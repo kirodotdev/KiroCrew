@@ -13,6 +13,9 @@ import { findReport, parseErrorCode } from '../utils/errorReport'
 import ErrorBoundary from './ErrorBoundary'
 import ErrorNotice from './ErrorNotice'
 import { getMobileConnectRenderers } from './mobileConnectRenderers'
+import { TailnetDirectLink, tailnetDirectActive } from './TailnetDirectLink'
+import { useSharedCrewCapabilities } from '../hooks/sharedCrew/useSharedCrew'
+import { sharedCrewPreviewOn } from '../api/sharedCrewUi'
 
 /** Machine-readable code from a mint error's JSON body (same shape as the
  *  Settings card's helper): lets the UI blame configuration only when the
@@ -52,7 +55,7 @@ const LINK_ERROR_KEYS = {
  * Renders one section per governed method the `/api/mobile-connect/methods`
  * endpoint returned (the CPP `mobile_connect` seam). The core draws two kinds
  * itself: `tailnet_qr` (server-rendered QR carrying a live session token,
- * minted ONLY on explicit click) and `login_link` (one-time sign-in URL). A
+ * minted ONLY on explicit click) and `login_link` (a sign-in URL, reusable inside its link window). A
  * downstream edition's kinds are drawn by the renderer seam in
  * `mobileConnectRenderers.tsx`, and those sections come first: a deployment
  * that contributes a method offers it as the primary way in, so the built-in
@@ -99,6 +102,40 @@ export default function MobileConnectModal({
   // already filtered every id through `capabilities.mobile_connect`, so a
   // registered renderer for a denied or absent method draws nothing.
   const editionSections = getMobileConnectRenderers().filter(r => kinds.includes(r.kind))
+  // A plain tailnet link needs no token, so when the gateway serves one it
+  // leads, and the token-carrying methods move under an Advanced fold for
+  // devices that are not on the tailnet.
+  const caps = useSharedCrewCapabilities()
+  const direct = caps.capabilities.tailnet_direct
+  // The direct link is a sharing surface: it shows only under the Shared Crew preview.
+  const directActive = sharedCrewPreviewOn(caps.capabilities) && tailnetDirectActive(direct)
+
+  const tokenSections = (
+    <>
+      {hasQr && (
+        <p className="text-[12.5px] text-muted leading-relaxed mb-4">
+          {t('components.mobileConnect.scan_with_your_phone_camera_to_continue_with_the_s')}
+        </p>
+      )}
+      {/* Edition sections, each in its own ErrorBoundary so a throwing
+          renderer disables only itself. Deliberately WITHOUT `fallback={null}`,
+          unlike the Overview stat-card slot: a card that vanishes leaves a grid
+          of siblings, but a registered section here can be the dialog's ONLY
+          content, and silently emptying it would strand a user who reached it
+          from a nav row that promised a way in. The default boundary keeps the
+          section occupied, which is also what makes counting these sections a
+          sound input to `standalone` below. */}
+      {editionSections.map(r => (
+        <ErrorBoundary key={r.kind} scope={`mobile-connect:${r.kind}`}>
+          <r.component onClose={onClose} />
+        </ErrorBoundary>
+      ))}
+      {hasQr && <TailnetQrSection onClose={onClose} />}
+      {kinds.includes('login_link') && (
+        <LoginLinkSection standalone={!hasQr && editionSections.length === 0} onClose={onClose} />
+      )}
+    </>
+  )
 
   // Two sibling layers, the same split Modal.tsx uses for its backdrop and
   // dialog wrapper. The BACKDROP stays on the chat-pane ceiling (z-50): the
@@ -144,28 +181,28 @@ export default function MobileConnectModal({
             <Smartphone size={16} className="shrink-0" />
             {t('components.mobileConnect.use_kiro_crew_on_your_phone')}
           </div>
-          {hasQr && (
-            <p className="text-[12.5px] text-muted leading-relaxed mb-4">
-              {t('components.mobileConnect.scan_with_your_phone_camera_to_continue_with_the_s')}
-            </p>
+          {caps.isError && (
+            <div className="mb-4">
+              <ErrorNotice
+                message={caps.error instanceof Error ? caps.error.message : t('sharedCrew.session_state_failed')}
+                askAgent
+                onHandoff={onClose}
+                testId="mobile-connect-capabilities-error"
+              />
+              <Btn onClick={() => { void caps.refetch() }}>{t('components.mobileConnect.try_again')}</Btn>
+            </div>
           )}
-          {/* Edition sections, each in its own ErrorBoundary so a throwing
-              renderer disables only itself. Deliberately WITHOUT `fallback={null}`,
-              unlike the Overview stat-card slot: a card that vanishes leaves a grid
-              of siblings, but a registered section here can be the dialog's ONLY
-              content, and silently emptying it would strand a user who reached it
-              from a nav row that promised a way in. The default boundary keeps the
-              section occupied, which is also what makes counting these sections a
-              sound input to `standalone` below. */}
-          {editionSections.map(r => (
-            <ErrorBoundary key={r.kind} scope={`mobile-connect:${r.kind}`}>
-              <r.component onClose={onClose} />
-            </ErrorBoundary>
-          ))}
-          {hasQr && <TailnetQrSection onClose={onClose} />}
-          {kinds.includes('login_link') && (
-            <LoginLinkSection standalone={!hasQr && editionSections.length === 0} onClose={onClose} />
+          {directActive && (
+            <div className="mb-4">
+              <TailnetDirectLink direct={direct} />
+            </div>
           )}
+          {directActive ? (
+            <details className="border-t border-border pt-3" data-testid="mobile-connect-advanced">
+              <summary className="cursor-pointer text-[12.5px] text-muted mb-2">{t('sharedCrew.direct_link_advanced')}</summary>
+              {tokenSections}
+            </details>
+          ) : tokenSections}
         </div>
       </div>
     </>
@@ -331,7 +368,7 @@ function TailnetQrSection({ onClose }: { onClose: () => void }) {
   )
 }
 
-/** One-time login link for the configured external origin. `standalone` means
+/** Sign-in link for the configured external origin. `standalone` means
  *  the QR section is absent (link-only editions / governance): no divider, and
  *  an intro that does not presuppose a camera alternative. */
 function LoginLinkSection({ standalone, onClose }: { standalone: boolean; onClose: () => void }) {
@@ -342,6 +379,7 @@ function LoginLinkSection({ standalone, onClose }: { standalone: boolean; onClos
   const sessionKey = activeSlot ? `dashboard:${activeSlot}` : undefined
   const createLink = useMutation({ mutationFn: () => api.mobileLoginLink(sessionKey) })
   const [linkCopyFailed, setLinkCopyFailed] = useState(false)
+  const showLinkQr = Boolean(createLink.data?.image)
 
   return (
     <div className={standalone ? '' : 'border-t border-border pt-3'}>
@@ -356,6 +394,19 @@ function LoginLinkSection({ standalone, onClose }: { standalone: boolean; onClos
             ? t('components.mobileConnect.creating')
             : t('components.mobileConnect.create_sign_in_link')}
         </Btn>
+      )}
+      {showLinkQr && (
+        <div className="flex justify-center mb-3">
+          <div className="bg-white p-2.5 rounded-lg leading-none">
+            {/* Same natural-size, pixelated rendering as TailnetQrSection's code:
+                a phone camera needs whole-pixel modules. Carries a live token. */}
+            <img
+              src={createLink.data?.image}
+              alt={t('components.mobileConnect.qr_code_for_the_sign_in_link')}
+              className="block max-w-full h-auto [image-rendering:pixelated]"
+            />
+          </div>
+        </div>
       )}
       {createLink.data && (
         <div className="flex items-center gap-2">
@@ -405,9 +456,12 @@ function LoginLinkSection({ standalone, onClose }: { standalone: boolean; onClos
       )}
       {createLink.data && (
         <p className="text-[11.5px] text-muted mt-2">
-          {t('components.mobileConnect.the_link_works_once_and_expires_in_about_minutes', {
-            minutes: Math.max(1, Math.round((createLink.data.expires_in ?? 900) / 60)),
-          })}
+          {t(
+            showLinkQr
+              ? 'components.mobileConnect.the_code_and_link_expire_in_about_minutes_minute'
+              : 'components.mobileConnect.the_link_works_once_and_expires_in_about_minutes',
+            { minutes: Math.max(1, Math.round((createLink.data.expires_in ?? 900) / 60)) },
+          )}
         </p>
       )}
     </div>

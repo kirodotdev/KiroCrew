@@ -93,7 +93,7 @@ def _invoke(path: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(path), *args],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
 
 

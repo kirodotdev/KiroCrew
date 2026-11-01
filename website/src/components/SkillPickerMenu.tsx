@@ -3,6 +3,7 @@ import { OverlayPortal } from './overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { Lock, Sparkles } from 'lucide-react'
 import { usePickerSource } from './dashboardPickerSource'
+import ErrorNotice from './ErrorNotice'
 import { pickerQueryKey } from '../chat-core/composer/pickerSource'
 import { unwrapSkills } from '../lib/skillsPayload'
 import type { SkillsPayload } from '../lib/skillsPayload'
@@ -94,7 +95,7 @@ export default function SkillPickerMenu({
   // `loading` below is `isLoading && open` and isLoading clears only on settle,
   // so an unbounded fetch leaves "Loading skills…" up forever.
   const source = usePickerSource()
-  const { data, isLoading, isFetching, isError } = useQuery<SkillsPayload<SkillItem>>({
+  const { data, isLoading, isFetching, isError, refetch } = useQuery<SkillsPayload<SkillItem>>({
     queryKey: pickerQueryKey(source, ['skills', slotKey ?? null, project ?? null, agent ?? null]),
     queryFn: ({ signal }) => source.skills!(slotKey, agent, signal) as Promise<SkillsPayload<SkillItem>>,
     enabled: open && !!source.skills,
@@ -102,6 +103,28 @@ export default function SkillPickerMenu({
   })
   const loading = isLoading && open
 
+  // A manual retry is in flight: set when the user presses Retry on the
+  // load-failure notice, cleared when that re-ask settles. Mirrors the sibling
+  // pickers' own busy flag (WorkspacePicker's `browsing`, ProjectPicker's
+  // `retryingRecent`) rather than reading a query internal: on a refetch after
+  // an error react-query flips back to its pending state (isLoading true), so
+  // without this the generic "Loading skills…" copy would replace the notice
+  // and its control mid-re-ask instead of the inert "Retrying…" the siblings
+  // show. Cleared off `isFetching` going false below.
+  const [retrying, setRetrying] = useState(false)
+  useEffect(() => { if (!isFetching) setRetrying(false) }, [isFetching])
+  const retryLoad = useCallback(() => {
+    if (isFetching) return
+    setRetrying(true)
+    void refetch()
+  }, [isFetching, refetch])
+  // The re-ask is in flight THIS render. `retrying` state alone clears one
+  // commit late (its effect runs after the settle commit), so on a Retry that
+  // succeeds with zero rows the failed role="alert" copy would show — and a
+  // screen reader could announce it — for one frame before flipping to "No
+  // matching". Anding with `isFetching`, which is false
+  // the moment the query settles, closes that frame.
+  const retryInFlight = retrying && isFetching
   // Unwrap the two payload shapes once (the cache stores the RAW payload so
   // ChatInput's focus-prefetch — same query key, same queryFn — stays
   // interchangeable with this reader).
@@ -162,12 +185,14 @@ export default function SkillPickerMenu({
   const releaseKeysWhenEmpty = !isFetching && (data !== undefined || isError) && matched.length === 0
 
   // Shared Arrow/Enter/Tab/Escape + scroll-into-view (see useListKeyboardNav).
-  const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
+  const retryRef = useRef<HTMLButtonElement>(null)
+  const { selected, setSelected, selectedRef, itemRefs, hoverSelect, restoreEmptyFocus } = useListKeyboardNav({
     open,
     count: results.length,
     onChoose: choose,
     onClose,
     releaseKeysWhenEmpty,
+    emptyActionRef: retryRef,
   })
 
   // Populate bottom-up when the menu opens above the input (shared helper —
@@ -215,8 +240,13 @@ export default function SkillPickerMenu({
   // branches preserve the Enter/Ctrl+Enter release announcement.
   const mappedEmpty = agentScoped && items.length === 0
   // A settled ERROR is not an empty catalog: both release Enter, but "No matching
-  // skills" asserts something false about the user's skills.
-  const loadFailed = isError && items.length === 0
+  // skills" asserts something false about the user's skills. `retryInFlight` is
+  // held too: on a Retry with no cached data react-query v5 resets the query to
+  // `pending` with `error: null`, so `isError` briefly goes false while the
+  // re-ask is out — without pinning it here the copy would flip to "No matching
+  // skills" for the whole re-ask. It ands `retrying` with `isFetching` so the
+  // failed copy does not linger one frame past the settle commit.
+  const loadFailed = (isError || retryInFlight) && items.length === 0
   const emptyKey = loadFailed
     ? (!releaseKeysWhenEmpty
         ? 'components.skillPickerMenu.skills_load_failed'
@@ -241,7 +271,42 @@ export default function SkillPickerMenu({
     ? 'components.skillPickerMenu.loading_skills_ctrl_enter_held'
     : 'components.skillPickerMenu.loading_skills_enter_held'
 
-  const empty = loading
+  const empty = loadFailed
+    // A failed load is an ERROR surface, so it renders through ErrorNotice
+    // (errors-use-error-notice) — never a hand-written red/status div — and
+    // gains the re-ask the four sibling pickers already carry (#7068). No
+    // hand-off: this floats over the composer's unsaved draft, and the agent
+    // hand-off would navigate away from it; the Retry is the local recovery.
+    // `refetch()` re-issues the SAME query; on success the menu re-renders from
+    // `data` with no error, so the notice clears itself. `loadFailed` holds
+    // through the re-ask (it admits `retryInFlight`), so this branch precedes the
+    // generic `loading` one and shows an inert "Retrying…", not the first-load
+    // "Loading skills…" copy. The ErrorNotice is role="alert", which announces
+    // the Enter-sends flip the empty copy carries. Retry is inert-but-focusable
+    // while busy. Mousedown preserves composer focus; Tab reaches Retry and
+    // Tab/Shift+Tab return to the composer. Activation restores focus before
+    // refetch, and the nav hook returns focus to the composer whenever the
+    // button unmounts while holding it (a retry already in flight landing),
+    // so focus never drops to <body>.
+    ? <div className="px-3 py-3 flex items-center gap-2" aria-busy={retryInFlight || undefined}>
+        {/* No hand-off: this picker floats over the composer's unsaved draft. */}
+        <ErrorNotice
+          variant="inline"
+          className="flex-1 min-w-0 whitespace-normal"
+          message={i18nT(emptyKey, { agent: scopedAgent })}
+        />
+        <button
+          type="button"
+          ref={retryRef}
+          onMouseDown={e => e.preventDefault()}
+          onClick={() => { restoreEmptyFocus(); retryLoad() }}
+          aria-disabled={retryInFlight || undefined}
+          className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 shrink-0 aria-disabled:opacity-50"
+        >
+          {retryInFlight ? i18nT('components.skillPickerMenu.retrying') : i18nT('components.skillPickerMenu.retry')}
+        </button>
+      </div>
+    : loading
     ? <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(loadingKey)}</div>
     // Enter's meaning flips with the release gate (pick → send), so the copy
     // must announce it at the point of action rather than silently sending.
@@ -285,7 +350,7 @@ export default function SkillPickerMenu({
               ref={el => { itemRefs.current[i] = el }}
               className={`w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle text-text' : 'text-muted hover:bg-bg-hover hover:text-text'}`}
               title={s.key}
-              onMouseEnter={() => setSelected(i)}
+              onMouseMove={e => hoverSelect(i, e)}
               onMouseDown={e => {
                 e.preventDefault()
                 if (gated && onTrustRequest) onTrustRequest(info)

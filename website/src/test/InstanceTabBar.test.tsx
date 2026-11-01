@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstanceTabBar, {
@@ -340,7 +340,7 @@ describe('InstanceTabBar', () => {
 
     await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
     const pin = await screen.findByTestId('crew-pin-cd-1')
-    pin.focus()
+    act(() => { pin.focus() })
     await u.keyboard('{Enter}')
     await waitFor(() =>
       expect(JSON.parse(localStorage.getItem('mc-crew-switcher-pinned')!)).toEqual(['cd-1']),

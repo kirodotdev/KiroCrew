@@ -133,7 +133,8 @@ def test_one_pathological_row_cannot_park_the_sweep(_memory_cfg):
 def test_bulk_threads_default_to_one(_memory_cfg):
     _memory_cfg["embedding_threads"] = 4
     assert emb.bulk_embed_threads() == 1
-    assert emb._embed_threads() == 4
+    # 4 is the declared default, so the pinned 16-core host gets its large-host 6.
+    assert emb._embed_threads() == 6
 
 
 def test_explicit_zero_inherits_the_interactive_count(_memory_cfg):
@@ -155,7 +156,7 @@ def test_bulk_threads_override_is_honoured(_memory_cfg):
     _memory_cfg["embedding_threads"] = 4
     _memory_cfg["embedding_bulk_threads"] = 6
     assert emb.bulk_embed_threads() == 6
-    assert emb._embed_threads() == 4
+    assert emb._embed_threads() == 6
 
 
 def test_bulk_threads_clamped_to_cores(_memory_cfg, monkeypatch):

@@ -331,6 +331,38 @@ def on_dashboard_agentic(session_id: str, data: dict[str, Any], *, timeout: floa
     return _append_dashboard(session_id, "dashboard/agentic_value", data, timeout)
 
 
+def on_dashboard_custom(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
+    """One custom record a script cron wrote for its crewmate, appended to the DM log.
+
+    *data* is the ``dashboard/custom_value`` payload the record route has already
+    built: the record type and data the script sent, checked for shape and size, and
+    the ``writer``, ``member`` and ``crew_key`` the ROUTE stamped from the caller's
+    attested identity. This emitter does not re-check the caps -- the route is the
+    only party that knows the writer -- and the FOLD re-checks on read, which is where
+    a line off disk needs it.
+
+    Waits and answers like :func:`on_dashboard_agentic`, for the same reason: this log
+    is the record's only home, so a script told its record landed must be able to
+    trust that the fold will see it, and ``False`` is final.
+    """
+    # A literal, for the reason ``on_dashboard_agentic`` spells out.
+    return _append_dashboard(session_id, "dashboard/custom_value", data, timeout)
+
+
+def on_dashboard_custom_failed(
+    session_id: str, data: dict[str, Any], *, timeout: float = 5.0
+) -> bool:
+    """A member-bound script cron's failed run, appended to its crewmate's DM log.
+
+    *data* is the ``dashboard/custom_failed`` payload the scheduler's recorder built:
+    the ``writer`` and ``member`` it read off the job, and the run's scrubbed error.
+    BEST-EFFORT at the call site, like :func:`on_dashboard_refused`: the run has
+    already failed, and ``False`` only means the page will not say so.
+    """
+    # A literal, for the reason ``on_dashboard_agentic`` spells out.
+    return _append_dashboard(session_id, "dashboard/custom_failed", data, timeout)
+
+
 def on_dashboard_refused(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
     """One refused agentic write -- or one correction of an earlier refusal.
 

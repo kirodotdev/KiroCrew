@@ -643,20 +643,14 @@ LOCAL_COMMAND_JOBS = frozenset(
         "Backend Lint & Type Check (3.12)",
         "Backend Lint & Type Check",
         "Frontend Lint & Type Check",
-        "Comment History Gate",
-        "Brand Name Gate",
-        "Harness Parity Gate",
-        "Feature Map Gate",
-        "Focus Cue Gate",
-        "Changelog History Gate",
-        "Decision Ledger Gate",
-        "Memory Store Seam Gate",
-        "Loop-Bound Locks Gate",
-        "Builtin Skill Scope Gate",
-        "Testpaths Coverage Gate",
-        "Working-Directory Path Gate",
-        "Vendored Tree Integrity",
-        "Docs Lint",
+        # ci.yml's baselined ratchets, off lint-gate's path. Each step runs a
+        # script a contributor runs locally, so a push red only here is as
+        # avoidable as one red only in a lint job.
+        "Backend Ratchets & Boundaries",
+        "Frontend Ratchets & i18n",
+        # fast-gate.yml's fourteen stdlib gates run as steps of this one job,
+        # so a red on any of them reaches the census under this single name.
+        "Source Gates",
         "Static Ratchet Gate",
         "CloudFormation Lint",
         "PR Hygiene",

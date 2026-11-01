@@ -50,6 +50,7 @@ from kiro_crew.security import redact
 from kiro_crew.sel import sel
 from kiro_crew.skills import remove_retired_conductor_skill
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.terminal_safe import safe_terminal_line
 from kiro_crew.validation import USER_ID_RE
 
 
@@ -73,8 +74,22 @@ def _get_alias() -> str:
     return alias
 
 
+def _manifest_features() -> frozenset[str]:
+    """The Slack Code switches the saved config turns on (none if it cannot load).
+
+    The CLI renders the SAME manifest the dashboard serves for this install, so an
+    existing app updated from either one asks Slack for the same scopes.
+    """
+    from kiro_crew.slack.features import manifest_features
+
+    try:
+        return manifest_features(KiroCrewConfig.load())
+    except Exception:
+        return frozenset()
+
+
 def _manifest(alias: str | None = None, output: str | None = None, url: bool = False) -> None:
-    """Render slack-manifest.yaml with the user's alias substituted."""
+    """Render slack-manifest.yaml with the user's alias and Slack Code switches."""
 
     alias = alias or _get_alias()
     if not slack_manifest.valid_alias(alias):
@@ -84,24 +99,35 @@ def _manifest(alias: str | None = None, output: str | None = None, url: bool = F
             file=sys.stderr,
         )
         sys.exit(1)
+    features = _manifest_features()
     try:
-        rendered = slack_manifest.render(alias)
+        rendered = slack_manifest.render(alias, features=features)
     except FileNotFoundError:
         print("❌ Cannot find slack-manifest.yaml", file=sys.stderr)
         sys.exit(1)
     command = slack_manifest.slash_command(alias)
+    switches = ", ".join(f"slack.{f}" for f in slack_manifest.FEATURES if f in features)
     hint = (
         f"   Slash command: /{command} — the gateway answers it once slack.command matches:\n"
         f"   kirocrew config set slack.command {command}\n"
+        f"   Slack Code switches rendered: {switches or 'none'}\n"
     )
     if url:
         print("\n🔗 Click to create your Slack app:\n")
-        print(f"{slack_manifest.deep_link(alias)}\n")
+        print(f"{slack_manifest.deep_link(alias, features)}\n")
         print(hint)
     elif output:
         out = Path(output)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(rendered, encoding="utf-8")
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(rendered, encoding="utf-8")
+        except OSError as exc:
+            # A directory at the path, a file where a folder should be or a
+            # read-only target: one line, not a traceback.
+            shown = safe_terminal_line(str(output))
+            reason = safe_terminal_line(str(exc.strerror or exc))
+            print(f"❌ Could not write {shown}: {reason}", file=sys.stderr)
+            sys.exit(1)
         print(f"✅ Manifest written to {output} (name: KiroCrew-{alias})")
         print(hint)
     else:
@@ -823,7 +849,7 @@ def _setup_slack_tokens() -> None:
     # the possibly-stale snapshot read before the prompts.
     cred_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = _env_lock_path(cred_path)
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     if not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
         os.close(lock_fd)
         print(

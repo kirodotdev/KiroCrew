@@ -317,7 +317,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     })
     evt.preventDefault() // Pierre's capture handler already claimed it.
     expect(evt.defaultPrevented).toBe(true)
-    document.dispatchEvent(evt)
+    act(() => { document.dispatchEvent(evt) })
     await waitFor(() =>
       expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, {
         content: '# keyboard',
@@ -387,8 +387,12 @@ describe('ArtifactDetailPage — mutation paths', () => {
     await waitFor(() =>
       expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, { snapshot: true }),
     )
+    // The snapshot holds `saving` (and so disables the Version select) until its three refetches land.
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /Version/i })).toBeEnabled())
     vi.mocked(api).updateArtifact = vi.fn().mockRejectedValue(new Error('snapshot refused'))
-    await chooseMore('Snapshot')
+    // The rejected mock settles in microtasks, so the click that starts the handler owns those updates.
+    const snapshotItem = await findMoreItem('Snapshot')
+    await act(async () => { fireEvent.click(snapshotItem) })
     await waitFor(() => expect(screen.getByText('snapshot refused')).toBeInTheDocument())
   })
 
@@ -620,6 +624,56 @@ describe('ArtifactDetailPage — mutation paths', () => {
     }
   })
 
+  const WEBVIEW_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0 Mobile Safari/537.36'
+
+  it.each([
+    ['markdown' as const, 'CR Queue-v2.md', 'text/plain'],
+    ['widget' as const, 'CR Queue-v2.html', 'text/html'],
+  ])('in an Android in-app browser a %s downloads the same bytes from a gateway URL, not a blob', async (kind, name, mime) => {
+    const ua = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(WEBVIEW_UA)
+    vi.mocked(api).artifactDownloadUrl = vi.fn().mockResolvedValue({ url: '/api/artifact-downloads/abc' })
+    const hrefs: string[] = []
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function mockClick(this: HTMLAnchorElement) {
+        hrefs.push(`${this.getAttribute('href')} ${this.download}`)
+      })
+    const create = vi.fn(() => 'blob:download')
+    const origCreate = URL.createObjectURL
+    URL.createObjectURL = create as typeof URL.createObjectURL
+    try {
+      await mount(mkArtifact({ kind, content: 'body', name: 'CR Queue' }))
+      await chooseMore('Download')
+      await waitFor(() => expect(hrefs.length).toBe(1))
+      expect(hrefs[0]).toBe(`/api/artifact-downloads/abc ${name}`)
+      const [sentName, sentType, sentBody] = vi.mocked(api).artifactDownloadUrl.mock.calls[0]
+      expect([sentName, sentType]).toEqual([name, mime])
+      // A widget sends the page's own export, which carries its CSP, not the raw content.
+      if (kind === 'widget') expect(sentBody).toContain('Content-Security-Policy')
+      else expect(sentBody).toBe('body')
+      expect(create).not.toHaveBeenCalled()
+    } finally {
+      click.mockRestore()
+      ua.mockRestore()
+      URL.createObjectURL = origCreate
+    }
+  })
+
+  it('in an Android in-app browser a failed hand-off shows an error and builds no blob', async () => {
+    const ua = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(WEBVIEW_UA)
+    vi.mocked(api).artifactDownloadUrl = vi.fn().mockRejectedValue(new Error('offline'))
+    const cap = captureDownload()
+    try {
+      await mount(mkArtifact({ kind: 'markdown', content: 'body', name: 'CR Queue' }))
+      await chooseMore('Download')
+      expect(await screen.findByText('Download failed')).toBeInTheDocument()
+      expect(cap.seen).toEqual([])
+    } finally {
+      cap.restore()
+      ua.mockRestore()
+    }
+  })
+
   // ── publish + popout toolbar branches ─────────────────────────────────────
   it('the Publish button toggles the publish panel', async () => {
     await mount(mkArtifact())
@@ -667,7 +721,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
   it('opens More from the keyboard and moves focus into the menu', async () => {
     await mount(mkArtifact())
     const trigger = moreButton()
-    trigger.focus()
+    act(() => { trigger.focus() })
     fireEvent.keyDown(trigger, { key: 'Enter' })
     const menu = await screen.findByRole('menu')
     expect(trigger).toHaveAttribute('aria-expanded', 'true')

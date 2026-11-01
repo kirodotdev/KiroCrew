@@ -984,7 +984,6 @@ def cleanup_orphaned_session_roots() -> int:
             if not platform_compat.pid_exists(child_pid):
                 entries_to_remove.add(stripped)
 
-    # Write back cleaned entries
     if entries_to_remove:
         _write_back_pid_file(entries_to_remove)
 
@@ -1141,11 +1140,10 @@ def kill_orphan_mcps(pids: list[int]) -> int:
                     # types are identical on POSIX).
                     #
                     # This signals the root ALONE. Its descendants were already
-                    # reaped explicitly above, which is what this commit adds:
-                    # the older reasoning here -- that surviving children with an
-                    # MCP marker get reclaimed on a subsequent sweep, and that
-                    # unmarked ones were never candidates -- is what the
-                    # 112-process leak falsified. An UNMARKED intermediate IS a
+                    # reaped explicitly above. Relying on a later sweep to reclaim
+                    # surviving children with an MCP marker, on the theory that
+                    # unmarked ones are never candidates, leaks processes: an
+                    # UNMARKED intermediate IS a
                     # candidate yet is not sweepable, so it never reparents into
                     # view and keeps its marked children behind a non-init ppid.
                     platform_compat.kill_pid(pid, platform_compat.SIGKILL)

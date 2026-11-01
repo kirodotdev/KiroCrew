@@ -133,7 +133,6 @@ def test_normal_tree_passes_staging(tmp_path: Path, monkeypatch):
 
     symlinks_found = [str(p) for p in staged.rglob("*") if p.is_symlink()]
     assert symlinks_found == []
-    # Verify files copied correctly
     assert (staged / "index.html").read_text(encoding="utf-8") == "<h1>hi</h1>"
     assert (staged / "subdir" / "style.css").read_text(encoding="utf-8") == "body {}"
     shutil.rmtree(str(sp))

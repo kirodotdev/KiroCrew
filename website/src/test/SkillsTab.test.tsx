@@ -1386,7 +1386,7 @@ describe('SkillsTab update/delete failure surfacing', () => {
     resolveDelete({ ok: true })
     // The editor must remain mounted with the draft intact.
     await waitFor(() => expect(screen.queryByTestId('skill-delete-failure')).not.toBeInTheDocument())
-    expect(screen.getByText('Save')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('Save')).toBeInTheDocument())
     expect(screen.getByText('Cancel')).toBeInTheDocument()
     confirmSpy.mockRestore()
   })

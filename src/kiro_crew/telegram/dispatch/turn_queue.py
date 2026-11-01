@@ -32,6 +32,7 @@ from kiro_crew.messaging.queue_drain import (
 )
 from kiro_crew.messaging.queue_receipt import MAX_COLLAPSE as _MAX_COLLAPSE
 from kiro_crew.messaging.queue_receipt import ReceiptSurface, receipt_address_key
+from kiro_crew.telegram.client import frame_reply_context
 from kiro_crew.telegram.dispatch import origin as _origin
 from kiro_crew.telegram.transport import TelegramInboundMessage
 
@@ -109,6 +110,11 @@ async def _pump_queue(
     """
     while True:
         texts: list[str] = []
+        # The user's OWN words, parallel to ``texts`` but WITHOUT the reply-
+        # context framing. ``texts`` (framed) builds the replayed turn the agent
+        # sees; ``raw_texts`` is what the "Now answering" receipt shows the chat,
+        # matching the "⏳ Queued" bubble, so internal framing is never surfaced.
+        raw_texts: list[str] = []
         all_attachments: list[Any] = []
         remainder: list[tuple[str, str, dict]] = []
         privacy_requests: list[str] = []
@@ -187,7 +193,24 @@ async def _pump_queue(
                     and item_origin.sender_key == origin.sender_key
                 )
                 if fits:
-                    texts.append(item[1])
+                    # Frame THIS entry's own reply context onto its own text
+                    # before it joins the collapsed burst, so each queued reply
+                    # carries exactly its own parent — never another entry's and
+                    # never duplicated. Screened/fenced inside frame_reply_context;
+                    # the combined turn is then replayed with no reply_context, so
+                    # _run_turn does not frame it a second time.
+                    entry_reply_context = item[2].get("reply_context") or ""
+                    entry_text = item[1]
+                    if isinstance(entry_reply_context, str) and entry_reply_context:
+                        entry_text = frame_reply_context(
+                            entry_text,
+                            entry_reply_context,
+                            chat_id=str(item_origin.chat_id),
+                            session_key=session_key,
+                        )
+                    texts.append(entry_text)
+                    # The receipt shows the user's own words, never the framing.
+                    raw_texts.append(item[1])
                     all_attachments.extend(item_attachments)
                     person = person or entry_person_origin(item[2])
                     requested = item[2].get("privacy_request") or ""
@@ -234,7 +257,7 @@ async def _pump_queue(
                 await self._receipt_flip_locked(
                     session_key,
                     int(origin.chat_id),
-                    texts,
+                    raw_texts,
                     own_deferred,
                     owner=_origin._entry_owner(origin),
                 )
@@ -332,6 +355,7 @@ async def _enqueue_with_receipt(
     thread: int | None = None,
     attachments: list[Any] | None = None,
     privacy_request: str = "",
+    reply_context: str = "",
     origin: _QueuedOrigin,
     person_origin: bool = False,
 ) -> bool:
@@ -368,6 +392,10 @@ async def _enqueue_with_receipt(
             # modifier was already stripped from, so a request left behind here
             # is one no later parse can recover.
             privacy_request=privacy_request,
+            # The reply's quoted context rides with its own entry so the drain
+            # can frame it onto THIS entry's text before collapsing — kept out
+            # of ``text`` so it never reached the activation gate.
+            reply_context=reply_context,
             **_origin._origin_kwargs(origin),
         ):
             return False

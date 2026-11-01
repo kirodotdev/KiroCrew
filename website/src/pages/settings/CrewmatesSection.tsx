@@ -3,12 +3,9 @@
  * features. One today -- `dashboard.crewmate_threads`, reply threads on crewmate
  * chat messages (RFC crewmates launch, screen 07), off by default.
  *
- * Sits under its own heading, right after Feature Previews, because that is
- * where the Crew Members preview card lives -- the one door to the `/members`
- * page this flag changes. The heading is visual only: config has no crewmate
- * parent flag (Crew Members is a client-side preview flag, `previewFlags.ts`),
- * so this toggle nests under a section title rather than under a parent key.
- * Whether crewmate features should share a parent flag is out of scope here.
+ * Sits under its own heading, right after Feature Previews. The heading is
+ * visual only: config has no crewmate parent flag, so this toggle nests under a
+ * section title rather than under a parent key.
  *
  * Server-side, like the Power toggle on the Chat tab: the value is PATCHed to
  * `dashboard.crewmate_threads` and read back through the shared
@@ -46,8 +43,11 @@ export function CrewmatesSection() {
 
   return (
     <SettingsSection title={i18nT('pages.settings.crewmatesSection.title')}>
-      {/* A config read that failed leaves the switch disabled; say so, rather
-          than showing a control that cannot move. The retry is the query's own. */}
+      {/* Sits right after Feature Previews, so the line says what kind of group
+          this is: server settings that apply on every device, not previews. */}
+      <p className="text-[13px] text-muted mb-2" data-testid="crewmates-section-description">
+        {i18nT('pages.settings.crewmatesSection.description')}
+      </p>
       {/* A config read that failed leaves the switch disabled; say so, with the
           query's own retry, rather than showing a control that cannot move.
           askAgent: a toggle holds no draft, so the hand-off loses nothing. */}

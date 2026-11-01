@@ -75,6 +75,9 @@ _SLOT_FOLD_ROW_BYTES: Final[dict[str, int]] = {
     "goal": 1_700,
     # a waiting row: kind, text, stamp and its options, each at CREWMATE_TEXT_LIMIT
     "waiting": 11_000,
+    # one custom record: its data at CUSTOM_RECORD_BYTES, plus the type name, the
+    # stamp, the seq, and the writer, member and ownership cells at their clamps
+    "custom": 8_900,
     # a worker row with every text cell at its clamp -- slot and stop reason at
     # TEXT_LIMIT, task, agent, last line, report and close reason at
     # WORKERS_TEXT_LIMIT -- serializes to 2,034 bytes; a one-unit fixture can only

@@ -73,14 +73,36 @@ alone while your claim lasts.
 
 The root build target owns frontend dependency installation, SPA staging,
 virtualenv creation, and the editable backend install. Do not duplicate those
-steps manually:
+steps manually.
+
+How you clone depends on your access. If you have push access (members of
+[`kirocrew-active-contributors`](https://github.com/orgs/kirodotdev/teams/kirocrew-active-contributors)
+and maintainers), clone this repository directly rather than forking: a branch
+here reaches the CodeBuild runner fleet, which a fork's branches cannot, so a
+fork pull request runs on the shared GitHub-hosted pool and queues behind
+everything else. The second remote points at the same repository on purpose, so
+that every `upstream` command in this guide reads the same whichever way you
+cloned.
+
+```bash
+# With push access: clone this repository
+git clone https://github.com/kirodotdev/KiroCrew.git
+cd KiroCrew
+git remote add upstream https://github.com/kirodotdev/KiroCrew.git
+```
+
+Without push access, fork first:
 
 ```bash
 # Fork the repo on GitHub, then clone your fork
 git clone https://github.com/<your-username>/KiroCrew.git
 cd KiroCrew
 git remote add upstream https://github.com/kirodotdev/KiroCrew.git
+```
 
+Then, either way:
+
+```bash
 make build
 source .venv/bin/activate
 kirocrew setup               # configure the data home and default agent
@@ -320,7 +342,9 @@ git push --force-with-lease origin <feature-branch>
 
 ## Pull Request Workflow
 
-1. **Fork** the repository on GitHub.
+1. **Fork** the repository on GitHub, unless you have push access, in which
+   case branch on this repository directly as in First-Time Setup above. Your
+   branches then reach the CodeBuild runner fleet, which a fork's cannot.
 2. **Branch** from `main` in a git worktree, never in the main clone (the
    `kirocrew-worktree-dev` skill owns this rule):
    ```bash
@@ -341,7 +365,7 @@ git push --force-with-lease origin <feature-branch>
    python3 scripts/local-gate.py
    ```
 6. **Commit** using [Conventional Commits](https://www.conventionalcommits.org/)
-   (see below), push to your fork, and open a **Pull Request against `main`**.
+   (see below), push your branch, and open a **Pull Request against `main`**.
 7. **Fill the PR template.** Keep every heading of
    [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) and fill the
    **Goal:** line under Problem / Motivation. The `pr-hygiene` check fails a body

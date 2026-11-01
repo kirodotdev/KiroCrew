@@ -544,7 +544,8 @@ class TestSubagentCompleted:
         coordinator._record_terminal_metric(_Info())
         calls = _named(rec, ev.SUBAGENT_COMPLETED)
         assert len(calls) == 1
-        assert calls[0]["attrs"] == {"outcome": "completed"}
+        # A record with no result text is a completed run with an empty result.
+        assert calls[0]["attrs"] == {"outcome": "completed", "result": "empty"}
 
     @pytest.mark.parametrize("outcome", ["completed", "failed", "stopped"])
     def test_a_stopped_run_is_not_reported_as_a_completion(self, rec, outcome):
@@ -573,7 +574,93 @@ class TestSubagentCompleted:
         coordinator._record_terminal_metric(_Info())
         calls = _named(rec, ev.SUBAGENT_COMPLETED)
         assert len(calls) == 1
-        assert calls[0]["attrs"] == {"outcome": ev.SUBAGENT_OUTCOME_UNKNOWN}
+        assert calls[0]["attrs"] == {"outcome": ev.SUBAGENT_OUTCOME_UNKNOWN, "result": "none"}
+
+    @pytest.mark.parametrize(
+        "outcome,result,truncated,expected",
+        [
+            ("completed", "the answer", False, "text"),
+            ("completed", "a long answer, cut", True, "text"),
+            ("completed", "", False, "empty"),
+            ("completed", "   \n", False, "empty"),
+            # The runner's no-reply placeholder, alone or with the notice it
+            # appends after a run that called tools, is not a reply.
+            ("completed", "_No response._", False, "empty"),
+            ("completed", "_No response._\n\nThe sub-agent ran tools.", False, "empty"),
+            ("failed", "partial text", False, "none"),
+            ("stopped", "", False, "none"),
+        ],
+    )
+    def test_result_says_only_whether_the_result_was_empty(
+        self, rec, outcome, result, truncated, expected
+    ):
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        class _Info:
+            pass
+
+        info = _Info()
+        info.outcome = outcome
+        info.result = result
+        info.result_truncated = truncated
+        # The runner assigns a result path to every run, so it says nothing.
+        info.result_path = "/tmp/result.txt"
+        coordinator = TerminalCoordinator.__new__(TerminalCoordinator)
+        coordinator._record_terminal_metric(info)
+        (call,) = _named(rec, ev.SUBAGENT_COMPLETED)
+        assert call["attrs"] == {"outcome": outcome, "result": expected}
+
+    @pytest.mark.parametrize(
+        "returned_reply,result,expected",
+        [
+            # A fallback notice is added to an empty reply, so the stored result
+            # is not empty; the flag read before the notice decides.
+            (False, "_Note: served by a fallback model._", "empty"),
+            (True, "_Note: served by a fallback model._\n\nthe answer", "text"),
+        ],
+    )
+    def test_the_runners_reply_flag_decides_over_the_stored_text(
+        self, rec, returned_reply, result, expected
+    ):
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        class _Info:
+            pass
+
+        info = _Info()
+        info.outcome = "completed"
+        info.result = result
+        info.result_truncated = False
+        info.returned_reply = returned_reply
+        coordinator = TerminalCoordinator.__new__(TerminalCoordinator)
+        coordinator._record_terminal_metric(info)
+        (call,) = _named(rec, ev.SUBAGENT_COMPLETED)
+        assert call["attrs"] == {"outcome": "completed", "result": expected}
+
+    def test_the_runner_sets_the_reply_flag_before_annotating(self):
+        """``returned_reply`` is read from the reply before the fallback notice."""
+        from kiro_crew.subagent_manager import run_turn
+
+        source = Path(run_turn.__file__).read_text(encoding="utf-8")
+        flag = source.index("info.returned_reply = not _no_reply")
+        assert source.index("_no_reply = not cleaned.strip()") < flag
+        assert flag < source.index("cleaned = annotate_model_fallback(cleaned, client)")
+
+    def test_the_no_reply_placeholder_is_the_runners_own(self):
+        """``empty`` is read from the placeholder the runner stores for a run with
+        no reply, so the two spellings must not drift apart."""
+        from kiro_crew.subagent_manager import run_turn
+
+        source = Path(run_turn.__file__).read_text(encoding="utf-8")
+        assert (
+            f"info.result = cleaned or {ev.SUBAGENT_NO_REPLY_RESULT!r}".replace("'", '"') in source
+        )
+
+    def test_result_values_are_pinned(self):
+        assert ev.SUBAGENT_RESULT_VALUES == ("text", "empty", "none")
+        for outcome in ev.SUBAGENT_OUTCOMES:
+            for result in ("", "x", None, 3):
+                assert ev.subagent_result_kind(outcome, result) in ev.SUBAGENT_RESULT_VALUES
 
     def test_the_emit_is_not_gated_on_the_crew_log_emitter(self):
         """It is called BESIDE ``_record_crew_log_terminal``, not inside it: that

@@ -871,7 +871,6 @@ class TestGitLog:
     @pytest.mark.asyncio
     async def test_limit_parameter(self, repo, mock_sel):
         """limit=1 returns only 1 commit even if there are more."""
-        # Add a second commit
         (repo / "d.txt").write_text("x\n")
         _git(repo, "add", "d.txt")
         _git(repo, "commit", "-qm", "second commit")

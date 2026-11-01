@@ -68,6 +68,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { ThemeProvider } from '../hooks/useTheme'
 
 const SLOT = 'member-default'
 const OTHER = 'chat-1-main'
@@ -107,9 +108,11 @@ function mount(store: ReturnType<typeof makeStore>, slotKey: string = SLOT) {
   const tree = (key: string) => (
     <Provider store={store}>
       <QueryClientProvider client={qc}>
+        <ThemeProvider>
         <MemoryRouter>
           <ChatPane slotKey={key} agentLocked frameless />
         </MemoryRouter>
+        </ThemeProvider>
       </QueryClientProvider>
     </Provider>
   )
@@ -340,6 +343,19 @@ describe('ChatPane Stop: parity with the main chat', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('says a refused stop for a missing chat in plain words, not the API text (#20398)', async () => {
+    const { ApiError } = await import('../api/apiError')
+    const body = JSON.stringify({ error: 'not found', code: 'slot_not_found' })
+    apiMock.stopChatSlot.mockRejectedValueOnce(new ApiError(404, 'not found', body))
+    const store = makeStore('streaming')
+    const { getByTestId, queryByTestId } = mount(store)
+    await act(async () => { fireEvent.click(getByTestId('stop-button-armed')) })
+    const notice = queryByTestId('chat-pane-stop-error')?.textContent ?? ''
+    expect(notice).toContain("This chat wasn't found, so nothing was stopped. Reload the page.")
+    expect(notice).not.toContain('not found)')
+    expect(notice).not.toContain("Couldn't stop this turn")
   })
 
   it('a definite backend refusal resets the press: the retry is a fresh soft stop', async () => {

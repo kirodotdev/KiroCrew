@@ -35,6 +35,7 @@
     "reset_conversation": "Reset conversation",
     "chat_tag": "Tag session",
     "suggest_followup": "Suggest follow-ups",
+    "request_server": "Request MCP server",
     "send_message": "Send message",
     "send_notification": "Send notification",
     "delete_message": "Delete message",
@@ -79,6 +80,7 @@
     "ops_mission_control_api": "Call Ops Mission Control",
     "design_tweak_update_thread": "Update design-tweak thread",
     "pod_up": "Start pod",
+    "pod_restart": "Restart pod",
     "pod_down": "Stop pod",
     "pod_status": "Read pod status",
     "pod_ls": "List pods",
@@ -111,6 +113,7 @@
     "session_retry": "Retry session turn",
     "session_continue": "Continue session",
     "session_set_model": "Set session model",
+    "session_set_color": "Set session color",
     "session_reload": "Reload session",
     "session_rename": "Rename session",
     "session_generate_title": "Regenerate session title",
@@ -124,7 +127,8 @@
     "session_broadcast": "Broadcast to sessions",
     "session_release": "Release session",
     "session_read_message": "Read session message",
-    "session_summary": "Read session summary"
+    "session_summary": "Read session summary",
+    "work_dispatch": "Dispatch work item"
   },
   "kirocrew-cron": {
     "cron_list": "List schedules",

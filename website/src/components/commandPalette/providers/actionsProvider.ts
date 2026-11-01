@@ -1,18 +1,19 @@
 import { createElement } from 'react'
 import type { ReactNode } from 'react'
 import { useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { Command, MessageSquarePlus, SunMoon, Keyboard, Pin } from 'lucide-react'
 
 import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { createChatForView, showCreatedChat } from '../../../lib/createdChatView'
+import { useAskingNavigate } from '../../NavigationLeaveGuard'
 import { useSessionActions } from '../../../hooks/useSessionActions'
 import { useTheme } from '../../../hooks/useTheme'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import type { ResourceProvider, Result } from '../types'
 
 import { i18nT } from '../../../i18n/t'
+import { slotRowByKey } from '../../../store/slotIndex'
 
 /**
  * Actions provider (Search Everywhere).
@@ -89,25 +90,28 @@ const compareResults = makeScoreThenNameComparator<Result>(
  * action list before the user types anything.
  */
 export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvider {
+  // `title` and `subtitle` are accessors, like `label` below: this array is built inside
+  // a `useMemo` whose deps exclude the language, so a plain `i18nT(...)` here would keep
+  // the language active when the memo last ran. `search()` reads them on every call.
   const actions: ActionDef[] = [
     {
       key: 'new-session',
-      title: 'New session',
-      subtitle: i18nT('components.commandPalette.providers.actionsProvider.start_a_fresh_chat'),
+      get title() { return i18nT('components.commandPalette.providers.actionsProvider.new_session') },
+      get subtitle() { return i18nT('components.commandPalette.providers.actionsProvider.start_a_fresh_chat') },
       icon: inlineIcon(MessageSquarePlus),
       run: deps.newSession,
     },
     {
       key: 'toggle-theme',
-      title: 'Toggle theme',
-      subtitle: i18nT('components.commandPalette.providers.actionsProvider.cycle_light_dark_system'),
+      get title() { return i18nT('components.commandPalette.providers.actionsProvider.toggle_theme') },
+      get subtitle() { return i18nT('components.commandPalette.providers.actionsProvider.cycle_light_dark_system') },
       icon: inlineIcon(SunMoon),
       run: deps.toggleTheme,
     },
     {
       key: 'open-shortcuts',
-      title: 'Open Shortcuts',
-      subtitle: i18nT('components.commandPalette.providers.actionsProvider.keyboard_shortcuts_help'),
+      get title() { return i18nT('components.commandPalette.providers.actionsProvider.open_shortcuts') },
+      get subtitle() { return i18nT('components.commandPalette.providers.actionsProvider.keyboard_shortcuts_help') },
       icon: inlineIcon(Keyboard),
       run: deps.openShortcuts,
     },
@@ -117,12 +121,16 @@ export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvid
     const { pinned, toggle } = deps.pinCurrentSession
     actions.push({
       key: 'pin-session',
-      title: pinned
-        ? i18nT('components.commandPalette.providers.actionsProvider.unpin_current_session')
-        : i18nT('components.commandPalette.providers.actionsProvider.pin_current_session'),
-      subtitle: pinned
-        ? i18nT('components.commandPalette.providers.actionsProvider.remove_pin_from_this_chat')
-        : i18nT('components.commandPalette.providers.actionsProvider.pin_this_chat_to_the_top'),
+      get title() {
+        return pinned
+          ? i18nT('components.commandPalette.providers.actionsProvider.unpin_current_session')
+          : i18nT('components.commandPalette.providers.actionsProvider.pin_current_session')
+      },
+      get subtitle() {
+        return pinned
+          ? i18nT('components.commandPalette.providers.actionsProvider.remove_pin_from_this_chat')
+          : i18nT('components.commandPalette.providers.actionsProvider.pin_this_chat_to_the_top')
+      },
       icon: inlineIcon(Pin),
       run: toggle,
     })
@@ -177,14 +185,14 @@ export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvid
 export function useActionsProvider(opts: { openShortcuts: () => void }): ResourceProvider {
   const dispatch = useAppDispatch()
   const store = useAppStore()
-  const navigate = useNavigate()
+  const navigate = useAskingNavigate()
   const { cycle } = useTheme()
   const { openShortcuts } = opts
 
   const { togglePin } = useSessionActions()
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
   const activePinned = useAppSelector(
-    (s) => s.dashboard.slots.find((slot) => slot.key === activeSlot)?.pinned ?? false,
+    (s) => slotRowByKey(s.dashboard.slots, activeSlot)?.pinned ?? false,
   )
 
   // "New session" is a write (createSlot); route it through useMutation for

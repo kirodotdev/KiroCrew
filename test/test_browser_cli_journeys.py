@@ -1064,7 +1064,6 @@ class TestViewSubprocessesReceiveNodeEnv:
         # stop() issues no subprocess.run call at all (no global --kill).
         mock_run.assert_not_called()
 
-        # Cleanup.
         view_mod._child = None
 
 

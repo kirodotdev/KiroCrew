@@ -25,6 +25,7 @@ import type React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api, type WebhookTokenEntry } from '../../api/client'
+import { acpBackendName } from '../../api/acpBackend'
 import { i18nT } from '../../i18n/t'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import {
@@ -55,13 +56,9 @@ import type { CronJob } from '../../types'
 import { type KiroCrewAgent } from '../AgentSelector'
 import { modelSupportsEffort } from '../../lib/effort'
 import { type TemplateProvenance } from '../../lib/templateSource'
+import { INHERIT_MODEL } from './crewFields'
 
-/** The stored spelling for "no per-agent pin, inherit the next tier down". The
- *  select shows this as a real option; the backend normalizes it back to ''.
- *  Same value as KiroCrewAgentsPage's export; defined here so the hook (and the
- *  dialog that consumes it) never import back into the page — that would close
- *  a cycle (page -> CrewEditorNextDialog -> useCrewEditor -> page). */
-export const INHERIT_MODEL = 'auto'
+export { INHERIT_MODEL }
 
 /** How long a schedule-draft discard confirm stays fully locked while the
  *  create request is in flight. The lock exists because discarding cannot
@@ -184,11 +181,26 @@ export interface CrewEditorController {
    *  cached list after a transport failure rather than rejecting). Surfaced as a
    *  warn-toned status beside the Model field, NOT as an options-load error. */
   modelsDegraded: boolean
+  /** Refetch that list, and whether the refetch is in flight. */
+  retryModels: () => void
+  retryingModels: boolean
+  /** The name of the harness whose list the Model field offers and whose build takes the effort pin. */
+  pinHarness: string
 
   // Derived model/effort readout.
-  resolved: { model?: string; pinned?: boolean; reasoning_effort?: string; effort_pinned?: boolean } | undefined
+  resolved: {
+    model?: string; pinned?: boolean; reasoning_effort?: string; effort_pinned?: boolean
+    /** The pair-id harness build's effort verdict; null until known, absent elsewhere. */
+    effort_supported?: boolean | null
+    /** Present when the pin's list is another harness's than the configured backend's. */
+    models_backend?: string
+    /** The id that harness serves the stored pin as, `''` for none; absent until a live session says. */
+    pin_served_as?: string
+  } | undefined
   resolvedError: unknown
   effortCapable: boolean
+  /** The pin backend's own levels, when it reported them. */
+  effortLevels: string[] | undefined
   effortModel: string
 
   // Sharing collisions.
@@ -363,6 +375,12 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     enabled: open,
   })
 
+  const { data: resolved, error: resolvedError } = useQuery({
+    queryKey: ['agent-resolved-model', editing],
+    queryFn: () => api.agentResolvedModel(editing),
+    enabled: !!editing,
+  })
+
   // The model list surfaces a transport failure as `isDegraded` (the adapter
   // resolves with an auto-only/cached list rather than rejecting). A genuine
   // query ERROR (the fetch rejected) belongs in the shared options-load notice;
@@ -373,12 +391,15 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   // field instead (see `modelsDegraded` below), not as an options-load error.
   const modelsQuery = useAvailableModelsQuery({ enabled: open })
   const availableModels = modelsQuery.data
-  const modelsDegraded = !modelsQuery.error && modelsQuery.isDegraded
-  const editorOptionsError = installedError ?? workspacesError ?? cfgError ?? modelsQuery.error
+  // The pin's list is the harness's that judges it, when that is not the configured one. The
+  // template pane keeps the configured list: other crews run the same template file.
+  const pinModelsQuery = useAvailableModelsQuery({ enabled: open, backend: resolved?.models_backend })
+  const modelsDegraded = !pinModelsQuery.error && pinModelsQuery.isDegraded
+  const editorOptionsError = installedError ?? workspacesError ?? cfgError ?? modelsQuery.error ?? pinModelsQuery.error
 
   const modelOptions = [
     INHERIT_MODEL,
-    ...(availableModels || []).map((m: { name: string }) => m.name).filter((n: string) => n && n !== INHERIT_MODEL),
+    ...(pinModelsQuery.data || []).map((m: { name: string }) => m.name).filter((n: string) => n && n !== INHERIT_MODEL),
   ]
 
   // ── Edit field state (own copies, seeded from the record on open) ──
@@ -564,16 +585,13 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   }, [queryClient, editing])
 
   // ── Resolved model + effort ──
-  const { data: resolved, error: resolvedError } = useQuery({
-    queryKey: ['agent-resolved-model', editing],
-    queryFn: () => api.agentResolvedModel(editing),
-    enabled: !!editing,
-  })
   const modelPinPendingClear = editModel === INHERIT_MODEL && !!editingAgent?.model
   const effortModel = editModel !== INHERIT_MODEL
     ? editModel
     : modelPinPendingClear ? '' : (resolved?.model || '')
-  const effortCapable = modelSupportsEffort(effortModel)
+  // The server answers only for a harness build (codex), which holds for any pick.
+  const effortCapable = resolved?.effort_supported ?? modelSupportsEffort(effortModel)
+  const effortLevels: string[] | undefined = resolved?.effort_levels?.length ? resolved.effort_levels : undefined
 
   // ── Mutations ──
   const settleFor = useCallback((epoch: number, err?: string) => {
@@ -1028,9 +1046,13 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     kirocrewCfg,
     editorOptionsError,
     modelsDegraded,
+    retryModels: () => { void pinModelsQuery.refetch() },
+    retryingModels: pinModelsQuery.isFetching,
+    pinHarness: acpBackendName({ id: resolved?.models_backend ?? kirocrewCfg?.agent?.acp_backend ?? '' }),
     resolved,
     resolvedError,
     effortCapable,
+    effortLevels,
     effortModel,
     collidingCrews,
     sharingWorkspace,

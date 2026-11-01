@@ -49,8 +49,7 @@ _STOP_REFUSAL = "refusal"
 #: path leaves it unset on every normal completion), but here the two are the
 #: whole question — "the provider said the turn ended and produced nothing" is a
 #: model-side event, while "the provider never said why it stopped" is a
-#: transport-side one, and the incident that motivated these diagnostics could
-#: not tell them apart.
+#: transport-side one, and these diagnostics exist to tell them apart.
 STOP_REASON_ABSENT = "absent"
 #: A terminal stop reason outside the closed set above.
 STOP_REASON_OTHER = "other"
@@ -121,7 +120,7 @@ class EmptyTurnActivity:
     saw_text: bool = False
     #: A visible assistant segment was FLUSHED and persisted at a tool boundary,
     #: so the user has already read text this turn even though the final segment
-    #: is empty. This is the incident's own shape.
+    #: is empty.
     flushed_visible: bool = False
     #: At least one tool call was dispatched.
     had_tools: bool = False

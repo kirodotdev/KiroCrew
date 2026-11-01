@@ -485,6 +485,8 @@ kirocrew artifact delete <slug>
 ```
 
 The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
+`show --version N` takes N of 1 or more; a lower value or a non-number exits 2
+with a message before any request, and a given N always reads that version.
 
 ### HTTP
 
@@ -502,7 +504,7 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `GET` | `/api/artifacts/{slug}/versions` | `{slug, versions: [int]}` |
 | `GET` | `/api/artifacts/{slug}/versions/{n}` | Specific version content |
 | `GET` | `/api/artifact-folders` | Folder tree with `item_count` + breadcrumb `path` |
-| `POST` | `/api/artifact-folders` | Create folder `{name, parent?\|parent_id?, color?}`; spawns background emoji-icon task |
+| `POST` | `/api/artifact-folders` | Create folder `{name, parent?\|parent_id?, color?}`; spawns background emoji-icon task (at most one in flight per folder: a rename during it queues only the latest name, deleting the folder drops that queued request, and the in-flight task is never cancelled; an entry bound to an event loop other than the running one is pruned before each spawn, since its cleanup can never run) |
 | `PATCH` | `/api/artifact-folders/{id}` | Rename / reparent / reorder / icon / color |
 | `DELETE` | `/api/artifact-folders/{id}` | `?delete_contents=` picks keep (re-parent, default) vs cascade (delete subtree incl. artifacts) |
 | `PATCH` | `/api/artifacts/{slug}/folder` | Move an artifact into a folder (`{folder}` id/path or `{folder_id}` id-only) |
@@ -1047,7 +1049,10 @@ deliberately does NOT delegate to `delete()`: re-checking under the lock and the
 calling a method that re-acquires it reopens the same window between the two
 acquisitions, so the removal is inlined.
 
-**Star semantics in `WidgetFrame`.** `exists` and `pinned` are separate states:
+**Star semantics in `WidgetFrame`** (the slug, probe and star live in the
+`useWidgetArtifact` hook of `website/src/components/WidgetArtifact.tsx`, which the
+HTML frame and the markdown-bodied widget, `MarkdownWidget`, both draw from, so a
+widget without an iframe keeps the same link and star). `exists` and `pinned` are separate states:
 `{exists: true, pinned: false}` is the normal steady state, so the star renders
 hollow (offering to save) while the title still links to `/artifacts/<slug>`.
 Starring pins; if the artifact is absent (a pre-feature widget, a failed
@@ -1661,7 +1666,8 @@ to this kind would store content no reader can parse.
   as a crewmate's Dashboard frame. A link in the page opens through the host:
   `buildSrcdoc({ linkBridge: true })` turns a `_blank` or bare web link click,
   and `window.open`, into a `kirocrew-dashboard:open` message, and
-  `useFrameLinkBridge` opens an absolute `http(s)` URL only on a real click in
+  `useFrameLinkBridge` opens an `http(s)` URL, or a dashboard path resolved
+  against its origin, only on a real click in
   that frame, once per click, with no dialog. The shim decides a click after
   the page's own handlers, so a click the page cancels posts nothing. The host
   opens at once only when it can tie the click to the asking frame
@@ -2062,15 +2068,17 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   SEL audit event), mirroring the folder-watcher file-read guard.
 - **Dedup tie-in.** A file-backed artifact whose `source_path` is also inside a
   synced folder source is the same document under two sources (the aggregate
-  `artifact` source and the folder's `local_file` source). The aggregate
-  `artifact` source is **excluded from dedup entirely** (`enumerate_docs` and
-  `_build_doc_for` skip `_AGGREGATE_SOURCE_TYPES`, and `_delete_doc` refuses a
-  cascade on them): treating the whole aggregate as one dedup unit keyed on a
-  single item's hash both misidentified it and — when it lost a pair — cascade-
-  deleted the user's entire artifact library. The artifact↔folder overlap
-  therefore persists (both copies remain retrievable) until per-artifact-slug
-  dedup is built; that is a recorded, intentional trade against silent data
-  loss on the hard-delete path.
+  `artifact` source and the folder's `local_file` source). Dedup treats each
+  artifact as its own document: `enumerate_docs` builds one unit per
+  `artifact_item_state` row (its slug and the items it owns), never one unit for
+  the whole source, so two artifacts with identical text stay separate units. A
+  losing artifact goes through `_collapse_doc`: the winner's items gain the
+  artifact source as a location, the loser's own items are deleted, and its
+  `artifact_item_state` row is marked `deduped` with `merged_into_source_id`
+  naming the winner. The source row stays while it still holds a document or a
+  location (`_source_is_now_empty`), so a collapse removes one artifact's
+  redundant copy, never the library. A folder copy outranks an artifact copy
+  (`pick_winner` prefers `PERSISTENT_SOURCE_TYPES`).
 
 ## Companion Chat
 
@@ -2487,6 +2495,39 @@ JSON never carries base64.
 - The read is offloaded with `asyncio.to_thread`: the sidecar may be up to
   `MAX_CONTENT_BYTES` and a synchronous read would stall every other gateway
   task, the liveness heartbeat included.
+
+### Download hand-off for in-app browsers
+
+The page's Download builds the file in the browser and clicks a `blob:` URL. An
+Android in-app browser (a WebView) drops that click: the host app gets the URL and
+cannot fetch a `blob:`. So on a user agent marked `; wv)` the page POSTs the same
+bytes to `POST /api/artifact-downloads` (`dashboard/handlers/artifact_download.py`)
+and downloads them from the returned `GET /api/artifact-downloads/{doc_id}`. Every
+other browser keeps the blob path. Inside a WebView a blob cannot work, so a failed
+hand-off shows the page's Download failed notice and saves nothing.
+
+- A stash of the browser's own export, not a reader of the stored artifact, so an
+  HTML download keeps the CSP the page's export embeds in the document.
+- **Authenticated** like every other dashboard route; neither is on the bypass list.
+- The GET answers `Content-Disposition: attachment` with both `filename=` and
+  `filename*=`, `Content-Security-Policy: sandbox`, `nosniff` and
+  `Cache-Control: private, no-store`, so model-authored HTML or SVG never runs as
+  same-origin script.
+- Not single use: a WebView aborts its own fetch of a download and the host app
+  fetches the URL again. Entries expire after 5 minutes and the stash is capped
+  in count and bytes, oldest evicted first. One file may be as large as the
+  largest stored artifact plus 2 MiB for the export around it.
+- The POST takes only `text/plain`, `text/html`, `application/json`,
+  `image/svg+xml` and `image/png`; a path in the filename, an unknown type or a
+  missing field is a 400, an oversized file a 413. A png arrives base64-encoded
+  and must start with the png signature, so no other bytes ride that type.
+  `saveBlob` sends every type as base64 with `encoding: "base64"`, so bytes that
+  are not UTF-8 (a legacy svg) are kept exactly and served with no forced charset.
+- Other browser-built downloads use the same hand-off through `saveBlob`
+  (`website/src/utils/download.ts`): a Mermaid export, a share image, a lightbox
+  picture (re-encoded as png when it is another raster type) and a file's last
+  copy. The file panel's Download already has an attachment URL, so inside a
+  WebView it downloads that URL directly at any size.
 
 ### Auto-registration from chat (`kiro_crew.image_artifacts`)
 

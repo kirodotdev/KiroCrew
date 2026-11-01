@@ -8,6 +8,7 @@ import { MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, S
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { loadChatConfig, saveChatConfig, MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, type ChatConfig, type ContentWidth, type DashboardConfig, type MemoryMode, type SendMode } from '../chat/ChatSettings'
 import { api } from '../../api/client'
+import { fmtNumber } from '../../i18n/format'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
 import { FieldHint, LinkPatternsEditor, type LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
 import {
@@ -17,7 +18,8 @@ import {
   normalizeTitleRefresh, type CompletionKeepMode, COMPLETION_KEEP_OPTIONS, type VerbosityLevel,
   VERBOSITY_OPTIONS, MEMORY_MODE_OPTIONS, FOLDER_ROOT_EXAMPLE, memoryModeLabels, asMemoryMode,
   asVerbosity, completionKeepLabels, COMPLETION_KEEP_CHARS_MIN, COMPLETION_KEEP_CHARS_MAX,
-  COMPLETION_KEEP_CHARS_DEFAULT, type KirocrewConfigShape,
+  COMPLETION_KEEP_CHARS_DEFAULT, type KirocrewConfigShape, COMPACT_CUSTOM, AUTOCOMPACT_PCT_MIN,
+  AUTOCOMPACT_PCT_MAX,
 } from './chatPanelOptions'
 import { useChatPanelDashboard } from './useChatPanelDashboard'
 import { useChatPanelTypedFields } from './useChatPanelTypedFields'
@@ -209,13 +211,17 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // the default must share one storage family or the fallback chain breaks.
   const [busyDefault, setBusyDefaultState] = useState<BusySendMode>(() => readBusySendDefault())
   const setBusyDefault = (m: BusySendMode) => { setBusySendDefault(m); setBusyDefaultState(m) }
-  const budgetInitRef = useRef(false)
-  useEffect(() => {
-    if (mcQ.data && !budgetInitRef.current) {
-      budgetInitRef.current = true
-      setLocalBudget(String(mcQ.data.agent?.soft_stop_budget_secs ?? SOFT_STOP_DEFAULT))
-    }
-  }, [mcQ.data])
+  // The served config seeds the budget row ONCE, in the render that first has
+  // it. Setting state during render is React's shape for state derived from a
+  // value that just arrived: the component re-renders before anything commits,
+  // so the commit that enables the input is the one that shows the stored
+  // number. Seeding from an effect instead commits one frame where the input is
+  // enabled and empty, which a user can see and a test can land on.
+  const [budgetSeeded, setBudgetSeeded] = useState(false)
+  if (mcQ.data && !budgetSeeded) {
+    setBudgetSeeded(true)
+    setLocalBudget(String(mcQ.data.agent?.soft_stop_budget_secs ?? SOFT_STOP_DEFAULT))
+  }
 
   const budgetMut = useMutation({
     mutationFn: (n: number) => api.patchConfig('agent.soft_stop_budget_secs', n),
@@ -223,8 +229,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     onError: () => {
       setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_soft_stop_budget'))
       // Revert the input to the last-known server value so the user isn't
-      // left looking at an unpersisted number. budgetInitRef stays true,
-      // so the init effect will not clobber this on future query updates.
+      // left looking at an unpersisted number. budgetSeeded stays true,
+      // so the render-phase seed will not clobber this on future query updates.
       setLocalBudget(String(mcCfg?.agent?.soft_stop_budget_secs ?? SOFT_STOP_DEFAULT))
     },
   })
@@ -240,8 +246,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     setFolderRootError, folderRootSaved, setFolderRootSaved, folderRootErrorId,
     folderRootEditedRef, folderRootIme, folderRootMut, commitFolderRoot, localWaitSecs,
     setLocalWaitSecs, waitClampNotice, setWaitClampNotice, waitSecsEditedRef, waitSecsMut,
-    keepModeMut,
-  } = useChatPanelTypedFields({ qc, setSaveError, dashQ, mcQ, mcCfg })
+    keepModeMut, compactSelect, pickCompact, localCompactPct, editCompactPct, commitCompactPct,
+    compactClampNotice, compactPctMut,
+  } = useChatPanelTypedFields({ qc, setSaveError, setPathSaveError, clearOwnPathError, dashQ, mcQ, mcCfg })
 
   const {
     availableModelsQ, availableModels, selectedModelIds, modelPickerSummary, toggleVisibleModel,
@@ -483,12 +490,19 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             </div>
           )}
           <FollowDefaultModelAction />
+          {/* Selectable Models: label prefers the backend's native name
+              (e.g. Opus 5.5 for the id opus) when it sent one, with the id
+              beside it as a monospace hint so the row matches the Default
+              Model select and the config file; without a name the label is
+              the id. value stays the id -- it is the wire value a toggle
+              hides/shows. */}
           <SettingsMultiSelect
             label={i18nT('pages.settings.chatPanel.selectable_models')}
             hint={i18nT('pages.settings.chatPanel.selectable_models_description')}
             options={availableModels.map(model => ({
               value: model.name,
-              label: model.name,
+              label: model.displayName ?? model.name,
+              hint: model.displayName && model.displayName !== model.name ? model.name : undefined,
               description: model.name === 'auto'
                 ? i18nT('pages.settings.chatPanel.auto_always_visible')
                 : model.description,
@@ -597,7 +611,6 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
 
         <div className="mb-8">
         <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_subagents')}</h4>
-        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.model_for_spawned_sub_agents')}</div>
         {/* The memory cost of a pin, at the place the pin is chosen: a pinned
             subagent cannot share its parent chat's runtime. */}
         <div className="text-[12px] text-muted mb-1" data-testid="subagent-pin-runtime-cost">
@@ -755,17 +768,32 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.auto_compact_threshold')}
             hint={i18nT('pages.settings.chatPanel.context_usage_at_which_auto_compaction_triggers')}
-            value={String(mcCfg?.session?.autocompact_pct ?? 70)}
+            value={compactSelect}
             options={COMPACT_OPTIONS}
             optionLabels={compactLabels()}
-            onChange={v =>
-              api.patchConfig('session.autocompact_pct', Number(v))
-                .then(() => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }))
-                .catch(() => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_auto_compact_threshold')))
-            }
+            onChange={pickCompact}
             disabled={!mcQ.isSuccess}
             configKey="session.autocompact_pct"
           />
+          {compactSelect === COMPACT_CUSTOM && (
+            <>
+              <SettingsInput
+                label={i18nT('pages.settings.chatPanel.auto_compact_exact')}
+                description={i18nT('pages.settings.chatPanel.auto_compact_exact_hint', { min: fmtNumber(AUTOCOMPACT_PCT_MIN), max: fmtNumber(AUTOCOMPACT_PCT_MAX) })}
+                type="number"
+                value={localCompactPct}
+                min={AUTOCOMPACT_PCT_MIN}
+                max={AUTOCOMPACT_PCT_MAX}
+                step={0.5}
+                onChange={editCompactPct}
+                onBlur={commitCompactPct}
+                onKeyDown={e => { if (e.key === 'Enter') commitCompactPct() }}
+                // Locked while a save is in flight, like the wait budget below.
+                disabled={!mcQ.isSuccess || compactPctMut.isPending}
+              />
+              <FieldHint message={compactClampNotice} />
+            </>
+          )}
           <SettingsInput
             label={i18nT('pages.settings.chatPanel.compaction_wait_budget')}
             description={i18nT('pages.settings.chatPanel.compaction_wait_budget_description')}
@@ -912,6 +940,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               Default off: the gesture takes the double-click that otherwise
               selects a word in the bubble (#7908). */}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.double_click_to_edit')} hint={i18nT('pages.settings.chatPanel.double_click_to_edit_desc')} checked={chatCfg.doubleClickToEdit} onChange={v => setChat('doubleClickToEdit', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.scroll_on_send')} hint={i18nT('pages.settings.chatPanel.scroll_on_send_desc')} checked={chatCfg.scrollOnSend} onChange={v => setChat('scrollOnSend', v)} />
           {/* This device only (its own key, not the backed-up chat config): it
               acts on this browser's clipboard. Default off, since it
               overwrites the clipboard on every drag. */}

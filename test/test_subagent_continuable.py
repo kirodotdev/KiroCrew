@@ -37,7 +37,7 @@ from subagent_continuable_helpers import _manager, _mock_sessions
 
 from kiro_crew.subagent import SubagentInfo
 from kiro_crew.subagent_persistence import create_agent_folder, write_run_agent
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -135,18 +135,24 @@ class TestSessionManagerContinuable:
         session.semaphore.release.assert_called_once_with()
         assert session.turn_owner is None
 
-    def test_release_cleanup_runs_for_plain_subagent(self) -> None:
+    @pytest.mark.asyncio
+    async def test_release_cleanup_runs_for_plain_subagent(self) -> None:
         mgr = self._sessions()
         session = MagicMock()
         session.provider.session_id = "sid-1"
+        session.turn_owner = "owner"
         mgr._sessions["subagent:abc"] = session
-        cleanup = object()
-        mgr._safe_cleanup = MagicMock(return_value=cleanup)  # type: ignore[method-assign]
-        with patch("kiro_crew.session.asyncio.ensure_future") as ensure:
-            mgr.release("subagent:abc", cleanup=True)
-        mgr._safe_cleanup.assert_called_once_with(session.provider, "sid-1")
-        ensure.assert_called_once_with(cleanup)
+        cleaned: list[tuple[object, str]] = []
+
+        async def _cleanup(provider: object, session_id: str) -> None:
+            cleaned.append((provider, session_id))
+
+        mgr._safe_cleanup = _cleanup  # type: ignore[method-assign]
+        mgr.release("subagent:abc", cleanup=True)
+        await async_wait_until(lambda: cleaned, describe=lambda: "the transcript cleanup ran")
+        assert cleaned == [(session.provider, "sid-1")]
         session.semaphore.release.assert_called_once_with()
+        assert session.turn_owner is None
 
     def test_forget_conversation_returns_sid_and_unmarks(self) -> None:
         mgr = self._sessions()

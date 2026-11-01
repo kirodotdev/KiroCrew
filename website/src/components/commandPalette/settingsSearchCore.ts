@@ -34,6 +34,7 @@
  *     in its description/keywords/tab.
  */
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
+import { PREVIEW_SESSION_ENVIRONMENTS, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 import { SETTINGS_KEYWORDS } from './settingsKeywords'
 import { settingsTabLabel } from './settingsTabLabel'
@@ -160,6 +161,10 @@ export function settingEntryOffered(
   entry: SettingEntry,
   governance: SettingsSearchGovernance,
 ): boolean {
+  // By tab too: a row with no configKey (the default picker) still opens that tab.
+  if (entry.tab === 'session-environments' || entry.configKey?.startsWith('session_environments.')) {
+    return readPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
+  }
   if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
   if (entry.id === GATEWAY_AUTO_UPDATE_SETTING_ID) return governance.updateSwitches.gateway
   if (entry.id === APP_AUTO_DOWNLOAD_SETTING_ID) return governance.updateSwitches.app

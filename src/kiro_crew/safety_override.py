@@ -274,6 +274,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.safety_override_grant import (  # noqa: F401
         _bootstrap_yolo_policy,
+        _capped,
+        _past_life_cap,
         _revoke_grants_for_policy_deny,
         _singleton,
         _singleton_lock,
@@ -291,6 +293,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _duration_member_permitted,
         _non_deniable_approval_modes,
         approval_mode_permitted,
+        yolo_ttl_cap,
     )
     from kiro_crew.safety_override_records import (  # noqa: F401
         POLICY_REVOKED_SOURCE,

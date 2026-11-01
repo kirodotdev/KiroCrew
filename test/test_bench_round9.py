@@ -18,6 +18,7 @@ the comparison's compatibility claim omitting the environment it was measured in
 from __future__ import annotations
 
 import argparse
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -140,12 +141,18 @@ def test_a_failed_ingest_closes_the_store(tmp_path: Path) -> None:
         )
 
     # The observable consequence of a leaked handle: the directory cannot be cleared.
-    # On POSIX unlink succeeds regardless, so assert on the sqlite side-files that a
-    # still-open connection leaves behind instead.
-    leftovers = sorted(p.name for p in tmp_path.iterdir())
-    assert "leak.db-wal" not in leftovers and "leak.db-shm" not in leftovers, (
-        f"the store was left open: {leftovers}"
-    )
+    # On POSIX unlink succeeds regardless, so probe for an open connection instead:
+    # leaving WAL mode needs an exclusive lock, which any other open connection to
+    # the file (in this process or another) refuses.
+    probe = sqlite3.connect(tmp_path / "leak.db", timeout=0)
+    try:
+        try:
+            mode = probe.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+        except sqlite3.OperationalError as exc:
+            pytest.fail(f"the store was left open: {exc}")
+    finally:
+        probe.close()
+    assert mode == "delete", "the store was left open: the file stayed in WAL mode"
 
 
 def test_a_successful_ingest_still_hands_the_store_to_the_caller(tmp_path: Path) -> None:
@@ -159,7 +166,10 @@ def test_a_successful_ingest_still_hands_the_store_to_the_caller(tmp_path: Path)
     try:
         assert loaded.report.written == 2
         # Usable, i.e. not closed underneath us.
-        assert loaded.store.search_episodic(query_embedding=[0.1, 0.2], query_text="malta") == [] or True
+        assert (
+            loaded.store.search_episodic(query_embedding=[0.1, 0.2], query_text="malta") == []
+            or True
+        )
     finally:
         loaded.close()
 

@@ -16,7 +16,7 @@ const CrewDynamicDashboard = lazy(() => import('./CrewDynamicDashboard'))
  * cannot invent a number, because it has no channel that produces one.
  *
  * The tab holds the dashboard alone and offers no view switch. The raw crew-log
- * record is a Developer Mode surface, reached from the chat panel's own Crew log
+ * record is a diagnostics surface, reached from the chat panel's own Crew log
  * view, so the thread's slot is not part of this tab's input. */
 export default function CrewDashboardTab({ slug, member, displayName, avatar, onAct, onOpenProfileTab, preview = false, onLeavePreview }: {
   slug: string
@@ -73,6 +73,8 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
             preview={showPreview}
             onPreviewGone={showPreview ? onPreviewGone : undefined}
             onPreviewLoaded={showPreview ? setStagedMs : undefined}
+            // The Mates side panel's trackpad swipe closes from over this frame.
+            relayWheel
           />
         </Suspense>
       </ErrorBoundary>

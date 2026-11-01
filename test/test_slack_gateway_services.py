@@ -324,7 +324,6 @@ class TestHeartbeatCallback:
             mock_hs.return_value = mock_hs_inst
             await orch._init_heartbeat()
 
-        # Get the on_task callback
         callback = mock_hs.call_args[1]["on_task"]
 
         with patch(
@@ -445,7 +444,6 @@ class TestAutonudgeFire:
                 mock_ans.return_value = mock_inst
                 await orch._init_autonudge()
 
-        # Get the on_fire callback
         on_fire = mock_ans.call_args[1]["on_fire"]
         loop = MagicMock()
         loop.id = "loop1"

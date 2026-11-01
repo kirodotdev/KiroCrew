@@ -27,7 +27,7 @@ container receives the model credential.
 
 **Read-through for existing installs.** An install that launched before this file existed has
 its pointer in ``cloud.json``. :meth:`LaunchState.load` falls back to those fields when this
-file has nothing, so ``kirocrew cloud resume`` re-attaches exactly as it did. The fallback is
+file has nothing, so ``kirocrew cloud launch`` re-attaches exactly as it did. The fallback is
 read-only: nothing migrates the value by writing, because writing is the thing being removed.
 """
 
@@ -101,7 +101,7 @@ class LaunchState:
         cloud command must not hand an operator a traceback over a file it can simply treat
         as unset. Every way the document can fail to be one answers the same thing -- there
         is no record here -- and the legacy fields are then consulted, which is what keeps
-        ``cloud resume`` working on an install that predates this file.
+        ``cloud launch`` working on an install that predates this file.
 
         Refusing about the NAME, which is the opposite call and not a contradiction. A
         malformed document is a file with nothing in it worth acting on; a file reachable

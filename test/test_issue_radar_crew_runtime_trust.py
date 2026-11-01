@@ -363,15 +363,21 @@ class TestWatchGating(unittest.IsolatedAsyncioTestCase):
                 )
             )
             poll = use(mock.patch.object(watch, "_poll_repo", new=mock.AsyncMock()))
-            sweep = use(
-                mock.patch.object(
-                    watch.crew_runtime, "sweep_repo", new=mock.AsyncMock(return_value={})
-                )
-            )
+            use(mock.patch.object(watch.crew_runtime, "sweep_repo", new=self._recording_sweep()))
             await watch._poll_once(_app(_FakeState()))
         # Muting the bell must not stop a crew reconciling its own pull requests.
         poll.assert_not_awaited()
-        sweep.assert_awaited_once()
+        self.assertEqual(self.swept, [(OWNER, REPO, "github", "github.com")])
+
+    def _recording_sweep(self):
+        """A hand-written sweep that records the repo key ``_poll_once`` built."""
+        self.swept: list[tuple[str, str, str, str]] = []
+
+        async def _sweep(_app, key):
+            self.swept.append((key.owner, key.repo, key.provider, key.host))
+            return {}
+
+        return _sweep
 
     async def test_a_failing_new_issue_poll_still_runs_the_sweep(self):
         watch = self._watch()
@@ -392,31 +398,38 @@ class TestWatchGating(unittest.IsolatedAsyncioTestCase):
                     watch, "_poll_repo", new=mock.AsyncMock(side_effect=RuntimeError("gh down"))
                 )
             )
-            sweep = use(
-                mock.patch.object(
-                    watch.crew_runtime, "sweep_repo", new=mock.AsyncMock(return_value={})
-                )
-            )
+            use(mock.patch.object(watch.crew_runtime, "sweep_repo", new=self._recording_sweep()))
+            logs = use(self.assertLogs(watch.logger, "WARNING"))
             await watch._poll_once(_app(_FakeState()))
-        sweep.assert_awaited_once()
+        self.assertEqual(self.swept, [(OWNER, REPO, "github", "github.com")])
+        self.assertIn(
+            f"issue-radar watch failed for {OWNER}/{REPO}",
+            [r.getMessage() for r in logs.records],
+        )
 
     async def test_disabling_the_app_suspends_the_crews(self):
         watch = self._watch()
+        reset_singleton()
+        self.addCleanup(reset_singleton)
+        crew = {"id": "c_abc", "unattended": True, "enabled": True}
+        state = _FakeState()
+        slot = _FakeSlot("crew-c_abc")
+        slot._app = "issue-radar"
+        cr.sync_trust(slot, crew)
+        state._slots = {"crew-c_abc": slot}
         with contextlib.ExitStack() as stack:
             use = stack.enter_context
             use(mock.patch.object(watch, "is_app_enabled", return_value=False))
-            suspend = use(
-                mock.patch.object(
-                    watch.crew_runtime, "suspend_crews", new=mock.AsyncMock(return_value=0)
-                )
-            )
             repos = use(mock.patch.object(watch.store, "list_connected_repos"))
-            await watch._poll_once(_app(_FakeState()))
-            await watch._poll_once(_app(_FakeState()))
+            await watch._poll_once(_app(state))
+            self.assertFalse(_effectively_trusted(slot))
+            # Re-granted behind the poll's back: a second suspension would clear it.
+            cr.sync_trust(slot, crew)
+            await watch._poll_once(_app(state))
         # A disabled app stays silent — no config walk — and suspends only ONCE,
         # because nothing re-establishes trust while the app is off.
         repos.assert_not_called()
-        suspend.assert_awaited_once()
+        self.assertTrue(_effectively_trusted(slot))
 
     async def test_suspension_clears_trust_on_resident_crew_slots(self):
         reset_singleton()

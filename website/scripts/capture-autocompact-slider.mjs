@@ -41,7 +41,8 @@ const RESET_TPL = ci.reset_to_global // "Reset to global ({{pct}}%)"
 const FOLLOWING_TPL = ci.following_global // "Following global ({{pct}}%)"
 const RESET_AGENT_TPL = ci.reset_to_agent_default // "Reset to the <agent/> agent's default ({{pct}}%)"
 const FOLLOWING_AGENT_TPL = ci.following_agent_default // "Following the <agent/> agent's default ({{pct}}%)"
-if (!AUTO_COMPACT_AT || !RESET_TPL || !FOLLOWING_TPL || !RESET_AGENT_TPL || !FOLLOWING_AGENT_TPL) {
+const HARNESS_TPL = ci.harness_managed_note // "This chat runs on {{backend}}, which compacts on its own. ..."
+if (!AUTO_COMPACT_AT || !RESET_TPL || !FOLLOWING_TPL || !RESET_AGENT_TPL || !FOLLOWING_AGENT_TPL || !HARNESS_TPL) {
   throw new Error('components.chatInput auto-compact keys missing — renamed?')
 }
 const fill = (tpl, pct, agent = '') => tpl.replace('{{pct}}', String(pct)).replace('<agent/>', agent)
@@ -136,9 +137,18 @@ async function main() {
   await page.waitForTimeout(300)
   await page.screenshot({ path: `${OUT}/overridden-over-agent.png` })
 
+  // State 5 — the session runs on a backend that compacts on its own (KAS):
+  // the note under the slider says the threshold does not apply. The same
+  // fixture without `harness_managed` is state 2, the "before" frame.
+  autocompact = { pct: null, global_pct: 70, harness_managed: 'kas', min: 5, max: 90 }
+  await reopen(page)
+  await page.getByText(HARNESS_TPL.replace('{{backend}}', 'KAS'), { exact: true }).waitFor({ timeout: 5000 })
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${OUT}/harness-managed-kas.png` })
+
   await browser.close()
   srv.close()
-  console.log(`wrote 4 frames to ${OUT}`)
+  console.log(`wrote 5 frames to ${OUT}`)
 }
 
 async function reopen(page) {

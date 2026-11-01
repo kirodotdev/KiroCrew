@@ -279,6 +279,18 @@ SESSION_START_FAILED_KIND = "session_start_failed"
 #: window are not carried over.
 CONTEXT_OVERFLOW_KIND = "context_overflow"
 
+#: Row-level kind for the terminal `error` row the provider's MANY-IMAGE PIXEL
+#: cap produces: an image already in the native history is larger than 2000px on
+#: its longest edge, and once a conversation holds many images one oversized
+#: image rejects the whole turn (the ``image_dimension_wedge`` tag
+#: ``_raise_acp_error`` sets). A retry, a Resume or another model re-sends the
+#: same history and fails the same way -- but UNLIKE a context overflow this is
+#: recoverable WITHOUT losing turns: the card swaps Resume for "Repair images and
+#: resume", which stops the slot's kiro-cli (releasing the transcript lock),
+#: downscales the oversized images in place (``session_image_repair``), and
+#: re-issues the interrupted turn against the repaired conversation.
+IMAGE_REPAIR_KIND = "image_repair"
+
 #: Row-level kind for the terminal `error` row a refused app-owned agent turn
 #: produces (``apps.manager.app_command_agent_refusal``: the app's agent is
 #: reserved, ambiguous or not installed), and for a session start whose agent has
@@ -519,7 +531,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     A merge run stops at a system injection, at an attachment-bearing entry
     (see :func:`carries_attachments`), at a possibly-delivered steer
     (``STEER_POSSIBLY_DELIVERED_META``), at a requeued automation steer
-    (:data:`AUTOMATION_STEER_META`) and where the stamped turn actor
+    (:data:`AUTOMATION_STEER_META`), at an entry a decision steered
+    (``meta.decisions_strip``) and where the stamped turn actor
     changes, so an app's queued send never folds into the user's own words; an
     entry that starts no run pops alone.
     """
@@ -534,6 +547,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 or (item.get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META)
                 # Automation text, never folded into a person's row.
                 or (item.get("meta") or {}).get(AUTOMATION_STEER_META)
+                # A decision's receipt names one message; a merged row has one meta.
+                or (item.get("meta") or {}).get("decisions_strip")
             ):
                 break
             if to_merge and _stamped_turn_actor(item) != _stamped_turn_actor(to_merge[0]):

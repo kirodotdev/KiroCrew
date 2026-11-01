@@ -63,12 +63,10 @@ class TestGenerateSourceSummary:
     async def test_caps_input_at_4000_chars(self, pipeline, store):
         """Should truncate chunk summaries to 4000 chars."""
         sid = store.add_source("test", "local_file", "/tmp/test.md")
-        # Add items with long summaries
         for i in range(10):
             store.add_item(f"t{i}", "c", "doc", source_id=sid, summary="x" * 500, chunk_index=i)
         pipeline.extractor._pool.send.return_value = '{"topic": "test", "themes": ["a"]}'
         await pipeline.generate_source_summary(sid)
-        # Verify the prompt was capped
         call_args = pipeline.extractor._pool.send.call_args[0][0]
         # The sections part should be <= 4000 chars
         sections_start = call_args.index("Sections:\n") + len("Sections:\n")

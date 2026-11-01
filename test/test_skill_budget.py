@@ -57,7 +57,6 @@ class TestAliasFold:
             _compute_budget,
         )
 
-        # Create the canonical skill file.
         canonical_file = _make_skill(tmp_path, "ns/pod-e2e", "# Pod\nbody here!!")
 
         # Create a symlink at the root level (the alias path).
@@ -75,7 +74,6 @@ class TestAliasFold:
             },
         )
 
-        # Build a minimal SkillsLoader mock.
         skill_pairs = [("ns/pod-e2e", canonical_file)]
 
         class FakeLoader:
@@ -1021,7 +1019,6 @@ class TestAliasCacheInvalidation:
         now = time.time()
         ledger_path = tmp_path / "skill-usage.json"
 
-        # Start with one key.
         payload1 = {"version": 1, "keys": {"alpha": {"hits": 5, "last_seen": now}}}
         ledger_path.write_text(json.dumps(payload1))
         ledger = SkillUsageLedger(ledger_path)

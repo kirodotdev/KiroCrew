@@ -1142,6 +1142,9 @@ class TestPersistsResultToConversationLog:
         _inject(state, job, "the result")
         assert state.conversation_log.append_if_absent.call_count == 2
         state.conversation_log.append.assert_not_called()
+        # The window still shows the result the log write was delegated for.
+        slot = state.get_or_create_slot(name=f"cron-{job.id}")
+        assert slot.messages[-1]["content"].startswith("# Cron Job Result: my-cron")
 
     def test_durable_copy_carries_the_window_rows_id(self):
         # The durable transcript copy must ride with the SAME ``meta.mid`` the

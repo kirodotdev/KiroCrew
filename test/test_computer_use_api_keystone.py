@@ -60,7 +60,7 @@ def _app_client(app_name: str = "pwn") -> TestClient:
 
 
 class TestAnAppTokenCannotWriteTheKeystone:
-    """The one write the keystone design exists to prevent (reviewer finding).
+    """The one write the keystone design exists to prevent.
 
     ``enable_state.save_state`` deliberately bypasses ``is_sensitive_path`` — that is
     what lets the operator's own Settings panel write a file the agent cannot read or
@@ -121,7 +121,7 @@ class TestAnAppTokenCannotWriteTheKeystone:
 
 
 class TestMixedSaveIsAllOrNothing:
-    """A mixed state+limits PUT must not half-apply (reviewer finding).
+    """A mixed state+limits PUT must not half-apply.
 
     The keystone write lands first, so a corrupt ``config.json`` can leave the
     SECURITY state applied — the feature enabled, or the real-pointer opt-in set —

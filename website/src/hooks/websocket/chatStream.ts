@@ -4,7 +4,7 @@
 import { useMemo, type MutableRefObject } from 'react'
 import { store, type AppDispatch } from '../../store'
 import { markSlotUnread } from '../../store/dashboardSlice'
-import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity, queueEntryQuote } from '../../store/chatSlice'
+import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity, queueEntryQuote, selectSlotToolLog } from '../../store/chatSlice'
 import { dispatchMcNotification, APPROVAL_KIND, shouldChimeOnPermissionRow } from '../notificationEvent'
 import { chatMessageMarksUnread, isMemberThreadSlot, memberThreadRowMarksUnread, noteMemberThreadRow, unreadWatermarkTs } from '../unreadOnAttention'
 import { isSlotMuted } from '../sessionMute'
@@ -18,7 +18,7 @@ import { isReconcileNote } from '../../lib/noteContract'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
-import { attendArrival } from './attention'
+import { attendArrival, crewWorkerRoot } from './attention'
 import { emitToolCall } from './browserEvents'
 import type { StreamBuffers } from './streamBuffers'
 import { batchedUnlessOpen } from '../../lib/streamBatch'
@@ -56,6 +56,9 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // the append — and a reconnect replay stay silent. A Slack post
       // that fails after the row went out retires it via
       // `approval_resolved`; that arrival chime is the accepted residual.
+      // A Crew Mode crew member's prompt sounds and toasts like any chat's: the
+      // toast's title is the crew member's name, and its conductor's row shows
+      // the wait (docs/decisions/2026-10-29-crew-member-approvals-notify.md).
       if (data.role === 'permission' && shouldChimeOnPermissionRow({ meta: data.meta, reconnecting: reconnectingRef.current })) {
         dispatchMcNotification(APPROVAL_KIND)
         // The same row is the OS toast for a user away from the window: no
@@ -97,6 +100,11 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // The slot's last_ts skips an unsaved row, so reads this window
       // relays later carry its ts explicitly (see noteUnsavedRowTs).
       if (data.slot && unreadWatermarkTs(data.role, data.ts) === undefined && data.ts) noteUnsavedRowTs(data.slot, data.ts)
+      // A crew member's pending prompt badges its live conductor (below), so the
+      // conductor's read relay must carry this row's ts too, in every window that
+      // received it, or a sibling window keeps the conductor's badge lit.
+      const crewRoot = data.slot && data.role === 'permission' && !data.meta?.resolved ? crewWorkerRoot(data.slot) : ''
+      if (crewRoot && unreadWatermarkTs(data.role, data.ts) === undefined && data.ts) noteUnsavedRowTs(crewRoot, data.ts)
       // The "only when done or waiting" opt-in leaves routine rows unbadged.
       // A member DM thread badges only on a row the crewmate wrote to the
       // user (`memberThreadRowMarksUnread`): its tool calls are its own work,
@@ -122,6 +130,14 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
           dispatch(batchedUnlessOpen(slot, markSlotUnread({ slot, ts: unreadWatermarkTs(data.role, data.ts), localTs: data.ts || undefined })))
         }
       })
+      // A crew member's pending prompt is also an arrival on its live conductor,
+      // the row the person's lists show: badged off screen, relayed as read where
+      // a window shows it, by the same rule (`attendArrival`).
+      if (crewRoot) {
+        attendArrival(crewRoot, data.ts, reconnectingRef.current, root => {
+          dispatch(markSlotUnread({ slot: root, ts: unreadWatermarkTs(data.role, data.ts), localTs: data.ts || undefined }))
+        })
+      }
       // Theme audio: an agent reply arriving is the `message-received`
       // trigger (no-op unless an L2 theme with that manifest sound is
       // active + unmuted). User/tool messages don't chime.
@@ -165,6 +181,9 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // which is keyed on `mid`, resolves this row -- without it that patch
       // matches nothing and the state never moves until a reload.
       const steerMid = (data as { mid?: unknown }).mid
+      // Whether this steer can be taken back while it waits (the gateway stamps it
+      // only where the harness can), so another tab draws the same controls.
+      const steerRetract = (data as { steerRetract?: unknown }).steerRetract === true
       const steerMeta = (data as { meta?: unknown }).meta
       const steerFiles = steerMeta && typeof steerMeta === 'object' ? (steerMeta as { files?: unknown }).files : undefined
       const steerDirs = steerMeta && typeof steerMeta === 'object' ? (steerMeta as { dirs?: unknown }).dirs : undefined
@@ -173,7 +192,7 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       const steerQuote = queueEntryQuote(steerMeta).quote
       dispatch(appendSlotMessage({
         slot: (data as { slot?: string }).slot || store.getState().chat.activeSlot || '',
-        message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(Array.isArray(steerFiles) ? { files: steerFiles } : {}), ...(Array.isArray(steerDirs) ? { dirs: steerDirs } : {}), ...(steerQuote ? { quote: steerQuote } : {}) }, ts: (data as { ts?: string }).ts },
+        message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(steerRetract ? { steerRetract: true } : {}), ...(Array.isArray(steerFiles) ? { files: steerFiles } : {}), ...(Array.isArray(steerDirs) ? { dirs: steerDirs } : {}), ...(steerQuote ? { quote: steerQuote } : {}) }, ts: (data as { ts?: string }).ts },
       }))
       // Steering is the other way to type into a busy session, so it
       // settles the rank exactly like a queued send. The server appends a
@@ -242,6 +261,16 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
         // in toolStatusLabel, so this frame handler only stores the parts.
         const tcid = (data as Record<string, unknown>).tool_call_id as string | undefined
         const isUpdate = (data as Record<string, unknown>).is_update === true
+        // A refinement can arrive AFTER its call's final result (the backend
+        // relays a completed `tool_call_update` as an `is_update` frame behind
+        // the result). The result already moved the line to thinking
+        // (`sseToolResult`); the refinement still merges into the tool log
+        // above, but it must not put the finished call back on the status line.
+        if (isUpdate && tcid) {
+          const entry = selectSlotToolLog(store.getState(), data.slot)
+            .findLast((e) => e.type === 'tool' && e.tool_call_id === tcid)
+          if (entry && entry.output !== undefined && !entry.output_partial) return
+        }
         const purpose = sanitizeLlmOutput((data as Record<string, unknown>).purpose as string || '')
         const frame = data as Record<string, unknown>
         const toolName = sanitizeLlmOutput(data.tool || '')

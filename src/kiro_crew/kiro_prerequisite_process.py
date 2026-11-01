@@ -356,6 +356,7 @@ async def _prepare_sandboxed_spawn(
     env: dict[str, str],
     extra_hidden_dirs: tuple[str, ...],
     extra_visible_dirs: tuple[str, ...],
+    first_party_fixed_argv: bool = False,
 ) -> tuple[list[str], dict[str, str], str | None]:
     """Prepare filesystem-heavy sandbox state on a worker thread.
 
@@ -374,6 +375,7 @@ async def _prepare_sandboxed_spawn(
             strip_python_env=True,
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
+            first_party_fixed_argv=first_party_fixed_argv,
         )
     )
 
@@ -447,13 +449,16 @@ async def _run_process(
     sandbox_mode: str = _UNVERIFIED_SANDBOX_MODE,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    first_party_fixed_argv: bool = False,
+    reap_survivors: bool = False,
     _on_private_loop: bool = False,
 ) -> ProcessResult:
     """Run one fixed argv with bounded output, always inside the OS sandbox.
 
     There is no opt-out: every spawn this module makes is a probe or a Kiro auth
-    call, and all of them are sandboxed. Nothing here may run a child
-    unsandboxed.
+    call, and all of them go through the sandbox chokepoint. The one way a
+    child runs unconfined is that chokepoint's own first-party carve-out, which
+    only the enterprise sign-in check claims (see *first_party_fixed_argv*).
 
     On Windows this re-enters itself once, on a private event loop owned by a
     pooled worker thread, because the spawn below reaches ``CreateProcess``
@@ -462,6 +467,15 @@ async def _run_process(
     and why the POSIX path needs none. ``_on_private_loop`` is that re-entry's
     own marker and is private: nothing outside this function may set it, and a
     caller that did would put the spawn back on its own loop.
+
+    *first_party_fixed_argv* is threaded to the sandbox chokepoint, where it is
+    ``wrap_argv``'s first-party carve-out (a reviewed property: every passing
+    site is listed in ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``).
+    *reap_survivors* (default off) has the supervisor end whatever the command
+    left in its process group once it exits, as ``spawn_supervised_oneshot``
+    does, so a credential helper a launcher leaves behind cannot hold the call
+    open until the timeout. It matters where no sandbox PID namespace would end
+    that helper, which is where the carve-out runs.
     """
 
     if platform_compat.IS_WINDOWS and not _on_private_loop:
@@ -475,6 +489,8 @@ async def _run_process(
                 sandbox_mode=sandbox_mode,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
+                first_party_fixed_argv=first_party_fixed_argv,
+                reap_survivors=reap_survivors,
                 _on_private_loop=True,
             )
         )
@@ -503,6 +519,7 @@ async def _run_process(
                 env=env,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
+                first_party_fixed_argv=first_party_fixed_argv,
             )
             if spawn_argv and not os.path.isabs(spawn_argv[0]):
                 # Off the loop: a miss walks the whole ``PATH`` once per name to
@@ -535,6 +552,7 @@ async def _run_process(
                 "-c",
                 _PROCESS_GROUP_SUPERVISOR_CODE,
                 *resource_limit_supervisor_argv(),
+                *(["--reap-survivors"] if reap_survivors and _host_can_reap() else []),
                 *spawn_argv,
             ]
         proc = await asyncio.create_subprocess_exec(

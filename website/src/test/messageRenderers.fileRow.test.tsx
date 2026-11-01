@@ -42,7 +42,7 @@ describe('default file row', () => {
     expect(screen.getByText('report q3.pdf')).toBeTruthy()
     expect(screen.getByText('Quarterly report')).toBeTruthy()
     const link = screen.getByRole('link')
-    expect(link.getAttribute('href')).toBe('/api/outbox/report%20q3.pdf')
+    expect(link.getAttribute('href')).toBe('/api/outbox/report%20q3.pdf?download=1')
     expect(link.hasAttribute('download')).toBe(true)
   })
 

@@ -118,6 +118,29 @@ def _deferred_work_ledger(handler_name: str) -> Callable:
     return _route
 
 
+def _deferred_instances(handler_name: str) -> Callable:
+    """Bind a crew-scoped session-read route without importing the peer module at boot.
+
+    Same shape and same reason as :func:`_deferred_work_ledger`. The three
+    ``/api/crew-sessions/*`` handlers live in the ``handlers_instances`` facade
+    family, a sibling of the ``handlers`` package rather than a submodule of it, so
+    :func:`_deferred` cannot name it. The dashboard entrypoint imports that family
+    eagerly for its connections routes; the headless ``--slack-only`` entrypoint does
+    not, and this binder keeps it that way until the first crew read arrives. The
+    handler is read through the FACADE, not its owner module, so a test that patches
+    ``handlers_instances.<name>`` reaches the route like every other instances route.
+    """
+
+    async def _route(request: web.Request) -> web.StreamResponse:
+        from kiro_crew.dashboard import handlers_instances
+
+        handler = getattr(handlers_instances, handler_name)
+        return await handler(request)
+
+    _route.__name__ = handler_name
+    return _route
+
+
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     app.router.add_post("/api/spawn", handlers.api_spawn)
@@ -132,6 +155,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     # (``handlers/spawn_resume.py``), registered before ``{agent_id}`` so
     # ``/api/spawn/lanes`` and ``/api/spawn/adaptive`` are not read as run ids.
     setup_spawn_resume_routes(app)
+    # The caller's own memory footprint, for ``resource_status``; a literal
+    # segment, so it too precedes ``{agent_id}``.
+    app.router.add_get(
+        "/api/spawn/session-memory",
+        _deferred("session_memory_scope", "api_spawn_session_memory"),
+    )
     app.router.add_get("/api/spawn/{agent_id}", handlers.api_spawn_status)
     app.router.add_delete("/api/spawn/{agent_id}", handlers.api_spawn_delete)
     app.router.add_post("/api/spawn/{agent_id}/retry", handlers.api_spawn_retry)
@@ -149,6 +178,19 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/work-ledger/report", _deferred_work_ledger("api_work_report"))
     app.router.add_post(
         "/api/work-ledger/rebuild", _deferred_work_ledger("api_work_ledger_rebuild")
+    )
+    # Mediated-secret egress (kirocrew-secrets MCP tool). Both are MCP-only, loopback
+    # + gateway-IPC-secret callers — no browser posts to them (they are in
+    # ``_STRICT_INTERNAL_API_PATHS``). The capability endpoint redeems the single-use
+    # approval grant; the request endpoint does the host-side vault read + SSRF-pinned
+    # egress and always withholds the origin's response.
+    app.router.add_post(
+        "/api/mediated-secret-capability",
+        _deferred("mediated_secrets", "api_mediated_secret_capability"),
+    )
+    app.router.add_post(
+        "/api/mediated-secret-request",
+        _deferred("mediated_secrets", "api_mediated_secret_request"),
     )
     # The Crew page's masked read of a conductor's work ledger (RFC Phase 4).
     # Deliberately NOT in ``_STRICT_INTERNAL_API_PATHS``: a browser is its only
@@ -218,7 +260,13 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/agent-panel/dashboard/snapshot", _deferred("agent_panel", "api_dashboard_snapshot")
     )
+    app.router.add_post(
+        "/api/agent-panel/dashboard/record", _deferred("agent_panel", "api_dashboard_record")
+    )
     app.router.add_get("/api/members/{slug}/panel", _deferred("agent_panel", "api_member_panel"))
+    # The installed app's record door: an app token reaches it only through its
+    # ``permissions.api`` grant, and the handler admits nothing else.
+    app.router.add_post("/api/member-records/{slug}", _deferred("agent_panel", "api_member_record"))
     # The crewmate's dynamic dashboard. Registered through the deferred binder for the
     # reason the panel's routes are: calling the module's own
     # `register_member_dashboard_routes` would import it at boot, which the boot-path
@@ -368,8 +416,43 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("GET", "/api/members/import/{sha256}/files", "api_members_import_files"),
     ):
         app.router.add_route(_method, _path, _deferred("change_cards", _name))
+    # ``request_server`` (kirocrew-core): any template session asks for an MCP
+    # server; MCP-only under the same strict "/api/cards/agent" prefix.
+    for _method, _path, _name in (
+        ("POST", "/api/cards/agent/request-server", "api_cards_agent_request_server"),
+    ):
+        app.router.add_route(_method, _path, _deferred("template_server_request", _name))
+    # Its ``template.mcp_server`` card's step and Undo: owner-only cookie auth
+    # (deliberately off the strict prefix), card-hooked.
+    app.router.add_post(
+        "/api/agents/detail/{name}/mcp-additions",
+        _deferred("template_server_request", "api_template_mcp_addition_add"),
+    )
+    app.router.add_delete(
+        "/api/agents/detail/{name}/mcp-additions/{server}",
+        _deferred("template_server_request", "api_template_mcp_addition_remove"),
+    )
     app.router.add_get(
-        "/api/chat/slots/{slot}/dashboard", _deferred("member_dashboard", "api_session_dashboard")
+        "/api/chat/slots/{slot}/dashboard",
+        _deferred("member_dashboard", "api_session_dashboard"),
+    )
+    # A Crew Mode root's workers for its side panel, under the same owner-only,
+    # no-app gate as the root's dashboard read above.
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-workers", _deferred("crew_workers", "api_crew_workers")
+    )
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/{worker}/steer",
+        _deferred("crew_workers", "api_crew_worker_steer"),
+    )
+    # The conductor's approval card: a worker's pending tool approval, decided by the
+    # dashboard owner through the per-slot approve route on the WORKER slot.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/{worker}/approve",
+        _deferred("crew_workers", "api_crew_worker_approve"),
+    )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-timeline", _deferred("crew_workers", "api_crew_timeline")
     )
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
@@ -434,6 +517,10 @@ def _register_mcp_routes(app: web.Application) -> None:
         _deferred("session_control", "api_session_control_set_model"),
     )
     app.router.add_post(
+        "/api/session-control/set-color",
+        _deferred("session_control", "api_session_control_set_color"),
+    )
+    app.router.add_post(
         "/api/session-control/reload",
         _deferred("session_control", "api_session_control_reload"),
     )
@@ -484,6 +571,16 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/session-control/summary",
         _deferred("session_control", "api_session_control_summary"),
     )
+    # Crew-scoped session reads (the crew= scope on the session read MCP tools).
+    # Registered HERE, not in the dashboard-only connections block, so both
+    # gateway entrypoints route them: a headless --slack-only gateway builds no
+    # tunnel manager, and there the handlers answer MANAGER_UNAVAILABLE_CODE
+    # rather than a route miss the tool would read as "no such endpoint". All
+    # three are on _STRICT_INTERNAL_API_PATHS (internal-secret, no browser
+    # caller), exactly like /api/sessions/summarize.
+    app.router.add_get("/api/crew-sessions/search", _deferred_instances("api_crew_sessions_search"))
+    app.router.add_get("/api/crew-sessions/list", _deferred_instances("api_crew_sessions_list"))
+    app.router.add_get("/api/crew-sessions/read", _deferred_instances("api_crew_sessions_read"))
     app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
     app.router.add_put("/api/browser/token", handlers.api_browser_token_put)
     app.router.add_post("/api/browser/install", handlers.api_browser_install_start)
@@ -652,6 +749,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     from kiro_crew.dashboard.handlers.sandbox_doc import register_sandbox_doc_routes
 
     register_sandbox_doc_routes(app)
+    # An http(s) download URL for browsers that drop a blob: download.
+    from kiro_crew.dashboard.handlers.artifact_download import register_artifact_download_routes
+
+    register_artifact_download_routes(app)
     app.router.add_get("/api/artifacts/session-docs", api_artifact_session_docs)
     app.router.add_post("/api/artifacts/materialize", api_artifact_materialize)
     app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)

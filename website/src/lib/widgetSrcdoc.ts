@@ -46,6 +46,7 @@ import { withBase } from './basePath'
 /** The runtime's served path under this build's base (the bare path in the stock build). */
 const TAILWIND_RUNTIME_PATH = withBase(TAILWIND_RUNTIME_PATH_ROOT)
 import { sanitizeCssValue } from './cssSanitize'
+import { SWIPE_GESTURE_IDLE_MS } from './trackpadGesture'
 
 /** The sandbox grants for every frame that holds an agent-written page: saved
  * artifacts (`ArtifactBody`), library thumbnails (`ArtifactThumbs`), a teammate's
@@ -630,6 +631,71 @@ const FRAME_TOUCH_RELAY_BODY = `(function(){
   window.addEventListener('touchcancel',function(e){if(on){on=false;send('cancel',e);}},opts);
 })();`
 
+/** A wheel relay, for a host whose desktop trackpad swipe must be able to run
+ * over the frame (see hooks/useTrackpadSwipe). A gesture's axis is fixed by its
+ * first event, as the host's own reader fixes it, and a run ends after the same
+ * gap the host's does (SWIPE_GESTURE_IDLE_MS): a run that starts vertical, a
+ * pinch (`ctrlKey`), or a run over content that can still scroll that way is
+ * the frame's and posts nothing. Scrollers are found along the event's composed
+ * path, so one inside a shadow root (a web component) counts, not just its host.
+ * Whether a scroller has room is the host's own rule (`room`, a copy of
+ * lib/trackpadGesture `hasScrollRoomX`), right-to-left scrollers included. Every other run is posted, event by event, as
+ * `{type: 'mc-frame-wheel', dx, dy, mode, t}`, where `t` is when the wheel
+ * happened, as `performance.timeOrigin + timeStamp` (epoch ms): the host's
+ * own receive time would squeeze a burst queued behind a stall into a few
+ * ms, and read slow fingers as a flick. A leftward-scrolling event of such
+ * a run (`deltaX < 0`, the fingers moving right) is also cancelled here: the
+ * host can drive only its panel's close from this frame, which is that
+ * direction, and a parent cannot cancel the browser's history swipe for a
+ * wheel that landed in a frame.
+ *
+ * Disarmed until the host says it is listening: the frame posts
+ * `{type: 'mc-frame-wheel-hello'}` when it starts, and relays (and cancels)
+ * only after the parent answers `{type: 'mc-frame-wheel-armed', on: true}`. The
+ * host sends `on: false` when its swipe stops listening (a phone-width window,
+ * a creation surface), so the frame then leaves every wheel to the browser
+ * instead of cancelling a run nobody will act on. Only the parent may arm it. */
+const FRAME_WHEEL_RELAY_BODY = `(function(){
+  var armed=false;
+  window.addEventListener('message',function(e){
+    var d=e.data;
+    if(e.source===parent&&d&&d.type==='mc-frame-wheel-armed')armed=d.on===true;
+  });
+  parent.postMessage({type:'mc-frame-wheel-hello'},'*');
+  function room(sl,m,rtl,dx){
+    if(m<=1)return false;
+    if(!rtl)return dx>0?sl<m-1:sl>0;
+    return dx>0?sl<0:sl>-(m-1);
+  }
+  function can(n,dx){
+    var m=n.scrollWidth-n.clientWidth;
+    if(m>1){var cs=getComputedStyle(n),o=cs.overflowX;if((o==='auto'||o==='scroll')&&room(n.scrollLeft,m,cs.direction==='rtl',dx))return true;}
+    return false;
+  }
+  function scrolls(e,dx){
+    var p=e.composedPath?e.composedPath():[];
+    if(p.length){for(var i=0;i<p.length;i++){var c=p[i];if(c&&c.nodeType===1&&can(c,dx))return true;}}
+    else{for(var n=e.target;n&&n.nodeType===1;n=n.parentElement){if(can(n,dx))return true;}}
+    var s=document.scrollingElement;
+    if(s&&room(s.scrollLeft,s.scrollWidth-s.clientWidth,getComputedStyle(s).direction==='rtl',dx))return true;
+    return false;
+  }
+  var last=-1e9,axis='';
+  window.addEventListener('wheel',function(e){
+    if(!armed)return;
+    var now=e.timeStamp;if(now-last>${SWIPE_GESTURE_IDLE_MS})axis='';last=now;
+    var dx=e.deltaX,dy=e.deltaY;
+    if(!axis){
+      if(e.ctrlKey)axis='own';
+      else if(dx===0&&dy===0)return;
+      else axis=Math.abs(dx)>Math.abs(dy)&&!scrolls(e,dx)?'x':'own';
+    }
+    if(axis!=='x'||e.ctrlKey)return;
+    parent.postMessage({type:'mc-frame-wheel',dx:dx,dy:dy,mode:e.deltaMode,t:performance.timeOrigin+e.timeStamp},'*');
+    if(dx<0&&Math.abs(dx)>Math.abs(dy))e.preventDefault();
+  },{passive:false,capture:true});
+})();`
+
 /** A static page's links do nothing when clicked. Installed (with the nonce) ahead
  * of the page, as capture-phase listeners on the window that the page has no
  * script to undo, so a click cannot navigate the frame to a host carrying the
@@ -695,7 +761,8 @@ const EXTERNAL_LINK_TARGET_SHIM_BODY = `(function(){
 /** Links leave the frame through the host, never through a popup of its own.
  *
  * Injected by `linkBridge` for the frames that hold agent-written pages (saved
- * artifacts, library thumbnails, a teammate's shared artifact, chat widgets).
+ * artifacts, library thumbnails, a teammate's shared artifact, chat widgets, a
+ * crewmate's Dashboard page).
  * Those frames are `sandbox="allow-scripts"` with no popup grant, so a page
  * cannot open a window itself; this hands the request to the host instead, as
  * `{type: 'kirocrew-dashboard:open', url}` -- the message the crew pages already
@@ -707,7 +774,9 @@ const EXTERNAL_LINK_TARGET_SHIM_BODY = `(function(){
  *   - A click on a link that would open a window (`target="_blank"` or any other
  *     target but `_self`) or that would navigate this frame to another site (a
  *     bare absolute `http(s)` link) is cancelled here and, when its href is an
- *     absolute `http(s)` URL, posted to the host. Fragment and relative links
+ *     absolute `http(s)` URL, posted to the host. A window-opening link to a
+ *     root-relative dashboard path (`/chat?sid=...`) is posted as that path,
+ *     which the host resolves against its own origin. Fragment and relative links
  *     with no target keep their in-frame behaviour; other schemes on a
  *     window-opening link are cancelled and not posted.
  *   - `window.open` is replaced by the same post and returns null, so a page
@@ -754,10 +823,25 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
     try { u = new URL(s); } catch (_) { return null; }
     return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
   }
+  // A root-relative dashboard path (/chat?sid=...), sent as written: the host
+  // resolves it against its own origin. Parsed against a placeholder origin and
+  // returned only while it stays there, so //host and /\\host (another origin) and any
+  // scheme are refused. Used only for a link that opens a window, never a bare one.
+  function path(raw){
+    var s = String(raw).trim(), u, o = 'https://kirocrew-path.invalid';
+    if (s.charAt(0) !== '/') return null;
+    try { u = new URL(s, o); } catch (_) { return null; }
+    // A dot segment can normalise to //host (/.//host), which the host would read
+    // as another origin, so a pathname starting // is refused too.
+    if (u.origin !== o || u.pathname.slice(0, 2) === '//') return null;
+    return u.pathname + u.search + u.hash;
+  }
+  function post(url){
+    try { P.postMessage({ type: T, url: url }, '*'); } catch (_) {}
+  }
   function ask(raw){
     var url = web(raw);
-    if (!url) return;
-    try { P.postMessage({ type: T, url: url }, '*'); } catch (_) {}
+    if (url) post(url);
   }
   // An SVG link may carry its address as xlink:href instead of href.
   var XLINK = 'http://www.w3.org/1999/xlink';
@@ -784,6 +868,7 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
     var url = web(hrefOf(a));
     if (!middle && target === '_self') return null;
     if (!middle && !target && !url) return null;
+    if (!url) url = path(hrefOf(a));
     if (middle && !url) return null;
     return { a: a, url: url, bare: !middle && !target };
   }
@@ -801,13 +886,13 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
   // nothing is posted.
   function decide(e, p, now){
     if (!now) {
-      setTimeout(function(){ if (!e.defaultPrevented && p.url) ask(p.url); }, 0);
+      setTimeout(function(){ if (!e.defaultPrevented && p.url) post(p.url); }, 0);
       return;
     }
     window.addEventListener(e.type, function(ev){
       if (ev !== e || e.defaultPrevented) return;
       e.preventDefault();
-      if (p.url) ask(p.url);
+      if (p.url) post(p.url);
     }, { once: true });
   }
   window.addEventListener('click', function(e){
@@ -1444,6 +1529,10 @@ interface BuildSrcdocOptions {
    * a host whose drawer gesture must be able to start over the frame. Off by
    * default: nothing else listens for them. */
   relayTouches?: boolean
+  /** Report the frame's unowned horizontal wheel runs to the parent (see
+   * FRAME_WHEEL_RELAY_BODY), for a host whose desktop trackpad swipe must be
+   * able to run over the frame. Off by default. */
+  relayWheel?: boolean
 }
 
 /** Build the srcdoc HTML for a sandboxed widget iframe. The LLM `html`
@@ -1463,6 +1552,7 @@ export function buildSrcdoc({
   offlineScripts = false,
   pageScripts = true,
   relayTouches = false,
+  relayWheel = false,
 }: BuildSrcdocOptions): string {
   // A widget hardcoded for a light canvas renders on a light canvas even when
   // the dashboard is dark -- see resolveWidgetTheme. Resolved once here so the
@@ -1623,6 +1713,11 @@ export function buildSrcdoc({
     const touchRelay = hostScript()
     touchRelay.textContent = FRAME_TOUCH_RELAY_BODY
     body.appendChild(touchRelay)
+  }
+  if (relayWheel) {
+    const wheelRelay = hostScript()
+    wheelRelay.textContent = FRAME_WHEEL_RELAY_BODY
+    body.appendChild(wheelRelay)
   }
 
   // Parse LLM html into a document fragment via the typed DOM API. The

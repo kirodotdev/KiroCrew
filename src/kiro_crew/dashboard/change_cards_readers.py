@@ -24,6 +24,7 @@ import os
 import re
 import time
 import urllib.parse
+from collections.abc import Iterator
 from typing import Any
 
 from kiro_crew import change_card_catalog as catalog
@@ -374,6 +375,11 @@ def after_shows_the_write(
             want = p.get("long_term")
             if not isinstance(got, str):
                 return False
+            if len(ev) > 1:
+                # The card's second step turned the Heartbeat on: it must still be.
+                hb = after.get("heartbeat")
+                if not (isinstance(hb, dict) and hb.get("on") is True):
+                    return False
             return got == want or member_goals.scrub_text(got) == member_goals.scrub_text(want)
         got_items, want_items = after.get("key_results"), p.get("items")
         records = after.get(KR_RECORDS_KEY)
@@ -406,6 +412,15 @@ def after_shows_the_write(
         # there is no Undo.
         written = ev[1].get("revision") if len(ev) > 1 else None
         return bool(written) and after.get("revision") == written
+    if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
+        # Undo removes the record this card wrote: the same card id and entry.
+        written = ev[0].get("card_id") if ev else None
+        return (
+            bool(written)
+            and after.get("present") is True
+            and after.get("card_id") == written
+            and same(after.get("entry"), p.get("entry"))
+        )
     if kind == catalog.KIND_MCP_TOGGLE:
         return after.get("enabled") is bool(p.get("enabled"))
     if kind == catalog.KIND_TRUST_APP:
@@ -431,6 +446,11 @@ def comparable_state(kind: str, state: Any) -> Any:
     their readings: a fresh reading between preview, apply and Undo is not a
     conflict, but new ids or changed goal links are.
     """
+    if kind == catalog.KIND_CREWMATE_GOAL and isinstance(state, dict):
+        # The Heartbeat a goal card may offer is not the goal it writes: a switch
+        # flipped since is no conflict for the goal, and the card's own Heartbeat
+        # step is a compare-and-set of its own (``expected`` on the schedules route).
+        return {k: v for k, v in state.items() if k != "heartbeat"}
     if kind == catalog.KIND_CREWMATE_KEY_RESULTS and isinstance(state, dict):
         out = {k: v for k, v in state.items() if k != KR_RECORDS_KEY}
         records = state.get(KR_RECORDS_KEY)
@@ -638,6 +658,13 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
         # Raw: a card Undo restores this text (REQ_CARD_RAW_RESTORE); the plan
         # and the change line carry it scrubbed.
         out["goals"] = [{"id": g["id"], "text": g["text"]} for g in rec["goals"]]
+        # What the card's Heartbeat checkbox needs: whether it may be offered
+        # (``change_card_catalog_plans._goal_heartbeat_offer``) and its interval.
+        out["heartbeat"] = {
+            "on": bool(rec["schedules"].get(member_goals.CADENCE_HEARTBEAT)),
+            "interval": rec["schedules"].get("interval"),
+            "declined": rec.get("heartbeat_offer") == member_goals.HEARTBEAT_OFFER_DECLINED,
+        }
     elif kind == catalog.KIND_CREWMATE_CHECK_INS:
         out["has_goal"] = member_goals.has_goal(rec)
         out["schedules"] = {k: rec["schedules"].get(k) for k in catalog.CHECK_IN_FIELDS}
@@ -714,6 +741,8 @@ def _sync_read_state(
             return {"exists": False, "ambiguous": len(candidates) > 1}
         spec = candidates[0][1] if isinstance(candidates[0][1], dict) else {}
         return {"exists": True, "fields": {k: _jsonable(spec.get(k)) for k in p["fields"]}}
+    if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
+        return _template_server_state(p)
     if kind == catalog.KIND_MCP_INSTALL:
         from kiro_crew.dashboard.handlers.mcp_discover import _derive_install_name
 
@@ -760,6 +789,26 @@ def _sync_read_state(
             return {"exists": False}
         return {"exists": True, "enabled": bool(hit.get("enabled")), "pattern": hit.get("pattern")}
     raise catalog.CardCatalogError("unknown_kind", kind)
+
+
+def _template_server_state(p: dict[str, Any]) -> dict[str, Any]:
+    """A ``template.mcp_server`` snapshot: is the server recorded, under which card.
+
+    ``template_has`` is the template's own spec declaring that name already, so
+    the card is refused rather than added behind a server of the same name.
+    """
+    from kiro_crew import template_mcp_additions as additions
+    from kiro_crew.dashboard.handlers.template_server_request import template_declares
+
+    added = additions.read_additions(p["template"]).get(p["server"])
+    out: dict[str, Any] = {
+        "present": added is not None,
+        "template_has": template_declares(p["template"], p["server"]),
+    }
+    if added is not None:
+        out["card_id"] = added.card_id
+        out["entry"] = _jsonable(dict(added.entry))
+    return out
 
 
 def _capability_service(app: Any) -> Any:
@@ -910,6 +959,12 @@ async def resumed_undo_is_stale(rec: dict[str, Any], index: int, *, state: Any, 
         # Step 1 applies the preview step 0 just took; its token and revision
         # are what the capability route checks, so nothing else to compare.
         return False
+    if kind == catalog.KIND_CREWMATE_GOAL:
+        # A goal card that also turned the Heartbeat on undoes in two steps:
+        # the Heartbeat off, then the goal. The goal write is a compare-and-set
+        # on the text the card wrote (``expected``), so it refuses a goal edited
+        # since on its own.
+        return False
     # Every other kind undoes in one step, so a resumed step is never admitted.
     return True
 
@@ -983,6 +1038,8 @@ async def read_state(
         if folder is None:
             return {"exists": False}
         return {"exists": True, "steering_dirs": catalog.string_items(folder.get("steering_dirs"))}
+    if kind in catalog.WORKFLOW_KINDS:
+        return await _workflow_state(kind, params, state)
     if kind == catalog.KIND_TEMPLATE_UPDATE and "skills" in (params.get("fields") or {}):
         return await asyncio.to_thread(_template_state_with_skills, params, state)
     # A legacy-shaped create card made its schedule at step 1, the current one at
@@ -1221,13 +1278,208 @@ async def read_context(
             crew for crew, c in cfg.agents.items() if getattr(c, "kiro_agent", "") == p["template"]
         )
         return {"members": members}
+    if kind == catalog.KIND_TEMPLATE_MCP_SERVER:
+        from kiro_crew.dashboard.handlers.template_server_request import (
+            addition_reach_view,
+            existing_grants,
+            live_apply,
+            server_tools,
+        )
+
+        return {
+            "reach": await asyncio.to_thread(addition_reach_view, state, p["template"]),
+            "live": live_apply(state),
+            "tools": await asyncio.to_thread(server_tools, p["server"]),
+            "grants": await asyncio.to_thread(existing_grants, p["template"], p["server"]),
+        }
     if kind == catalog.KIND_MCP_INSTALL:
         return {"detail": await _mcp_detail(p)}
     if kind == catalog.KIND_FOLDER_STEERING:
         # Display only: the folder's name, so a rename is not a conflict.
         folder = await _folder(state, p["folder"])
         return {"label": str((folder or {}).get("name") or p["folder"])}
+    if kind in catalog.WORKFLOW_KINDS:
+        return await _workflow_context(kind, p, before, state)
     return {}
+
+
+def _workflow_service(state: Any) -> Any:
+    svc = getattr(state, "workflow_service", None)
+    if svc is None:
+        raise catalog.CardCatalogError("workflows_unavailable", "workflows are not available")
+    return svc
+
+
+async def _workflow_state(kind: str, params: dict[str, Any], state: Any) -> dict[str, Any]:
+    """What a workflow card replaces: nothing for a save, the saved revision for an update.
+
+    A save creates a definition with its own new id, so there is nothing it could
+    overwrite; only the slash command it asks for must still be free. An update is pinned to the revision read here: Apply sends it as
+    ``expected_revision``, and any save in between is a change since the preview.
+    """
+    svc = _workflow_service(state)
+    if kind == catalog.KIND_WORKFLOW_SAVE:
+        # The command the card shows, asked for or derived from the name, and
+        # whether it is free, read again before Apply, so a save that takes it in
+        # between is a change since the preview.
+        slug = catalog.workflow_save_slug(params)
+        taken = await asyncio.to_thread(svc.get_definition, slug)
+        return {"slug": slug, "slug_taken": taken is not None}
+    definition = await asyncio.to_thread(svc.get_definition, params["workflow"])
+    if not isinstance(definition, dict):
+        return {"exists": False}
+    return {
+        "exists": True,
+        "id": str(definition.get("id") or ""),
+        "slug": str(definition.get("slug") or ""),
+        "name": str(definition.get("name") or ""),
+        "description": str(definition.get("description") or ""),
+        "format": str(definition.get("format") or "python"),
+        "revision": definition.get("revision"),
+        "content_hash": str(definition.get("content_hash") or ""),
+    }
+
+
+#: Largest script diff a ``workflow.update`` card carries, as JSON-encoded text like
+#: ``WORKFLOW_SOURCE_MAX``; it is kept twice (the row and the card's context). A
+#: larger diff is refused, never cut: a cut diff would hide the changed lines past
+#: the cut, and a removed line is shown nowhere else on the card.
+WORKFLOW_DIFF_MAX = 6_000
+
+#: The exact hunk header ``difflib.unified_diff`` writes with ``lineterm=""``.
+_HUNK_HEADER_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+#: How a hunk's separator row starts. Every other diff line starts with ``+``,
+#: ``-`` or a space, so a row starting with this is never a script line.
+WORKFLOW_DIFF_SEPARATOR = "\u22ef"
+
+
+def _hunk_separator(header: re.Match[str]) -> str:
+    """The separator row standing for one ``@@ -a,b +c,d @@`` header.
+
+    It names the new revision's lines the hunk spans (``⋯ lines c-(c+d-1) ⋯``),
+    the same numbers the card's numbered script block shows, so two far-apart
+    hunks never draw as one block. A hunk that only removes lines spans none of
+    them and names the new line it removes after (``⋯ after line c ⋯``).
+    """
+    _old_start, _old_len, new_start, new_len = (
+        int(g) if g is not None else 1 for g in header.groups()
+    )
+    sep = WORKFLOW_DIFF_SEPARATOR
+    if not new_len:
+        return f"{sep} after line {new_start} {sep}"
+    return f"{sep} lines {new_start}-{new_start + new_len - 1} {sep}"
+
+
+def _unified_range(start: int, stop: int) -> str:
+    """One side of a hunk header, spelled as ``difflib.unified_diff`` spells it."""
+    length = stop - start
+    if length == 1:
+        return str(start + 1)
+    return f"{start + 1 if length else start},{length}"
+
+
+def _unified_hunks(old: list[str], new: list[str]) -> Iterator[str]:
+    """The hunk lines of a unified diff of *old* to *new*, with no file headers.
+
+    ``difflib.unified_diff``'s output past its two file headers, except that lines
+    are matched with ``autojunk`` off. With it on, any line that makes up more than
+    1% of a script of 200 lines or more (a blank line, a closing bracket) is never
+    matched, so one changed line can diff as the whole script rewritten and the
+    card refuse a small change as too large to show.
+    """
+    import difflib
+
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    for group in matcher.get_grouped_opcodes(3):
+        first, last = group[0], group[-1]
+        old_range = _unified_range(first[1], last[2])
+        new_range = _unified_range(first[3], last[4])
+        yield f"@@ -{old_range} +{new_range} @@"
+        for tag, i1, i2, j1, j2 in group:
+            if tag == "equal":
+                yield from (" " + line for line in old[i1:i2])
+                continue
+            if tag in ("replace", "delete"):
+                yield from ("-" + line for line in old[i1:i2])
+            if tag in ("replace", "insert"):
+                yield from ("+" + line for line in new[j1:j2])
+
+
+def _workflow_diff(old: str, new: str) -> str:
+    """Every changed line from the saved script *old* to *new*, or a refusal.
+
+    A unified diff (:func:`_unified_hunks`, no file headers) with each ``@@``
+    hunk header replaced by a separator row naming the lines the hunk spans.
+    Hunk headers are matched by their exact shape, never by prefix, because a
+    source line such as ``-- x`` or a markdown ``---`` rule is written as
+    ``--- x`` / ``----`` once marked as removed, and every changed line must
+    reach the card. A removed line comes from a revision saved earlier, which
+    never passed the card's character checks, so its hidden characters are
+    spelled out (``catalog.escape_hidden_characters``) before it is shown.
+    """
+    # Split at ``\n`` only: ``splitlines`` also breaks at U+2028, U+2029 and
+    # U+0085, which Python's compiler reads as ordinary characters, so a line it
+    # runs as a comment could diff as unchanged code.
+    shown: list[str] = []
+    for line in _unified_hunks(old.split("\n"), new.split("\n")):
+        header = _HUNK_HEADER_RE.fullmatch(line)
+        if header is not None:
+            shown.append(_hunk_separator(header))
+        elif line.startswith("-"):
+            shown.append(catalog.escape_hidden_characters(line))
+        else:
+            shown.append(line)
+    diff = "\n".join(shown)
+    # Counted as the card store counts it: the escaped text.
+    if len(json.dumps(diff)) - 2 > WORKFLOW_DIFF_MAX:
+        raise catalog.CardCatalogError(
+            "diff_too_large",
+            f"the change to the script is too large to show on one card (its diff is "
+            f"over {WORKFLOW_DIFF_MAX} bytes once encoded) and a card never hides a "
+            "changed line; propose a smaller change, one card per step, or ask the "
+            "owner to edit the workflow in Customize -> Workflows",
+        )
+    return diff
+
+
+async def _workflow_context(
+    kind: str, params: dict[str, Any], before: dict[str, Any], state: Any
+) -> dict[str, Any]:
+    """Refuse a script the library would refuse, and for an update, the diff it shows.
+
+    The script is validated before the card exists, so the person is never asked to
+    approve something the save route answers 400 to.
+    """
+    from kiro_crew.workflows.validate import validate
+
+    result = await asyncio.to_thread(validate, params["source"])
+    if not result.ok:
+        errors = "; ".join(str(e) for e in result.errors)
+        raise catalog.CardCatalogError(
+            "invalid_workflow", f"the script is not valid: {errors[:400]}"
+        )
+    if kind != catalog.KIND_WORKFLOW_UPDATE or not before.get("exists"):
+        return {}
+    definition = await asyncio.to_thread(
+        _workflow_service(state).get_definition, str(before.get("id") or "")
+    )
+    revision = before.get("revision")
+    if not isinstance(definition, dict) or definition.get("revision") != revision:
+        # The diff must be against the revision Apply pins as ``expected_revision``;
+        # a save landing between the two reads would otherwise show a diff against
+        # a script the card does not replace.
+        raise catalog.CardCatalogError(
+            "workflow_changed", "the saved workflow changed while the card was built; ask again"
+        )
+    old = str(definition.get("source") or "")
+    if old == params["source"]:
+        return {}
+    return {
+        # Matching without autojunk can take seconds on a script of thousands of
+        # identical lines, so the diff runs off the event loop.
+        "diff": await asyncio.to_thread(_workflow_diff, old, params["source"]),
+        "source_changed": True,
+    }
 
 
 async def resolve_params(kind: str, params: dict[str, Any]) -> dict[str, Any]:

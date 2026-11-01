@@ -542,6 +542,24 @@ describe('sseChatMessagePatchByTs', () => {
       expect(out.messages[1].meta?.superseded).toBe(true)
       expect(out.messages[0].meta?.superseded).toBeUndefined()
     })
+
+    /** The live reply footer: `_broadcast_turn_stats` sends `chat_message_update`
+     *  keyed on the reply's mid with `meta: { turn_stats }` only. The row keeps
+     *  everything else its meta carries (its mid above all, which the next patch
+     *  and the pin walks read), and the sibling sharing its ts gets nothing. */
+    it('a turn_stats patch by mid adds the footer and keeps the rest of the row\'s meta', () => {
+      const { state } = withCollidingBanners()
+      const stats = { elapsed_ms: 1200, credits: 0.12 }
+      const out = reducer(state, {
+        type: 'chat/sseChatMessagePatchByTs',
+        payload: { slot: 'slot-1', ts: '', mid: 'm-second', meta: { turn_stats: stats } },
+      })
+      expect(out.messages[1].meta).toEqual({
+        mid: 'm-second', server_name: 'linear', oauth_url: 'https://mcp.linear.app/authorize', turn_stats: stats,
+      })
+      expect(out.messages[0].meta?.turn_stats).toBeUndefined()
+      expect(out.slotMessages['slot-1'][1].meta?.turn_stats).toEqual(stats)
+    })
   })
 
   it('no-op when slot is empty', () => {
@@ -675,9 +693,29 @@ describe('sseThinkingChunk (model reasoning)', () => {
     expect(thinking[0].content).toBe('Step 1. Step 2.')
   })
 
-  it('ignores chunks for a non-active slot', () => {
-    const state = reducer(active, sseThinkingChunk({ slot: 'other', content: 'nope' }))
+  it('lands a non-active slot\'s reasoning in that slot\'s cache, not the active transcript', () => {
+    // A split-view or session-grid pane renders its slot through ChatPane
+    // without moving activeSlot, so the pane reads slotMessages[slot].
+    let state = reducer(active, sseThinkingChunk({ slot: 'pane-9', content: 'Step 1. ' }))
+    state = reducer(state, sseThinkingChunk({ slot: 'pane-9', content: 'Step 2.' }))
     expect(state.messages).toHaveLength(0)
+    const cached = state.slotMessages['pane-9']
+    expect(cached.map(m => [m.role, m.content])).toEqual([['thinking', 'Step 1. Step 2.']])
+  })
+
+  it('keeps a non-active slot\'s reasoning above its streamed answer', () => {
+    let state = reducer(active, sseThinkingChunk({ slot: 'pane-9', content: 'why' }))
+    state = reducer(state, sseChatMessage({ slot: 'pane-9', role: 'chunk', content: 'answer', seq: 0 }))
+    state = reducer(state, sseThinkingChunk({ slot: 'pane-9', content: ' and more' }))
+    const cached = state.slotMessages['pane-9']
+    expect(cached.map(m => m.role)).toEqual(['thinking', 'streaming'])
+    expect(cached[0].content).toBe('why and more')
+  })
+
+  it('ignores reasoning for an unsafe slot key', () => {
+    const state = reducer(active, sseThinkingChunk({ slot: '__proto__', content: 'nope' }))
+    expect(state.messages).toHaveLength(0)
+    expect(Object.prototype.hasOwnProperty.call(state.slotMessages, '__proto__')).toBe(false)
   })
 
   it('ignores empty content', () => {

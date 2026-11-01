@@ -130,6 +130,10 @@ export const activityReducers = {
     state.sidePanelReopenSlot = null
     if ((settingTurnedOn || reopen) && state.activeSlot) state.activityOpen = true
   },
+  /** Close the active slot's panel, whatever it was: for a switch that must land
+   *  on the chat even when the target slot remembers its panel open (a phone
+   *  opening a Crew Mode worker from the Workers sheet). */
+  closeActivityPanel(state: ChatState) { state.activityOpen = false; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, false) },
   openActivityToTab(state: ChatState, action: PayloadAction<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'links' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.activityTabRequest += 1; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, true) },
   /** Tool details expand inline in the chat. This action signals the matching
    *  ToolCallLine pill to auto-expand and scroll into view. */
@@ -238,6 +242,23 @@ export const activityReducers = {
       applyToolOutputToMessages(state, action.payload.slot, tid, out)
     } else if (tid && isAskAnsweredOutput(out)) {
       applyToolOutputToMessages(state, action.payload.slot, tid, out, true)
+    }
+    // The live status line (`slotStatusDetail`) names the call that is
+    // running. Once that call RETURNS, the model is reading its result, so the
+    // line reads thinking until the next status frame -- on every surface that
+    // renders it (the sessions sidebar, the command palette, the crewmate DM
+    // pill), not only on the one that checks the tool log. Matched by the
+    // call's own id, so a result for an earlier call cannot flip the line while
+    // a later, parallel call is still running. A mid-stream frame
+    // (`final: false`) is not a return. Runs before the tool-log lookup below,
+    // which returns early for a slot with no log yet.
+    if (tid && action.payload.final !== false && !isUnsafeKey(action.payload.slot)) {
+      const statusKey = safeKey(action.payload.slot)
+      // Optional: a store built from a partial chat state carries no status map.
+      const status = state.slotStatusDetail?.[statusKey]
+      if (status?.kind === 'tool' && status.toolCallId === tid) {
+        state.slotStatusDetail[statusKey] = { kind: 'thinking' }
+      }
     }
     const log = action.payload.slot !== state.activeSlot
       ? state.slotActivity[action.payload.slot]?.toolLog

@@ -24,6 +24,7 @@ import {
 } from './staleOwnerSignal'
 import { edgeChallengeMessage, noteEdgeAuthChallenge } from './edgeAuthChallenge'
 import { AUTH_BANNER_BUTTON_CSS, AUTH_BANNER_CSS } from './authBannerStyles'
+import { isCameraPermissionDenied, qrScanSupported, scanQrCode } from './qrScan'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { withDeadline } from '../lib/withDeadline'
 import { installApiTransport } from './apiTransport'
@@ -71,6 +72,7 @@ import { createBrowserAndComputerUseEndpoints } from './client/browserAndCompute
 import { createDecisionsEndpoints } from './client/decisions'
 import { createMessagingEndpoints } from './client/messaging'
 import { createAutoResearchEndpoints } from './client/autoResearch'
+import { createSharedCrewEndpoints } from './client/sharedCrew'
 import type { DecisionsConsentData } from './client/decisions'
 
 export type { TunnelStatus } from './client/system'
@@ -103,10 +105,7 @@ export type {
   DeniedCommandRule,
   DeniedUserRule,
   AwsConsentStatus,
-  FileDeliveryGrant,
-  FileDeliveryConsentStatus,
   CredentialRedactionState,
-  ArmedFileDeliveryConsent,
   DeniedCommandsData,
   GovernanceScopeDetail,
   GovernanceScope,
@@ -166,6 +165,7 @@ export type {
   McpShareReason,
   McpShareRecommendation,
   McpMeasureProgress,
+  McpGatewayFootprint,
   McpManagedServer,
 } from './client/mcp'
 export type {
@@ -173,7 +173,6 @@ export type {
   CrewmateExportPreview,
   MemberRosterRow,
   MemberActivityEntry,
-  MemberRecap,
   MemberGoals,
   MemberGoal,
   GoalKeyResult,
@@ -247,6 +246,10 @@ export type {
 export type {
   SlackConfigData,
   SlackConfigSave,
+  SlackCapability,
+  SlackCodeSwitchKey,
+  SlackManifestChange,
+  SlackManifestStatus,
   DiscordConfigData,
   TelegramConfigData,
   DiscordConfigSave,
@@ -532,88 +535,113 @@ function showSessionExpiredBanner(lead?: string): void {
   // type, which clears contrast at this size where a lighter red would not.
   const failure = document.createElement('div')
   failure.setAttribute('role', 'status')
+  /**
+   * Exchange one sign-in URL or raw token, from the paste field or the QR scan.
+   *
+   * Both entry points share this ONE body on purpose: the parse, the exchange, the
+   * refusal wording, the owner-latch rule and the query invalidation below are
+   * single-sourced, so a scan cannot drift from a paste. Answers null when *raw*
+   * carried nothing to send (a URL with no `token`), without touching the screen:
+   * the paste path treats that as a no-op, and the scan path words it, since a
+   * scanned code that is not a sign-in code needs an answer. Otherwise answers the
+   * exchange that settles the attempt.
+   *
+   * One exchange at a time. A second submit while one is in flight gets the running
+   * exchange back and sends nothing: the first answer is the answer, and two
+   * concurrent exchanges would race their refusal text and their banner teardown.
+   * The disabled field and button make that rare, not impossible, since a scan can
+   * decode while a paste is still out.
+   */
+  let exchange: Promise<void> | null = null
+  const submitToken = (raw: string): Promise<void> | null => {
+    let t: string | null = null
+    try { t = new URL(raw).searchParams.get('token') } catch { t = raw }
+    if (!t) return null
+    if (exchange) return exchange
+    // Disabled for the round trip so a second Enter cannot start a second
+    // exchange. The pasted text is left in the field: on a refusal the user
+    // corrects it rather than re-pasting from scratch.
+    input.disabled = true
+    // Drop the previous attempt's refusal now, so the next one is visibly a
+    // new answer rather than text that was already on screen.
+    failure.textContent = ''
+    exchange = exchangePastedToken(t).then(({ reached, ok, tokenAccepted, ownerOk }) => {
+      input.disabled = false
+      if (!reached) {
+        // The request never got an answer, so nothing judged the token. Saying
+        // it was not accepted would assert a check that never ran and send the
+        // user to re-run a command that cannot help.
+        failure.textContent = i18nT('api.client.token_exchange_unreachable')
+        input.focus()
+        return
+      }
+      if (!ok) {
+        failure.textContent = i18nT('api.client.token_not_accepted')
+        input.focus()
+        return
+      }
+      // An owner denial is resolved by ONE event: a credential that both
+      // authenticates AND clears the owner gate. A 2xx here establishes
+      // neither. `/api/auth/me` is not owner-gated, so this session -- still
+      // authenticated, still owner-denied -- answers 200 on its cookie, and
+      // the middleware quietly falls back to that cookie when the pasted token
+      // is invalid. A token minted before the owner was configured is valid
+      // too, so it is accepted and still denied everywhere the gate fronts.
+      // Clearing the latch on the status alone, or on acceptance alone, would
+      // hide the prompt while every owner-gated call kept failing, and the
+      // user would learn that from their next refused save.
+      //
+      // So the latch drops only when the gateway reports both. Without them
+      // the banner stays up and says the token was not accepted, which is the
+      // accurate reading of a 200 that proves neither.
+      if (_staleOwnerBanner && !(tokenAccepted && ownerOk)) {
+        failure.textContent = i18nT('api.client.token_not_accepted')
+        input.focus()
+        return
+      }
+      // `removeAuthBanner` returns early while the latch is set --
+      // deliberately, because that session keeps answering 2xx on everything
+      // the owner gate does not front, so an unrelated success proves
+      // nothing. Dropping it here is what lets the banner clear on its own
+      // recovery, which the previous full-page reload hid by wiping the
+      // document.
+      _staleOwnerBanner = false
+      // Auth works again. `removeAuthBanner` drops the banner and clears the
+      // terminal-refresh latch, so a LATER lapse in this document retries the
+      // silent path instead of going straight back to the banner.
+      removeAuthBanner()
+      // Only queries that failed AND are holding nothing get refetched.
+      //
+      // `status === 'error'` alone is not enough, and the earlier version of
+      // this comment was wrong to say an error-state query has no data to sync
+      // from. React Query KEEPS the last successful `data` when a later
+      // refetch fails: measured against `@tanstack/query-core`, a query that
+      // succeeds and then fails a refetch reports `status: 'error'` with its
+      // `data` still defined and unchanged. Refetching one of those
+      // re-delivers data to whatever watches it, and
+      // `McpCustomServerModal`'s effect runs
+      // `setText(JSON.stringify(specQuery.data.spec, ...))` on every change of
+      // `specQuery.data` -- so an unsaved spec draft would be silently
+      // overwritten by the server's copy. A no-argument
+      // `invalidateQueries()` does that to every panel at once, which is the
+      // wider version of the same bug.
+      //
+      // `data === undefined` narrows it to queries that never carried a
+      // successful value: exactly the ones the lapse broke, and the only ones
+      // with nothing to overwrite a draft with.
+      invalidateAcrossQueryClients({
+        predicate: (q) => q.state.status === 'error' && q.state.data === undefined,
+      })
+    }).finally(() => {
+      exchange = null
+    })
+    return exchange
+  }
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       const v = input.value.trim()
       if (!v) return
-      let t: string | null = null
-      try { t = new URL(v).searchParams.get('token') } catch { t = v }
-      if (!t) return
-      // Disabled for the round trip so a second Enter cannot start a second
-      // exchange. The pasted text is left in the field: on a refusal the user
-      // corrects it rather than re-pasting from scratch.
-      input.disabled = true
-      // Drop the previous attempt's refusal now, so the next one is visibly a
-      // new answer rather than text that was already on screen.
-      failure.textContent = ''
-      void exchangePastedToken(t).then(({ reached, ok, tokenAccepted, ownerOk }) => {
-        input.disabled = false
-        if (!reached) {
-          // The request never got an answer, so nothing judged the token. Saying
-          // it was not accepted would assert a check that never ran and send the
-          // user to re-run a command that cannot help.
-          failure.textContent = i18nT('api.client.token_exchange_unreachable')
-          input.focus()
-          return
-        }
-        if (!ok) {
-          failure.textContent = i18nT('api.client.token_not_accepted')
-          input.focus()
-          return
-        }
-        // An owner denial is resolved by ONE event: a credential that both
-        // authenticates AND clears the owner gate. A 2xx here establishes
-        // neither. `/api/auth/me` is not owner-gated, so this session -- still
-        // authenticated, still owner-denied -- answers 200 on its cookie, and
-        // the middleware quietly falls back to that cookie when the pasted token
-        // is invalid. A token minted before the owner was configured is valid
-        // too, so it is accepted and still denied everywhere the gate fronts.
-        // Clearing the latch on the status alone, or on acceptance alone, would
-        // hide the prompt while every owner-gated call kept failing, and the
-        // user would learn that from their next refused save.
-        //
-        // So the latch drops only when the gateway reports both. Without them
-        // the banner stays up and says the token was not accepted, which is the
-        // accurate reading of a 200 that proves neither.
-        if (_staleOwnerBanner && !(tokenAccepted && ownerOk)) {
-          failure.textContent = i18nT('api.client.token_not_accepted')
-          input.focus()
-          return
-        }
-        // `removeAuthBanner` returns early while the latch is set --
-        // deliberately, because that session keeps answering 2xx on everything
-        // the owner gate does not front, so an unrelated success proves
-        // nothing. Dropping it here is what lets the banner clear on its own
-        // recovery, which the previous full-page reload hid by wiping the
-        // document.
-        _staleOwnerBanner = false
-        // Auth works again. `removeAuthBanner` drops the banner and clears the
-        // terminal-refresh latch, so a LATER lapse in this document retries the
-        // silent path instead of going straight back to the banner.
-        removeAuthBanner()
-        // Only queries that failed AND are holding nothing get refetched.
-        //
-        // `status === 'error'` alone is not enough, and the earlier version of
-        // this comment was wrong to say an error-state query has no data to sync
-        // from. React Query KEEPS the last successful `data` when a later
-        // refetch fails: measured against `@tanstack/query-core`, a query that
-        // succeeds and then fails a refetch reports `status: 'error'` with its
-        // `data` still defined and unchanged. Refetching one of those
-        // re-delivers data to whatever watches it, and
-        // `McpCustomServerModal`'s effect runs
-        // `setText(JSON.stringify(specQuery.data.spec, ...))` on every change of
-        // `specQuery.data` -- so an unsaved spec draft would be silently
-        // overwritten by the server's copy. A no-argument
-        // `invalidateQueries()` does that to every panel at once, which is the
-        // wider version of the same bug.
-        //
-        // `data === undefined` narrows it to queries that never carried a
-        // successful value: exactly the ones the lapse broke, and the only ones
-        // with nothing to overwrite a draft with.
-        invalidateAcrossQueryClients({
-          predicate: (q) => q.state.status === 'error' && q.state.data === undefined,
-        })
-      })
+      void submitToken(v)
     }
   })
   // The connective text around the command used to sit here as two bare English
@@ -638,6 +666,52 @@ function showSessionExpiredBanner(lead?: string): void {
     i18nT('api.client.run_kirocrew_token_then_paste_sign_in_url'),
   )
   el.append(b, instruction, input, failure)
+  // On a phone the desktop "Connect your phone" QR carries this same sign-in URL,
+  // but the camera app opens it in the DEFAULT browser, which restores a session
+  // in the wrong browser when the dashboard runs in another one. Scanning in the
+  // page feeds the decoded string into `submitToken`, so the session is restored
+  // in this tab. Appended only once the browser proves it can decode `qr_code`:
+  // the check is async, and a browser without the API (iOS WebKit today) gets
+  // the paste field alone.
+  void qrScanSupported().then((supported) => {
+    if (!supported || !el.isConnected) return
+    const scan = document.createElement('button')
+    scan.type = 'button'
+    scan.textContent = i18nT('api.client.scan_qr_code')
+    scan.style.cssText = AUTH_BANNER_BUTTON_CSS
+    scan.addEventListener('click', () => {
+      failure.textContent = ''
+      // `alive` ties the camera to the banner: a 2xx elsewhere, or the dismiss,
+      // removes `el`, and the next frame stops every track and closes the overlay.
+      //
+      // The button is not disabled while the viewfinder is up: the overlay makes
+      // the rest of the page inert, which already keeps a second tap off it, and
+      // an enabled button is what the viewfinder can hand focus back to on close.
+      // It is disabled for the exchange that follows a decode, until that settles,
+      // so a decode cannot start a second exchange over the first one.
+      void scanQrCode({ alive: () => el.isConnected }).then(
+        (raw) => {
+          if (raw === null) return
+          // The decoded string is never logged: in the intended use it IS the token.
+          const settled = submitToken(raw.trim())
+          if (!settled) {
+            failure.textContent = i18nT('api.client.token_not_accepted')
+            return
+          }
+          scan.disabled = true
+          void settled.finally(() => { scan.disabled = false })
+        },
+        (err: unknown) => {
+          // The paste field stays usable either way: the camera is an addition,
+          // and whatever stopped it does not stop a paste.
+          failure.textContent = isCameraPermissionDenied(err)
+            ? i18nT('api.client.camera_permission_denied')
+            : i18nT('api.client.camera_unavailable')
+        },
+      )
+    })
+    input.after(scan)
+  })
   const dismiss = document.createElement('button')
   dismiss.textContent = '✕'
   dismiss.style.cssText =
@@ -920,6 +994,96 @@ function sendResponseAuthRecovery(r: Response): Response {
   return r
 }
 
+export interface SessionEnvironmentProfile {
+  id: string
+  name: string
+  provider: string
+  workdir: string
+  /** Template name, what tells two profiles apart; older gateways omit it. */
+  template?: string
+}
+
+export interface RemoteDirListing {
+  root: string
+  path: string
+  entries: { name: string; dir: boolean }[]
+  truncated: boolean
+}
+
+export interface RemoteFileContent {
+  root: string
+  path: string
+  content: string
+  binary: boolean
+  truncated: boolean
+}
+
+export interface RemoteEnvironmentHealth {
+  state: 'running' | 'stopped' | 'unavailable' | 'not_created'
+  workspace?: string
+  workdir?: string
+  error?: string
+  stats?: {
+    arch: string
+    cpus: number
+    load?: number[]
+    memory?: { total_bytes: number; available_bytes: number }
+    disk?: { total_bytes: number; free_bytes: number }
+    uptime_s?: number
+  }
+}
+
+/** `withheld`: the 'strict' agent sandbox lends no gateway login to remote sessions.
+ *  `unsupported`: a Windows gateway lends no git login to remote sessions yet. */
+export type GitLoginStatus = 'signed_in' | 'not_signed_in' | 'unchecked' | 'withheld' | 'unsupported'
+
+export interface SessionEnvironmentsCheck {
+  coder: { ok: boolean; owner?: string; error?: string }
+  profiles: { id: string; ok: boolean; error?: string }[]
+  /** Per saved Sprites profile: API token saved and accepted. Older gateways omit it. */
+  sprites?: { id: string; ok: boolean; error?: string }[]
+  /** Per saved boxd profile: CLI installed and signed in. Older gateways omit it. */
+  boxd?: { id: string; ok: boolean; error?: string }[]
+  /** Absent from a gateway that predates the git rows. */
+  git?: Record<string, GitLoginStatus>
+}
+
+export interface SessionEnvironmentWorkspace {
+  workspace: string
+  /** Older gateways omit it; those rows are Coder workspaces. */
+  provider?: 'coder' | 'sprites' | 'boxd'
+  slot: string
+  /** The profile the chat is bound to; empty when unknown. */
+  profile?: string
+  state: string
+  template: string
+  created_at: string
+  /** Set once the owning session is archived: when the workspace is deleted. */
+  deletion_due_at: string
+}
+
+/** Provider-neutral stages of a remote session's start, in order. */
+export type SessionEnvironmentStartStage = 'checking' | 'provisioning' | 'connecting' | 'starting_agent'
+
+export interface SlotEnvironment {
+  profile: string | null
+  profiles: SessionEnvironmentProfile[]
+  /** True once the session has a message: its environment can no longer change. */
+  locked?: boolean
+  /** A runtime in this gateway is attached to the remote workspace. */
+  attached?: boolean
+  /** Set while this session's environment is starting in THIS gateway. */
+  starting?: {
+    stage: SessionEnvironmentStartStage
+    stage_elapsed_s: number
+    elapsed_s: number
+    /** Every stage this start has entered, in order. Older gateways omit it. */
+    entered?: SessionEnvironmentStartStage[]
+    /** The gateway already had this session attached: an engine restart. */
+    reconnect?: boolean
+  } | null
+}
+
 /**
  * A non-2xx this endpoint's caller handles itself, identified by the denial it
  * IS rather than by the status it arrives with.
@@ -1039,6 +1203,29 @@ const jCrewBoard = (r: Response) => parseJson(r, CREW_BOARD_NO_LEDGER)
  */
 const REMOTE_SCOPE_UNSUPPORTED: BenignDenial = { status: 400, code: 'scope_unsupported' }
 const jRemoteBrowse = (r: Response) => parseJson(r, REMOTE_SCOPE_UNSUPPORTED)
+
+/**
+ * The fourth: `GET /api/chat/slots/{slot}/environment` answering `owner_only` to a caller
+ * that is not the dashboard owner (a Shared Crew guest, a presigned messaging link). Both
+ * readers of that query (the composer chip and the placement hook) treat it as "this chat
+ * runs here, nothing to pick" and run it on every chat open, so journaling it would file one
+ * error report per chat for a guest whose dashboard works. A stale owner session answers
+ * with a different code and the auth-recovery denials are excluded in `apiFailure`, so only
+ * the plain non-owner refusal is opted out. The other environment routes (browse, health,
+ * file, PUT) keep `j`: a refusal there is a real failure.
+ */
+const SLOT_ENVIRONMENT_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jSlotEnvironment = (r: Response) => parseJson(r, SLOT_ENVIRONMENT_NOT_OWNER)
+
+/**
+ * The fifth: `GET /api/shared-crew/preview` answering `owner_only` to a caller that is not
+ * the dashboard owner. Settings > Developer > Feature Previews reads it on every visit and
+ * hides the card on that refusal, so journaling it would file one error report per visit
+ * for a guest whose Settings page works. Any other failure, a 403 without that code
+ * included, journals normally.
+ */
+const SHARED_CREW_PREVIEW_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jSharedCrewPreview = (r: Response) => parseJson(r, SHARED_CREW_PREVIEW_NOT_OWNER)
 
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
@@ -1235,10 +1422,9 @@ export interface KiroBonusCreditGrantPayload {
 export interface KiroUsagePayload {
   available?: boolean
   /**
-   * Why usage is unavailable when `available` is false (`api_key_auth`,
-   * `signin_required`, or `account_unproven` when the account is named but its
-   * reading could not be tied to it); absent when the gateway simply holds no
-   * reading.
+   * Why usage is unavailable when `available` is false (`signin_required`, or
+   * `account_unproven` when the account is named but its reading could not be
+   * tied to it); absent when the gateway simply holds no reading.
    */
   reason?: string
   credits_used?: number
@@ -1302,6 +1488,8 @@ const transport: ClientTransport = {
   jInstancesDisabled,
   jfetch,
   jCrewBoard,
+  jSlotEnvironment,
+  jSharedCrewPreview,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,
@@ -1349,6 +1537,7 @@ const browserAndComputerUse = createBrowserAndComputerUseEndpoints(transport)
 const decisions = createDecisionsEndpoints(transport)
 const messaging = createMessagingEndpoints(transport)
 const autoResearch = createAutoResearchEndpoints(transport)
+const sharedCrew = createSharedCrewEndpoints(transport)
 
 // Spread in the order the methods have always had, so the key order is
 // unchanged. A key two segments both defined would silently take the later
@@ -1465,6 +1654,7 @@ export const api = {
   ...themes.themeList,
   ...config.dashboardRead,
   ...featureDiscovery.featureVideos,
+  ...featureDiscovery.milestones,
   ...config.dashboardWrite,
   ...themes.themeEditing,
   ...voice.voiceSettings,
@@ -1530,4 +1720,5 @@ export const api = {
   ...apps.fileMenu,
   ...artifacts.publishing,
   ...featureDiscovery.tips,
+  ...sharedCrew.requests,
 }

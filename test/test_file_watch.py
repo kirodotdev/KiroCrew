@@ -80,7 +80,6 @@ class TestFileWatch:
             resp = await client.get(f"/api/file-watch?path={tmp_file}")
             assert resp.status == 200
 
-            # Read the first SSE event
             buf = b""
             async for chunk in resp.content.iter_any():
                 buf += chunk

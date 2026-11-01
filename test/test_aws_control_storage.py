@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -225,7 +226,7 @@ class TestCreateDrive:
         # that it cannot happen.
         bucket, calls = self._run_create("us-west-2")
         kinds = [c[0] for c in calls]
-        assert kinds == ["checked", "run_aws", "checked", "harden"]
+        assert kinds == ["checked", "run_aws", "checked", "run_aws", "checked", "harden"]
 
         create_args = calls[0][1]
         assert create_args[:2] == ["s3api", "create-bucket"]
@@ -237,7 +238,7 @@ class TestCreateDrive:
 
         # The tags handed to hardening carry BOTH discovery tags — this is what
         # a later find_drive() will require.
-        _bucket, tagset = calls[3][1]
+        _bucket, tagset = calls[-1][1]
         assert f"Key={engine.TAG_MANAGED},Value=true" in tagset
         assert f"Key={storage.TAG_DRIVE},Value={storage.DRIVE_ID}" in tagset
 
@@ -300,6 +301,124 @@ class TestCreateDrive:
         create_args = calls[0][1]
         assert "--create-bucket-configuration" in create_args
         assert "LocationConstraint=eu-central-1" in create_args
+
+    def _policy_put(self, calls):
+        return next(
+            a for k, a in calls if k == "checked" and a[:2] == ["s3api", "put-bucket-policy"]
+        )
+
+    def test_a_new_drive_gets_a_tls_only_bucket_policy_before_its_tags(self):
+        # Before the discovery tags, so a drive that can be found already has it
+        # whenever the profile is allowed to write bucket policies.
+        bucket, calls = self._run_create("us-west-2")
+        put = self._policy_put(calls)
+        assert calls.index(("checked", put)) < [c[0] for c in calls].index("harden")
+        assert put[put.index("--expected-bucket-owner") + 1] == "123456789012"
+        policy = json.loads(put[put.index("--policy") + 1])
+        assert policy["Statement"] == [
+            {
+                "Sid": "KiroCrewDenyInsecureTransport",
+                "Effect": "Deny",
+                "Principal": "*",
+                "Action": "s3:*",
+                "Resource": [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/*"],
+                "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+            }
+        ]
+
+    @pytest.mark.parametrize("failure", ["denied", "timeout"])
+    def test_a_failed_tls_policy_still_creates_the_drive(self, failure):
+        # The recommended drive IAM tier has no bucket-policy rights, on purpose.
+        def run_aws(args, profile, timeout=30):
+            if args[:2] == ["s3api", "get-bucket-policy"]:
+                if failure == "timeout":
+                    raise subprocess.TimeoutExpired("aws", 30)
+                return 255, "", "An error occurred (AccessDenied)"
+            return 0, "", ""
+
+        calls: list[str] = []
+        with (
+            mock.patch.object(
+                storage, "_checked", side_effect=lambda a, p, **k: calls.append(a[1])
+            ),
+            mock.patch.object(
+                storage, "_harden_bucket", side_effect=lambda *a: calls.append("harden")
+            ),
+            mock.patch.object(storage.engine, "run_aws", side_effect=run_aws),
+        ):
+            bucket = storage.create_drive("p", "us-west-2", "123456789012")
+        assert bucket.startswith("kirocrew-drive-")
+        assert "put-bucket-policy" not in calls
+        assert calls[-1] == "harden"
+
+    def test_a_govcloud_drive_names_its_own_partition_in_the_policy(self):
+        bucket, calls = self._run_create("us-gov-west-1")
+        put = self._policy_put(calls)
+        policy = json.loads(put[put.index("--policy") + 1])
+        assert policy["Statement"][0]["Resource"][0] == f"arn:aws-us-gov:s3:::{bucket}"
+
+
+class TestEnsureTlsOnlyPolicy:
+    """Existing drives get the TLS-only statement merged into whatever policy they hold."""
+
+    def _run(self, get_result):
+        puts: list[list[str]] = []
+
+        def checked(args, profile, *, action, timeout=30):
+            puts.append(args)
+            return ""
+
+        with (
+            mock.patch.object(storage, "_checked", side_effect=checked),
+            mock.patch.object(storage.engine, "run_aws", return_value=get_result),
+        ):
+            storage.ensure_tls_only_policy("b", "p", "us-west-2", account="123456789012")
+        return puts
+
+    def test_a_bucket_without_a_policy_gets_one(self):
+        puts = self._run((254, "", "An error occurred (NoSuchBucketPolicy)"))
+        assert len(puts) == 1
+        statements = json.loads(puts[0][puts[0].index("--policy") + 1])["Statement"]
+        assert [s["Sid"] for s in statements] == ["KiroCrewDenyInsecureTransport"]
+
+    def test_an_owner_statement_is_kept_beside_the_new_one(self):
+        own = {"Sid": "OwnerRule", "Effect": "Deny", "Principal": "*", "Action": "s3:Get*"}
+        existing = json.dumps({"Policy": json.dumps({"Version": "2012-10-17", "Statement": [own]})})
+        puts = self._run((0, existing, ""))
+        statements = json.loads(puts[0][puts[0].index("--policy") + 1])["Statement"]
+        assert statements[0] == own
+        assert statements[1]["Sid"] == "KiroCrewDenyInsecureTransport"
+
+    def test_a_policy_that_already_has_it_is_left_alone(self):
+        stmt = engine.deny_insecure_transport_statement("b")
+        existing = json.dumps({"Policy": json.dumps({"Statement": [stmt]})})
+        assert self._run((0, existing, "")) == []
+
+    def test_a_stale_copy_of_our_own_statement_is_replaced(self):
+        weak = dict(engine.deny_insecure_transport_statement("b"), Resource=["arn:aws:s3:::b"])
+        existing = json.dumps({"Policy": json.dumps({"Statement": [weak]})})
+        puts = self._run((0, existing, ""))
+        statements = json.loads(puts[0][puts[0].index("--policy") + 1])["Statement"]
+        assert statements == [engine.deny_insecure_transport_statement("b")]
+
+    def test_an_owner_transport_rule_is_kept_however_it_is_named(self):
+        # An owner's stricter rule, even under the common Sid, must never be removed.
+        strict = {
+            "Sid": "DenyInsecureTransport",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:*",
+            "Resource": ["arn:aws:s3:::b", "arn:aws:s3:::b/*"],
+            "Condition": {"NumericLessThan": {"s3:TlsVersion": "1.3"}},
+        }
+        existing = json.dumps({"Policy": json.dumps({"Statement": [strict]})})
+        puts = self._run((0, existing, ""))
+        statements = json.loads(puts[0][puts[0].index("--policy") + 1])["Statement"]
+        assert statements == [strict, engine.deny_insecure_transport_statement("b")]
+
+    def test_an_unreadable_policy_is_an_error_not_an_overwrite(self):
+        with pytest.raises(storage.AWSError):
+            self._run((255, "", "AccessDenied"))
 
 
 # ---------------------------------------------------------------------------
@@ -570,10 +689,12 @@ class TestObjectIO:
         # chokepoint rather than a hardcoded default.
         local = tmp_path / "a.txt"
         local.write_bytes(b"x")
-        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
-            storage.put_file(
+        payload = json.dumps({"VersionId": "v-999"})
+        with mock.patch.object(storage, "_checked", return_value=payload) as checked:
+            version = storage.put_file(
                 "p", "r", "b", "drive", "a.txt", str(local), timeout=999, account="111122223333"
             )
+        assert version == "v-999"
         assert checked.call_args.kwargs["timeout"] == 999
 
     def test_put_file_refuses_a_body_too_large_to_pin(self, tmp_path, monkeypatch):

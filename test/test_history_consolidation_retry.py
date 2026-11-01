@@ -813,7 +813,7 @@ async def test_pending_extraction_rechecks_its_actual_transcript(
 ):
     from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
     from kiro_crew.context import ContextBuilder
-    from kiro_crew.history_consolidation import _CONSOLIDATION_REFUSED
+    from kiro_crew.history_consolidation import _CONSOLIDATION_STALE
     from kiro_crew.memory_stores import memory_store_dir_for, provision_member_memory
     from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
@@ -883,7 +883,7 @@ async def test_pending_extraction_rechecks_its_actual_transcript(
                 c._memory.append_history.assert_called_once()
             assert log.consolidation_counts(KEY)[1] == 1
         else:
-            assert outcome is _CONSOLIDATION_REFUSED
+            assert outcome is _CONSOLIDATION_STALE
             assert json.loads(row["value_json"]) == "old@example.com"
             c._memory.append_history.assert_not_called()
             assert int(log.get_metadata(KEY).get("last_consolidated", 0)) == 0

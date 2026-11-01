@@ -15,6 +15,7 @@ import { KIRO_HARNESS_BACKENDS } from '../api/acpBackend'
 import { BrandGlyph } from './BrandIcon'
 import { KiroGhostMark } from './KiroGhostMark'
 import claudeMarkUrl from '../assets/harness-logos/claude.svg'
+import copilotMarkUrl from '../assets/harness-logos/copilot.svg'
 import deepseekMarkUrl from '../assets/harness-logos/deepseek.svg'
 import gooseMarkUrl from '../assets/harness-logos/goose.svg'
 import openaiMarkUrl from '../assets/harness-logos/openai.svg'
@@ -29,6 +30,7 @@ import piMarkUrl from '../assets/harness-logos/pi.svg'
 const HARNESS_MARK_URL: Readonly<Record<string, string>> = {
   claude: claudeMarkUrl,
   codex: openaiMarkUrl,
+  copilot: copilotMarkUrl,
   deepseek: deepseekMarkUrl,
   goose: gooseMarkUrl,
   opencode: opencodeMarkUrl,

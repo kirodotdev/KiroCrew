@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Download,
   ExternalLink,
+  Loader2,
   Package,
   RefreshCw,
   ShieldCheck,
@@ -20,18 +21,14 @@ import {
 } from '../api/client'
 import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeConfirmsUse, agentChoiceSaved, configuredAcpBackend, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
 import { clearCachedModels } from '../providers/adapters/acp'
-import {
-  PANEL_CLASS,
-  PINNED_FOOTER_CLASS,
-  SCRIM_CLASS,
-  SECTION_CLASS,
-  ShellAside,
-} from './OnboardingChapterShell'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
-import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
+import KasLoginGate from './KasLoginGate'
+import RelockNotice, { BARE_LOGIN_COMMAND } from './KiroPrerequisiteRelockNotice'
 import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
+import RemoteCrewSetupSkip from './RemoteCrewSetupSkip'
+import { EnterpriseSignInRequired, SetupShell } from './KiroPrerequisiteSetupShell'
 import {
   AgentDetailActions,
   AgentInstallDetail,
@@ -85,98 +82,6 @@ export function asSentence(message: string): string {
   const trimmed = message.trim()
   if (!trimmed) return trimmed
   return /[.!?:;…]$/.test(trimmed) ? trimmed : `${trimmed}.`
-}
-
-// Shared full-screen chrome for every gate state. This is the SAME container the
-// first-run onboarding chapters use (Import setup / Customize): the identical
-// scrim, panel geometry, and accent aside with the identical mascot positions,
-// imported from OnboardingChapterShell rather than re-declared here. Only the
-// copy in the aside and the right-column content differ. `cardLabel` names the
-// region for assistive tech.
-function SetupShell({
-  children,
-  footer,
-  cardLabel,
-  asideHeadline,
-  asideBody,
-}: {
-  children: ReactNode
-  // Rendered OUTSIDE the scroll region, so a state whose content overflows the
-  // fixed panel height still shows its closure action whole. A half-clipped
-  // primary button reads as a rendering defect rather than a scroll affordance.
-  footer?: ReactNode
-  cardLabel?: string
-  // The default aside says "Install Kiro CLI, sign in once…", which contradicts
-  // a state whose headline is "already installed" and which deliberately offers
-  // no install action. States like that pass their own copy so the two columns
-  // of the same screen do not disagree.
-  asideHeadline?: string
-  asideBody?: string
-}) {
-  const label = cardLabel || i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready')
-  // A scroll cue on the internally-scrolling column: the panel height is fixed,
-  // so the tallest states clip below the footer divider, and that divider then
-  // reads as the end of the content rather than a fold. `attachContent` follows
-  // the body because it swaps with the gate's state, changing the overflow.
-  const [attachScroll, edges, , attachScrollContent] = useScrollEdgesY<HTMLDivElement>()
-  return (
-    <main className={SCRIM_CLASS} aria-label={label}>
-      <div className={PANEL_CLASS}>
-        <ShellAside
-          copy={{
-            ariaLabel: label,
-            panelHeadline:
-              asideHeadline || i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready'),
-            panelBody:
-              asideBody
-              || i18nT('components.kiroPrerequisiteGate.install_kiro_cli_sign_in_once_and_kiro_crew_will'),
-            panelFootnote: i18nT(
-              'components.kiroPrerequisiteGate.secure_setup_on_your_gateway_host',
-            ),
-          }}
-        />
-        {/* Same scroll structure as the chapters: the panel height is fixed and
-            the right column scrolls internally. `my-auto` keeps the short states
-            (status error / non-owner) optically centered without breaking the
-            scroll on the tall two-step setup. The edge cues exist because that
-            fixed height clips the tallest states, and the footer divider below
-            otherwise reads as the end of the content rather than a fold — the
-            overlay scrollbar fades when idle and leaves no standing sign. */}
-        <section className={SECTION_CLASS}>
-          <div className="relative flex min-h-0 flex-1 flex-col">
-            <div
-              ref={attachScroll}
-              data-testid="gate-scroll-region"
-              className="flex min-h-0 flex-1 flex-col overflow-y-auto"
-            >
-              <div ref={attachScrollContent} className="my-auto w-full px-6 py-8 sm:px-10 sm:py-10">{children}</div>
-            </div>
-            {/* `from-card` matches SECTION_CLASS's own `bg-card`, so the fade
-                dissolves into the column rather than onto a mismatched surface.
-                `bottom-0`/`top-0` of this relative wrapper are the footer divider
-                and the top edge of the scroll region. */}
-            {edges.top && (
-              <div
-                aria-hidden="true"
-                data-testid="gate-scroll-cue-top"
-                className="pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b from-card to-transparent"
-              />
-            )}
-            {edges.bottom && (
-              <div
-                aria-hidden="true"
-                data-testid="gate-scroll-cue-bottom"
-                className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8 bg-gradient-to-t from-card to-transparent"
-              />
-            )}
-          </div>
-          {footer ? (
-            <div data-testid="gate-footer" className={`${PINNED_FOOTER_CLASS} shrink-0 border-t border-border px-6 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-10 sm:pb-4`}>{footer}</div>
-          ) : null}
-        </section>
-      </div>
-    </main>
-  )
 }
 
 function OwnerSetupRequired({
@@ -261,10 +166,12 @@ function SetupStatusError({
   message,
   retrying,
   onRetry,
+  allowRemoteSetup = false,
 }: {
   message: string
   retrying: boolean
   onRetry: () => void
+  allowRemoteSetup?: boolean
 }) {
   return (
     <SetupShell>
@@ -294,6 +201,7 @@ function SetupStatusError({
             {i18nT('components.kiroPrerequisiteGate.try_again')}
           </SendBtn>
         </div>
+        {allowRemoteSetup && <RemoteCrewSetupSkip />}
       </>
     </SetupShell>
   )
@@ -371,16 +279,34 @@ function splitSharedCommandPrefix(a: string, b: string): [string, string, string
  * the differing tail carries the weight, and ONE hint before both boxes explains
  * what the path is before a first-time reader meets it.
  */
+/**
+ * The executable the desktop app stages as its own Kiro CLI, as the bundled
+ * sign-in commands name it (`kiro_cli_bundle.BUNDLED_KIRO_CLI_ENTRY` and
+ * `BUNDLED_KIRO_CLI_WINDOWS_ENTRY` on the gateway). Code constants, not catalog
+ * values, so a translation cannot change the file name the hint points at.
+ */
+const BUNDLED_KIRO_CLI_ENTRY = 'kiro-cli-chat'
+const BUNDLED_KIRO_CLI_WINDOWS_ENTRY = 'kiro-cli.exe'
+
 function SignInCommands({ status }: { status: KiroPrerequisiteStatus }) {
   const [shared, personalTail, ssoTail] = status.bundled_cli
     ? splitSharedCommandPrefix(status.login_command, status.sso_login_command)
     : ['', status.login_command, status.sso_login_command]
   const prefix = shared ? <span className="text-muted">{shared}</span> : null
+  // On Windows the muted run is a PowerShell wrapper around the bundled
+  // executable, so the hint says what that wrapper is instead of calling it a path.
+  const windows = status.platform === 'Windows'
   return (
     <div className="mt-3 space-y-3">
       {status.bundled_cli && (
         <p className="text-[12px] leading-relaxed text-muted">
-          {i18nT('components.kiroPrerequisiteGate.sign_in_bundled_hint')}
+          {windows
+            ? i18nT('components.kiroPrerequisiteGate.sign_in_bundled_hint_windows', {
+              binary: BUNDLED_KIRO_CLI_WINDOWS_ENTRY,
+            })
+            : i18nT('components.kiroPrerequisiteGate.sign_in_bundled_hint', {
+              binary: BUNDLED_KIRO_CLI_ENTRY,
+            })}
         </p>
       )}
       <div>
@@ -539,12 +465,14 @@ function SandboxUnavailable({
   remedy,
   retrying,
   onRetry,
+  allowRemoteSetup,
 }: {
   failureKind: string
   detail: string
   remedy: string
   retrying: boolean
   onRetry: () => void
+  allowRemoteSetup: boolean
 }) {
   // One honest title for every kind — the CLI is installed, verification is
   // what failed — with the body carrying the mechanism, because the remedies
@@ -614,6 +542,7 @@ function SandboxUnavailable({
             </pre>
           </div>
         ) : null}
+        {allowRemoteSetup && <RemoteCrewSetupSkip />}
       </>
     </SetupShell>
   )
@@ -627,6 +556,7 @@ function CliOutdated({
   retrying,
   onUpdate,
   onRetry,
+  allowRemoteSetup,
 }: {
   updateCommand: string
   /** The desktop app's own copy, which the gateway refuses to self-update. */
@@ -636,6 +566,7 @@ function CliOutdated({
   retrying: boolean
   onUpdate: () => void
   onRetry: () => void
+  allowRemoteSetup: boolean
 }) {
   // The CLI is installed but too old to expose the `acp` subcommand Kiro Crew
   // launches every session through — so it would fail at session-create rather
@@ -723,6 +654,7 @@ function CliOutdated({
             {i18nT('components.kiroPrerequisiteGate.attempt_failed_remedy', { action: i18nT('components.kiroPrerequisiteGate.update_kiro_cli') })}
           </p>
         ) : null}
+        {allowRemoteSetup && <RemoteCrewSetupSkip />}
       </>
     </SetupShell>
   )
@@ -1469,8 +1401,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // must still hit the host, so it arms this flag for exactly one fetch.
   const forceProbe = useRef(false)
   // Set once the app has rendered from a resolved status. An enterprise relock
-  // then keeps the app on screen: the gateway refuses its requests while the
-  // gate is closed, and the relock screen itself is a follow-up.
+  // then keeps the app mounted and adds RelockNotice beside it.
   const appShown = useRef(false)
   const statusQuery = useQuery({
     queryKey: QUERY_KEY,
@@ -1518,6 +1449,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // The enterprise login gate refuses both reads below, and the sign-in screen
   // needs neither, so they wait until it opens.
   const enterpriseLocked = statusQuery.data?.enterprise_login_required === true
+  const signInOnly = statusQuery.data?.enterprise_sign_in_only === true
   const kiroNotReady = !!statusQuery.data && !statusQuery.data.ready && !enterpriseLocked
   const configQuery = useQuery<{ agent?: { acp_backend?: string } }>({
     queryKey: CONFIG_QUERY_KEY,
@@ -1618,9 +1550,6 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     if (statusQuery.data) appShown.current = true
     return <>{children}{extra}</>
   }
-  // A relock of an app already in use keeps that app mounted and visible.
-  const relocked = enterpriseLocked && appShown.current
-  const unlessRelocked = (screen: ReactNode) => (relocked ? <>{children}</> : <>{screen}</>)
   if (statusQuery.isPending) {
     return app()
   }
@@ -1629,6 +1558,22 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     forceProbe.current = true
     void statusQuery.refetch()
   }
+  // A relock of an app already in use keeps that app mounted and visible, and
+  // tells the user to sign in again beside it.
+  const relockStatus = enterpriseLocked && appShown.current ? statusQuery.data : undefined
+  const unlessRelocked = (screen: ReactNode) => (relockStatus
+    ? (
+      <>
+        {children}
+        <RelockNotice
+          owner={relockStatus.setup_allowed !== false}
+          command={relockStatus.enterprise_sign_in_command}
+          exactCommandElsewhere={relockStatus.bundled_cli === true
+            || (!!relockStatus.login_command && relockStatus.login_command !== BARE_LOGIN_COMMAND)}
+        />
+      </>
+    )
+    : <>{screen}</>)
   const prerequisite = statusQuery.data
 
   // An older gateway has no prerequisite API and must retain its existing
@@ -1640,6 +1585,51 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     && statusQuery.error.status === 404
   ) {
     return app()
+  }
+  // Enterprise build, nobody signed in: the gateway is a sign-in-only app that
+  // serves Crew's own sign-in and nothing else. Once a sign-in lands it says so
+  // (`enterprise_signed_in_restart`) and exits; the user starts Kiro Crew again.
+  if (signInOnly) {
+    const starting = i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready')
+    const aside = i18nT('components.kiroPrerequisiteGate.enterprise_sign_in_aside')
+    // Shown outside KasLoginGate, whatever it last read, so a sign-in made
+    // elsewhere (the CLI) still reaches it; the cached status keeps it on screen
+    // after the sign-in app has exited.
+    if (prerequisite?.enterprise_signed_in_restart === true) {
+      const done = i18nT('components.kiroPrerequisiteGate.enterprise_signed_in_restart')
+      return (
+        <SetupShell asideHeadline={starting} asideBody={aside}>
+          <div role="status" data-testid="enterprise-signed-in-restart">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
+              <ShieldCheck className="lucide-inline" />
+            </div>
+            <h1 className="mt-6 text-3xl font-bold tracking-tight text-text-strong">{done}</h1>
+            {prerequisite.enterprise_start_command ? (
+              <>
+                <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
+                  {i18nT('components.kiroPrerequisiteGate.enterprise_start_command_hint')}
+                </p>
+                {/* The gateway's own command, a code value, never a catalog string. */}
+                <div className="mt-3" data-testid="enterprise-start-command">
+                  <CopyCommand>
+                    <code>{prerequisite.enterprise_start_command}</code>
+                  </CopyCommand>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </SetupShell>
+      )
+    }
+    return (
+      <KasLoginGate organisationOnly>
+        <SetupShell asideHeadline={starting} asideBody={aside}>
+          <div role="status" aria-label={starting} className="flex justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted" aria-hidden="true" />
+          </div>
+        </SetupShell>
+      </KasLoginGate>
+    )
   }
   // No usable status: either a live gateway error or an unusable body. Both are
   // "we cannot tell". A RETURNING user keeps their dashboard, fully usable —
@@ -1659,6 +1649,24 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   }
   // Enterprise login gate closed: the gateway refuses every API but sign-in, so
   // none of the bypasses below may hand over the dashboard -- not `ready`, not an
+  // established install, not another harness. The first-run screens still run
+  // in order, so a missing CLI or a sandbox refusal shows its own remedy before
+  // the sign-in step.
+  // An enterprise gate reads Crew's own vault sign-in, so its sign-in screen names
+  // the vault command, never kiro-cli's login and never a kiro-cli install step.
+  if (enterpriseLocked && prerequisite.enterprise_sign_in_command) {
+    return unlessRelocked(
+      <EnterpriseSignInRequired
+        command={prerequisite.enterprise_sign_in_command}
+        needsStartUrl={prerequisite.enterprise_sign_in_needs_start_url === true}
+        owner={prerequisite.setup_allowed !== false}
+        retrying={retrying}
+        onRetry={retryStatus}
+      />,
+    )
+  }
+  // An enterprise build's closed gate shows sign-in, not the app, whatever the
+  // probe says about readiness: being ready can mean the login probe passed on an
   // established install, not another harness. The first-run screens still run
   // in order, so a missing CLI or a sandbox refusal shows its own remedy before
   // the sign-in step.
@@ -1762,6 +1770,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
         retrying={retrying}
         onUpdate={() => updateCliMutation.mutate()}
         onRetry={retryStatus}
+        allowRemoteSetup={!enterpriseLocked && !status.initial_setup_complete && status.setup_allowed !== false}
       />
     )
   }
@@ -1788,7 +1797,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
       ? `${status.probe_error} (exit ${status.probe_status})`
       : status.probe_error
     return unlessRelocked(
-      <SetupStatusError message={withStatus} retrying={retrying} onRetry={retryStatus} />
+      <SetupStatusError message={withStatus} retrying={retrying} onRetry={retryStatus} allowRemoteSetup={!enterpriseLocked} />
     )
   }
   // The CLI is present and executable, but verification runs it INSIDE the
@@ -1807,6 +1816,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
         remedy={status.sandbox_remedy}
         retrying={retrying}
         onRetry={retryStatus}
+        allowRemoteSetup={!enterpriseLocked}
       />
     )
   }
@@ -1939,6 +1949,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             onRetryBackends={() => { void backendsQuery.refetch() }}
           />
           )}
+          {/* A desktop user who will only use crews on other machines needs no
+              agent here. The closed enterprise login gate keeps its one way
+              through, as for the other agents above. */}
+          {!enterpriseLocked && <RemoteCrewSetupSkip />}
         </>
     </SetupShell>
   )

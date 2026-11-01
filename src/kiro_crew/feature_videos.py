@@ -175,6 +175,11 @@ class VideoEntry:
     #: offer, the ``seen``/``dismissed`` verdict, ``used_when`` and ``default_on``
     #: -- is the same plumbing a clip rides. Bundled catalog only.
     component: str = ""
+    #: Offered by ``/next``, the startup popup. ``False`` for a clip the dashboard
+    #: shows somewhere of its own (the Explore panel's intro card): it stays in
+    #: the catalog so ``/feedback`` records its ``seen``/``dismissed`` verdict,
+    #: but the popup never picks it. Bundled catalog only.
+    startup: bool = True
 
     # No ``payload()`` here on purpose. A catalog entry is not what reaches a
     # client: the client-facing shape is :meth:`Offer.payload`, which carries the
@@ -316,6 +321,20 @@ CATALOG: tuple[VideoEntry, ...] = (
         cta_route=f"/members?member={ASSISTANT_MEMBER_NAME}",
         default_on=True,
         component="crewmates",
+    ),
+    # "Kiro Crew in 15 seconds", the card at the top of the Explore panel (RFC
+    # 8.2). Explore is its only home, so the startup popup never offers it; the
+    # entry exists so the card's watched/closed verdict lands in this state file.
+    VideoEntry(
+        id="kiro-crew-intro",
+        feature="kiro-crew",
+        title="Kiro Crew in 15 seconds",
+        description="A short tour of what Kiro Crew does.",
+        src=f"{ASSET_PREFIX}kiro-crew-intro.mp4",
+        poster=f"{ASSET_PREFIX}kiro-crew-intro.jpg",
+        duration_s=15.0,
+        doc="dashboard.md",
+        startup=False,
     ),
 )
 
@@ -491,6 +510,117 @@ def _probe_sel_event_seen(tool_name: str) -> bool:
     return False
 
 
+#: Terminal execution outcomes only: permission grants and invocation starts do
+#: not establish that the feature was used successfully.
+_SEL_OK_OUTCOMES = frozenset({"completed", "success"})
+
+
+def _probe_sel_event_ok(tool_name: str) -> bool:
+    """True only for a terminal execution success, never a permission decision.
+
+    Milestone backfill must not credit an approved, started, denied or failed call
+    as a feature the user successfully used.
+    """
+    if not tool_name:
+        return False
+    for row in sel().recent(limit=_SEL_PROBE_LIMIT):
+        if not isinstance(row, dict):
+            continue
+        if row.get("operation") == tool_name and row.get("outcome") in _SEL_OK_OUTCOMES:
+            return True
+    return False
+
+
+def _probe_sel_directive_ok(tool_name: str) -> bool:
+    """True when the audit log carries a session directive *tool_name* that applied.
+
+    For directive tools such as ``monitor_start``, whose MCP call answers
+    "requested" (a ``completed`` row) before the gateway decides; only the
+    gateway's own ``mcp-directive`` row with outcome ``success`` says it applied.
+    """
+    if not tool_name:
+        return False
+    for row in sel().recent(limit=_SEL_PROBE_LIMIT):
+        if not isinstance(row, dict):
+            continue
+        if (
+            row.get("operation") == tool_name
+            and row.get("source") == "mcp-directive"
+            and row.get("outcome") == "success"
+        ):
+            return True
+    return False
+
+
+def _probe_channel_connected(name: str) -> bool:
+    """True when messaging channel *name* is set up on this install.
+
+    Answers only "connected or not", with the same test ``GET /api/slack/config``
+    reports as ``configured``. The credential values are compared with ``""``
+    and never returned or logged. Only Slack is wired; any other name is False.
+    """
+    if name != "slack":
+        return False
+    from kiro_crew.config.loader import (
+        CRED_OWNER_ID,
+        CRED_SLACK_APP_TOKEN,
+        CRED_SLACK_BOT_TOKEN,
+    )
+
+    # propagate=False: a post-boot read must not re-seed os.environ.
+    creds = KiroCrewConfig.load().load_credentials(propagate=False)
+    return all(
+        bool(creds.get(key, ""))
+        for key in (CRED_SLACK_BOT_TOKEN, CRED_SLACK_APP_TOKEN, CRED_OWNER_ID)
+    )
+
+
+def _probe_mate_thread_has_user_turn() -> bool:
+    """True when the first Mate's persistent pinned chat holds a human message.
+
+    Validates the bounded header before reading roles and human-turn markers
+    (``history_schema.HUMAN_TURN_META_KEY``). Content is never kept; stops at the
+    first hit. Restricted or unreadable headers count nothing.
+    """
+    from kiro_crew.history_derivation import (
+        TRANSCRIPT_HEADER_MAX_BYTES,
+        memory_mode_from_header_line,
+    )
+    from kiro_crew.history_files import transcript_stem
+    from kiro_crew.history_schema import HUMAN_TURN_META_KEY
+    from kiro_crew.jsonl_util import bounded_raw_records
+    from kiro_crew.members import read_dm_binding
+
+    binding = read_dm_binding(ASSISTANT_MEMBER_NAME)
+    if not binding:
+        return False
+    path = (
+        config_dir() / "sessions" / f"{transcript_stem('dashboard_' + binding['slot_key'])}.jsonl"
+    )
+    try:
+        with path.open("rb") as fh:
+            header = fh.readline(TRANSCRIPT_HEADER_MAX_BYTES)
+            if memory_mode_from_header_line(header) != "persistent":
+                return False
+            # Bounded: the transcript is agent-writable, so one huge record
+            # must not be read whole.
+            for line in bounded_raw_records(fh, path, label="mate probe"):
+                if b'"user"' not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("role") != "user":
+                    continue
+                meta = row.get("meta")
+                if isinstance(meta, dict) and meta.get(HUMAN_TURN_META_KEY) is True:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def _probe_config_key_set(dotted: str) -> bool:
     """True when the user has explicitly set *dotted* in their config on disk.
 
@@ -529,12 +659,16 @@ _PROBES: dict[str, Callable[[], bool]] = {
     "crewmates_exist": _probe_crewmates_exist,
     "crewmates_onboarded": _probe_crewmates_onboarded,
     "mate_missing": _probe_mate_missing,
+    "mate_thread_has_user_turn": _probe_mate_thread_has_user_turn,
 }
 
 #: Probes taking one argument, keyed by the part before the first ``:``.
 _PARAM_PROBES: dict[str, Callable[[str], bool]] = {
     "sel_event_seen": _probe_sel_event_seen,
     "config_key_set": _probe_config_key_set,
+    "sel_event_ok": _probe_sel_event_ok,
+    "sel_directive_ok": _probe_sel_directive_ok,
+    "channel_connected": _probe_channel_connected,
 }
 
 
@@ -828,7 +962,7 @@ def _bundled_offers(default_on_only: bool = False) -> tuple[Offer, ...]:
             component=entry.component,
         )
         for entry in offerable()
-        if entry.default_on or not default_on_only
+        if entry.startup and (entry.default_on or not default_on_only)
     )
 
 

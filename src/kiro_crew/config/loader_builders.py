@@ -209,6 +209,18 @@ def _folder_sort_from(raw: object, default: str) -> str:
     return default
 
 
+def _translucent_panels_from(raw: object) -> str:
+    """Normalize the Translucent panels choice; anything unknown reads as ``""``.
+
+    ``""`` is "never chosen on this workspace": the frontend then keeps the
+    browser's own stored choice, which is what every install did before the key
+    existed, so a missing or hand-edited value changes nothing the person sees.
+    """
+    if isinstance(raw, str) and raw in _sections.TRANSLUCENT_PANELS_VALUES:
+        return raw
+    return ""
+
+
 def _session_sort_from(raw: object, default: str) -> str:
     """Normalize the sidebar session sort key; anything unknown is *default*, ``date-desc``.
 
@@ -478,9 +490,17 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
         ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
         backend_from_stored,
+        kiro_cli_pick_backend,
         selectable_backends,
     )
+    from kiro_crew.config.validation import MALFORMED_BACKEND_FLOOR
 
+    if agent_data.get(key) == MALFORMED_BACKEND_FLOOR:
+        # The floor for an unusable value (``validate_config_data``), already
+        # warned about there: never a Kiro CLI pick, so never moved onto KAS.
+        from kiro_crew.acp_backends import GOVERNANCE_FLOOR_BACKEND
+
+        return GOVERNANCE_FLOOR_BACKEND
     value = backend_from_stored(agent_data.get(key))
     if value is None:
         default = section.default(key)
@@ -488,6 +508,14 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
     elif key == _MEMBER_HARNESS_KEY and value == ACP_BACKEND_KIRO:
         value = ACP_BACKEND_KAS
         _note_member_remap(agent_data.get(key), value)
+    elif value == ACP_BACKEND_KIRO and not section.read("kas_bundle", _safe_bool):
+        # The one place a stored Kiro CLI pick in ``agent.acp_backend`` moves onto
+        # KAS: once the gateway's probe confirmed v3 and while KAS is selectable.
+        # Here, not in the gate, so a Kiro CLI id the gate already answered (a
+        # degraded value's floor) is never moved by a later resolution. Not on the
+        # bundle route: the confirmation is about kiro-cli's own engine, and KAS
+        # there spawns Kiro Crew's bundled engine instead.
+        value = kiro_cli_pick_backend()
     return _normalize_acp_backend(value)
 
 
@@ -589,6 +617,31 @@ def _restore_stored_stt_provider(doc: dict) -> None:
 # Build each section in its own frame: the large inline constructor amplifies
 # line-tracing cost on every load. These helpers create fresh values, never
 # cache configuration, and leave resolution and admission checks unchanged.
+def _crew_mode_agent_or_default(value: object) -> str:
+    """``agent.crew_mode_agent`` as a trimmed name; the shipped conductor for anything else.
+
+    An empty or non-string value must not turn Crew Mode into "no agent", which the
+    slot switch reads as the default template: Crew Mode would then be a plain chat.
+    """
+    from kiro_crew.crew_mode import DEFAULT_CREW_MODE_AGENT
+
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return DEFAULT_CREW_MODE_AGENT
+
+
+def _strands_str_or_empty(value: object) -> str:
+    """A Strands string setting trimmed, or ``""``: ``agent.strands_project`` (empty is
+    the bundled project), ``agent.strands_project_sha256`` (empty is no confirmed
+    version), ``agent.strands_provider`` and ``agent.strands_model``.
+
+    Only the shape is read here; whether a value is usable (a loadable project, a
+    provider the CLI knows) is decided at spawn, where a bad one refuses the session
+    by name.
+    """
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _build_agent_config(agent_data: dict) -> AgentConfig:
     section = _sections.SectionReader(AgentConfig, agent_data)
     return AgentConfig(
@@ -611,13 +664,21 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         kas_bundle=section.read("kas_bundle", _safe_bool),
         kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
+        native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
+        crew_mode_agent=_crew_mode_agent_or_default(section.get("crew_mode_agent")),
         # Through the module alias rather than a new top-level import: the loader's
         # ``from ... import`` list is a FROZEN pre-split compatibility snapshot
         # (``test_config_module_boundaries.test_loader_reexports_historical_snapshot_by_identity``),
         # so a new name joins it only by being an old one. Same shape as
         # ``coerce_refusal_fallback_model`` above.
         deepseek_env=_sections.coerce_deepseek_env(section.get("deepseek_env")),
+        # The same type coercion: the Strands map has deepseek_env's shape.
+        strands_env=_sections.coerce_deepseek_env(section.get("strands_env")),
+        strands_project=_strands_str_or_empty(section.get("strands_project")),
+        strands_project_sha256=_strands_str_or_empty(section.get("strands_project_sha256")),
+        strands_provider=_strands_str_or_empty(section.get("strands_provider")),
+        strands_model=_strands_str_or_empty(section.get("strands_model")),
         sweep_agents_backups=section.read("sweep_agents_backups", _safe_bool),
         sandbox=section.get("sandbox"),
         sandbox_allow_no_isolation=bool(section.get("sandbox_allow_no_isolation")),
@@ -937,6 +998,12 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             _safe_int,
             _sections.FILE_CHANGES_KEEP_TURNS_MIN,
         ),
+        kas_delete_delay_secs=section.read(
+            "kas_delete_delay_secs",
+            _safe_int,
+            _sections.KAS_DELETE_DELAY_SECS_MIN,
+            _sections.KAS_DELETE_DELAY_SECS_MAX,
+        ),
         watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
         # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
         # reason `_safe_int` states: that sweep runs over the raw dict and skips
@@ -945,6 +1012,21 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             "reconcile_max_kills", _safe_int, 0, _sections.RECONCILE_MAX_KILLS_MAX
         ),
     )
+
+
+def _otlp_endpoint_rows(value: object, default: list) -> list:
+    """``telemetry.otlp_endpoints`` as a list, dict rows copied, else *default*.
+
+    Every row is kept, malformed ones too: ``metrics.otlp_endpoints`` warns about
+    each one under its real index, and dropping one here would hide it and
+    renumber the rows after it. A ``config.json`` value that is not a list never
+    reaches this: the schema check on load warns about it by path and drops it,
+    as for any mistyped field, so *default* here only covers a caller that builds
+    the section from a raw dict.
+    """
+    if not isinstance(value, list):
+        return default
+    return [dict(row) if isinstance(row, dict) else row for row in value]
 
 
 def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
@@ -956,6 +1038,10 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
         retention_days=section.read("retention_days", _safe_int),
         max_total_mb=section.read("max_total_mb", _safe_int),
         otlp_endpoint=str(section.get("otlp_endpoint")),
+        # Shape only: a list of objects, else the field default. Each entry is
+        # checked where destinations are resolved (metrics/otlp_endpoints.py),
+        # which skips a bad one with a warning rather than failing the load.
+        otlp_endpoints=section.read("otlp_endpoints", _otlp_endpoint_rows),
         beacon_enabled=bool(section.get("beacon_enabled")),
         beacon_endpoint=str(section.get("beacon_endpoint")),
     )
@@ -993,6 +1079,22 @@ def _default_session_folder_or_empty(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _feature_previews(value: object, default: dict) -> dict:
+    """``dashboard.feature_previews`` as ``{name: bool}`` over the known preview names.
+
+    A non-object reads as *default* (nothing on). Inside it, a name this build does
+    not know and a value that is not a literal ``true``/``false`` are dropped, so a
+    hand-edited ``"yes"`` or ``1`` reads as absent (off) rather than as on.
+    """
+    if not isinstance(value, dict):
+        return default
+    return {
+        name: flag
+        for name, flag in value.items()
+        if name in _sections.FEATURE_PREVIEW_FLAGS and isinstance(flag, bool)
+    }
+
+
 def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> DashboardConfig:
     section = _sections.SectionReader(DashboardConfig, dashboard_data)
     gitlab_hosts = _coerce_gitlab_hosts(section.get("gitlab_hosts"))
@@ -1011,9 +1113,11 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             _degraded,
             key_present="tailscale" in dashboard_data,
         ),
+        shared_crew=_sections.shared_crew_config_from(dashboard_data.get("shared_crew")),
         restore_sessions=section.get("restore_sessions"),
         crewmate_threads=section.read("crewmate_threads", _safe_bool),
         crewmates_in_agent_picker=section.read("crewmates_in_agent_picker", _safe_bool),
+        feature_previews=section.read("feature_previews", _feature_previews),
         dynamic_dashboard_cards=section.read("dynamic_dashboard_cards", _safe_bool),
         qr_session_until_restart=section.read("qr_session_until_restart", _safe_bool),
         qr_session_persist_across_restart=section.read(
@@ -1108,6 +1212,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         recent_tint_count=section.read(
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
         ),
+        show_unread_dot=section.read("show_unread_dot", _safe_bool),
         folder_sort=section.read("folder_sort", _folder_sort_from),
         session_sort=section.read("session_sort", _session_sort_from),
         update_nudge=(
@@ -1115,6 +1220,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             if isinstance(nudge := section.get("update_nudge"), dict)
             else section.default("update_nudge")
         ),
+        translucent_panels=_translucent_panels_from(section.get("translucent_panels")),
         onboarded=bool(section.get("onboarded")),
         import_onboarded=_safe_bool(
             dashboard_data.get("import_onboarded"),
@@ -1137,6 +1243,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         feature_videos_cache_max_mb=section.read(
             "feature_videos_cache_max_mb", _safe_float, lo=0.0
         ),
+        milestones_enabled=section.read("milestones_enabled", _safe_bool),
         folder_suggestions_enabled=bool(section.get("folder_suggestions_enabled")),
         topic_tags_enabled=section.read("topic_tags_enabled", _safe_bool),
         tips_cadence_hours=section.read("tips_cadence_hours", _safe_float, lo=0.0),

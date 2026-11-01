@@ -114,12 +114,10 @@ class TestLoadSteeringResources:
     def test_loads_md_files_from_resources(self, tmp_path):
         from kiro_crew.context import _load_steering_resources
 
-        # Create steering file
         steering_dir = tmp_path / ".kiro" / "steering"
         steering_dir.mkdir(parents=True)
         (steering_dir / "rules.md").write_text("# My Rules\nAlways be nice.")
 
-        # Create agent config with resources
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         import json

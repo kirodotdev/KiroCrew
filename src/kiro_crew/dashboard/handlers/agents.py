@@ -48,6 +48,7 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     model_registry_namespace,
     selectable_backend_values,
     selectable_stored_backend_values,
@@ -285,6 +286,7 @@ from kiro_crew.dashboard.agent_admin.template_lineage import (  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
+    _DASHBOARD_SERVED_SLASH_COMMANDS,
     _SLASH_COMMANDS,
     SLASH_COMMAND_DESCRIPTIONS,
     _history_key_for,
@@ -314,9 +316,12 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     read_only_reason_for_path,
     validate_definition_patch,
 )
+from kiro_crew.dashboard.handlers.agents_cc_model_rows import merge_advertised_rows
+from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
 )
+from kiro_crew.dashboard.kas_local_commands import served_slash_commands
 from kiro_crew.dashboard.kiro_readiness import (
     KIRO_PREREQUISITE_REQUIRED_CODE,
     reject_if_kiro_unverified,
@@ -558,6 +563,9 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
     "no session is up" is not "nothing is advertised", and an id the catalog does
     not list reaches a picker ONLY through this list. Returns ``[]`` only when the
     snapshot is empty too (a genuine first run) or the backend advertised nothing.
+    Both sources pass the same bounded admission
+    (:func:`model_registry.live_advertised_model_rows`), so a live payload cannot
+    reach the picker with an id or label the cache would refuse or clip.
 
     Two filters, and both are load-bearing. The CAPABILITY gate
     (``SessionCapabilities.resolves_model_from_advertised_list``) is the property
@@ -592,19 +600,16 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
             advertised = getter()
         except Exception:
             continue
-        if advertised:
-            return [
-                {
-                    "model_name": m.get("modelId", ""),
-                    "display_name": m.get("name", "") or m.get("modelId", ""),
-                    "description": m.get("description", ""),
-                }
-                for m in advertised
-                if m.get("modelId")
-            ]
+        rows = model_registry.live_advertised_model_rows(advertised) if advertised else []
+        if rows:
+            return rows
     return [
-        {"model_name": m, "display_name": m, "description": ""}
-        for m in model_registry.advertised_models(namespace)
+        {
+            "model_name": r["model_name"],
+            "display_name": r.get("display_name", "") or r["model_name"],
+            "description": r.get("description", ""),
+        }
+        for r in model_registry.advertised_model_rows(namespace)
     ]
 
 
@@ -759,9 +764,9 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     shown it unfiltered is offered the full flagship list and discovers the truth
     only when a prompt fails.
 
-    So when anything is advertised, registry rows are FILTERED DOWN to it (keeping
-    the registry's cleaner display names for the survivors), and advertised models
-    the registry does not list are appended for forward-compat.
+    So when anything is advertised, registry rows are FILTERED DOWN to it (each survivor
+    labelled with the backend's own name when it sent one, else the registry's),
+    and advertised models the registry does not list are appended for forward-compat.
 
     With no session live the advertised set is the last snapshot any session
     wrote (:func:`_advertised_cc_models`), so a cold dashboard filters the same
@@ -795,20 +800,7 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
             or _normalize_model_key(e.get("model_name", "")) == "auto"
         ]
 
-    merged: list[dict] = []
-    seen: dict[str, int] = {}
-    for entry in (*registry_rows, *advertised):
-        name = entry.get("model_name", "")
-        key = _normalize_model_key(name)
-        if not key:
-            continue
-        if key in seen:
-            # Collision: registry keeps display, advertised id keeps the wire value.
-            if key != "auto":
-                merged[seen[key]] = {**merged[seen[key]], "model_name": name}
-            continue
-        seen[key] = len(merged)
-        merged.append(entry)
+    merged = merge_advertised_rows(registry_rows, advertised, _normalize_model_key)
     # "auto" leads. It may be absent entirely if a future registry drops the row,
     # so synthesize it rather than assuming the filter above preserved one.
     merged = [e for e in merged if _normalize_model_key(e.get("model_name", "")) == "auto"] + [
@@ -816,7 +808,7 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     ]
     if not any(_normalize_model_key(e.get("model_name", "")) == "auto" for e in merged):
         merged.insert(0, {"model_name": "auto", "display_name": "Auto", "description": ""})
-        seen = {_normalize_model_key(e.get("model_name", "")): i for i, e in enumerate(merged)}
+    seen = {_normalize_model_key(e.get("model_name", "")) for e in merged}
     # Guarantee the configured default is present (e.g. a custom cc_model the
     # backend doesn't advertise) so the selected model never vanishes. Resolve it
     # to its canonical key first (it may be stored as a provider id or alias) so a
@@ -1402,7 +1394,15 @@ async def api_models(request: web.Request) -> web.Response:
     adapter's namespace, because they do not accept ids from that catalog.
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    backend = getattr(cfg.agent, "acp_backend", "")
+    from kiro_crew.crewmate_harness import models_route  # ``?backend=``: the mate picker's list
+
+    route = await asyncio.to_thread(models_route, cfg, request.query)
+    if route is None:
+        return web.json_response(
+            {"error": "backend is not a selectable harness", "code": "invalid_acp_backend"},
+            status=400,
+        )
+    backend, bundle_route = route
     if backend == ACP_BACKEND_CLAUDE:
         return web.json_response(
             _cc_models(request, configured_default=_scoped_default(cfg, backend))
@@ -1413,6 +1413,13 @@ async def api_models(request: web.Request) -> web.Response:
                 request, backend, configured_default=_scoped_default(cfg, backend)
             )
         )
+    # KAS from Crew's own engine bundle: no kiro-cli to list models with, so the
+    # readiness gate, the ``--list-models`` spawn and the ``_entitled_kiro_models``
+    # narrowing below never apply (the engine's select is already the signed-in
+    # account's list). Decided per ROUTE (backend AND the bundle switch), not per
+    # backend, which is why it is not a capability-set branch like the one above.
+    if bundle_route:
+        return await api_models_kas_bundle(request)
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
@@ -1595,11 +1602,15 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     # explicit "not available in the dashboard" rejection in chat_runner), but
     # the suggestion payload must not advertise them: a menu entry that only
     # ever produces a warning is an inert affordance.
+    offered = _SLASH_COMMANDS - blocked_commands
+    # The same holds for a harness with no command channel: the slash gate answers
+    # its commands with a notice, so list only what the dashboard serves there
+    # (served_slash_commands). /compact stays: it has a gate of its own.
+    if cfg.agent.acp_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
+        served = served_slash_commands(cfg.agent.acp_backend, _DASHBOARD_SERVED_SLASH_COMMANDS)
+        offered = offered & (served | {"/compact"})
     return web.json_response(
-        [
-            {"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")}
-            for c in sorted(_SLASH_COMMANDS - blocked_commands)
-        ]
+        [{"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)]
     )
 
 
@@ -1658,11 +1669,27 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.members import unchatted_legacy_bindings
 
     hidden = await unchatted_legacy_bindings(cfg, state)
-    agents = [
-        _agent_roster_row(name, "global", agent_cfg, redact=redact)
-        for name, agent_cfg in cfg.agents.items()
-        if name not in hidden
-    ]
+
+    # Which rows are bound to their own mate file: one file stat per row, so it
+    # runs off the loop, against the config already in hand.
+    from kiro_crew.mate_capabilities import owns_mate_file
+
+    def _mate_file_owners() -> set[str]:
+        return {
+            name
+            for name, agent_cfg in cfg.agents.items()
+            if name not in hidden and owns_mate_file(name, agent_cfg.kiro_agent)
+        }
+
+    mate_owners = await asyncio.to_thread(_mate_file_owners)
+    agents = []
+    for name, agent_cfg in cfg.agents.items():
+        if name in hidden:
+            continue
+        row = _agent_roster_row(name, "global", agent_cfg, redact=redact)
+        # Keyed on the config name: the row's own ``name`` may be masked.
+        row["owns_mate_file"] = name in mate_owners
+        agents.append(row)
 
     # Project rows come from a directory scan, so it runs on the discovery
     # pool — same rule as every other agent listing: no filesystem I/O on the
@@ -1703,8 +1730,8 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
             # their config-insertion index and form a stable bottom block.
             sorted_agents = sorted(
                 enumerate(agents),
-                # ``str(...)`` because the row's value type widened to ``object``
-                # for ``avatar`` (the one structured field); ``name`` is always a
+                # ``str(...)`` because the row's value type is ``object`` for
+                # ``avatar`` and ``owns_mate_file``; ``name`` is always a
                 # ``str`` -- masked or verbatim, ``_roster_mask`` returns one.
                 key=lambda item: (
                     -usage.get(str(item[1]["name"]), (0, 0.0))[0],
@@ -1732,10 +1759,13 @@ def _get_config_lock() -> LoopBoundLock:
     return _config_lock
 
 
-def _pin_entitlement_backend(cfg: Any) -> str:
+def _pin_entitlement_backend(
+    cfg: Any, crew: str = "", acp_backend: str | None = None, *, for_workers: bool = False
+) -> str:
     """The harness whose live catalog may judge a crew's model pin.
 
-    Every agent the crew create and update handlers write is a Crew Member whose DM slot
+    A crewmate's harness pin decides first and may raise (see
+    ``crewmate_harness.pinned_entitlement_backend``). Every agent the crew create and update handlers write is a Crew Member whose DM slot
     (``member-<slug>``) routes through ``agent.member_acp_backend`` — not
     through the configured default harness ``agent.acp_backend``. When the two
     share a model-registry namespace, the default backend scopes the
@@ -1750,6 +1780,10 @@ def _pin_entitlement_backend(cfg: Any) -> str:
     -namespace provider is live the catalog is simply unknown (fail-open) rather
     than judged by the wrong backend's advertised ids.
     """
+    from kiro_crew.crewmate_harness import pinned_entitlement_backend as pin_backend
+
+    if (pinned := pin_backend(cfg, crew, acp_backend, for_workers=for_workers)) is not None:
+        return pinned
     default_backend = getattr(cfg.agent, "acp_backend", "")
     member_backend = getattr(cfg.agent, "member_acp_backend", "")
     if (
@@ -1761,7 +1795,12 @@ def _pin_entitlement_backend(cfg: Any) -> str:
 
 
 async def _revalidate_crew_pin(
-    model: str, request: web.Request, *, for_workers: bool = False
+    model: str,
+    request: web.Request,
+    *,
+    for_workers: bool = False,
+    crew: str = "",
+    acp_backend: str | None = None,
 ) -> str | None:
     """Revalidate the snapshot a crew's model pin is about to be judged by.
 
@@ -1776,8 +1815,7 @@ async def _revalidate_crew_pin(
     the retained claude_code seam and a known wrong-flavour spelling -- so no probe
     is spent on a value the snapshot does not decide.
 
-    ``for_workers`` names the crew's ``worker_model``: it is judged against the
-    harness the crewmate's worker runs on (``mate_worker.crewmate_worker_backend``).
+    ``for_workers`` judges ``worker_model`` on its worker's harness; an unstartable pin denies.
     """
     if not model or model == "auto" or model_registry.acp_id_correction(model):
         return None
@@ -1785,15 +1823,23 @@ async def _revalidate_crew_pin(
     if is_claude_code(cfg.agent.provider):
         return None
     # circular import: see _model_pin_rejected.
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
     from kiro_crew.dashboard.handlers.core import _revalidate_role_pin_evidence
-    from kiro_crew.mate_worker import crewmate_worker_backend
 
-    backend = crewmate_worker_backend(cfg.agent) if for_workers else _pin_entitlement_backend(cfg)
+    try:
+        backend = _pin_entitlement_backend(cfg, crew, acp_backend, for_workers=for_workers)
+    except CrewmateHarnessUnavailable as exc:
+        return str(exc)
     return await _revalidate_role_pin_evidence(model, request, backend=backend)
 
 
 def _model_pin_rejected(
-    model: str, request: web.Request, provider: str, *, backend: str | None = None
+    model: str,
+    request: web.Request,
+    provider: str,
+    *,
+    backend: str | None = None,
+    harness_pinned: bool = False,
 ) -> str | None:
     """Reason a crew's model pin is unusable, or ``None`` to allow it.
 
@@ -1830,7 +1876,11 @@ def _model_pin_rejected(
     # kiro-cli serves; the others reach the child verbatim and kill it at startup.
     # Check this before live entitlement because a wrong-flavour id is naturally
     # absent from that set and would otherwise produce a less actionable error.
-    correction = model_registry.acp_id_correction(model)
+    from kiro_crew.crewmate_harness import kiro_spelling_applies
+
+    # A crew *harness_pinned* to a harness with its own ids has no kiro-cli spelling to fix.
+    spelled = kiro_spelling_applies(backend, harness_pinned)
+    correction = model_registry.acp_id_correction(model) if spelled else None
     if correction:
         # Deliberately NOT prescriptive. Upstream naming does not line up across
         # providers — Bedrock's ``claude-opus-4-8`` is the registry's

@@ -159,6 +159,9 @@ async def start_api_server(
     # Crew-log class record for a binding that just COMMITTED, taken before anything
     # can be routed through it
     state.wire_session_bind_listener()
+    # Lands a waiting model pick when a channel or cron turn ends, a boundary
+    # no dashboard turn passes
+    state.wire_session_release_listener()
 
     app = web.Application(
         client_max_size=60 * 1024 * 1024
@@ -183,14 +186,14 @@ async def start_api_server(
     from kiro_crew.slack.handler import load_voice_reply_config
 
     await asyncio.to_thread(load_voice_reply_config)
-    # Enterprise build only: no kiro login, no Crew. The gateway hands in the
-    # service whose boot probe saw the login; a caller that did not run that
-    # check gets it here, still before the bind. A failure exits non-zero.
+    # Enterprise build only: no kiro sign-in, no Crew. Checked here, still before
+    # the bind, on the one enterprise sign-in (Crew's vault sign-in) that
+    # the rules fetch read. A plain store read, so a repeat costs nothing. A
+    # failure exits non-zero.
     from kiro_crew.enterprise_boot import require_kiro_login
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
-    if kiro_prerequisite_service is None:
-        kiro_prerequisite_service = await require_kiro_login(assume_ready=assume_kiro_ready)
+    await require_kiro_login(assume_ready=assume_kiro_ready)
     if kiro_prerequisite_service is None:
         kiro_prerequisite_service = await asyncio.to_thread(
             KiroPrerequisiteService,
@@ -198,11 +201,14 @@ async def start_api_server(
         )
     app["kiro_prerequisite_service"] = kiro_prerequisite_service
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
-    # Enterprise build only: the gate starts open on that verified login and
-    # closes if it expires. The middleware chain installed below reads it.
-    from kiro_crew.dashboard.enterprise_gate_middleware import install_enterprise_gate
+    # Enterprise build only: the gate starts open on that sign-in and closes if
+    # it is lost. The middleware chain installed below reads it.
+    from kiro_crew.dashboard.enterprise_gate_middleware import (
+        enterprise_login_source,
+        install_enterprise_gate,
+    )
 
-    install_enterprise_gate(app, app["kiro_prerequisite_service"])
+    install_enterprise_gate(app, await enterprise_login_source())
     # A signed-out bundled kiro-cli-chat fails a prompt as a bare connection
     # error; the ACP layer asks this service's whoami verdict to tell it apart.
     from kiro_crew.kiro_prerequisite import register_turn_auth_service
@@ -326,6 +332,21 @@ async def start_api_server(
         tailnet_trust=_tailnet_trust,
     )
 
+    # Shared Crew is preview-only: without KIROCREW_SHARED_CREW_PREVIEW=1 none of
+    # its modules is imported on the boot path (no-new-work-on-gateway-boot-path).
+    from kiro_crew.shared_crew.preview import no_maintenance, preview_enabled
+
+    _shared_crew_preview = preview_enabled()
+    start_shared_crew_maintenance: Callable[[], None] = no_maintenance
+    if _shared_crew_preview:
+        from kiro_crew.dashboard import tailnet_direct_listener
+        from kiro_crew.shared_crew import lifecycle
+
+        # The same access set as the dashboard: owner-only before the bind, read
+        # after it. The headless server never runs the direct listener.
+        tailnet_direct_listener.prepare_access_set(_cfg)
+        lifecycle.install(app)
+        start_shared_crew_maintenance = lifecycle.install_lifecycle(app)
     _register_mcp_routes(app)
 
     # Probe parity with the full dashboard server. Headless gateways are often
@@ -378,9 +399,18 @@ async def start_api_server(
     bind_addr = bind_address_for(local_only)
     site = web.TCPSite(runner, bind_addr, port)
     await _start_site(site, port)
+    # After the bind, never on the boot path (no-new-work-on-gateway-boot-path):
+    # from here an app cron naming a missing folder creates it through the
+    # dashboard's own folder service. Boot-time registration stays read-only.
+    from kiro_crew.dashboard.handlers.cron_board import wire_app_cron_folder_creator
+
+    wire_app_cron_folder_creator(state)
     # Same listener guard as start_dashboard: a headless gateway loses its
     # listener to a failed accept() exactly the same way.
     _arm_listener_guard(state, runner, site)
+    start_shared_crew_maintenance()
+    if _shared_crew_preview:
+        await tailnet_direct_listener.finish_access_set()
     _kick_pinned_order_load(state)
     # Export the actually-bound port for child processes (parity with
     # start_dashboard — headless gateways spawn the same MCP stdio children).
@@ -454,6 +484,12 @@ async def start_api_server(
     _kick_local_decision_model(state)
     _kick_owner_only_sweep(state)
     _kick_display_verdicts(state)
+    # Parity with start_dashboard's post-bind restore: build fair admission's
+    # service (and probe containment) before any channel turn can arrive, so a
+    # headless gateway enforces the configured limits too. Never raises.
+    from kiro_crew.shared_crew.wiring import prepare_gateway
+
+    await prepare_gateway(state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 

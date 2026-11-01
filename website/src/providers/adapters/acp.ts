@@ -1,7 +1,7 @@
 import { api } from '../../api/client'
 import { apiErrorCode } from '../../api/apiError'
 import modelTokensRaw from '../../model_tokens.json'
-import { markModelsDegraded, markModelsAuthRequired } from '../modelListHealth'
+import { markModelsDegraded, markModelsAuthRequired, modelHealthKey } from '../modelListHealth'
 import { isPricedMultiplier } from '../modelList'
 import { i18nT } from '../../i18n/t'
 import type {
@@ -165,6 +165,10 @@ interface RawPlugin {
 /** Raw model entry from /api/models. */
 interface RawModel {
   model_name: string
+  /** The backend's own human label for the model (advertised by the harness for
+   *  an advertised-selection backend). Optional: a gateway predating the field
+   *  omits it, and the render site falls back to `model_name`. */
+  display_name?: string
   description?: string
   /** Backend-resolved context window. Two spellings because the endpoint has two
    *  branches: the kiro path returns `kiro-cli --list-models` rows verbatim
@@ -402,14 +406,18 @@ export class AcpAdapter implements ProviderAdapter {
     return { ok: false as const, error: 'plugin update is not supported' }
   }
 
-  async fetchAvailableModels(): Promise<ModelInfo[]> {
+  async fetchAvailableModels(backend?: string): Promise<ModelInfo[]> {
+    // The last-good cache holds the configured backend's list: another backend's
+    // list neither reads it (wrong ids) nor writes it (every other picker reads it).
+    const configured = backend === undefined
+    const health = modelHealthKey(this.id, backend)
     try {
-      const models = await api.models()
+      const models = await api.models(backend)
       if (!Array.isArray(models) || models.length === 0) {
         // Empty/non-array success: NOT a live list — keep polling, serve the
         // last-good live list if we have one, else auto-only.
-        markModelsDegraded(this.id, true)
-        return readCachedModels() ?? this._defaultModels()
+        markModelsDegraded(health, true)
+        return (configured ? readCachedModels() : null) ?? this._defaultModels()
       }
       const result = models.map((m: RawModel) => {
         // Prefer the backend's resolved window over the bundled snapshot: the
@@ -421,13 +429,21 @@ export class AcpAdapter implements ProviderAdapter {
         learnWindow(m.model_name, reported)
         return {
           name: m.model_name,
+          // The backend's native label, kept only when it is a REAL name (not
+          // the id-fallback the gateway fills in when a harness advertised no
+          // name). The auto row keeps its catalog label. The render site falls
+          // back to `name` when this is absent.
+          displayName:
+            m.model_name !== 'auto' && m.display_name && m.display_name !== m.model_name
+              ? m.display_name
+              : undefined,
           description: m.description || '',
           contextWindow: reported || MODEL_TOKENS[m.model_name] || DEFAULT_CONTEXT,
           rateMultiplier: rowMultiplier(m),
         }
       })
-      writeCachedModels(result) // remember this good live list for next hiccup
-      markModelsDegraded(this.id, false) // live success → self-heal can stop polling
+      if (configured) writeCachedModels(result) // remember this good live list for next hiccup
+      markModelsDegraded(health, false) // live success → self-heal can stop polling
       return result
     } catch (err) {
       // Transient backend failure (503 / network): NOT live — keep polling.
@@ -437,10 +453,11 @@ export class AcpAdapter implements ProviderAdapter {
       // signed-out kiro-cli login (503 `kiro_prerequisite_required`) can raise
       // the one actionable sign-in banner instead of the generic config-load
       // failure. Any other cause clears the auth flag — only this code means a
-      // sign-in wall.
-      markModelsDegraded(this.id, true)
-      markModelsAuthRequired(this.id, apiErrorCode(err) === 'kiro_prerequisite_required')
-      return readCachedModels() ?? this._defaultModels()
+      // sign-in wall. Another backend's list does not speak for the configured
+      // backend's sign-in, so only the configured list sets the flag.
+      markModelsDegraded(health, true)
+      if (configured) markModelsAuthRequired(this.id, apiErrorCode(err) === 'kiro_prerequisite_required')
+      return (configured ? readCachedModels() : null) ?? this._defaultModels()
     }
   }
 

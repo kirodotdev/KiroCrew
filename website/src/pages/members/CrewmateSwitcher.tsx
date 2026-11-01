@@ -1,11 +1,13 @@
 import { useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { Check, ChevronDown, FileUp, PanelLeft, Plus, Search } from 'lucide-react'
+import { ChevronDown, FileUp, PanelLeft, Plus, Search } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
 import { Glass } from '../../components/Glass'
+import type { AutomationRecord } from '../../monitoring/automation'
+import CrewmateRowBody from './CrewmateRowBody'
 import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { fmtList } from '../../i18n/format'
 import { cn } from '../../lib/utils'
@@ -29,7 +31,8 @@ const rowOnlySignals = (m: MemberRosterRow): MemberSignals => ({
   running: !!m.running,
   needsYou: false,
   unread: false,
-  patrolling: false,
+  patrolling: !!m.heartbeat_on,
+  goal: !!m.has_goal,
 })
 
 /**
@@ -43,17 +46,17 @@ const rowOnlySignals = (m: MemberRosterRow): MemberSignals => ({
  * always the chip's accessible name); open, it is a searchable list of every
  * crewmate, the current one marked, and a "New crewmate" footer that opens the same create dialog the
  * old column's "+" did (one write path, one more front door). A second footer
- * Under the chip the page draws `CrewmateUnreadColumn` (below): one small pill
- * per crewmate with an UNREAD message who is not the open one (issue #19045).
- * The word "Crewmates" and the roster count the chip used to carry said what
- * the page is and how big the crew is — neither is what a reader comes to this
- * corner for, which is "who said something I have not read".
- *
  * action, "Show the full roster", brings the roster column back beside the
  * thread: this list holds crewmates only, and the column is where the team
  * headers, the star, the filters and the sort live — on desktop,
  * with the thread's back control hidden, nothing else reaches them. While the
  * column is showing the same action reads "Hide the roster".
+ *
+ * Under the chip the page draws `CrewmateUnreadColumn` (below): one small pill
+ * per crewmate with an UNREAD message who is not the open one (issue #19045).
+ * The word "Crewmates" and the roster count the chip used to carry said what
+ * the page is and how big the crew is — neither is what a reader comes to this
+ * corner for, which is "who said something I have not read".
  *
  * Switching here REPLACES the open crewmate the same way a roster row click did:
  * the parent owns the URL, so this component only reports the pick.
@@ -84,6 +87,7 @@ export default function CrewmateSwitcher({
   onCreate,
   onShowRoster,
   signals = rowOnlySignals,
+  automationOf,
   openRequest = 0,
   faceOnStageFor = '',
   className,
@@ -106,6 +110,10 @@ export default function CrewmateSwitcher({
    *  read, so the dot here can never disagree with the filter that counts it.
    *  Omitted, a row shows only its own `running`. */
   signals?: (m: MemberRosterRow) => MemberSignals
+  /** The automation record on each crewmate's own slot, for the on-watch ring
+   *  the row's face draws -- the roster's `automationOf`. Omitted, the ring
+   *  reads the heartbeat alone (`signals(m).patrolling`). */
+  automationOf?: (m: MemberRosterRow) => AutomationRecord | null
   /** Bumped by the page to open the list from outside (the unread column's
    *  "+N" pill). A counter, not a boolean, so two requests in a row both open. */
   openRequest?: number
@@ -152,10 +160,14 @@ export default function CrewmateSwitcher({
   const chipLabel = othersNeedYou ? fmtList([rosterLabel, needsYouLabel], { type: 'unit' }) : rosterLabel
   // With a search typed the search decides alone, over the FULL roster, so a
   // hidden row is reachable here the same way it is from the column's search.
-  const shown = useMemo(
-    () => members.filter((m) => rosterShows(m, { search: q, chosen: activeName })),
-    [members, q, activeName],
-  )
+  // The open crewmate is pinned to the top, the rest keep the roster's order:
+  // the list opens to "who am I talking to, and who else is there", and with
+  // no check mark on the row its place is what says which one is open.
+  const shown = useMemo(() => {
+    const rows = members.filter((m) => rosterShows(m, { search: q, chosen: activeName }))
+    const i = rows.findIndex((m) => m.name === activeName)
+    return i > 0 ? [rows[i], ...rows.slice(0, i), ...rows.slice(i + 1)] : rows
+  }, [members, q, activeName])
   // The OTHER crewmates lead the stack, in roster order: the open one is already
   // named by the identity pill beside this chip, and a second copy of its face
   // here read as a duplicate rather than as "the rest of the crew". It joins the
@@ -253,8 +265,8 @@ export default function CrewmateSwitcher({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={t('pages.membersPage.find_crewmate')}
-            aria-label={t('pages.membersPage.find_crewmate')}
+            placeholder={t('pages.membersPage.search_members')}
+            aria-label={t('pages.membersPage.search_members')}
             className="flex-1 min-w-0 bg-transparent outline-hidden text-[13px] text-text placeholder:text-muted"
             data-testid="crewmate-switcher-search"
             autoFocus
@@ -268,7 +280,6 @@ export default function CrewmateSwitcher({
           ) : (
             shown.map((m) => {
               const on = m.name === activeName
-              const label = crewDisplayName(m)
               const s = signals(m)
               return (
                 <button
@@ -288,61 +299,21 @@ export default function CrewmateSwitcher({
                   data-testid="crewmate-switcher-row"
                   data-active={on || undefined}
                 >
-                  <span className="relative shrink-0">
-                    <CrewStateAvatar seed={m.name} avatar={m.avatar} slotKey={m.slot_key} running={s.running} size={32} working="subtle" />
-                    {/* The roster row's presence dot: shown only while the
-                        crewmate works, and spelled by the "Working" line below
-                        rather than a second name. */}
-                    {s.running && (
-                      <span
-                        className="absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full border-2 border-bg-elevated bg-ok"
-                        aria-hidden="true"
-                        data-testid="crewmate-switcher-presence-dot"
-                      />
-                    )}
-                  </span>
-                  <span className="flex-1 min-w-0 leading-tight">
-                    <span className="block text-[13px] font-semibold truncate">{label}</span>
-                    <span className="block text-[11.5px] text-muted truncate">
-                      {s.running ? t('pages.membersPage.drawer_working') : (m.kiro_agent || m.last_message || t('pages.membersPage.pill_idle'))}
-                    </span>
-                  </span>
-                  {/* Right-edge markers, the IM convention the roster row uses
-                      for its unread dot. Each is a named image, so the state is
-                      part of the option's accessible name, not only a colour.
-                      Needs-you leads: it is the one that asks something of
-                      the reader. */}
-                  {/* Each marker is a dot AND a word: colour alone is not a
-                      state a reader can be sure of (two small dots, one amber
-                      and one purple, are the same mark to a third of readers).
-                      The word is `aria-hidden` because the named image already
-                      carries the fuller sentence into the option's name — a
-                      visible word that was also spoken would say it twice. */}
-                  {s.needsYou && (
-                    <span className="flex items-center gap-1 shrink-0" data-testid="crewmate-switcher-row-needs-you">
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0 bg-warn"
-                        role="img"
-                        aria-label={needsYouLabel}
-                        title={needsYouLabel}
-                        data-testid="crewmate-switcher-needs-you-dot"
-                      />
-                      <span className="text-[11px] text-muted whitespace-nowrap" aria-hidden="true">{t('pages.membersPage.team_needs_you')}</span>
-                    </span>
-                  )}
-                  {s.unread && (
-                    <span className="flex items-center gap-1 shrink-0" data-testid="crewmate-switcher-unread">
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0 bg-accent"
-                        role="img"
-                        aria-label={t('pages.membersPage.unread_message')}
-                        title={t('pages.membersPage.unread_message')}
-                        data-testid="crewmate-switcher-unread-dot"
-                      />
-                      <span className="text-[11px] text-muted whitespace-nowrap" aria-hidden="true">{t('pages.membersPage.switcher_unread')}</span>
-                    </span>
-                  )}
-                  <Check size={15} className={cn('shrink-0 text-accent', !on && 'opacity-0')} aria-hidden="true" />
+                  {/* The roster row itself (face, name, status line, right-edge
+                      markers): CrewmateRowBody, so this list and the full
+                      roster draw one row. The popover is an elevated surface,
+                      so the presence dot's cut-out border is `bg-elevated`. */}
+                  <CrewmateRowBody
+                    m={m}
+                    signals={s}
+                    automation={automationOf?.(m) ?? null}
+                    slotKey={m.slot_key}
+                    size={32}
+                    surface="elevated"
+                    testIdPrefix="crewmate-switcher-row"
+                  />
+                  {/* No check mark: the open crewmate is already the row with
+                      `aria-selected` and the accent-subtle fill. */}
                 </button>
               )
             })

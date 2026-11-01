@@ -38,7 +38,14 @@ async def _start_subagent_dispatch_after_memory_ready(self: GatewayOrchestrator)
         raise RuntimeError(
             "Subagent queue dispatch cannot start before memory preparation completes"
         )
-    self.subagent_mgr.release_queue_dispatch()
+    # Fair admission reconciles first, so a recovered child lands in its person's
+    # slice; a failed reconcile keeps the queue held and retries in the background.
+    from kiro_crew.shared_crew.admission_link import release_after_reconcile
+
+    retry = await release_after_reconcile(self.subagent_mgr.release_queue_dispatch)
+    if retry is not None:
+        self._background_tasks.add(retry)
+        retry.add_done_callback(self._background_tasks.discard)
 
 
 def _register_child_liveness(self: GatewayOrchestrator) -> None:

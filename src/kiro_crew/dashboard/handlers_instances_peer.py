@@ -20,6 +20,7 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew.apps.version import versions_compatible
+from kiro_crew.crew_mode import VIEW_ALL as CREW_VIEW_ALL
 from kiro_crew.dashboard.chat_persistence import (
     cap_effort_capability_levels,
     register_reasoning_effort_values,
@@ -571,6 +572,10 @@ _PEER_SLOT_STR_FIELDS: dict[str, int] = {
     # reads from the peer's ``api/chat/folders`` through the proxy. Clamped like
     # ``key``: an opaque id, matched, never shown.
     "folder_id": _PEER_FIELD_MAX_CHARS,
+    # The peer's Crew Mode stamp on a worker: its root's key in the PEER's key
+    # space, so the person's list on this dashboard leaves the peer's workers out
+    # the way it leaves local ones out. An opaque id, matched, never shown.
+    "crew_root": _PEER_FIELD_MAX_CHARS,
 }
 
 
@@ -660,6 +665,10 @@ def _clean_peer_slot(row: object) -> dict[str, object] | None:
         out["parent"] = parent
     if row.get("lineage_pending") is True:
         out["lineage_pending"] = True
+    # ``True`` on a peer's Crew Mode root; omitted otherwise, like the local payload
+    # reads it. Only a real ``True`` counts: a string or number is dropped.
+    if row.get("crew_mode_root") is True:
+        out["crew_mode_root"] = True
     return out
 
 
@@ -731,7 +740,12 @@ async def read_peer_slots(
         )
 
     try:
-        async with mgr.proxy_request(instance_id, "GET", "api/chat/slots") as upstream:
+        # ``crew=all``: the hub reads with the peer token, which the peer treats
+        # as a person's read, and a person's default view leaves Crew Mode
+        # workers out (``crew_mode.list_view``). The merged list keeps them.
+        async with mgr.proxy_request(
+            instance_id, "GET", "api/chat/slots", params={"crew": CREW_VIEW_ALL}
+        ) as upstream:
             if not 200 <= upstream.status < 300:
                 raise PeerSlotsUnavailable(
                     "peer_slots_refused",

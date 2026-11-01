@@ -36,7 +36,7 @@ import time  # noqa: F401 -- patch seam: runtime modules read time through this 
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from sqlite3 import Error as StdlibSQLiteError
@@ -111,6 +111,8 @@ from kiro_crew.vector_memory_lifecycle import (  # noqa: F401
     _migrate_v2,
 )
 from kiro_crew.vector_memory_member import (  # noqa: F401
+    _member_consolidation_confidence,
+    _member_consolidation_metadata,
     _member_identity,
     _member_store,
     consolidation_source_digest,
@@ -132,7 +134,11 @@ from kiro_crew.vector_memory_runtime import migration as _migration
 from kiro_crew.vector_memory_runtime import recall as _recall
 from kiro_crew.vector_memory_runtime import retirement as _retirement
 from kiro_crew.vector_memory_runtime import semantic as _semantic
+from kiro_crew.vector_memory_runtime import (  # noqa: F401
+    semantic_scoring_patch as _semantic_scoring_patch,
+)
 from kiro_crew.vector_memory_runtime import store_bookkeeping as _store_bookkeeping
+from kiro_crew.vector_memory_runtime import term_index as _term_index  # noqa: F401
 from kiro_crew.vector_memory_runtime.embedding import (  # noqa: F401
     _EmbeddingVector,
     _RecallQuery,
@@ -241,9 +247,11 @@ _FAISS_FILE = "memory.faiss"
 _AUDITABLE_REJECT_CODES = {
     SemanticRejectCode.ALLOWLIST,
     SemanticRejectCode.CONFIDENCE,
+    SemanticRejectCode.CONSOLIDATION_VALUE_SIZE,
     SemanticRejectCode.INJECTION,
     SemanticRejectCode.RESERVED_PREFIX,
     SemanticRejectCode.VALUE_EMPTY,
+    SemanticRejectCode.WORK_STATE,
 }
 
 _SECURITY_REJECT_CODES = {
@@ -288,7 +296,58 @@ _EPISODIC_SCORING_MAX_BYTES = 64 * 1024 * 1024
 # its resident snapshot is bounded independently. Above this ceiling retrieval
 # preserves the existing per-call SQLite read rather than retaining unbounded
 # user data in the gateway process.
+#
+# This is the FLOOR of the scaled cap below, not a fixed cap. The per-call scan
+# the overflow path falls back to re-stems the whole population in pure Python on
+# every recall, holding the GIL that every turn's context build needs, so on a
+# large store that fallback serializes turn builds against each other and against
+# consolidation writes. A large store holds the resident set and keeps the term
+# index instead — but only on a host with the memory to spare, so the effective
+# cap scales with available memory (``_semantic_scoring_max_bytes``).
 _SEMANTIC_SCORING_MAX_BYTES = 64 * 1024 * 1024
+# How far above the floor the scaled cap may reach. The hard ceiling is
+# ``_SEMANTIC_SCORING_CEILING_MULTIPLE * _SEMANTIC_SCORING_MAX_BYTES``, computed
+# from the floor at call time so it tracks the floor rather than being a second
+# fixed number that could drift from it: 16 x 64 MiB = 1 GiB. A store's resident
+# scoring set is bounded user data (keys + values + embeddings); past ~1 GiB the
+# memory spent to avoid the per-call scan is not a good trade even on a large
+# host, and an unbounded cap lets one store's set dominate the gateway's RSS.
+# 1 GiB holds a large store (a 54k-row 1024-d store's ~266 MB set) with headroom.
+_SEMANTIC_SCORING_CEILING_MULTIPLE = 16
+# Fraction of currently-available memory the resident semantic scoring set may
+# occupy. 1/16 keeps the set a small slice of free memory: a ~266 MB set is
+# admitted once a host has ~4.3 GB free, and the 1 GiB ceiling is reached at
+# ~16 GB free. A small host keeps the 64 MiB floor and never loads a resident
+# set it cannot hold.
+_SEMANTIC_SCORING_AVAIL_FRACTION = 1 / 16
+
+
+def _semantic_scoring_max_bytes() -> int:
+    """Memory-scaled ceiling on the resident semantic scoring set, in bytes.
+
+    ``clamp(floor, fraction * available, CEILING_MULTIPLE * floor)``, where the
+    floor is ``_SEMANTIC_SCORING_MAX_BYTES`` read at call time (so pinning that
+    constant moves both the floor and the derived ceiling). The probe is the same
+    cgroup-clamped available-memory reader the dynamic sub-agent cap uses, so a
+    container's limit binds. FAIL SAFE: when available memory cannot be read
+    (probe returns <= 0, or raises), the 64 MiB floor is kept, so a host whose
+    memory is unmeasurable never loads a resident set larger than the floor.
+    """
+    floor = _SEMANTIC_SCORING_MAX_BYTES
+    ceiling = _SEMANTIC_SCORING_CEILING_MULTIPLE * floor
+    try:
+        from kiro_crew.subagent import _available_memory_gb
+
+        available_gb = _available_memory_gb()
+    except Exception:  # pragma: no cover - defensive; the probe must never raise here
+        return floor
+    if available_gb <= 0:  # unreadable probe -> fail safe to the floor
+        return floor
+    available_bytes = available_gb * 1024 * 1024 * 1024
+    scaled = int(available_bytes * _SEMANTIC_SCORING_AVAIL_FRACTION)
+    return max(floor, min(scaled, ceiling))
+
+
 # Conservative ceiling on bound parameters in one statement. sqlite's own limit is
 # 32,766 on the bundled build but only 999 on hosts still on a pre-3.32 library,
 # and there is no cheap way to read it on every supported runtime, so batched id
@@ -394,6 +453,10 @@ def _sanitize_decay_rates(raw: Mapping[str, object] | None) -> dict[str, float]:
 # the all-tables totals.
 _ScanSurface = Literal["semantic", "episodic"]
 
+# What ``VectorMemoryStore._read_pooled`` returns when a read must run on the
+# shared connection under ``_db_lock`` instead of on a pooled read connection.
+_ON_SHARED_CONNECTION = object()
+
 
 @dataclass
 class _ReadCounters:
@@ -408,10 +471,10 @@ class _ReadCounters:
     episodic side.
 
     Cost is a method call and a few integer adds per SELECT, so counting is
-    always on; only the EXPOSURE is a surface decision. Every increment happens
-    under ``_db_lock`` (the fetch helpers hold it, and the one direct caller
-    increments inside its own locked block), so a snapshot taken under the same
-    lock is never torn and no count is lost to a concurrent reader.
+    always on; only the EXPOSURE is a surface decision. Every increment and
+    every snapshot takes the counters' own lock: reads on the pooled read
+    connections run outside ``_db_lock``, so that lock does not cover them. A
+    snapshot is never torn and no count is lost to a concurrent reader.
     """
 
     statements_executed: int = 0
@@ -420,6 +483,9 @@ class _ReadCounters:
     semantic_full_scans: int = 0
     episodic_rows_read: int = 0
     episodic_full_scans: int = 0
+    _guard: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
 
     def record(self, rows: int, scan: _ScanSurface | None = None) -> None:
         """Credit one materialized SELECT of *rows* rows.
@@ -428,18 +494,74 @@ class _ReadCounters:
         surface; leaving it None still credits the all-tables totals, which is
         the right answer for a bounded or keyed read.
         """
-        self.statements_executed += 1
-        self.rows_read += rows
-        if scan == "semantic":
-            self.semantic_rows_read += rows
-            self.semantic_full_scans += 1
-        elif scan == "episodic":
-            self.episodic_rows_read += rows
-            self.episodic_full_scans += 1
+        with self._guard:
+            self.statements_executed += 1
+            self.rows_read += rows
+            if scan == "semantic":
+                self.semantic_rows_read += rows
+                self.semantic_full_scans += 1
+            elif scan == "episodic":
+                self.episodic_rows_read += rows
+                self.episodic_full_scans += 1
 
     def snapshot(self) -> dict[str, int]:
         """Return the totals as a plain JSON-serializable dict."""
-        return asdict(self)
+        with self._guard:
+            return {f.name: getattr(self, f.name) for f in fields(self) if f.name != "_guard"}
+
+
+def _read_pooled(store: "VectorMemoryStore", sql: str, params: Sequence[object], *, one: bool):
+    """Run one SELECT on a pooled read-only connection, outside ``_db_lock``.
+
+    Returns ``_ON_SHARED_CONNECTION`` when the read must run on the shared
+    connection under the lock instead:
+
+    - this thread already holds the lock, so the read belongs to a locked
+      section and must see that section's own uncommitted writes;
+    - the pool is off (before ``init()`` finished, after ``close()``, or a
+      file not in WAL mode);
+    - the shared connection has a transaction open that no thread is
+      inside (a failed write left it open), whose rows only that
+      connection can see;
+    - the pooled connection failed; the shared one reports the real error.
+
+    A read that runs while another thread is writing sees the last
+    committed state, the same rows it would have read just before that
+    write took the lock.
+    """
+    db = store.db  # readiness and "not initialized" errors, unchanged
+    lock = store._db_lock
+    held = getattr(lock, "held_by_current_thread", None)
+    if held is None or held() or not store._readers.enabled:
+        return _ON_SHARED_CONNECTION
+    if db.in_transaction and lock.acquire(blocking=False):
+        try:
+            if db.in_transaction:
+                return _ON_SHARED_CONNECTION
+        finally:
+            lock.release()
+    conn = store._readers.checkout()
+    if conn is None:
+        return _ON_SHARED_CONNECTION
+    broken = True
+    try:
+        cursor = conn.execute(sql, params)
+        try:
+            result = cursor.fetchone() if one else cursor.fetchall()
+        finally:
+            cursor.close()
+        broken = False
+        return result
+    except sqlite3.OperationalError:
+        # A statement this connection cannot run (a function only the shared
+        # connection registers, an interrupt from close()). The connection
+        # itself is fine; close() discards it through the generation check.
+        broken = False
+        return _ON_SHARED_CONNECTION
+    except sqlite3.Error:
+        return _ON_SHARED_CONNECTION
+    finally:
+        store._readers.checkin(conn, broken=broken)
 
 
 class VectorMemoryStore:
@@ -481,6 +603,8 @@ class VectorMemoryStore:
         if extra_prefixes:
             self._prefixes.extend(extra_prefixes)
         self._db: sqlite3.Connection | None = None
+        # Whether _db's own close is kept from deleting the -wal (sqlite_wal.keep_wal_on_close).
+        self._wal_kept_on_close = False
         # POSIX permits replacing an open SQLite file. Private V2 stores hold a
         # shared lock outside the swappable store directory for the full
         # connection lifetime so startup restore can refuse rather than move a
@@ -503,10 +627,14 @@ class VectorMemoryStore:
         # locked write sections call helpers (save_faiss_index) that re-acquire.
         # NOTE: never hold this across a blocking embed call — embeds happen
         # before the locked region so the lock only guards local db/FAISS work.
-        self._db_lock = threading.RLock()
-        # Read-volume totals. Guarded by _db_lock (see _ReadCounters) rather than
-        # a lock of their own: every increment already sits inside a locked fetch,
-        # so the counting adds no synchronization to the read path.
+        #
+        # Plain reads do not take it: once init() has the file open in WAL mode,
+        # the fetch helpers run on read-only connections from ``_readers``, so a
+        # read waits neither for another read nor for a writer.
+        self._db_lock = _lifecycle.StoreDbLock()
+        self._readers = _lifecycle.ReaderPool()
+        # Read-volume totals, with their own small lock (see _ReadCounters):
+        # reads on the pooled connections run outside _db_lock.
         self._reads = _ReadCounters()
         # FAISS state
         self._faiss_index: object | None = None  # faiss.IndexFlatIP (untyped)
@@ -541,6 +669,10 @@ class VectorMemoryStore:
         # in-process generation and cross-process SQLite version remain current.
         self._semantic_scoring: _SemanticScoringSet | None = None
         self._semantic_scoring_generation = 0
+        # One rebuild of the resident set at a time; taken before ``_db_lock``, never inside it.
+        self._semantic_scoring_build_lock = threading.Lock()
+        # Keys patched into the resident set while their transaction was still open.
+        self._semantic_scoring_pending: set[str] = set()
         self._semantic_scoring_supported = True
         self._semantic_scoring_refused: tuple[int, int] | None = None
         # Promotion keys already refused: the refusal is deterministic, so warn once per store
@@ -759,9 +891,12 @@ class VectorMemoryStore:
     # serialized on ``_db_lock`` (enforced by an AST guard in
     # test_vector_memory_lock_discipline.py). Route plain SELECTs through these helpers; only
     # read-modify-write sections that must be atomic should take the lock
-    # explicitly. Both helpers materialize results before releasing the lock,
-    # so callers never iterate a live cursor unlocked — and per the lock's
-    # contract, never call a blocking embed while holding it.
+    # explicitly. A helper called outside any locked section runs its SELECT on a
+    # pooled read-only connection (``_read_pooled``) and takes no lock at all;
+    # called inside one, it stays on ``self.db`` under the held lock. Both
+    # helpers materialize results before returning, so callers never iterate a
+    # live cursor — and per the lock's contract, never call a blocking embed
+    # while holding it.
 
     def _fetch_all_locked(
         self,
@@ -770,24 +905,32 @@ class VectorMemoryStore:
         *,
         scan: _ScanSurface | None = None,
     ) -> list[sqlite3.Row]:
-        """Run a SELECT serialized on ``_db_lock``; return materialized rows.
+        """Run a SELECT; return materialized rows (see ``_read_pooled`` for where).
 
         Pass *scan* at the few call sites that read a whole population, so the
         read-volume counters can attribute it to that surface (see
         :class:`_ReadCounters`). The default leaves the read in the all-tables
         totals only, which is correct for a bounded or keyed fetch.
         """
-        with self._db_lock:
-            rows = self.db.execute(sql, params).fetchall()
-            self._reads.record(len(rows), scan)
-            return rows
+        pooled = _read_pooled(self, sql, params, one=False)
+        if pooled is _ON_SHARED_CONNECTION:
+            with self._db_lock:
+                rows = self.db.execute(sql, params).fetchall()
+        else:
+            rows = pooled
+        self._reads.record(len(rows), scan)
+        return rows
 
     def _fetch_one_locked(self, sql: str, params: Sequence[object] = ()) -> sqlite3.Row | None:
-        """Run a SELECT serialized on ``_db_lock``; return the first row or None."""
-        with self._db_lock:
-            row = self.db.execute(sql, params).fetchone()
-            self._reads.record(1 if row is not None else 0)
-            return row
+        """Run a SELECT; return the first row or None (see ``_read_pooled``)."""
+        pooled = _read_pooled(self, sql, params, one=True)
+        if pooled is _ON_SHARED_CONNECTION:
+            with self._db_lock:
+                row = self.db.execute(sql, params).fetchone()
+        else:
+            row = pooled
+        self._reads.record(1 if row is not None else 0)
+        return row
 
     def read_counters(self) -> dict[str, int]:
         """Return this store's monotonic read-volume totals.
@@ -797,8 +940,7 @@ class VectorMemoryStore:
         over one database file report their own reads independently. See
         :class:`_ReadCounters` for what each key counts.
         """
-        with self._db_lock:
-            return self._reads.snapshot()
+        return self._reads.snapshot()
 
     # ── Key Validation ──
 
@@ -853,10 +995,23 @@ class VectorMemoryStore:
         return dict(row) if row else None
 
     def get_all_semantic(
-        self, limit: int | None = None, offset: int = 0, *, q: str = ""
+        self,
+        limit: int | None = None,
+        offset: int = 0,
+        *,
+        q: str = "",
+        after_key: str | None = None,
+        exclude_lessons: bool = False,
     ) -> list[dict]:
         """Get active semantic memory entries."""
-        return _semantic.get_all_semantic(self, limit, offset, q=q)
+        return _semantic.get_all_semantic(
+            self,
+            limit,
+            offset,
+            q=q,
+            after_key=after_key,
+            exclude_lessons=exclude_lessons,
+        )
 
     def _stamp_facets(self, item_id: str, facets: "memory_schema.MemoryFacets | None") -> None:
         """Stamp the carve axes on a crew row. A no-op on the v1 lineage."""
@@ -1016,6 +1171,13 @@ class VectorMemoryStore:
         self, query_text: str = "", cap: int = 1500, *, facts_only: bool = False
     ) -> str:
         """Format semantic memory for prompt injection with hybrid retrieval."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        pooled = _recall_pool.offload(
+            self, "semantic", {"query_text": query_text, "cap": cap, "facts_only": facts_only}
+        )
+        if pooled is not None:
+            return pooled
         return _semantic.get_semantic_context(self, query_text, cap, facts_only=facts_only)
 
     def _semantic_candidates_v2(
@@ -1152,6 +1314,19 @@ class VectorMemoryStore:
         cap: int = 3000,
     ) -> str:
         """Format episodic search results for prompt injection."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        pooled = _recall_pool.offload(
+            self,
+            "episodic",
+            {
+                "query_embedding": None if query_embedding is None else list(query_embedding),
+                "query_text": query_text,
+                "cap": cap,
+            },
+        )
+        if pooled is not None:
+            return pooled
         return _episodic_search.get_episodic_context(self, query_embedding, query_text, cap)
 
     # ── Facets: reading a carve back out ──
@@ -1231,10 +1406,17 @@ class VectorMemoryStore:
         return _lessons.has_any_decodable_lesson(self)
 
     def delete_lesson(
-        self, rule_substring: str, repo_scope: str | None = None, *, exact: bool = False
+        self,
+        rule_substring: str,
+        repo_scope: str | None = None,
+        *,
+        exact: bool = False,
+        keep_one: bool = False,
     ) -> bool:
         """Delete lessons whose value contains rule_substring."""
-        return _lessons.delete_lesson(self, rule_substring, repo_scope, exact=exact)
+        return _lessons.delete_lesson(
+            self, rule_substring, repo_scope, exact=exact, keep_one=keep_one
+        )
 
     def get_lessons_context(
         self,
@@ -1249,6 +1431,23 @@ class VectorMemoryStore:
         experience_budget: int = 0,
     ) -> str:
         """Format lessons for prompt injection, most relevant first."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        if _recall_pool.pool_enabled():
+            job_args = _recall_pool.lessons_args(
+                self,
+                query_text,
+                cap,
+                project_dir,
+                recall_query,
+                background,
+                hard_cap,
+                directive_budget,
+                experience_budget,
+            )
+            pooled = _recall_pool.offload(self, "lessons", job_args)
+            if pooled is not None:
+                return pooled
         return _lessons.get_lessons_context(
             self,
             query_text,

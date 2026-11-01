@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.sel import sel
 from kiro_crew.slack.format import (
     LINK_DASHBOARD_ACTION,
     build_link_dashboard_button,
@@ -62,16 +63,18 @@ class TestFooterBlocksLinkDashboard:
             {"type": "context", "elements": [{"type": "mrkdwn", "text": "Finished in 5s"}]}
         ]
         return _append_footer_actions(
-            footer_blocks, options, thread_ts, linked_session_key, dashboard_state,
+            footer_blocks,
+            options,
+            thread_ts,
+            linked_session_key,
+            dashboard_state,
         )
 
     def test_button_added_when_in_thread_not_linked_with_dashboard(self) -> None:
         blocks = self._build_footer("1234.0", None, MagicMock())
         actions = [b for b in blocks if b.get("type") == "actions"]
         assert len(actions) == 1
-        assert any(
-            e["action_id"] == LINK_DASHBOARD_ACTION for e in actions[0]["elements"]
-        )
+        assert any(e["action_id"] == LINK_DASHBOARD_ACTION for e in actions[0]["elements"])
 
     def test_button_not_added_when_no_thread_ts(self) -> None:
         blocks = self._build_footer("", None, MagicMock())
@@ -88,17 +91,16 @@ class TestFooterBlocksLinkDashboard:
         actions = [b for b in blocks if b.get("type") == "actions"]
         assert len(actions) == 0
 
-    def test_button_appended_to_existing_actions_block(self) -> None:
-        """When OPTIONS are present, button is appended to the existing actions block."""
-        blocks = self._build_footer(
-            "1234.0", None, MagicMock(), options=["A", "B"]
-        )
+    def test_button_gets_its_own_row_after_an_options_card(self) -> None:
+        """After an OPTIONS card the button is its own row, so answering the card
+        (which replaces the card's rows) leaves the link in place."""
+        blocks = self._build_footer("1234.0", None, MagicMock(), options=["A", "B"])
         actions = [b for b in blocks if b.get("type") == "actions"]
-        assert len(actions) == 1
-        action_ids = [e["action_id"] for e in actions[0]["elements"]]
-        assert LINK_DASHBOARD_ACTION in action_ids
-        # OPTIONS checkboxes are also present
-        assert any(aid == "options_checkboxes" for aid in action_ids)
+        assert len(actions) == 2
+        card_ids = [e["action_id"] for e in actions[0]["elements"]]
+        assert LINK_DASHBOARD_ACTION not in card_ids
+        assert card_ids[0].startswith("options_choice_")
+        assert [e["action_id"] for e in actions[1]["elements"]] == [LINK_DASHBOARD_ACTION]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -129,6 +131,12 @@ def _make_orch_for_link() -> MagicMock:
     return orch
 
 
+def _link_audit() -> list[tuple[str, str]]:
+    """The (outcome, reason) of each Link to Dashboard row in the real SEL, oldest first."""
+    rows = [e for e in sel().recent() if e["operation"] == "mc_link_dashboard"]
+    return [(e["outcome"], e["metadata"].get("reason", "")) for e in reversed(rows)]
+
+
 @pytest.fixture
 def link_orch(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     from kiro_crew.slack import interactions
@@ -140,7 +148,9 @@ def link_orch(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_link_dashboard_creates_slot_and_imports(link_orch: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_link_dashboard_creates_slot_and_imports(
+    link_orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from kiro_crew.slack import interactions
 
     mock_sel_inst = MagicMock()
@@ -170,7 +180,7 @@ async def test_link_dashboard_creates_slot_and_imports(link_orch: MagicMock, mon
 
 
 @pytest.mark.asyncio
-async def test_link_dashboard_null_slot_returns(link_orch: MagicMock) -> None:
+async def test_link_dashboard_null_slot_returns(link_orch: MagicMock, sel_private_root) -> None:
     """When _import_thread_to_slot returns None, handler should return without crash."""
     from kiro_crew.slack import interactions
 
@@ -187,10 +197,11 @@ async def test_link_dashboard_null_slot_returns(link_orch: MagicMock) -> None:
     await interactions.dispatch(payload)
     # No crash, no slot created
     link_orch.dashboard_state.link_slack.assert_not_called()
+    assert _link_audit() == [("failure", "empty_thread")]
 
 
 @pytest.mark.asyncio
-async def test_link_dashboard_no_thread_ts_returns(link_orch: MagicMock) -> None:
+async def test_link_dashboard_no_thread_ts_returns(link_orch: MagicMock, sel_private_root) -> None:
     from kiro_crew.slack import interactions
 
     payload = {
@@ -203,10 +214,13 @@ async def test_link_dashboard_no_thread_ts_returns(link_orch: MagicMock) -> None
     }
     await interactions.dispatch(payload)
     link_orch.dashboard_state.get_or_create_slot.assert_not_called()
+    assert _link_audit() == [("failure", "no_thread_ts")]
 
 
 @pytest.mark.asyncio
-async def test_link_dashboard_no_dashboard_state_returns(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_link_dashboard_no_dashboard_state_returns(
+    monkeypatch: pytest.MonkeyPatch, sel_private_root
+) -> None:
     from kiro_crew.slack import interactions
 
     orch = MagicMock()
@@ -223,14 +237,19 @@ async def test_link_dashboard_no_dashboard_state_returns(monkeypatch: pytest.Mon
         "actions": [{"action_id": "mc_link_dashboard", "value": ""}],
     }
     await interactions.dispatch(payload)
-    # No crash, no slot created
+    assert _link_audit() == [("failure", "no_dashboard")]
 
 
 @pytest.mark.asyncio
-async def test_link_dashboard_skips_link_command_messages(link_orch: MagicMock) -> None:
+async def test_link_dashboard_skips_link_command_messages(
+    link_orch: MagicMock, sel_private_root
+) -> None:
     """Messages starting with '!link-to-dashboard' should be skipped."""
+    from kiro_crew.dashboard.state import _ChatSlot
     from kiro_crew.slack import interactions
 
+    slot = _ChatSlot("slot_abc")
+    link_orch.dashboard_state.get_or_create_slot = MagicMock(return_value=slot)
     link_orch.slack.fetch_thread_replies = AsyncMock(
         return_value=[
             {"user": "U1", "text": "!link-to-dashboard"},
@@ -249,14 +268,16 @@ async def test_link_dashboard_skips_link_command_messages(link_orch: MagicMock) 
     with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
         await interactions.dispatch(payload)
 
-    slot = link_orch.dashboard_state.get_or_create_slot.return_value
-    # Only 1 message imported (the "real message"), not the !link-to-dashboard
-    assert slot.append.call_count == 1
-    assert slot.append.call_args.args[1] == "real message"
+    # Only the "real message" is imported, not the !link-to-dashboard command.
+    assert [(m["role"], m["content"]) for m in slot.messages] == [("user", "real message")]
+    assert slot.title == "Slack thread 100.0"
+    assert _link_audit() == [("success", "")]
 
 
 @pytest.mark.asyncio
-async def test_link_dashboard_unauthorized_user(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_link_dashboard_unauthorized_user(
+    monkeypatch: pytest.MonkeyPatch, sel_private_root
+) -> None:
     from kiro_crew.slack import interactions
 
     orch = _make_orch_for_link()
@@ -272,6 +293,12 @@ async def test_link_dashboard_unauthorized_user(monkeypatch: pytest.MonkeyPatch)
     }
     await interactions.dispatch(payload)
     orch.dashboard_state.get_or_create_slot.assert_not_called()
+    denied = [
+        (e["caller_identity"], e["outcome"], e["resources"])
+        for e in sel().recent()
+        if e["operation"] == "slack.interactive"
+    ]
+    assert denied == [("UBAD", "denied", "mc_link_dashboard")]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

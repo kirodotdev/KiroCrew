@@ -59,6 +59,9 @@ class _CronCapture(NamedTuple):
     cron_memory_store: str
     cron_agent: str
     default_substituted: bool
+    # The previous run's result framed as untrusted data, for build_message's
+    # request_prefix_context (``cron_prior_result_context``); "" when none.
+    prior_result: str = ""
 
 
 def _cron_extra_env(job: CronJob) -> dict[str, str] | None:
@@ -137,7 +140,12 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
                     )
                 await self._alert_cron_failure(job, gate_reason, denied=True)
                 return None
-            return await goal_reminder.fire(self.dashboard_state, job)
+            outcome = await goal_reminder.fire(self.dashboard_state, job)
+            # The run's summary in the job's history: a check-in delivers
+            # nothing itself, so without it a skip ("the mate is busy") would
+            # read as a success that said nothing, silent job or not.
+            job.set_run_result(redact(outcome))
+            return outcome
 
         cap = await self._cron_capture(job)
 
@@ -152,7 +160,14 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
 
         # ── Code-based script execution (deterministic, no LLM) ──
         if job.script:
-            return await self._cron_run_script(job)
+            result = await self._cron_run_script(job)
+            if job.last_status == "error" and not getattr(job, "run_never_started", False):
+                # A failed run writes no record, so the crewmate's page would keep the
+                # last good one as current: the gateway records the failure there. A
+                # run that never started (overlap guard, admission closed, pool
+                # starved) is not a failure of the job, as the scheduler counts it.
+                await self._record_bound_script_failure(job)
+            return result
 
         # ── Fire-time governance gate: message (LLM) jobs ──
         # Command and script jobs are gated inside their blocks above; a job
@@ -216,11 +231,14 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
         # When agent_sequence has multiple agents, run them sequentially
         # with per-agent session keys and per-job env vars.
         if agent_sequence_dispatches(cap.cron_agents):
-            return await self._cron_run_sequence(job, cap)
+            dispatch = self._cron_run_sequence(job, cap)
+        else:
+            # ── Single-agent path (existing behavior) ──
+            # Per-job env vars (single-agent path) travel via extra_env passthrough
+            dispatch = self._cron_run_single(job, cap, retry=_cron_callback)
+        from kiro_crew.shared_crew.admission_entry import admitted_cron_dispatch
 
-        # ── Single-agent path (existing behavior) ──
-        # Per-job env vars (single-agent path) travel via extra_env passthrough
-        return await self._cron_run_single(job, cap, retry=_cron_callback)
+        return await admitted_cron_dispatch(job, dispatch)
 
     self._cron_reconciled = False
     self._cron_armed = False
@@ -236,7 +254,7 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
         self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
     # A run its deadline ends never returns to _cron_callback, whose failure
     # paths are the only ones that alert; the service hands it back here.
-    self.cron_svc.set_timeout_alert(self._alert_cron_failure)
+    self.cron_svc.set_timeout_alert(self._alert_cron_timeout)
     if self._no_crons:
         logger.info("Cron scheduler disabled (--no-crons)")
     else:
@@ -258,6 +276,41 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
             await self._start_cron_after_memory_ready()
 
 
+async def _record_bound_script_failure(self: GatewayOrchestrator, job: CronJob) -> None:
+    """Record *job*'s failed run in the crew log of the crewmate it is bound to.
+
+    Only for a job bound to a crewmate (``member_id``). The identity is the
+    scheduler's own record of the job, never anything the script said. BEST-EFFORT and
+    off the loop: the recorder never raises, and a failure that cannot be recorded
+    (no crew log yet, the crew panel off) changes nothing about the run.
+    """
+    import asyncio as _asyncio
+
+    from kiro_crew.dashboard.handlers.agent_panel_record import record_cron_failure
+
+    member_id = str(getattr(job, "member_id", "") or "")
+    if not member_id:
+        return
+    try:
+        await _asyncio.to_thread(
+            record_cron_failure, str(job.id), member_id, str(job.last_error or "")
+        )
+    except Exception:
+        logger.debug("Cron '%s': failure record skipped", job.name, exc_info=True)
+
+
+async def _alert_cron_timeout(self: GatewayOrchestrator, job: CronJob, detail: str) -> None:
+    """The service's timeout alert: record a bound script's failure, then alert.
+
+    A run its deadline ends is cancelled inside ``_cron_run_script``, so the failure
+    record after it in ``_cron_callback`` never runs; this is where that run is
+    recorded instead. A run that never started is skipped, as there.
+    """
+    if getattr(job, "script", None) and not getattr(job, "run_never_started", False):
+        await self._record_bound_script_failure(job)
+    await self._alert_cron_failure(job, detail)
+
+
 async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture:
     """What one cron fire captures before it dispatches anything.
 
@@ -266,9 +319,12 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     the agent it dispatches: the configured default stands in for the bare floor
     only where that is safe. Every kind of job captures, before the overlap guard.
     """
-    # helper picks stable vs ephemeral session key and
-    # decides whether to prepend last_result, based on job.persistent_session.
+    # helper picks stable vs ephemeral session key; a persistent job's previous
+    # result is carried separately, framed as data, ahead of the request.
     session_key, msg = build_cron_session_context(job)
+    from kiro_crew.cron_service.identity import cron_prior_result_context
+
+    prior_result = cron_prior_result_context(job)
 
     from kiro_crew.cron import resolve_cron_memory
     from kiro_crew.execution_context import (
@@ -278,6 +334,20 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
 
     # Snapshot the job before yielding; reloading a cron cannot rebind it.
     cron_agents = list(job.agent_sequence)
+    # Only an agent run writes a transcript under this key; tagging a script or
+    # command job would create an empty transcript on every fire.
+    if (
+        not job.persistent_session
+        and not (job.script or job.command)
+        and not agent_sequence_dispatches(cron_agents)
+    ):
+
+        def tag_run_transcript() -> None:
+            from kiro_crew.history import ConversationLog
+
+            ConversationLog().update_metadata(session_key, {"cron_run": "ephemeral"})
+
+        await asyncio.to_thread(tag_run_transcript)
     # ── Default-agent fallback (LLM jobs) ──
     # A job with no explicit agent_id must run the configured default
     # agent (config.agent.default_agent), matching the chat transports'
@@ -528,6 +598,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         cron_memory_store,
         cron_agent,
         _default_substituted,
+        prior_result,
     )
 
 

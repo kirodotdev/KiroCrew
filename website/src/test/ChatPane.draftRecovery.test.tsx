@@ -7,7 +7,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { selectSlotMessages, setActiveSlot, sseChatMessage } from '../store/chatSlice'
+import chatReducer, { appendSlotMessage, selectSlotMessages, setActiveSlot, sseChatMessage } from '../store/chatSlice'
+import { warnDeliveryUnconfirmed } from '../utils/deliveryWarning'
 import type { SendReceipt, SendTurnOptions } from '../chat-core/transport/sendTurn'
 import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
@@ -116,7 +117,7 @@ function makeStore(slotKey: string, running: boolean, subagentsOnly = false) {
   return store
 }
 
-function renderPane(slotKey: string, opts: { running: boolean; busyMode?: BusyMode; subagentsOnly?: boolean }) {
+function renderPane(slotKey: string, opts: { running: boolean; busyMode?: BusyMode; subagentsOnly?: boolean; crewmate?: { name: string } }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = makeStore(slotKey, opts.running, opts.subagentsOnly)
   const ui = (key: string) => (
@@ -124,7 +125,7 @@ function renderPane(slotKey: string, opts: { running: boolean; busyMode?: BusyMo
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatPane slotKey={key} {...(opts.busyMode ? { busyMode: opts.busyMode } : {})} />
+            <ChatPane slotKey={key} {...(opts.busyMode ? { busyMode: opts.busyMode } : {})} {...(opts.crewmate ? { crewmate: opts.crewmate } : {})} />
           </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>
@@ -242,6 +243,46 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     // No restore: nothing proved the send failed.
     expect((box as HTMLTextAreaElement).value).toBe('')
     expect(rows().some(m => m.role === 'error')).toBe(false)
+  })
+
+  it('the warning strip removes an unconfirmed send and hands its text back to this pane', async () => {
+    forcedReceipt = { status: 'response-late', body: {} }
+    const { store } = renderPane('member-strip', { running: false })
+    const box = await composer()
+    fireEvent.change(box, { target: { value: 'take this back' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    fireEvent.click(await screen.findByTestId('delivery-exit-dismiss'))
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('take this back'))
+    const rows = selectSlotMessages(store.getState() as RootState, 'member-strip')
+    expect(rows.some(m => m.role === 'user')).toBe(false)
+    expect(screen.queryByTestId('delivery-exit-dismiss')).toBeNull()
+  })
+
+  it('a crewmate pane offers no removal, since its messages-only transcript could not say a removed send arrived', async () => {
+    forcedReceipt = { status: 'response-late', body: {} }
+    const { store } = renderPane('member-crewmate-late', { running: false, crewmate: { name: 'Radar' } })
+    const box = await composer()
+    fireEvent.change(box, { target: { value: 'hello radar' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(selectSlotMessages(store.getState() as RootState, 'member-crewmate-late').some(m => m.meta?.deliveryUnconfirmed)).toBe(true))
+    expect(screen.queryByTestId('delivery-exit-dismiss')).toBeNull()
+    const notice = selectSlotMessages(store.getState() as RootState, 'member-crewmate-late').find(m => m.role === 'notice' && m.meta?.deliveryNoticeFor)
+    expect(notice?.content).toBe('\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_resend_manually'))
+  })
+
+  it.each([
+    ['an ordinary pane offers it', undefined, true],
+    ['a crewmate pane on the same slot does not', { name: 'Radar' }, false],
+  ])('a pane warning raised elsewhere: %s', async (_label, crewmate, offered) => {
+    const slot = crewmate ? 'member-shared-crew' : 'member-shared-plain'
+    const { store } = renderPane(slot, { running: false, ...(crewmate ? { crewmate } : {}) })
+    await composer()
+    act(() => {
+      store.dispatch(appendSlotMessage({ slot, message: { role: 'user', content: 'from a split pane', cls: 'msg msg-u', meta: { optimistic: true, sendId: 'shared-1' } } }))
+      warnDeliveryUnconfirmed(slot, { sendId: 'shared-1', surface: 'pane', epoch: 0, sent: { text: 'from a split pane', files: [], pastes: [] } })
+    })
+    if (offered) expect(await screen.findByTestId('delivery-exit-dismiss')).toBeTruthy()
+    else expect(screen.queryByTestId('delivery-exit-dismiss')).toBeNull()
   })
 
   it('an identical queue entry does not stand in for the unconfirmed send — the draft still comes back', async () => {

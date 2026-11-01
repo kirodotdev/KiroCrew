@@ -278,6 +278,110 @@ class TestSignedPrincipalProxy:
             secret=self._SECRET,
         )
 
+    def _v2_verifies(self, received: dict[str, list[str]], cache=None) -> bool:
+        from kiro_crew.apps.proxy_auth import ProxyPrincipalReplayCache, verify_proxy_request_v2
+
+        return verify_proxy_request_v2(
+            self._only(received, "x-kirocrew-proxy-v2"),
+            self._only(received, "x-kirocrew-proxy-nonce"),
+            method="GET",
+            target="/api/claim-test",
+            body=b"",
+            secret=self._SECRET,
+            replay_cache=ProxyPrincipalReplayCache() if cache is None else cache,
+        )
+
+    @pytest.mark.parametrize("opted_in", [False, True])
+    @pytest.mark.asyncio
+    async def test_every_app_receives_a_v2_signature_beside_an_unchanged_v1(
+        self, monkeypatch, opted_in
+    ):
+        from kiro_crew.apps.proxy_auth import ProxyPrincipalReplayCache, verify_proxy_request
+
+        received, _ = await self._proxy(monkeypatch, opted_in=opted_in, context=self._OWNER_CONTEXT)
+        v1 = self._only(received, "x-kirocrew-proxy")
+        assert verify_proxy_request(
+            v1, method="GET", target="/api/claim-test", body=b"", secret=self._SECRET
+        )
+        # Both signatures carry the same issue time, and only v1 lives in v1's header.
+        assert v1.partition(":")[0] == self._only(received, "x-kirocrew-proxy-v2").partition(":")[0]
+        cache = ProxyPrincipalReplayCache()
+        assert self._v2_verifies(received, cache)
+        assert not self._v2_verifies(received, cache)
+
+    @pytest.mark.asyncio
+    async def test_each_proxied_request_gets_its_own_nonce(self, monkeypatch):
+        first, _ = await self._proxy(monkeypatch, opted_in=False, context=self._OWNER_CONTEXT)
+        second, _ = await self._proxy(monkeypatch, opted_in=False, context=self._OWNER_CONTEXT)
+        assert self._only(first, "x-kirocrew-proxy-nonce") != self._only(
+            second, "x-kirocrew-proxy-nonce"
+        )
+
+    @pytest.mark.parametrize(
+        "header_name",
+        [
+            "X-KiroCrew-Proxy-V2",
+            "x-kirocrew-proxy-v2",
+            "X-KiroCrew-Proxy-Nonce",
+            "x-KIROCREW-proxy-nonce",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_caller_sent_v2_headers_are_replaced_by_the_gateway_ones(
+        self, monkeypatch, header_name
+    ):
+        received, _ = await self._proxy(
+            monkeypatch,
+            opted_in=False,
+            context=self._OWNER_CONTEXT,
+            headers={header_name: "0123456789abcdef0123456789abcdef"},
+        )
+        assert self._only(received, "x-kirocrew-proxy-nonce") != (
+            "0123456789abcdef0123456789abcdef"
+        )
+        assert self._v2_verifies(received)
+
+    @pytest.mark.parametrize(
+        # Spellings other than the gateway's own key: those are the ones a plain
+        # dict would keep beside it.
+        "header_name",
+        ["x-kirocrew-proxy-nonce", "X-KIROCREW-PROXY-NONCE"],
+    )
+    @pytest.mark.asyncio
+    async def test_caller_sent_nonce_is_stripped_before_the_gateway_sets_its_own(
+        self, monkeypatch, header_name
+    ):
+        """The outgoing header map holds the gateway's nonce and no caller copy.
+
+        The wire alone cannot show this: the HTTP client folds two spellings of one
+        header into the last one set, which happens to be the gateway's. The strip
+        is what keeps the result from depending on that, so the map handed to the
+        client is checked directly.
+        """
+        import aiohttp
+
+        sent: list[dict[str, str]] = []
+        real_request = aiohttp.ClientSession.request
+
+        def spy(session, method, url, **kwargs):
+            headers = kwargs.get("headers") or {}
+            if isinstance(headers, dict) and "X-KiroCrew-Proxy" in headers:
+                sent.append(dict(headers))
+            return real_request(session, method, url, **kwargs)
+
+        monkeypatch.setattr(aiohttp.ClientSession, "request", spy)
+        forged = "0123456789abcdef0123456789abcdef"
+        await self._proxy(
+            monkeypatch,
+            opted_in=False,
+            context=self._OWNER_CONTEXT,
+            headers={header_name: forged},
+        )
+        assert len(sent) == 1, "the proxy never sent the backend request"
+        nonces = [v for k, v in sent[0].items() if k.lower() == "x-kirocrew-proxy-nonce"]
+        assert len(nonces) == 1, f"caller nonce survived the strip: {nonces!r}"
+        assert nonces[0] != forged
+
     @pytest.mark.asyncio
     async def test_unsignable_owner_id_refuses_instead_of_forwarding(self, monkeypatch):
         received, body = await self._proxy(

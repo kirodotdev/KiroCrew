@@ -78,6 +78,13 @@ describe('useCrewmateThreadsFlag', () => {
 })
 
 describe('CrewmatesSection', () => {
+  it('says under the heading that these are server settings, not previews', async () => {
+    wrap(<CrewmatesSection />)
+    expect(await screen.findByTestId('crewmates-section-description')).toHaveTextContent(
+      "Server settings for mates, not previews. They're saved on the server, so they apply on every device.",
+    )
+  })
+
   it('renders the reply-threads switch off by default and saves the flag on toggle', async () => {
     wrap(<CrewmatesSection />)
     const toggle = await screen.findByRole('switch', { name: /Reply threads on mate chat messages/ })

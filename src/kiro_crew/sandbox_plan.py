@@ -54,10 +54,12 @@ class RendererCapabilities:
     """
 
     #: Tier directories the cc tier leaves VISIBLE, because the renderer cannot mask a
-    #: directory while re-exposing one file inside it. The Linux launcher restores a
-    #: read-only copy of ``~/.aws/config`` into the empty mask; Seatbelt rules are path
-    #: rules with no such copy, and ``credential_process`` and the SSO caches live
-    #: under ``~/.aws``, so Seatbelt keeps the whole directory readable.
+    #: directory while re-exposing one file inside it. Neither renderer needs it today:
+    #: the Linux launcher restores a read-only copy of ``~/.aws/config`` into the empty
+    #: mask, and Seatbelt denies the ``~/.aws`` subpath with a ``require-not literal``
+    #: exception for ``~/.aws/config`` (the same shape as ``~/.ssh/known_hosts``). So
+    #: on both backends cc hides the credentials file and the SSO caches and keeps
+    #: only ``config`` readable.
     cc_unmaskable_dirs: frozenset[str]
 
 
@@ -67,7 +69,7 @@ CAPABILITIES: Mapping[str, RendererCapabilities] = {
         cc_unmaskable_dirs=frozenset(),
     ),
     BACKEND_SEATBELT: RendererCapabilities(
-        cc_unmaskable_dirs=frozenset({".aws"}),
+        cc_unmaskable_dirs=frozenset(),
     ),
 }
 

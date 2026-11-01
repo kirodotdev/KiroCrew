@@ -11,6 +11,143 @@ import type { ChatState, SideMessage, SideQueueEntry, SideSendStatus, SideStandi
 import { isUnsafeKey, safeKey } from './wire'
 
 const MAX_RETIRED_QUEUE_IDS = 50
+const MAX_SUBMITTED_STEER_TEXT = 50
+
+const sideSteerSubmittedText = new Map<string, Map<string, string>>()
+
+/** Keep this tab's submitted steer text outside the panel that sent it. */
+export function recordSideSteerSubmittedText(slot: string, steerId: string, content: string): void {
+  let perSlot = sideSteerSubmittedText.get(slot)
+  if (!perSlot) {
+    perSlot = new Map<string, string>()
+    sideSteerSubmittedText.set(slot, perSlot)
+  }
+  perSlot.delete(steerId)
+  perSlot.set(steerId, content)
+  while (perSlot.size > MAX_SUBMITTED_STEER_TEXT) {
+    const oldest = perSlot.keys().next().value
+    if (oldest === undefined) break
+    perSlot.delete(oldest)
+  }
+}
+
+/** Read this tab's submitted text without consuming its ownership record. */
+export function readSideSteerSubmittedText(slot: string, steerId: string): string | undefined {
+  return sideSteerSubmittedText.get(slot)?.get(steerId)
+}
+
+/** Forget submitted text once the steer's queue card has been handled. */
+export function forgetSideSteerSubmittedText(slot: string, steerId: string): void {
+  const perSlot = sideSteerSubmittedText.get(slot)
+  if (!perSlot) return
+  perSlot.delete(steerId)
+  if (perSlot.size === 0) sideSteerSubmittedText.delete(slot)
+}
+
+/** Non-raw queue entries a close dropped, retained independently of the slot
+ *  state so a delayed receipt can identify its conversation after a reopen.
+ *  A requeued steer's demoted receipt carries only its steer id, while an
+ *  ordinary queued receipt carries its queue id, so each card keeps both. */
+type SideQueueCardDroppedByClose = { queueId: string; steerId?: string }
+const sideQueueCardsDroppedByClose = new Map<string, SideQueueCardDroppedByClose[]>()
+
+/** Record queue entries named by a close frame for delayed receipt handling. */
+export function noteSideQueueDroppedByClose(
+  slot: string,
+  entries: readonly { queueId: string; steerId?: string }[],
+): void {
+  if (entries.length === 0) return
+  const dropped = sideQueueCardsDroppedByClose.get(slot) ?? []
+  for (const entry of entries) {
+    const existing = dropped.findIndex(card =>
+      card.queueId === entry.queueId || (!!entry.steerId && card.steerId === entry.steerId)
+    )
+    if (existing >= 0) dropped.splice(existing, 1)
+    dropped.push({ queueId: entry.queueId, ...(entry.steerId ? { steerId: entry.steerId } : {}) })
+  }
+  sideQueueCardsDroppedByClose.set(slot, dropped.slice(-MAX_RETIRED_QUEUE_IDS))
+}
+
+function noteSideQueueCardsDroppedByClose(slot: string, entries: readonly SideQueueEntry[]): void {
+  noteSideQueueDroppedByClose(slot, entries.map(entry => ({
+    queueId: entry.id,
+    ...(entry.steerId ? { steerId: entry.steerId } : {}),
+  })))
+}
+
+function takeSideQueueCardDroppedByClose(
+  slot: string,
+  matches: (card: SideQueueCardDroppedByClose) => boolean,
+): boolean {
+  const dropped = sideQueueCardsDroppedByClose.get(slot)
+  const at = dropped?.findIndex(matches) ?? -1
+  if (!dropped || at < 0) return false
+  dropped.splice(at, 1)
+  if (dropped.length === 0) sideQueueCardsDroppedByClose.delete(slot)
+  return true
+}
+
+/** Consume the record that a close dropped this queue entry. */
+export function takeSideQueueDroppedByClose(slot: string, queueId: string): boolean {
+  return takeSideQueueCardDroppedByClose(slot, card => card.queueId === queueId)
+}
+
+/** Consume the record that a close dropped this requeued steer. */
+export function takeSideSteerDroppedByClose(slot: string, steerId: string): boolean {
+  return takeSideQueueCardDroppedByClose(slot, card => card.steerId === steerId)
+}
+
+/** Queue cards a socket-open re-read dropped because the gateway did not hold
+ *  them. The read cannot say whether a card ran or was cancelled, so its text is
+ *  kept here until a cancel for it arrives: this tab's own cancel can be answered
+ *  after the read landed, and its text must still reach the composer once. */
+type SideQueueCardDroppedByResync = { content: string; raw: boolean }
+const sideQueueCardsDroppedByResync = new Map<string, Map<string, SideQueueCardDroppedByResync>>()
+
+function noteSideQueueDroppedByResync(slot: string, entries: readonly SideQueueEntry[]): void {
+  if (entries.length === 0) return
+  const dropped = sideQueueCardsDroppedByResync.get(slot) ?? new Map<string, SideQueueCardDroppedByResync>()
+  for (const entry of entries) {
+    dropped.delete(entry.id)
+    dropped.set(entry.id, { content: entry.content, raw: entry.raw === true })
+  }
+  while (dropped.size > MAX_RETIRED_QUEUE_IDS) dropped.delete(dropped.keys().next().value as string)
+  sideQueueCardsDroppedByResync.set(slot, dropped)
+}
+
+function takeSideQueueDroppedByResync(slot: string, queueId: string): SideQueueCardDroppedByResync | undefined {
+  const dropped = sideQueueCardsDroppedByResync.get(slot)
+  const card = dropped?.get(queueId)
+  if (!dropped || !card) return undefined
+  dropped.delete(queueId)
+  if (dropped.size === 0) sideQueueCardsDroppedByResync.delete(slot)
+  return card
+}
+
+/** Cards a re-read dropped from a conversation that was then closed. A close
+ *  ends the reducer's handling of the slot, so this tab's own cancel answered
+ *  after the close reads the text from here instead, once. Kept apart from the
+ *  live record so a later conversation's frames never consult it. */
+const sideQueueCardsDroppedByResyncThenClosed = new Map<string, Map<string, SideQueueCardDroppedByResync>>()
+
+/** Replaces, never merges: each close describes only the conversation it ended,
+ *  so a card from an earlier one cannot answer a cancel after a later close. */
+function keepSideQueueDroppedByResyncAcrossClose(slot: string): void {
+  const dropped = sideQueueCardsDroppedByResync.get(slot)
+  sideQueueCardsDroppedByResync.delete(slot)
+  if (dropped) sideQueueCardsDroppedByResyncThenClosed.set(slot, dropped)
+  else sideQueueCardsDroppedByResyncThenClosed.delete(slot)
+}
+
+/** Consume the text of a card a re-read dropped before its conversation closed. */
+export function takeSideQueueDroppedByResyncThenClose(slot: string, queueId: string): SideQueueCardDroppedByResync | undefined {
+  const kept = sideQueueCardsDroppedByResyncThenClosed.get(slot)
+  const card = kept?.get(queueId)
+  if (!kept || !card) return undefined
+  kept.delete(queueId)
+  if (kept.size === 0) sideQueueCardsDroppedByResyncThenClosed.delete(slot)
+  return card
+}
 
 /** Monotonic tick, so an observation can be ordered against a request already in flight.
  *  A bare boolean cannot: it could have been set by an earlier, unrelated edit. */
@@ -18,6 +155,57 @@ let queueEditBroadcastSeq = 0
 /** Nested per slot rather than keyed on a joined string: queue ids are unique only within
  *  their own sidecar, and a joined key would need a separator literal. */
 const queueEditBroadcasts = new Map<string, Map<string, number>>()
+
+type PendingQueueEdit = { content: string; handedBack: boolean }
+const pendingQueueEdits = new Map<string, Map<string, PendingQueueEdit>>()
+const liveQueueEditDrafts = new Map<string, Map<string, string>>()
+
+/** Keep an open side queue editor's local text available until that editor exits. */
+export function setSideQueueEditDraft(slot: string, queueId: string, content: string | undefined): void {
+  const perSlot = liveQueueEditDrafts.get(slot)
+  if (content === undefined) {
+    perSlot?.delete(queueId)
+    if (perSlot?.size === 0) liveQueueEditDrafts.delete(slot)
+    return
+  }
+  if (perSlot) perSlot.set(queueId, content)
+  else liveQueueEditDrafts.set(slot, new Map([[queueId, content]]))
+}
+
+/** Record the latest text submitted for a queue card while its edit request is in flight. */
+export function beginSideQueueEdit(slot: string, queueId: string, content: string): void {
+  let perSlot = pendingQueueEdits.get(slot)
+  if (!perSlot) {
+    perSlot = new Map<string, PendingQueueEdit>()
+    pendingQueueEdits.set(slot, perSlot)
+  }
+  perSlot.set(queueId, { content, handedBack: false })
+}
+
+/** Return the newest local edit to a closing composer and remember that hand-back. */
+export function takeSideQueueEditForClose(slot: string, queueId: string): string | undefined {
+  const livePerSlot = liveQueueEditDrafts.get(slot)
+  const liveDraft = livePerSlot?.get(queueId)
+  // QueueStack refuses a blank commit. Treat the same value as no live draft
+  // here so closing the card returns its pending edit or saved wording.
+  const hasLiveDraft = liveDraft !== undefined && liveDraft.trim().length > 0
+  if (livePerSlot?.delete(queueId) && livePerSlot.size === 0) {
+    liveQueueEditDrafts.delete(slot)
+  }
+  const edit = pendingQueueEdits.get(slot)?.get(queueId)
+  if (edit) edit.handedBack = true
+  return hasLiveDraft ? liveDraft : edit?.content
+}
+
+/** Retire a settled edit and report whether closure already returned its text. */
+export function finishSideQueueEdit(slot: string, queueId: string): boolean {
+  const perSlot = pendingQueueEdits.get(slot)
+  const edit = perSlot?.get(queueId)
+  if (!edit || !perSlot) return false
+  perSlot.delete(queueId)
+  if (perSlot.size === 0) pendingQueueEdits.delete(slot)
+  return edit.handedBack
+}
 
 function noteQueueEditBroadcast(slot: string, queueId: string): void {
   let perSlot = queueEditBroadcasts.get(slot)
@@ -400,7 +588,16 @@ export const sideReducers = {
       return
     }
     if (at < 0) {
-      if (kind === 'cancel' || kind === 'drain') retireQueueId()
+      if (kind === 'cancel' || kind === 'drain') {
+        // A card a socket-open re-read dropped: a cancel for it releases its text
+        // as the card would have, so a cancel answered after the read is not lost.
+        const dropped = takeSideQueueDroppedByResync(slot, queue_id)
+        const released = dropped && kind === 'cancel' ? (raw ? content : '') || dropped.content || content || '' : ''
+        if (released && (!suppressRelease || dropped?.raw)) {
+          side.releasedText = mergeIntoDraft(side.releasedText, released)
+        }
+        retireQueueId()
+      }
       // Another tab edited an entry this tab has no card for, while this tab's
       // restore read is in flight. The read may have been answered before the
       // edit, so its copy would show the old text. The frame's `rev` lets the
@@ -528,14 +725,21 @@ export const sideReducers = {
     side.releasedText = current.slice(consumed.length).replace(/^\s+/, '')
   },
   sideClose(state: ChatState, action: PayloadAction<string>) {
-    delete state.slotSide[action.payload]
-    if (isUnsafeKey(action.payload)) return
-    state.slotSideClosed[safeKey(action.payload)] = true
+    const slot = action.payload
+    if (isUnsafeKey(slot)) return
+    noteSideQueueCardsDroppedByClose(slot, state.slotSide[slot]?.queue?.filter(entry => !entry.raw) ?? [])
+    // Queue ids are unique only within one conversation, so what a re-read dropped
+    // from this one must not answer a cancel in the next. It moves to a record only
+    // this tab's own cancel answer reads. A close of a slot already closed (the
+    // gateway's frame for a close this tab made) leaves that record as it is.
+    if (!state.slotSideClosed[slot]) keepSideQueueDroppedByResyncAcrossClose(slot)
+    delete state.slotSide[slot]
+    state.slotSideClosed[safeKey(slot)] = true
     // Closed here, so this page knows the gateway holds nothing for the slot: a
     // restore read still in flight describes the conversation just closed.
     state.slotSideRestored ??= {}
-    state.slotSideRestored[safeKey(action.payload)] = true
-    if (state.slotSideReading) delete state.slotSideReading[action.payload]
+    state.slotSideRestored[safeKey(slot)] = true
+    if (state.slotSideReading) delete state.slotSideReading[slot]
   },
   /** A restore read of the slot's side conversation started (`reading: true`), or
    *  failed (`reading: false`). Only while one is in flight does the panel keep an
@@ -567,14 +771,17 @@ export const sideReducers = {
     const local = draft && isDraft(draft) ? current(draft) : draft
     state.slotSide[safeKey(slot)] = restoredSide(local, snapshot)
   },
-  /** Correct a restored panel still waiting on a turn from a socket-open read of
-   *  the gateway's copy (`resyncWaitingSideConversations`). The read speaks only
+  /** Correct a restored panel from a socket-open read of the gateway's copy
+   *  (`resyncWaitingSideConversations`), so it shows what happened while the tab
+   *  could not hear its frames. The read speaks only
    *  for the panel as it was when the read was sent (`readFor`). A read that finds
    *  no open conversation, or another conversation (it shares none of the runs
    *  `readFor` shows), stops the wait for the turns the read covers, settles the
    *  questions accepted into them, and otherwise leaves the rows alone. A read
    *  that shares one of those runs settles optimistic questions already stored by
-   *  the gateway, then is merged as a restore merges it. A read
+   *  the gateway, then is merged as a restore merges it, queue included: a queued
+   *  card the read lacks goes if the panel showed it when the read was sent, and
+   *  stays if it was added after. A read
    *  whose conversation this tab closed and replaced while the read was
    *  out (the panel carries another `createdAt`) changes nothing. */
   sideResync(state: ChatState, action: PayloadAction<{ slot: string; snapshot: SideSnapshot; readFor: SideState }>) {
@@ -601,8 +808,23 @@ export const sideReducers = {
       return
     }
     const local = isDraft(side) ? current(side) : side
-    const merged = restoredSide(settleStoredOptimisticRows(local, snapshot), snapshot)
+    // A queued question the read lacks but the panel already showed when the read
+    // was sent ran or was cancelled before the gateway answered, so its card goes.
+    // One added after the read was sent is newer than the read, so it stays.
+    const readIds = new Set((snapshot.queue ?? []).map(entry => entry.id))
+    const shownAtRead = new Set((readFor.queue ?? []).map(entry => entry.id))
+    const goneIds = (local.queue ?? []).filter(entry => shownAtRead.has(entry.id) && !readIds.has(entry.id)).map(entry => entry.id)
+    const kept = goneIds.length ? { ...local, queue: local.queue?.filter(entry => !goneIds.includes(entry.id)) } : local
+    const merged = restoredSide(settleStoredOptimisticRows(kept, snapshot), snapshot)
     side.messages = merged.messages
+    if (merged.queue) side.queue = merged.queue
+    if (goneIds.length) {
+      // Retired like a drain or cancel frame retires it, so a late push for the
+      // entry cannot bring the card back.
+      const retired = (side.removedQueueIds ?? []).filter(id => !goneIds.includes(id))
+      side.removedQueueIds = [...retired, ...goneIds].slice(-MAX_RETIRED_QUEUE_IDS)
+      noteSideQueueDroppedByResync(slot, (local.queue ?? []).filter(entry => goneIds.includes(entry.id)))
+    }
     side.pending = merged.pending
     side.streaming = merged.streaming
     if (merged.lastRunId) side.lastRunId = merged.lastRunId

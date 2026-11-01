@@ -29,6 +29,7 @@ from kiro_crew.env import (
     mcp_search_path,
     resolved_command_casing,
     sanitize_spec_env,
+    saved_command_casing,
     spec_path_key,
 )
 from kiro_crew.executors import mcp_probe_executor
@@ -197,6 +198,41 @@ def _drop_temp_refusals(server: McpServerInfo) -> None:
         cached.temp_refusals = []
 
 
+def secret_reference_refusal(secret_keys: list[str] | tuple[str, ...]) -> str:
+    """The not-probed reason for a server whose env holds ``secret://`` values.
+
+    Names only the env KEYS, never a value. The MCP tab shows an ``outdated``
+    row's error as this reason, with the routing guide beside it.
+    """
+    return (
+        f"not probed: env {', '.join(secret_keys)} holds a secret:// reference, "
+        "which is resolved only when the MCP gateway starts the server"
+    )
+
+
+def _served_by_gateway(name: str) -> bool:
+    """True when the running MCP gateway starts server *name* for a session.
+
+    The same answer the agent-spec rebuild acts on
+    (``kiro_crew.agent.gateway_routed_names``, matched with
+    ``routed_for_secret_reference``): saved routing AND a stub in the overlay the
+    running gateway built. Saved routing alone is only intent until the next
+    gateway start, so a row reads routed exactly when a session would launch the
+    server through the gateway. Blocking (config and overlay reads); any failure
+    answers False, which keeps the refusal row and its routing guidance.
+    """
+    try:
+        # Deferred: ``kiro_crew.agent`` is heavy, and this probe module must not
+        # pull it in at import time.
+        from kiro_crew import agent
+        from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference
+
+        return routed_for_secret_reference(name, agent.gateway_routed_names())
+    except Exception:  # noqa: BLE001 -- "cannot tell" keeps the refusal row
+        logger.debug("Could not read MCP gateway routing for %s", name, exc_info=True)
+        return False
+
+
 def _redact_temp_refusal_text(text: str) -> str:
     """The redactor the declared-temp WARNING applies to a path or failure."""
     return _sanitize_probe_error(ValueError(text))
@@ -289,11 +325,19 @@ async def probe_server(
     secret_keys = secret_reference_keys(server.env)
     if secret_keys:
         _drop_temp_refusals(server)
+        # A server the running gateway serves is started there, where the
+        # reference IS resolved, so "route it through the gateway" is not its
+        # next step. It reports ``routed``: no probe ran, so it states where
+        # the server runs and claims nothing about its health, and like
+        # ``outdated`` it carries no verdict (not cached, not counted toward the
+        # quarantine). Off the loop: the routing answer reads config and the
+        # overlay from disk.
+        if await asyncio.to_thread(_served_by_gateway, server.name):
+            server.status = "routed"
+            server.error = ""
+            return server
         server.status = "outdated"
-        server.error = (
-            f"not probed: env {', '.join(secret_keys)} holds a secret:// reference, "
-            "which is resolved only when the MCP gateway starts the server"
-        )
+        server.error = secret_reference_refusal(secret_keys)
         return server
 
     if not _on_private_loop:
@@ -348,16 +392,17 @@ async def probe_server(
         # Same rule the agent-config resolver and gatewayd's rewriter apply, so
         # the probe spawns the spelling the session will use: an absolute
         # command that exists and is executable is the operator's own spelling
-        # and runs verbatim; a PATH-resolved one gets the casing repair, since
-        # a PATHEXT-synthesized ``.EXE`` reaching an ``argv[0]``-dispatching
-        # shim would fail (or pass) the probe for a reason the session does
-        # not share.
+        # and runs verbatim, except a saved PATHEXT ``.EXE`` extension, which
+        # ``saved_command_casing`` heals; a PATH-resolved one gets the casing
+        # repair, since a PATHEXT-synthesized ``.EXE`` reaching an
+        # ``argv[0]``-dispatching shim would fail (or pass) the probe for a
+        # reason the session does not share.
         if (
             os.path.isabs(server.command)
-            and os.path.isfile(server.command)
+            and await asyncio.to_thread(os.path.isfile, server.command)
             and os.access(server.command, os.X_OK)
         ):
-            resolved = server.command
+            resolved = saved_command_casing(server.command)
         else:
             resolved = resolved_command_casing(shutil.which(server.command, path=effective_path))
         if not resolved:

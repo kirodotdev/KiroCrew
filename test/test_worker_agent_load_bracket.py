@@ -736,6 +736,8 @@ class _FakeHandle:
         self.kwargs = kwargs
         self.drained = False
         self.native_context_documents = {}
+        # Set by ``AcpSessionHandle.__init__``; ``_finish_create_session`` extends it.
+        self.kas_launch_snapshots: list[str] = []
 
     def store_session_config(self, resp):
         return None

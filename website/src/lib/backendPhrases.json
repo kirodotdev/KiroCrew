@@ -1,4 +1,5 @@
 {
   "neverStartedPrefix": "never started: waiting for memory",
-  "neverStartedPressurePrefix": "never started: waiting for memory (macOS memory pressure"
+  "neverStartedPressurePrefix": "never started: waiting for memory (macOS memory pressure",
+  "cronPartialGateBlockPattern": "^\\d+ of \\d+ tool call\\(s\\) blocked by the security gate: "
 }

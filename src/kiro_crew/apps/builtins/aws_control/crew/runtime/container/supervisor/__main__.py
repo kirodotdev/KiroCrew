@@ -1075,7 +1075,7 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
         # terminate on a backend that never existed. front and sidecar are declared here too,
         # BEFORE the first try, so no interruptible statement sits between the two cleanup
         # scopes: a stop at the readiness boundary is caught by one scope or the other rather
-        # than escaping both with the claim unreleased (GPT F1).
+        # than escaping both with the claim unreleased.
         backend = None
         front: ProcessGroup | None = None
         sidecar: ProcessGroup | None = None
@@ -1132,7 +1132,7 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
         try:
             # The readiness boundary is INSIDE this cleanup scope (not between the scopes): a
             # stop here still routes to the release-and-teardown below rather than escaping with
-            # the claim unreleased and the backend undrained (GPT F1).
+            # the claim unreleased and the backend undrained.
             log.info("backend: ready on %s", settings.backend_base_url)
             front = _start_front(settings)
             log.info("front: started")
@@ -1158,7 +1158,7 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
             raise
 
         # The handoff from the startup guard to the supervise-phase handlers happens INSIDE
-        # the guard scope, not after it (GPT F1). If the `watched` list build and the
+        # the guard scope, not after it. If the `watched` list build and the
         # supervise `try` ran after `with _startup_signal_guard()` exited, its finally would
         # have already restored the default dispositions -- a SIGTERM in that span would then
         # kill the process and a SIGINT escape as KeyboardInterrupt, in both cases BEFORE

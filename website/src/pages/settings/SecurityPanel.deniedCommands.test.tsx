@@ -47,11 +47,6 @@ vi.mock('../../api/client', () => ({
     // crash on an undefined queryFn; the section's behaviour is covered in
     // SecurityPanel.tailnet.test.tsx.
     tailnetStatus: vi.fn(),
-    // Read by the rail on every mount to summarise the flagged-file-delivery
-    // section, for the same reason as `tailnetStatus` above. The section's own
-    // behaviour is covered in SecurityPanel.fileDelivery.test.tsx.
-    fileDeliveryConsent: vi.fn(),
-    revokeFileDeliveryConsent: vi.fn(),
     listTrustedApps: vi.fn(),
     trustApp: vi.fn(),
     untrustApp: vi.fn(),
@@ -63,7 +58,7 @@ vi.mock('../../api/client', () => ({
   },
 }))
 
-import { api } from '../../api/client'
+import { api, ApiError } from '../../api/client'
 import { SecurityPanel } from './SecurityPanel'
 import { i18nT } from '../../i18n/t'
 import {
@@ -73,7 +68,6 @@ import {
   NOTED_PATTERN,
   USER_NOTE,
   TAILNET_OFF,
-  CONSENT_NONE,
   snapshot,
   posture,
   govNoPolicy,
@@ -107,14 +101,15 @@ describe('SecurityPanel — denied commands', () => {
     vi.clearAllMocks()
     ;(api.toggleBuiltinDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.setDeniedCommandsDisableAll as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
-    ;(api.addUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    // mockReset, not just clearAllMocks: a `...Once` rejection a test never
+    // consumed must not leak into the next test's add.
+    ;(api.addUserDeniedCommand as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(snapshot())
     ;(api.toggleUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.deleteUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
-    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
   })
 
   it('toggling a built-in OFF opens the confirm modal and only mutates after ack', async () => {
@@ -206,25 +201,67 @@ describe('SecurityPanel — denied commands', () => {
     await waitFor(() => expect(api.setDeniedCommandsDisableAll).toHaveBeenCalledWith(true))
   })
 
-  it('add-pattern validates the regex: invalid shows inline error, no API call', async () => {
+  it('add-pattern sends a plain regex straight to the API', async () => {
+    await renderPanel()
+
+    const input = screen.getByLabelText('Custom deny pattern')
+    fireEvent.change(input, { target: { value: 'rm -rf /data' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // The note is untouched here, so it arrives as the empty string the client
+    // defaults to.
+    await waitFor(() =>
+      expect(api.addUserDeniedCommand).toHaveBeenCalledWith('rm -rf /data', ''),
+    )
+  })
+
+  it('add-pattern accepts Python-only regex syntax the browser cannot parse', async () => {
+    // The gate compiles user rules with Python `re`. A named group `(?P<x>...)`
+    // is valid there and a SyntaxError in `new RegExp()`, so a browser-side parse
+    // would refuse a rule the server accepts.
+    await renderPanel()
+
+    const pythonOnly = String.raw`\Arm -rf (?P<target>/data)\Z`
+    expect(() => new RegExp(pythonOnly)).toThrow()
+
+    const input = screen.getByLabelText('Custom deny pattern')
+    fireEvent.change(input, { target: { value: pythonOnly } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() =>
+      expect(api.addUserDeniedCommand).toHaveBeenCalledWith(pythonOnly, ''),
+    )
+  })
+
+  it('add-pattern shows the server error for a regex Python cannot compile', async () => {
+    // The server is the one judge of the pattern: its 400 body names the `re`
+    // error, and that text is what the reader sees under the form.
+    ;(api.addUserDeniedCommand as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(
+        400,
+        'Bad Request',
+        JSON.stringify({ error: 'invalid regex: missing ), unterminated subpattern at position 0' }),
+      ),
+    )
     await renderPanel()
 
     const input = screen.getByLabelText('Custom deny pattern')
     fireEvent.change(input, { target: { value: '(unclosed' } })
-    // Submit via Enter.
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    // Inline error surfaces and no API call is made.
-    await screen.findByText(/Invalid regular expression|Unterminated group|Invalid group/i)
-    expect(api.addUserDeniedCommand).not.toHaveBeenCalled()
-
-    // A valid pattern clears the error and calls the API. The note is untouched
-    // here, so it arrives as the empty string the client defaults to.
-    fireEvent.change(input, { target: { value: 'rm -rf /data' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() =>
-      expect(api.addUserDeniedCommand).toHaveBeenCalledWith('rm -rf /data', ''),
+      expect(api.addUserDeniedCommand).toHaveBeenCalledWith('(unclosed', ''),
     )
+    expect(
+      await screen.findByText('invalid regex: missing ), unterminated subpattern at position 0'),
+    ).toBeInTheDocument()
+    // The draft survives so the reader can fix it.
+    expect(screen.getByLabelText('Custom deny pattern')).toHaveValue('(unclosed')
+
+    // Once the reader edits the pattern the rejection no longer describes what
+    // is on screen, so it goes away rather than sit under the corrected text.
+    fireEvent.change(input, { target: { value: '(closed)' } })
+    expect(
+      screen.queryByText('invalid regex: missing ), unterminated subpattern at position 0'),
+    ).not.toBeInTheDocument()
   })
 
   it('add-pattern sends the typed note through to the API and clears both drafts', async () => {
@@ -414,7 +451,6 @@ describe('SecurityPanel — rule search', () => {
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
-    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
   })
 
   const SEARCH = 'Search rules, patterns, categories…'

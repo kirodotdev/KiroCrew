@@ -22,13 +22,13 @@ describe('workerKitErrorText', () => {
     ['invalid_request', 'crewWorkerKit.error_invalid_request'],
   ])('reads %s as its sentence', (code, key) => {
     const text = workerKitErrorText(refusal(code))
-    expect(text).toBe(i18nT(key, { action: i18nT('crewWorkerKit.copy') }))
+    expect(text).toBe(i18nT(key))
     expect(text).not.toContain(code)
   })
 
-  it('names the preview button it is given', () => {
-    expect(workerKitErrorText(refusal('stale_revision'), 'Re-copy from template')).toContain('“Re-copy from template”')
-    expect(workerKitErrorText(refusal('revision_required'))).toBe('Press “Copy into the worker” to see the changes first, then apply them.')
+  it('points at the preview on screen, not at a button', () => {
+    expect(workerKitErrorText(refusal('stale_revision'))).toContain('The changes below are up to date')
+    expect(workerKitErrorText(refusal('revision_required'))).toBe('Check the changes below first, then add them.')
   })
 
   it('keeps the message of a failure that names no known code', () => {

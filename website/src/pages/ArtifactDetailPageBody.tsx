@@ -537,6 +537,7 @@ export function ArtifactDetailPageBody({
                   scrollNonce={bodyScrollNonce}
                   onActivateComment={openThreadHandler}
                   unreadRootIds={unreadRootIds}
+                  headingRail
                 />
               )}</CodeCommentsScope>
               {/* Selecting text opens the type-first comment box; mounted only

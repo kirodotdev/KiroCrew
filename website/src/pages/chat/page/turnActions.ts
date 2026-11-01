@@ -1,8 +1,8 @@
-import { useState, useCallback, useMemo, useEffect, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../../store'
-import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
-import { appendSlotMessage, selectSendConfirmed, resolveOptimisticSteer, truncateAfterIndex, replaceMessages } from '../../../store/chatSlice'
+import { isHiddenInvisibleAssistantRow, isRetractedSteerRow } from '../../../utils/invisibleText'
+import { appendSlotMessage, selectSendConfirmed, resolveOptimisticSteer } from '../../../store/chatSlice'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../../../chat-core/transport/steerReceipt'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
@@ -15,6 +15,9 @@ import { revealComposer } from '../composerFocus'
 import type { ChatMessage } from '../../../types'
 import type { ErrorReport } from '../../../utils/errorReport'
 import { i18nT } from '../../../i18n/t'
+import { clearSendRaceNotice, isSendRaceConflict, sendIdempotencyKey, setSendRaceNotice } from '../../../api/sendRace'
+import { isComposerLocked, noteComposerLocked } from '../../../api/typingLease'
+import { baseRevisionForPress } from '../../../hooks/sharedCrew/sendRevisionSeed'
 
 // Per-action titles for the refused-press notice above the composer. A press
 // added later gets its refusal surfaced by adding one entry here and calling
@@ -31,6 +34,7 @@ export const REFUSED_PRESS_TITLE_KEYS = {
   side_turn: 'pages.chatPage.could_not_send_to_side_chat',
   agent_switch: 'pages.chatPage.could_not_switch_agent',
   fresh_session: 'pages.chatPage.could_not_start_fresh_session',
+  repair_images: 'pages.chatPage.could_not_repair_images',
 } as const
 
 export type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
@@ -46,6 +50,19 @@ export function slashRefusal(res: { stage?: 'open' | 'turn' | 'agent'; error?: s
     action: res.stage === 'turn' ? 'side_turn' : 'side_open',
     message: res.error || i18nT('pages.chatPage.side_command_not_run'),
   }
+}
+
+/** One steer press. `baseAtPress` is the send revision this tab had seen when
+ *  the person pressed (`baseRevisionFor` read synchronously at the press). */
+export interface SteerVars {
+  text: string
+  sendId?: string
+  slot: string
+  auto?: boolean
+  quote?: MessageQuote | null
+  askId?: string | null
+  files?: string[]
+  baseAtPress?: number
 }
 
 interface SteerDeliveryOptions {
@@ -99,8 +116,18 @@ export function useSteerDelivery({
     // (`decisions/points/message_steer.py`). The receipt policy below is unchanged,
     // because the answer arrives as the `dispatched` of a steer or the `queued` of
     // a queue -- both rulings `applySteerReceipt` already owns.
-    mutationFn: ({ text, sendId, slot, auto, quote }: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null }) =>
-      sendTurn({ message: text, slot, steer: auto ? 'auto' : true, ...(sendId ? { meta: { sendId, ...(quote ? { quote } : {}) } } : {}) }),
+    // A steer is a send too (first submit wins): it carries the revision this
+    // tab had seen at the press (`baseAtPress`), or, when it had seen none, the
+    // one the session's read answers, and the host refuses it with `send_race`
+    // when a collaborator's send was accepted after that.
+    mutationFn: async ({ text, sendId, slot, auto, quote, files, baseAtPress }: SteerVars) =>
+      sendTurn({
+        message: text,
+        slot,
+        steer: auto ? 'auto' : true,
+        ...(sendId ? { meta: { sendId, ...(files?.length ? { files } : {}), ...(quote ? { quote } : {}) } } : {}),
+        race: { baseRevision: await baseRevisionForPress(slot, baseAtPress), ...(sendId ? { idempotencyKey: sendIdempotencyKey(sendId) } : {}) },
+      }),
     onSuccess: (receipt, { text, sendId, slot, quote, askId }) => {
       // Receipt policy for a steer, owned once in chat-core (issue #9457):
       // applySteerReceipt decides WHICH ruling applies; the adapter below is
@@ -134,6 +161,24 @@ export function useSteerDelivery({
         if (onScreenNow) setInput(back)
       }
       const row = (message: ChatMessage) => dispatch(appendSlotMessage({ slot, message }))
+      if (receipt.status === 'refused' && isSendRaceConflict(receipt.body)) {
+        // A collaborator's send was accepted first: nothing of this one was,
+        // so its bubble goes, the text comes back, and the notice above the
+        // composer names who sent first. Not an error row: nothing failed.
+        setSendRaceNotice(slot, receipt.body)
+        if (sendId) dispatch(resolveOptimisticSteer({ slot, sendId, outcome: 'queued' }))
+        handBack()
+        return
+      }
+      if (receipt.status === 'refused' && isComposerLocked(receipt.body)) {
+        // Someone else holds the typing lease: the text comes back and the
+        // composer locks with their name. Not an error row: nothing failed.
+        noteComposerLocked(receipt.body)
+        if (sendId) dispatch(resolveOptimisticSteer({ slot, sendId, outcome: 'queued' }))
+        handBack()
+        return
+      }
+      if (receipt.status !== 'refused') clearSendRaceNotice(slot)
       applySteerReceipt(receipt, {
         // A confirmed echo is stronger evidence than a missing HTTP response,
         // including when a steer raced onto a new turn and lost its steer flag.
@@ -210,8 +255,10 @@ export function useRefusedPress() {
   }
 }
 
+/** The empty id set, shared so an idle page keeps one identity. */
+const NO_MIDS: ReadonlySet<string> = new Set()
+
 interface RegenerateOptions {
-  dispatch: AppDispatch
   activeSlot: string | null
   messages: ChatMessage[]
   /** The page's latest-value ref of `messages`, read by the press handlers so they keep one identity across frames. */
@@ -231,7 +278,7 @@ interface RegenerateOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useRegenerate({
-  dispatch, activeSlot, messages, messagesRef, slotRunning, activeSlotRemoteBound, isStreaming, setRefusedPress, showRefusedPress,
+  activeSlot, messages, messagesRef, slotRunning, activeSlotRemoteBound, isStreaming, setRefusedPress, showRefusedPress,
 }: RegenerateOptions) {
   const lastTextIdx = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -251,12 +298,35 @@ export function useRegenerate({
   useEffect(() => {
     if (regenerating && isStreaming) setRegenerating(false)
   }, [regenerating, isStreaming])
+  // A turn that ran and ended without streaming settles the press too: the
+  // empty turn kept the previous reply, so it must not stay marked until the
+  // safety timeout below.
+  const regenTurnRanRef = useRef(false)
+  useEffect(() => {
+    if (!regenerating) { regenTurnRanRef.current = false; return }
+    if (slotRunning) regenTurnRanRef.current = true
+    else if (regenTurnRanRef.current) setRegenerating(false)
+  }, [regenerating, slotRunning])
   // Safety timeout
   useEffect(() => {
     if (!regenerating) return
     const t = setTimeout(() => { setRegenerating(false) }, 30_000)
     return () => clearTimeout(t)
   }, [regenerating])
+  // The ids of the rows the Regenerate turn may replace: the previous reply,
+  // which stays on screen while the new one streams in below it. The page
+  // draws them as "previous reply" so the user can tell the two apart, and so
+  // the collapse into one reply with a variant switcher at the turn's end is
+  // expected rather than looking like a lost answer. Cleared once nothing is
+  // pending or running: the swap has happened, or an empty turn kept the old
+  // reply as the current one.
+  const [replacingMids, setReplacingMids] = useState<ReadonlySet<string>>(NO_MIDS)
+  useEffect(() => { setReplacingMids(NO_MIDS) }, [activeSlot])
+  // `replacingMids` is a dep so a press and its refusal batched into one
+  // render (regenerating never visibly true) still clear the mark.
+  useEffect(() => {
+    if (!regenerating && !slotRunning && replacingMids.size > 0) setReplacingMids(NO_MIDS)
+  }, [regenerating, slotRunning, replacingMids])
   useEffect(() => { setRefusedPress(null) }, [activeSlot, setRefusedPress])
   // A turn that actually starts retires the refusal: whatever the slot was busy
   // with is over, so the old reason would now describe a state that passed.
@@ -267,17 +337,17 @@ export function useRegenerate({
   const handleRegenerate = useCallback(() => {
     if (!activeSlot || regenerating || slotRunning || activeSlotRemoteBound) return
     const messages = messagesRef.current
-    // Mirror the server's scan exactly (chat_regenerate.py): the turn being
-    // regenerated ends at the last assistant row BY ROLE — hidden
-    // invisible-only rows included — so this optimistic truncation cannot
-    // diverge from the history rewrite the server persists. System-notice
-    // rows (compaction / session reload) ARE skipped, on both sides: they are
-    // status rows, not the reply, and capturing one as the variant would drop
-    // the real reply from variant history. The skip-aware lastTextIdx only
-    // decides which drawn row HOSTS the affordance; its extra invisible-row
-    // skip would truncate after an earlier user row than the server does.
+    // Mirror the server's scan exactly (chat_regenerate.py): only a slot whose
+    // last turn holds an assistant reply BY ROLE can be regenerated. System
+    // notices (compaction / session reload) are skipped and a real user turn is
+    // never crossed, on both sides. Nothing is removed here: the previous reply
+    // stays on screen until the server replaces it at the end of a turn that
+    // produced a new one, so a turn that ends empty keeps it.
     let aiIdx = -1
     for (let i = messages.length - 1; i >= 0; i--) {
+      // A taken-back steer draws only a settlement note and did not open a
+      // turn, so it is neither a boundary nor the request being regenerated.
+      if (isRetractedSteerRow(messages[i])) continue
       // Never cross a real user turn (mirror the server): a reply found past
       // a newer user row (e.g. a /compact row awaiting only its notice) would
       // be regenerated by deleting that newer turn, irreversibly.
@@ -288,18 +358,28 @@ export function useRegenerate({
       break
     }
     if (aiIdx < 0) return
-    const uIdx = messages.slice(0, aiIdx).map(mm => mm.role).lastIndexOf('user')
+    let uIdx = -1
+    for (let i = aiIdx - 1; i >= 0; i--) {
+      if (isRetractedSteerRow(messages[i])) continue
+      if (messages[i].role === 'user') { uIdx = i; break }
+    }
     if (uIdx < 0) return
-    const snapshot = [...messages]
-    dispatch(truncateAfterIndex(uIdx + 1))
+    // The same rows the server arms as the target: everything after the
+    // regenerated user row.
+    const mids = new Set<string>()
+    for (const row of messages.slice(uIdx + 1)) {
+      const mid = row.meta?.mid
+      if (typeof mid === 'string' && mid) mids.add(mid)
+    }
+    setReplacingMids(mids)
     setRegenerating(true)
     api.regenerateSlot(activeSlot).catch((e: unknown) => {
       showRefusedPress('regenerate', e)
-      dispatch(replaceMessages(snapshot))
+      setReplacingMids(NO_MIDS)
       setRegenerating(false)
     })
-  }, [activeSlot, regenerating, slotRunning, activeSlotRemoteBound, messagesRef, dispatch, showRefusedPress])
+  }, [activeSlot, regenerating, slotRunning, activeSlotRemoteBound, messagesRef, showRefusedPress])
   return {
-    lastTextIdx, regenerating, setRegenerating, handleRegenerate,
+    lastTextIdx, regenerating, setRegenerating, handleRegenerate, replacingMids,
   }
 }

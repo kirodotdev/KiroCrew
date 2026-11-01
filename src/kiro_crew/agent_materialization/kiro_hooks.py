@@ -1245,6 +1245,41 @@ def _user_kiro_hooks_locked() -> bool:
     return True
 
 
+def _drop_refused_kiro_hook_events(hooks: dict) -> dict:
+    """*hooks* without the events the policy's ``script_hooks`` events list refuses.
+
+    Enterprise builds only, for the reason :func:`_user_kiro_hooks_locked` gives;
+    an ``oss`` build returns *hooks* without asking. kiro-cli spells an event
+    ``preToolUse`` where a policy writes ``PreToolUse``; the identifier matcher is
+    case-insensitive, so one list covers both. An unreadable answer drops the event.
+    """
+    from kiro_crew.edition_locks import locked_off
+
+    if not locked_off():
+        return hooks
+    from kiro_crew.hook_event_governance import event_refusal
+    from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
+
+    kept: dict = {}
+    for event, entries in hooks.items():
+        try:
+            reason = event_refusal(HOST_SESSION_KEY, str(event))
+        except Exception:
+            reason = "governance unavailable (fail-closed)"
+        if reason is None:
+            kept[event] = entries
+            continue
+        # Event keys come from config before event-name validation, so both values
+        # go through the same diagnostic scrub as the neighbouring rejections.
+        agent_mod.logger.info(
+            "kiro_hooks[%s]: not installed: %s",
+            agent_mod._hook_diagnostic(event),
+            agent_mod._hook_diagnostic(reason),
+        )
+        agent_mod._sel_hook_rejected(str(event), "", reason)
+    return kept
+
+
 def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
     """Merge user-defined kiro_hooks from kirocrew config into *config* (additive).
 
@@ -1461,6 +1496,7 @@ def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
                 continue
             combined_user_hooks.setdefault(event, []).extend(entries)
 
+    combined_user_hooks = _drop_refused_kiro_hook_events(combined_user_hooks)
     config["hooks"] = _merge_kiro_hooks(config.get("hooks", {}), combined_user_hooks)
 
     after = sum(len(v) for v in config["hooks"].values() if isinstance(v, list))

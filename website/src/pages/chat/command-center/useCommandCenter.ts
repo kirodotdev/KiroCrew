@@ -2,17 +2,23 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { CREW_BOARD_POLL_MS } from '../../../api/crewBoard'
+import { crewModeView } from '../../../lib/crewMode'
+import { useCrewMode } from '../../../hooks/usePreviewFlag'
 import { fmtList } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import { useAppDispatch, useAppSelector } from '../../../store'
 import { isAnsweredQuestionEnding, markQuestionSettled } from '../../../store/chatSlice'
 import { answersAsText, questionName } from '../../../utils/questionAnswers'
 import { restoreToComposer } from '../../../utils/composerRestore'
+import { viewSubagentSlots } from '../../../lib/subagentReplayScope'
 import type { SubagentActivity } from '../../../types'
-import { buildCommandCenter, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
+import { buildCommandCenter, crewWaitingApprovals, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
 
 /** The work board as its route serves it: the folded value plus its revision. */
-type WorkProjection = { value?: { items: WorkItem[]; omitted?: number }; revision?: number }
+// `published_revision` is the read's delta base: the revision of the gateway's last
+// work publish, read before the fold. Kept on the cached entry, because a pushed
+// `slot_fold` delta applies only on exactly that base (hooks/websocket/workDelta.ts).
+type WorkProjection = { value?: { items: WorkItem[]; omitted?: number }; revision?: number; published_revision?: number }
 
 /** How often the panel re-reads the work board on its own.
  *
@@ -68,7 +74,23 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   const liveWorkflows = useAppSelector(s => s.chat.workflowRuns)
   const connected = useAppSelector(s => s.dashboard.connected)
   const fleet = scope === 'fleet'
-  const scoped = useMemo(() => fleet ? slots : root ? scopedSlots(slots, root) : [], [slots, root, fleet])
+  // The fleet page lists the person's sessions: a Crew Mode worker is its
+  // conductor's, and its approval is decided on that conductor's card, so it gets
+  // no session card and no attention card here (edge review R2 F4).
+  const crewMode = useCrewMode()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewModeView reads
+  const scoped = useMemo(() => fleet ? crewModeView(slots) : root ? scopedSlots(slots, root) : [], [slots, root, fleet, crewMode])
+  // Read over the full slot set, before the workers are left out: the conductor
+  // of a worker waiting on approval reads as needing a tool decision (R3 Z2).
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewWaitingApprovals reads
+  const crewWaiting = useMemo(() => fleet ? crewWaitingApprovals(slots) : undefined, [slots, fleet, crewMode])
+  // These slots' subagent runs are drawn here, finished ones included, so the
+  // gateway's durable replay is asked for them (it covers only named slots).
+  const scopedKeys = useMemo(() => scoped.map(s => s.key).join('\n'), [scoped])
+  useEffect(() => {
+    if (!enabled || !scopedKeys) return
+    return viewSubagentSlots(scopedKeys.split('\n'))
+  }, [enabled, scopedKeys])
   const canRead = enabled && (fleet || !!root && scoped.length > 0)
   // The app-wide policy is never-stale; a finite staleTime here made every
   // window focus re-read all of these. Frames and reconnect own freshness; a
@@ -181,6 +203,8 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     // let a high read revision reject newer pushes, dropping them silently until
     // the clock pull. The module's rule is "the ledger holds only revisions a
     // frame applied"; a read records none, so the next frame always applies.
+    // `published_revision` stays: it is comparable to a delta frame's base by
+    // construction, and is the base the next `slot_fold` delta applies on.
     queryFn: async (): Promise<WorkProjection> => {
       const { revision: _ignored, ...rest } = (await api.sessionWorkProjection(root!)) as WorkProjection
       return rest
@@ -201,8 +225,8 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
         session_key: r.sessionKey || runs.get(r.run_id)?.session_key || '', error: r.error })
     }
     return buildCommandCenter({ root: fleet ? null : root, slots: scoped, subagents, approvalMode, workflows: [...runs.values()],
-      questions: visibleQuestions, approvals: approvals.data || [], work: work.isEnabled ? work.data?.value : undefined })
-  }, [root, scoped, activeSlot, liveAgents, background, liveWorkflows, workflows.data, visibleQuestions, approvals.data, work.data, work.isEnabled, approvalMode, fleet])
+      questions: visibleQuestions, approvals: approvals.data || [], work: work.isEnabled ? work.data?.value : undefined, crewWaiting })
+  }, [crewWaiting, root, scoped, activeSlot, liveAgents, background, liveWorkflows, workflows.data, visibleQuestions, approvals.data, work.data, work.isEnabled, approvalMode, fleet])
   // A pick in a trailing `[OPTIONS:]` ask is unsent text only while that ask is
   // offered; once the session moves on the card is gone and so is its draft,
   // never restored to the composer (the labels are the agent's, not typed text).

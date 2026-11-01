@@ -135,6 +135,10 @@ async def _start_app_backends(app: web.Application, state: DashboardState) -> No
     )
 
     async def _hooks_startup(app_: web.Application) -> None:
+        # Wire app admission without opening its store before the listener binds.
+        from kiro_crew.shared_crew.wiring import install
+
+        install(state)
         await on_gateway_startup(
             cron_service=state.crons,
             broadcast_fn=_app_event_broadcast,

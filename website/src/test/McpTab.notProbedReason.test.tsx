@@ -95,10 +95,23 @@ describe('McpTab: an outdated row that was not probed', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
+  it('labels the status badge Not probed, not Outdated (#20376)', async () => {
+    mockApi.mcpServers.mockResolvedValue([server({ status: 'outdated', error: REFUSAL })])
+    renderTab()
+    const badge = await screen.findByText('Not probed', undefined, ROW_WAIT)
+    // The badge belongs to the server's own row, in the status's warn tone:
+    // no probe ran, so nothing failed.
+    expect(within(rowOf('vault-backed')).getByText('Not probed')).toBe(badge)
+    expect(badge.className).toContain('text-warn-text')
+    expect(badge.className).not.toContain('text-danger-text')
+    // "Outdated" names an aged result a refresh would fix; this row has none.
+    expect(within(rowOf('vault-backed')).queryByText('Outdated')).toBeNull()
+  })
+
   it('drops the aged-result hint, which a refresh cannot satisfy', async () => {
     mockApi.mcpServers.mockResolvedValue([server({ status: 'outdated', error: REFUSAL })])
     renderTab()
-    const badge = await screen.findByText('Outdated', undefined, ROW_WAIT)
+    const badge = await screen.findByText('Not probed', undefined, ROW_WAIT)
     expect(within(badge.parentElement!).queryByRole('button', { name: 'More information' })).toBeNull()
     expect(screen.queryByText(/30 minutes/)).toBeNull()
   })
@@ -147,5 +160,30 @@ describe('McpTab: outdated rows without a reason are unchanged', () => {
     renderTab()
     expect(await screen.findByText(/timeout after 15s/, undefined, ROW_WAIT)).toBeInTheDocument()
     expect(screen.queryByTestId('mcp-not-probed-reason')).toBeNull()
+  })
+})
+
+describe('McpTab: a secret:// server the gateway already routes', () => {
+  it('says it is routed via the gateway and claims no health', async () => {
+    mockApi.mcpServers.mockResolvedValue([server({ status: 'routed', error: '' })])
+    renderTab()
+    const badge = await screen.findByText('Routed via gateway', undefined, ROW_WAIT)
+    expect(within(rowOf('vault-backed')).getByText('Routed via gateway')).toBe(badge)
+    for (const health of ['Online', 'Error', 'Outdated', 'Unknown']) {
+      expect(within(rowOf('vault-backed')).queryByText(health)).toBeNull()
+    }
+    fireEvent.click(within(badge.parentElement!).getByRole('button', { name: 'More information' }))
+    const tip = await screen.findByRole('tooltip', undefined, ROW_WAIT)
+    expect(tip.textContent ?? '').toMatch(/makes no health claim/)
+  })
+
+  it('does not offer the guide on routing through the gateway', async () => {
+    mockApi.mcpServers.mockResolvedValue([server({ status: 'routed', error: '' })])
+    renderTab()
+    await screen.findByText('Routed via gateway', undefined, ROW_WAIT)
+    expect(screen.queryByTestId('mcp-not-probed-reason')).toBeNull()
+    expect(
+      screen.queryByRole('link', { name: 'How to route this server through the MCP gateway' }),
+    ).toBeNull()
   })
 })

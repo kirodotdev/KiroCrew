@@ -46,6 +46,7 @@ import { formatThinkingTime, getTopMoods, shouldShowStat, formatDate, formatComp
 import { api } from '../mochiApi'
 import { i18nT } from '../../../../i18n/t'
 import ErrorNotice from '../../../../components/ErrorNotice'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../../../components/ui/tabs'
 import { capabilitiesVars } from '../../../../components/destinationVars'
 import { SUPPORTED_LANGUAGES } from '../../../../i18n/languages'
 import { moodLabel } from '../../i18nKeys'
@@ -658,16 +659,21 @@ const Field: React.FC<{ label: string; desc?: string; value: string; onChange: (
 }
 
 
-const SelectField: React.FC<{ label: string; desc?: string; value: string; options: (string | { value: string; label: string })[]; onChange: (v: string) => void; disabled?: boolean }> = ({ label, desc, value, options, onChange, disabled }) => (
-  <div style={{ marginBottom: 8 }}>
-    <div style={{ fontSize: 12, color: 'var(--text)', marginBottom: 1 }}>{label}</div>
-    {desc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>{desc}</div>}
-    <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}
-      style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 8px', color: 'var(--text)', fontSize: 12, outline: 'none' }}>
-      {options.map((o) => { const v = typeof o === 'string' ? o : o.value; const l = typeof o === 'string' ? o : o.label; return <option key={v} value={v}>{l}</option> })}
-    </select>
-  </div>
-)
+const SelectField: React.FC<{ label: string; desc?: string; value: string; options: (string | { value: string; label: string })[]; onChange: (v: string) => void; disabled?: boolean }> = ({ label, desc, value, options, onChange, disabled }) => {
+  // Named by its caption, the same way `Field` is: `useId` because SelectField
+  // renders once per setting, so a fixed id would repeat in the document.
+  const labelId = useId()
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div id={labelId} style={{ fontSize: 12, color: 'var(--text)', marginBottom: 1 }}>{label}</div>
+      {desc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>{desc}</div>}
+      <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} aria-labelledby={labelId}
+        style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 8px', color: 'var(--text)', fontSize: 12, outline: 'none' }}>
+        {options.map((o) => { const v = typeof o === 'string' ? o : o.value; const l = typeof o === 'string' ? o : o.label; return <option key={v} value={v}>{l}</option> })}
+      </select>
+    </div>
+  )
+}
 
 
 /**
@@ -1181,19 +1187,31 @@ const McpSection: React.FC<{
               label={i18nT('apps.mochi.settingsPanel.mcp_agent_bg')} />
           </div>
         )}
-        {/* Chat / BG tab selector */}
-        <div style={{ display: 'flex', gap: 0, marginBottom: 6 }}>
+        {/* Chat / BG tab selector: the shared Radix rail, so a screen reader
+            hears which tab is selected and the arrow keys move between them.
+            Its Tailwind classes resolve to no rules in this window (see the
+            ErrorNotice note below), so the look stays inline `var(--*)`. The
+            body below is ONE panel, mounted for the selected tab only, so
+            only the selected tab carries `aria-controls`: Radix emits it on
+            every trigger, and on the other one it would name an element that
+            does not exist. A caller prop wins over Radix's own, so passing
+            `undefined` drops it there. */}
+        <Tabs value={tab} onValueChange={(v) => setActiveTab(prev => ({ ...prev, [s.name]: v === 'bg' ? 'bg' : 'chat' }))} layoutId={`mochi-mcp-tabs-${s.name}`}>
+        <TabsList aria-label={s.name} style={{ display: 'flex', gap: 0, marginBottom: 6 }}>
           {(['chat', 'bg'] as const).map(t => (
-            <button key={t} onClick={() => setActiveTab(prev => ({ ...prev, [s.name]: t }))} style={{
+            <TabsTrigger key={t} value={t} {...(tab === t ? {} : { 'aria-controls': undefined })} style={{
               fontSize: 10, padding: '3px 10px', cursor: 'pointer', border: '1px solid var(--border)',
               background: tab === t ? 'var(--accent-glow)' : 'var(--bg)',
               color: tab === t ? 'var(--accent)' : 'var(--text-muted)',
               fontWeight: tab === t ? 600 : 400,
               borderRadius: t === 'chat' ? '4px 0 0 4px' : '0 4px 4px 0',
               borderLeft: t === 'bg' ? 'none' : undefined,
-            }}>{t === 'chat' ? i18nT('apps.mochi.settingsPanel.mcp_tab_chat') : i18nT('apps.mochi.settingsPanel.mcp_tab_bg')}</button>
+            }}>{t === 'chat' ? i18nT('apps.mochi.settingsPanel.mcp_tab_chat') : i18nT('apps.mochi.settingsPanel.mcp_tab_bg')}</TabsTrigger>
           ))}
-        </div>
+        </TabsList>
+        {/* Radix makes the panel a tab stop; it is a container, not a control,
+            so it shows no focus ring (the wrapper's outline class is inert here). */}
+        <TabsContent value={tab} style={{ outline: 'none' }}>
         {/* Refresh tools */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
           <button onClick={() => refreshTools(s.name)} disabled={refreshing === s.name} style={{
@@ -1250,6 +1268,8 @@ const McpSection: React.FC<{
             {staleTools.length > 0 && renderToolGroup(i18nT('apps.mochi.settingsPanel.mcp_stale'), staleTools, 'var(--text-muted)', true)}
           </div>
         )}
+        </TabsContent>
+        </Tabs>
       </div>
     )
   }
@@ -1306,33 +1326,40 @@ const McpSection: React.FC<{
       }}>
         {enabled.map((s) => (
           <div key={s.name}>
-            <div role="button" tabIndex={0} aria-expanded={expanded === s.name} style={{
+            {/* A plain row holding sibling buttons: "expand", which carries the
+                server's name, and Remove. Remove used to sit inside a
+                role="button" row whose key handler took its Enter/Space. */}
+            <div style={{
+              position: 'relative',
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '4px 6px', borderRadius: 6, cursor: 'pointer',
-            }} onClick={() => {
-              const opening = expanded !== s.name
-              setExpanded(opening ? s.name : null)
-              if (opening && !toolsMap[s.name]) refreshTools(s.name)
-            }} onKeyDown={(e) => {
-              if (e.key !== 'Enter' && e.key !== ' ') return
-              e.preventDefault()
-              const opening = expanded !== s.name
-              setExpanded(opening ? s.name : null)
-              if (opening && !toolsMap[s.name]) refreshTools(s.name)
+              padding: '4px 6px', borderRadius: 6,
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }} />
+              <button type="button" aria-expanded={expanded === s.name} onClick={() => {
+                const opening = expanded !== s.name
+                setExpanded(opening ? s.name : null)
+                if (opening && !toolsMap[s.name]) refreshTools(s.name)
+              }} style={{
+                display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0,
+                padding: 0, border: 'none', borderRadius: 4, background: 'none',
+                color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer',
+              }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }} />
                 <span style={{ fontSize: 12, color: 'var(--text)' }}>{s.name}</span>
                 {s.core && <span style={{ fontSize: 10, color: 'var(--text-muted)', fontStyle: 'italic' }}>{i18nT('apps.mochi.settingsPanel.core')}</span>}
                 <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>{agentLabel(getStaged(s.name, s).agents)}</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                {/* Stretches the expand button's hit area over the whole row, so
+                    a click anywhere expands it, as when the row was the control.
+                    The right-hand group lets clicks through to it, all but
+                    Remove, which stays on top with its own click. */}
+                <span aria-hidden="true" style={{ position: 'absolute', inset: 0, borderRadius: 6 }} />
+              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, position: 'relative', pointerEvents: 'none' }}>
                 {!s.core && (
-                  <button onClick={(e) => { e.stopPropagation(); toggleServer(s.name, false) }}
+                  <button type="button" onClick={() => toggleServer(s.name, false)}
                     aria-label={i18nT('apps.mochi.settingsPanel.remove_server', { name: s.name })} style={{
                     background: 'none', border: 'none', color: 'var(--text-muted)',
                     cursor: 'pointer', fontSize: 11, padding: '2px 6px', borderRadius: 4,
-                    display: 'inline-flex', alignItems: 'center',
+                    display: 'inline-flex', alignItems: 'center', pointerEvents: 'auto',
                   }}><X size={12} /></button>
                 )}
                 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{expanded === s.name ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>

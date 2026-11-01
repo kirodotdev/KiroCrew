@@ -436,6 +436,8 @@ export { bitbucketServerHostSet, gerritHostSet }
 const GITLAB_MARKERS: ReadonlyArray<{ marker: string; kind: SourceLinkKind }> = [
   { marker: '/-/merge_requests/', kind: 'change' },
   { marker: '/-/issues/', kind: 'issue' },
+  // GitLab's newer work-item URL for an issue; it shares the issue number space.
+  { marker: '/-/work_items/', kind: 'issue' },
 ]
 
 function gitlabLink(origin: string, path: string): PullRequestLink | null {
@@ -445,6 +447,9 @@ function gitlabLink(origin: string, path: string): PullRequestLink | null {
     const project = path.slice(1, idx)
     const number = path.slice(idx + marker.length)
     if (!project || !/^\d+$/.test(number)) continue
+    // A group-level work item (an epic, /groups/<g>/-/work_items/<n>) is not a
+    // project issue: the project issues API can never fetch it.
+    if (marker === '/-/work_items/' && project.toLowerCase().startsWith('groups/')) continue
     return {
       url: `https://${origin}${path}`,
       provider: 'gitlab',

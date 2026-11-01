@@ -65,7 +65,9 @@ def schemas() -> list[dict[str, Any]]:
                 "every message. Ask a specific question when earlier decisions or "
                 "events are needed; skip it if the current conversation suffices. "
                 "Returns bounded context and sources. The caller cannot choose another "
-                "store; private members cannot access Global V1 or sibling memories."
+                "store; private members cannot access Global V1 or sibling memories. "
+                "It returns distilled facts, not transcript text: for a past "
+                "conversation's exact words, follow up with search_chat_history."
             ),
             "inputSchema": {
                 "type": "object",
@@ -94,7 +96,12 @@ def schemas() -> list[dict[str, Any]]:
                 "The check covers only a fixed set of model-ID families; other "
                 "backend IDs are not lesson-refused. A model version mentioned by "
                 "itself is allowed. Free-form wording remains a best-effort check, "
-                "so do not disguise either refused class. Give the rule (what to "
+                "so do not disguise either refused class. Save only what changes "
+                "future unrelated sessions: not ticket facts, package details, "
+                "steering duplicates or changelog notes. There is no `scope` "
+                "parameter: pass repo_scope to restrict a lesson to one codebase. "
+                "A refused, deduped or unchanged result means nothing was written: "
+                "never tell the user the lesson was saved. Give the rule (what to "
                 "do); negative (what not to do) is optional."
             ),
             "inputSchema": {
@@ -225,6 +232,16 @@ def schemas() -> list[dict[str, Any]]:
                             "scope='workspace'."
                         ),
                     },
+                    "keep_one": {
+                        "type": "boolean",
+                        "description": (
+                            "Optional, default false. Remove only the extra "
+                            "copies: of the matching lessons, those with the "
+                            "same stored rule, NOT clause, tier and scope are collapsed to the "
+                            "oldest one. Different lessons are never removed "
+                            "in this mode, so use it to clean up duplicates."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -276,9 +293,8 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
         return f"Error: {_gov_mem}"
     # A stale client still holding the old advertised schema can send
     # scope="workspace". Silently forcing that to "global" would take a correction
-    # meant for one workspace and inject it into EVERY session -- the exact harm
-    # this change exists to end, and worse than the old behaviour, where the tier
-    # was inert and reached no prompt at all. So a legacy scope asking for anything
+    # meant for one workspace and inject it into EVERY session -- worse than a
+    # tier that is inert and reaches no prompt at all. So a legacy scope asking for anything
     # narrower than global is REFUSED, with the replacement named. Refusing loses
     # nothing that ever worked, and it tells the caller instead of widening silently.
     _legacy_scope = args.get("scope")
@@ -723,6 +739,10 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
     for key, value in (("scope", tier_scope), ("workspace", workspace)):
         if isinstance(value, str) and value:
             payload[key] = value
+    # Forwarded only when set, so a call without it sends today's body.
+    keep_one = args.get("keep_one") is True
+    if keep_one:
+        payload["keep_one"] = True
     d = mcp_core._delete("/api/lessons", payload)
     err_val = d.get("error")
     if err_val:
@@ -753,7 +773,11 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
     # removal would tell a remove-then-re-add consolidation its old lesson is
     # gone while it is still injected. A reply without the key reads as removed.
     if d.get("ok") is False:
+        if keep_one:
+            return f"No lessons were removed: no extra copies match: {query}"
         return f"No lessons were removed: nothing matches: {query}"
+    if keep_one:
+        return f"Removed extra copies of lessons matching: {query} (one of each kept)"
     return f"Removed lessons matching: {query}"
 
 

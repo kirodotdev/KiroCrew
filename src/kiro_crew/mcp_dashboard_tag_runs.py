@@ -277,15 +277,28 @@ def _run_chat_tag_assign(args: dict[str, Any], ctx: ToolContext) -> str:
                 "written — call chat_tag_assign again; it re-reads the current list."
             )
         return redact(f"Error: {refused.error}")
-    final = [str(t) for t in (d.get("tags") or new_tags) if isinstance(t, str)]
+    # The endpoint filters the PUT to the live vocabulary and returns what it
+    # stored, so report that list: an empty one is authoritative. Only a reply
+    # without a list at all falls back to the request.
+    raw_final = d.get("tags")
+    if isinstance(raw_final, list):
+        final = [str(t) for t in raw_final if isinstance(t, str)]
+    else:
+        final = new_tags
     shown = ", ".join(f"`{names_by_id.get(t, t)}`" for t in final) or "none"
-    added = ", ".join(f"`{names_by_id.get(t, t)}`" for t in add_ids if t not in current)
-    removed = ", ".join(f"`{names_by_id.get(t, t)}`" for t in remove_ids if t in current)
+    added = ", ".join(
+        f"`{names_by_id.get(t, t)}`" for t in add_ids if t not in current and t in final
+    )
+    removed = ", ".join(
+        f"`{names_by_id.get(t, t)}`" for t in remove_ids if t in current and t not in final
+    )
     parts = []
     if added:
         parts.append(f"added {added}")
     if removed:
         parts.append(f"removed {removed}")
+    if not parts:
+        parts.append("nothing changed")
     return redact(f"Session `{slot_key}`: {'; '.join(parts)}. Tags now: {shown}.")
 
 

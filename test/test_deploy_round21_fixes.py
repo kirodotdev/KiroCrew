@@ -61,8 +61,14 @@ def test_f2_backend_rejects_userinfo_url():
 
 
 def test_f2_backend_accepts_plain_https():
-    _validate("https://d123.cloudfront.net/site/")
-    _validate("")  # draft state
+    from kiro_crew.validation import ARTIFACT_SAVE_SCHEMA, validate_tool_args
+
+    # The empty URL is the documented draft state.
+    for url in ("https://d123.cloudfront.net/site/", ""):
+        meta = {"deploy_target": {"public_url": url}}
+        args = {"name": "app", "content": "x", "webapp_metadata": meta}
+        cleaned = validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
+        assert cleaned["webapp_metadata"]["deploy_target"]["public_url"] == url
 
 
 def test_f2_frontend_safe_http_url_rejects_userinfo():

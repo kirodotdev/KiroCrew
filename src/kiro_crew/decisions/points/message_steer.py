@@ -414,7 +414,13 @@ async def steer_or_queue(
             "turn_chars": len(running_message) + len(activity),
         }
         answers = await core.decide(
-            POINT, state, questions(), session_key=session_key, config=config, extra=extra
+            POINT,
+            state,
+            questions(),
+            session_key=session_key,
+            config=config,
+            extra=extra,
+            unclipped=text,
         )
     except asyncio.CancelledError:
         raise

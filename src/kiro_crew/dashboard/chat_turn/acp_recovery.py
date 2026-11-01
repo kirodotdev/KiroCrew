@@ -264,12 +264,15 @@ async def _binding_rebuild_allowed(turn) -> bool:
 
 async def _on_process_died(turn: _ChatTurn, exc) -> None:
     """The session's process died under the turn."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _prompt_depth = turn._prompt_depth
     slot = turn.slot
     _is_synthetic = turn._is_synthetic
     _turn_emitted = turn._turn_emitted
     client = turn.client
     message = turn.message
+
     logger.warning("ACP process died in slot %s: %s — resetting session", slot.key, exc)
     # The class this handler caught is a fact only this site holds, and the
     # closer in `_turn_close_crew_log` (chat_turn/crew_log_attribution.py), from `_run_chat`'s
@@ -323,8 +326,15 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
         # _broadcast_chat_message in ws_mode) AND persists the card — do NOT
         # also broadcast_ws("chat_message") or the UI renders a duplicate card
         # until the post-turn history refresh reconciles it.
-        _retry_msg = "⟳ Connection lost — retrying…"
-        slot.append("error", _retry_msg, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
+        slot.append(
+            "error",
+            gn.GATEWAY_CONNECTION_LOST_RETRYING_TEXT,
+            "msg msg-err",
+            meta={
+                "kind": TRANSIENT_RETRY_KIND,
+                **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CONNECTION_LOST_RETRYING),
+            },
+        )
         _requeue_text, _requeue_payload = build_recovery_requeue(
             message,
             _turn_emitted,
@@ -349,19 +359,32 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
         # not stuck at all, and telling that user to start over would discard
         # a healthy conversation over someone else's fault.
         if _own_fault:
-            slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
+            slot.append(
+                "error",
+                gn.GATEWAY_SESSION_STUCK_TEXT,
+                "msg msg-err",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_STUCK),
+            )
         else:
             slot.append(
                 "error",
-                "The agent process this chat shares kept restarting — please retry.",
+                gn.GATEWAY_SHARED_RUNTIME_RESTARTING_TEXT,
                 "msg msg-err",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SHARED_RUNTIME_RESTARTING),
             )
     else:
-        slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
+        slot.append(
+            "error",
+            gn.GATEWAY_CONNECTION_LOST_GIVE_UP_TEXT,
+            "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CONNECTION_LOST_GIVE_UP),
+        )
 
 
 async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
     """An ACP error the turn retries on a fresh session."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _is_synthetic = turn._is_synthetic
     _msg = turn._msg
     _prompt_depth = turn._prompt_depth
@@ -369,6 +392,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
     client = turn.client
     message = turn.message
     slot = turn.slot
+
     logger.info(
         "ACP transient (%s) in slot %s — resetting session",
         _msg[:80],
@@ -414,13 +438,15 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
             max(slot._acp_pipe_death_retries, runtime_death.shared_deaths(slot.key))
             > SESSION_RECOVERY_MAX_ATTEMPTS
         )
-        _status = "⟳ Connection lost — retrying…"
+        _status = gn.GATEWAY_CONNECTION_LOST_RETRYING_TEXT
         turn._status = _status
+        _retry_notice = gn.GATEWAY_NOTICE_CONNECTION_LOST_RETRYING
     else:
         slot._prompt_busy_retries += 1
         _exhausted = slot._prompt_busy_retries > 3
-        _status = "⟳ Session busy — retrying…"
+        _status = gn.GATEWAY_SESSION_BUSY_RETRYING_TEXT
         turn._status = _status
+        _retry_notice = gn.GATEWAY_NOTICE_SESSION_BUSY_RETRYING
     # Resolved Stop: see the same gate in _on_process_died.
     if _should_suppress_requeue(slot) or _stop_pressed(turn):
         pass
@@ -432,12 +458,18 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
         # -- and this arm reaches the same users, just via a plain
         # AcpError rather than the typed death.
         if _own_fault:
-            slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
+            slot.append(
+                "error",
+                gn.GATEWAY_SESSION_STUCK_TEXT,
+                "msg msg-err",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_STUCK),
+            )
         else:
             slot.append(
                 "error",
-                "The agent process this chat shares kept restarting — please retry.",
+                gn.GATEWAY_SHARED_RUNTIME_RESTARTING_TEXT,
                 "msg msg-err",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SHARED_RUNTIME_RESTARTING),
             )
     elif _prompt_depth == 0:
         # Single emit (see the _on_process_died note): slot.append persists +
@@ -452,7 +484,12 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
                 else slot._prompt_busy_retries
             ),
         )
-        slot.append("error", turn._status, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
+        slot.append(
+            "error",
+            turn._status,
+            "msg msg-err",
+            meta={"kind": TRANSIENT_RETRY_KIND, **gn.gateway_notice_meta(_retry_notice)},
+        )
         _requeue_text, _requeue_payload = build_recovery_requeue(
             message,
             _turn_emitted,
@@ -474,16 +511,19 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
         # counted above; do NOT re-queue (mirrors AcpProcessDied /
         # PromptBusyExhaustedError) — surface feedback so the nested turn
         # doesn't fail silently against the now-dead process.
-        _retry_msg = (
-            "⟳ Connection lost — please retry."
-            if _is_pipe_death
-            else "⟳ Session busy — please retry."
-        )
-        slot.append("error", _retry_msg, "msg msg-err")
+        if _is_pipe_death:
+            _retry_msg = gn.GATEWAY_CONNECTION_LOST_GIVE_UP_TEXT
+            _give_up = gn.GATEWAY_NOTICE_CONNECTION_LOST_GIVE_UP
+        else:
+            _retry_msg = gn.GATEWAY_SESSION_BUSY_GIVE_UP_TEXT
+            _give_up = gn.GATEWAY_NOTICE_SESSION_BUSY_GIVE_UP
+        slot.append("error", _retry_msg, "msg msg-err", meta=gn.gateway_notice_meta(_give_up))
 
 
 async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
     """The session the turn spoke to is gone."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _is_synthetic = turn._is_synthetic
     _prompt_depth = turn._prompt_depth
     _turn_emitted = turn._turn_emitted
@@ -521,7 +561,14 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
             "error",
             CREDENTIAL_RELOAD_RETRY_NOTICE if _creds else SESSION_NOT_FOUND_RETRY_TEXT,
             "msg msg-err",
-            meta={"kind": TRANSIENT_RETRY_KIND},
+            meta={
+                "kind": TRANSIENT_RETRY_KIND,
+                **gn.gateway_notice_meta(
+                    gn.GATEWAY_NOTICE_CREDENTIALS_RELOADING
+                    if _creds
+                    else gn.GATEWAY_NOTICE_SESSION_RECONNECTING
+                ),
+            },
         )
         _requeue_text, _requeue_payload = build_recovery_requeue(
             message,
@@ -557,11 +604,18 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
             "msg msg-err",
         )
     else:
-        slot.append("error", SESSION_NOT_FOUND_GIVE_UP_TEXT, "msg msg-err")
+        slot.append(
+            "error",
+            SESSION_NOT_FOUND_GIVE_UP_TEXT,
+            "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_RECONNECT_GIVE_UP),
+        )
 
 
 async def _on_acp_binding_mismatch(turn: _ChatTurn, exc) -> None:
     """The conversation is bound to another session."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _attachment_meta = turn._attachment_meta
     _attachments = turn._attachments
     _escalation = turn._escalation
@@ -591,7 +645,10 @@ async def _on_acp_binding_mismatch(turn: _ChatTurn, exc) -> None:
         "⟳ Preserved model reasoning no longer matches this conversation — "
         "rebuilding the model session from this chat and retrying once…",
         "msg msg-err",
-        meta={"kind": TRANSIENT_RETRY_KIND},
+        meta={
+            "kind": TRANSIENT_RETRY_KIND,
+            **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REASONING_MISMATCH_REBUILDING),
+        },
     )
     if _replay_owes_delivery(turn):
         # An owed sub-agent completion is queued as the completion it
@@ -627,6 +684,8 @@ async def _on_acp_binding_mismatch(turn: _ChatTurn, exc) -> None:
 
 async def _on_acp_image_unsupported(turn: _ChatTurn, exc, _image_replay_owed) -> None:
     """The model refused the turn's image format."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _escalation = turn._escalation
     _is_synthetic = turn._is_synthetic
     _turn_emitted = turn._turn_emitted
@@ -673,7 +732,10 @@ async def _on_acp_image_unsupported(turn: _ChatTurn, exc, _image_replay_owed) ->
         "restarting the model session without binary image history and "
         "continuing…",
         "msg msg-err",
-        meta={"kind": TRANSIENT_RETRY_KIND},
+        meta={
+            "kind": TRANSIENT_RETRY_KIND,
+            **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_IMAGE_HISTORY_RESTARTING),
+        },
     )
     if _image_replay_owed:
         # An owed completion is queued as the completion it is: no
@@ -901,6 +963,8 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
 
 async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> None:
     """A transient error before the first token, with the retries spent."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _crew_log_sid = turn._crew_log_sid
     _crew_log_turn_no = turn._crew_log_turn_no
     _is_synthetic = turn._is_synthetic
@@ -951,6 +1015,16 @@ async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> No
         f"⚠️ {_fb_primary_safe} is throttled — running on {_fb_cand_safe} "
         f"until {_fb_primary_safe} recovers.",
         "msg msg-info",
+        # No primary name to show: the row keeps its English wording.
+        meta=(
+            gn.gateway_notice_meta(
+                gn.GATEWAY_NOTICE_MODEL_THROTTLED_FALLBACK,
+                primary=_fb_primary_safe,
+                fallback=_fb_cand_safe,
+            )
+            if slot._fallback_primary_model
+            else None
+        ),
     )
     logger.info(
         "Re-queuing slot %s on fallback model %s (candidate %d of chain)",

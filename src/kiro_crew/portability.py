@@ -104,6 +104,7 @@ from kiro_crew.portability_templates import (
     unbundled_agent_templates,
 )
 from kiro_crew.portability_vetting import (
+    _disable_imported_script_hooks,
     _read_manifest_bytes,
     _sanitize_imported_crons,
     _strip_host_local_store_state,
@@ -128,6 +129,7 @@ from kiro_crew.snapshot import (
     _refuse_corrupt_source_databases,
     _staging_is_pinned,
 )
+from kiro_crew.staging import staging_dir
 from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting, strip_utf8_bom
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
@@ -687,9 +689,9 @@ def apply_import_zip(
     # shutil.copy2 BEFORE it reaches the first tree call -- so gating inside the tree
     # helpers let a merge on a platform that cannot pin half-apply the core files and
     # then raise, against this function's own "fails loudly, nothing was written"
-    # contract. Raised in review. This is the third site of the same defect (after
-    # _build_snapshot and _do_merge), which is why the gate now lives at the entry of
-    # every operation that mutates rather than next to the individual writes.
+    # contract. The same shape exists in _build_snapshot and _do_merge, which is why
+    # the gate lives at the entry of every operation that mutates rather than next to
+    # the individual writes.
     #
     # There is no flag to pass here: an import is a UI action, not a command line. I first
     # concluded from that that the gate should refuse, and it was the wrong conclusion drawn
@@ -733,7 +735,15 @@ def apply_import_zip(
         "staging": staging_mode,
     }
 
-    with tempfile.TemporaryDirectory() as work_str:
+    # The extracted copy is the large transfer here (up to the uncompressed cap), so
+    # it stages under the data home's ``staging`` leaf -- same real disk as the install
+    # it becomes, off a tmpfs ``/tmp`` where it would be held in RAM.
+    # ``apply_import_zip`` is synchronous and runs off the event loop, so resolving
+    # ``staging_dir()`` here makes no on-loop filesystem call. The uploaded ``.zip``
+    # spool itself stays in the system temp dir, where ``part_stream`` creates it on
+    # the serving loop under a cancellation-safety invariant shared by three handlers;
+    # only this extraction and the snapshot/restore work stage under the data home.
+    with tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
         work = Path(work_str)
         platform_compat.restrict_dir_to_owner(work)
 
@@ -816,6 +826,11 @@ def apply_import_zip(
         # on, so calling them "rejected" would tell the user their jobs are gone.
         if paused_crons:
             summary["paused_crons"] = paused_crons
+        # Script hooks get the same treatment as command/script crons: they run a
+        # shell command on their own when their event fires, so they arrive off.
+        disabled_hooks = _disable_imported_script_hooks(snap / "hooks.json")
+        if disabled_hooks:
+            summary["disabled_hooks"] = disabled_hooks
 
         # Before EITHER branch, for the same reason the cron re-vet is: both branches copy
         # the tree below. No export writes these entries, so an archive carrying one was
@@ -864,12 +879,12 @@ def apply_import_zip(
             elif auto_dir.is_dir():
                 shutil.rmtree(str(auto_dir))
             # A platform that cannot pin a directory by descriptor refuses this
-            # staging pass, and the refusal is allowed to propagate. An earlier
-            # revision caught it and returned the summary, which was worse than the
-            # crash it avoided: the caller reads a returned summary as success, so the
-            # dashboard rendered "Import complete" over a data home nothing had been
-            # written to. Raised in review. Propagating reaches the existing error
-            # path, which is the one that tells the user the import did not happen.
+            # staging pass, and the refusal is allowed to propagate. Catching it and
+            # returning the summary would be worse than the crash: the caller reads a
+            # returned summary as success, so the dashboard would render "Import
+            # complete" over a data home nothing was written to. Propagating reaches the
+            # existing error path, which is the one that tells the user the import did
+            # not happen.
             # Each settings store whose file this swap replaces is held at its writer
             # lock for the whole swap (rollback included): a write from another tab or
             # channel in between would publish its pre-import copy over the restored
@@ -986,7 +1001,7 @@ def apply_import_zip(
                     # can never do this safely, so it skips one item and lets the
                     # import proceed. Recorded in the summary as skipped WITH the
                     # reason -- reporting "copied" for a refusal, or saying nothing,
-                    # would be the silent-install bug class this change removes.
+                    # would be a silent install.
                     try:
                         _copy_notifications(
                             snap / "notifications.jsonl", mc / "notifications.jsonl"

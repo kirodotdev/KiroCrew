@@ -66,10 +66,10 @@ _DEFAULT_SITE = "datadoghq.com"
 #:
 #: This is a credential-exfiltration gate, not input tidiness. ``_headers()`` attaches
 #: BOTH stored secrets (``DD-API-KEY`` and ``DD-APPLICATION-KEY``) to every request, and
-#: ``site`` was interpolated into the host verbatim from config that ``PUT
+#: ``site`` is interpolated into the host from config that ``PUT
 #: /providers/<id>/config`` lets the agent write. A prompt-injected agent setting
 #: ``site`` to a host it controls would therefore have both keys posted to it on the next
-#: poll — a full credential handover with no user-visible step. Found in review.
+#: poll — a full credential handover with no user-visible step.
 #:
 #: An allowlist rather than a regex or a suffix check: `.datadoghq.com` as a suffix test
 #: is defeated by `evil-datadoghq.com`, and a "looks like a domain" test admits every

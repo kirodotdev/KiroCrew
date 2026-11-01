@@ -10,9 +10,34 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 from auto_research_helpers import isolate_fixture  # noqa: F401 - fixture
 
+from kiro_crew.apps.builtins.auto_research import handlers as _h
+from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME
 from kiro_crew.apps.builtins.auto_research.handlers import create_campaign
+from kiro_crew.autonudge import AutoNudgeService
+
+
+@pytest_asyncio.fixture
+async def nudges(tmp_path, monkeypatch):
+    """A real loop registry under ``tmp_path``, published as the autonudge service."""
+    svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+    await svc.start()
+    monkeypatch.setattr(_h, "_autonudge_instance", lambda: svc)
+    try:
+        yield svc
+    finally:
+        svc.stop()
+
+
+def _stop_reasons(tmp_path) -> list[str]:
+    """The reason of every stop record the ``nudges`` registry wrote."""
+    path = tmp_path / "autonudge" / "logs" / "autonudge_stops.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line)["reason"] for line in path.read_text().splitlines()]
+
 
 # --- Worker loop launch (autonudge) ---
 
@@ -153,6 +178,10 @@ class TestLoopLaunch:
         await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
         # Worker still armed despite the persistence failure.
         svc.add.assert_awaited_once()
+        assert svc.add.call_args.kwargs["slot_key"] == f"research-{c['id']}"
+        slot = state.get_or_create_slot.return_value
+        assert slot._titled is True
+        assert slot._trust is True
 
     @pytest.mark.asyncio
     async def test_launch_title_fails_closed_without_redactors(self, monkeypatch):
@@ -204,33 +233,36 @@ class TestLoopLaunch:
         assert "tests pass and build is green" in brief
 
     @pytest.mark.asyncio
-    async def test_launch_noop_without_service(self, monkeypatch):
+    async def test_launch_noop_without_service(self, monkeypatch, caplog):
         from kiro_crew.apps.builtins.auto_research import handlers as h
 
         monkeypatch.setattr(h, "_autonudge_instance", lambda: None)
-        await h._launch_loop(SimpleNamespace(app={}), "a1b2c3d4")  # must not raise
+        with caplog.at_level("WARNING", logger=LOGGER_NAME):
+            await h._launch_loop(SimpleNamespace(app={}), "a1b2c3d4")  # must not raise
+        messages = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME]
+        assert messages == [
+            "auto_research: cannot launch loop for a1b2c3d4 (autonudge/state unavailable)"
+        ]
+        assert not (h._campaign_dir("a1b2c3d4") / "brief.md").exists()
 
     @pytest.mark.asyncio
-    async def test_stop_removes_loop(self, monkeypatch):
+    async def test_stop_removes_loop(self, nudges, tmp_path):
         from kiro_crew.apps.builtins.auto_research import handlers as h
 
-        svc = MagicMock()
-        svc.remove = AsyncMock()
-        svc.get_by_slot.return_value = SimpleNamespace(id="loop1")
-        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        await nudges.add(slot_key="research-a1b2c3d4", message="run", idle_secs=60)
         await h._stop_loop("a1b2c3d4", remove=True)
-        svc.remove.assert_awaited_once_with("loop1", stop_reason="")
+        assert nudges.get_by_slot("research-a1b2c3d4") is None
+        # No reason was given, so the stop record falls back to the generic one.
+        assert _stop_reasons(tmp_path) == ["removed"]
 
     @pytest.mark.asyncio
-    async def test_pause_deactivates_loop(self, monkeypatch):
+    async def test_pause_deactivates_loop(self, nudges):
         from kiro_crew.apps.builtins.auto_research import handlers as h
 
-        svc = MagicMock()
-        svc.update = AsyncMock()
-        svc.get_by_slot.return_value = SimpleNamespace(id="loop1")
-        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        loop = await nudges.add(slot_key="research-a1b2c3d4", message="run", idle_secs=60)
         await h._stop_loop("a1b2c3d4", remove=False)
-        svc.update.assert_awaited_once_with("loop1", active=False)
+        assert nudges.get_by_slot("research-a1b2c3d4") is loop
+        assert loop.active is False
 
 
 class TestSuspendResearchLoopsWhileDisabled:

@@ -82,6 +82,7 @@ def _transcript(turns: int, *, size: int) -> list[dict]:
 _STABLE_TEXT = {
     "critical_rules": lambda: ctx._CRITICAL_RULES,
     "critical_rules_channel": lambda: ctx._CRITICAL_RULES_CHANNEL,
+    "critical_rules_subagent": lambda: ctx._CRITICAL_RULES_SUBAGENT,
     "member_how_you_work": lambda: ctx._MEMBER_HOW_YOU_WORK,
     # Item 7 included, because the ASSEMBLY includes it on this variant too: the
     # Dashboard tab is rendered from the instance store and does not depend on
@@ -105,9 +106,10 @@ _STABLE_TEXT_SHA256 = {
     "context_scope_all_withheld": "98ed04f8fca6f805d76f7fd3f518c63f221d5af6da6636fd30b28dc217207a0a",
     "critical_rules": "16827ce030089653769a3f16a6fb96e6c9fcda799ef4750630080011b5ac1647",
     "critical_rules_channel": "7b7ea4db70ccbc233959938b561281591e3b3c26544b383046942ce229eacf7e",
+    "critical_rules_subagent": "9eaa81827b3b0cb392286aa21837b6c17014e0abce484d2013150535102104c9",
     "docs_section": "971b6008afbd9ff048c498c06cffecc6dafc7a58b0df75ff9db0b15cf9e26c09",
-    "member_how_you_work": "eaecc5424f7093f793bb68228cd9231752f7f0ba6c75204d6d7a392ad3dca3f1",
-    "member_how_you_work_unavailable": "8b763af41df7bf48da8ac0e6080746273ea8fcf2e2239c4467e1958041adf02f",
+    "member_how_you_work": "0eaf81da81eb98552dd0ee9f0de078b06da2855579f9107adf0bebd1736557b2",
+    "member_how_you_work_unavailable": "861580229057bd9163fa665b6356d947bafa1c8232f368f55a69b67d2ed73b6b",
     "reply_answer_only": "f0bd694165ff81cdbe123048042070588b846bd43a224b31adc79d9f8768bfce",
     "reply_concise": "5d3e25d89e682469332237e46373f0e9aac8516eefd63047134d1ec0575aac2a",
     "response_preferences_frame": "08ee149ae459c828213d47643f1cdbd6661d8a77a2223b8be5d0aa6fbb6cdc18",
@@ -375,7 +377,11 @@ def _session_context_member_mode(rig: _Rig) -> str:
 
 
 def _background_overflow(rig: _Rig) -> str:
-    """Protected preferences fill the allowance, so background is omitted by name."""
+    """Preferences larger than the whole background pool still leave it for background.
+
+    Preferences carry their own startup allowance, so they are not charged to the
+    pool and the activity, workspace and docs blocks are admitted.
+    """
     rig.seed_memory()
     rig.memory._preferences_file.write_text(
         "# Preferences\n" + "Keep this standing preference.\n" * 1_000,
@@ -513,12 +519,14 @@ _SCENARIOS = {
 #: recorded before the assembly moved into owners.
 _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
     "background_overflow": (
-        "2c4855e1f2a3372fb61f2d9abac311aeb1e524374c11dddea87a6e50d396f7e5",
+        "0ee1905bca3a3c831714e7ea6ff1b63c37f739d96b2d1c3846286110510837ef",
         [
-            ("unclassified", 173),
+            ("unclassified", 64),
             ("agent_identity", 25),
             ("surface", 197),
-            ("memory", 31487),
+            ("workspace_identity", 371),
+            ("docs_pointer", 235),
+            ("memory", 31813),
             ("memory_tools", 425),
             ("lessons", 179),
         ],
@@ -568,14 +576,15 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "follow_up_reinjection": (
-        "65223485bb4ae222f2e5e608ab05f015b46c775ac1e5a65173517e1a3a49d555",
+        "9d6892ea04a2776f416e8d4659d2b464d06809487f328eedcd501dd0c3320901",
         [
             ("agent_instructions", 1479),
             ("memory", 183),
             ("memory_tools", 84),
-            ("recovery", 114),
+            ("recovery", 167),
             ("skill_index", 439),
-            ("unclassified", 18),
+            ("unclassified", 36),
+            ("lessons", 181),
             ("response_preferences", 402),
             ("reply_format_rules", 1347),
             ("request_header", 46),
@@ -727,11 +736,11 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "session_context_member_mode": (
-        "758327f19b09f64d46dd8e137d69303353c0cb0645fb7b81f578f65b2200d16b",
+        "89e48fe11084555b3db2a9eaf6fddbf49bf48fddd458e9d4a07f943c1be92150",
         [
             ("unclassified", 64),
             ("agent_identity", 25),
-            ("surface", 1360),
+            ("surface", 1687),
             ("workspace_identity", 371),
             ("docs_pointer", 235),
             ("memory_tools", 425),
@@ -809,10 +818,10 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "subagent_scope": (
-        "d23ab1482b64c75cd64f60d870d0b716b94e0ff7d6fcaac9c8693cb2cec61620",
+        "4df13fdaeffbcf481322fbd7c75f970b3277969789fcf52fff12aeaacc00a8bc",
         [
             ("agent_instructions", 145),
-            ("session_wrapper", 296),
+            ("session_wrapper", 297),
             ("agent_identity", 25),
             ("surface", 195),
             ("context_scope", 249),

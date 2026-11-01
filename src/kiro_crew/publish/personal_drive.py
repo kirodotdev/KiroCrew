@@ -55,16 +55,38 @@ implemented and is refused explicitly rather than silently downgraded to public.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
+import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.deploy import engine, profiles
+from kiro_crew.publish.personal_drive_parts import (  # noqa: F401
+    _ACCOUNT_RE,
+    _EXTERNAL_ID_BYTES,
+    _ID_SEP,
+    _KEY_LOCKS,
+    _KEY_LOCKS_GUARD,
+    _SANDBOX_CSP,
+    _SANDBOX_POLICY_NAME,
+    _key_lock,
+    _no_profile_message,
+    _parse_external_id,
+    _sandbox_policy_config,
+    _serialized,
+    _unknown_profile_message,
+    bound_account,
+    make_external_id,
+    split_external_id,
+)
 from kiro_crew.publish_provider import (
     NON_TEXT_KINDS,
     Capability,
@@ -82,8 +104,6 @@ from kiro_crew.publish_provider import (
 )
 
 logger = logging.getLogger(__name__)
-
-_T = TypeVar("_T")
 
 #: This drive's registry key -- deliberately NOT ``DEFAULT_PROVIDER``.
 #:
@@ -132,17 +152,16 @@ SITE_TAG_VALUE = "kirocrew-personal-drive"
 BUCKET_PREFIX = f"{engine.BUCKET_PREFIX}pub-"
 _BUCKET_RE = re.compile(rf"^{re.escape(BUCKET_PREFIX)}[0-9a-f]{{12}}$")
 
+#: The S3 origin the drive's distribution is built with (``engine.create_distribution``).
+_ORIGIN_RE = re.compile(
+    r"^(?P<bucket>[a-z0-9.-]+)\.s3\.(?P<region>[a-z]{2}(?:-[a-z]+)+-\d)\.amazonaws\.com$"
+)
+
 #: Objects under this prefix are the only ones the distribution may read.
 PUBLIC_PREFIX = "public/"
 
 #: A published-then-made-private object moves here: still stored, not served.
 PRIVATE_PREFIX = "private/"
-
-#: ``external_id`` is ``<random>~<profile>``. The RANDOM half comes first so a profile
-#: name containing the separator cannot corrupt the object key, and the key/URL use only
-#: that half -- an account label never reaches a public link.
-_ID_SEP = "~"
-_EXTERNAL_ID_BYTES = 16
 
 #: Object metadata key holding the content digest, so a push can detect that the remote
 #: object changed under it instead of overwriting blindly.
@@ -162,188 +181,13 @@ _SHA_META = "sha256"
 #: Five minutes still absorbs a burst of readers on one link while capping that exposure.
 _EDGE_MAX_AGE_SECONDS = 300
 
+
 #: Serializes drive CREATION within this process. Two first publishes racing would each
 #: see no drive and each build one, leaving two tagged drives for discovery to reject.
 #: This closes the same-process race (a double-clicked publish, two artifacts published
 #: together); a race between two machines sharing one account is not covered and shows
 #: up as the actionable ambiguity error from :meth:`_find_drive`.
 _CREATE_LOCK = threading.Lock()
-
-#: Account-global name of the response-headers policy that opaque-origins published
-#: artifacts. Account-global because a policy name is unique per account, which is
-#: exactly why the find-or-create below must VERIFY a same-named policy before reusing it
-#: (see :meth:`_sandbox_headers_policy`).
-_SANDBOX_POLICY_NAME = "kirocrew-publish-drive-sandbox"
-
-#: THE sandbox CSP directive -- one source of truth. It is spelled ONCE here so the create
-#: path and the reuse-verification path cannot drift: if a second literal existed in the
-#: verify path, a future edit to one copy would let the verifier accept (or a create
-#: emit) a policy whose CSP does not match, silently defeating the isolation. Delivered
-#: as a HEADER (a ``<meta>`` CSP ignores ``sandbox`` by spec), it gives each served
-#: document an OPAQUE origin so origin-keyed storage (localStorage/IndexedDB/cookies) is
-#: simply unreachable and cannot be shared between mutually-untrusted published documents.
-#:
-#: ``frame-ancestors 'none'`` rides along in the SAME constant deliberately, rather than
-#: living only in the ``FrameOptions`` header below, because this constant is the one thing
-#: the reuse path VERIFIES: a policy whose CSP does not match exactly fails closed. Framing
-#: protection expressed only as a header would be reused unverified, which is the same
-#: fail-open the CSP comparison exists to prevent. It is ``'none'`` and not ``'self'``
-#: because every artifact on a drive shares ONE domain -- ``'self'`` would let one published
-#: document frame another, which is precisely the cross-document relationship the opaque
-#: origin above exists to deny. Nothing legitimately frames a published copy: the
-#: dashboard's viewer renders artifact HTML from its own storage, never the public URL.
-_SANDBOX_CSP = "sandbox allow-scripts allow-popups; frame-ancestors 'none'"
-
-
-def _sandbox_policy_config() -> dict[str, Any]:
-    """The response-headers-policy config this module installs -- one source of truth.
-
-    Both the create path and the reuse-verification path derive the required CSP from the
-    SAME :data:`_SANDBOX_CSP` constant via this builder, so there is no second literal to
-    drift out of sync with the one the create path writes.
-    """
-    return {
-        "Name": _SANDBOX_POLICY_NAME,
-        "Comment": "Opaque-origin sandbox for pooled artifact publishing",
-        "SecurityHeadersConfig": {
-            "ContentSecurityPolicy": {
-                "ContentSecurityPolicy": _SANDBOX_CSP,
-                "Override": True,
-            },
-            "ContentTypeOptions": {"Override": True},
-            # Legacy companion to the CSP's `frame-ancestors`: a browser too old for CSP3
-            # honours only this header, and a published artifact is a public page whose
-            # framing a third-party origin would otherwise control. DENY rather than
-            # SAMEORIGIN for the reason given on `_SANDBOX_CSP` -- one drive serves every
-            # artifact from a single domain, so "same origin" is another published
-            # document, not a trusted host.
-            "FrameOptions": {"FrameOption": "DENY", "Override": True},
-            "StrictTransportSecurity": {
-                "AccessControlMaxAgeSec": 31536000,
-                "IncludeSubdomains": True,
-                "Override": True,
-            },
-            "ReferrerPolicy": {
-                "ReferrerPolicy": "same-origin",
-                "Override": True,
-            },
-        },
-    }
-
-
-# One lock per published artifact, so two mutations of the SAME object cannot interleave.
-# Every mutating path is read-then-write against S3 (head to decide, then copy/put/delete),
-# and the seam does not serialize per artifact -- its only lock covers cloning -- so without
-# it a push landing between a move's copy and its delete has its bytes deleted with the
-# source, leaving the record naming a version the drive does not hold and, since the
-# stored digest then matches nothing, every later push in permanent conflict.
-#
-# Keyed on the artifact's own id at this destination, so unrelated artifacts never contend.
-# Entries are never evicted: one small lock per artifact touched in this process is cheaper
-# than the bugs that come from freeing a lock somebody may be about to take.
-_KEY_LOCKS: dict[str, threading.Lock] = {}
-_KEY_LOCKS_GUARD = threading.Lock()
-
-
-def _key_lock(key_part: str) -> threading.Lock:
-    """The lock guarding one artifact's remote state."""
-    with _KEY_LOCKS_GUARD:
-        return _KEY_LOCKS.setdefault(key_part, threading.Lock())
-
-
-def _serialized(key_part: str, work: Callable[[], _T]) -> _T:
-    """Run one artifact's remote mutation under that artifact's own lock.
-
-    Called on the worker thread, never on the event loop, so a blocking lock is the right
-    primitive here and cannot stall the gateway.
-    """
-    with _key_lock(key_part):
-        return work()
-
-
-def _no_profile_message() -> str:
-    return (
-        "No AWS account is registered yet, so there is nowhere to put the drive. "
-        "Register a profile on the Artifact Deploy page first; the drive is then "
-        "created in that account on the first publish."
-    )
-
-
-def _unknown_profile_message(requested: str, known: list[str]) -> str:
-    if known:
-        return (
-            f"AWS profile {requested!r} is not registered. "
-            f"Registered profiles: {', '.join(sorted(known))}."
-        )
-    return _no_profile_message()
-
-
-#: An AWS account id is exactly twelve digits and cannot contain :data:`_ID_SEP`. That is
-#: what makes the three-field handle unambiguous even though a PROFILE NAME may contain the
-#: separator: the middle field is read as an account ONLY if it has this shape, so a
-#: two-field handle minted before binding existed cannot have its profile name mistaken for
-#: an account.
-_ACCOUNT_RE = re.compile(r"^\d{12}$")
-
-
-def make_external_id(profile: str, account: str) -> str:
-    """A publish handle binding an unguessable key to the ACCOUNT that holds the copy.
-
-    Shape: ``<key>~<account>~<profile>``. The account is what the withdrawal paths verify;
-    the profile name is retained only so the AWS calls have a credential source to resolve.
-
-    Binding the NAME alone was the earlier shape and it was a real exposure, not a nicety.
-    A profile name is a local alias the owner can repoint at another account by editing
-    their AWS config. Do that, then delete the artifact, and the withdrawal resolved the
-    name to the NEW account, found no drive there, reported a removal that removed nothing,
-    and cleared the record -- leaving the original copy public in the old account with its
-    handle erased. That needed no race and no failure, just a config edit and an ordinary
-    delete, which is why it was fixed here rather than deferred with the timing-dependent
-    windows.
-    """
-    key = secrets.token_hex(_EXTERNAL_ID_BYTES)
-    return f"{key}{_ID_SEP}{account}{_ID_SEP}{profile}"
-
-
-def _parse_external_id(external_id: str) -> tuple[str, str, str]:
-    """Return ``(key_part, bound_account, bound_profile)``; unknown fields are ``''``.
-
-    The single parser for this format, so the three readers below cannot drift apart.
-    Three shapes are accepted, and the middle one is the reason for :data:`_ACCOUNT_RE`:
-
-    * ``key~account~profile`` -- current. Account and profile both known.
-    * ``key~profile`` -- minted before binding, or hand-written by a caller. The middle
-      field fails the account shape, so it is read as the PROFILE and the account is
-      unknown. Reading it as an account would be the worst possible error: the withdrawal
-      paths would then compare a profile name against a live account id, mismatch every
-      time, and refuse every operation on every pre-existing publication.
-    * ``key`` -- no separator at all. Both unknown; the caller falls back to the registry
-      default, which is the pre-binding behaviour.
-    """
-    key_part, _, rest = (external_id or "").partition(_ID_SEP)
-    if not rest:
-        return key_part, "", ""
-    head, sep, tail = rest.partition(_ID_SEP)
-    if sep and _ACCOUNT_RE.match(head):
-        return key_part, head, tail
-    return key_part, "", rest
-
-
-def split_external_id(external_id: str) -> tuple[str, str]:
-    """Return ``(key_part, bound_profile)``; the profile is ``''`` when unbound.
-
-    Kept at two fields because that is all its callers need -- they want the object key,
-    or the credential source. The account is read through :func:`bound_account` by the one
-    place that verifies it.
-    """
-    key_part, _account, bound = _parse_external_id(external_id)
-    return key_part, bound
-
-
-def bound_account(external_id: str) -> str:
-    """The account id pinned into the handle, or ``''`` when the handle predates binding."""
-    _key, account, _profile = _parse_external_id(external_id)
-    return account
 
 
 class PersonalDriveProvider(PublishProvider):
@@ -521,6 +365,14 @@ class PersonalDriveProvider(PublishProvider):
         """
         bucket = self._find_bucket(profile, region)
         dist_id, dist_arn = self._find_distribution(profile, region)
+        if not bucket and dist_id:
+            # The drive is one per ACCOUNT, but the tag query above saw only this
+            # profile's region. A second install whose profile points elsewhere finds the
+            # (global) distribution and misses the (regional) bucket, which is not a
+            # half-present drive at all. The distribution's origin names the bucket's
+            # region, so look there too -- and still require the drive tag and the naming
+            # scheme there, so the origin alone never decides which bucket is trusted.
+            bucket = self._find_bucket_at_origin(profile, region, dist_id)
         if not bucket:
             if dist_id:
                 # A drive-tagged distribution with no matching bucket is a PARTIAL drive,
@@ -586,6 +438,33 @@ class PersonalDriveProvider(PublishProvider):
                 "console, then publish again."
             )
         return buckets[0] if buckets else ""
+
+    def _find_bucket_at_origin(self, profile: str, region: str, dist_id: str) -> str:
+        """The drive's bucket in the region the distribution's origin names, or "".
+
+        Returns a bucket only when the tag query IN THAT REGION reports the same bucket
+        the origin points at. An origin in the profile's own region was already searched,
+        and an origin that is not a drive-scheme S3 bucket is not this drive's.
+        """
+        out = engine._checked(
+            ["cloudfront", "get-distribution", "--id", dist_id, "--output", "json"],
+            profile,
+            action="cloudfront:GetDistribution",
+        )
+        try:
+            dist = json.loads(out or "{}").get("Distribution") or {}
+        except json.JSONDecodeError:  # pragma: no cover - malformed API output
+            return ""
+        origins = ((dist.get("DistributionConfig") or {}).get("Origins") or {}).get("Items") or []
+        for origin in origins:
+            match = _ORIGIN_RE.match(str(origin.get("DomainName", "")))
+            if not match or not _BUCKET_RE.match(match["bucket"]):
+                continue
+            if match["region"] == region:
+                continue
+            if self._find_bucket(profile, match["region"]) == match["bucket"]:
+                return match["bucket"]
+        return ""
 
     def _find_distribution(self, profile: str, region: str) -> tuple[str, str]:
         """The drive's distribution, as (id, arn), or ("", "").
@@ -684,6 +563,13 @@ class PersonalDriveProvider(PublishProvider):
         objects, so a whole-bucket grant would serve them. The Deny is belt-and-braces:
         the Allow already omits them, and an explicit Deny keeps that true if the Allow
         is ever widened.
+
+        The last statement refuses any request to the bucket not sent over TLS. CloudFront
+        forwards to an S3 REST origin with the viewer's protocol, and the distribution
+        redirects every viewer to HTTPS (``engine.distribution_config``); the owner's CLI
+        and SDK calls use HTTPS too, so it denies nothing the drive relies on. The policy
+        is re-installed on every resolve (:meth:`_reassert_bucket_policy`), so existing
+        drives pick it up.
         """
         policy = {
             "Version": "2012-10-17",
@@ -703,6 +589,7 @@ class PersonalDriveProvider(PublishProvider):
                     "Action": "s3:GetObject",
                     "NotResource": f"arn:aws:s3:::{bucket}/{PUBLIC_PREFIX}*",
                 },
+                engine.deny_insecure_transport_statement(bucket),
             ],
         }
         return json.dumps(policy)
@@ -1339,7 +1226,7 @@ class PersonalDriveProvider(PublishProvider):
         profile: str,
         bucket: str,
         key: str,
-        path: str,
+        payload: bytes,
         content_type: str,
         digest: str,
     ) -> None:
@@ -1353,28 +1240,107 @@ class PersonalDriveProvider(PublishProvider):
         The digest is stored as object metadata so a later push can tell that the
         object changed out of band, which is the whole content of the concurrency
         guarantee this provider declares in :meth:`sync_model`.
+
+        The body uploaded is *payload* -- the bytes the caller already read, digested
+        and size-checked -- never a re-read of the artifact's name. :meth:`publish` and
+        :meth:`push_version` read the file once (``_read_payload``), take its sha256 and
+        enforce the size limit, and then make several AWS round trips (``_live_account``,
+        ``_ensure_drive`` / ``_require_drive``, ``_head``) before the upload. Re-opening
+        the name here would reach whatever that name points at AFTER all of that, so a
+        same-user process that replaced the file during those round trips would have its
+        bytes uploaded under the original's digest and token. Uploading the in-memory
+        ``payload`` removes the second open entirely: there is no name left for the CLI,
+        or for this method, to resolve a second time.
+
+        On POSIX the bytes are placed in an anonymous temp file (``tempfile.TemporaryFile``,
+        which is unlinked the moment it is created, so there is no name on the filesystem
+        for anything to swap) and handed to the merged ``engine`` seam as the child's
+        stdin, read as ``--body /dev/stdin``. Windows has no ``/dev/stdin``: the bytes are
+        written to a freshly created private temp this method owns, uploaded by that name,
+        and removed -- the temp is minted here from ``payload`` and never handed to another
+        process, so it carries the same no-second-resolution guarantee as the descriptor.
         """
-        engine._checked(
-            [
-                "s3api",
-                "put-object",
-                "--bucket",
-                bucket,
-                "--key",
-                key,
-                "--body",
-                path,
-                "--content-type",
-                content_type or "application/octet-stream",
-                "--cache-control",
-                f"max-age={_EDGE_MAX_AGE_SECONDS}",
-                "--metadata",
-                f"{_SHA_META}={digest}",
-            ],
-            profile,
-            action="s3:PutObject",
-            timeout=300,
+        if platform_compat.IS_POSIX:
+            # TemporaryFile is anonymous and portable (Linux AND macOS) -- unlike
+            # os.memfd_create, which is Linux-only. It is unlinked at creation, so the
+            # bytes live only behind this descriptor and there is no path to re-resolve.
+            with tempfile.TemporaryFile() as body:
+                body.write(payload)
+                body.flush()
+                body.seek(0)
+                engine._checked(
+                    self._put_args(bucket, key, "/dev/stdin", content_type, digest),
+                    profile,
+                    action="s3:PutObject",
+                    timeout=300,
+                    stdin_fd=body.fileno(),
+                )
+            return
+
+        # Windows: no /dev/stdin, so the body must be named. Write the already-read bytes
+        # to a private temp this method creates and owns, upload it by name, then remove
+        # it. The name is minted here from `payload` and never handed to another process.
+        # Because a named body is still re-opened by the CLI, pin the bytes with
+        # `--checksum-sha256` (base64 of the payload's digest): S3 compares it against what
+        # it actually received and rejects a body a same-user process swapped in the window
+        # between the close and the CLI's open -- the check lands downstream of that open,
+        # where a pre-flight inspection cannot reach. The hex `digest` stays in metadata for
+        # the out-of-band-change signal a later push reads; the base64 form is S3's wire
+        # format for the pin.
+        checksum_b64 = base64.b64encode(hashlib.sha256(payload).digest()).decode("ascii")
+        tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115 - closed explicitly below
+            prefix="kirocrew-drive-body-", delete=False
         )
+        try:
+            tmp.write(payload)
+            tmp.flush()
+            tmp.close()
+            engine._checked(
+                self._put_args(
+                    bucket, key, tmp.name, content_type, digest, checksum_sha256=checksum_b64
+                ),
+                profile,
+                action="s3:PutObject",
+                timeout=300,
+            )
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _put_args(
+        bucket: str,
+        key: str,
+        body: str,
+        content_type: str,
+        digest: str,
+        *,
+        checksum_sha256: str = "",
+    ) -> list[str]:
+        args = [
+            "s3api",
+            "put-object",
+            "--bucket",
+            bucket,
+            "--key",
+            key,
+            "--body",
+            body,
+            "--content-type",
+            content_type or "application/octet-stream",
+            "--cache-control",
+            f"max-age={_EDGE_MAX_AGE_SECONDS}",
+            "--metadata",
+            f"{_SHA_META}={digest}",
+        ]
+        if checksum_sha256:
+            # Pins the BYTES S3 stores to the digest of the payload we read. Deliberately
+            # NOT paired with --checksum-algorithm, which would have the CLI hash whatever
+            # it re-opened and certify a substitution instead of catching it.
+            args += ["--checksum-sha256", checksum_sha256]
+        return args
 
     # The suffixes the seam actually writes when it stages an artifact for upload. Keyed
     # by EXTENSION, not by artifact kind, so this answers a stable local question ("what
@@ -1481,7 +1447,7 @@ class PersonalDriveProvider(PublishProvider):
                 profile=profile,
                 bucket=bucket,
                 key=f"{prefix}{key_part}",
-                path=file_path,
+                payload=payload,
                 content_type=content_type,
                 digest=digest,
             )
@@ -1607,7 +1573,7 @@ class PersonalDriveProvider(PublishProvider):
                 profile=profile,
                 bucket=bucket,
                 key=key,
-                path=file_path,
+                payload=payload,
                 content_type=self._content_type_for(
                     file_path, str(head.get("ContentType") or "application/octet-stream")
                 ),

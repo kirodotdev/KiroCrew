@@ -310,4 +310,4 @@ class TestItDrawsFromTheHost:
 
     def test_it_renders_on_load_and_on_every_message(self, html: str) -> None:
         assert "window.addEventListener('load', render)" in html
-        assert "addEventListener('message'" in html
+        assert "addEventListener('kirocrew-dashboard'" in html

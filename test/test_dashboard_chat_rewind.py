@@ -72,7 +72,6 @@ class TestRewindSlot:
             "dashboard:src", skip_if_busy=True
         )
         state.sessions.remove.assert_not_awaited()
-        # Cleanup runs
         if slot.task:
             slot.task.cancel()
 

@@ -641,6 +641,7 @@ class SessionManager:
     set_approval_policy = _claims.set_approval_policy
     # -- Background, warm-pool and companion runtimes (session_parts.runtimes).
     start_pool = _runtimes.start_pool
+    _start_cleanup_for_waiting_deletes = _runtimes._start_cleanup_for_waiting_deletes
     _ensure_background = _runtimes._ensure_background
     _configured_bg_backend_raw = _runtimes._configured_bg_backend_raw
     _configured_bg_backend = _runtimes._configured_bg_backend
@@ -776,6 +777,7 @@ class SessionManager:
     close_all = _teardown.close_all
     absorb_orphaned_release = _teardown.absorb_orphaned_release
     adopt_turn = _teardown.adopt_turn
+    retire_turn_permit = _teardown.retire_turn_permit
     cancel_current = _teardown.cancel_current
     cancel_owned_turn = _teardown.cancel_owned_turn
     stop_turn = _teardown.stop_turn
@@ -798,6 +800,7 @@ class SessionManager:
     _has_pending_injection = _sweeps._has_pending_injection
     _expire_idle_hook = _sweeps._expire_idle_hook
     _bg_drain_reap_hook = _sweeps._bg_drain_reap_hook
+    _released_sessions_hook = _sweeps._released_sessions_hook
     _orphan_mcp_hook = _sweeps._orphan_mcp_hook
     _reap_agent_scopes_hook = _sweeps._reap_agent_scopes_hook
     _rss_threshold_check = _sweeps._rss_threshold_check
@@ -893,6 +896,10 @@ class SessionManager:
         # surface that can reach the user (a dashboard notification, a Slack DM)
         # decides what to do with it. Args: (session_key, parked_secs).
         self.on_stuck_turn: Callable[[str, float], None] | None = None
+        # Fired after a turn lease is released (``release``), with the folded
+        # key. Also a seam: the dashboard uses it to land a model pick at a
+        # channel turn's end, which no dashboard turn boundary sees.
+        self.on_session_released: Callable[[str], None] | None = None
 
         self._compaction = CompactionCoordinator(
             self,

@@ -57,8 +57,8 @@ export function fileReadQueryKey(filePath: string): readonly [string, string] {
 /** Read a file for a panel tab. Never throws for an HTTP status -- `ok` carries
  *  it, so each caller decides what a 404 means for its own surface. A transport
  *  failure still rejects. */
-export async function fetchFileRead(filePath: string, signal?: AbortSignal): Promise<FileReadResult> {
-  const res = await fetch(fileReadUrl(filePath), signal ? { signal } : undefined)
+export async function fetchFileRead(filePath: string, signal?: AbortSignal, slot?: string | null): Promise<FileReadResult> {
+  const res = await fetch(fileReadUrl(filePath, slot), signal ? { signal } : undefined)
   const binary = res.headers.get('X-File-Binary') === 'true'
   return {
     text: res.ok && !binary ? await res.text() : '',

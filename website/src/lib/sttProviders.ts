@@ -40,6 +40,14 @@ export const FALLBACK_STREAMING_PROVIDERS = [
 ]
 
 /**
+ * Which providers identify languages among `transcribe_languages`, used only
+ * while the backend has served no `language_identification_providers` list.
+ * Of the built-ins only Transcribe does; an edition provider joins through the
+ * served list.
+ */
+export const FALLBACK_LANGUAGE_IDENTIFICATION_PROVIDERS = [PROVIDER_TRANSCRIBE]
+
+/**
  * Providers whose model is a name from the downloadable catalog, so the model
  * picker and its download control apply to them. Apple ships its model with the
  * OS and Transcribe runs the model on AWS, so neither has one to choose.

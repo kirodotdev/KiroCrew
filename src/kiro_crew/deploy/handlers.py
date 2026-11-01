@@ -249,7 +249,11 @@ async def _handle_deploy(request: web.Request) -> web.Response:
     # this request — the provider-registry call site is offloaded for the same
     # reason.
     reason = await asyncio.to_thread(
-        publish_denied_reason, request, DEPLOY_WEB_PROVIDER_ID
+        publish_denied_reason,
+        request,
+        DEPLOY_WEB_PROVIDER_ID,
+        # _do_deploy checks the publish lists itself.
+        lists_checked_by_caller=True,
     )
     if reason:
         _audit("deploy", "", "denied", error=reason)
@@ -265,7 +269,9 @@ async def _handle_deploy(request: web.Request) -> web.Response:
         return err
     assert params is not None  # _json_body returns (dict, None) on success
     params = _strip_confirm_for_internal(request, params)
-    status, payload = await _do_deploy(params)
+    status, payload = await _do_deploy(
+        params, session_key=request.headers.get("X-Session-Key") or ""
+    )
     return web.json_response(_sanitize_response(payload), status=status)
 
 
@@ -981,7 +987,11 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
     # entry intact rather than consuming it. Off the loop for the same reason as
     # the deploy handler — the decision reads policy, profiles and config from disk.
     reason = await asyncio.to_thread(
-        publish_denied_reason, request, DEPLOY_WEB_PROVIDER_ID
+        publish_denied_reason,
+        request,
+        DEPLOY_WEB_PROVIDER_ID,
+        # _do_deploy checks the publish lists itself.
+        lists_checked_by_caller=True,
     )
     if reason:
         _audit("pending_confirm", request.match_info.get("id", ""), "denied", error=reason)
@@ -1161,7 +1171,9 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
     # entry back, and answer with a plain sentence plus the exception text in
     # `details` (the banner/Details split every other refusal here uses).
     try:
-        status, payload = await _do_deploy(params)
+        status, payload = await _do_deploy(
+            params, session_key=request.headers.get("X-Session-Key") or ""
+        )
     except Exception as exc:  # noqa: BLE001 -- the entry must survive any failure
         await asyncio.to_thread(add_pending, entry)
         _audit("pending_confirm", entry_id, "failure", error=f"{type(exc).__name__}: {exc}")
@@ -1407,6 +1419,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         is_credential_finding,
         scan_content,
         summarize,
+    )
+    from kiro_crew.publish_governance import (  # noqa: F401
+        deploy_target_denied_reason,
     )
     from kiro_crew.security import (  # noqa: F401
         is_sensitive_path,

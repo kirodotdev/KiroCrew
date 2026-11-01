@@ -161,7 +161,7 @@ describe('ChatInput', () => {
       const onStop = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} isRunning onStop={onStop} stopState="soft_pending" />)
       const btn = screen.getByTestId('stop-button-pulsing')
-      expect(btn).toHaveAttribute('aria-label', 'Force kill session (discards in-progress work and queued messages)')
+      expect(btn).toHaveAttribute('aria-label', 'Force stop (your messages stay; in-progress work and queued messages are discarded)')
       fireEvent.click(btn)
       expect(onStop).toHaveBeenCalled()
     })
@@ -178,7 +178,7 @@ describe('ChatInput', () => {
     it('shows disabled killing spinner when stopState is killing (after isRunning false)', () => {
       const onStop = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} isRunning={false} onStop={onStop} stopState="killing" />)
-      const btn = screen.getByRole('button', { name: 'Killing session' })
+      const btn = screen.getByRole('button', { name: 'Force stopping session' })
       expect(btn).toBeDisabled()
       fireEvent.click(btn)
       expect(onStop).not.toHaveBeenCalled()

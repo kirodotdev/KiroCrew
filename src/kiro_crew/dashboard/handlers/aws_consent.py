@@ -83,7 +83,7 @@ async def _deny_non_owner(request: web.Request, operation: str) -> web.Response 
     # Off the event loop. ``audit_decision`` writes the security event log, and
     # the first write on a fresh gateway also initialises it, so a large or
     # corrupt log tail would make one refused request stall the requests behind
-    # it and the heartbeat. Same offload the file-delivery consent refusals use.
+    # it and the heartbeat.
     await asyncio.to_thread(
         aws_consent.audit_decision,
         "*",

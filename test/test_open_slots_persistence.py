@@ -76,7 +76,6 @@ def test_persist_overwrites_atomically(tmp_path, monkeypatch):
     state.open_slots_restored = True  # steady state: the boot restore has run
     state.get_or_create_slot("chat-1-foo")
     state._persist_open_slots()
-    # Add another slot and re-persist
     state.get_or_create_slot("chat-2-bar")
     state._persist_open_slots()
 

@@ -46,6 +46,7 @@ from kiro_crew.dashboard.state_parts.notification_log import (
     sweep_expired_notifications,
 )
 from kiro_crew.dashboard.state_parts.transcript_rows import _mark_permission_resolved
+from kiro_crew.dashboard.turn_dispatch import BackgroundTurnAbandoned, mark_turn_unstarted
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
 from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
 from kiro_crew.preview_text import strip_markdown_preview
@@ -355,20 +356,21 @@ async def run_background_turn(self: DashboardState, slot: "_ChatSlot", coro: Any
         await asyncio.wait_for(sema.acquire(), timeout=self._BACKGROUND_QUEUE_WAIT_SECS)
     except asyncio.TimeoutError:
         coro.close()
+        mark_turn_unstarted(slot)
         self._log.warning(
             "background turn abandoned after waiting %ds for a permit: slot=%s cap=%d",
             self._BACKGROUND_QUEUE_WAIT_SECS,
             slot.key,
             self._bg_turn_cap,
         )
-        raise TimeoutError(
-            f"queued {self._BACKGROUND_QUEUE_WAIT_SECS}s behind the background-turn "
-            f"cap ({self._bg_turn_cap} concurrent) without a free slot"
-        ) from None
+        # Its own TimeoutError, so the dispatch reports a turn that never ran
+        # rather than one the turn ceiling stopped.
+        raise BackgroundTurnAbandoned(self._BACKGROUND_QUEUE_WAIT_SECS, self._bg_turn_cap) from None
     except BaseException:
         # Cancelled while queued: the turn never ran, so close its coroutine
         # rather than leaving an un-awaited coroutine warning behind.
         coro.close()
+        mark_turn_unstarted(slot)
         raise
     finally:
         if queued:
@@ -653,14 +655,25 @@ async def request_question(
 
 
 def resolve_question(
-    self: DashboardState, ask_id: str, answers: dict[str, str] | None, *, reason: str | None = None
+    self: DashboardState,
+    ask_id: str,
+    answers: dict[str, str] | None,
+    *,
+    reason: str | None = None,
+    responder: Any = None,
+    response_id: str = "",
 ) -> bool:
     """Resolve one blocking question future if it is still pending.
 
     ``reason`` says why a ``None`` answer ended the wait (``dismissed``,
     ``composer``, ...); only a blocking MCP ask reports it back to the agent.
+    ``responder`` is the verified Shared Crew principal answering through the
+    dashboard; with it the resolution goes through the shared decision
+    registry (first valid response wins once).
     """
-    return _questions_for(self).resolve(self, ask_id, answers, reason=reason)
+    return _questions_for(self).resolve(
+        self, ask_id, answers, reason=reason, responder=responder, response_id=response_id
+    )
 
 
 async def open_agent_ask(
@@ -754,7 +767,10 @@ def _fan_out_web_push(self: DashboardState, note: dict[str, Any]) -> None:
     """
     running = self._running_loop()
     if running is not None:
-        running.create_task(self._send_web_push_all(note))
+        # Held until done: the loop keeps only a weak reference to a task.
+        task = running.create_task(self._send_web_push_all(note))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         return
     loop = self.serving_loop
     if loop is None or loop.is_closed():

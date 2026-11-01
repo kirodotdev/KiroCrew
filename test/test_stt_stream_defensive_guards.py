@@ -9,6 +9,7 @@ live in ``test_stt_stream.py``; the shared socket helpers in ``stt_stream_helper
 from __future__ import annotations
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -100,6 +101,45 @@ class TestDefensiveGuards:
         ), f"both start and end audit events required; got {ops}"
         end = next(c for c in calls if c["operation"] == "stt_stream_end")
         assert end["outcome"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_profile_resolver_is_built_off_the_event_loop(self, monkeypatch):
+        """The resolver's boto3 Session is the first boto3 use, which imports boto3.
+
+        ``kiro_crew.transcribe_aws`` defers that import (~200 ms) to first use, so the
+        stream builds the resolver in a worker thread, as the batch path does, rather
+        than stalling every other request on the loop for the first dictation.
+        """
+        pytest.importorskip("amazon_transcribe")
+        from kiro_crew import aws_consent
+
+        cfg = _cfg(transcribe_profile="dictation")
+        aws_consent.record_grant(
+            aws_consent.SERVICE_TRANSCRIBE,
+            profile=cfg.stt.transcribe_profile,
+            region=cfg.stt.transcribe_region,
+            account="111122223333",
+            arn="arn:aws:iam::111122223333:user/test",
+            granted_at="2026-08-21T00:00:00+00:00",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.stt_stream.KiroCrewConfig.load", classmethod(lambda cls: cfg)
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
+        built_on: list[int] = []
+
+        def _resolver(profile):
+            built_on.append(threading.get_ident())
+            raise RuntimeError("profile not found")
+
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._ProfileCredentialResolver", _resolver)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            msg = await ws.receive_json()
+            assert msg["code"] == "stt_session_failed"
+            await ws.close()
+        assert len(built_on) == 1
+        assert built_on[0] != threading.get_ident(), "resolver was built on the event loop"
 
     @pytest.mark.asyncio
     async def test_start_audit_sel_failure_closes_ws_and_emits_end_audit(self, monkeypatch):

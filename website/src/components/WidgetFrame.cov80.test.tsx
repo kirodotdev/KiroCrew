@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import WidgetFrame, {
@@ -69,7 +69,7 @@ describe('staggeredBuildWait', () => {
 })
 
 describe('WidgetFrame toolbar actions', () => {
-  it('downloads the widget as a sanitized .html filename', () => {
+  it('downloads the widget as a sanitized .html filename', async () => {
     const click = vi.fn()
     const create = document.createElement.bind(document)
     vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
@@ -78,7 +78,8 @@ describe('WidgetFrame toolbar actions', () => {
       return el
     })
 
-    wrap(<WidgetFrame html="<p>zzq</p>" title={'zzq/report:1*'} />)
+    const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title={'zzq/report:1*'} />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
     fireEvent.click(
       screen.getByRole('button', { name: i18nT('components.widgetFrame.download_as_html') }),
     )
@@ -89,9 +90,10 @@ describe('WidgetFrame toolbar actions', () => {
     expect(document.querySelector('a[download]')).toBeNull()
   })
 
-  it('opens a standalone wrapper document in a new tab', () => {
+  it('opens a standalone wrapper document in a new tab', async () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
-    wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
 
     fireEvent.click(
       screen.getByRole('button', { name: i18nT('components.widgetFrame.open_in_new_tab') }),
@@ -99,8 +101,9 @@ describe('WidgetFrame toolbar actions', () => {
     expect(open).toHaveBeenCalledWith('blob:zzq-widget', '_blank')
   })
 
-  it('expands, then collapses again from the backdrop', () => {
+  it('expands, then collapses again from the backdrop', async () => {
     const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
 
     fireEvent.click(screen.getByRole('button', { name: i18nT('components.widgetFrame.expand') }))
     const backdrop = container.querySelector('.fixed.inset-0')!
@@ -172,11 +175,12 @@ describe('WidgetFrame toolbar actions', () => {
     expect(iframe.style.height).toBe(before)
   })
 
-  it('revokes both action blob URLs once their grace window elapses', () => {
+  it('revokes both action blob URLs once their grace window elapses', async () => {
     vi.useFakeTimers()
     try {
       vi.spyOn(window, 'open').mockReturnValue(null)
       wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+      await settleMint()
       fireEvent.click(
         screen.getByRole('button', { name: i18nT('components.widgetFrame.open_in_new_tab') }),
       )
@@ -385,8 +389,9 @@ describe('WidgetFrame artifact star', () => {
     createArtifact = vi.spyOn(api, 'createArtifact').mockResolvedValue({} as never)
   })
 
-  it('disables the star for a widget with no slug context', () => {
-    wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+  it('disables the star for a widget with no slug context', async () => {
+    const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
     expect(star()).toBeDisabled()
     expect(star()).toHaveAttribute(
       'title',
@@ -409,12 +414,14 @@ describe('WidgetFrame artifact star', () => {
     expect(screen.queryByRole('link')).toBeNull()
   })
 
-  it('a probe failure that is not a 404 leaves the widget unstarred', async () => {
+  it('a probe failure that is not a 404 leaves the widget unstarred and says so', async () => {
     vi.spyOn(api, 'artifact').mockRejectedValue(new Error('zzq-probe-exploded'))
     wrap(derived())
     await act(async () => {})
     expect(screen.queryByRole('link')).toBeNull()
     expect(star()).toBeEnabled()
+    // The read failed, so the title row says so instead of looking like "no artifact".
+    expect(await screen.findByRole('alert')).toHaveTextContent('zzq-probe-exploded')
   })
 
   it('starring an existing artifact pins it without re-creating it', async () => {
@@ -467,8 +474,10 @@ describe('WidgetFrame artifact star', () => {
     wrap(derived())
     await act(async () => {})
     fireEvent.click(star())
-    expect(await screen.findByText(i18nT('components.widgetFrame.save_failed')))
-      .toHaveAttribute('title', 'zzq-create-broke')
+    // The failure is an ErrorNotice: the label and the error's own text, read aloud.
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(i18nT('components.widgetFrame.save_failed'))
+    expect(notice).toHaveTextContent('zzq-create-broke')
     expect(setPinned).not.toHaveBeenCalled()
   })
 
@@ -477,8 +486,10 @@ describe('WidgetFrame artifact star', () => {
     wrap(derived())
     await act(async () => {})
     fireEvent.click(star())
-    expect(await screen.findByText(i18nT('components.widgetFrame.save_failed')))
-      .toHaveAttribute('title', 'zzq-not-an-error')
+    // The failure is an ErrorNotice: the label and the error's own text, read aloud.
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(i18nT('components.widgetFrame.save_failed'))
+    expect(notice).toHaveTextContent('zzq-not-an-error')
   })
 
   it('un-starring unpins the artifact and keeps it in the library', async () => {
@@ -506,13 +517,16 @@ describe('WidgetFrame artifact star', () => {
     setPinned.mockRejectedValue(new ApiError(500, 'zzq-unpin-broke'))
     wrap(derived())
     fireEvent.click(await screen.findByRole('button', { name: unstarName }))
-    expect(await screen.findByText(i18nT('components.widgetFrame.save_failed')))
-      .toHaveAttribute('title', 'zzq-unpin-broke')
+    // The failure is an ErrorNotice: the label and the error's own text, read aloud.
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(i18nT('components.widgetFrame.save_failed'))
+    expect(notice).toHaveTextContent('zzq-unpin-broke')
   })
 
-  it('an explicit slug renders as starred before the probe resolves', () => {
+  it('an explicit slug renders as starred before the probe resolves', async () => {
     vi.spyOn(api, 'artifact').mockReturnValue(new Promise(() => {}) as never)
-    wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" slug="zzq-explicit" />)
+    const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" slug="zzq-explicit" />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
     expect(screen.getByRole('button', {
       name: i18nT('components.widgetFrame.remove_artifact_from_library', { name: 'zzq-explicit' }),
     })).toBeInTheDocument()

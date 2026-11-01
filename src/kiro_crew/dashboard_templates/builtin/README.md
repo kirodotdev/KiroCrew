@@ -47,7 +47,10 @@ beside the list it belongs to, so a partial picture is never shown as a whole on
 ## How a page gets its values
 
 The host fills every `data-dashboard-field` element by `textContent` and sets
-`window.kirocrew = {fields, agentic, seq, stale}`. A field whose type is `array` or
+`window.kirocrew = {fields, agentic, seq, missing}`. `missing` names the cells whose
+value did not resolve; the host dims them and draws no band, and tells the crewmate
+instead. A page draws no freshness or staleness message of its own either: no quiet
+band from a fold stamp and no live indicator. A field whose type is `array` or
 `object` therefore reaches its bound element as JSON, which is unreadable in a cell, so
 each page overwrites that one cell with a count and draws the real thing from
 `window.kirocrew.fields` in its own script. Every page renders on load and again on each

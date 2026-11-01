@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import fnmatch
 import logging
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
@@ -42,6 +45,18 @@ ESSENTIAL_OVERSIZED_SKIP_SOURCE = "essential-context#oversized-skipped"
 _MAX_SKIPPED_LISTED = 10
 _MAX_DIRECTORY_ENTRIES = 2048
 _MAX_DOCUMENTS = 64
+_CONDITIONAL_INCLUSIONS = frozenset({"manual", "filematch", "auto"})
+
+
+def _steering_inclusion(fields: dict[str, str], path: Path) -> str:
+    """A steering file's ``inclusion`` mode; an absent or unrecognised value reads as ``always``."""
+    inclusion = fields.get("inclusion", "always").strip().casefold()
+    if inclusion == "always" or inclusion in _CONDITIONAL_INCLUSIONS:
+        return inclusion
+    logger.warning("Steering %s: unknown inclusion %r, read as always", path, inclusion)
+    return "always"
+
+
 # kiro-cli re-reads its declared resources for every request and drops whole
 # files once they total more than three bytes per token of the model's context
 # window: about 492,000 bytes for deepseek-3.2's 164,000 tokens, the smallest
@@ -128,6 +143,42 @@ def _is_prefix_collision(name: str) -> bool:
     return folded not in _MANAGED_EXACT_NAMES and not folded.startswith(_MANAGED_NAME_STEMS)
 
 
+_RootTable = tuple[list[Path], list[Path], dict[Path, Path]]
+#: The root table of the one :func:`documents_for_member` read running on this
+#: context, or ``None`` outside one.
+_managed_roots: contextvars.ContextVar[_RootTable | None] = contextvars.ContextVar(
+    "kirocrew_member_managed_roots", default=None
+)
+
+
+def _managed_root_table() -> _RootTable:
+    """The admin roots, the workspace roots, and their compared spellings, read now."""
+    cfg = KiroCrewConfig.load()
+    roots = [config_dir(), Path.home() / ".kiro/crew", Path.home() / ".kirocrew"]
+    workspaces = [config_dir() / "workspace"]
+    workspaces.extend(workspace_dir_for(name) for name in cfg.workspaces)
+    resolved_roots = {root: _comparable_root(root) for root in dict.fromkeys([*roots, *workspaces])}
+    return roots, workspaces, resolved_roots
+
+
+@contextlib.contextmanager
+def _managed_roots_scope() -> Iterator[None]:
+    """Read the root table once for one document read; nested scopes reuse it.
+
+    One member turn checks ~37 paths, and each fresh table costs a config load per
+    workspace plus a guarded resolve per root (~16 ms). The table lives only for
+    this read: the next turn reads configuration and link targets again.
+    """
+    if _managed_roots.get() is not None:
+        yield
+        return
+    token = _managed_roots.set(_managed_root_table())
+    try:
+        yield
+    finally:
+        _managed_roots.reset(token)
+
+
 def _refuse_managed_source(path: Path) -> None:
     """Resources cannot reopen Global V1 or a peer's managed member state.
 
@@ -151,14 +202,8 @@ def _refuse_managed_source(path: Path) -> None:
     resolved, so those comparisons are exact; ``_read`` additionally re-checks the
     validated path, so the pre-validation call never has to be the deciding one.
     """
-    cfg = KiroCrewConfig.load()
-    roots = [config_dir(), Path.home() / ".kiro/crew", Path.home() / ".kirocrew"]
-    workspaces = [config_dir() / "workspace"]
-    workspaces.extend(workspace_dir_for(name) for name in cfg.workspaces)
+    roots, workspaces, resolved_roots = _managed_roots.get() or _managed_root_table()
     candidate = Path(os.path.abspath(path))
-    # Reuse only within this check. A later call must observe new configuration
-    # and link targets through the same guarded resolver, never a cached grant.
-    resolved_roots = {root: _comparable_root(root) for root in dict.fromkeys([*roots, *workspaces])}
     in_workspace = False
     for workspace in workspaces:
         workspace = resolved_roots[workspace]
@@ -765,6 +810,7 @@ def member_inherits_default_resources(project: str | None) -> bool:
     return acp_driver.inherits_default_resources(_admitted_project_root(project))
 
 
+@_managed_roots_scope()
 def documents_for_member(
     template: str,
     project: str | None,
@@ -776,6 +822,7 @@ def documents_for_member(
     trigger_text: str = "",
     inherits_default_resources: bool = True,
     core_sources_out: set[str] | None = None,
+    template_dir: str | None = None,
 ) -> list[tuple[str, str]]:
     """Read actual project instructions and the owner's declared template sources.
 
@@ -795,6 +842,10 @@ def documents_for_member(
     out. Every other returned document (global and project steering, the
     conditional-guide index, ``AGENTS.md`` and the declared ``file://``
     resources) is a guide the caller may drop whole.
+
+    *template_dir*, used only when *project* is ``None``, is searched for the
+    template under its ``.kiro/agents`` (and anchors that template's relative
+    prompt). No guide, steering or resource is read from it.
     """
     from kiro_crew.agent import is_managed_prompt
     from kiro_crew.agent_discovery import _read_agent_spec
@@ -856,8 +907,8 @@ def documents_for_member(
                 return
         if steering:
             fields, _ = split_frontmatter(body, STEERING_LOADER)
-            inclusion = fields.get("inclusion", "always").strip().casefold()
-            if inclusion in {"manual", "filematch", "auto"}:
+            inclusion = _steering_inclusion(fields, path)
+            if inclusion in _CONDITIONAL_INCLUSIONS:
                 if conditional_index:
                     import hashlib
                     import re
@@ -911,10 +962,6 @@ def documents_for_member(
                             f"Essential source {path}: too many documents"
                         )
                 return
-            if inclusion != "always":
-                raise MemberEssentialContextError(
-                    f"Essential source {path}: unknown steering inclusion {inclusion!r}"
-                )
         seen.add(Path(os.path.abspath(path)))
         documents.append((str(path), body))
         if len(documents) > _MAX_DOCUMENTS:
@@ -947,7 +994,8 @@ def documents_for_member(
             for path in _matches(project_root, ".kiro/steering/**/*.md", skipped, linked):
                 add(path, project_root, steering=True)
 
-    spec_path = resolve_template_path(template, project)
+    template_root = project or template_dir
+    spec_path = resolve_template_path(template, template_root)
     if spec_path is None:
         if template != "kirocrew":
             raise MemberEssentialContextError(f"Essential template {template!r}: not found")
@@ -972,10 +1020,22 @@ def documents_for_member(
         if prompt.startswith("file://"):
             path = Path(prompt[7:]).expanduser()
             if path.is_absolute():
-                add(path, absolute_root)
+                # An absolute persona is also contained by the template_dir
+                # that stood in for a missing project. Declared resources keep
+                # absolute_root, so nothing else is read from that directory.
+                template_root_path = (
+                    None if project_root is not None else _admitted_project_root(template_dir)
+                )
+                persona_root = (
+                    template_root_path
+                    if template_root_path is not None
+                    and spec_path.is_relative_to(template_root_path)
+                    else absolute_root
+                )
+                add(path, persona_root)
                 _mark_core(str(path))
             else:
-                resolved = resolve_relative_prompt_path(path, spec_path, project)
+                resolved = resolve_relative_prompt_path(path, spec_path, template_root)
                 if resolved is not None:
                     add(*resolved)
                     _mark_core(str(resolved[0]))
@@ -1209,13 +1269,8 @@ def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
             continue
         if "steering" in path.parts:
             fields, _ = split_frontmatter(body, STEERING_LOADER)
-            inclusion = fields.get("inclusion", "always").strip().casefold()
-            if inclusion in {"manual", "auto", "filematch"}:
+            if _steering_inclusion(fields, path) in _CONDITIONAL_INCLUSIONS:
                 continue
-            if inclusion != "always":
-                raise MemberEssentialContextError(
-                    f"Essential source {path}: unknown inclusion {inclusion!r}"
-                )
         documents[str(path)] = body
     return documents
 
@@ -1247,7 +1302,7 @@ def kiro_launch_documents(template: str, project: str | None) -> list[tuple[str,
             logger.warning("Steering %s not loaded: %s", path, exc)
             continue
         fields, _ = split_frontmatter(body, STEERING_LOADER)
-        if fields.get("inclusion", "always").strip().casefold() == "always":
+        if _steering_inclusion(fields, path) == "always":
             declared[str(path)] = body
     return list(declared.items())
 

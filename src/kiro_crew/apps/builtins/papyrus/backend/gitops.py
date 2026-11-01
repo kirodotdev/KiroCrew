@@ -280,13 +280,13 @@ def _pin_attributes_sync(cwd: Path) -> None:
     # at ANOTHER repository, `info` and `attributes` are legitimate non-links
     # *inside that repo*, so both inner checks pass and a `GET /git` status poll
     # rewrites a different repository's attributes, outside this project entirely.
-    # Verified before the fix. The rule has to hold for every segment KiroCrew
+    # Verified. The rule has to hold for every segment Kiro Crew
     # traverses by name, not just the leaf.
     #
     # `store.is_reparse_link`, not `is_symlink()`: a Windows directory JUNCTION is a
     # reparse point `is_symlink()` does not report, and it is the link type a user
-    # can create there without elevation — so a symlink-only check left this guard
-    # bypassable on the platform this PR adds support for.
+    # can create there without elevation — so a symlink-only check leaves this guard
+    # bypassable on Windows.
     if (
         store.is_reparse_link(git_dir)
         or store.is_reparse_link(info)
@@ -346,7 +346,8 @@ async def _git(
     """Run ``git <args>`` in *cwd* off the event loop.
 
     Returns ``(returncode, stdout, stderr)``. A timeout kills the process tree
-    and surfaces as :class:`GitError` rather than a silent empty result.
+    and surfaces as :class:`GitError` rather than a silent empty result. On
+    cancel the tree is killed too, then the cancel propagates.
     """
     # Attribute-driven programs are disabled by a file, not by `-c` — see
     # `_pin_attributes_sync` for why the override list cannot cover them.
@@ -510,6 +511,13 @@ async def _git(
                 logger.warning("papyrus: git did not exit after SIGKILL")
         _audit(args[0] if args else "run", str(cwd), "failure", error="timeout")
         raise GitError(f"git {args[0] if args else ''} timed out") from exc
+    except asyncio.CancelledError:
+        # The child runs in its own session, so once this coroutine stops
+        # awaiting it nothing else will stop it: no timeout is left.
+        # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+        if proc is not None and proc.returncode is None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     except FileNotFoundError as exc:
         _audit(args[0] if args else "run", str(cwd), "failure", error="git not found")
         raise GitError("git is not installed on this host") from exc

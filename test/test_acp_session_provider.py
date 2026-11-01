@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -148,9 +148,9 @@ class TestAcpSessionProviderLifecycle:
         runtime = _make_runtime()
         provider = AcpSessionProvider(handle, runtime)
 
-        # Should not raise
-        await provider.shutdown()
-        handle.destroy.assert_awaited_once()
+        assert await provider.shutdown() is None
+        assert handle.destroy.await_args_list == [call()]
+        assert runtime.kill.call_count == 0
 
     @pytest.mark.asyncio
     async def test_shutdown_idle_subagent_does_not_cancel(self):
@@ -160,9 +160,9 @@ class TestAcpSessionProviderLifecycle:
         provider = AcpSessionProvider(handle, runtime, owns_runtime=False)
 
         await provider.shutdown()
-        handle.cancel.assert_not_awaited()
-        handle.destroy.assert_awaited_once()
-        runtime.kill.assert_not_called()
+        assert handle.cancel.await_count == 0
+        assert handle.destroy.await_args_list == [call()]
+        assert runtime.kill.call_count == 0
 
     @pytest.mark.asyncio
     async def test_shutdown_active_subagent_cancels_then_destroys(self):
@@ -174,9 +174,11 @@ class TestAcpSessionProviderLifecycle:
         provider = AcpSessionProvider(handle, runtime, owns_runtime=False)
 
         await provider.shutdown()
-        handle.cancel.assert_awaited_once()
-        handle.destroy.assert_awaited_once()
-        runtime.kill.assert_not_called()
+        assert [c for c in handle.mock_calls if c[0] in ("cancel", "destroy")] == [
+            call.cancel(),
+            call.destroy(),
+        ]
+        assert runtime.kill.call_count == 0
 
     @pytest.mark.asyncio
     async def test_shutdown_active_subagent_destroys_even_if_cancel_fails(self):
@@ -186,9 +188,10 @@ class TestAcpSessionProviderLifecycle:
         runtime = _make_runtime()
         provider = AcpSessionProvider(handle, runtime, owns_runtime=False)
 
-        await provider.shutdown()
-        handle.destroy.assert_awaited_once()
-        runtime.kill.assert_not_called()
+        assert await provider.shutdown() is None
+        assert handle.cancel.await_count == 1
+        assert handle.destroy.await_args_list == [call()]
+        assert runtime.kill.call_count == 0
 
     @pytest.mark.asyncio
     async def test_shutdown_owns_runtime_kills_runtime(self):
@@ -200,9 +203,9 @@ class TestAcpSessionProviderLifecycle:
         provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
 
         await provider.shutdown()
-        runtime.kill.assert_awaited_once_with(expected=True, reason="provider shutdown")
-        handle.destroy.assert_not_awaited()
-        handle.cancel.assert_not_awaited()
+        assert runtime.kill.await_args_list == [call(expected=True, reason="provider shutdown")]
+        assert handle.destroy.await_count == 0
+        assert handle.cancel.await_count == 0
 
 
 class TestAcpSessionProviderStream:
@@ -312,17 +315,20 @@ class TestAcpSessionProviderToolApproval:
         runtime = _make_runtime()
         provider = AcpSessionProvider(handle, runtime)
 
-        await provider.approve_tool("req-42")
-        handle.approve_tool.assert_awaited_once_with("req-42", option_id="allow_once")
+        handle.approve_tool.return_value = True
+
+        assert await provider.approve_tool("req-42") is True
+        assert handle.approve_tool.await_args_list == [call("req-42", option_id="allow_once")]
 
     @pytest.mark.asyncio
     async def test_approve_tool_always(self):
         handle = _make_handle()
         runtime = _make_runtime()
         provider = AcpSessionProvider(handle, runtime)
+        handle.approve_tool.return_value = True
 
-        await provider.approve_tool("req-99", always=True)
-        handle.approve_tool.assert_awaited_once_with("req-99", option_id="allow_always")
+        assert await provider.approve_tool("req-99", always=True) is True
+        assert handle.approve_tool.await_args_list == [call("req-99", option_id="allow_always")]
 
     @pytest.mark.asyncio
     async def test_reject_tool(self):
@@ -331,7 +337,8 @@ class TestAcpSessionProviderToolApproval:
         provider = AcpSessionProvider(handle, runtime)
 
         await provider.reject_tool("req-7")
-        handle.reject_tool.assert_awaited_once_with("req-7")
+        assert handle.reject_tool.await_args_list == [call("req-7")]
+        assert handle.approve_tool.await_count == 0
 
 
 class TestAcpSessionProviderCancel:
@@ -463,13 +470,17 @@ class TestAcpSessionProviderErrorPropagation:
     def test_touch_activity_stamps_its_own_handle(self):
         """The keepalive also reaches this session's handle, the clock the
         tool-stall watchdog reads (the runtime clock is process-wide)."""
-        handle = _make_handle()
+        import asyncio
+
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+
         runtime = _make_runtime()
+        handle = AcpSessionHandle("test-session-1", asyncio.Queue(), runtime)
         provider = AcpSessionProvider(handle, runtime)
 
         provider.touch_activity()
 
-        handle.note_keepalive.assert_called_once_with()
+        assert handle._keepalive_ts > 0.0
 
 
 class TestAcpSessionProviderClientCompat:
@@ -595,8 +606,8 @@ class TestAcpSessionProviderClientCompat:
         handle.set_config_option = AsyncMock()
         runtime = _make_runtime()
         provider = AcpSessionProvider(handle, runtime)
-        await provider.set_config_option("effort", "high")
-        handle.set_config_option.assert_awaited_once_with("effort", "high")
+        assert await provider.set_config_option("effort", "high") is None
+        assert handle.set_config_option.await_args_list == [call("effort", "high")]
 
     @pytest.mark.asyncio
     async def test_wait_for_compaction(self):
@@ -707,8 +718,8 @@ class TestAcpSessionProviderOwnsRuntime:
         runtime.kill = AsyncMock(side_effect=OSError("already dead"))
         provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
 
-        await provider.shutdown()
-        runtime.kill.assert_awaited_once_with(expected=True, reason="provider shutdown")
+        assert await provider.shutdown() is None
+        assert runtime.kill.await_args_list == [call(expected=True, reason="provider shutdown")]
 
 
 class TestAcpSessionProviderRound4Parity:
@@ -878,7 +889,7 @@ class TestAcpSessionProviderRound4Parity:
         runtime = _make_runtime()
         provider = AcpSessionProvider(handle, runtime)
         await provider.cancel_session(grace_secs=3.0)
-        handle.cancel.assert_awaited_once_with(grace_secs=3.0)
+        assert handle.cancel.await_args_list == [call(grace_secs=3.0)]
 
     @pytest.mark.asyncio
     async def test_cancel_session_swallows_runtime_dead(self):
@@ -1042,8 +1053,9 @@ class TestAcpSessionProviderContractParity:
         handle = _make_handle()
         runtime = _make_runtime()
         provider = AcpSessionProvider(handle, runtime)
-        await provider.approve_tool("req", option_id="allow_always")
-        handle.approve_tool.assert_awaited_once_with("req", option_id="allow_always")
+        handle.approve_tool.return_value = False
+        assert await provider.approve_tool("req", option_id="allow_always") is False
+        assert handle.approve_tool.await_args_list == [call("req", option_id="allow_always")]
 
 
 class TestNewConversation:
@@ -1081,15 +1093,17 @@ class TestNewConversation:
 
     @pytest.mark.asyncio
     async def test_owning_shutdown_stops_in_flight_hook_executions(self):
+        order: list[str] = []
         handle = _make_handle(session_id="owned")
-        handle._cancel_hook_tasks = MagicMock()
+        handle._cancel_hook_tasks = MagicMock(side_effect=lambda: order.append("hooks"))
         runtime = _make_runtime()
-        runtime.kill = AsyncMock()
+        runtime.kill = AsyncMock(side_effect=lambda **_kw: order.append("kill"))
         provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
 
         await provider.shutdown()
 
-        handle._cancel_hook_tasks.assert_called_once_with()
+        # The runtime kill does not reach the handle's hook tasks, so they stop first.
+        assert order == ["hooks", "kill"]
 
     @pytest.mark.asyncio
     async def test_the_fresh_session_keeps_the_providers_owner(self):
@@ -1102,6 +1116,40 @@ class TestNewConversation:
         await provider.new_conversation()
 
         assert runtime.create_session.await_args.kwargs["session_key"] == "slot:owner"
+
+    @pytest.mark.asyncio
+    async def test_the_fresh_conversation_keeps_the_delete_delay(self):
+        """A pooled worker sets the delay once; every later conversation inherits it."""
+        old = _make_handle(session_id="old-session-1")
+        old.delete_delay_secs = 1800.0
+        runtime, new_handle = self._runtime_with_new_session()
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        assert new_handle.delete_delay_secs == 1800.0
+
+    def test_the_workflow_provider_passes_the_delete_delay_to_its_session(self):
+        """A workflow worker holds an ``AcpProvider``; only its shared-runtime client
+        can release a session, and the per-session client ends its sessions as before."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        handle = _make_handle()
+        provider = AcpProvider.__new__(AcpProvider)
+        provider._client = AcpSessionProvider(handle, _make_runtime())
+        provider.set_delete_delay(1800)
+        assert handle.delete_delay_secs == 1800.0
+
+        provider._client = MagicMock(spec=[])
+        provider.set_delete_delay(1800)
+
+    def test_set_delete_delay_reaches_the_handle(self):
+        handle = _make_handle()
+        provider = AcpSessionProvider(handle, _make_runtime())
+        provider.set_delete_delay(-5)
+        assert handle.delete_delay_secs == 0.0
+        provider.set_delete_delay(1800)
+        assert handle.delete_delay_secs == 1800.0
 
     @pytest.mark.asyncio
     async def test_destroys_old_session_to_free_context(self):
@@ -1250,8 +1298,9 @@ class TestNewConversation:
 
         await provider.new_conversation()
 
-        # The fresh session is re-pinned to the configured model.
-        new_handle.set_model.assert_awaited_once_with("claude-opus-4-8")
+        assert new_handle.set_model.await_args_list == [call("claude-opus-4-8")]
+        assert provider._handle is new_handle
+        assert old.destroy.await_count == 1
 
     @pytest.mark.asyncio
     async def test_default_model_sentinel_not_reapplied(self):
@@ -1336,7 +1385,8 @@ class TestLivePathModelEntitlement:
 
         await provider.set_model("claude-opus-4.8")
 
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        assert handle.set_model.await_args_list == [call("claude-opus-4.8")]
+        assert handle.refresh_available_models.await_count == 0
 
     @pytest.mark.asyncio
     async def test_unknown_advertised_set_still_applied(self):
@@ -1345,7 +1395,8 @@ class TestLivePathModelEntitlement:
 
         await provider.set_model("claude-opus-4.8")
 
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        assert handle.set_model.await_args_list == [call("claude-opus-4.8")]
+        assert handle.refresh_available_models.await_count == 0
 
     @pytest.mark.asyncio
     async def test_malformed_advertised_payload_does_not_raise(self):
@@ -1355,7 +1406,8 @@ class TestLivePathModelEntitlement:
 
         await provider.set_model("claude-opus-4.8")
 
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        assert handle.set_model.await_args_list == [call("claude-opus-4.8")]
+        assert handle.refresh_available_models.await_count == 0
 
     @pytest.mark.asyncio
     async def test_stale_refusal_revalidates_and_allows(self):
@@ -1376,8 +1428,8 @@ class TestLivePathModelEntitlement:
 
         await provider.set_model("claude-opus-5")
 
-        handle.refresh_available_models.assert_awaited_once()
-        handle.set_model.assert_awaited_once_with("claude-opus-5")
+        assert handle.refresh_available_models.await_args_list == [call(force=True)]
+        assert handle.set_model.await_args_list == [call("claude-opus-5")]
 
     @pytest.mark.asyncio
     async def test_refusal_stands_when_fresh_probe_still_lacks_model(self):
@@ -1421,8 +1473,8 @@ class TestLivePathModelEntitlement:
 
         await provider.set_model("claude-opus-4.8")
 
-        handle.refresh_available_models.assert_not_awaited()
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        assert handle.refresh_available_models.await_count == 0
+        assert handle.set_model.await_args_list == [call("claude-opus-4.8")]
 
     @pytest.mark.asyncio
     async def test_refusal_heal_forces_a_fresh_probe(self):

@@ -71,18 +71,16 @@ is why this harness has no ordering constraint the claude one has. ``read-only``
 still permits passive READS; ACP v1 has no way to require a prompt for those, and
 what makes the residual gap survivable is that mask.
 
-The session array is the whole tool surface, and the adapter will not check it
------------------------------------------------------------------------------
+The session array is the whole tool surface, and one bad element costs all of it
+--------------------------------------------------------------------------------
 codex reads no agent spec, so ``session/new``'s ``mcpServers`` is everything the
-session will ever have. The adapter does not validate it: an element whose
-transport it declared unsupported is ACCEPTED, and ``session/new`` returns a normal
-sessionId. Captured live -- ``mcpCapabilities`` advertising ``sse: false``, an
-``sse`` element sent anyway, session created; a control element typed
-``nonsense-type`` created one too.
+session will ever have. Since 2.3.0 the adapter validates that array against the
+ACP schema and fails the WHOLE ``session/new`` over one element it will not take:
+an ``sse`` element while ``mcpCapabilities`` advertises ``sse: false``, or a
+control element typed ``nonsense-type``. Up to 2.2.2 a bare one was ACCEPTED and
+never wired, a session running with a tool the operator declared simply absent.
 
-That failure mode is silence, which is why the narrowing matters. There is no error
-for anyone to see and no frame to react to -- just a session running with a server
-that was never wired, so a tool the operator declared is simply absent.
+Either way the narrowing matters.
 :meth:`CodexHarness.session_mcp_servers` is therefore the ONLY thing standing
 between the array Crew composed and an array the adapter will honour, narrowed
 against the capabilities THIS session's handshake reported.

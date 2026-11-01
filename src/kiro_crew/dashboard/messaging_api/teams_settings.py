@@ -50,7 +50,11 @@ async def api_teams_config_get(request: web.Request) -> web.Response:
 
     cfg = KiroCrewConfig.load()
     # Off-loop: a secret:// reference is read and decrypted from the vault.
-    creds = await asyncio.to_thread(cfg.load_credentials)
+    # propagate=False: a post-boot dashboard read must not re-seed os.environ,
+    # or a worker-thread setdefault could restore a credential the live watcher
+    # just popped. Boot owns the one propagation; the live applier owns mutations
+    # after it.
+    creds = await asyncio.to_thread(cfg.load_credentials, propagate=False)
     # Off-loop too: find_spec and the PEP 668 marker check touch the filesystem.
     # find_spec locates PyJWT without importing it, so this keeps the boot-path
     # rule above.
@@ -387,8 +391,15 @@ async def _teams_config_save(request: web.Request) -> web.Response:
     applied: list[str] = []
     async with _get_config_lock():
         path = config_path()
+
+        def _read_config() -> object:
+            # The existence check, the read and the parse share one worker-thread hop
+            # (as in feishu_settings.py): a stalled mount must not block the loop on
+            # any of them.
+            return json.loads(read_config_text(path)) if path.exists() else {}
+
         try:
-            data = json.loads(read_config_text(path)) if path.exists() else {}
+            data = await asyncio.to_thread(_read_config)
             if not isinstance(data, dict):
                 raise ValueError("config.json is not a JSON object")
         except Exception:

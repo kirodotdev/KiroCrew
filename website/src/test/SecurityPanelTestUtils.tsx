@@ -2,7 +2,7 @@
  * Fixtures shared by SecurityPanel.test.tsx and the suites split from it
  * (SecurityPanel.deniedCommands, .registryTrust and .rail): the rule descriptions and
  * patterns, the denied-commands, posture and no-policy governance snapshots, and the
- * rail's tailnet and file-delivery defaults. Each suite keeps its own vi.mock of the api
+ * rail's tailnet default. Each suite keeps its own vi.mock of the api
  * client, so nothing here imports `api`.
  */
 import type { DeniedCommandsData } from '../api/client'
@@ -38,21 +38,6 @@ export const TAILNET_OFF = {
   origin: '',
   resolved_at: 0,
   state: 'off',
-} as const
-
-/**
- * Nothing confirmed, for the same reason TAILNET_OFF exists: the rail reads the
- * flagged-file-delivery state on mount in every test of those suites, so the mock must
- * RESOLVE rather than merely exist. "Not confirmed" is the right default for
- * suites that cover the rest of the panel; the section's own states are covered in
- * SecurityPanel.fileDelivery.test.tsx.
- */
-export const CONSENT_NONE = {
-  ok: true,
-  grantable: ['owner_dashboard'],
-  never_grantable: ['channel_upload', 'slack_upload'],
-  labels: { owner_dashboard: "This machine's outbox and my own dashboard" },
-  grants: { owner_dashboard: null },
 } as const
 
 export function snapshot(overrides: Partial<DeniedCommandsData> = {}): DeniedCommandsData {

@@ -141,6 +141,60 @@ export async function copyImageToClipboard(png: Promise<Blob>): Promise<boolean>
   }
 }
 
+/** Rejects on an HTTP error, so an error page is never copied or saved as the image. */
+export async function fetchImageBlob(src: string): Promise<Blob> {
+  const res = await fetch(src)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return await res.blob()
+}
+
+/** Copy the image at `src`. Only works where `fetch` can read its bytes:
+ *  same-origin, `data:` or `blob:`, or a cross-origin server that sends CORS headers. */
+export function copyImageFromUrl(src: string): Promise<boolean> {
+  return copyImageToClipboard(fetchImageBlob(src).then(imageBlobToPng))
+}
+
+/** Whether the desktop shell can copy a drawn image by its screen position.
+ *  Only the top frame holds the bridge, and its coordinates are the top frame's. */
+export function nativeImageCopyAvailable(): boolean {
+  return typeof window !== 'undefined' && window === window.top && typeof window.electronAPI?.copyImageAt === 'function'
+}
+
+/** The middle of the part of `el` inside the viewport, or null when none of it is. */
+function visibleCenter(el: Element): { x: number; y: number } | null {
+  const r = el.getBoundingClientRect()
+  const left = Math.max(r.left, 0), right = Math.min(r.right, window.innerWidth)
+  const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, window.innerHeight)
+  if (right <= left || bottom <= top) return null
+  return { x: (left + right) / 2, y: (top + bottom) / 2 }
+}
+
+/** Copy `img` through the desktop shell, which reads the drawn pixels, so the
+ *  image's origin and the page's clipboard permissions do not matter. The shell
+ *  copies whatever is drawn at the point, so this waits until the point hits
+ *  `img` itself: a closing menu or its overlay can sit on top for a few frames.
+ *  `hint` (the right-click point) is tried first: the visible centre can sit
+ *  under something drawn over the image, such as the composer. */
+export function copyImageElementNatively(img: HTMLImageElement, timeoutMs = 1000, hint?: { x: number; y: number } | null): Promise<boolean> {
+  const copyAt = window.electronAPI?.copyImageAt
+  if (!nativeImageCopyAvailable() || typeof copyAt !== 'function') return Promise.resolve(false)
+  const deadline = performance.now() + timeoutMs
+  return new Promise(resolve => {
+    const attempt = () => {
+      const center = img.isConnected ? visibleCenter(img) : null
+      const point = center && hint && document.elementFromPoint(hint.x, hint.y) === img ? hint : center
+      if (point && document.elementFromPoint(point.x, point.y) === img) {
+        copyAt(point.x, point.y).then(ok => resolve(ok === true), () => resolve(false))
+      } else if (!point || performance.now() >= deadline) {
+        resolve(false)
+      } else {
+        requestAnimationFrame(attempt)
+      }
+    }
+    attempt()
+  })
+}
+
 /** Copy rich text: `html` as `text/html` for editors that paste formatting
  *  (Outlook, Word, Docs), with `plain` as the `text/plain` fallback for
  *  everything else. Same contract as `copyToClipboard`: resolves `true` only

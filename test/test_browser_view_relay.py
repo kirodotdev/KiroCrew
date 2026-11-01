@@ -34,9 +34,6 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.browser_cli import view as browser_cli_view
 from kiro_crew.dashboard.handlers import browser_view_relay
 
-pytestmark = pytest.mark.asyncio
-
-
 # ── Stub upstream: the shapes the real `playwright-cli show` serves ──────────
 
 #: A stand-in capability token in the ``token_urlsafe`` alphabet.
@@ -227,6 +224,7 @@ async def _running_stack(
 # ── Rewrites ─────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_redirect_is_rerooted_and_ws_param_prefixed(monkeypatch: pytest.MonkeyPatch) -> None:
     async with _running_stack(monkeypatch) as relay_client:
         resp = await relay_client.get(f"/browser-view/{TOKEN}/", allow_redirects=False)
@@ -249,6 +247,7 @@ async def test_redirect_is_rerooted_and_ws_param_prefixed(monkeypatch: pytest.Mo
         assert resp.headers["Access-Control-Allow-Origin"] == "*"
 
 
+@pytest.mark.asyncio
 async def test_tokened_bare_prefix_proxies_upstream_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -258,6 +257,7 @@ async def test_tokened_bare_prefix_proxies_upstream_root(
         assert resp.headers["Location"].startswith(f"/browser-view/{TOKEN}/index.html?")
 
 
+@pytest.mark.asyncio
 async def test_html_root_absolute_refs_are_rerooted(monkeypatch: pytest.MonkeyPatch) -> None:
     async with _running_stack(monkeypatch) as relay_client:
         resp = await relay_client.get(f"/browser-view/{TOKEN}/index.html")
@@ -269,6 +269,7 @@ async def test_html_root_absolute_refs_are_rerooted(monkeypatch: pytest.MonkeyPa
         assert 'src="/assets/' not in body
 
 
+@pytest.mark.asyncio
 async def test_html_documents_are_stamped_into_an_opaque_origin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -302,6 +303,7 @@ async def test_html_documents_are_stamped_into_an_opaque_origin(
         assert asset.headers.get("Access-Control-Allow-Origin") == "*"
 
 
+@pytest.mark.asyncio
 async def test_every_relayed_type_is_stamped_except_scripts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -329,6 +331,7 @@ async def test_every_relayed_type_is_stamped_except_scripts(
         assert js.headers.get("Access-Control-Allow-Origin") == "*"
 
 
+@pytest.mark.asyncio
 async def test_css_url_refs_are_rerooted(monkeypatch: pytest.MonkeyPatch) -> None:
     async with _running_stack(monkeypatch) as relay_client:
         resp = await relay_client.get(f"/browser-view/{TOKEN}/assets/index-def.css")
@@ -337,6 +340,7 @@ async def test_css_url_refs_are_rerooted(monkeypatch: pytest.MonkeyPatch) -> Non
         assert f"url(/browser-view/{TOKEN}/assets/codicon-xyz.ttf)" in body
 
 
+@pytest.mark.asyncio
 async def test_binary_passthrough_is_byte_exact(monkeypatch: pytest.MonkeyPatch) -> None:
     async with _running_stack(monkeypatch) as relay_client:
         resp = await relay_client.get(f"/browser-view/{TOKEN}/bin")
@@ -345,6 +349,7 @@ async def test_binary_passthrough_is_byte_exact(monkeypatch: pytest.MonkeyPatch)
         assert await resp.read() == BINARY_BODY
 
 
+@pytest.mark.asyncio
 async def test_stream_branch_carries_range_and_validator_headers_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -364,6 +369,7 @@ async def test_stream_branch_carries_range_and_validator_headers_back(
         assert await resp.read() == BINARY_BODY[:4]
 
 
+@pytest.mark.asyncio
 async def test_rewritten_documents_never_carry_upstream_validators(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -381,6 +387,7 @@ async def test_rewritten_documents_never_carry_upstream_validators(
             assert name not in resp.headers
 
 
+@pytest.mark.asyncio
 async def test_off_origin_redirect_fails_closed() -> None:
     # The rewrite refuses a Location carrying a scheme/host: the upstream only
     # ever redirects within itself, so anything else degrades to the relay root.
@@ -392,6 +399,7 @@ async def test_off_origin_redirect_fails_closed() -> None:
 # ── WebSocket pumping ────────────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_websocket_text_and_binary_pump_both_ways(monkeypatch: pytest.MonkeyPatch) -> None:
     async with (
         _running_stack(monkeypatch) as relay_client,
@@ -411,6 +419,7 @@ async def test_websocket_text_and_binary_pump_both_ways(monkeypatch: pytest.Monk
 # ── Fail-closed answers ──────────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_wrong_token_answers_404_without_touching_upstream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -426,6 +435,7 @@ async def test_wrong_token_answers_404_without_touching_upstream(
         assert hits == []  # the gate answered before any upstream contact
 
 
+@pytest.mark.asyncio
 async def test_view_not_running_answers_the_same_404(monkeypatch: pytest.MonkeyPatch) -> None:
     # Indistinguishable from a wrong token: an unauthenticated probe must not
     # learn whether a logged-in browser is up.
@@ -441,6 +451,7 @@ async def test_view_not_running_answers_the_same_404(monkeypatch: pytest.MonkeyP
         await client.close()
 
 
+@pytest.mark.asyncio
 async def test_supervisor_busy_answers_retryable_503(monkeypatch: pytest.MonkeyPatch) -> None:
     # A start window holds the supervisor lock and the gate refuses as "busy"
     # rather than parking the thread pool. Busy is reachable ONLY by a caller
@@ -465,6 +476,7 @@ async def test_supervisor_busy_answers_retryable_503(monkeypatch: pytest.MonkeyP
     assert [(r["outcome"], r["resources"]) for r in recorder.records] == [("denied", "busy")]
 
 
+@pytest.mark.asyncio
 async def test_dead_upstream_answers_502(monkeypatch: pytest.MonkeyPatch) -> None:
     # A port with no listener, HELD for the duration so no concurrent worker
     # can take it: that is what makes the 502 a property of the address rather
@@ -547,6 +559,7 @@ def _upstream_that_cuts_mid_body() -> Iterator[int]:
         worker.join(timeout=5)
 
 
+@pytest.mark.asyncio
 async def test_a_mid_body_cut_closes_the_body_instead_of_writing_a_second_head(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -899,6 +912,7 @@ def test_relay_prefix_bypasses_cookie_auth_by_design() -> None:
 # ── Status payload carries the relay path ────────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_status_payload_gains_tokened_relay_path_when_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -920,6 +934,7 @@ async def test_status_payload_gains_tokened_relay_path_when_running(
     assert messaging._browser_view_payload()["path"] is None
 
 
+@pytest.mark.asyncio
 async def test_status_payload_never_publishes_target_the_proof_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -974,6 +989,7 @@ def _sequenced_authorize(
     return calls
 
 
+@pytest.mark.asyncio
 async def test_happy_path_runs_exactly_two_proofs(monkeypatch: pytest.MonkeyPatch) -> None:
     # The cost contract: one pre-connect authorization plus ONE post-connect
     # re-proof per established connection — never per chunk.
@@ -985,6 +1001,7 @@ async def test_happy_path_runs_exactly_two_proofs(monkeypatch: pytest.MonkeyPatc
         assert len(calls) == 2
 
 
+@pytest.mark.asyncio
 async def test_post_connect_reproof_carries_a_monotonic_fence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1013,6 +1030,7 @@ async def test_post_connect_reproof_carries_a_monotonic_fence(
         assert fences[1] is not None and fences[1] >= before
 
 
+@pytest.mark.asyncio
 async def test_reproof_failure_after_connect_answers_uniform_404(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1029,6 +1047,7 @@ async def test_reproof_failure_after_connect_answers_uniform_404(
         assert len(calls) == 2
 
 
+@pytest.mark.asyncio
 async def test_reproof_port_move_is_refused_as_stale(monkeypatch: pytest.MonkeyPatch) -> None:
     # The view RESTARTED after we connected: relay_authorize says "ok" for the
     # new instance, but our held connection went to the freed OLD port. Same
@@ -1039,6 +1058,7 @@ async def test_reproof_port_move_is_refused_as_stale(monkeypatch: pytest.MonkeyP
         assert resp.status == 404
 
 
+@pytest.mark.asyncio
 async def test_reproof_busy_answers_retryable_503(monkeypatch: pytest.MonkeyPatch) -> None:
     # A start grabs the supervisor lock between our pre-connect authorization
     # and the post-connect re-proof. The caller demonstrably holds the
@@ -1054,6 +1074,7 @@ async def test_reproof_busy_answers_retryable_503(monkeypatch: pytest.MonkeyPatc
         assert payload["code"] == "busy"
 
 
+@pytest.mark.asyncio
 async def test_redirect_branch_is_also_gated_by_the_reproof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1066,6 +1087,7 @@ async def test_redirect_branch_is_also_gated_by_the_reproof(
         assert "Location" not in resp.headers
 
 
+@pytest.mark.asyncio
 async def test_websocket_closes_before_any_frame_when_reproof_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1080,6 +1102,7 @@ async def test_websocket_closes_before_any_frame_when_reproof_fails(
             assert ws.close_code == aiohttp.WSCloseCode.TRY_AGAIN_LATER
 
 
+@pytest.mark.asyncio
 async def test_stale_upstream_denial_is_audited_with_its_own_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1110,6 +1133,7 @@ class _AuditRecorder:
         self.records.append(kwargs)
 
 
+@pytest.mark.asyncio
 async def test_both_token_outcomes_are_audited_without_the_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1137,6 +1161,7 @@ async def test_both_token_outcomes_are_audited_without_the_token(
             assert "index.html" not in str(value)
 
 
+@pytest.mark.asyncio
 async def test_view_down_denial_is_audited_with_its_own_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1155,6 +1180,7 @@ async def test_view_down_denial_is_audited_with_its_own_reason(
     assert [(r["outcome"], r["resources"]) for r in recorder.records] == [("denied", "view_down")]
 
 
+@pytest.mark.asyncio
 async def test_no_token_request_never_reaches_the_supervisor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1183,6 +1209,7 @@ async def test_no_token_request_never_reaches_the_supervisor(
     ]
 
 
+@pytest.mark.asyncio
 async def test_ownership_unproven_is_audited_with_its_own_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1205,6 +1232,7 @@ async def test_ownership_unproven_is_audited_with_its_own_reason(
     ]
 
 
+@pytest.mark.asyncio
 async def test_audit_failure_never_breaks_serving(monkeypatch: pytest.MonkeyPatch) -> None:
     # Best-effort audit, per the sibling capability handlers: a SEL failure is
     # logged and the relay keeps serving.

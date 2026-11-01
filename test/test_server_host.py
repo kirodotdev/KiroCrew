@@ -35,8 +35,20 @@ class _Spawn:
 
 def _install_spawn(monkeypatch: pytest.MonkeyPatch, spawn: _Spawn) -> None:
     """Route the backend's ``subprocess`` name, in every module holding it, to *spawn*."""
-    fake = SimpleNamespace(run=spawn, SubprocessError=subprocess.SubprocessError)
+    fake = SimpleNamespace(
+        run=spawn,
+        SubprocessError=subprocess.SubprocessError,
+        TimeoutExpired=subprocess.TimeoutExpired,
+    )
     monkeypatch.setattr(server, "subprocess", fake)
+
+
+class _TimedOutSpawn(_Spawn):
+    """A spawn that outlives its ``timeout``, as ``subprocess.run`` reports it."""
+
+    def __call__(self, argv: list[str], **kwargs: Any) -> SimpleNamespace:
+        self.calls.append((argv, kwargs))
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
 
 
 @pytest.mark.parametrize(
@@ -103,6 +115,17 @@ def test_a_failed_reveal_is_a_500(monkeypatch: pytest.MonkeyPatch) -> None:
     assert (excinfo.value.status, excinfo.value.code) == (500, "folder_open_failed")
 
 
+def test_a_timed_out_reveal_is_a_coded_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hung file manager is an ``ApiError`` the UI renders, not a stray ``TimeoutExpired``."""
+    _install_spawn(monkeypatch, _TimedOutSpawn())
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(server, "_reveal_binary", lambda: "/usr/bin/xdg-open")
+    with pytest.raises((server.ApiError, subprocess.TimeoutExpired)) as excinfo:
+        server._reveal_folder_sync("/srv/vault/.trash")
+    assert isinstance(excinfo.value, server.ApiError)
+    assert (excinfo.value.status, excinfo.value.code) == (500, "folder_open_timeout")
+
+
 @pytest.mark.parametrize(
     ("platform", "suppressed", "expected"),
     [("darwin", False, True), ("darwin", True, False), ("linux", False, False)],
@@ -139,6 +162,15 @@ def test_a_failed_folder_chooser_is_a_500(monkeypatch: pytest.MonkeyPatch) -> No
     with pytest.raises(server.ApiError) as excinfo:
         server._pick_folder_sync()
     assert (excinfo.value.status, excinfo.value.code) == (500, "folder_chooser_failed")
+
+
+def test_a_timed_out_folder_chooser_is_a_coded_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A chooser left open past its timeout is an ``ApiError``, not a stray ``TimeoutExpired``."""
+    _install_spawn(monkeypatch, _TimedOutSpawn())
+    with pytest.raises((server.ApiError, subprocess.TimeoutExpired)) as excinfo:
+        server._pick_folder_sync()
+    assert isinstance(excinfo.value, server.ApiError)
+    assert (excinfo.value.status, excinfo.value.code) == (500, "folder_chooser_timeout")
 
 
 def test_the_trusted_env_pins_path_on_posix_and_keeps_the_rest(

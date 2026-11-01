@@ -447,6 +447,7 @@ class TestWarmPoolQueueRaces:
         mgr._fill_warm_pool = AsyncMock()
         mgr._discard_pool_provider = AsyncMock()
         await mgr._sweep_warm_pool_once()
+        assert mgr._warm_pool.qsize() == 0  # not re-enqueued as healthy
         mgr._discard_pool_provider.assert_awaited_once()
         assert mgr._discard_pool_provider.await_args.args[0] is dead
 
@@ -488,8 +489,10 @@ class TestDiscardPoolProvider:
         with patch("kiro_crew.session._sync_kill_provider") as killer:
             with pytest.raises(_Bang):
                 await mgr._discard_pool_provider(provider, "unit")
-        # Dispatched to the executor; wait for the worker to pick it up.
-        await async_wait_until(lambda: killer.call_count)
+        # Dispatched to the executor; wait on the field the assertion reads.
+        # MagicMock sets call_args *after* it bumps call_count, so waiting on
+        # call_count can return while call_args is still None on a slow runner.
+        await async_wait_until(lambda: killer.call_args is not None)
         assert killer.call_args.args[0] is provider
 
     @pytest.mark.asyncio

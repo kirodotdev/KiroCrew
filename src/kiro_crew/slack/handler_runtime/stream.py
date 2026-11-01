@@ -35,10 +35,8 @@ if TYPE_CHECKING:
         TRUNCATION_NOTICE,
         LLMEvent,
         SlackClientOps,
-        StatusReactionController,
         StreamRedactor,
         _convert_tables,
-        _tool_to_phase,
         is_control_tag_tail,
         is_wait_identity,
         logger,
@@ -291,7 +289,6 @@ class _AnswerStream:
         user_id: str,
         channel_activation: str | None,
         show_thinking: bool,
-        status: StatusReactionController,
     ) -> None:
         self.slack = slack
         self.channel = channel
@@ -299,7 +296,6 @@ class _AnswerStream:
         self.team_id = team_id
         self.user_id = user_id
         self.channel_activation = channel_activation
-        self.status = status
         self.use_slack_stream = False
         self.stream_ts: str | None = None
         self.thinking_ts: str | None = None  # 💭 reasoning placeholder, posted above the answer
@@ -729,8 +725,6 @@ class _AnswerStream:
 
         if event.text:
             self.tool_gap = False
-        self.status.set_phase("thinking")
-        self.status.on_progress()
         self.accumulated += event.text
 
         if self.status_dirty and self.use_slack_stream:
@@ -776,8 +770,6 @@ class _AnswerStream:
 
     async def on_thinking(self, event: LLMEvent) -> None:
         """Accumulate a reasoning chunk and claim the 💭 slot above the answer."""
-        self.status.set_phase("thinking")
-        self.status.on_progress()
         self.thinking_accumulated += event.text
         # Claim the 💭 slot as soon as reasoning starts so it appears
         # promptly during a long thinking phase (early feedback). This
@@ -805,8 +797,6 @@ class _AnswerStream:
         tool_name, _ = redact_exfiltration_urls(tool_name)
         tool_name, _ = redact_credentials(tool_name)
         tool_kind = event.tool_kind or ""
-        self.status.set_phase(_tool_to_phase(tool_name, tool_kind))
-        self.status.on_progress()
         tool_detail = event.tool_purpose or tool_kind
         tool_status = f"\n🫆 `{tool_name}`\n"
         await self.ensure_started()
@@ -952,6 +942,25 @@ class _AnswerStream:
             self.status_dirty = True
             # Flush buffered text before approval pause
             await self.flush()
+
+    async def resume_after_approval(self) -> None:
+        """The decision is in: an agent session goes back to ``processing``.
+
+        "Waiting for approval…" reads as Slack's ``suspended`` state, which shows no
+        loader and no Stop button, and the next text chunk -- the only reset the
+        base status gets -- may come only after the approved tool has run. Sent
+        through ``set_session_status``, which does nothing unless agent sessions
+        are live, so the older thread status is untouched. Gated on the approval
+        status alone: a flush that dropped the turn to message posting still left
+        the session ``suspended``. Best-effort.
+        """
+        if not self.status_dirty:
+            return
+        try:
+            # "processing" is agent_sessions.status.SESSION_STATUS_PROCESSING.
+            await self.slack.set_session_status(self.channel, self.reply_ts, "processing")
+        except Exception:
+            logger.debug("agent session resume after approval failed", exc_info=True)
 
     async def on_tool_rejected(self) -> None:
         """Close the running tool's card as failed, or note the rejection inline."""

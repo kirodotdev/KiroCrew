@@ -141,8 +141,9 @@ afterEach(() => {
 })
 
 describe('ChatPane shared scroll chrome', () => {
-  it('pays for a host band floating over its top edge (`topInset`, #18325)', () => {
-    const { container } = renderPane({ topInset: 48 })
+  it('pays for a host band floating over its top edge (`topInset`, #18325)', async () => {
+    let container!: HTMLElement
+    await act(async () => { container = renderPane({ topInset: 48 }).container })
     // The scroller pads its rows below the band on top of its own 12px, so
     // at scroll top nothing hides under it while rows still scroll under it.
     const scroller = container.querySelector('.chat-container') as HTMLElement
@@ -153,9 +154,10 @@ describe('ChatPane shared scroll chrome', () => {
     expect(pinBand).not.toBeNull()
     expect(pinBand.style.top).toBe('48px')
     // Default: no band, nothing paid.
-    const plain = renderPane()
-    expect((plain.container.querySelector('.chat-container') as HTMLElement).style.paddingTop).toBe('12px')
-    expect((plain.container.querySelector('.relative.z-\\[2\\]') as HTMLElement).style.top).toBe('')
+    let plain!: HTMLElement
+    await act(async () => { plain = renderPane().container })
+    expect((plain.querySelector('.chat-container') as HTMLElement).style.paddingTop).toBe('12px')
+    expect((plain.querySelector('.relative.z-\\[2\\]') as HTMLElement).style.top).toBe('')
   })
 
   it('renders the top edge fade only; the composer dock floats over the scroller', () => {
@@ -241,50 +243,5 @@ describe('ChatPane shared scroll chrome', () => {
     expect(state.scrollTop).toBe(600)
     act(() => { scroller.dispatchEvent(new Event('scroll')) })
     expect(screen.queryByLabelText('Scroll to bottom')).toBeNull()
-  })
-})
-
-describe('ChatPane mate greeting (`crewmateGreeting`)', () => {
-  const greeting = <div data-testid="host-greeting">Where we left off</div>
-  // The greeting's "newer than me" test compares a row's stamp with the moment
-  // it appeared, so the clock is pinned: Date only, the frame fakes above stay.
-  const SHOWN_AT = '2026-10-11T04:00:00.000Z'
-  beforeEach(() => { vi.setSystemTime(new Date(SHOWN_AT)) })
-  afterEach(() => { vi.useRealTimers() })
-
-  it("draws the host's greeting inside the transcript scroller, after the rows", () => {
-    const { container } = renderPane({ crewmate: { name: 'oncall' }, crewmateGreeting: greeting })
-    const drawn = screen.getByTestId('host-greeting')
-    expect(container.querySelector('.chat-container')!.contains(drawn)).toBe(true)
-  })
-
-  // Drawn after the last row, so a reply landing after it (a patrol / wake
-  // turn, which keeps the greeting up) must take it down: a stale summary
-  // under a fresher reply would read as the newest word.
-  it("takes the greeting down once the mate says something newer, so it is never under a fresher reply", () => {
-    const { store } = renderPane({ crewmate: { name: 'oncall' }, crewmateGreeting: greeting })
-    expect(screen.getByTestId('host-greeting')).toBeInTheDocument()
-    act(() => {
-      store.dispatch(appendSlotMessage({ slot: SLOT, message: { role: 'nudge', content: '[auto-nudge cycle 3] Checking on round 3', cls: '', ts: SHOWN_AT } }))
-    })
-    // A patrol wake alone draws nothing, so the greeting is still the newest word.
-    expect(screen.getByTestId('host-greeting')).toBeInTheDocument()
-    act(() => {
-      store.dispatch(appendSlotMessage({ slot: SLOT, message: { role: 'assistant', content: 'K is done; J is still running.', cls: '', ts: '2026-10-11T04:00:01.000Z' } }))
-    })
-    expect(screen.queryByTestId('host-greeting')).toBeNull()
-  })
-
-  it('keeps the greeting when the transcript that lands after it is older', () => {
-    const { store } = renderPane({ crewmate: { name: 'oncall' }, crewmateGreeting: greeting })
-    act(() => {
-      store.dispatch(appendSlotMessage({ slot: SLOT, message: { role: 'assistant', content: 'from yesterday', cls: '', ts: '2026-01-01T00:00:00Z' } }))
-    })
-    expect(screen.getByTestId('host-greeting')).toBeInTheDocument()
-  })
-
-  it('draws nothing for an ordinary chat: the greeting belongs to a mate', () => {
-    renderPane({ crewmateGreeting: greeting })
-    expect(screen.queryByTestId('host-greeting')).toBeNull()
   })
 })

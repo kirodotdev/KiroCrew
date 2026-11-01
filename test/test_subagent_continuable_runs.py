@@ -496,6 +496,38 @@ async def test_continuation_after_a_restart_keeps_the_recorded_model_and_effort(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("restart", [False, True], ids=["in-memory", "after-a-restart"])
+async def test_a_continuation_keeps_the_runs_lineage_depth(restart: bool) -> None:
+    # The run's parent record is gone, so admission alone would count the
+    # follow-up one level below a sub-agent; the run's own depth (live, or
+    # from state.json after a restart) keeps it where the run sat.
+    conv_id = "deep-after-restart" if restart else "deep-in-memory"
+    await asyncio.to_thread(create_agent_folder, conv_id, memory_mode="persistent")
+    await asyncio.to_thread(write_run_agent, conv_id, "")
+    sessions = _mock_sessions(resumed=True)
+    if restart:
+        sessions.resumable_sid = MagicMock(side_effect=[None, "sid-from-state"])
+    manager = _manager(sessions)
+    state = {"session_id": "sid-from-state", "provider": "acp", "cwd": "", "keep": True}
+    if restart:
+        state["depth"] = 4
+    else:
+        manager._agents[conv_id] = SubagentInfo(id=conv_id, task="first task", done=True, depth=4)
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.read_state", return_value=state),
+        patch.object(manager, "_promote_conversation", return_value=object()),
+    ):
+        info = manager.continue_conversation(
+            conv_id, "follow-up", parent_session_key="subagent:gone"
+        )
+        assert info is not None and not info.error, info.error
+        await await_until(manager._tasks[info.id], what="the run finishing")
+    assert info.depth == 4
+
+
+@pytest.mark.asyncio
 async def test_a_follow_up_keeps_the_runs_model_and_effort() -> None:
     await asyncio.to_thread(create_agent_folder, "pinned-a", memory_mode="persistent")
     await asyncio.to_thread(write_run_agent, "pinned-a", "")

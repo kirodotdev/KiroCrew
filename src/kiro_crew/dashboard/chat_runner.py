@@ -29,8 +29,10 @@ from typing import (  # noqa: F401
 
 from kiro_crew import (  # noqa: F401
     context_omissions,
+    injection_receipts,
     mcp_apps_render,
     model_registry,
+    prompt_segments,
     resource_status,
     runtime_death,
     session_directive,
@@ -56,6 +58,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
     EVENT_STEER_CONSUMED,
+    EVENT_STEER_DROPPED,
     STOP_CLASS_FAILED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
@@ -77,6 +80,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_LOCAL_CLEAR,
+    ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     Routing,
     routing_for,
 )
@@ -174,14 +178,18 @@ from kiro_crew.dashboard.chat_turn.prompt_assembly import (  # noqa: F401
 from kiro_crew.dashboard.chat_turn.queue_cycle import (
     TURN_FAILED_META,
     _end_turn_tail,
+    _hand_off_unstarted_turn,
     _note_failed_before_the_try,
     _turn_record_outcome,
     _TurnExit,
 )
-from kiro_crew.dashboard.chat_turn.queue_drain import (
+from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
+    _RESTORED_DRAIN_IDS,
     _arm_queued_delivery_settlement,
+    _drain_parked_queues,
     _start_next_queued_turn,
     drain_idle_parent_queue_for_stall,
+    idle_slot_admits_drain,
     subagents_hold_user_messages,
 )
 from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
@@ -193,6 +201,10 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _answer_text_only,
     _current_turn_carries_image_ref,
     _should_suppress_requeue,
+)
+from kiro_crew.dashboard.chat_turn.regenerate_swap import (  # noqa: F401
+    RegenerateTarget,
+    release_regenerate_on_done,
 )
 from kiro_crew.dashboard.chat_turn.segment_flush import (
     _flush_segment,
@@ -213,6 +225,7 @@ from kiro_crew.dashboard.chat_turn.slash_commands import (
 from kiro_crew.dashboard.chat_turn.steer_queue import (  # noqa: F401
     _has_user_queued_followup,
     _on_steer_consumed,
+    _on_steer_dropped,
     _requeue_unconsumed_steers,
 )
 from kiro_crew.dashboard.chat_turn.stop_recovery import (
@@ -231,6 +244,8 @@ from kiro_crew.dashboard.chat_turn.tool_rows import (
     _on_tool_call,
     _on_tool_call_update,
     _tcid_identity_key,
+    _tool_call_ws_payload,
+    _tool_meta,
 )
 from kiro_crew.dashboard.chat_turn.turn_admission import _turn_admit
 from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import (
@@ -240,6 +255,7 @@ from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import (
 from kiro_crew.dashboard.chat_turn.turn_ending import _turn_ending_chain
 from kiro_crew.dashboard.chat_turn.turn_entry import (
     _stop_pressed,
+    _turn_flush_file_changes,
     _turn_open,
     _turn_release_handles,
 )
@@ -270,6 +286,7 @@ from kiro_crew.dashboard.chat_turn.turn_stats import (  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
+    BLOCKED_LINKS_ORDERED_KEY,
     _dequeue_next_message,
     _dequeue_next_system_message,
     _maybe_consolidate,
@@ -282,6 +299,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     expire_slack_options,
     mirror_is_paused,
     run_to_completion,
+    variant_from_row,
 )
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
@@ -325,7 +343,10 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     build_stale_recovery_prompt,
     context_entry_expired,
 )
-from kiro_crew.dashboard.steer_settle import settle_consumed_steers
+from kiro_crew.dashboard.steer_settle import (
+    possibly_consumed_steers,
+    settle_consumed_steers,
+)
 from kiro_crew.dashboard.turn_dispatch import (
     spawn_guarded_turn,
     tool_approval_timeout_secs,
@@ -490,6 +511,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     SUBAGENT_COMPLETION_KIND,
     SYNTHESIS_CLEAR,
     SYNTHETIC_RECOVERY_KIND,
+    background_wake_absent,
     should_recover_promise_only,
     subagents_attached_async,
     synthesis_fire_verdict,
@@ -620,6 +642,31 @@ _PARKED_FOR_MEMORY: "weakref.WeakKeyDictionary[Any, dict[str, bool]]" = weakref.
 _P = ParamSpec("_P")
 
 
+def _segment_user_span(turn: Any, full_message: str) -> str:
+    """*full_message* as a :class:`~kiro_crew.prompt_segments.SegmentedPrompt`.
+
+    ``build_message`` marked its prompt's provenance (``turn._prompt_segments``)
+    and every later step is a pure prepend, so the new prefix is injected and the
+    marked segments follow it unchanged. A prompt that no context builder
+    assembled is the user's own message and goes out as it is.
+
+    Never a plain string once segments exist: a plain string reads as all user,
+    which would upgrade every injected path. If the sent tail differs from what
+    was assembled, the whole prompt is marked injected and nothing is upgraded.
+    """
+    segments = getattr(turn, "_prompt_segments", ())
+    if not segments:
+        return full_message
+    assembled = "".join(text for _, text in segments)
+    if full_message.endswith(assembled):
+        prefix = full_message[: len(full_message) - len(assembled)]
+        return prompt_segments.SegmentedPrompt(
+            [(prompt_segments.SOURCE_INJECTED, prefix), *segments]
+        )
+    logger.warning("prompt segments: the assembled prompt is not the sent tail; upgrading nothing")
+    return prompt_segments.SegmentedPrompt([(prompt_segments.SOURCE_INJECTED, full_message)])
+
+
 def _hands_off_queue_on_exit(
     fn: "Callable[Concatenate[DashboardState, _ChatSlot, _TurnExit, _P], Coroutine[Any, Any, None]]",
 ) -> "Callable[Concatenate[DashboardState, _ChatSlot, _P], Coroutine[Any, Any, None]]":
@@ -644,7 +691,18 @@ def _hands_off_queue_on_exit(
         closing = False
         setup_failed = False
         try:
-            await fn(state, slot, turn_exit, *args, **kwargs)
+            # Shared Crew fair admission for a turn no admitted work started
+            # (shared_crew.turn_gate); a pass-through when admission is off.
+            from kiro_crew.shared_crew.turn_gate import gate_turn
+
+            await gate_turn(
+                state,
+                slot,
+                args[0] if args else "",
+                kwargs,
+                lambda: fn(state, slot, turn_exit, *args, **kwargs),
+                stop_reason=lambda: turn_exit.stop_reason,
+            )
         except GeneratorExit:
             closing = True
             raise
@@ -754,6 +812,11 @@ async def _run_chat(
     _responsive_human: bool = False,
     _responsive_protected: bool = False,
     _directive_user_origin: bool = False,
+    # *message* is what the person typed, so it may name an unsigned KAS MCP
+    # server to sign in to. False for a prompt composed from other text, such
+    # as the OpenAI-compatible endpoint's flattened conversation, whose system
+    # and assistant turns could name a server the person never asked for.
+    _message_is_typed: bool = True,
     # This turn was drained from a queue entry a PREVIOUS process accepted
     # (`slot_queue_repository.RESTORED_QUEUE_KEY`). Its provenance therefore
     # rests on an ordinary writable file rather than on anything this process
@@ -784,13 +847,29 @@ async def _run_chat(
     # deactivate a loop whose config advanced since (the A->B->A race that a
     # message-value key could not tell apart). Captured by the fire path.
     _directive_loop_gen: int = 0,
+    # The text skill triggers match on a loop's wake, when it is not the
+    # message: a plain nudge passes the loop's own message, without the cycle
+    # header the fire path prepends. ``None`` matches the turn's own text. Set
+    # only by ``_fire_dashboard_nudge``.
+    _skill_trigger_text: str | None = None,
     _directive_channel_origin: bool = False,
+    # Whether the OWNER's own dashboard request dispatched this turn
+    # (`is_owner_dashboard_request`), declared by the dashboard send, regenerate
+    # and rewind handlers and by the queue drain. It rides this call rather than
+    # the slot, so it ends with the dispatch it belongs to: a dispatch that never
+    # starts takes it with it, and one that does not declare starts from False.
+    # Adopted into `_turn_owner_sent` only for a turn the person sent.
+    _directive_owner_origin: bool = False,
     # The message is turn CONTENT and its first word is never read as a dashboard
     # command: set by the drain for an entry the channel hand-off stamped
     # (``COMMANDS_OFF_META_KEY``). A channel's own queue already replays every
     # entry this way; without the switch, a channel's queued "/clear" would be the
     # one queued "/clear" in the system that ran instead of being said.
     _commands_off: bool = False,
+    # A verbatim recovery replay of a dashboard prompt whose first attempt died
+    # before the mirror posted its echo. Set only by the drain, from the entry's
+    # ``MIRROR_ECHO_OWED_META_KEY`` stamp, so the replay is echoed once.
+    _recovery_echo_owed: bool = False,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -825,8 +904,11 @@ async def _run_chat(
         _directive_self_wake=_directive_self_wake,
         _directive_loop_id=_directive_loop_id,
         _directive_loop_gen=_directive_loop_gen,
+        _skill_trigger_text=_skill_trigger_text,
         _directive_channel_origin=_directive_channel_origin,
+        _directive_owner_origin=_directive_owner_origin,
         _commands_off=_commands_off,
+        _recovery_echo_owed=_recovery_echo_owed,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
@@ -876,7 +958,30 @@ async def _run_chat(
         _todo_recovery_carried = turn._todo_recovery_carried
         _todo_sync_rendered = turn._todo_sync_rendered
         full_message = turn.full_message
-        event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
+        if (
+            not is_slash
+            and _message_is_typed
+            and turn._directive_user_origin
+            and not turn._turn_provenance_restored
+            and not turn._turn_actor
+            and not turn._is_synthetic
+            and not turn._directive_self_wake
+            and turn._prompt_depth == 0
+        ):
+            # Require human-send provenance: generated app dispatches can have
+            # no actor or synthetic flag, but are not the person's words.
+            # Hand over only what they typed, before `@prompt`/`$skill` expansion
+            # and any runner-authored prepend that could name an unsigned server.
+            note = getattr(client, "note_user_message", None)
+            if note is not None:
+                note(turn.user_typed_message)
+        # The prefixes added after assembly made the prompt a plain string again;
+        # re-apply build_message's provenance so only the user's text is upgraded.
+        event_stream = (
+            client.stream_command(message)
+            if is_slash
+            else client.stream(_segment_user_span(turn, full_message))
+        )
         async for event in event_stream:
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS
@@ -992,6 +1097,8 @@ async def _run_chat(
                 continue
             elif event.kind == EVENT_STEER_CONSUMED:
                 await _on_steer_consumed(turn, event)
+            elif event.kind == EVENT_STEER_DROPPED:
+                await _on_steer_dropped(turn, event)
             elif event.kind == EVENT_COMPACTION_STATUS:
                 await _on_compaction_status(turn, event)
             elif event.kind == EVENT_CLEAR_STATUS:
@@ -1155,6 +1262,7 @@ async def _run_chat(
         await _turn_record_outcome(turn)
         await _turn_close_crew_log(turn)
         await _turn_release_handles(turn)
+        _held_flush_cancel = await _turn_flush_file_changes(turn)
         await _turn_settle_debts(turn)
         await _turn_release_session(turn)
         # Retire the in-flight marker once every transcript mutation is complete
@@ -1174,8 +1282,12 @@ async def _run_chat(
         # The per-exit duties and the queue hand-off, in their one order. Run to
         # completion: a cancel landing inside the tail (a turn deadline during
         # the deferred-reset consume) is deferred until the hand-off ran, then
-        # re-raised, so the queue is never left behind a finished task.
+        # re-raised, so the queue is never left behind a finished task. A cancel
+        # the file-change flush in _turn_flush_file_changes held resurfaces here,
+        # once the hand-off has run, for the same reason.
         await run_to_completion(_end_turn_tail(state, slot, turn_exit))
+        if _held_flush_cancel is not None:
+            raise _held_flush_cancel
 
 
 # Every function the owners define runs on this module's globals, so a patch of

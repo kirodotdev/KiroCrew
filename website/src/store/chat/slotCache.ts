@@ -176,26 +176,45 @@ export function seedContextUsage(
 }
 
 export const slotCacheReducers = {
-  sseContextUsage(state: ChatState, action: PayloadAction<{ slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean }>) {
+  sseContextUsage(state: ChatState, action: PayloadAction<{ slot: string; pct?: number; used_tokens?: number; window_tokens?: number; reset?: boolean }>) {
     const { slot, pct, used_tokens, window_tokens, reset } = action.payload
     if (isUnsafeKey(slot)) return
-    state.slotContextPct[safeKey(slot)] = pct
+    const key = safeKey(slot)
     if (window_tokens && window_tokens > 0) {
+      // Real counts: set both the percentage and the {used, window} pair.
+      if (typeof pct === 'number') state.slotContextPct[key] = pct
       // Equal counts keep the stored object: the active slot's ChatPage
       // selects it, and a fresh one would re-render the page per frame.
-      const prev = state.slotContextTokens[safeKey(slot)]
+      const prev = state.slotContextTokens[key]
       const used = used_tokens ?? 0
       if (prev?.used !== used || prev.window !== window_tokens) {
-        state.slotContextTokens[safeKey(slot)] = { used, window: window_tokens }
+        state.slotContextTokens[key] = { used, window: window_tokens }
       }
-    } else if (reset) {
-      // Model switch / compaction / session reset: the stored counts belong
-      // to a window that no longer describes the session. Deleting re-enables
-      // the model-derived fallback (provider.getContextWindow(slot.model)).
-      // A frame WITHOUT `reset` never deletes — it only fills or replaces — so
-      // the backend sets `reset` whenever it has no real counts to send,
-      // clearing stale counts instead of leaving them beside a fresh pct.
-      delete state.slotContextTokens[safeKey(slot)]
+      return
     }
+    if (reset) {
+      if (typeof pct === 'number') {
+        // Compaction / /clear / session reset: the transcript changed, so the
+        // old reading is stale. Write the (zero) pct and drop the counts; the
+        // meter reads 0 against its model-derived window.
+        state.slotContextPct[key] = pct
+        delete state.slotContextTokens[key]
+        return
+      }
+      // Model switch: the transcript is unchanged but the new model's window is
+      // not known yet. Keep `used` (roughly model-independent), drop the window
+      // so the meter falls back to the new model's derived window, and drop the
+      // stale pct so ContextUsageControl derives it from used / new-window
+      // rather than pairing the old percentage with the new window. When no
+      // `used` is known (a percentage-only backend), there is no honest number
+      // for the new window, so clear the reading instead of guessing.
+      delete state.slotContextPct[key]
+      const prevUsed = used_tokens ?? state.slotContextTokens[key]?.used
+      if (prevUsed != null) state.slotContextTokens[key] = { used: prevUsed }
+      else delete state.slotContextTokens[key]
+      return
+    }
+    // A frame without `reset` and without a window: percentage-only update.
+    if (typeof pct === 'number') state.slotContextPct[key] = pct
   },
 }

@@ -28,6 +28,7 @@ import {
 } from './subagentCompletion'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { normalizeModelKey } from '../../lib/model'
+import { sliceCodePoints } from '../../components/CommentOverlay'
 
 function outcomeLabel(outcome: SubagentOutcome): string {
   if (outcome === 'failed') return i18nT('pages.chat.subagentCompletionCard.failed')
@@ -44,7 +45,7 @@ export function headline(parsed: ParsedSubagentCompletion): string {
     // text overflows its box, and a 120-character slice usually fits — so the
     // ellipsis has to be added when the slice actually shortened the task.
     const task = sanitizeLlmOutput(parsed.task)
-    if (task) return task.length > 120 ? `${task.slice(0, 120)}…` : task
+    if (task) return task.length > 120 ? `${sliceCodePoints(task, 0, 120)}…` : task
     return i18nT('pages.chat.subagentCompletionCard.agent_id', { id: parsed.agentId })
   }
   // Only the final chunk knows the wave's outcome; earlier chunks report
@@ -176,6 +177,18 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           ) : (
             <CheckCircle2 size={15} className="text-ok" />
           )}
+          {/* The glyph is aria-hidden (lucide's default). A single run's outcome
+              chip already says the state in words; a batch has no such chip,
+              so its glyph gets sr-only words. */}
+          {parsed.kind === 'batch' && (
+            <span className="sr-only" data-testid="glyph-state">
+              {failed
+                ? i18nT('pages.chat.subagentCompletionCard.state_some_failed')
+                : partial
+                  ? i18nT('pages.chat.subagentCompletionCard.state_partial')
+                  : i18nT('pages.chat.subagentCompletionCard.completed')}
+            </span>
+          )}
         </span>
         <Bot size={12} className="text-accent/70 shrink-0" aria-hidden />
         <span id={headlineId} className="truncate text-[13px] leading-5 font-medium text-text-strong">{headline(parsed)}</span>
@@ -187,7 +200,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
                 : interrupted
                   ? 'bg-warn-subtle border-warn/20 text-warn-text'
                   : stopped
-                    ? 'bg-muted/15 border-border text-muted'
+                    ? 'bg-bg-hover border-border text-muted'
                     : 'bg-ok-subtle border-ok/20 text-ok-text'
             }`}
           >
@@ -197,17 +210,20 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           <>
             {parsed.ok > 0 && (
               <span className={`${CHIP} bg-ok-subtle border-ok/20 text-ok-text`} data-testid="chip-ok">
-                <CheckCircle2 size={10} aria-hidden /> {parsed.ok}
+                <CheckCircle2 size={10} aria-hidden /> <span aria-hidden="true">{parsed.ok}</span>
+                <span className="sr-only">{i18nT('pages.chat.subagentCompletionCard.chip_ok', { count: parsed.ok })}</span>
               </span>
             )}
             {parsed.failed > 0 && (
               <span className={`${CHIP} bg-danger-subtle border-danger/20 text-danger-text`} data-testid="chip-failed">
-                <AlertCircle size={10} aria-hidden /> {parsed.failed}
+                <AlertCircle size={10} aria-hidden /> <span aria-hidden="true">{parsed.failed}</span>
+                <span className="sr-only">{i18nT('pages.chat.subagentCompletionCard.chip_failed', { count: parsed.failed })}</span>
               </span>
             )}
             {parsed.stopped > 0 && (
-              <span className={`${CHIP} bg-muted/15 border-border text-muted`} data-testid="chip-stopped">
-                <Square size={10} aria-hidden /> {parsed.stopped}
+              <span className={`${CHIP} bg-bg-hover border-border text-muted`} data-testid="chip-stopped">
+                <Square size={10} aria-hidden /> <span aria-hidden="true">{parsed.stopped}</span>
+                <span className="sr-only">{i18nT('pages.chat.subagentCompletionCard.chip_stopped', { count: parsed.stopped })}</span>
               </span>
             )}
           </>
@@ -227,7 +243,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
                   ? 'bg-warn-subtle border-warn/20 text-warn-text'
                   : resolvedKnown
                     ? 'bg-accent/10 border-accent/20 text-accent/80'
-                    : 'bg-bg-hover border-border text-muted/60'
+                    : 'bg-bg-hover border-border text-muted'
               }`}
               data-testid="subagent-completion-model"
               title={

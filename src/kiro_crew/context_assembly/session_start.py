@@ -344,7 +344,11 @@ def build_session_context(
     # deliberately silent there.
     effective_groups = ctx._config_scoped_groups(context_groups, _cfg)
 
-    if mode == _member_mode and ctx._member_dispatch_held(member_dispatch_mounted, _cfg):
+    from kiro_crew.crewmate_harness import crewmate_for_session
+
+    if mode == _member_mode and ctx._member_dispatch_held(
+        member_dispatch_mounted, _cfg, crewmate_for_session(_cfg, session_key)
+    ):
         append_required(_member.operating_mode_block(agent_label))
 
     # Legacy member-DM identity. Private V2 has already derived its owner
@@ -644,11 +648,7 @@ def build_session_context(
 
     if essentials:
         prefix = next(
-            (
-                r
-                for r in (ctx._CRITICAL_RULES, ctx._CRITICAL_RULES_CHANNEL)
-                if context.startswith(r)
-            ),
+            (r for r in ctx._CRITICAL_RULES_VARIANTS if context.startswith(r)),
             "",
         )
         context = prefix + essentials + context[len(prefix) :]

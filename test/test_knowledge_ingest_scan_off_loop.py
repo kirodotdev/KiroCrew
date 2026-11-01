@@ -753,7 +753,7 @@ def test_await_ratchet_would_catch_a_reintroduced_post_commit_hop():
     """Negative control: the await detector fires on the shape just removed.
 
     Without this, a detector bug that reports nothing would make the ratchet pass
-    forever. Feeds it the exact code the GPT reviewer flagged.
+    forever. Feeds it the exact post-commit hop shape.
     """
     pre_fix = ast.parse(
         "class W:\n"

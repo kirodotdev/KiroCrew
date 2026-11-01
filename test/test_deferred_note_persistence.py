@@ -1319,3 +1319,31 @@ class TestRestoreTrustBoundary:
         assert sanitize_restored_deferred_notes(None) == []
         assert sanitize_restored_deferred_notes("[]") == []
         assert sanitize_restored_deferred_notes({"content": "x"}) == []
+
+
+class TestRebindDropArmsTheSave:
+    """Gate (b) corollary: dropping a held note at the rebind seam must mark the
+    slot dirty, so the save that retires the note's durable entry is armed.
+
+    The terminal ``done`` row the queue cycle appends after
+    ``flush_deferred_notes`` is wire-only and does not mark the slot dirty, so
+    the drop itself has to arm the save -- otherwise the dropped-note id sits
+    only in memory, a restart replays the note, and it is dropped again every
+    cycle until the hold's ceiling fills.
+    """
+
+    def test_dropped_note_at_rebind_seam_dirties_the_slot(self, tmp_path: Path):
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "rebind-drop")
+
+        note = _hold_note(slot)
+        note["id"] = "rebinddirty1"
+        # Authorize the note for a different session than the slot routes to.
+        note["session"] = effective_session_key(slot) + "-stale"
+
+        slot._dirty = False
+        dropped = slot.flush_deferred_notes()
+
+        assert dropped == 0, "a rebound note is dropped, not delivered"
+        assert "rebinddirty1" in slot._dropped_note_ids
+        assert slot._dirty is True, "recording the dropped id must arm the save"

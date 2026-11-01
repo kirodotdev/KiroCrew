@@ -264,7 +264,7 @@ def _node_major(node_bin: str) -> int | None:
     """Return the major version of ``node_bin``, or None if it can't run."""
     try:
         out = subprocess.check_output(
-            [node_bin, "--version"], text=True, stderr=subprocess.DEVNULL
+            [node_bin, "--version"], text=True, encoding="utf-8", stderr=subprocess.DEVNULL
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         return None

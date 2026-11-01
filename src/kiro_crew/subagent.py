@@ -67,6 +67,7 @@ if TYPE_CHECKING:
         QueuedRunListing,
     )
 
+from kiro_crew import sandbox_plan  # noqa: F401 - read by agent_policy.validate_cwd
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
@@ -254,6 +255,7 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     AgentCheck,
     ParentRecordUnreadable,
     ParentSpawnPolicy,
+    _accepted_project_dirs,
     _available_agents_hint,
     _inherited_member_agent,
     _internal_agent_refusal,
@@ -351,6 +353,7 @@ from kiro_crew.subagent_parts.run_limits import (  # noqa: F401
     _HOST_READ_OFF_LOOP_SECS,
     _LOW_FIDELITY_DENY_REASON,
     _MAX_CONCURRENT,
+    _MAX_SPAWN_DEPTH,
     _ON_DONE_TIMEOUT,
     _PRESSURE_EPISODE_MAX_GAP_SECS,
     _PRESSURE_HOLD_PRUNE_FACTOR,

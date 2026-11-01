@@ -10,10 +10,11 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew import _facade_mirror
+from kiro_crew import _facade_mirror, executors
 from kiro_crew.apps.builtins.dev_fleet import fleet_state, repository, runtime
 from kiro_crew.apps.builtins.dev_fleet.worktree_ops_pods import _wt_lock
 from kiro_crew.apps.builtins.dev_fleet.worktree_ops_removal import _worktree_remove
+from kiro_crew.git_tmp_packs import reap_stale_tmp_packs
 from kiro_crew.loop_lock import LoopBoundLock
 
 # --- rebase ---
@@ -162,7 +163,7 @@ async def _prunable(path: str, branch: str | None) -> dict:
     # looking at, and whether a discard is even offerable.
     dirt_tracked, dirt_untracked = await repository._dirty_split(path) if dirty else (None, [])
     try:
-        age_h = round((time.time() - Path(path).stat().st_ctime) / 3600, 1)
+        age_h = round((time.time() - (await asyncio.to_thread(Path(path).stat)).st_ctime) / 3600, 1)
     except OSError:
         age_h = None
     base = {
@@ -517,9 +518,31 @@ async def _status_refresher() -> None:
     while True:
         try:
             remote = await repository._upstream_remote()
-            await runtime._run_cmd(
+            fetched = await runtime._run_cmd(
                 ["git", "-C", repo, "fetch", remote, repository.BASE_BRANCH, "--quiet"],
                 timeout=90,
+            )
+            if fetched[0] != 0:
+                # A fetch that times out every cycle leaves a fresh
+                # multi-hundred-MB ``tmp_pack_*`` each time. Log it once per
+                # failed cycle, with the remote's own words for the cause.
+                runtime.logger.warning(
+                    "dev-fleet: background fetch of %s from %s failed: %s",
+                    repo,
+                    remote,
+                    # Redact the whole text first: a cut can drop the URL
+                    # prefix the redactor keys on and keep the secret.
+                    runtime._redact(fetched[2]).strip()[-200:],
+                )
+            # This loop is the only thing that fetches into the operator's
+            # checkout every minute, so orphaned ``tmp_pack_*`` pile up in the
+            # checkout's object store fastest here: each cycle, right
+            # after a fetch that may itself just have been killed by the 90s
+            # timeout, send the reaper over the object store. The mtime
+            # threshold is what keeps this from touching an in-flight pack. The
+            # sweep scans and unlinks files, so it runs off the event loop.
+            await asyncio.get_running_loop().run_in_executor(
+                executors.subprocess_executor(), reap_stale_tmp_packs, repo
             )
             await fleet_state._fleet_refresh()
         except Exception:
@@ -766,6 +789,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _POD_START_REFUSAL,
         _WT_LOCKS,
         _is_number,
+        _limit_argv,
         _mint_pod_token_locked,
         _pod_checkout_guard,
         _pod_down,
@@ -775,6 +799,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _pod_provision,
         _pod_provision_dismiss,
         _pod_restart,
+        _pod_start,
         _pod_status,
         _pod_token,
         _pod_up,

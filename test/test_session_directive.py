@@ -460,9 +460,7 @@ class TestRepeatedSentinelBytesStayLinear:
         kept = sd.preserve_tail_marker(full, cut)
         elapsed = time.monotonic() - start
 
-        assert (
-            elapsed < 5.0
-        ), (  # flake-ok: 5 s ceiling only catches a quadratic walk
+        assert elapsed < 5.0, (  # flake-ok: 5 s ceiling only catches a quadratic walk
             f"locate walk took {elapsed:.1f}s -- quadratic cost is back"
         )
         assert sd.decode(kept, "autonudge_stop") == {"reason": "goal met"}
@@ -481,9 +479,7 @@ class TestRepeatedSentinelBytesStayLinear:
         kept = sd.preserve_tail_marker(full, cut)
         elapsed = time.monotonic() - start
 
-        assert (
-            elapsed < 5.0
-        ), (  # flake-ok: 5 s ceiling only catches a quadratic walk
+        assert elapsed < 5.0, (  # flake-ok: 5 s ceiling only catches a quadratic walk
             f"locate walk took {elapsed:.1f}s -- quadratic cost is back"
         )
         assert kept == cut

@@ -202,7 +202,7 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
  *     captured while it was still live reverts a finished card to "running".
  *   - a steer row (`role: "user"`, `meta.steer`): `steer_queue`'s
  *     `_mark_steer_row_state` -> `slot.update_message` advances
- *     `meta.steerState` `written` -> `consumed`/`requeued`. A snapshot captured
+ *     `meta.steerState` `written` -> `consumed`/`requeued`/`retracted`. A snapshot captured
  *     while it was still `written` revives the "pending steer" badge on a steer
  *     the turn already took.
  *
@@ -259,7 +259,7 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
   // A steer row advances `written` -> `consumed`/`requeued` and never back
   // (`steer_queue.py`: the only two transitions; a requeued steer runs later as
   // its own NEW row, not a rewrite of this one), so both are safe anchors.
-  const STEER_SETTLED = new Set(['consumed', 'requeued'])
+  const STEER_SETTLED = new Set(['consumed', 'requeued', 'retracted'])
 
   // The `(role, mid, ts)` upsert key for a covered row, or undefined if the row
   // is not one this pass guards. Steer rows ride the `user` role, so they are

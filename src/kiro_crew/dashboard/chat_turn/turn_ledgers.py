@@ -28,7 +28,12 @@ if TYPE_CHECKING:
         _REPLAYS_COMPLETION_KEY,
         TURN_ACTOR_META_KEY,
     )
+    from kiro_crew.dashboard.chat_turn.recipient import (
+        MIRROR_ECHO_OWED_META_KEY,
+        _mirror_echo_owed,
+    )
     from kiro_crew.dashboard.chat_turn.recovery import _session_stop_generation_for
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import carry_regenerate_target
     from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome
 
 
@@ -94,6 +99,17 @@ def _queue_recovery(
     _current_replay_message = turn._current_replay_message
     _directive_channel_origin = turn._directive_channel_origin
     _directive_user_origin = turn._directive_user_origin
+    # The owner mark is read off the SLOT, not the turn's call: it is the
+    # dispatcher's `_directive_owner_origin` as the turn's entry adopted it and as
+    # any non-owner steer since has narrowed it, and the turn's end clears it. A recovery is a
+    # second turn of the same request, so it carries the mark exactly as it
+    # stands now -- a retried owner lookup keeps its authority, and a turn a
+    # peer steered into does not regain the authority that steer took away.
+    # Never wider than the user mark, which is the rule everywhere the owner
+    # mark is written.
+    _recovery_owner_origin = getattr(turn.slot, "_turn_owner_sent", False) is True and bool(
+        _directive_user_origin
+    )
     _on_consumed = turn._on_consumed
     _on_irreversibly_consumed = turn._on_irreversibly_consumed
     _recovery_turn_id = turn._recovery_turn_id
@@ -130,6 +146,10 @@ def _queue_recovery(
         # without these lists the replayed transcript row falls back to a
         # whitespace-bounded path and truncates spaced attachment names.
         _recovery_meta.update(attachment_meta(_current_replay_message.get("meta")))
+    if payload == RecoveryPayload.ORIGINAL and _mirror_echo_owed(turn):
+        # The person's own words, replayed because the turn died before its
+        # mirror echo point: the replay owes that echo (``_prompt_typed_in_dashboard``).
+        _recovery_meta[MIRROR_ECHO_OWED_META_KEY] = True
     _recovery_qid = slot.queue_insert(
         index,
         content,
@@ -153,7 +173,12 @@ def _queue_recovery(
         ),
         directive_user_origin=_directive_user_origin,
         directive_channel_origin=_directive_channel_origin,
+        directive_owner_origin=_recovery_owner_origin,
     )
+    # A recovery a Regenerate turn queues before it has any reply (a replay of
+    # its message or a continuation) is the same Regenerate's next attempt: it
+    # settles the previous reply, not this turn.
+    carry_regenerate_target(slot, _recovery_qid)
     if content == turn.message and _turn_is_completion:
         # A verbatim requeue still replays the completion; runner-written
         # text queued after it (a continuation, a retry prompt) does not.

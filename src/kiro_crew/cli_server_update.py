@@ -148,11 +148,25 @@ def _update(force: bool = False) -> None:
 
     print(f"  📂 {proj}")
 
+    from kiro_crew.platform.update_governance import (
+        git_command_env,
+        repo_exec_config_reason,
+        resolve_remote_url,
+        update_blocked_reason,
+    )
+
+    # One env for every git call below, built first: it strips an inherited
+    # `GIT_DIR`, so the branch, the guards and the reset all judge `proj`, and it
+    # reads no agent-writable global config. Only the fetch keeps the operator's
+    # transport setup (`_fetch_env`, below).
+    _git_env = git_command_env()
+
     # Detect current branch
     try:
         branch_result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=proj,
+            env=_git_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -174,19 +188,38 @@ def _update(force: bool = False) -> None:
     # Source pin, checked before the fetch so a blocked update never touches the
     # tree. A human at a terminal is not the authorization: the fleet decides
     # which remote this host may take code from.
-    from kiro_crew.platform.update_governance import resolve_remote_url, update_blocked_reason
-
-    _blocked = update_blocked_reason(resolve_remote_url(proj, remote="origin"))
+    # The fetch reads the operator's own global config (their credential helper,
+    # ssh command), as it did before; the pin judges that same view.
+    _fetch_env = git_command_env(human_transport=True)
+    _blocked = update_blocked_reason(
+        resolve_remote_url(proj, fetch_env=_fetch_env, remote="origin")
+    )
     if _blocked:
         print(f"  🛡️  Update blocked by security policy: {_blocked}")
+        sys.exit(1)
+
+    # The checkout is a tree agents can write, and `fetch`, `status` and
+    # `reset --hard` below EXEC programs its own git config names (hooks,
+    # `core.fsmonitor`, `filter.<name>.smudge`). A human typing `kirocrew update`
+    # has not agreed to run those. Fixed-name keys are pinned by `git_command_env`;
+    # a repo-named driver cannot be pinned, so it is refused, as on the dashboard
+    # and unattended paths.
+    _exec_config = repo_exec_config_reason(proj, git="git", human_transport=True)
+    if _exec_config:
+        print(f"  🛡️  Update refused: {_exec_config}, which git would run during the update.")
+        print("      Remove it from the checkout's git config, then retry.")
         sys.exit(1)
 
     # Fetch + reset --hard: no merge conflicts, untracked files preserved
     print("  ⬇️  git fetch…")
     try:
         result = subprocess.run(
-            ["git", "fetch", "origin", branch],
+            # `--upload-pack` beats every configured upload-pack (an env pin does
+            # not: git takes the first value it reads, the repository's). The bare
+            # name is what an ssh server accepts.
+            ["git", "fetch", "--upload-pack=git-upload-pack", "origin", branch],
             cwd=proj,
+            env=_fetch_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=60,
@@ -215,6 +248,7 @@ def _update(force: bool = False) -> None:
         pin_result = subprocess.run(
             ["git", "rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}"],
             cwd=proj,
+            env=_git_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -234,8 +268,12 @@ def _update(force: bool = False) -> None:
     # Check if there are new commits
     try:
         diff_result = subprocess.run(
-            ["git", "diff", "HEAD", target, "--quiet"],
+            # No textconv/external diff: a driver named by repo config planted
+            # while the fetch ran would otherwise run here, before the
+            # post-fetch exec-config re-check.
+            ["git", "diff", "--no-textconv", "--no-ext-diff", "HEAD", target, "--quiet"],
             cwd=proj,
+            env=_git_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -283,7 +321,8 @@ def _update(force: bool = False) -> None:
         * ``"diverged"`` — ahead AND behind; resettable only under ``--force``.
         * ``"fast_forward"`` — behind and not ahead; nothing of its own to lose.
         """
-        counts = count_divergence_sync(proj, target)
+        # Same env as the reset, so the guard judges the repository it resets.
+        counts = count_divergence_sync(proj, target, env=_git_env)
         if isinstance(counts, DivergenceUnreadable):
             if counts.reason == UNREADABLE_UNPARSEABLE:
                 print(f"  ❌ Could not parse the commit counts against origin/{branch}:")
@@ -329,7 +368,7 @@ def _update(force: bool = False) -> None:
     # and outside the re-classification that must stay adjacent to the reset.
     try:
         floor_breach = dep_sync.incoming_python_floor_breach(
-            Path(proj), target, Path(sys.executable)
+            Path(proj), target, Path(sys.executable), env=_git_env
         )
     except dep_sync.IncomingFloorUnreadable as exc:
         # Unreadable is not absent: a git failure here must refuse, or it is
@@ -340,11 +379,21 @@ def _update(force: bool = False) -> None:
         print(f"  ❌ Refusing to update: {floor_breach}")
         sys.exit(1)
 
+    # Re-read the repo-named driver config before `status`: the fetch above can
+    # take its full timeout, and `status` runs a `filter.<name>.clean` planted in
+    # that window on every stat-dirty file.
+    _exec_config = repo_exec_config_reason(proj, git="git", human_transport=True)
+    if _exec_config:
+        print(f"  🛡️  Update refused: {_exec_config}, which git would run during the update.")
+        print("      Remove it from the checkout's git config, then retry.")
+        sys.exit(1)
+
     # Warn about local tracked-file changes before discarding
     try:
         status = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=proj,
+            env=_git_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -394,12 +443,22 @@ def _update(force: bool = False) -> None:
         print(f"      Reconcile with: git rebase origin/{branch}")
         sys.exit(1)
 
+    # Re-read the repo-named driver config right before the reset: the fetch and
+    # the prompt above leave an unbounded gap, and a `filter.<name>.smudge`
+    # planted in it would run on the reset's checkout.
+    _exec_config = repo_exec_config_reason(proj, git="git", human_transport=True)
+    if _exec_config:
+        print(f"  🛡️  Update refused: {_exec_config}, which git would run during the reset.")
+        print("      Remove it from the checkout's git config, then retry.")
+        sys.exit(1)
+
     _snapshot_memory_or_exit()
     print(f"  🔄 git reset --hard origin/{branch} ({target[:12]})…")
     try:
         result = subprocess.run(
             ["git", "reset", "--hard", target],
             cwd=proj,
+            env=_git_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -500,6 +559,12 @@ def _update(force: bool = False) -> None:
     # has already succeeded, so a gateway that is not running or a call that
     # fails must not change the outcome or the exit code.
     _revalidate_gateway_update_check()
+
+    # A running gateway keeps serving the code it imported at boot, so the pulled
+    # revision takes effect only after a restart -- the same hint the wheel,
+    # managed-venv and provider paths print.
+    print("\n  Restart the gateway to use the new version:")
+    print("    kirocrew restart")
 
 
 def _revalidate_gateway_update_check() -> None:

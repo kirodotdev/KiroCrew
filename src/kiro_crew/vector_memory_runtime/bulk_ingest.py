@@ -7,24 +7,159 @@ parses and clusters; this module writes, and every write goes through the store'
 methods.
 
 The functions are bound on ``VectorMemoryStore`` as the class attributes of the same name
-and take the store as ``self``. Store fields read: ``embed_fn`` and ``_memory_version``;
+and take the store as ``self``. Store fields read: ``embed_fn``, ``_memory_version``,
+``_embedding_dim``, ``_space_generation`` and ``_confidence_threshold``;
 ``_promotion_refused`` is read and updated.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
+import math
+import struct
 from typing import TYPE_CHECKING
 
 from kiro_crew import memory_schema
 from kiro_crew.vector_memory_runtime import migration as _migration
+from kiro_crew.vector_memory_runtime.embedding import _EmbeddingVector
 
 if TYPE_CHECKING:
     from kiro_crew.vector_memory import VectorMemoryStore
 
 # The store's own logger: callers and tests filter on it by name.
 logger = logging.getLogger("kiro_crew.vector_memory")
+
+
+def encode_embedding_blob(blob: object) -> str | None:
+    """A stored vector BLOB as the base64 text an export carries, or None."""
+    if isinstance(blob, (bytes, bytearray, memoryview)) and len(blob):
+        return base64.b64encode(bytes(blob)).decode("ascii")
+    return None
+
+
+def export_embedding_space(recorded: str | None) -> tuple[str, dict | None]:
+    """The space signature and ``{"model_id", "dim"}`` an export's vectors belong to.
+
+    *recorded* is the store's ``recorded_embedding_space()``.
+
+    An unrecorded space is the bundled model's, the only thing that could have
+    written vectors before space tracking existed. The model is named only when
+    this process can produce that exact signature from a model id and width --
+    the bundled model, or the active backend (metadata only, no model load);
+    otherwise it is None, and an importer carries none of the vectors.
+    """
+    from kiro_crew import embeddings
+
+    signature = recorded or embeddings.default_embedding_space_signature()
+    if signature == embeddings.default_embedding_space_signature():
+        return signature, {"model_id": embeddings._MODEL_ID, "dim": embeddings._DEFAULT_DIM}
+    try:
+        backend = embeddings.get_shared_embedder()
+        model_id, dim = str(backend.model_id), int(backend.dim)
+    except Exception:
+        logger.debug("Active embedding backend unavailable for export", exc_info=True)
+        return signature, None
+    if embeddings.embedding_space_signature(model_id, dim) == signature:
+        return signature, {"model_id": model_id, "dim": dim}
+    return signature, None
+
+
+def _payload_space_carryable(
+    data: dict, token: tuple[str | None, str], *, has_embedder: bool, dim: int
+) -> bool:
+    """Whether an import may persist the payload's own vectors on a store.
+
+    *token* is the store's space token, read once by the caller and attached to
+    every carried vector, so the space judged here is the one the commit checks.
+    *has_embedder* says the store has an ``embed_fn``; *dim* is its vector width.
+
+    Only where the store cannot re-derive them itself (no ``embed_fn``: the CLI
+    store), and only when the payload names its model, that model produces the
+    payload's signature, and the signature is the one this store's vectors and
+    the active backend both use. A store with no recorded space counts as the
+    bundled model's, as everywhere else, so a payload from a custom model lands
+    NULL there for the gateway's sweep rather than being attributed to the
+    wrong space.
+    """
+    if has_embedder:
+        return False
+    signature = data.get("embedding_space_sig")
+    model = data.get("embedding_model")
+    if not isinstance(signature, str) or not isinstance(model, dict):
+        return False
+    model_id, model_dim = model.get("model_id"), model.get("dim")
+    if not isinstance(model_id, str) or not model_id or type(model_dim) is not int:
+        return False
+    if model_dim != dim:
+        return False
+    from kiro_crew import embeddings
+
+    try:
+        if embeddings.embedding_space_signature(model_id, dim) != signature:
+            return False
+        recorded = token[0] or embeddings.default_embedding_space_signature()
+        if signature != recorded or signature != embeddings.active_embedding_space_signature():
+            return False
+        requested = embeddings.embedding_rebuild_generation()
+    except Exception:
+        logger.debug("Embedding space unavailable; import carries no vectors", exc_info=True)
+        return False
+    return not (requested and token[1] != requested)
+
+
+def _decode_payload_vector(raw: object, dim: int) -> list[float] | None:
+    """A base64 float32 vector of exactly *dim* finite values, else None."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if len(blob) != 4 * dim:
+        return None
+    values = list(struct.unpack(f"{dim}f", blob))
+    if not all(math.isfinite(v) for v in values):
+        return None
+    return values
+
+
+# The confidence an imported semantic row with no ``confidence`` field is stored at.
+IMPORT_CONFIDENCE_DEFAULT = 0.85
+
+
+def _import_confidence(raw: object, replacement: float, *, writer: str = "memory import") -> float:
+    """The ``0..1`` confidence an imported semantic row with *raw* is written at.
+
+    *writer* names the write path in the warning line; member consolidation shares
+    this bound for the confidence its model writes.
+
+    An import file is the user's own data, so a bad confidence never skips its row:
+    a number is clamped to ``0..1`` (an int is compared before it is converted, so one
+    too large for a float clamps instead of raising), a string ``float()`` reads is
+    read as before, and ``True``/``False`` keep 1.0/0.0. NaN, ``null`` and every other
+    non-number take *replacement*, which the caller keeps at or above the store's
+    confidence threshold: NaN passed that threshold before, so it still must. A
+    replaced value logs a warning that never echoes it: a file can carry a 400-digit
+    integer.
+    """
+    if isinstance(raw, bool):
+        return float(raw)
+    value: object = raw
+    if isinstance(raw, str):
+        try:
+            value = float(raw)
+        except ValueError:
+            value = None
+    if not isinstance(value, (int, float)) or (isinstance(value, float) and math.isnan(value)):
+        logger.warning("%s: confidence is not a number; using %s", writer, replacement)
+        return replacement
+    clamped = max(0, min(1, value))
+    if clamped != value:
+        logger.warning("%s: confidence outside 0..1; using %s", writer, float(clamped))
+    return float(clamped)
 
 
 def migrate_from_markdown(self: VectorMemoryStore) -> dict[str, int]:
@@ -161,8 +296,22 @@ def migrate_from_markdown(self: VectorMemoryStore) -> dict[str, int]:
 
 
 def import_memory(self: VectorMemoryStore, data: dict) -> dict[str, int]:
-    """Import memory from an export dict with 'semantic' and 'episodic' arrays."""
+    """Import memory from an export dict with 'semantic' and 'episodic' arrays.
+
+    A semantic row's exported vector is persisted as it is when
+    ``_payload_space_carryable`` allows it under the store's space token, read
+    once here before that check. Each carried vector holds that token, so the
+    publish transaction drops it if a model swap lands at any point after. A row
+    without a usable vector takes the normal write tail and, on a store with no
+    embedder, waits for the gateway's sweep.
+    """
     counts = {"semantic": 0, "episodic": 0, "skipped": 0}
+    replacement = max(IMPORT_CONFIDENCE_DEFAULT, min(1.0, float(self._confidence_threshold)))
+    token = self._embedding_token()
+    generation = self._space_generation
+    carry = _payload_space_carryable(
+        data, token, has_embedder=self.embed_fn is not None, dim=self._embedding_dim
+    )
     for entry in data.get("semantic", []):
         try:
             val = (
@@ -170,9 +319,30 @@ def import_memory(self: VectorMemoryStore, data: dict) -> dict[str, int]:
                 if isinstance(entry.get("value_json"), str)
                 else entry.get("value")
             )
-            conf = float(entry.get("confidence", 0.85))
+            conf = (
+                _import_confidence(entry["confidence"], replacement)
+                if "confidence" in entry
+                else IMPORT_CONFIDENCE_DEFAULT
+            )
             src = entry.get("source", "import")
-            if self.set_semantic(entry["key"], val, conf, src) is None:
+            values = (
+                _decode_payload_vector(entry.get("embedding"), self._embedding_dim)
+                if carry
+                else None
+            )
+            if values is None:
+                reject = self.set_semantic(entry["key"], val, conf, src)
+            else:
+                reject = self.set_semantic(
+                    entry["key"],
+                    val,
+                    conf,
+                    src,
+                    embedding=_EmbeddingVector(values, token),
+                    embedding_resolved=True,
+                    embedding_generation=generation,
+                )
+            if reject is None:
                 counts["semantic"] += 1
             else:
                 counts["skipped"] += 1

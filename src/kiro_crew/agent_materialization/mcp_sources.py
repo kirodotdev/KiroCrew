@@ -560,6 +560,16 @@ def _gateway_routed_names() -> frozenset[str]:
         return frozenset()
 
 
+def gateway_routed_names() -> frozenset[str]:
+    """The servers the running MCP gateway starts; empty on any failure.
+
+    The public read of :func:`_gateway_routed_names` for callers outside the
+    materialization (the dashboard's MCP probe and list), so the MCP tab and the
+    agent-spec rebuild give the same routing answer. Blocking.
+    """
+    return _gateway_routed_names()
+
+
 def _unrouted_secret_reference(
     name: str,
     chosen: dict,
@@ -949,6 +959,13 @@ def resolve_mcp_servers(
             # ``chosen``, so recording ``spec``'s would name a source this entry was
             # not derived from. ``None`` records "the source carried no such field".
             _derived: tuple[str, str] | None = _keep_record
+            if _keep_record is not None and resolved != _keep_record[1]:
+                # A kept record whose own ``emitted`` value heals to the command
+                # written (a saved PATHEXT ``.EXE``) follows it, scope-owned or
+                # not: the source stays verbatim, and ``emitted`` names the value
+                # on disk, so the next pass does not read it as a hand edit.
+                if agent_mod.saved_command_casing(_keep_record[1]) == resolved:
+                    _derived = (_keep_record[0], resolved)
             if _keep_record is None and not _scope_owned and (_owned_in or resolved != _pre_cmd):
                 _cmd_source = chosen.get("command")
                 # Non-empty by construction -- ``resolved`` is truthy, and it came

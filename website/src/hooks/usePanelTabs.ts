@@ -12,7 +12,7 @@ import {
 import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins' | 'command-center'
+export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins' | 'command-center' | 'workers'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 /** `app` hosts an MCP App (a sandboxed iframe with a live JSON-RPC bridge).
  *  It is deliberately a TabKind and NOT a ViewKind: SidePanel unmounts
@@ -87,6 +87,7 @@ export const PINNED_VIEWS: ViewKind[] = ['changes', 'artifacts', 'files']
  *  onto the Members page unfed — the default is not "offered", it is "decide". */
 export const VIEW_DATA_SOURCE: Record<ViewKind, 'slot' | 'chat-transcript'> = {
   'command-center': 'slot',
+  workers: 'slot',
   changes: 'chat-transcript',
   issues: 'chat-transcript',
   links: 'chat-transcript',
@@ -184,6 +185,9 @@ export interface PanelTab {
   sessionId?: string
   /** Working directory the shell spawns in (the chat's project dir, if any). */
   cwd?: string
+  /** Set for a shell in a chat's REMOTE session workspace: the gateway opens it
+   *  over `coder ssh` for this slot instead of spawning a local shell. */
+  remoteSlot?: string
 }
 
 /**
@@ -204,6 +208,7 @@ export interface PanelTab {
  */
 const VIEW_TITLE_KEY: Record<ViewKind, string> = {
   'command-center': 'commandCenter.title',
+  workers: 'commandCenter.workers',
   changes: 'hooks.usePanelTabs.changes',
   issues: 'hooks.usePanelTabs.issues',
   files: 'hooks.usePanelTabs.files',
@@ -479,6 +484,7 @@ function mutateSlot(key: string, fn: (b: Bucket) => Bucket, unfocusedShows: stri
   if (opts?.choice) {
     tabChoices.set(key, (tabChoices.get(key) ?? 0) + 1)
     stoppedAt.set(key, null)
+    heldViews.delete(key)
   }
   const prev = store[key] ?? { tabs: [], activeId: null }
   const changed = fn(prev)
@@ -512,11 +518,15 @@ const tabChoices = new Map<string, number>()
  *  checked but did not land. No entry means the strip has not been shown in
  *  this page session, which is a plain open. */
 const stoppedAt = new Map<string, number | 'landed' | null>()
+/** Per strip, a view opened with `openPanelView(..., { hold: true })` that a
+ *  discovery open may not take the focus from (see there). */
+const heldViews = new Map<string, string>()
 /** Ends the show of `slot`'s strip: the panel closed, or it shows another chat
  *  (see `notePanelShown`). */
 export function notePanelStoppedShowing(slot: string | null): void {
   const key = bucketKey(slot)
   stoppedAt.set(key, tabChoices.get(key) ?? 0)
+  heldViews.delete(key)
 }
 /** Take this show's landing: true once per show, when nothing has asked for a
  *  tab in `slot`'s strip since the panel last stopped showing it. A successful
@@ -606,8 +616,60 @@ function upsertInBucket(b: Bucket, tab: PanelTab, replaceId?: string): Bucket {
  *  a session row's PR chip switches sessions and opens Changes in one gesture.
  *  `usePanelTabs` is bound to whichever slot was active when it rendered, so
  *  going through `openView` there would open the tab on the chat being LEFT. */
-export function openPanelView(slotKey: string | null, kind: ViewKind): void {
-  mutateSlot(bucketKey(slotKey), b => upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) }), null, { choice: true })
+/** Add view *kind* to *slotKey*'s strip if it is missing, and make it the tab
+ *  the strip opens on while nobody has picked one. For a view a session should
+ *  always be able to reach and land on -- a Crew Mode chat's Workers -- on a
+ *  fresh browser, a reload or a reopened tab.
+ *
+ *  "Nobody has picked one" is read from the stored strip, not a new store: no
+ *  focus at all, or focus still on the first pinned view (Changes, which
+ *  `syncPinned` writes on its own) with the focus history never having left it
+ *  and no tab asked for in this page session (`tabChoices`: a PR chip opening
+ *  Changes is such an ask). Any other stored focus is kept. */
+export function offerPanelView(slotKey: string | null, kind: ViewKind): void {
+  const key = bucketKey(slotKey)
+  mutateSlot(key, b => {
+    const has = b.tabs.some(t => t.id === kind)
+    const unpicked = b.activeId === null
+      || (b.activeId === PINNED_VIEWS[0] && !tabChoices.get(key)
+        && (b.recent ?? []).every(id => id === b.activeId))
+    if (has && !(unpicked && b.activeId !== kind)) return b
+    const tabs = has ? b.tabs : [...b.tabs, { id: kind, kind, title: viewTitle(kind) }]
+    return { tabs, activeId: unpicked ? kind : b.activeId }
+  })
+}
+
+/** What *slotKey*'s strip holds now: its tab ids and the tab in front. Read
+ *  before a change that may have to be undone (a failed Ultra Mode turn-on). */
+export function panelStripOf(slotKey: string | null): { ids: readonly string[], activeId: string | null } {
+  const b = store[bucketKey(slotKey)] ?? EMPTY_BUCKET
+  return { ids: b.tabs.map(t => t.id), activeId: b.activeId }
+}
+
+/** remove views a turned-off (or failed) Ultra Mode put on a strip. When the tab
+ *  in front goes, or is one of `restore.over` (a tab the caller itself put in
+ *  front), `restore.focus` comes back to the front if it is still there; a tab
+ *  in front that went falls back to the first tab. */
+export function dropPanelViews(slotKey: string | null, kinds: readonly ViewKind[], restore?: { focus: string | null, over: readonly ViewKind[] }): void {
+  mutateSlot(bucketKey(slotKey), b => {
+    const tabs = b.tabs.filter(t => !(kinds as readonly string[]).includes(t.id))
+    const keep = (id: string | null) => !!id && tabs.some(t => t.id === id)
+    const refocus = !!restore && keep(restore.focus) && (!keep(b.activeId) || (restore.over as readonly (string | null)[]).includes(b.activeId))
+    const activeId = refocus ? restore!.focus : keep(b.activeId) ? b.activeId : (tabs[0]?.id ?? null)
+    if (tabs.length === b.tabs.length && activeId === b.activeId) return b
+    return { tabs, activeId }
+  })
+}
+
+export function openPanelView(slotKey: string | null, kind: ViewKind, opts?: { hold?: boolean }): void {
+  const key = bucketKey(slotKey)
+  mutateSlot(key, b => upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) }), null, { choice: true })
+  // `hold`: a discovery open (Changes for a link the chat's history turns out
+  // to hold) keeps this view in front until the next tab choice or the end of
+  // this show. The Ultra Mode board opens a worker with Workers in front, and
+  // the worker's history loads after it: without the hold, its PR link took
+  // the focus and hid the panel's way back to the root.
+  if (opts?.hold) heldViews.set(key, kind)
 }
 
 /** Drop every document body the panel holds in memory, in EVERY slot, so the
@@ -841,6 +903,7 @@ export function __resetPanelTabs(): void {
   autoOpenedApps.clear()
   tabChoices.clear()
   stoppedAt.clear()
+  heldViews.clear()
   shownPanelSlot = null
   clearTimeout(persistTimer)
   dirtySlots.clear()
@@ -897,10 +960,17 @@ export function usePanelTabs(
      *  for not being a stored tab. Pass a module constant: the array is a
      *  dependency of the strip callbacks. */
     leadingIds?: readonly string[]
+    /** An Ultra Mode chat (a crew root or one of its workers): the Board leads
+     *  the strip and only a person moves the focus. An `automatic` open (a PR
+     *  or issue link found, Pin Summary's landing, an app render opening on its
+     *  own, the Git tab) adds or updates its tab and leaves the focus where it
+     *  is: on the Board, or on the tab the person last clicked. */
+    boardFirst?: boolean
   },
 ) {
   const key = bucketKey(slotKey)
   const leadingIds = opts?.leadingIds
+  const boardFirst = !!opts?.boardFirst
   const defaultLeadingId = leadingIds?.[0] ?? null
   const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   const { tabs: storedTabs, activeId } = bySlot[key] ?? EMPTY_BUCKET
@@ -974,9 +1044,10 @@ export function usePanelTabs(
       const next = upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) })
       const keepSummary = automatic && stoppedAt.get(key) === 'landed'
         && b.activeId === 'summary' && b.tabs[0]?.id === 'summary'
-      return keepSummary ? { ...next, activeId: b.activeId } : next
+      const keepHeld = automatic && b.activeId !== null && heldViews.get(key) === b.activeId
+      return keepSummary || keepHeld || (automatic && boardFirst) ? { ...next, activeId: b.activeId } : next
     }, { choice: !automatic })
-  }, [key, update])
+  }, [key, update, boardFirst])
 
   /** Open an app-contributed body-owning tab (one instance per kind, like a
    *  view). Persists the metadata (`appName`/`appTabId`) needed to re-mount the
@@ -1153,15 +1224,17 @@ export function usePanelTabs(
    *  render, so two same-tick opens would both read a stale pre-insert `tabs` and
    *  each conclude there was room. The currently-focused tab is never a candidate
    *  (belt-and-braces: focus stamping already sorts it last). */
-  const openApp = useCallback((toolCallId: string, title: string, slot: string | null = null) => {
+  const openApp = useCallback((toolCallId: string, title: string, slot: string | null = null, opts?: { automatic?: boolean }) => {
     const id = `app:${toolCallId}`
+    // An Ultra Mode chat keeps its focus when a render opens on its own (see `boardFirst`).
+    const keepFocus = !!opts?.automatic && boardFirst
     update(b => {
       const now = Date.now()
       const i = b.tabs.findIndex(t => t.id === id)
       if (i !== -1) {
         const next = b.tabs.slice()
         next[i] = { ...next[i], title, appToolCallId: toolCallId, slot, appActiveAt: now }
-        return { tabs: next, activeId: id }
+        return { tabs: next, activeId: keepFocus ? b.activeId : id }
       }
       let kept = b.tabs
       // Count EVERY app tab toward the budget (including the focused one), but
@@ -1193,9 +1266,9 @@ export function usePanelTabs(
         kept = kept.filter(t => !doomed.has(t.id))
       }
       const tab: PanelTab = { id, kind: 'app', title, appToolCallId: toolCallId, slot, appActiveAt: now }
-      return { tabs: [...kept, tab], activeId: id }
-    }, { choice: true })
-  }, [update])
+      return { tabs: [...kept, tab], activeId: keepFocus ? b.activeId : id }
+    }, { choice: !keepFocus })
+  }, [update, boardFirst])
 
   const openArtifact = useCallback((art: { slug: string; kind: Artifact['kind']; title?: string }, content: string, slot: string | null = null) => {
     upsert({ id: `artifact:${art.slug}`, kind: 'artifact', title: art.title ?? art.slug, artifactSlug: art.slug, artifactKind: art.kind, content, slot })
@@ -1278,10 +1351,14 @@ export function usePanelTabs(
    *  per-slot bucketing makes those sessions chat-specific automatically. At
    *  the per-chat cap we focus (reuse) the most-recent terminal instead of
    *  spawning another. Returns the session id to connect / run against. */
-  const openTerminal = useCallback((opts?: { cwd?: string }): string => {
+  const openTerminal = useCallback((opts?: { cwd?: string; remoteSlot?: string; title?: string }): string => {
     const terms = tabs.filter(t => t.kind === 'terminal')
     if (terms.length >= MAX_TERMINALS_PER_CHAT) {
-      const last = terms[terms.length - 1]
+      // Reuse only a terminal on the same machine: a remote request must never
+      // land in a gateway shell, nor a local one in a workspace. None: refuse.
+      const same = terms.filter(t => (t.remoteSlot ?? '') === (opts?.remoteSlot ?? ''))
+      const last = same[same.length - 1]
+      if (!last) return ''
       setActive(last.id)
       return last.sessionId ?? ''
     }
@@ -1294,7 +1371,9 @@ export function usePanelTabs(
     upsert({
       id: `terminal:${sessionId}`, kind: 'terminal',
       title: opts?.cwd ? basename(opts.cwd) : 'Terminal',
+      ...(opts?.title ? { title: opts.title } : {}),
       sessionId, cwd: opts?.cwd,
+      ...(opts?.remoteSlot ? { remoteSlot: opts.remoteSlot } : {}),
     })
     return sessionId
   }, [tabs, upsert, setActive])
@@ -1306,5 +1385,6 @@ export function usePanelTabs(
     openView, openPanelTab, openTerminal, openFile, openWorkingTreeDiff, openDiff, openArtifact, openFolder, openApp,
     patchTab, closeTab, closeAll, setActive, setOrder, syncPinned,
     hasTabs: tabs.length > 0,
-  }), [tabs, effectiveActiveId, activeTab, openView, openPanelTab, openTerminal, openFile, openWorkingTreeDiff, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
+    boardFirst,
+  }), [boardFirst, tabs, effectiveActiveId, activeTab, openView, openPanelTab, openTerminal, openFile, openWorkingTreeDiff, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
 }

@@ -7,8 +7,21 @@
 
 import type { ClientTransport } from './transport'
 
+/** A registered Slack Code switch: its `slack.<key>` config key, the
+ *  manifest feature it renders and the key the GET reports it under. The union
+ *  mirrors the server's `slack_manifest.FEATURE_SCOPES`; a new switch is
+ *  registered by adding its key here (and to `SLACK_CODE_SWITCHES`), and the
+ *  config, save and capability fields below follow from it. */
+export type SlackCodeSwitchKey = 'agent_sessions'
+
+/** Per registered switch, the toggle as saved (`<key>`) and whether the
+ *  installed app can run it (`<key>_capability`). */
+export type SlackCodeSwitchFields =
+  & { [K in SlackCodeSwitchKey]?: boolean }
+  & { [K in SlackCodeSwitchKey as `${K}_capability`]?: SlackCapability }
+
 /** Slack config as returned by GET /api/slack/config (secrets masked). */
-export interface SlackConfigData {
+export interface SlackConfigData extends SlackCodeSwitchFields {
   connected: boolean
   connect_error: string
   configured: boolean
@@ -28,8 +41,50 @@ export interface SlackConfigData {
   auto_link_sessions?: boolean
 }
 
-/** Writable Slack config fields sent to PUT /api/slack/config. */
-export interface SlackConfigSave {
+/** One feature's capability. reason: "" | missing_scope | feature_disabled |
+ *  not_allowed_token_type | scopes_unknown. */
+export interface SlackCapability {
+  available: boolean
+  reason: string
+  /** The bot scope the feature needs (e.g. assistant:write). */
+  scope: string
+}
+
+/** One manifest delta: what a switch adds to (or removes from) the Slack app. */
+export interface SlackManifestChange {
+  added_scopes: string[]
+  removed_scopes: string[]
+  added_events: string[]
+  removed_events: string[]
+  added_features: string[]
+  removed_features: string[]
+}
+
+/** GET /api/slack/manifest/status: the installed app vs the manifest the switches need. */
+export interface SlackManifestStatus {
+  features: string[]
+  required_scopes: string[]
+  required_events: string[]
+  required_features: string[]
+  /** Per switch, what turning it on adds to the base manifest. */
+  feature_changes: Record<string, SlackManifestChange>
+  install: {
+    /** up_to_date | needs_update | feature_disabled | unknown | not_configured | token_rejected */
+    status: string
+    missing_scopes: string[]
+    extra_scopes: string[]
+    disabled_features: string[]
+    app_id: string
+    team_id: string
+    reason: string
+  }
+  /** The app's App Manifest page on api.slack.com, when Slack named the app. */
+  app_manifest_url: string | null
+}
+
+/** Writable Slack config fields sent to PUT /api/slack/config. Each registered
+ *  Slack Code switch is sent under its own `slack.<key>` key. */
+export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, boolean>> {
   bot_token: string
   bot_token_clear: boolean
   app_token: string
@@ -374,6 +429,9 @@ export interface WhatsAppGroup {
   rules: string
   /** Minimum seconds between agent replies in this group (anti-flood). */
   cooldown_s: number
+  /** Numbers admitted in this group in place of the global allowed_wa_ids.
+   *  Absent means the global list applies; carried through edits unchanged. */
+  allowed_wa_ids?: string[]
 }
 
 /** WhatsApp (personal account, QR-paired via neonize) config from
@@ -384,6 +442,10 @@ export interface WhatsAppConfigData {
   configured: boolean
   connected: boolean
   connect_error: string
+  /** Whether `connect_error` reports a failure (a broken link, a missing SDK, a
+   *  start exception) rather than a step still to take, such as the pairing
+   *  instruction. Absent from a gateway that predates the field. */
+  connect_failed?: boolean
   read_only: boolean
   enabled: boolean
   /** Who may DM the agent: only the linked number (self), an allow-list, anyone
@@ -421,7 +483,8 @@ export function createMessagingEndpoints({ get, post, put, j }: ClientTransport)
   const channelConfigs = {
     // Slack integration config
     getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
-    getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string }>,
+    getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string; features?: string[] }>,
+    getSlackManifestStatus: (refresh = false) => get(`/api/slack/manifest/status${refresh ? '?refresh=1' : ''}`).then(j) as Promise<SlackManifestStatus>,
     saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,

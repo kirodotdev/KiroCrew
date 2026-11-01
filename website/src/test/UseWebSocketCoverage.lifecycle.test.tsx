@@ -257,7 +257,7 @@ describe('useWebSocket connection lifecycle', () => {
     await act(async () => { await Promise.resolve() })
 
     // A cosmetic seed throwing synchronously must not strand the subscribe.
-    expect(WS_INSTANCES[0].send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe_subagents' }))
+    expect(WS_INSTANCES[0].send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe_subagents', slots: [] }))
     expect(testStore.getState().dashboard.connected).toBe(true)
     // A successful structured snapshot must not turn a failed legacy read into
     // an authoritative empty legacy snapshot.
@@ -314,7 +314,7 @@ describe('useWebSocket connection lifecycle', () => {
       const second = WS_INSTANCES[1]
       act(() => { second.simulateOpen() })
       expect(api.chatSlotDetail).toHaveBeenCalledWith(ACTIVE, PANE_HYDRATE_LIMIT)
-      expect(second.send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe_subagents' }))
+      expect(second.send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe_subagents', slots: [ACTIVE] }))
       unmount()
     } finally {
       vi.useRealTimers()

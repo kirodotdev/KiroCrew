@@ -14,6 +14,51 @@ from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.state import DashboardState
 
 
+class TestCrewmatePicksOnItsHarness:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route,field,pick",
+        [
+            ("model", "model", "gpt-5.6-sol"),
+            ("reasoning-effort", "reasoning_effort", "max"),
+        ],
+    )
+    async def test_same_harness_still_applies_live(self, tmp_path, monkeypatch, route, field, pick):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot(
+            "member-atlas-0123456789ab", mode="member", model="claude-opus-4.8"
+        )
+        provider = TestSlotModelLiveSwitch._provider(supports_effort=True)
+        provider.capabilities = capabilities_for(ACP_BACKEND_KAS)
+        provider.accepts_effort_level.return_value = True
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.sessions.reset = AsyncMock()
+        cfg = KiroCrewConfig.load()
+        cfg.agents["atlas"] = KiroCrewAgentConfig(
+            member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend="kas"
+        )
+        monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", lambda: cfg)
+        app = TestSlotModelLiveSwitch._app(state)
+        app.router.add_post(
+            "/api/chat/slots/{slot}/reasoning-effort", chat_handlers.api_chat_slot_reasoning_effort
+        )
+        async with TestClient(TestServer(app, host="127.0.0.1")) as client:
+            resp = await client.post(f"/api/chat/slots/{slot.key}/{route}", json={field: pick})
+            data = await resp.json()
+
+        assert resp.status == 200, data
+        assert getattr(slot, field) == pick
+        if field == "model":
+            provider.client.set_model.assert_awaited_once_with(pick)
+        else:
+            provider.change_effort.assert_awaited_once_with(pick)
+        state.sessions.reset.assert_not_awaited()
+
+
 class TestSlotModelLiveSwitch:
     """POST /api/chat/slots/{slot}/model — prefer an in-place session/set_model
     over tearing the session down.
@@ -476,7 +521,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_refused_pick_rolls_back_the_pick_generation(self, tmp_path):
-        """REGRESSION (review finding): a refused pick changed nothing, so the
+        """A refused pick changed nothing, so the
         explicit-pick generation must roll back with the model. Leaving the
         bump in place would make the model-fallback restore probe read the
         FAILED attempt as an explicit choice and silently abandon restoring
@@ -505,7 +550,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_refused_pick_rollback_spares_a_newer_concurrent_pick(self, tmp_path):
-        """REGRESSION (review finding on eb3cf067): two picks arriving together
+        """Two picks arriving together
         must not roll back each other's state. The pick transaction is
         serialised per slot (_model_pick_lock), so the refused pick unwinds
         cleanly before the next pick's snapshot is taken — the surviving state
@@ -642,7 +687,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_same_value_pick_still_bumps_the_pick_generation(self, tmp_path):
-        """REGRESSION (review finding): picking the model the slot already
+        """Picking the model the slot already
         reports takes the equality early-return, but it is still an EXPLICIT
         affirmation — without the bump, a user who deliberately re-picks the
         very model the session fell back to would have that choice silently
@@ -665,7 +710,7 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_same_value_pick_during_fallback_takes_the_live_switch_path(self, tmp_path):
-        """REGRESSION (review finding on 1a61ddcf): with a fallback actively
+        """With a fallback actively
         serving the session, a pick of the DISPLAYED primary equals slot.model
         but the wire model is the fallback — the equality early-return would
         record the pick and switch nothing, stranding the session on the
@@ -787,6 +832,9 @@ class TestSlotModelSwitchContextBroadcast:
     async def test_reset_fallback_broadcasts_token_clearing_event(self, tmp_path):
         # No live provider -> the reset path: no token counts, so the frontend
         # deletes its stored entry and falls back to the model-derived window.
+        # The reset recreates the session but RESUMES THE SAME CONVERSATION, so
+        # the frame omits `pct` — the last known percentage still describes the
+        # session and the meter must keep it rather than drop to 0%.
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()
         state.broadcast_ws = MagicMock()
@@ -800,7 +848,7 @@ class TestSlotModelSwitchContextBroadcast:
         assert resp.status == 200
         state.sessions.reset.assert_awaited_once()
         events = self._find_context_events(state.broadcast_ws)
-        assert events == [{"slot": state._slots["a"].key, "pct": 0.0, "reset": True}]
+        assert events == [{"slot": state._slots["a"].key, "reset": True}]
 
     @pytest.mark.asyncio
     async def test_broadcast_failure_does_not_fail_the_switch(self, tmp_path):
@@ -1067,3 +1115,46 @@ class TestDeferredModelSwitchAtTheBoundary:
 
         assert await sc.apply_deferred_model_switch(state, slot) is True
         assert slot._pending_reset_history_key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live", [False, True])
+async def test_stored_harness_secret_never_reaches_model_response_or_log(
+    tmp_path, monkeypatch, caplog, live
+):
+    from kiro_crew import model_registry
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.dashboard import chat_handlers
+
+    secret = "sk-test-not-a-real-secret-0000"
+    cfg = KiroCrewConfig()
+    cfg.agents["atlas"] = KiroCrewAgentConfig(
+        member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend=secret
+    )
+    monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", lambda: cfg)
+    monkeypatch.setattr(model_registry, "is_canonical_key", lambda model: True)
+    monkeypatch.setattr(model_registry, "get_entry", lambda model: {})
+    monkeypatch.setattr(model_registry, "acp_id_correction", lambda model: None)
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("member-atlas-0123456789ab", mode="member", model="auto")
+    provider = TestSlotModelLiveSwitch._provider() if live else None
+    state.sessions.get_provider = MagicMock(return_value=provider)
+    state.sessions.reset = AsyncMock()
+    async with TestClient(
+        TestServer(TestSlotModelLiveSwitch._app(state), host="127.0.0.1")
+    ) as client:
+        response = await client.post(
+            f"/api/chat/slots/{slot.key}/model",
+            json={"model": "test-display-only"},
+        )
+        assert response.status == 400
+        text = await response.text()
+        data = await response.json()
+    assert secret not in text + caplog.text
+    assert "unknown" in data["error"]
+    assert "model rejected" in caplog.text
+    assert cfg.agents["atlas"].acp_backend == secret
+    assert slot.model == "auto"
+    state.sessions.reset.assert_not_awaited()
+    if provider is not None:
+        provider.client.set_model.assert_not_awaited()

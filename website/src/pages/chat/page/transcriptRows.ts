@@ -119,6 +119,9 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
         const toolCallId = item.msg.meta?.tool_call_id
         if (typeof toolCallId === 'string' && appToolCallIds.has(toolCallId)) looseHasApp = true
       }
+      // A reply an error cut short carries stats too. Any row after it (its card,
+      // a recovery) makes an app-bearing batch long enough that the grouper has
+      // already made it a turn, which this pass keeps whole.
       if (item.kind === 'single' && isTurnEnd(item.msg)) flushLooseTurn()
     }
     flushLooseTurn()

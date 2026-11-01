@@ -54,7 +54,7 @@ from typing import Any
 
 from kiro_crew import crewmate_prompts
 from kiro_crew import members as members_mod
-from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME
+from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, ASSISTANT_MEMBER_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,8 @@ _WELCOME_OFFER = _WELCOME_ASK_NAME + crewmate_prompts.text("welcome.offer_tools"
 #: (``member_mate_tools``): the user saves the name on its crewmate page.
 _WELCOME_OFFER_NO_TOOLS = _WELCOME_ASK_NAME + crewmate_prompts.text("welcome.offer_no_tools")
 
-#: Mate's welcome for a user with no other crewmate. ``{name}`` is its label.
+#: Mate's welcome for a user with no other crewmate. ``{name}`` is its label,
+#: ``{key}`` its short name.
 FIRST_WELCOME = _KICKOFF_PREAMBLE + _WELCOME_INTRO + _FIRST_OF_CREW + _WELCOME_OFFER
 
 #: Mate's welcome for a user who already has other crewmates.
@@ -115,6 +116,60 @@ GOAL_WELCOME_NO_TOOLS = _GOAL_HELLO + crewmate_prompts.text("welcome.goal_no_too
 _GOAL_DRAFT = crewmate_prompts.text("welcome.goal_draft")
 _GOAL_KNOWN = _GOAL_DRAFT + crewmate_prompts.text("welcome.goal_known_tools")
 _GOAL_KNOWN_NO_TOOLS = _GOAL_DRAFT + crewmate_prompts.text("welcome.goal_known_no_tools")
+
+
+#: The one language sentence ``welcome.preamble`` and ``wake.preamble`` carry.
+LANGUAGE_DEFAULT = crewmate_prompts.text("hidden_turn.language_default")
+#: What :data:`LANGUAGE_DEFAULT` becomes in a first welcome once the tag is known.
+_LANGUAGE_FIRST = crewmate_prompts.text("hidden_turn.language_first")
+#: What it becomes in a goal check-in: follow the thread, else the tag.
+_LANGUAGE_THREAD_OR_TAG = crewmate_prompts.text("hidden_turn.language_thread_or_tag")
+
+
+def hidden_turn_language(ui_lang: object = "") -> str:
+    """The language a hidden gateway turn writes in, as a BCP-47 tag, or ``""``.
+
+    A hidden turn has no user text to follow, and the ``[UI LANGUAGE]`` block
+    the session carries steers only tool-call purpose text (replies follow the
+    language the user writes in), so without a sentence naming the tag the reply
+    falls back to English. The configured ``dashboard.language`` wins; on an install
+    left on "follow the browser" the opening tab's ``X-UI-Lang`` (*ui_lang*,
+    the language the SPA rendered) is the only signal, and is used per request,
+    never persisted, as ``guide_observe`` does. Both pass the same validation
+    gate, so client text never reaches the prompt. ``en`` reads as ``""``: the
+    preamble's own sentence already ends in English.
+
+    Total and blocking (a config read): an unreadable config only means no tag.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.context import normalize_ui_language_tag, ui_language_tag
+
+    try:
+        tag = ui_language_tag(KiroCrewConfig.load())
+    except Exception:
+        logger.debug("dashboard.language unreadable for a hidden turn", exc_info=True)
+        tag = ""
+    if not tag:
+        tag = normalize_ui_language_tag(ui_lang, source="X-UI-Lang")
+    return "" if tag == "en" else tag
+
+
+def with_language(prompt: str, language: str, *, in_thread: bool = False) -> str:
+    """*prompt* with its language sentence naming *language*, so it carries one.
+
+    A hidden prompt opens on a preamble holding :data:`LANGUAGE_DEFAULT`
+    (``[UI LANGUAGE]`` when shown, else English). With a tag known, that
+    sentence is swapped in place rather than joined by a second one: a first
+    welcome (*in_thread* false) writes in *language*; a goal check-in
+    (*in_thread*) runs in a thread the user has written in, so it follows their
+    language there and falls back to *language*. ``""`` leaves *prompt* as is.
+    """
+    if not language:
+        return prompt
+    line = (_LANGUAGE_THREAD_OR_TAG if in_thread else _LANGUAGE_FIRST).format(language=language)
+    if LANGUAGE_DEFAULT in prompt:
+        return prompt.replace(LANGUAGE_DEFAULT, line, 1)
+    return prompt + " " + line
 
 
 def _recorded_goal(slug: str, member: str) -> str:
@@ -173,7 +228,7 @@ def welcome_kickoff(
         template = (
             FIRST_WELCOME_WITH_CREW_NO_TOOLS if has_other_crewmates else FIRST_WELCOME_NO_TOOLS
         )
-    return template.format(name=label or ASSISTANT_DEFAULT_DISPLAY_NAME)
+    return template.format(name=label or ASSISTANT_DEFAULT_DISPLAY_NAME, key=ASSISTANT_MEMBER_NAME)
 
 
 #: One-time claim under the member's directory (``members/<slug>/``).
@@ -249,9 +304,10 @@ def _has_content(slot: Any) -> bool:
     return bool(slot.messages) or bool(getattr(slot, "_queue", None))
 
 
-async def maybe_start_first_greeting(state: Any, slug: str) -> str:
+async def maybe_start_first_greeting(state: Any, slug: str, ui_lang: object = "") -> str:
     """Start the first welcome *slug*'s crewmate owes: Mate's, or a goal question.
 
+    *ui_lang* is the opening tab's ``X-UI-Lang`` (:func:`hidden_turn_language`).
     Returns one of the module's outcome constants. Every check that can refuse
     runs BEFORE the marker is claimed, and the emptiness/busy checks run again
     after the off-loop claim, since a send can land while the claim is written.
@@ -277,6 +333,7 @@ async def maybe_start_first_greeting(state: Any, slug: str) -> str:
         )
     else:
         kickoff = welcome_kickoff(entry, has_other_crewmates=others, has_mate_tools=has_tools)
+    kickoff = with_language(kickoff, await asyncio.to_thread(hidden_turn_language, ui_lang))
     if not await asyncio.to_thread(claim_greeting_marker, slug, slot.key):
         return ALREADY_GREETED
     if slot.running or _has_content(slot) or state._slots.get(slot.key) is not slot:

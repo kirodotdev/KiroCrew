@@ -1,19 +1,37 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins } from 'lucide-react'
-import { Badge, EmptyState, ContentSkeleton } from '../../components/ui'
+import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe } from 'lucide-react'
+import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
-import { parseSourceProps, shouldShowWordCount, syncStatusLabel } from './knowledgeUtils'
-import { fmtCompact, fmtNumber } from '../../i18n/format'
+import { parseSourceProps, shouldShowWordCount, syncStatusLabel, ingestionStatusLabel } from './knowledgeUtils'
+import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { servedUploadMb } from '../../utils/fileTokens'
+import { pathForFile, canPickFolderNatively } from '../../lib/electron'
 import ErrorNotice from '../../components/ErrorNotice'
+import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButton'
+import { useConfigSetHintsV1 } from '../../hooks/useGatewayPlatform'
+
+/** A site name as the gateway compares it: lowercase, no trailing dot. */
+function normalizeSite(site: string): string {
+  return site.trim().toLowerCase().replace(/\.$/, '')
+}
+
+/** The site of *value* when it is an https link, else null. */
+function typedHttpsSite(value: string): string | null {
+  try {
+    const url = new URL(value.trim())
+    return url.protocol === 'https:' && url.hostname ? normalizeSite(url.hostname) : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * Indexing progress and the Kiro requests a source still owes.
@@ -102,20 +120,46 @@ function NamespacePicker({ value, onChange, namespaces }: { value: string; onCha
   )
 }
 
-function DropZone({ onFiles, accept, caption }: { onFiles: (files: File[]) => void; accept?: string; caption: string }) {
+/** Split a drop into files to upload and the folders in it. A folder is
+ *  watched by its path, which only the desktop shell can read; a plain browser
+ *  gives just the name, so `path` is '' there. The item list must be read
+ *  inside the drop handler: it is emptied once the event yields. */
+export function splitDrop(dt: DataTransfer): { files: File[]; folders: { name: string; path: string }[] } {
+  const items = dt.items ? Array.from(dt.items).filter(it => it.kind === 'file') : []
+  if (!items.length) return { files: Array.from(dt.files || []), folders: [] }
+  const files: File[] = []
+  const folders: { name: string; path: string }[] = []
+  for (const item of items) {
+    const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
+    const file = item.getAsFile()
+    if (entry?.isDirectory) folders.push({ name: entry.name || file?.name || '', path: file ? pathForFile(file) : '' })
+    else if (file) files.push(file)
+  }
+  return { files, folders }
+}
+
+function DropZone({ onFiles, onFolder, inputRef, accept }: {
+  onFiles: (files: File[]) => void
+  onFolder: (folder: { name: string; path: string }) => void
+  inputRef: React.RefObject<HTMLInputElement>
+  accept?: string
+}) {
   const [over, setOver] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
   return (
     <Clickable
       onDragOver={e => { e.preventDefault(); setOver(true) }}
       onDragLeave={() => setOver(false)}
-      onDrop={e => { e.preventDefault(); setOver(false); onFiles(Array.from(e.dataTransfer.files)) }}
+      onDrop={e => {
+        e.preventDefault(); setOver(false)
+        const { files, folders } = splitDrop(e.dataTransfer)
+        if (files.length) onFiles(files)
+        if (folders.length) onFolder(folders[0])
+      }}
       onClick={() => inputRef.current?.click()}
       className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-all ${over ? 'border-accent bg-accent-subtle' : 'border-border hover:border-border-strong'}`}
     >
       <Upload size={28} className="mx-auto mb-2 text-muted" />
-      <div className="text-sm text-muted">{i18nT('pages.knowledge.sourcesList.drop_files_here_or_click_to_upload')}</div>
-      <div className="text-[11px] text-muted/50 mt-1">{caption}</div>
+      <div className="text-sm text-muted">{i18nT('pages.knowledge.sourcesList.drop_files_or_a_folder_here')}</div>
       <input ref={inputRef} type="file" multiple accept={accept} aria-label={i18nT('pages.knowledge.sourcesList.upload_files')} className="hidden" onChange={e => e.target.files && onFiles(Array.from(e.target.files))} />
     </Clickable>
   )
@@ -127,9 +171,18 @@ function IngestionProgress({ jobs }: { jobs: IngestionJob[] }) {
     <div className="space-y-1.5 mt-3">
       {jobs.map((j, i) => (
         <div key={i} className="flex items-center gap-2 text-[13px]">
-          {j.status === 'done' ? <CheckCircle size={14} className="text-ok" /> : j.status.startsWith('error') ? <AlertCircle size={14} className="text-danger" /> : <RefreshCw size={14} className="text-accent animate-spin" />}
+          {j.status === 'done' ? <CheckCircle size={14} className="text-ok" /> : j.status === 'error' ? <AlertCircle size={14} className="text-danger" /> : <RefreshCw size={14} className="text-accent animate-spin" />}
           <span className="text-text truncate flex-1">{j.name}</span>
-          <span className="text-muted text-[11px]">{j.status}</span>
+          {j.status === 'error' ? (
+            <>
+              {/* No hand-off: this list sits in the add-source panel beside the
+                  namespace picker, whose typed value is page state only — a
+                  navigation to the chat would unmount and discard it. */}
+              <ErrorNotice variant="inline" showIcon={false} className="min-w-0" message={j.error ?? i18nT('pages.knowledge.sourcesList.failed')} />
+            </>
+          ) : (
+            <span className="text-muted text-[11px]">{ingestionStatusLabel(j.status)}</span>
+          )}
         </div>
       ))}
     </div>
@@ -283,7 +336,12 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   const maxUploadMb = dashCfgError ? null : servedUploadMb(dashCfg?.knowledge_upload_max_mb)
   const [showAdd, setShowAdd] = useState(false)
-  const [addType, setAddType] = useState<'local_file' | 'local_folder'>('local_file')
+  // Files and folders share one view (#26892): files upload at once, and a
+  // folder opens the watched-folder form below the drop zone.
+  const [addType, setAddType] = useState<'local' | 'url'>('local')
+  const [folderOpen, setFolderOpen] = useState(false)
+  const [folderNeedsPath, setFolderNeedsPath] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [addUri, setAddUri] = useState('')
   const [addName, setAddName] = useState('')
   const [addIgnorePatterns, setAddIgnorePatterns] = useState('')
@@ -299,6 +357,23 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   }
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
+  // Each row's Rename button, by source id. Closing a rename unmounts whatever
+  // had focus in it (the input, or its Save or Cancel button), and a browser
+  // then drops focus to document.body, so every close hands focus back to the
+  // Rename button of the row it was opened from once that button has remounted
+  // (the pattern in MeetingTitle). The field has no blur handler, so there is
+  // no pointer-blur path to exclude.
+  const renameButtons = useRef(new Map<string, HTMLButtonElement>())
+  const closeRename = (id: string | null) => {
+    setEditingId(null)
+    if (id === null) return
+    // Only take back focus the unmount dropped: a rename can resolve after the
+    // user has already moved on to another control, and that control keeps it.
+    requestAnimationFrame(() => {
+      const at = document.activeElement
+      if (at === null || at === document.body) renameButtons.current.get(id)?.focus({ preventScroll: true })
+    })
+  }
 
   const { data: sources = [], isLoading: loading } = useQuery({
     queryKey: ['knowledge-sources'],
@@ -335,12 +410,27 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     }
   }
 
-  const { data: kbConfig } = useQuery({
+  const { data: kbConfig, error: kbConfigError } = useQuery({
     queryKey: ['knowledge-config'],
-    queryFn: () => knowledgeApi<{ enabled: boolean; supported_formats: string[]; folder_picker?: boolean }>('/config'),
+    queryFn: () => knowledgeApi<{ enabled: boolean; supported_formats: string[]; folder_picker?: boolean; url_allowed_hosts?: string[] | null }>('/config'),
     staleTime: 60_000,
   })
   const folderPickerAvailable = kbConfig?.folder_picker ?? false
+  const configSetHints = useConfigSetHintsV1()
+  // The gateway fetches a web page only from these hosts; empty by default.
+  // `null` until the list is known, so a failed or pending read is never shown
+  // as an empty list. The gateway answers `null` when it could not read it.
+  const urlAllowedHosts = kbConfig && !kbConfigError && Array.isArray(kbConfig.url_allowed_hosts) ? kbConfig.url_allowed_hosts : null
+  const urlHostsUnavailable = Boolean(kbConfigError) || (kbConfig !== undefined && !Array.isArray(kbConfig.url_allowed_hosts))
+  // The site of the typed https link, compared the way the gateway compares it
+  // (case and a trailing dot aside), so an unlisted site is named before the
+  // click rather than refused after it.
+  const typedSite = typedHttpsSite(addUri)
+  const typedSiteListed = typedSite !== null && (urlAllowedHosts ?? []).some(h => normalizeSite(h) === typedSite)
+  const typedSiteMissing = urlAllowedHosts !== null && typedSite !== null && !typedSiteListed
+  const showSiteCommand = urlAllowedHosts !== null && (urlAllowedHosts.length === 0 || typedSiteMissing)
+  // The command sets the whole list, so it starts from the listed sites plus the typed one.
+  const siteCommandValue = [...(urlAllowedHosts ?? []), ...(typedSiteMissing && typedSite ? [typedSite] : [])].join('\n')
 
   const pickFolderMutation = useMutation({
     mutationFn: () => knowledgeApi<{ path?: string | null }>('/pick-folder', { method: 'POST' }),
@@ -384,8 +474,8 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   const renameMutation = useMutation({
     mutationFn: ({ id, name }: { id: string; name: string }) =>
       knowledgeApi(`/sources/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }),
-    onSuccess: () => {
-      setEditingId(null)
+    onSuccess: (_data, { id }) => {
+      closeRename(id)
       queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
     },
   })
@@ -395,7 +485,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     if (!editingId) return
     const name = editDraft.trim()
     const current = sources.find(s => s.id === editingId)
-    if (!name || (current && name === current.name)) { setEditingId(null); return }
+    if (!name || (current && name === current.name)) { closeRename(editingId); return }
     renameMutation.mutate({ id: editingId, name })
   }
 
@@ -420,8 +510,11 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
 
   const handleAdd = () => {
     if (!addUri.trim()) return
-    const body: Record<string, unknown> = { name: addName || addUri, source_type: addType, uri: addUri }
-    if (addType === 'local_folder') {
+    // A pasted link often carries a trailing newline, which the gateway refuses.
+    const uri = addType === 'url' ? addUri.trim() : addUri
+    const sourceType = addType === 'url' ? 'url' : 'local_folder'
+    const body: Record<string, unknown> = { name: addName || uri, source_type: sourceType, uri }
+    if (sourceType === 'local_folder') {
       const props: Record<string, unknown> = { recursive: addRecursive }
       if (addIgnorePatterns.trim()) props.ignore_patterns = addIgnorePatterns.split('\n').map(s => s.trim()).filter(Boolean)
       if (uploadNamespace && uploadNamespace !== 'default') props.namespace = uploadNamespace
@@ -429,6 +522,80 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     }
     addMutation.mutate(body)
   }
+
+  // A folder is added by its path, so both ways in open the folder form. The
+  // desktop shell can read a dropped folder's path; a plain browser cannot.
+  // That path names a folder on this machine, so it is used only when the
+  // shell confirms the gateway runs here too (a remote-crew window gets the
+  // same bridge). The answer is read once, up front, so a drop is handled
+  // synchronously and no late answer can land on a later drop or a typed path.
+  const sameHostRef = useRef(false)
+  useEffect(() => {
+    let live = true
+    void canPickFolderNatively().then(v => { if (live) sameHostRef.current = v })
+    return () => { live = false }
+  }, [])
+  const openFolder = (folder: { name: string; path: string }) => {
+    const usable = folder.path !== '' && sameHostRef.current
+    setShowAdd(true); setFolderOpen(true)
+    setAddUri(usable ? folder.path : ''); setFolderNeedsPath(!usable)
+    if (folder.name) setAddName(folder.name)
+  }
+  // With a native picker on the gateway machine, Choose folder opens it at
+  // once; without one the button says the folder is added by its path.
+  const chooseFolder = () => {
+    setFolderOpen(true); setFolderNeedsPath(false)
+    if (folderPickerAvailable && !pickFolderMutation.isPending) pickFolderMutation.mutate()
+  }
+
+  // The watched-folder form, opened by Choose folder or by dropping a folder.
+  const folderForm = (
+    <div className="border-t border-border pt-3 space-y-3" data-testid="sources-folder-form">
+      <input value={addName} onChange={e => setAddName(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.name_optional')}
+        aria-label={i18nT('pages.knowledge.sourcesList.source_name_optional')}
+        className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
+      <div className="flex gap-2">
+        <input value={addUri} onChange={e => setAddUri(e.target.value)}
+          placeholder={i18nT('pages.knowledge.sourcesList.folder_path_e_g_home_user_notes')}
+          aria-label={i18nT('pages.knowledge.sourcesList.folder_path')}
+          className="flex-1 min-w-0 px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
+        {folderPickerAvailable && (
+          <button type="button" onClick={() => pickFolderMutation.mutate()} disabled={pickFolderMutation.isPending}
+            aria-label={i18nT('pages.knowledge.sourcesList.browse_for_a_folder')}
+            className="shrink-0 px-3 py-1.5 text-sm border border-border rounded text-text hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
+            <FolderOpen size={14} /> {pickFolderMutation.isPending ? i18nT('pages.knowledge.sourcesList.opening') : i18nT('pages.knowledge.sourcesList.browse')}
+          </button>
+        )}
+      </div>
+      {/* A dropped folder's path could not be used here: a browser hides it, and a remote gateway cannot read it. */}
+      {folderNeedsPath && <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.folder_drop_needs_path')}</div>}
+      <textarea value={addIgnorePatterns} onChange={e => setAddIgnorePatterns(e.target.value)}
+        placeholder={i18nT('pages.knowledge.sourcesList.ignore_patterns_one_per_line_e_g_trash_templates')}
+        aria-label={i18nT('pages.knowledge.sourcesList.ignore_patterns')}
+        rows={3} className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text resize-none" />
+      <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.watches_folder_recursively_supported_files_auto')}</div>
+      <label htmlFor="sources-recursive" className="flex items-center gap-2 text-[12px] text-muted cursor-pointer">
+        <input id="sources-recursive" aria-label={i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')} type="checkbox" checked={addRecursive} onChange={e => setAddRecursive(e.target.checked)} className="accent-accent" />
+        {i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')}
+      </label>
+      <div className="flex gap-2 justify-end">
+        <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
+        <button onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim()}
+          className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_folder')}</button>
+      </div>
+      {/* No hand-off: the folder form holds the unsaved name, path and ignore-pattern drafts. */}
+      <ErrorNotice
+        variant="inline"
+        testId="sources-folder-picker-error"
+        message={pickFolderMutation.isError ? (pickFolderMutation.error?.message || i18nT('pages.knowledge.sourcesList.folder_picker_failed')) : ''}
+      />
+      <ErrorNotice
+        variant="inline"
+        testId="sources-folder-error"
+        message={addMutation.isError ? (addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')) : ''}
+      />
+    </div>
+  )
 
   if (loading) return <ContentSkeleton />
 
@@ -443,24 +610,38 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
         <span>{i18nT('pages.knowledge.sourcesList.indexing_uses_kiro_requests_each_source_costs_mo')}</span>
       </div>
       <div className="flex justify-end">
-        <button onClick={() => setShowAdd(true)} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
+        <button onClick={() => {
+          // Each opening reads the site list again, so a failed read can be retried
+          // and a site added in a terminal shows up without a reload.
+          queryClient.invalidateQueries({ queryKey: ['knowledge-config'] })
+          setFolderOpen(false); setFolderNeedsPath(false)
+          setShowAdd(true)
+        }} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
       </div>
 
       {showAdd && (
         <div className="border border-border rounded-lg p-4 bg-bg-elevated space-y-3">
           <div className="text-sm font-medium">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
           <div className="flex gap-2 flex-wrap">
-            {(['local_file', 'local_folder'] as const).map(t => (
-              <button key={t} onClick={() => setAddType(t)}
+            {(['local', 'url'] as const).map(t => (
+              <button key={t} type="button" onClick={() => setAddType(t)} aria-pressed={addType === t}
                 className={`px-3 py-1.5 text-[13px] rounded-md border flex items-center gap-1 ${addType === t ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted'}`}>
-                {t === 'local_file' ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.local_file')}</> : <><FolderOpen size={12} /> {i18nT('pages.knowledge.sourcesList.local_folder')}</>}
+                {t === 'local'
+                  ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.files_and_folders')}</>
+                  : <><Globe size={12} /> {i18nT('pages.knowledge.sourcesList.web_page')}</>}
               </button>
             ))}
           </div>
-          <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />
-          {addType === 'local_file' ? (
+          {/* A fetched page is stored in the default namespace, so no picker is offered for it. */}
+          {addType !== 'url' && <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />}
+          {addType === 'local' ? (
             <>
-              <DropZone onFiles={(files) => { onIngest(files); setShowAdd(false) }} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} caption={i18nT('pages.knowledge.helpers.supported_formats', { formats: supportedFormatsDisplay })} />
+              <DropZone inputRef={fileInputRef} onFiles={(files) => { onIngest(files); setShowAdd(false) }} onFolder={openFolder} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} />
+              {/* Browsers have no one picker for files and folders, so each gets its own button. */}
+              <div className="flex gap-2 flex-wrap">
+                <Btn type="button" onClick={() => fileInputRef.current?.click()}><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.choose_files')}</Btn>
+                <Btn type="button" onClick={chooseFolder} aria-expanded={folderOpen}><FolderOpen size={12} /> {folderPickerAvailable ? i18nT('pages.knowledge.sourcesList.choose_folder') : i18nT('pages.knowledge.sourcesList.add_folder_by_path')}</Btn>
+              </div>
               <IngestionProgress jobs={ingestionJobs} />
               <div className="text-[11px] text-muted bg-bg rounded border border-border p-2">
                 {i18nT('pages.knowledge.sourcesList.supports_formats', { formats: supportedFormatsDisplay })}
@@ -473,40 +654,56 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 testId="sources-upload-limit-notice"
                 message={dashCfgError ? i18nT('pages.knowledge.sourcesList.max_file_size_unavailable') : ''}
               />
+              {folderOpen && folderForm}
             </>
           ) : (
             <>
-              <input value={addName} onChange={e => setAddName(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.name_optional')}
+              <Input value={addName} onChange={e => setAddName(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.name_optional')}
                 aria-label={i18nT('pages.knowledge.sourcesList.source_name_optional')}
-                className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
-              <div className="flex gap-2">
-                <input value={addUri} onChange={e => setAddUri(e.target.value)}
-                  placeholder={i18nT('pages.knowledge.sourcesList.folder_path_e_g_home_user_notes')}
-                  aria-label={i18nT('pages.knowledge.sourcesList.folder_path')}
-                  className="flex-1 min-w-0 px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
-                {folderPickerAvailable && (
-                  <button type="button" onClick={() => pickFolderMutation.mutate()} disabled={pickFolderMutation.isPending}
-                    aria-label={i18nT('pages.knowledge.sourcesList.browse_for_a_folder')}
-                    className="shrink-0 px-3 py-1.5 text-sm border border-border rounded text-text hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
-                    <FolderOpen size={14} /> {pickFolderMutation.isPending ? i18nT('pages.knowledge.sourcesList.opening') : i18nT('pages.knowledge.sourcesList.browse')}
-                  </button>
-                )}
+                className="w-full" />
+              <Input value={addUri} onChange={e => setAddUri(e.target.value)} type="url" inputMode="url"
+                placeholder={i18nT('pages.knowledge.sourcesList.page_url_e_g')}
+                aria-label={i18nT('pages.knowledge.sourcesList.page_url')}
+                aria-describedby="sources-url-hosts"
+                className="w-full" />
+              {/* Says which sites can be fetched before the user tries one: the list
+                  is empty by default, and a refusal after the click explains less. */}
+              <div id="sources-url-hosts" className="text-[11px] text-muted">
+                {urlAllowedHosts === null ? null : <>
+                  {urlAllowedHosts.length === 0
+                    ? i18nT('pages.knowledge.sourcesList.web_page_no_hosts_allowed')
+                    : typedSiteMissing && typedSite
+                      ? i18nT('pages.knowledge.sourcesList.web_page_site_not_allowed', { site: typedSite, hosts: fmtList(urlAllowedHosts) })
+                      : i18nT('pages.knowledge.sourcesList.web_page_hosts_allowed', { hosts: fmtList(urlAllowedHosts) })}
+                  {/* The shared command row: one copyable command per shell, built
+                      from the sites in the box, so no quoting is left to the user.
+                      Keyed by its starting value so a newly typed site restarts it. */}
+                  {showSiteCommand && (
+                    <div className="mt-1.5">
+                      <ConfigSetCommandRow key={siteCommandValue} configKey="knowledge.doc_ingest_hosts" schemaType="array" initialValue={siteCommandValue || undefined} hints={configSetHints} />
+                    </div>
+                  )}
+                </>}
               </div>
-              <textarea value={addIgnorePatterns} onChange={e => setAddIgnorePatterns(e.target.value)}
-                placeholder={i18nT('pages.knowledge.sourcesList.ignore_patterns_one_per_line_e_g_trash_templates')}
-                aria-label={i18nT('pages.knowledge.sourcesList.ignore_patterns')}
-                rows={3} className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text resize-none" />
-              <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.watches_folder_recursively_supported_files_auto')}</div>
-              <label htmlFor="sources-recursive" className="flex items-center gap-2 text-[12px] text-muted cursor-pointer">
-                <input id="sources-recursive" aria-label={i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')} type="checkbox" checked={addRecursive} onChange={e => setAddRecursive(e.target.checked)} className="accent-accent" />
-                {i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')}
-              </label>
               <div className="flex gap-2 justify-end">
-                <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
-                <button onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim()}
-                  className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_folder')}</button>
+                <Btn type="button" onClick={() => setShowAdd(false)}>{i18nT('pages.knowledge.sourcesList.cancel')}</Btn>
+                {/* Nothing can be fetched from a site that is not listed, so the button waits for it. */}
+                <Btn type="button" primary onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim() || !urlAllowedHosts?.length || typedSiteMissing}>
+                  {addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_page')}
+                </Btn>
               </div>
-              {addMutation.isError && <div className="text-[12px] text-danger flex items-center gap-1"><AlertCircle size={12} /> {addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')}</div>}
+              {/* No hand-off: the add-source panel holds the unsaved page name and link drafts.
+                  Both failures render in one place, under the buttons. */}
+              <ErrorNotice
+                variant="inline"
+                testId="sources-web-page-hosts-error"
+                message={urlHostsUnavailable ? i18nT('pages.knowledge.sourcesList.web_page_hosts_unavailable') : ''}
+              />
+              <ErrorNotice
+                variant="inline"
+                testId="sources-web-page-error"
+                message={addMutation.isError ? (addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')) : ''}
+              />
             </>
           )}
         </div>
@@ -553,19 +750,20 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 {editingId === s.id ? (
                   <div className="flex items-center gap-1">
                     <input autoFocus value={editDraft} onChange={e => setEditDraft(e.target.value)}
-                      {...ime.bindEnter({ onEnter: () => { if (!renameMutation.isPending) submitRename() }, onEscape: () => setEditingId(null) })}
+                      {...ime.bindEnter({ onEnter: () => { if (!renameMutation.isPending) submitRename() }, onEscape: () => closeRename(s.id) })}
                       maxLength={200} aria-label={i18nT('pages.knowledge.sourcesList.source_name')}
                       className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-hidden w-full max-w-xs focus-ring" />
                     <button aria-label={i18nT('pages.knowledge.sourcesList.save_name')} onClick={submitRename} disabled={renameMutation.isPending}
                       className="text-ok shrink-0 p-1 rounded hover:bg-bg-elevated disabled:opacity-50"><Check size={14} /></button>
-                    <button aria-label={i18nT('pages.knowledge.sourcesList.cancel_rename')} onClick={() => setEditingId(null)}
+                    <button aria-label={i18nT('pages.knowledge.sourcesList.cancel_rename')} onClick={() => closeRename(s.id)}
                       className="text-muted shrink-0 p-1 rounded hover:bg-bg-elevated"><X size={14} /></button>
                   </div>
                 ) : (
                   <div className="flex items-center gap-1 min-w-0 group/name">
                     <span className="text-sm font-medium text-text-strong truncate">{s.name}</span>
-                    <button aria-label={i18nT('pages.knowledge.sourcesList.rename_source')} onClick={() => startRename(s)}
-                      className="text-muted shrink-0 p-0.5 rounded opacity-100 sm:opacity-0 sm:group-hover/name:opacity-100 [@media(hover:none)]:opacity-100 hover:text-text transition-opacity"><Pencil size={12} /></button>
+                    <button ref={(el) => { if (el) renameButtons.current.set(s.id, el); else renameButtons.current.delete(s.id) }}
+                      aria-label={i18nT('pages.knowledge.sourcesList.rename_source')} onClick={() => startRename(s)}
+                      className="text-muted shrink-0 p-0.5 rounded opacity-100 sm:opacity-0 sm:group-hover/name:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:text-text transition-opacity"><Pencil size={12} /></button>
                   </div>
                 )}
                 <div className="text-[11px] text-muted flex items-center gap-1.5 min-w-0">

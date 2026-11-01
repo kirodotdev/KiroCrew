@@ -525,13 +525,13 @@ async def test_client_without_an_event_map_is_still_held_to_the_floor():
 # ── AcpSessionHandle ──
 
 
-def _handle():
+def _handle(*, session_key: str = ""):
     from kiro_crew.acp.session_handle import AcpSessionHandle
 
     runtime = MagicMock()
     runtime.send_response = AsyncMock()
     runtime.send_error = AsyncMock()
-    return AcpSessionHandle("s1", asyncio.Queue(), runtime)
+    return AcpSessionHandle("s1", asyncio.Queue(), runtime, session_key=session_key)
 
 
 @pytest.mark.asyncio
@@ -800,11 +800,11 @@ _IDENTITY_GATED_APPROVAL_CALLERS = Counter(
     {
         ("acp/client_permissions.py", "_handle_permission"): 1,
         ("apps/builtins/auto_improvement/spine/agent_runner.py", "_approve"): 1,
-        ("apps/builtins/code_review_sage/sage_lib/review_pool.py", "send"): 1,
+        ("apps/builtins/code_review_sage/sage_lib/review_pool.py", "_send"): 1,
         ("channel.py", "_stream_task"): 4,
         ("cli_chat.py", "_answer_permission"): 1,
         ("dashboard/chat_turn/permission_prompt.py", "_on_permission_prompt"): 1,
-        ("dashboard/chat_turn/tool_approval.py", "_on_permission_request"): 6,
+        ("dashboard/chat_turn/tool_approval.py", "_decide_permission_request"): 6,
         ("dashboard/handlers/hooks.py", "_run_hook_inner"): 1,
         ("eval/runner.py", "_run_turn"): 2,
         ("llm_helpers_parts/tool_approval.py", "_resolve_permission"): 2,

@@ -5,7 +5,7 @@
  * filePath, capped at COMMENT_DRAFT_MAX_FILES, no TTL. Uses `evictAfterWrite` so
  * a failed persist (e.g. QuotaExceeded) never silently drops in-memory drafts.
  */
-import type { InlineComment } from '../components/CommentOverlay'
+import type { InlineComment, InlineCommentImage } from '../components/CommentOverlay'
 import { createSlotDraftStore } from './slotDraftStore'
 
 export const COMMENT_DRAFTS_KEY = 'mc-comment-drafts'
@@ -14,16 +14,41 @@ export const COMMENT_DRAFT_MAX_FILES = 20
 
 /** Accept only non-empty arrays of comments carrying the required string keys;
  *  return a deep copy isolating the store from caller mutations, or null to
- *  drop. The per-comment spread is a full copy ONLY because every InlineComment
- *  field is a primitive; adding a nested object/array field would silently make
- *  this a shallow copy (no compile error) and must switch to a structured clone. */
+ *  drop. Every InlineComment field is a primitive except `image`, which is
+ *  copied on its own; adding another nested field would silently make this a
+ *  shallow copy (no compile error) and must copy that field too. A malformed
+ *  `image` drops the batch like any other malformed comment, because a box
+ *  that is not inside its image cannot be drawn or reported. */
+function isValidImage(v: unknown): boolean {
+  if (v === undefined) return true
+  if (!v || typeof v !== 'object') return false
+  const img = v as InlineCommentImage
+  const inUnit = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1
+  // A box has area and ends inside the image. The slack absorbs float noise
+  // from a box drawn to the image's far edge (0.7 + 0.3 = 1.0000000000000002).
+  const boxOk = inUnit(img.x) && inUnit(img.y) && inUnit(img.w) && inUnit(img.h)
+    && img.w > 0 && img.h > 0 && img.x + img.w <= 1 + 1e-9 && img.y + img.h <= 1 + 1e-9
+  // Which use of the file the box is on: both or neither, and the use exists.
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0
+  const useOk = (img.nth === undefined && img.uses === undefined)
+    || (count(img.nth) && count(img.uses) && img.nth < img.uses)
+  return typeof img.src === 'string' && (img.path === undefined || typeof img.path === 'string') && boxOk && useOk
+}
+
 function isValidComments(v: unknown): InlineComment[] | null {
   if (!Array.isArray(v) || v.length === 0) return null
   const ok = v.every(c => c && typeof c === 'object'
     && typeof (c as InlineComment).id === 'string'
     && typeof (c as InlineComment).anchor === 'string'
-    && typeof (c as InlineComment).text === 'string')
-  return ok ? v.map(c => ({ ...(c as InlineComment) })) : null
+    && typeof (c as InlineComment).text === 'string'
+    && isValidImage((c as InlineComment).image))
+  return ok
+    ? v.map(c => {
+      const copy = { ...(c as InlineComment) }
+      if (copy.image) copy.image = { ...copy.image }
+      return copy
+    })
+    : null
 }
 
 const store = createSlotDraftStore<InlineComment[]>({

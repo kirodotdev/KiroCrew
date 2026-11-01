@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.milestones import record_when as record_milestone_when
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
         _SLACK_SECRET_FIELDS,
@@ -72,12 +74,19 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
 
     cfg = KiroCrewConfig.load()
     # Off-loop: a secret:// reference is read and decrypted from the vault.
-    creds = await asyncio.to_thread(cfg.load_credentials)
+    # propagate=False: a post-boot dashboard read must not re-seed os.environ,
+    # or a worker-thread setdefault could restore a credential the live watcher
+    # just popped. Boot owns the one propagation.
+    creds = await asyncio.to_thread(cfg.load_credentials, propagate=False)
     bot = creds.get(CRED_SLACK_BOT_TOKEN, "")
     app = creds.get(CRED_SLACK_APP_TOKEN, "")
     owner = creds.get(CRED_OWNER_ID, "")
     slack = cfg.slack
     state: DashboardState = request.app["state"]
+    # The Slack Code switches and whether the install can run each one.
+    from kiro_crew.dashboard.slack_code_settings import code_settings_view
+
+    code_view = code_settings_view(cfg)
     return web.json_response(
         {
             # True only when the socket-mode connect succeeded this session —
@@ -105,6 +114,7 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
             "show_thinking": slack.show_thinking,
             "session_folder": slack.session_folder,
             "auto_link_sessions": slack.auto_link_sessions,
+            **code_view,
         }
     )
 
@@ -205,8 +215,15 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
 
     # Config → config.json under "slack" (staged, applied only after Phase 1).
     path = config_path()
+
+    def _read_config() -> object:
+        # The existence check, the read and the parse share one worker-thread hop
+        # (as in feishu_settings.py): a stalled mount must not block the loop on
+        # any of them.
+        return json.loads(read_config_text(path)) if path.exists() else {}
+
     try:
-        data = json.loads(read_config_text(path)) if path.exists() else {}
+        data = await asyncio.to_thread(_read_config)
         if not isinstance(data, dict):
             raise ValueError("config.json is not a JSON object")
     except Exception:
@@ -261,6 +278,19 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         if new_folder != str(slack_cfg.get("session_folder", "") or ""):
             staged["session_folder"] = new_folder
             applied.append("session_folder")
+
+    # Slack Code: the registered switches, staged only on change.
+    from kiro_crew.dashboard.slack_code_settings import (
+        CodeSettingsError,
+        validate_code_settings,
+    )
+
+    try:
+        code_staged, code_applied = validate_code_settings(body, slack_cfg)
+    except CodeSettingsError as exc:
+        return _deny(str(exc))
+    staged.update(code_staged)
+    applied.extend(code_applied)
 
     # ── Phase 1.5: verify newly pasted tokens against Slack before storing.
     # A token Slack rejects (invalid_auth etc.) fails the save right here,
@@ -334,6 +364,14 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
+    # The "Slack connected" milestone, after a save that succeeded and only when
+    # Slack is now set up. The check runs off the loop and reads no token value.
+    record_milestone_when("slack", "channel_connected:slack")
+    if code_applied or env_updates:
+        # A switch flip or a new bot token changes what the drift probe compares.
+        from kiro_crew.dashboard.slack_code_settings import reset_status_cache
+
+        reset_status_cache()
     # Only ``slack.command`` still needs a restart: it is registered in the Slack
     # app manifest, so no local reload can make Slack route a new trigger. Every
     # other slack.* field -- including the enterprise allow-list, which the
@@ -352,3 +390,25 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             "verify_warning": verify_warning,
         }
     )
+
+
+async def api_slack_manifest_status(request: web.Request) -> web.Response:
+    """GET /api/slack/manifest/status — is the installed Slack app current?
+
+    Compares the bot scopes Slack reports for the stored bot token
+    (``auth.test``'s ``x-oauth-scopes``) with the manifest the saved Slack Code
+    switches render, and names the app so Settings can link its App Manifest
+    page. ``?refresh=1`` skips the short cache (the "Check again" button after a
+    reinstall). Reads only: no config is written and the token is never echoed.
+    Remote sessions may read it — it is the same status the read-only page shows.
+    """
+    from kiro_crew.config.loader import CRED_SLACK_BOT_TOKEN, KiroCrewConfig  # noqa: F811
+    from kiro_crew.dashboard.slack_code_settings import manifest_status
+
+    cfg = KiroCrewConfig.load()
+    # A post-boot read: a propagating one could put back a bot token the live
+    # watcher just removed from the environment, as every channel reader here avoids.
+    creds = await asyncio.to_thread(cfg.load_credentials, propagate=False)
+    refresh = request.query.get("refresh", "") in ("1", "true")
+    body = await manifest_status(cfg, creds.get(CRED_SLACK_BOT_TOKEN, ""), refresh=refresh)
+    return web.json_response(body)

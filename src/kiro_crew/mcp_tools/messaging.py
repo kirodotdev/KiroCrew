@@ -23,12 +23,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import file_delivery_consent, mcp_core
+from kiro_crew import mcp_core
 from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
-from kiro_crew.platform import binary_content_is_flagged
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.platform import wide_content_is_flagged
 from kiro_crew.security import BINARY_MIME_ALLOWLIST, redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import _SLACK_TS_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN
 
@@ -988,23 +986,12 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             outcome="denied",
             error=f"sensitive_filename: {redact(clean_name)}",
         )
-        file_delivery_consent.audit_refusal(
-            file_delivery_consent.CLASS_OWNER_DASHBOARD,
-            leg="file_send",
-            name=redact(clean_name),
-            reason="flagged name",
-        )
         return "Error: filename contains sensitive content. Rename the file first."
-    # Content is scanned whichever way it decodes: UTF-8 text through ``redact``,
-    # non-UTF-8 bytes through the shared ``binary_content_is_flagged``. Binary
-    # must also carry an allow-listed MIME type (deny-by-default), and that check
-    # runs first so bytes of a type this path refuses outright are never scanned.
-    # ``wide_content_is_flagged`` runs on BOTH branches: NUL-interleaved ASCII is
-    # valid UTF-8, so a wide-encoded credential decodes cleanly and its characters
-    # arrive NUL-separated, which the contiguous-ASCII detectors do not match.
-    flagged = False
+    # The owner's own outbox and dashboard get the bytes as-is: no content scan
+    # here. Binary still needs an allow-listed MIME type. The Slack and channel
+    # upload legs scan on their own in ``_gate_upload_file``.
     try:
-        text = raw.decode("utf-8")
+        raw.decode("utf-8")
     except UnicodeDecodeError:
         guessed = mimetypes.guess_type(clean_name)[0] or ""
         if guessed not in BINARY_MIME_ALLOWLIST:
@@ -1016,47 +1003,6 @@ def file_send(name: str, args: dict[str, Any]) -> str:
                 error=f"binary_mime_not_allowed: {guessed}",
             )
             return f"Error: binary file type not allowed: {guessed or 'unknown'}. Allowed: audio, video, image, PDF."
-        flagged = binary_content_is_flagged(raw)
-    else:
-        flagged = redact(text) != text or wide_content_is_flagged(raw)
-    # A positive here is almost always CORRECT -- the reported case (a VPN device
-    # private key) matches the PEM branch, the highest-confidence detector in the
-    # catalogue -- so the remedy is not a looser scan but an owner who can say
-    # "that is mine". The grant covers ONLY this machine's outbox and the owner's
-    # own authenticated dashboard; the Slack and channel upload legs route through
-    # ``_gate_upload_file``, which does not read the consent store and refuses them
-    # regardless (see file_delivery_consent for why that is structural).
-    delivered_under_consent = False
-    if flagged:
-        if not file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD):
-            mcp_core.sel().log_tool_invocation(
-                session_key="mcp_core",
-                source="mcp",
-                tool_name="file_send",
-                outcome="denied",
-                error="sensitive_content_detected",
-            )
-            # The error string below reaches the AGENT. This entry is what reaches
-            # the OWNER, so it carries the name: the panel it points them at asks
-            # them to allow delivery, and an owner who cannot see which of their
-            # files was stopped has nothing to base that on.
-            file_delivery_consent.audit_refusal(
-                file_delivery_consent.CLASS_OWNER_DASHBOARD,
-                leg="file_send",
-                name=clean_name,
-                reason="flagged content",
-            )
-            return (
-                "Error: file content contains sensitive data; send aborted. The owner "
-                "can allow delivery to this machine's outbox and their own dashboard "
-                "in Settings > Security > Flagged-file delivery (owner-gated; no agent "
-                "can write it). That panel ARMS the request via POST "
-                "/api/file-delivery/consent?destination_class=owner_dashboard; the grant "
-                "is then RECORDED only by running `kirocrew file-delivery approve` on the "
-                "host, so arming alone leaves delivery blocked. The Slack and channel "
-                "upload legs can never be granted."
-            )
-        delivered_under_consent = True
     dest = mcp_core.outbox_dir() / clean_name
     try:
         with dest.open("xb") as f:
@@ -1067,26 +1013,6 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             / f"{Path(clean_name).stem}_{uuid.uuid4().hex}{Path(clean_name).suffix}"
         )
         dest.write_bytes(raw)
-    if delivered_under_consent:
-        # Emitted once the bytes are on disk. A full outbox or a read-only
-        # workspace is an ordinary operational condition, and only
-        # ``FileExistsError`` is recovered above, so any other write error
-        # propagates from here; a record written before the copy would claim a
-        # consented delivery that never happened and there is no retraction
-        # entry to correct it. Over-reporting a release of flagged content is the
-        # direction an incident review cannot afford.
-        mcp_core.sel().log_tool_invocation(
-            session_key="mcp_core",
-            source="mcp",
-            tool_name="file_send",
-            outcome="completed",
-            error="sensitive_content_delivered_with_consent",
-        )
-        file_delivery_consent.audit_decision(
-            file_delivery_consent.CLASS_OWNER_DASHBOARD,
-            outcome="delivered",
-            detail=f"file_send: {clean_name}",
-        )
     mcp_core.sel().log_tool_invocation(
         session_key="mcp_core",
         source="mcp",
@@ -1106,20 +1032,6 @@ def file_send(name: str, args: dict[str, Any]) -> str:
     )
     if d.get("error"):
         return f"Error: {d['error']}"
-    # Under an owner grant the third-party legs are not attempted AT ALL. The
-    # shared ``_gate_upload_file`` would refuse them anyway -- it does not read the
-    # consent store, which is what makes that refusal structural rather than a
-    # check someone could invert -- but handing flagged bytes to a handler that
-    # will refuse them is a needless hop for content the owner scoped to their own
-    # dashboard. Returning here keeps the grant's blast radius to exactly the
-    # destination class it names, and belt-and-braces means neither layer is load
-    # bearing alone.
-    if delivered_under_consent:
-        msg = f"File sent: {dest.name} ({desc})" if desc else f"File sent: {dest.name}"
-        return (
-            f"{msg} (delivered to the dashboard under the owner's file-delivery "
-            "consent; Slack and channel upload skipped)"
-        )
     # Native channel delivery first: when the caller's session is linked to a
     # non-Slack conversation with a document-capable transport (a Telegram
     # chat today), the file belongs THERE — the user who asked for it is

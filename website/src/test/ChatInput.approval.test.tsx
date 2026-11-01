@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-ui/react-popover"))
 
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { api, ApiError } from '../api/client'
@@ -20,10 +20,12 @@ vi.mock('../api/client', () => {
   // genuine transport failure. A bare object stub makes that check false.
   class MockApiError extends Error {
     readonly status: number
-    constructor(status: number, message: string) {
+    readonly body: string
+    constructor(status: number, message: string, body = '') {
       super(message)
       this.name = 'ApiError'
       this.status = status
+      this.body = body
     }
   }
   return {
@@ -31,6 +33,11 @@ vi.mock('../api/client', () => {
       resolveApproval: vi.fn(() => Promise.resolve({})),
       approveChatSlot: vi.fn(() => Promise.resolve({})),
       spawnList: vi.fn(() => Promise.resolve({ agents: [] })),
+      // A personal Crew by default: no Shared Crew capability is reported.
+      sharedCrewCapabilities: vi.fn(() => Promise.resolve(null)),
+      sharedCrewMode: vi.fn(() => Promise.resolve(null)),
+      sharedCrewPeople: vi.fn(() => Promise.resolve(null)),
+      sharedCrewViewer: vi.fn(() => Promise.resolve(null)),
     },
     ApiError: MockApiError,
   }
@@ -93,6 +100,9 @@ function stateWithApproval(meta: Record<string, unknown> = {}): Partial<RootStat
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(api.sharedCrewCapabilities).mockResolvedValue(null as never)
+  vi.mocked(api.sharedCrewMode).mockResolvedValue(null as never)
+  vi.mocked(api.sharedCrewPeople).mockResolvedValue(null as never)
 })
 
 describe('ChatInput approval flow', () => {
@@ -133,7 +143,7 @@ describe('ChatInput approval flow', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'approve')
+      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'approve', undefined, expect.stringMatching(/^r_/))
     })
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
@@ -146,7 +156,7 @@ describe('ChatInput approval flow', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     rejectVia(label as 'Reject once' | 'Reject all')
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', decision)
+      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', decision, undefined, expect.stringMatching(/^r_/))
     })
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
@@ -160,7 +170,7 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(cmdBtn)
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_command', { request_id: 'ap-123', pattern: 'ls /tmp' }
+        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', pattern: 'ls /tmp' }
       )
     })
     expect(api.resolveApproval).not.toHaveBeenCalled()
@@ -175,7 +185,7 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(baseBtn)
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_base', { request_id: 'ap-123', pattern: 'ls *' }
+        'slot-1', 'trust_base', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', pattern: 'ls *' }
       )
     })
     expect(api.resolveApproval).not.toHaveBeenCalled()
@@ -185,11 +195,11 @@ describe('ChatInput approval flow', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
-    const timed = screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust “ls /tmp” for an hour'))!
+    const timed = screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust ls /tmp for an hour'))!
     fireEvent.click(timed)
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_command', { request_id: 'ap-123', pattern: 'ls /tmp', ttl_seconds: 3600 }
+        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', pattern: 'ls /tmp', ttl_seconds: 3600 }
       )
     })
     expect(api.resolveApproval).not.toHaveBeenCalled()
@@ -207,7 +217,7 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust any ls command for an hour'))!)
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_base', { request_id: 'ap-123', pattern: 'ls *', ttl_seconds: 3600 }
+        'slot-1', 'trust_base', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', pattern: 'ls *', ttl_seconds: 3600 }
       )
     })
     expect(await screen.findByText(/^Trusted any “ls” command until .+, then it asks again$/)).toBeInTheDocument()
@@ -220,7 +230,7 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getByText('Trust all tools for this session'))
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust', { request_id: 'ap-123' }
+        'slot-1', 'trust', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123' }
       )
     })
     expect(api.resolveApproval).not.toHaveBeenCalled()
@@ -236,7 +246,7 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getByText('Trust read-only commands'))
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_reads', { request_id: 'ap-123' }
+        'slot-1', 'trust_reads', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123' }
       )
     })
   })
@@ -478,6 +488,75 @@ describe('ChatInput orphaned approval (404)', () => {
       expect(screen.queryByText('Allow once')).not.toBeInTheDocument()
     })
     expect(store.getState().chat.messages[1].meta!.resolved).toBe('stale')
+  })
+
+  it('a lost race adopts the winner and names who answered in a shared Crew', async () => {
+    // The Shared Crew preview on and a teammate joined: names show only then.
+    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ attribution: 'available', shared_crew_preview: true } as never)
+    vi.mocked(api.sharedCrewMode).mockResolvedValue({ schema_version: 1, mode: 'network', crew_id: 'c1' } as never)
+    vi.mocked(api.sharedCrewPeople).mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [{ principal: { id: 'p_b', kind: 'human', display: { name: 'Bob', login: '', captured_at: null } }, sources: ['observed'], is_viewer: false }] } as never)
+    const winner = {
+      decision_id: 'approval-state:ap-123', kind: 'approval', session_key: 's1', state: 'resolved', revision: 2,
+      initiator: { id: 'p_a', kind: 'human', display: { name: 'Alice', login: '', captured_at: null } },
+      responder: { id: 'p_b', kind: 'human', display: { name: 'Bob', login: '', captured_at: null } },
+      outcome: 'rejected', resolved_at: 10,
+    }
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(
+      new ApiError(409, 'already answered', JSON.stringify({ code: 'already_resolved', decision: winner })),
+    )
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    // The approval bar reads capabilities, then the Crew mode, before it can
+    // name anyone: wait for the mode read before clicking.
+    await waitFor(() => expect(api.sharedCrewMode).toHaveBeenCalled(), { timeout: 5000 })
+    await act(async () => {})
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent('Bob rejected')
+    })
+    expect(store.getState().chat.messages[1].meta!.resolved).toBe('rejected')
+  })
+
+  it('a lost race in a personal Crew says it was settled, naming no one', async () => {
+    const winner = {
+      decision_id: 'approval-state:ap-123', kind: 'approval', session_key: 's1', state: 'resolved', revision: 2,
+      initiator: { id: 'p_l', kind: 'human', display: { name: 'local-app', login: '', captured_at: null } },
+      responder: { id: 'p_l', kind: 'human', display: { name: 'local-app', login: '', captured_at: null } },
+      outcome: 'rejected', resolved_at: 10,
+    }
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(
+      new ApiError(409, 'already answered', JSON.stringify({ code: 'already_resolved', decision: winner })),
+    )
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent('Already rejected elsewhere')
+    })
+    expect(screen.queryByText(/local-app/)).toBeNull()
+    expect(store.getState().chat.messages[1].meta!.resolved).toBe('rejected')
+  })
+
+  it('a late lost-race reply settles only the clicked row, not a newer request with the same id', async () => {
+    const winner = {
+      decision_id: 'approval-state:ap-123', kind: 'approval', session_key: 's1', state: 'resolved', revision: 2,
+      initiator: { id: 'p_a', kind: 'human', display: { name: 'Alice', login: '', captured_at: null } },
+      responder: { id: 'p_b', kind: 'human', display: { name: 'Bob', login: '', captured_at: null } },
+      outcome: 'approved', resolved_at: 10,
+    }
+    let reject: (e: unknown) => void = () => {}
+    vi.mocked(api.resolveApproval).mockImplementationOnce(() => new Promise((_, r) => { reject = r }))
+    const base = stateWithApproval()
+    const first = base.chat!.messages[1]
+    const store = createTestStore({ ...base, chat: { ...base.chat!, messages: [base.chat!.messages[0], { ...first, meta: { ...first.meta, mid: 'm-old' } }] } })
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Allow once'))
+    // A replacement process asks again under the same approval id.
+    store.dispatch({ type: 'chat/appendMessage', payload: { role: 'permission', content: 'Running: ls /tmp', meta: { ...first.meta, mid: 'm-new' } } })
+    expect(store.getState().chat.messages.filter(m => m.meta?.approval_id === 'ap-123')).toHaveLength(2)
+    reject(new ApiError(409, 'already answered', JSON.stringify({ code: 'already_resolved', decision: winner })))
+    await waitFor(() => expect(store.getState().chat.messages.find(m => m.meta?.mid === 'm-old')?.meta?.resolved).toBe('approved'))
+    expect(store.getState().chat.messages.find(m => m.meta?.mid === 'm-new')?.meta?.resolved).toBeUndefined()
   })
 
   it('clears the approval bar when Allow once 404s', async () => {
@@ -930,7 +1009,7 @@ describe('ChatInput unattended-source approvals', () => {
     if (label === 'Allow once') fireEvent.click(screen.getByText(label))
     else rejectVia(label as 'Reject once' | 'Reject all')
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', decision)
+      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', decision, undefined, expect.stringMatching(/^r_/))
     })
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
@@ -993,7 +1072,7 @@ describe('ChatInput approval bar survives a steered user message (#1667)', () =>
     // Click Allow once — it must still call with the original approval_id
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'approve')
+      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'approve', undefined, expect.stringMatching(/^r_/))
     })
   })
 

@@ -17,7 +17,7 @@ import { jsonEqual } from '../utils/structuralEqual'
 import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { nextActiveAfterClose } from '../lib/sessionTabs'
 import { api } from '../api/client'
-import { ApiError, isNotFoundError } from '../api/apiError'
+import { ApiError, apiErrorCode, isNotFoundError } from '../api/apiError'
 import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey } from './dashboardSlice'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
@@ -28,6 +28,7 @@ import type { ChatMessage, SideSnapshot, TurnIdentityFields } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { initialState, type ChatState } from './chat/state'
+import type { AgentSwitchNotice } from '../utils/agentSwitchFeedback'
 import { filterMessages, isUnsafeKey, safeKey } from './chat/wire'
 import { ensureMsgId, finalizeTrailingStreaming, floorForGen, isRedeliveredMessage, mintMsgId, reconcileOptimisticEcho } from './chat/transcript'
 import { OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, claimOlderFetchAbort, isSupersededPagingRejection, releaseOlderFetchAbort } from './chat/paging'
@@ -57,6 +58,7 @@ import { addSlotListCases, evictSlotState } from './chat/slotResidue'
 import { addSlotSwitchCases, switchSlot } from './chat/slotSwitch'
 import { addSlotRefreshCases, withRefreshRevision } from './chat/slotRefresh'
 import { addLifecycleCases, historyNoticeReducers } from './chat/lifecycle'
+import { crewRootOf } from '../lib/crewMode'
 
 /** Frame roles that retire a slot's pending STATELESS question card.
  *
@@ -631,9 +633,12 @@ export const deleteSlot = createAsyncThunk<
     // tab when it does not.
     let navigation: Promise<unknown> | undefined
     if (root.chat.activeSlot === key) {
-      const sameSurface = new Set(root.dashboard.slots.filter(s => slotSurfaceKey(s) === deletedSurface).map(s => s.key))
+      // A Crew Mode worker is its conductor's, never where a close lands: not by
+      // the sidebar's displayed order (where it may sit right under its root) and
+      // not by recency. Both sets leave it out.
+      const sameSurface = new Set(root.dashboard.slots.filter(s => !crewRootOf(s) && slotSurfaceKey(s) === deletedSurface).map(s => s.key))
       const sidebarSurface = isChatPageSurface(deletedSurface)
-        ? new Set(root.dashboard.slots.filter(s => isChatPageSurface(slotSurfaceKey(s))).map(s => s.key))
+        ? new Set(root.dashboard.slots.filter(s => !crewRootOf(s) && isChatPageSurface(slotSurfaceKey(s))).map(s => s.key))
         : sameSurface
       // Land on the sidebar row below the closed one (above at the bottom): the
       // tab-strip landing rule, applied to the sidebar's displayed order. The
@@ -822,8 +827,9 @@ type StopReply = { ok?: boolean; info?: string; already_stopping?: boolean; erro
  *  the request landed (a real stop, an in-flight cancel, a settled no-op, or a
  *  debounced repeat), otherwise the error message the host must SHOW (#9547
  *  round 2): a swallowed failure is indistinguishable from the dead Stop
- *  button this fix exists to remove. */
-export type StopFailure = { error: string } | null
+ *  button this fix exists to remove. `status`, `code` and `authRequired` name
+ *  the reason, so the host can say it in plain words (#20398). */
+export type StopFailure = { error: string; status?: number; code?: string; authRequired?: boolean; edgeChallenge?: boolean } | null
 
 export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force: boolean }>(
   'chat/requestStop',
@@ -842,6 +848,9 @@ export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force
       reply = (force ? await api.stopChatSlotForce(slotId) : await api.stopChatSlot(slotId)) as StopReply
     } catch (e) {
       dispatch(chatSlice.actions.setStopPressedAt({ slotId, ts: 0 }))
+      if (e instanceof ApiError) {
+        return { error: e.message, status: e.status, code: apiErrorCode(e), authRequired: e.authRequired, edgeChallenge: e.edgeChallenge }
+      }
       return { error: e instanceof Error ? e.message : String(e) }
     }
     // A 2xx can still carry a refusal — a peer-bound slot whose crew could
@@ -849,7 +858,7 @@ export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force
     // throws on non-2xx. That is a failed stop the host must show too.
     if (reply && reply.ok === false) {
       dispatch(chatSlice.actions.setStopPressedAt({ slotId, ts: 0 }))
-      return { error: reply.error || reply.code || 'stop refused' }
+      return { error: reply.error || reply.code || 'stop refused', code: reply.code }
     }
     // The backend found no turn on the slot. Its answer is authoritative and
     // the client's busy view is what was wrong, so settle it — otherwise the
@@ -914,15 +923,18 @@ const chatSlice = createSlice({
     ...workflowReducers,
     ...mcpAppReducers,
     ...historyNoticeReducers,
-    setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
+    setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload; state.pendingInputSend = false },
+    /** Stage text that ChatPage sends at once in the active session (see `pendingInputSend`). */
+    stagePendingSend(state, action: PayloadAction<string>) { state.pendingInput = action.payload; state.pendingInputSend = true },
     /** Stage Side Chat text for the main composer of a specific slot. The host
      *  showing that slot appends it to the live draft; passing null clears the
      *  field after it is consumed. */
     stageToMainComposer(state, action: PayloadAction<{ slot: string; text: string } | null>) { state.mainComposerAppend = action.payload },
-    setAgentSwitchNotice(state, action: PayloadAction<string | null>) {
+    setAgentSwitchNotice(state, action: PayloadAction<string | AgentSwitchNotice | null>) {
       // Always create a fresh value so repeating the same refusal restarts the
       // App shell's expiry effect instead of inheriting the previous timer.
-      state.agentSwitchNotice = action.payload === null ? null : { message: action.payload }
+      const p = action.payload
+      state.agentSwitchNotice = p === null ? null : typeof p === 'string' ? { message: p } : { ...p }
     },
     setVoicePlaying(state, action: PayloadAction<boolean>) { state.voicePlaying = action.payload },
     setVoicePreparing(state, action: PayloadAction<boolean>) { state.voicePreparing = action.payload },
@@ -1055,10 +1067,10 @@ const chatSlice = createSlice({
 
 export const {
   setCloseRefused,
-  setActiveSlot, dropActiveSlot, forkOpenStarted, forkOpenSettled, clearSlotState, setPendingInput, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  setActiveSlot, dropActiveSlot, forkOpenStarted, forkOpenSettled, clearSlotState, setPendingInput, stagePendingSend, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  removeThinking, confirmOptimisticSend, markSendUnconfirmed, dropUnconfirmedRow, resolveOptimisticSteer, removeByApprovalId, retireSwappedRows, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoicePreparing, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, setSidePanelAlwaysOpen, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
+  toggleActivity, openActivityToTab, openActivityPanel, closeActivityPanel, setSidePanelAlwaysOpen, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, subagentReplayDone, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setAutomations, sseAutomation, removeAutomation,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
@@ -1193,12 +1205,15 @@ export const awaitSideRestore = createAsyncThunk<'restored' | 'failed' | 'timeou
 const latestSideResyncRead = new Map<string, object>()
 
 /**
- * A side turn can end while this tab cannot hear it: before its socket first
- * connects, when the restore read was answered first, or while the socket is
- * down. Its final frame then reaches no socket of this tab, and a panel waiting
- * on the turn would wait until the next reload. So each time the socket opens,
- * every restored panel still waiting on a turn reads the gateway's copy again
- * (`sideResync`), once any restore read still in flight has landed. A 404 means
+ * Side Chat frames reach only the sockets connected when they are sent. While
+ * this tab cannot hear them -- before its socket first connects, when the
+ * restore read was answered first, or while the socket is down -- a side turn
+ * can end, another tab can ask and be answered, and queued questions can be
+ * added, run or cancelled. A panel waiting on a turn would wait until the next
+ * reload, and an idle one would show a conversation and a queue the gateway no
+ * longer holds. So each time the socket opens, every restored panel reads the
+ * gateway's copy again (`sideResync`), whether or not it waits on a turn, once
+ * any restore read still in flight has landed. A 404 means
  * the slot is gone, so nothing of it still runs. A conversation closed and
  * replaced while the read was out keeps to its own frames. Only the newest read
  * sent for a slot is applied: an older one can answer after it, and would undo
@@ -1212,7 +1227,7 @@ export const resyncWaitingSideConversations = createAsyncThunk<void, void, { sta
       await sideRestoreReads.get(slot)?.catch(() => undefined)
       const { slotSide, slotSideRestored } = getState().chat
       const side = slotSide[slot]
-      if (!slotSideRestored?.[slot] || !side || !(side.pending || side.streaming || side.awaitingFinalRunId)) return
+      if (!slotSideRestored?.[slot] || !side) return
       const thisRead = {}
       latestSideResyncRead.set(slot, thisRead)
       let snapshot: SideSnapshot | undefined
@@ -1229,7 +1244,7 @@ export const resyncWaitingSideConversations = createAsyncThunk<void, void, { sta
   },
 )
 
-export { clampToolOutput, TOOL_OUTPUT_MAX_CHARS, normalizeQueueEntries, queueEntryAttachments, queueEntryQuote, type QueueEntryAttachments } from './chat/wire'
+export { clampToolOutput, TOOL_OUTPUT_MAX_CHARS, normalizeQueueEntries, queueEntryAttachments, queueEntryPastes, queueEntryQuote, type QueueEntryAttachments } from './chat/wire'
 export { hydrateQueuedBubbles } from './chat/queue'
 export { floorForGen, hasUnidentifiedDurableRow, raiseChunkSeq, snapshotChunkGen, snapshotChunkSeq, transcriptTsMs } from './chat/transcript'
 export {
@@ -1246,7 +1261,7 @@ export {
 } from './chat/subagents'
 export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys } from './chat/workflows'
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
-export { queueEditBroadcastAt } from './chat/side'
+export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
 export {
   selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendConfirmed, selectSlotMessages,
   selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,

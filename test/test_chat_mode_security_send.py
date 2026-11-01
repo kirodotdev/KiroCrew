@@ -258,7 +258,19 @@ async def test_app_on_its_own_slot_keeps_agent_and_theme_writes(state) -> None:
 #: app's send never creates a user slot). A settings-bearing field names a value
 #: the slot keeps; the sample is one that would change ``_user_slot``.
 _TURN_ONLY_BODY_KEYS = frozenset(
-    {"message", "slot", "meta", "steer", "memory_mode", "mode", "responsive"}
+    {
+        "message",
+        "slot",
+        "meta",
+        "steer",
+        "memory_mode",
+        "mode",
+        "responsive",
+        # First submit wins: the revision the send is based on, and Send now
+        # (which only turns steering off). Neither changes a slot setting.
+        "base_revision",
+        "send_now",
+    }
 )
 _SETTINGS_BODY_KEYS: dict[str, object] = {
     "agent": "researcher",
@@ -309,7 +321,8 @@ def test_every_api_chat_body_key_is_classified() -> None:
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    read = _body_keys_read(functions["api_chat"], "body", functions)
+    # The body is read by ``_api_chat_send``; ``api_chat`` wraps it (Crew Mode steer).
+    read = _body_keys_read(functions["_api_chat_send"], "body", functions)
     assert not _TURN_ONLY_BODY_KEYS & _SETTINGS_BODY_KEYS.keys()
     assert read == _TURN_ONLY_BODY_KEYS | _SETTINGS_BODY_KEYS.keys()
 
@@ -512,7 +525,7 @@ async def test_title_refresh_counts_only_the_users_turns(state, actor: str, refr
     slot.title, slot._titled, slot._title_origin = "Old", True, "auto"
     slot._title_low_signal = True  # due at the first user turn
     slot.append("user", "x", "msg msg-u", meta={TURN_ACTOR_META_KEY: actor} if actor else None)
-    generate = AsyncMock(return_value="")
+    generate = AsyncMock(return_value="Fresh title")
 
     with (
         patch("kiro_crew.dashboard.chat_title._generate_refreshed_title", new=generate),
@@ -522,6 +535,7 @@ async def test_title_refresh_counts_only_the_users_turns(state, actor: str, refr
         await maybe_refresh_title(state, slot)
 
     assert generate.called is refreshed
+    assert slot.title == ("Fresh title" if refreshed else "Old")
 
 
 def _app_then_user_turns(slot) -> None:

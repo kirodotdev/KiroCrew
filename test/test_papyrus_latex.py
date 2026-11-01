@@ -38,6 +38,7 @@ import pytest
 
 from kiro_crew import sandbox, security
 from kiro_crew.apps.builtins.papyrus.backend import latex, procio, store
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import await_until
 
 
@@ -661,6 +662,94 @@ class TestRunHelper:
         assert kill.await_args is not None
         assert kill.await_args.args[0] == 4321
         assert (code, output) == (-1, "")
+
+    @staticmethod
+    def _compiler_that_runs_until_killed(started: asyncio.Event) -> mock.AsyncMock:
+        """A compiler whose output read blocks until the run is cancelled.
+
+        The first ``communicate()`` is ``_run``'s read and never returns on its
+        own. Later calls are the reap after the kill, and return at once.
+        """
+
+        async def read_then_drain() -> tuple[bytes, bytes]:
+            if not started.is_set():
+                started.set()
+                await asyncio.Event().wait()
+            return b"", b""
+
+        proc = mock.AsyncMock()
+        proc.communicate = mock.AsyncMock(side_effect=read_then_drain)
+        proc.kill = mock.Mock()
+        proc.returncode = None
+        proc.pid = UNALLOCATABLE_PID
+        return proc
+
+    async def test_a_cancel_kills_the_process_tree(self, project: Path) -> None:
+        """Cancelling the run must not orphan the compiler.
+
+        The child runs in its own session, so nothing else stops it once ``_run``
+        stops awaiting it. A cancel (app stop, gateway restart) that skipped the
+        kill would leave ``pdflatex`` running on an untrusted ``.tex`` with no
+        deadline left. The cancel must kill and reap the tree, then propagate.
+        """
+        started = asyncio.Event()
+        proc = self._compiler_that_runs_until_killed(started)
+        with mock.patch.object(
+            latex, "sandboxed_spawn_argv", return_value=(["/bin/true"], {}, None)
+        ), mock.patch(
+            "asyncio.create_subprocess_exec", mock.AsyncMock(return_value=proc)
+        ), mock.patch.object(
+            latex.platform_compat, "kill_process_tree_async", mock.AsyncMock(return_value=True)
+        ) as kill:
+            task = asyncio.create_task(
+                latex._run(["pdflatex"], cwd=project, env={}, timeout=60, operation="compile")
+            )
+            await await_until(started, what="the compiler read starting")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled run finishing")
+        assert kill.await_args is not None, "a cancelled run left the compiler running"
+        assert kill.await_args.args[0] == UNALLOCATABLE_PID
+        assert proc.communicate.await_count >= 2, "the killed compiler was not reaped"
+
+    async def test_a_second_cancel_cannot_skip_the_kill(self, project: Path) -> None:
+        """A repeated cancel while the kill is in flight must not abandon it.
+
+        Shutdown can cancel a task more than once. If the kill were awaited
+        unshielded, the second cancel would land inside it and the child would
+        survive anyway.
+        """
+        started = asyncio.Event()
+        killing = asyncio.Event()
+        release_kill = asyncio.Event()
+
+        async def slow_kill(*_args: object) -> bool:
+            killing.set()
+            await release_kill.wait()
+            return True
+
+        proc = self._compiler_that_runs_until_killed(started)
+        with mock.patch.object(
+            latex, "sandboxed_spawn_argv", return_value=(["/bin/true"], {}, None)
+        ), mock.patch(
+            "asyncio.create_subprocess_exec", mock.AsyncMock(return_value=proc)
+        ), mock.patch.object(
+            latex.platform_compat, "kill_process_tree_async", mock.AsyncMock(side_effect=slow_kill)
+        ) as kill:
+            task = asyncio.create_task(
+                latex._run(["pdflatex"], cwd=project, env={}, timeout=60, operation="compile")
+            )
+            await await_until(started, what="the compiler read starting")
+            task.cancel()
+            await await_until(killing, what="the cancel starting the kill")
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), "the second cancel abandoned the in-flight kill"
+            release_kill.set()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled run finishing")
+        assert kill.await_count == 1
+        assert proc.communicate.await_count >= 2, "the killed compiler was not reaped"
 
     async def test_cleans_up_the_sandbox_profile(self, project: Path, tmp_path: Path) -> None:
         """The sandbox launcher/profile is a temp file the caller owns."""

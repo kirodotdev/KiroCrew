@@ -348,8 +348,8 @@ async def test_the_load_path_records_the_digest_stage(monkeypatch, tmp_path):
 
     `record_hash` existing is not the same as it being called: with no caller the
     payload reports `hash_ms: 0` forever while the surface claims a load is split
-    into hash / load / first-decode. That is the shape a reviewer caught, and this
-    asserts the wiring rather than the recorder.
+    into hash / load / first-decode. So this asserts the wiring rather than the
+    recorder.
     """
     from kiro_crew.stt import telemetry as telemetry_mod
 

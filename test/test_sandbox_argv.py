@@ -422,6 +422,9 @@ class TestMacOsNestingDetection:
         # unconditionally — that would brick in-sandbox spawns wherever the probe
         # is unavailable.
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        # Unknown outer tier, so a `strict` request proves no downgrade and the argv
+        # passes through unchanged; a host `standard` would add the env-scrub wrap.
+        monkeypatch.delenv("KIROCREW_SANDBOX_LEVEL", raising=False)
         monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
         with patch("kiro_crew.sel.sel"):
             result, _ = wrap_argv(["kiro-cli", "acp"], mode="strict")
@@ -878,7 +881,7 @@ class TestAgentSliceMemoryHigh:
     def test_slice_memory_events_high_reads_counter(self, tmp_path):
         import kiro_crew.sandbox as sb
 
-        evt = tmp_path / "memory.events"
+        evt = tmp_path / "memory.events.local"
         evt.write_text("low 0\nhigh 42\nmax 1\noom 0\noom_kill 0\n", encoding="utf-8")
         with patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=tmp_path):
             assert sb._slice_memory_events_high() == 42
@@ -896,14 +899,14 @@ class TestAgentSliceMemoryHigh:
     def test_slice_memory_events_high_resolves_dash_hierarchy(self, tmp_path):
         """Regression: on the standard systemd layout the agents slice nests
         under kirocrew.slice (dash-hierarchy), NOT directly under
-        user@<uid>.service. The reader must find memory.events through the
+        user@<uid>.service. The reader must find memory.events.local through the
         real resolver on that layout — a hardcoded flat path would miss it,
         silently disabling the throttle warning."""
         import kiro_crew.sandbox as sb
 
         nested = tmp_path / "kirocrew.slice" / sb._CGROUP_AGENTS_SLICE
         nested.mkdir(parents=True)
-        (nested / "memory.events").write_text(
+        (nested / "memory.events.local").write_text(
             "low 0\nhigh 7\nmax 0\noom 0\noom_kill 0\n", encoding="utf-8"
         )
         with patch.object(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path)):

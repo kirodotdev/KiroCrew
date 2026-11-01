@@ -989,6 +989,10 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     # idle_secs/max_cycles/max_runtime_secs come straight from the request
     # body: body_int raises ValueError on "abc" and on float("inf") (1e309 is
     # legal JSON in aiohttp's parser) and TypeError on null/list, any of which
@@ -1114,6 +1118,10 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     # The goal baseline the popover read when it opened (``goal_token``). Absent skips
     # the store's stale check; a present one is compared under the store's
     # lock, so a goal another writer saved meanwhile is refused instead of overwritten.

@@ -87,6 +87,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "rather than returned.",
     ),
     (
+        "A remote crew's reply to a conductor's session tool",
+        "dashboard/handlers/remote_dispatch_routes.py",
+        "What a connected crew answers when a conductor drives a worker there with "
+        "`crew=` on session_create, session_send, session_read_message, "
+        "session_stop or session_close, on its way into the conductor's model "
+        "context. The reply must be JSON within the proxy's buffer cap and is "
+        "redacted whole with the peer-text chain, keys included, before any field "
+        "of it is read; one that cannot be redacted is refused, never returned.",
+    ),
+    (
         "Thread, GIL and loop-stall diagnostics",
         "diag/threads.py",
         "Python frames, folded stacks and loop-stall dump text, on their way to an "
@@ -118,6 +128,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "same traversal drops `worker_session_key` and empties a `bind` event's "
         "text, which covers the fields known to be secrets and says nothing about "
         "prose that happens to contain one.",
+    ),
+    (
+        "A crew's work-item copy read by a hub",
+        "dashboard/handlers/remote_work_item.py",
+        "Every key and string in the worker-owned fields and event tail of a hub's "
+        "work item on this crew, on its way to the hub over its proxy (remote "
+        "dispatch, a Feature Preview). The worker wrote them and nothing between "
+        "that write and this read inspects them. It reuses the Crew page's "
+        "`_redact_deep`, which runs `redact_via_context`, so both scanners run in "
+        "the shared order.",
     ),
     (
         "Conductor work items shown on the Crew page",
@@ -842,5 +862,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "OpenAI-compatible API",
         "dashboard/openai_compat.py",
         "Streamed and non-streamed completions served to third-party clients.",
+    ),
+    (
+        "A Crew Mode root's worker list and timeline",
+        "dashboard/handlers/crew_workers.py",
+        "The side panel's worker cards (a closed worker's saved title, the ledger "
+        "line through the board's deep redactor) and every timeline bar and mark "
+        "label, which are slices of transcript rows: each passes exfiltration-URL "
+        "and credential redaction (the display battery for timeline labels) "
+        "before it reaches the browser.",
     ),
 )

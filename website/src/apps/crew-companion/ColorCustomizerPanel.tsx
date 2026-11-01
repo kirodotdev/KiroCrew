@@ -5,7 +5,7 @@
  * with per-body-part highlighting. i18n via useT().
  */
 import { Check, X } from 'lucide-react'
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { extractSvgColors, applySvgColorMap, type ColorMap } from './colorCustomizer'
 import { PresetRegistry, extractSwatches, type CatPreset } from './catPresets'
 import { BUILT_IN_CAT_PRESETS } from './builtInCatPresets'
@@ -45,16 +45,24 @@ const CS = {
   section: { fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' as const, letterSpacing: 1, marginBottom: 8, marginTop: 12 },
   presetGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(90px, 1fr))', gap: 8, marginBottom: 12 },
   presetCard: (active: boolean) => ({
-    padding: 6, borderRadius: 8, cursor: 'pointer', textAlign: 'center' as const,
+    borderRadius: 8, textAlign: 'center' as const,
     border: active ? '2px solid var(--accent)' : '1px solid var(--border)',
     background: active ? 'var(--accent-glow)' : 'var(--cc-input-bg)',
     transition: 'border-color 150ms',
+  }),
+  // The tile's "apply" button fills the tile and carries its padding, so the
+  // tile looks and clicks as before. Its radius follows the tile's, so the
+  // keyboard focus ring is rounded like the tile rather than square.
+  presetSelect: (hasDelete: boolean) => ({
+    display: 'block', width: '100%', padding: hasDelete ? '6px 6px 0' : 6,
+    border: 'none', borderRadius: 7, background: 'none', color: 'inherit',
+    font: 'inherit', textAlign: 'center' as const, cursor: 'pointer',
   }),
   presetThumb: { width: 56, height: 56, objectFit: 'contain' as const, borderRadius: 6, margin: '0 auto 4px' },
   presetName: { fontSize: 10, fontWeight: 500, lineHeight: 1.3 },
   btnRow: { display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' as const },
   btn: { padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--cc-input-bg)', color: 'var(--text)', cursor: 'pointer', fontSize: 12 },
-  deleteBtn: { background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 10, marginTop: 2 },
+  deleteBtn: { background: 'none', border: 'none', borderRadius: 4, color: 'var(--danger)', cursor: 'pointer', fontSize: 10, marginTop: 2, position: 'relative' as const },
 } as const
 
 function PresetCard({ preset, active, svgContent, onClick, onDelete, deleteLabel, i18nT }: {
@@ -72,11 +80,20 @@ function PresetCard({ preset, active, svgContent, onClick, onDelete, deleteLabel
   const displayName = preset.builtIn ? i18nT(preset.name) : preset.name
 
   return (
-    <div role="button" tabIndex={0} aria-pressed={active} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }} style={CS.presetCard(active)} onClick={onClick}>
-      <img src={previewUri} alt={displayName} style={CS.presetThumb} draggable={false} />
-      <div style={CS.presetName}>{displayName}</div>
+    // A plain tile holding two sibling buttons, "apply" and Delete. Delete used
+    // to sit inside a role="button" tile whose key handler took its Enter/Space.
+    <div style={{ ...CS.presetCard(active), paddingBottom: onDelete ? 6 : 0, position: 'relative' }}>
+      <button type="button" aria-pressed={active} style={CS.presetSelect(!!onDelete)} onClick={onClick}>
+        <img src={previewUri} alt={displayName} style={CS.presetThumb} draggable={false} />
+        <span style={{ ...CS.presetName, display: 'block' }}>{displayName}</span>
+        {/* Stretches the apply button's hit area over the whole tile (beside
+            Delete, and the space a taller grid row adds), so a click anywhere
+            applies the preset, as when the tile was the control. Delete is
+            positioned after it, so it stays on top. */}
+        <span aria-hidden="true" style={{ position: 'absolute', inset: 0 }} />
+      </button>
       {onDelete && (
-        <button style={CS.deleteBtn} onClick={(e) => { e.stopPropagation(); onDelete() }}>{deleteLabel}</button>
+        <button type="button" style={CS.deleteBtn} onClick={onDelete}>{deleteLabel}</button>
       )}
     </div>
   )
@@ -121,6 +138,21 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
   const [activePresetId, setActivePresetId] = useState<string | null>(null)
   const [showSaveForm, setShowSaveForm] = useState(false)
   const [saveNameInput, setSaveNameInput] = useState('')
+  // The "Save preset" button that opens the name field. Closing the field
+  // unmounts whatever had focus in it (the input, or its confirm or cancel
+  // button), and a browser then drops focus to document.body, so every close
+  // hands focus back here once the button has remounted (the pattern in
+  // MeetingTitle).
+  const saveTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const closeSaveForm = useCallback(() => {
+    setShowSaveForm(false)
+    // Only take back focus the unmount dropped: a save can resolve after the
+    // user has already moved on to another control, and that control keeps it.
+    requestAnimationFrame(() => {
+      const at = document.activeElement
+      if (at === null || at === document.body) saveTriggerRef.current?.focus({ preventScroll: true })
+    })
+  }, [])
   const sourceColors = useMemo(() => extractSvgColors(idleSvgContent), [idleSvgContent])
 
   useEffect(() => {
@@ -169,8 +201,8 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
     setRegistry(new PresetRegistry(BUILT_IN_CAT_PRESETS, customs))
     await api?.presetsSaveCustom?.(customs)
     setSaveNameInput('')
-    setShowSaveForm(false)
-  }, [colorMap, registry, saveNameInput])
+    closeSaveForm()
+  }, [closeSaveForm, colorMap, registry, saveNameInput])
 
   const handleDeletePreset = useCallback(async (id: string) => {
     registry.removeCustomPreset(id)
@@ -210,14 +242,14 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
       <div style={CS.btnRow}>
         <button style={CS.btn} onClick={handleReset}>{i18nT('apps.crewCompanion.color.reset')}</button>
         {!showSaveForm ? (
-          <button style={CS.btn} onClick={() => setShowSaveForm(true)}>{i18nT('apps.crewCompanion.color.savePreset')}</button>
+          <button ref={saveTriggerRef} style={CS.btn} onClick={() => setShowSaveForm(true)}>{i18nT('apps.crewCompanion.color.savePreset')}</button>
         ) : (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <input
               type="text"
               value={saveNameInput}
               onChange={e => setSaveNameInput(e.target.value)}
-              {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: () => setShowSaveForm(false) })}
+              {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: closeSaveForm })}
               placeholder={i18nT('apps.crewCompanion.color.promptName')}
               aria-label={i18nT('apps.crewCompanion.color.promptName')}
               autoFocus
@@ -231,7 +263,7 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
               aria-label={i18nT('apps.crewCompanion.color.savePreset')}>
               <Check className="lucide-inline" aria-hidden="true" />
             </button>
-            <button style={CS.btn} onClick={() => { setShowSaveForm(false); setSaveNameInput('') }}
+            <button style={CS.btn} onClick={() => { setSaveNameInput(''); closeSaveForm() }}
               aria-label={i18nT('apps.crewCompanion.gallery.cancel')}>
               <X className="lucide-inline" aria-hidden="true" />
             </button>

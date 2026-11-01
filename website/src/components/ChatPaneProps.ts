@@ -56,6 +56,13 @@ export interface ChatPaneProps {
    *  long transcripts keep the same user-configured measure as the main
    *  chat. */
   followContentWidth?: boolean
+  /** This pane's composer owns the document-wide "Start Dictation with a Key"
+   *  binding. Defaults to false: the key listens on the whole document, so
+   *  exactly one mounted composer may have it set (N armed panes would
+   *  open N captures on one keystroke). The Members page's DM pane sets it;
+   *  in split view the grid sets it on the focused pane only, since the
+   *  single-chat composer is not mounted there. */
+  pushToTalk?: boolean
   /** Suppress the "Session ready. Type a message to start." hint on an empty
    *  transcript. A host that is showing its own verdict about this thread
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
@@ -76,6 +83,13 @@ export interface ChatPaneProps {
    *  the pane shows every attachment but cannot open one. Capability by
    *  omission, like `openSideChat`. */
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Reveal the Crew (Workers) tab from a Crew Mode dispatch-notice row. The
+   *  host's single reveal (`handleOpenCrewTab`), threaded down so a split pane
+   *  uses the SAME path as the single-chat surface — it closes Find and rebinds
+   *  the card's slot before opening, which a pane cannot do itself. Capability
+   *  by omission, like `onFileOpen`: a pane with no host reveal leaves the
+   *  notice button disabled rather than half-revealing. */
+  onOpenCrewTab?: (slot: string) => void
   /** Open an artifact named in a reply (`/artifacts/<slug>` link) in the
    *  host's side panel, the way the main chat does. Without it the link is a
    *  plain `target="_blank"` anchor to the standalone artifact view -- a
@@ -101,12 +115,6 @@ export interface ChatPaneProps {
    *  (components/chat/crewmateBubbles). Undefined = an ordinary transcript;
    *  decided by the host, never inferred from the slot. */
   crewmate?: CrewmateIdentity
-  /** A message from the crewmate the HOST draws after the last row (the
-   *  Members page's warm resume / cold welcome, `mateGreeting.ts`). It sits in
-   *  the transcript like a reply but is not one: never a slot row, never sent,
-   *  so it costs no model call and the model never reads it back. Only
-   *  meaningful with `crewmate`. */
-  crewmateGreeting?: React.ReactNode
   /** Whether a person can see this crewmate's thread right now: the window is
    *  visible AND focused and nothing covers the chat. The unread landing marks
    *  a message read only while this is true; a reply landing in a parked or

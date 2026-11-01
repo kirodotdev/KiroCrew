@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from unittest import mock
 
@@ -367,14 +366,18 @@ class TestValidateSemantic:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(SemanticRejectCode.VALUE_EMPTY, "pref.os", None, "user_explicit")
         assert mock_log.called
         # The documented contrast is VALUE_EMPTY auditable where VALUE_SIZE is not, so pin both
         # here rather than leaving the refusal half to a sibling test on another code.
-        with patch.object(store, "_log_event") as mock_log_size:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log_size:
             store.log_reject_event(SemanticRejectCode.VALUE_SIZE, "pref.os", None, "user_explicit")
         assert not mock_log_size.called
+        assert [(e["event_type"], e["memory_key"]) for e in store.get_events()] == [
+            ("value_empty", "pref.os")
+        ]
+        assert store.get_rejection_stats() == {"value_empty": 1}
 
 
 class TestLogRejectEvent:
@@ -383,27 +386,37 @@ class TestLogRejectEvent:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(SemanticRejectCode.ALLOWLIST, "bad.key", "v", "user_explicit")
             mock_log.assert_called_once_with(
                 "allowlist_reject", "semantic", "bad.key", None, "v", "user_explicit"
             )
+        [event] = store.get_events()
+        assert (
+            event["event_type"],
+            event["memory_type"],
+            event["memory_key"],
+            event["old_value"],
+            event["new_value"],
+            event["source"],
+        ) == ("allowlist_reject", "semantic", "bad.key", None, "v", "user_explicit")
 
     def test_non_auditable_code_skipped(self, tmp_path: Path, opened) -> None:
         from unittest.mock import patch
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(SemanticRejectCode.KEY_FORMAT, "x", "v", "user_explicit")
             mock_log.assert_not_called()
+        assert store.get_events() == []
 
     def test_value_json_preferred_over_str(self, tmp_path: Path, opened) -> None:
         from unittest.mock import patch
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(
                 SemanticRejectCode.INJECTION,
                 "pref.x",
@@ -414,6 +427,12 @@ class TestLogRejectEvent:
             mock_log.assert_called_once_with(
                 "injection_blocked", "semantic", "pref.x", None, '{"k": "v"}', "user_explicit"
             )
+        [event] = store.get_events()
+        assert (event["event_type"], event["memory_key"], event["new_value"]) == (
+            "injection_blocked",
+            "pref.x",
+            '{"k": "v"}',
+        )
 
     def test_repeated_non_security_reject_audits_once_per_cause(
         self, tmp_path: Path, opened
@@ -423,7 +442,7 @@ class TestLogRejectEvent:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             for _ in range(3):
                 store.log_reject_event(
                     SemanticRejectCode.VALUE_EMPTY, "pref.general", None, "promotion"
@@ -431,9 +450,10 @@ class TestLogRejectEvent:
         assert mock_log.call_count == 1, "the repeating refusal audited once per pass"
         # A different cause on the same key is a different defect and must still be audited,
         # which is what keeps the dedupe from hiding real findings.
-        with patch.object(store, "_log_event") as mock_other_cause:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_other_cause:
             store.log_reject_event(SemanticRejectCode.ALLOWLIST, "pref.general", "v", "promotion")
         assert mock_other_cause.call_count == 1, "a second cause on the same key was suppressed"
+        assert store.get_rejection_stats() == {"value_empty": 1, "allowlist_reject": 1}
 
     def test_repeated_preexisting_reject_audits_every_attempt(self, tmp_path: Path, opened) -> None:
         """The dedupe must not reach ALLOWLIST or CONFIDENCE: get_rejection_stats counts them
@@ -443,10 +463,11 @@ class TestLogRejectEvent:
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         for code in (SemanticRejectCode.ALLOWLIST, SemanticRejectCode.CONFIDENCE):
-            with patch.object(store, "_log_event") as mock_log:
+            with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
                 for _ in range(3):
                     store.log_reject_event(code, "pref.general", "v", "promotion")
             assert mock_log.call_count == 3, f"{code.value} was deduped and lost per-attempt counts"
+        assert store.get_rejection_stats() == {"allowlist_reject": 3, "low_confidence": 3}
 
     def test_repeated_security_reject_audits_every_attempt(self, tmp_path: Path, opened) -> None:
         """Negative control on the dedupe's scope: the security trail must keep every attempt."""
@@ -454,12 +475,13 @@ class TestLogRejectEvent:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             for _ in range(3):
                 store.log_reject_event(
                     SemanticRejectCode.INJECTION, "pref.x", "payload", "consolidation:s"
                 )
         assert mock_log.call_count == 3, "deduping reached a security code and lost audit rows"
+        assert store.get_rejection_stats() == {"injection_blocked": 3}
 
     def test_audited_reject_set_is_bounded(self, tmp_path: Path, opened) -> None:
         """Bounded oldest-first, so an evicted pair audits again rather than the set growing."""
@@ -468,10 +490,11 @@ class TestLogRejectEvent:
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         with patch("kiro_crew.vector_memory._MAX_AUDITED_REJECTS", 0):
-            with patch.object(store, "_log_event") as mock_log:
+            with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
                 store.log_reject_event(SemanticRejectCode.VALUE_EMPTY, "pref.os", None, "promotion")
                 store.log_reject_event(SemanticRejectCode.VALUE_EMPTY, "pref.os", None, "promotion")
         assert mock_log.call_count == 2
+        assert store.get_rejection_stats() == {"value_empty": 2}
 
 
 class TestConflictResolution:
@@ -1200,13 +1223,18 @@ class TestSchemaInit:
         store = VectorMemoryStore(db_path=db_path)
         try:
             store.init()
+            # Read before close: on a driver without setconfig the close opens a
+            # read-only connection of its own (sqlite_wal.close_keeping_wal).
+            opened_by_init = list(events)
         finally:
             store.close()
 
-        assert events.count("probe_readonly") == 1, events
-        assert events.count("connect") == 1, events
-        restricted_db_before = events.index("restrict:mem.db") < events.index("connect")
-        assert restricted_db_before, events
+        assert opened_by_init.count("probe_readonly") == 1, opened_by_init
+        assert opened_by_init.count("connect") == 1, opened_by_init
+        restricted_db_before = opened_by_init.index("restrict:mem.db") < opened_by_init.index(
+            "connect"
+        )
+        assert restricted_db_before, opened_by_init
 
     def test_relaxed_mode_is_retightened_on_reopen(self, tmp_path: Path, opened) -> None:
         """A DB whose mode was widened after creation is locked down again.
@@ -1318,6 +1346,18 @@ class TestSemanticContext:
         ctx = store.get_semantic_context(cap=500)
         assert len(ctx) < 700  # cap + delimiters
 
+    def test_oversized_fact_is_skipped_not_a_stop(self, tmp_path: Path, opened) -> None:
+        # The long row ranks first (newer, and first by key on a timestamp tie);
+        # it does not fit the cap, but the short row after it does.
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        assert store.algorithm_version != "v2"
+        store.set_semantic("project.b_short", "PostgreSQL", 1.0, "user_explicit")
+        store.set_semantic("project.a_long", "y" * 600, 1.0, "user_explicit")
+        ctx = store.get_semantic_context(cap=500)
+        assert "y" * 600 not in ctx
+        assert "PostgreSQL" in ctx
+
 
 class TestEpisodicCRUD:
     def test_write_and_list(self, tmp_path: Path, opened) -> None:
@@ -1345,28 +1385,20 @@ class TestEpisodicCRUD:
         finally:
             store.close()
 
-    def test_has_episodic_text_waits_for_store_lock(self, tmp_path: Path) -> None:
+    def test_has_episodic_text_does_not_wait_for_store_lock(self, tmp_path: Path) -> None:
+        """The lookup reads on a pooled read connection, so a thread holding the
+        writer lock does not hold it up; inside the lock it stays on the shared
+        connection and still answers."""
         store = VectorMemoryStore(db_path=tmp_path / "mem.db")
         store.init()
         text = "Lock-safe episodic memory text lookup."
         assert store.write_episodic(text)
-        lookup_started = threading.Event()
-
-        def lookup() -> bool:
-            lookup_started.set()
-            return store.has_episodic_text(text)
-
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 with store._db_lock:
-                    future = executor.submit(lookup)
-                    assert lookup_started.wait(timeout=5)
-                    with pytest.raises(FutureTimeoutError):
-                        future.result(
-                            timeout=0.1
-                        )  # flake-ok: timeout IS the assertion; proves future cannot complete while the db lock is held
-                wait_until(future.done)
-                assert future.result()
+                    future = executor.submit(store.has_episodic_text, text)
+                    assert future.result(timeout=30)
+                    assert store.has_episodic_text(text)
         finally:
             store.close()
 
@@ -1451,7 +1483,26 @@ class TestEpisodicCRUD:
         ctx = store.get_episodic_context(query_text="topic")
         # With limit=2, at most 2 entries should appear
         assert ctx, "Expected non-empty episodic context"
-        assert ctx.count(". ") <= 2
+        # Count numbered entry lines, not every ". ": the header holds sentences too.
+        assert sum(1 for line in ctx.splitlines() if line[:1].isdigit()) <= 2
+
+    def test_oversized_episode_is_skipped_not_a_stop(
+        self, tmp_path: Path, opened, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Rank 2 does not fit the cap; rank 3 after it does and must still appear.
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        assert store.algorithm_version != "v2"
+        ranked = [
+            {"id": "a", "text": "first short episode"},
+            {"id": "b", "text": "y" * 1200},
+            {"id": "c", "text": "third short episode"},
+        ]
+        monkeypatch.setattr(store, "search_episodic", lambda **_kw: ranked)
+        ctx = store.get_episodic_context(query_text="anything", cap=500)
+        assert "y" * 1200 not in ctx
+        assert "1. first short episode" in ctx
+        assert "3. third short episode" in ctx
 
 
 class TestEpisodicInjectionScreening:

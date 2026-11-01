@@ -74,6 +74,20 @@ def test_a_moved_crewmate_tells_its_user_once_and_never_on_a_later_start(dispatc
     assert dispatched[0][1].startswith(notice.WORKER_UPGRADE_PREFIX)
 
 
+def test_a_move_that_changed_the_kit_names_the_change_in_its_one_notice(dispatched):
+    slot = _thread("atlas")
+    notice.mark_notice_owed("atlas", "it no longer has tool 'execute_bash'")
+
+    asyncio.run(_offer(_State(slot)))
+    asyncio.run(_offer(_State(slot)))  # a later start: still one notice
+
+    assert len(dispatched) == 1
+    key, prompt = dispatched[0]
+    assert key == slot.key and prompt.startswith(notice.NOTICE_PROMPT)
+    assert "it no longer has tool 'execute_bash'" in prompt
+    assert "request_capabilities" in prompt
+
+
 def test_a_crewmate_created_after_the_upgrade_owes_no_notice(dispatched):
     slot = _thread("nova")
     # Its own directory exists, as any crewmate's does once it has been used.
@@ -128,8 +142,9 @@ def test_the_migration_owes_the_notice_only_for_crewmates_it_moved(monkeypatch, 
 def test_a_crewmate_the_migration_left_behind_tells_its_user_why_once(
     monkeypatch, tmp_path, dispatched
 ):
-    """``orbit`` would gain a shell its template does not give it, so it stays on
-    its template; its thread says so once, with the migration's own reason."""
+    """A user-level agent Kiro Crew does not own carries ``orbit``'s id, so its own file
+    would never be read and it stays on its template; its thread says so once, with
+    the reason."""
     _migrate_atlas_and_orbit(monkeypatch, tmp_path)
     assert notice.claim_kept_notice(members_mod.member_slug("atlas"), "atlas") == ""
     slot = _thread("orbit")
@@ -140,7 +155,7 @@ def test_a_crewmate_the_migration_left_behind_tells_its_user_why_once(
     assert len(dispatched) == 1
     key, prompt = dispatched[0]
     assert key == slot.key and prompt.startswith(notice.WORKER_UPGRADE_PREFIX)
-    assert "execute_bash" in prompt and "left as it was" in prompt
+    assert "user-level agent" in prompt and "left as it was" in prompt
 
 
 def test_a_left_behind_crewmate_that_moves_later_never_says_it_was_left(
@@ -148,15 +163,11 @@ def test_a_left_behind_crewmate_that_moves_later_never_says_it_was_left(
 ):
     """Start 1 leaves ``orbit`` behind with its thread unopened; start 2 moves it.
     Its thread then gets the moved notice only, never the stale kept one."""
-    import json
-
     import kiro_crew.config.paths as paths_mod
     from kiro_crew.mate_config_migration import migrate_existing_crewmates
 
     cfg = _migrate_atlas_and_orbit(monkeypatch, tmp_path)
-    shell = paths_mod.kiro_agents_dir() / "shell.json"
-    spec = json.loads(shell.read_text(encoding="utf-8"))
-    shell.write_text(json.dumps({**spec, "tools": ["fs_read"]}), encoding="utf-8")
+    (paths_mod.kiro_agents_dir() / "orbit.json").unlink()
     assert migrate_existing_crewmates(cfg).migrated == ["orbit"]
     slot = _thread("orbit")
 
@@ -201,7 +212,7 @@ def test_a_kept_notice_claimed_while_the_thread_is_busy_follows_its_next_turn_en
 
 
 def _migrate_atlas_and_orbit(monkeypatch, tmp_path):
-    """``atlas`` moves; ``orbit``'s worker would gain ``execute_bash``, so it stays."""
+    """``atlas`` moves; a user-level agent named ``orbit`` shadows its file, so it stays."""
     import json
 
     import kiro_crew.config.paths as paths_mod
@@ -217,10 +228,9 @@ def _migrate_atlas_and_orbit(monkeypatch, tmp_path):
     mates.mkdir(parents=True)
     (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
     (user / "plain.json").write_text(json.dumps({**base, "name": "plain"}), encoding="utf-8")
-    (user / "shell.json").write_text(
-        json.dumps({**base, "name": "shell", "tools": ["fs_read", "execute_bash"]}),
-        encoding="utf-8",
-    )
+    (user / "shell.json").write_text(json.dumps({**base, "name": "shell"}), encoding="utf-8")
+    # Someone else's agent under orbit's id: not Kiro Crew's to move or write.
+    (user / "orbit.json").write_text(json.dumps({**base, "name": "orbit"}), encoding="utf-8")
     cfg = KiroCrewConfig()
     cfg.agents = {
         "atlas": KiroCrewAgentConfig(member_id="atlas", kiro_agent="plain"),
@@ -237,14 +247,14 @@ def _migrate_atlas_and_orbit(monkeypatch, tmp_path):
 
 
 def test_the_notice_names_the_path_to_the_worker_tabs_as_the_dashboard_shows_it():
-    """The tabs live in the crewmate editor's Built From section, opened by the pencil.
-
-    Built From only shows the kit, so the notice also names where it is changed:
-    the same editor's Advanced section, Worker's extra kit."""
-    for words in ("pencil button (Edit mate)", "Built From", "Tools, MCP Servers and Skills"):
+    """The worker's kit lives in the crewmate editor's Abilities section, opened by
+    the pencil. The notice names that path as the dashboard shows it today."""
+    for words in ("pencil button (Edit mate)", "Abilities"):
         assert words in notice.NOTICE_PROMPT
     assert "crewmate page" not in notice.NOTICE_PROMPT
-    assert "under Advanced, Worker's extra kit" in notice.NOTICE_PROMPT
+    # The retired editor language must not come back.
+    assert "Built From" not in notice.NOTICE_PROMPT
+    assert "Worker's extra kit" not in notice.NOTICE_PROMPT
 
 
 def test_the_notice_names_the_editor_labels_the_dashboard_shows():
@@ -257,5 +267,6 @@ def test_the_notice_names_the_editor_labels_the_dashboard_shows():
             encoding="utf-8"
         )
     )
-    kit = labels["crewWorkerKit"]
-    assert (kit["section_advanced"], kit["title"]) == ("Advanced", "Worker's extra kit")
+    # The section the notice points the user at is "Abilities".
+    assert labels["crewEditorNext"]["section_capabilities"] == "Abilities"
+    assert labels["crewEditorNext"]["section_capabilities"] in notice.NOTICE_PROMPT

@@ -76,6 +76,7 @@ if TYPE_CHECKING:
         _thread_agents,
         _thread_context,
         _thread_meta_fallback,
+        _TurnScopeReset,
         acp_error_is_session_not_found,
         acp_error_needs_fresh_credentials,
         build_cancelled_turn_preamble,
@@ -83,7 +84,10 @@ if TYPE_CHECKING:
         build_working_blocks,
         canonical_key,
         consume_reinjection,
+        context_template,
         credential_give_up_text,
+        enter_turn,
+        exit_turn,
         expire_slack_options,
         get_dashboard_state,
         handle_message,
@@ -159,11 +163,17 @@ class _SlackTurn:
     _had_error: "bool"
     _replayed: "bool"
     routed_link_key: "str | None"
-    status_ctrl: "StatusReactionController"
     _stop_reason: "str"
     task: "Task"
     _turn_completed_ok: "bool"
     _working_ts: "str | None"
+    status_ctrl: "StatusReactionController"
+    # Set by ``_deliver_answer`` once it has taken down the working indicators, so
+    # a later cancel does not clear a review-mode status it chose to keep.
+    _indicators_cleared: "bool"
+    # Opened by ``_run_turn`` (native Stop's write fence); ``close_turn_scope`` closes it
+    # from ``handle_message``'s ``finally``, after delivery.
+    _turn_scope: "_TurnScopeReset | None"
 
     # Set by ``_deliver_answer`` before its first await; ``book_success`` and
     # ``book_failure`` read and set it, so the turn books exactly one verdict.
@@ -232,9 +242,14 @@ class _SlackTurn:
         self.spool_attachments = spool_attachments
         self._compaction_replay = _compaction_replay
         self.start_priority = start_priority
+        self._turn_scope = None
         self._t0 = _t0
         self.reply_ts = reply_ts
         self.session_key = session_key
+        # Bound up front: ``handle_message``'s cancel arm reads both whichever
+        # phase the cancel lands in.
+        self._working_ts = None
+        self._indicators_cleared = False
 
     if not TYPE_CHECKING:
 
@@ -264,6 +279,44 @@ class _SlackTurn:
             if callable(_close_gap):
                 _close_gap(self.session_key)
 
+    # The one place that takes down the "…is working" thread status and the inline
+    # Stop block: ``_deliver_answer`` calls it on its exits, ``_run_turn`` on each
+    # exit before the stream opens, a compaction replay before its nested turn
+    # starts, and ``handle_message``'s cancel arm on a cancel. A no-op once the indicators are cleared or
+    # released, so a cancel after delivery adds no second clear. ``keep_status``
+    # deletes only the Stop block and leaves the turn owning the status (a review
+    # turn keeps it until its draft lands). Each Slack call is guarded on its own,
+    # so one failure does not skip the other.
+    async def clear_working_indicators(self, *, keep_status: bool = False) -> None:
+        if self._indicators_cleared:
+            return
+        if not keep_status:
+            try:
+                await self.slack.set_thread_status(self.channel, self.reply_ts, "")
+            except Exception:
+                logger.debug("Failed to clear the thread status", exc_info=True)
+        if self._working_ts:
+            try:
+                await self.slack.delete_message(self.channel, self._working_ts)
+            except Exception:
+                logger.debug("Failed to delete the Stop block", exc_info=True)
+            self._working_ts = None
+        if not keep_status:
+            self._indicators_cleared = True
+
+    # Hand the thread status to its new owner: a posted review draft owns
+    # "Awaiting review…". A later cancel of this turn then leaves the status alone.
+    def release_working_indicators(self) -> None:
+        self._indicators_cleared = True
+
+    # Close native Stop's write fence, if ``_run_turn`` opened it. ``handle_message``
+    # calls this from its ``finally``, so the fence covers delivery and closes on every
+    # exit. Idempotent: the scope is dropped once it is closed.
+    def close_turn_scope(self) -> None:
+        scope, self._turn_scope = self._turn_scope, None
+        if scope is not None:
+            exit_turn(scope)
+
     def book_success(self) -> None:
         if self._verdict_booked:
             return
@@ -283,6 +336,9 @@ class _SlackTurn:
             return
         self._verdict_booked = True
         self._had_error = True
+        # The turn body finalized the reaction before delivery; a reply that then
+        # failed still owes the user the error reaction.
+        self.status_ctrl.finalize(error=True)
         await self.sessions.record_failure(self.session_key)
         Stats().inc_message_failed()
 
@@ -334,7 +390,6 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         msg_ts,
         enabled=KiroCrewConfig.load().slack.reactions_enabled,
     )
-    status_ctrl.set_phase("queued")
     _had_error = False
     _stop_reason = ""
     # Whether the stream delivered an EVENT_COMPLETE; ``_stop_reason`` alone
@@ -354,8 +409,13 @@ async def _run_turn(turn: _SlackTurn) -> bool:
 
     # Set assistant thread status while we wait for the LLM to respond.
     # Defer start_stream until the first text chunk arrives so the user
-    # sees the status indicator instead of a blank bot message.
-    await slack.set_thread_status(channel, reply_ts, _STATUS_WORKING)
+    # sees the status indicator instead of a blank bot message. Where Slack
+    # shows that native status (an assistant thread, or an agent session) it is
+    # the progress signal; elsewhere the message gets the 👀 ack instead
+    # (``StatusReactionController.start``).
+    turn._turn_scope = enter_turn(channel, reply_ts)  # native Stop's write fence
+    _native_status = await slack.set_thread_status(channel, reply_ts, _STATUS_WORKING)
+    status_ctrl.start(native_status=bool(_native_status))
 
     # Post inline stop button (only in threaded conversations to avoid breaking tests)
     _working_ts: str | None = None
@@ -380,6 +440,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             )
         except Exception:
             logger.warning("Failed to post inline stop button", exc_info=True)
+    # Published now, not only at the end of this phase: a cancel at any later
+    # await skips that copy, and ``handle_message``'s cancel arm reads it here.
+    turn._working_ts = _working_ts
 
     # The Slack wire this turn's answer streams to, and every flag the end of the turn
     # reads off it (``handler_runtime/stream.py``).
@@ -391,7 +454,6 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         user_id=user_id,
         channel_activation=channel_activation,
         show_thinking=KiroCrewConfig.load().slack.show_thinking,
-        status=status_ctrl,
     )
 
     task = Task(id=msg_ts)
@@ -468,8 +530,8 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # inject it twice.
         _needs_reinjection = False
         _turn_compacted = False
-        # This attempt is over: stop its reaction ladder and stall watchdog now
-        # (idempotent, so the ``finally`` re-call is a no-op), and take down what
+        # This attempt is over: take its ack reaction down now (idempotent, so
+        # the ``finally`` re-call is a no-op), and take down what
         # it posted -- the Working block and a reasoning placeholder that a
         # thinking-only attempt left above where the answer would have gone. The
         # nested call posts its own.
@@ -481,6 +543,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 except Exception:
                     pass
         _working_ts = None
+        turn._working_ts = None
         answer.thinking_ts = None
         # Visible, not persisted: the abandoned attempt records nothing, so the
         # conversation log carries this message exactly once, with the reply the
@@ -489,6 +552,13 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             await slack.post_message(channel, notice, reply_ts)
         except Exception:
             logger.debug("Failed to post the replay notice", exc_info=True)
+        # Clear this attempt's status before the nested turn starts, so a cancel
+        # that lands before the nested turn owns a status has nothing left over.
+        # From here the nested turn sets and clears its own status, and a cancel
+        # that unwinds this frame must not clear it (e.g. its "Awaiting review…"
+        # for a draft it already posted): the clear marks this turn's indicators
+        # done, so a later clear here is a no-op.
+        await turn.clear_working_indicators()
         try:
             await handle_message(
                 slack,
@@ -573,6 +643,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             if channel_agent and _agent == channel_agent and is_slack_born(session_key)
             else None
         )
+        # The context builder takes the TEMPLATE the turn runs, never a record's
+        # name, including on a dashboard-linked session (``context_template``).
+        _context_agent = await asyncio.to_thread(context_template, _agent, _channel_crew)
         _alloc: dict[str, Any] = (
             _channel_crew.allocation_kwargs() if _channel_crew else {"agent": _agent}
         )
@@ -669,7 +742,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             and context_builder.conversation_log
         ):
             _session.prev_turn_cancelled = False
-            _preamble = build_cancelled_turn_preamble(context_builder.conversation_log, session_key)
+            _preamble = await asyncio.to_thread(
+                build_cancelled_turn_preamble, context_builder.conversation_log, session_key
+            )
             if _preamble:
                 offset = len(_preamble) + 2
                 _user_text_range = (offset, offset + len(text))
@@ -728,7 +803,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 session_key,
                 channel_id=channel,
                 thread_ts=thread_ts or msg_ts,
-                agent=_agent,
+                agent=_context_agent,
                 memory_store=_memory_store,
                 resumed=resumed,
                 needs_reinjection=_needs_reinjection,
@@ -750,7 +825,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # ── Early cancellation check: bail before expensive LLM call ──
         if sessions.is_cancelled(session_key, msg_ts):
             logger.info("Message %s cancelled before LLM call — skipping", msg_ts)
-            await slack.set_thread_status(channel, reply_ts, "")
+            await turn.clear_working_indicators()
             return False
         # A replay must not run a message the user has stopped since its first
         # attempt began. Same shape and same placement as the check above: the
@@ -760,12 +835,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             and session_stop_generation(sessions, session_key) != _stop_gen_at_entry
         ):
             logger.info("Message %s stopped before its compaction replay — skipping", msg_ts)
-            await slack.set_thread_status(channel, reply_ts, "")
-            if _working_ts:
-                try:
-                    await slack.delete_message(channel, _working_ts)
-                except Exception:
-                    pass
+            await turn.clear_working_indicators()
             return False
 
         # The permission ladder reads the routed conversation, its agent and this
@@ -773,7 +843,6 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # them is rebound past this point.
         turn.session_key = session_key
         turn._agent = _agent
-        turn.status_ctrl = status_ctrl
         turn.answer = answer
         turn.task = task
 
@@ -795,27 +864,22 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             # rather than rendered; without it the pause would be the same
             # silence the per-message echo guard already leaves.
             #
-            # The "Working…" block is deleted on the way out, as the
-            # compaction-replay exit above does: it carries a live Stop button for
-            # a turn that never opened, and this route returns before the normal
-            # path that would clean it up. The latch does not clear on its own, so
-            # leaving it would strand one per refused message.
+            # The "Working…" block is deleted on the way out, as on every early
+            # exit here: it carries a live Stop button for a turn that never
+            # opened, and this route returns before the normal path that would
+            # clean it up. The latch does not clear on its own, so leaving it
+            # would strand one per refused message.
             logger.warning("Slack turn ceiling reached for %s -- conversation paused", session_key)
             if exc.announce:
                 try:
                     await slack.post_message(channel, str(exc), reply_ts or None)
                 except Exception:
                     logger.debug("turn-ceiling notice post failed", exc_info=True)
-            await slack.set_thread_status(channel, reply_ts, "")
-            if _working_ts:
-                try:
-                    await slack.delete_message(channel, _working_ts)
-                except Exception:
-                    pass
+            await turn.clear_working_indicators()
             return False
         except SessionClosingError:
             logger.info("Aborting Slack dispatch for %s — gateway shutting down", session_key)
-            await slack.set_thread_status(channel, reply_ts, "")
+            await turn.clear_working_indicators()
             return False
 
         async for event in client.stream(full_message):
@@ -839,7 +903,6 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                     _turn_compacted = True
 
             elif event.kind == EVENT_COMPLETE:
-                status_ctrl.on_progress()
                 # The turn ended: text carried across a final ``wait`` is answer.
                 answer.take_carried()
                 _stop_reason = event.stop_reason
@@ -1220,6 +1283,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         status_ctrl.finalize(error=_had_error)
 
     # What ``_deliver_answer`` reads off the turn, as this phase left it.
+    turn.status_ctrl = status_ctrl
     turn._acquired = _acquired
     turn._agent = _agent
     turn.answer = answer

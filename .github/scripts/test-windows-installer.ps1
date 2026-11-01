@@ -637,7 +637,22 @@ do {
   [DateTime]::UtcNow -lt $uninstallDeadline
 )
 if ($remainingRegistrations.Count -ne 0) {
-  throw "Silent uninstall left a $productName registration behind: $(($remainingRegistrations | ForEach-Object { $_.PSPath }) -join '; ')"
+  # NAME each surviving registration, the way the residue branch below names
+  # its files. Find-InstallerRegistrations returns { Entry, InstallRoot }
+  # wrappers, so the key path lives on .Entry (the wrapper has no PSPath of its
+  # own). The hive, DisplayName, InstallLocation and UninstallString tell a slow
+  # uninstaller apart from a registration another step left in the other hive.
+  foreach ($remaining in $remainingRegistrations) {
+    $entry = $remaining.Entry
+    $fields = foreach ($name in @("DisplayName", "InstallLocation", "UninstallString")) {
+      $property = $entry.PSObject.Properties[$name]
+      "${name}=$(if ($property) { $property.Value } else { '<unset>' })"
+    }
+    Write-Host "  left registration: $($entry.PSPath) [$($fields -join '; ')]"
+  }
+  $keys = ($remainingRegistrations | ForEach-Object { $_.Entry.PSPath }) -join '; '
+  throw ("Silent uninstall left $($remainingRegistrations.Count) $productName " +
+    "registration(s) behind: $keys")
 }
 if (Test-Path -LiteralPath $installLocation) {
   # NAME the residue. "The directory is still there" is not actionable: the

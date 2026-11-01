@@ -240,6 +240,15 @@ def test_populated_pre_metadata_v1_open_avoids_newer_sql(store, monkeypatch):
     assert current["revision"] == 1
     assert current["source_ref"] == "user_explicit"
     assert len(opened) == 1
+    # Read-only connections also come from the store's read pool once the open
+    # finished; they set query_only and run nothing but reads.
+    readers = [probe for probe in probes if "PRAGMA query_only=1" in probe.statements]
+    probes = [probe for probe in probes if probe not in readers]
+    assert all(
+        statement.startswith(("SELECT", "PRAGMA"))
+        for reader in readers
+        for statement in reader.statements
+    )
     assert len(probes) == 1
     assert probes[0].statements == ["SELECT 1 FROM sqlite_schema WHERE name='member_database'"]
     assert any(
@@ -248,7 +257,10 @@ def test_populated_pre_metadata_v1_open_avoids_newer_sql(store, monkeypatch):
     assert any(
         statement.startswith("INSERT INTO memory_record_meta") for statement in opened[0].statements
     )
-    assert any(
+    # One accepted revision is within the V1 bound: the open-time pass looks for
+    # over-limit records and, finding none, deletes nothing.
+    assert any("HAVING count(*) >" in statement for statement in opened[0].statements)
+    assert not any(
         statement.startswith("DELETE FROM memory_revisions") for statement in opened[0].statements
     )
 

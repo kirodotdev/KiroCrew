@@ -77,7 +77,7 @@ async def _on_cancelled(turn: _ChatTurn) -> None:
     # Mark the cancel on _stop_reason too — every cancelled exit (the Stop
     # press AND the involuntary cases: tab close, idle sweep, shutdown, the
     # turn ceiling converted one frame above _run_chat) is a discarded turn whose history
-    # must stay owed, so the debt correctly stays armed (GPT 6.1 F1).
+    # must stay owed, so the debt correctly stays armed.
     _stop_reason = STOP_REASON_CANCELLED
     turn._stop_reason = _stop_reason
     await _persist_partial_reply(turn, _cancel_reason)
@@ -188,6 +188,8 @@ _POISON_CANARY_TIMEOUT_SECS = 30.0
 
 async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
     """Any other ACP error: the error card and the turn's failure record."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _directive_loop_gen = turn._directive_loop_gen
     _directive_loop_id = turn._directive_loop_id
     _directive_self_wake = turn._directive_self_wake
@@ -365,7 +367,10 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
             "messages are kept; the model rebuilds its working "
             "context from them)…",
             "msg msg-err",
-            meta={"kind": TRANSIENT_RETRY_KIND},
+            meta={
+                "kind": TRANSIENT_RETRY_KIND,
+                **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CONVERSATION_REJECTED_RESTARTING),
+            },
         )
         # The verbatim requeue carries the retry identity forward via
         # _queue_recovery itself (one mechanism for every recovery
@@ -573,11 +578,16 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
         if is_crewmate_worker_session(session_key):
             # A crewmate's worker is refused for its kit, which only some
             # member backends carry, so the member card's remedy does not fit.
+            from kiro_crew.crewmate_harness import crewmate_for_session
             from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
 
-            _worker_reason = worker_kit_backend_refusal(
-                crewmate_worker_backend(KiroCrewConfig.load().agent)
-            )
+            _cfg = KiroCrewConfig.load()
+            try:
+                _worker_reason = worker_kit_backend_refusal(
+                    crewmate_worker_backend(_cfg, crewmate_for_session(_cfg, session_key))
+                )
+            except Exception as _exc:  # noqa: BLE001 - the row must still be written
+                _worker_reason = str(_exc)
             if _worker_reason:
                 _err_text = "capability_harness_unsupported: " + _worker_reason
         _err_meta = _terminal_error_meta(exc)

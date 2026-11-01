@@ -30,7 +30,7 @@ from kiro_crew.dashboard.origin import (
     resolve_dashboard_host,
 )
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, generate_token
-from kiro_crew.dashboard.urls import tunnel_origin_if_opted_in
+from kiro_crew.dashboard.urls import slack_tunnel_opt_in, tunnel_origin_if_opted_in
 from kiro_crew.sel import sel
 from kiro_crew.slack.handler import is_allowed_user, is_tracked_channel
 from kiro_crew.tunnel import get_tunnel_url, publish_disabled
@@ -219,8 +219,10 @@ async def send_dashboard_link(
     token = generate_token(user_id, session_ttl)
 
     # Tunnel URL is only used when explicitly opted in via slack.use_tunnel_url
-    # (default false until tunnel mechanism is scaled for general use).
-    tunnel_url = tunnel_origin_if_opted_in(cfg.slack.use_tunnel_url)
+    # (default false until tunnel mechanism is scaled for general use). An
+    # enterprise build reads the opt-in as off, so neither door below opens.
+    use_tunnel = slack_tunnel_opt_in(cfg.slack.use_tunnel_url)
+    tunnel_url = tunnel_origin_if_opted_in(use_tunnel)
     # Set when the link is knowingly loopback-only and cannot ever become
     # reachable, so the DM can say that rather than leaving it to the log.
     no_tunnel_notice = False
@@ -239,7 +241,7 @@ async def send_dashboard_link(
     # does not keep. Falling through leaves ``tunnel_url`` empty, so the link is
     # composed from the local origin below — the same outcome as an edition whose
     # seam is a no-op, and the behavior every standalone install already gets.
-    if cfg.slack.use_tunnel_url and local_only and not tunnel_url and publish_disabled():
+    if use_tunnel and local_only and not tunnel_url and publish_disabled():
         # Audited, not just logged: this is the same security control as the boot
         # refusal in ``tunnel.setup`` (which records ``tunnel.start_denied``), and a
         # control whose denials are only half auditable cannot be reviewed after the
@@ -262,7 +264,7 @@ async def send_dashboard_link(
         # requester taps a link that times out every time and the only explanation
         # is in the log they cannot see.
         no_tunnel_notice = True
-    elif cfg.slack.use_tunnel_url and local_only and not tunnel_url:
+    elif use_tunnel and local_only and not tunnel_url:
         from kiro_crew.platform import current_context
         from kiro_crew.platform.context import async_safe_context_call
 

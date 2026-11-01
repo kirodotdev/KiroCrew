@@ -17,12 +17,14 @@ import { safeSetItem } from '../../utils/safeStorage'
 import TagManagerList from '../../components/TagManagerList'
 import { DndActiveProbe, DndDroppable } from '../../components/dnd'
 import { collectFolderSubtreeIds } from '../../utils/folderTree'
+import { isMateManaged } from '../../utils/mateFolders'
 import type { ChatFolder, ChatTag } from '../../types'
 import { SESSION_LANES } from '../chat/sessionLane'
 import { SessionRowWindowScroller } from '../chat/sessionRowWindow'
 import { i18nT } from '../../i18n/t'
 import { sidebarCollision } from './dnd/collision'
 import { BoardUnfileDropStrip, SortableColumnFolder, FolderDragGhost } from './dnd/targets'
+import { COLUMN_DRAG_CLASSES, columnDropSide, draggedColumnId, endColumnDrag, markColumnDropSide, startColumnDrag } from './columnDragFeedback'
 import type { Slot } from './types'
 import { FOLDERS_SHELVED_LS_KEY } from './persistence'
 import { sessionRowIdentity } from './rowIdentity'
@@ -38,7 +40,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     boardPeerCount, closeColumnPopover, columnEditId, columnMatches, columnPopoverImeLatch, columnPopoverRef,
     connected, createChatInFolder, deleteColumnWithConfirm, derivedHintCol, dndSensors,
     dropSlotMutation, editName, editScope, editingId, flatView, folderCompare, folderCreateError,
-    folderCreateMountAbsent, folderDragWithheld, folderEditInputRef, folderReorderable,
+    folderCreateMountAbsent, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderReorderable,
     folderSubtrees, folders, handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragStart, heldLane,
     hiddenFolderCount, hideEmptyFolderBody, ime, isActiveRow, isFolderFilteredOut, laneSlots, moveByDrag,
     nativeSessionDrag, onMenuCloseAutoFocus, onOpenSlotInNewTab, orderedColumns, popoverPos,
@@ -75,10 +77,14 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     // the collapse state it no longer has anything to remember.
     const emptyBody = hideEmptyFolderBody && deepChildren.length === 0 && childSlots.length === 0
     const collapsed = boardFolderCollapsed(columnId, folder)
+    // A mate's folder is managed for the person: open and collapse only. No
+    // menu, rename, new chat, drag, or drop -- the list view's rule.
+    const mateManaged = isMateManaged(folder, folders)
     // Valid "Move folder to" destinations: everything outside this folder's
     // own subtree (cycle guard). One O(1) lookup, computed once per row.
     const subtreeIds = folderSubtrees.get(folder.id) ?? collectFolderSubtreeIds(folders, folder.id)
-    const reparentTargets = folders.filter(f => !subtreeIds.has(f.id))
+    // A mate's folder takes no folder moved into it, so it is no destination.
+    const reparentTargets = folders.filter(f => !subtreeIds.has(f.id) && !isMateManaged(f, folders))
     // The board lane's answer to a reveal. A column has no folder HEADER row, so the
     // tree's `folderFlash` has nothing to attach to here and a board reveal used to
     // scroll to the column and then sit there unmarked -- the scroll alone is not the
@@ -104,7 +110,11 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     // path does not pass down, so it stays a separate piece of work. Disabled
     // while renaming in THIS column (rename is per-column via editScope) so
     // the inline input stays usable.
-    const draggable = !!dragHandleProps && !(editingId === folder.id && editScope === columnId)
+    const focusBoardFolderRow = () => {
+      // The header row itself, like the list view's `focusListFolderRow`.
+      document.querySelector<HTMLElement>(`[data-board-folder-row="${columnId}:${folder.id}"]`)?.focus({ preventScroll: true })
+    }
+    const draggable = !!dragHandleProps && !mateManaged && !(editingId === folder.id && editScope === columnId)
     return (
       // Two drop mechanisms coexist on this block, one per drag SOURCE:
       //  • Native HTML5 onDrop (below) — SESSION cards drag natively (they set
@@ -118,7 +128,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
       //    drag never fires dnd-kit's onDragEnd and a dnd-kit drag never fires
       //    the DOM drop event. Id is column-scoped because a root folder renders
       //    once per board column and dnd-kit droppable ids must be unique.
-      <DndDroppable key={`col-${columnId}-folder-drop-${folder.id}`} id={`col-${columnId}-folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
+      <DndDroppable key={`col-${columnId}-folder-drop-${folder.id}`} id={`col-${columnId}-folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }} disabled={mateManaged}>
         {({ setNodeRef, isOver }) => (
       // The drag handlers below make this a mouse-only drop target with no
       // keyboard analogue, so scope-disable the static-interaction rule.
@@ -133,9 +143,12 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
         // paints nothing. Naming this box gives the same declaration something to
         // key on here.
         className={`folder-col rounded-md transition-all mb-0.5${isOver ? ' ring-1 ring-accent' : ''}${boardFolderFlash ? ` session-reveal-flash${boardFolderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
-        onDragOver={e => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('ring-1', 'ring-accent') }}
-        onDragLeave={e => { e.stopPropagation(); e.currentTarget.classList.remove('ring-1', 'ring-accent') }}
+        // A mate's folder accepts no card: without preventDefault on dragover
+        // the browser reads the box as no drop target, so no drop fires here.
+        onDragOver={e => { if (mateManaged) return; e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('ring-1', 'ring-accent') }}
+        onDragLeave={e => { if (mateManaged) return; e.stopPropagation(); e.currentTarget.classList.remove('ring-1', 'ring-accent') }}
         onDrop={e => {
+          if (mateManaged) return
           e.preventDefault(); e.stopPropagation()
           e.currentTarget.classList.remove('ring-1', 'ring-accent')
           const k = e.dataTransfer.getData('text/plain')
@@ -145,13 +158,19 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
         {/* Only the header opens the folder menu; body rows keep their own
          * menus and the rename input keeps its native editing menu. */}
         <ContextMenu>
-          <ContextMenuTrigger asChild disabled={editingId === folder.id && editScope === columnId}>
+          <ContextMenuTrigger asChild disabled={mateManaged || (editingId === folder.id && editScope === columnId)}>
         {/* Same rule as the tree row: a column copy with no body has nothing to
          *  toggle, so it is not a control - no button role, no tab stop, no
          *  pointer cursor, no expanded state and no handler. It stays draggable,
          *  because reordering a folder is an action an empty folder can honour. */}
         <div
-          className={`group relative flex items-center gap-2 pr-2 py-1 rounded-md ${draggable ? 'cursor-grab active:cursor-grabbing' : emptyBody ? 'cursor-default' : 'cursor-pointer'} text-[12px] text-muted transition-all${emptyBody ? '' : ' hover:text-text hover:bg-bg-hover'}`}
+          // The focus target after a rename closes, the board's counterpart to
+          // the tree's `data-folder-row`. Column-scoped, because a root folder
+          // renders once per column and focus must land in the column the
+          // rename happened in. A dedicated marker rather than `data-testid`
+          // (#22769): test ids are not a runtime contract.
+          data-board-folder-row={`${columnId}:${folder.id}`}
+          className={`focus-ring-accent-inset group relative flex items-center gap-2 pr-2 py-1 rounded-md ${draggable ? 'cursor-grab active:cursor-grabbing' : emptyBody ? 'cursor-default' : 'cursor-pointer'} text-[12px] text-muted transition-all${emptyBody ? '' : ' hover:text-text hover:bg-bg-hover'}`}
           style={{ paddingLeft: '6px' }}
           {...(draggable ? dragHandleProps : {})}
           // The collapse props go AFTER the drag spread, and the order is
@@ -172,7 +191,10 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               tabIndex: 0,
               'aria-label': i18nT('pages.chatSidebar.folder_2', { name: folder.name }),
               'aria-roledescription': i18nT('pages.chatSidebar.drag_to_reorder'),
-            } : {})
+            // Inert row: still no tab stop, but `tabIndex: -1` lets the rename
+            // close hand focus back to it - the list row's own contract.
+            // Without it the focus call is a no-op and focus drops to <body>.
+            } : { tabIndex: -1 })
             : {
               role: 'button',
               tabIndex: 0,
@@ -201,17 +223,17 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
              *  handled the other way round — the row's onKeyDown ignores events
              *  whose target is not the row — so Space types a space here rather
              *  than collapsing the folder. */
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[12px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
+            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[12px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { if (renameCommit(folder.id, editName)) requestAnimationFrame(focusBoardFolderRow) }, onEscape: () => { folderCancelEscapeRef.current = true; folderEditInputRef.current?.blur(); setEditingId(null); requestAnimationFrame(focusBoardFolderRow) }, onBlur: () => { if (folderCancelEscapeRef.current) { folderCancelEscapeRef.current = false; return } renameCommit(folder.id, editName) } })} />
           ) : (
             // Double-click rename is a mouse-only power shortcut; the accessible
             // path is the ⋯-menu Rename item, so scope-disable the interaction rule.
             // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-            <span className="flex-1 truncate" title={i18nT('pages.chatSidebar.double_click_to_rename')} {...offlineProps(connected, i18nT('utils.offline.rename_folders'))} onDoubleClick={e => { e.stopPropagation(); if (!connected) { setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_folders') })); return } setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}>{folder.name}</span>
+            <span className="flex-1 truncate" title={mateManaged ? undefined : i18nT('pages.chatSidebar.double_click_to_rename')} {...(mateManaged ? {} : offlineProps(connected, i18nT('utils.offline.rename_folders')))} onDoubleClick={e => { e.stopPropagation(); if (mateManaged) return; if (!connected) { setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_folders') })); return } setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}>{folder.name}</span>
           )}
           <span className="text-[10px] text-muted shrink-0">{count}</span>
           {/* List-view parity: an empty folder's row keeps its action cluster
             *  visible (see the note in renderFolderHeader). */}
-          {!(editingId === folder.id && editScope === columnId) && (
+          {!mateManaged && !(editingId === folder.id && editScope === columnId) && (
           <span className={`${emptyBody ? '' : 'opacity-0 '}group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100 transition-opacity flex items-center gap-0.5`}>
             {/* ⋯ menu + a primary "new chat in folder" action, mirroring the
              *  list-view folder header (renderFolderHeader) so board view has
@@ -262,7 +284,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
             {/* Default: the empty-folder affordance stays exactly as it was, in
              *  list-view parity (see renderFolderBlock). Reached only when the
              *  setting is OFF - with it on there is no body to put this in. */}
-            {deepChildren.length === 0 && childSlots.length === 0 && (
+            {deepChildren.length === 0 && childSlots.length === 0 && !mateManaged && (
               <button key={`col-${columnId}-newchat-${folder.id}`} type="button" data-testid={`col-${columnId}-folder-${folder.id}-empty-new-chat`} data-folder-new-chat=""
                 // Same three-gesture contract as the folder header's "+".
                 onMouseDownCapture={onOpenSlotInNewTab ? (e => { if (e.button === 1) e.preventDefault() }) : undefined}
@@ -425,16 +447,24 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                 // Board column is a drag-and-drop drop zone (column reorder + session
                 // card drop); mouse-only drag handlers, so scope-disable the rule.
                 // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-                <div key={col.id} data-testid={`column-${col.id}`} className="flex flex-col flex-1 min-w-0 bg-card border border-border rounded-md overflow-hidden" style={{ minWidth: orderedColumns.length > 1 ? '220px' : undefined }}
+                <div key={col.id} data-testid={`column-${col.id}`} data-board-column={col.id} className={`flex flex-col flex-1 min-w-0 bg-card border border-border rounded-md overflow-hidden ${COLUMN_DRAG_CLASSES}`} style={{ minWidth: orderedColumns.length > 1 ? '220px' : undefined }}
                   // Clear first, on the way down: a folder block or unfile strip
                   // inside the lane takes the card and stops the dragover, so only
                   // a dragover that reaches the lane itself shows the hint again.
-                  onDragOverCapture={laneDef ? () => setDerivedHintCol(c => (c === col.id ? null : c)) : undefined}
+                  // The column-reorder landing mark follows the same rule: a folder
+                  // block stops a column drag's dragover and drop, so a release there
+                  // reorders nothing and must not show where the column would land.
+                  onDragOverCapture={e => {
+                    markColumnDropSide(e.currentTarget, null)
+                    if (laneDef) setDerivedHintCol(c => (c === col.id ? null : c))
+                  }}
                   onDragOver={e => {
                     const types = e.dataTransfer.types
                     // Accept column reorder on the entire column surface
                     if (types.includes('application/mc-column')) {
                       e.preventDefault()
+                      const dragged = draggedColumnId(e.currentTarget)
+                      markColumnDropSide(e.currentTarget, dragged ? columnDropSide(orderedColumns.map(c => c.id), dragged, col.id) : null)
                       return
                     }
                     // A derived lane leaves the drop refused (no preventDefault)
@@ -452,11 +482,15 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                   onDragLeave={e => {
                     e.currentTarget.classList.remove('ring-1', 'ring-accent')
                     // Moving onto a child also fires dragleave; only leaving the lane clears.
-                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDerivedHintCol(c => (c === col.id ? null : c))
+                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                      setDerivedHintCol(c => (c === col.id ? null : c))
+                      markColumnDropSide(e.currentTarget, null)
+                    }
                   }}
                   onDrop={e => {
                     e.currentTarget.classList.remove('ring-1', 'ring-accent')
                     setDerivedHintCol(null)
+                    endColumnDrag(e.currentTarget)
                     // Column reorder takes priority
                     const draggedCol = e.dataTransfer.getData('application/mc-column')
                     if (draggedCol && draggedCol !== col.id) {
@@ -476,7 +510,12 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                     {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
                     <span draggable
                       className="cursor-grab text-muted hover:text-text shrink-0"
-                      onDragStart={e => { e.dataTransfer.setData('application/mc-column', col.id); e.dataTransfer.effectAllowed = 'move' }}
+                      onDragStart={e => {
+                        e.dataTransfer.setData('application/mc-column', col.id)
+                        e.dataTransfer.effectAllowed = 'move'
+                        startColumnDrag(e, e.currentTarget.closest<HTMLElement>('[data-board-column]'), col.id)
+                      }}
+                      onDragEnd={e => endColumnDrag(e.currentTarget.closest<HTMLElement>('[data-board-column]'))}
                       title={i18nT('pages.chatSidebar.drag_to_reorder')}>
                       <GripVertical size={12} />
                     </span>

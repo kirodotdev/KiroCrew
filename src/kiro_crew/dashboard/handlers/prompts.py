@@ -109,6 +109,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.prompts_skill_edits import _SKILL_WRITE_LOCK  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import _match_package_row  # noqa: F401
+    from kiro_crew.dashboard.handlers.prompts_skill_edits import _skill_detail_verbs  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import api_skill_detail  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import api_skill_pin  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import api_skills_create  # noqa: F401
@@ -150,6 +151,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.handlers._shared import read_bounded_json  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import read_skill_file  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import requesting_slot_project  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import skill_rows_for_globs  # noqa: F401
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
         is_owner_dashboard_request,
     )

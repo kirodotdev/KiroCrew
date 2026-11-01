@@ -27,7 +27,11 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.acp_backends import ACP_BACKEND_GOOSE, ACP_BACKENDS_SIDE_READONLY
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_STRANDS,
+    ACP_BACKENDS_SIDE_READONLY,
+)
 from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.drivers.acp import (
@@ -61,6 +65,8 @@ from kiro_crew.llm_helpers import (
 from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.security import StreamRedactor, redact
 from kiro_crew.sel import sel
+from kiro_crew.shared_crew.admission_gate import actor_budget
+from kiro_crew.shared_crew.turn_gate import capacity_note, initiated_by, run_admitted
 from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
@@ -136,6 +142,18 @@ THREAD_BOUNDARY_PROMPT_LISTING = (
     "user asks for them. Never claim that a tool is unconfigured or suggest "
     "enabling it. If the user wants a change made, tell them to ask in the "
     "main chat."
+)
+
+#: The read-only boundary for a thread session whose one tool reads a file's text
+#: by its absolute path (Strands, whose side session proves only its own ``read``).
+THREAD_BOUNDARY_PROMPT_FILE_READS = (
+    "This thread is read-only: lookups work here, but changes don't. Reading a "
+    "file by its absolute path runs without asking, so use it when a reply needs "
+    "it. There is no shell, search or web tool here. Writing or editing files, "
+    "running commands, fetching pages, and MCP tools are refused here, even when "
+    "the user asks for them. Never claim that a tool is unconfigured or suggest "
+    "enabling it. If the user wants a change made, tell them to ask in the main "
+    "chat."
 )
 
 THREAD_BOUNDARY_PROMPT_NO_TOOLS = (
@@ -349,6 +367,7 @@ def build_thread_message(
     tools_available: bool,
     shell_available: bool = True,
     file_reads_available: bool = True,
+    searches_available: bool = True,
 ) -> str:
     """The whole envelope, every time: a thread turn always cold-starts its
     session, so nothing carries over between replies."""
@@ -386,6 +405,8 @@ def build_thread_message(
     else:
         if shell_available:
             parts.append(THREAD_BOUNDARY_PROMPT)
+        elif file_reads_available and not searches_available:
+            parts.append(THREAD_BOUNDARY_PROMPT_FILE_READS)
         elif file_reads_available:
             parts.append(THREAD_BOUNDARY_PROMPT_NO_SHELL)
         else:
@@ -632,19 +653,20 @@ async def api_chat_thread_reply(request: web.Request) -> web.Response:
             if unanswered and flight_key not in _in_flight:
                 _in_flight.add(flight_key)
                 run_id = uuid.uuid4().hex
-                task = asyncio.create_task(
-                    _run_thread_turn(
-                        state,
-                        slot,
-                        mid,
-                        run_id,
-                        str(existing.get("content", "")),
-                        parent,
-                        context_before,
-                        flight_key,
-                        identity,
+                with initiated_by(actor_budget(request)):
+                    task = asyncio.create_task(
+                        _run_thread_turn(
+                            state,
+                            slot,
+                            mid,
+                            run_id,
+                            str(existing.get("content", "")),
+                            parent,
+                            context_before,
+                            flight_key,
+                            identity,
+                        )
                     )
-                )
                 state._background_tasks.add(task)
                 task.add_done_callback(state._background_tasks.discard)
                 return web.json_response(
@@ -740,20 +762,21 @@ async def api_chat_thread_reply(request: web.Request) -> web.Response:
             content=text,
             reply=reply,
         )
-        task = asyncio.create_task(
-            _run_thread_turn(
-                state,
-                slot,
-                mid,
-                run_id,
-                text,
-                parent,
-                context_before,
-                flight_key,
-                identity,
-                start_priority=owner_start_priority(request),
+        with initiated_by(actor_budget(request)):
+            task = asyncio.create_task(
+                _run_thread_turn(
+                    state,
+                    slot,
+                    mid,
+                    run_id,
+                    text,
+                    parent,
+                    context_before,
+                    flight_key,
+                    identity,
+                    start_priority=owner_start_priority(request),
+                )
             )
-        )
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
         launched = True
@@ -879,7 +902,59 @@ async def _run_thread_turn(
     identity: str | None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> None:
-    """Background task: one crewmate reply into the thread on *mid*.
+    """Background task: one crewmate reply, admitted by Shared Crew fair admission.
+
+    Charged to the replier (the handler binds it with ``initiated_by``). A
+    refused or unstarted reply never runs: the thread gets a final error frame
+    naming the capacity limit and the reply slot is freed.
+    """
+
+    def _refused(reason: object) -> None:
+        _in_flight.discard(flight_key)
+        broadcast_thread_reply(
+            state,
+            slot_key=slot.key,
+            mid=mid,
+            run_id=run_id,
+            role=ROLE_ASSISTANT,
+            content=capacity_note(reason),
+            is_error=True,
+            final=True,
+            ts=time.time(),
+        )
+
+    await run_admitted(
+        _thread_turn_body(
+            state,
+            slot,
+            mid,
+            run_id,
+            text,
+            parent,
+            context_before,
+            flight_key,
+            identity,
+            start_priority,
+        ),
+        session_key=thread_session_key(slot.key, mid),
+        text=text,
+        refused=_refused,
+    )
+
+
+async def _thread_turn_body(
+    state: DashboardState,
+    slot: _ChatSlot,
+    mid: str,
+    run_id: str,
+    text: str,
+    parent: dict[str, Any],
+    context_before: list[dict[str, Any]],
+    flight_key: str,
+    identity: str | None,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
+) -> None:
+    """One crewmate reply into the thread on *mid*.
 
     The shape is the side turn's (``handlers/side._run_side_turn``) without its
     steer/queue ledger: resolve the slot's agent, derive the read-only spec on
@@ -972,17 +1047,18 @@ async def _run_thread_turn(
             )
         tools_available = backend is not None and backend in ACP_BACKENDS_SIDE_READONLY
         # The same confinement per harness as a Side Chat turn
-        # (dashboard/handlers/side.py): claude and goose through the session
-        # shape their client starts for ``side_read_only``, kiro-cli through the
-        # derived spec.
+        # (dashboard/handlers/side.py): claude, goose and Strands through the
+        # session shape their client starts for ``side_read_only``, kiro-cli
+        # through the derived spec.
         claude_thread = tools_available and is_claude_backend_name(backend)
         if claude_thread and not await asyncio.to_thread(claude_adapter_honours_session_options):
             tools_available = claude_thread = False
         if backend == ACP_BACKEND_GOOSE and not goose_side_home_supported():
             tools_available = False
         goose_thread = tools_available and backend == ACP_BACKEND_GOOSE
+        strands_thread = tools_available and backend == ACP_BACKEND_STRANDS
         session_kwargs: dict[str, Any] = {}
-        if claude_thread or goose_thread:
+        if claude_thread or goose_thread or strands_thread:
             agent: str | None = kiro_agent or slot_agent
             approval_policy = ToolApprovalPolicy.READ_ONLY
             session_kwargs["side_read_only"] = True
@@ -1015,8 +1091,9 @@ async def _run_thread_turn(
             threads.get(mid, []),
             text,
             tools_available=tools_available,
-            shell_available=not (claude_thread or goose_thread),
+            shell_available=not (claude_thread or goose_thread or strands_thread),
             file_reads_available=not goose_thread,
+            searches_available=not strands_thread,
         )
         try:
             response_text = redact(

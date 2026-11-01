@@ -215,6 +215,38 @@ export const LOCATIONS = {
       ],
     }],
   },
+  // The profile card's Schedules tab: what wakes the mate, the Heartbeat row
+  // first. The card opens from the header pill (`members.edit`).
+  'members.schedule-tab': {
+    kind: 'tab',
+    terms: {
+      en: ["my mate's schedules", 'what wakes my mate', 'turn on heartbeat', "my mate's check-ins"],
+      'zh-CN': ['队友的定时任务', '什么会唤醒队友', '打开心跳'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+      ],
+    }],
+  },
+  // The profile card's Goals tab: the goal record the user and the mate share,
+  // its milestones and check-in switches.
+  'members.goals-tab': {
+    kind: 'tab',
+    terms: {
+      en: ["my mate's goal", "my mate's milestones", 'goals and milestones', "what my mate is working toward"],
+      'zh-CN': ['队友的目标', '队友的里程碑', '目标和里程碑'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+      ],
+    }],
+  },
   // The profile card's Settings row (CrewProfileSettings), on its Profile tab:
   // the door to the crewmate's own settings page (permission, model, worker
   // model, the dashboard lock). The card opens from the header pill
@@ -273,12 +305,13 @@ export const LOCATIONS = {
   },
   // The side panel's opener. Drawn while the panel is hidden (always, as an
   // overlay); while the docked panel is open its contents are already on screen.
+  // The panel's first tab is the mate's Dashboard, so this is also the way to it.
   'members.details': {
     kind: 'toggle',
     label: { from: 'attr', attr: 'aria-label' },
     terms: {
-      en: ['crewmate details', 'crewmate info', 'side panel', 'show crewmate details'],
-      'zh-CN': ['队友详情', '队友信息', '侧边面板'],
+      en: ['crewmate details', 'crewmate info', 'side panel', 'show crewmate details', "my mate's dashboard", "my mate's files"],
+      'zh-CN': ['队友详情', '队友信息', '侧边面板', '队友的仪表板', '队友的文件'],
     },
     placements: [{
       ...ON_PAGE, entry: 'header',

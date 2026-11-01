@@ -401,6 +401,7 @@ class TestSteerRegisteredBeforeAwait:
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         slot = _running_slot(state)
+        slot._steer_possibly_delivered.add("later")
         client_mock = MagicMock()
         client_mock.supports_steer = True
         client_mock.steer = AsyncMock(side_effect=RuntimeError("boom"))
@@ -415,6 +416,7 @@ class TestSteerRegisteredBeforeAwait:
 
         # unwound — queue fallback owns delivery, no double-delivery via requeue
         assert slot._pending_steers == []
+        assert "later" not in slot._steer_possibly_delivered
         assert [i["content"] for i in slot._queue] == ["later"]
 
     @pytest.mark.asyncio

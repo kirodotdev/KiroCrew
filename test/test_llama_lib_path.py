@@ -15,6 +15,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BUNDLED_PLATFORMS = (
     "linux_x86_64",
     "linux_aarch64",
+    "linux_aarch64_dotprod",
     "macos_arm64",
     "macos_x86_64",
     "win_amd64",

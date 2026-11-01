@@ -414,7 +414,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     await waitFor(() => expect(customField()).toBeInTheDocument())
     const field = customField()
 
-    field.focus()
+    act(() => { field.focus() })
     // Focused on a preset value, so the field opens empty rather than pre-filled.
     expect(field.value).toBe('')
 
@@ -431,7 +431,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     render(<SettingsView />)
     await waitFor(() => expect(customField().value).toBe('200'))
 
-    customField().focus()
+    act(() => { customField().focus() })
     // Editing an existing custom interval starts from it, not from blank.
     expect(customField().value).toBe('200')
   })
@@ -467,7 +467,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     await waitFor(() => expect(customField()).toBeInTheDocument())
     const field = customField()
 
-    field.focus()
+    act(() => { field.focus() })
     fireEvent.change(field, { target: { value: '75' } })
     fireEvent.keyDown(field, { key: 'Enter' })
 
@@ -480,7 +480,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     await waitFor(() => expect(customField()).toBeInTheDocument())
     const field = customField()
 
-    field.focus()
+    act(() => { field.focus() })
     fireEvent.change(field, { target: { value: '75' } })
     fireEvent.keyDown(field, { key: 'a' })
 
@@ -492,7 +492,7 @@ describe('SettingsView — reads once, then follows the broadcast', () => {
     render(<SettingsView />)
     await waitFor(() => expect(preset(45)).toHaveAttribute('aria-pressed', 'true'))
 
-    customField().focus()
+    act(() => { customField().focus() })
     fireEvent.change(customField(), { target: { value: '77' } })
     expect(customField().value).toBe('77')
 

@@ -49,6 +49,10 @@ from kiro_crew.imessage.rpc import JsonRpcPeer, RpcError, RpcTransportError
 
 logger = logging.getLogger(__name__)
 
+#: Lost-peer close tasks, held until done: a bare ``create_task`` result is
+#: only weakly referenced by the loop and can be collected mid-close.
+_PEER_CLOSE_TASKS: set[asyncio.Task[None]] = set()
+
 #: Protocol version this client speaks. The bridge rejects anything else.
 PROTOCOL_VERSION = 1
 
@@ -345,8 +349,11 @@ class IMessageClient:
         self._set_state(False, reason[:120])
         if old is not None:
             # Sync callback, async teardown: schedule it rather than block the
-            # reader's own exit path.
-            asyncio.create_task(self._close_peer(old))
+            # reader's own exit path. The loop holds a task only weakly, so the
+            # set keeps it alive until the close finishes.
+            task = asyncio.create_task(self._close_peer(old))
+            _PEER_CLOSE_TASKS.add(task)
+            task.add_done_callback(_PEER_CLOSE_TASKS.discard)
         self._schedule_resubscribe()
 
     async def _close_peer(self, peer: JsonRpcPeer) -> None:

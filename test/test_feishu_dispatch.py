@@ -974,7 +974,7 @@ class TestMidTurn:
 
 
 # ------------------------------------------------------------------
-# Tests: group isolation (review finding a)
+# Tests: group isolation
 # ------------------------------------------------------------------
 
 
@@ -1045,7 +1045,7 @@ class TestGroupIsolation:
 
 
 # ------------------------------------------------------------------
-# Tests: restart seeding (review finding b)
+# Tests: restart seeding
 # ------------------------------------------------------------------
 
 

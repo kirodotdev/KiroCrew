@@ -31,8 +31,12 @@ def _governance_denial(
     alias_groups: tuple[tuple[str, ...], ...] = (),
     deny_aliases: tuple[str, ...] = (),
     spawn_target: str = "",
+    own_scopes: tuple[str, ...] = (),
 ) -> str | None:
     """Return a denial reason if governance forbids *tool_name*, else None.
+
+    *own_scopes* is ``gate_decision``'s: the scopes a proven non-shell call is
+    judged in (``GateFacts.governance_own_scopes``), or ``()``.
 
     *spawn_target* is the agent a backend-stated sub-agent spawn will start (set
     only from KAS's own ``_meta.kiro.consent``; see ``AcpEvent.spawn_target``).
@@ -86,6 +90,7 @@ def _governance_denial(
             extra_titles=extra_titles,
             alias_groups=alias_groups,
             deny_aliases=deny_aliases,
+            own_scopes=own_scopes,
         )
         if not decision.permitted:
             # The denied identity when the decision names one -- with the title,

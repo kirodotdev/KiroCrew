@@ -308,7 +308,10 @@ async def connect(
         # this exact call.
         if params.forwards_over_ssm:
             if not await asyncio.to_thread(cloud_ssm.session_manager_plugin_installed):
-                return self._error_status(inst, cloud_ssm.session_manager_plugin_install_hint())
+                return self._error_status(
+                    inst,
+                    await asyncio.to_thread(cloud_ssm.session_manager_plugin_unavailable_message),
+                )
 
         # Reclaim our own forwarder if a prior gateway hard-kill leaked it
         # still holding this instance's recorded port. Keyed on the recorded
@@ -468,6 +471,7 @@ async def connect(
         self._tunnel_epoch[instance_id] = self._tunnel_epoch.get(instance_id, 0) + 1
         tunnel.status.turn_url = params.turn_url(local_port)
         tunnel._on_healthy = self._on_tunnel_healthy
+        tunnel._timeout_tunable = True  # budget is _connect_timeout_for(...)
         ok = await tunnel.start()
         if not ok:
             self._last_error[instance_id] = tunnel.status.error or "tunnel failed to start"

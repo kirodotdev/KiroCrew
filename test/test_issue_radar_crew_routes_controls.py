@@ -58,6 +58,7 @@ class _Nudge:
 
     def __init__(self, slot_key: str) -> None:
         self.loop = _Loop(slot_key)
+        self.messages: list[str] = []
 
     def get_by_slot(self, slot_key: str) -> _Loop | None:
         return self.loop if slot_key == self.loop.slot_key else None
@@ -65,6 +66,8 @@ class _Nudge:
     async def update(self, loop_id: str, **kw) -> None:
         if "active" in kw:
             self.loop.active = bool(kw["active"])
+        if "message" in kw:
+            self.messages.append(kw["message"])
 
 
 # ── POST /crew/pause ────────────────────────────────────────────────────────
@@ -304,6 +307,24 @@ class TestUpdateRevokesWhenAutoApprovalIsWithdrawn(_CrewRouteCase):
         self.assertIs(_payload(res)["crew"]["unattended"], True)
         self.assertFalse(slot._trust)
         self.assertFalse(svc.loop.active)
+
+    async def test_editing_the_extra_prompt_refreshes_the_armed_loop_message(self):
+        """An idle-timer turn sends the loop's cached prompt, so an edit must reach it."""
+        crew = self.crew("Andromeda")
+        slot, app, svc = self._armed(crew)
+        text = "Ask the requester before passing a product decision."
+        res = await self._patch(app, svc, owner=OWNER, repo=REPO, id=crew["id"], extra_prompt=text)
+        self.assertEqual(res.status, 200)
+        self.assertEqual(len(svc.messages), 1)
+        self.assertIn(text, svc.messages[0])
+        # Clearing it refreshes too, and the cleared text is gone.
+        await self._patch(app, svc, owner=OWNER, repo=REPO, id=crew["id"], extra_prompt="")
+        self.assertEqual(len(svc.messages), 2)
+        self.assertNotIn(text, svc.messages[1])
+        # An unrelated edit leaves the cached message alone.
+        await self._patch(app, svc, owner=OWNER, repo=REPO, id=crew["id"], name="Whirlpool")
+        self.assertEqual(len(svc.messages), 2)
+        self.assertTrue(svc.loop.active)
 
     async def test_a_withdrawal_without_a_dashboard_is_not_a_500(self):
         """The gateway can serve this route with no dashboard state attached, and the

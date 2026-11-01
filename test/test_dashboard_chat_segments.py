@@ -22,7 +22,6 @@ class TestFlushSegment:
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         slot = state.get_or_create_slot("s1")
-        # Simulate accumulated chunks
         slot.append("chunk", "Hello ")
         slot.append("chunk", "world")
 

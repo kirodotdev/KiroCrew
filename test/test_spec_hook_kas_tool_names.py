@@ -222,14 +222,25 @@ def test_an_mcp_server_tool_spec_hook_withholds_mcp_auto_approval(tmp_path, monk
     assert hook_gated_capabilities(matchers) == {"mcp"}
 
 
-def test_a_post_tool_use_title_matcher_is_kept_and_warned(caplog):
-    # PostToolUse still matches the call's title, which the author is told once.
+def test_a_post_tool_use_matcher_is_read_like_a_pre_tool_use_one(caplog):
+    # Both events meet the finished or requested call under its tool id, so a
+    # kiro-cli tool name is not warned about and an unknown one is, once.
     with caplog.at_level("WARNING", logger="kiro_crew.agent_sdk.spec_hooks"):
         hooks = spec_hooks.spec_script_hooks(
-            "a1", {"hooks": {"postToolUse": [{"matcher": "touch*", "command": "log.sh"}]}}
+            "a1",
+            {
+                "hooks": {
+                    "postToolUse": [
+                        {"matcher": "execute_bash", "command": "log.sh"},
+                        {"matcher": "touch*", "command": "log.sh"},
+                    ]
+                }
+            },
         )
-    assert [h.matcher for h in hooks] == ["touch*"]
-    assert any("postToolUse" in r.getMessage() for r in caplog.records)
+    assert [h.matcher for h in hooks] == ["execute_bash", "touch*"]
+    warned = [r.getMessage() for r in caplog.records]
+    assert not any("execute_bash" in m for m in warned)
+    assert any("touch*" in m for m in warned)
 
 
 # ── Matching in the hook store ──

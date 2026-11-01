@@ -9,7 +9,7 @@
  *   segment's error / no-totals branches
  * - the Kiro credits modal with a bonus pool and a signed-in identity
  * - the notification popover's pointer-outside and route-change dismissals
- * - developer mode and the Electron native-menu navigation bridge
+ * - the old /developer route and the Electron native-menu bridges
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
@@ -257,6 +257,36 @@ describe('App — applying an update', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Update error' })).toBeNull())
   })
 
+  it('keeps focus inside the failure dialog and dismisses it on Escape', async () => {
+    vi.mocked(api.applyUpdate).mockRejectedValueOnce(new Error('no space left on device'))
+    await startUpdate()
+
+    const dialog = await screen.findByRole('dialog', { name: 'Update error' })
+    // Focus moves in once the dialog's effects have run.
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+    // The agent hand-off stays beside Dismiss.
+    const ask = within(dialog).getByRole('button', { name: /ask the agent/i })
+    const dismiss = within(dialog).getByRole('button', { name: 'Dismiss' })
+    dismiss.focus()
+    fireEvent.keyDown(dismiss, { key: 'Tab' })
+    expect(document.activeElement).toBe(ask)
+    fireEvent.keyDown(ask, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(dismiss)
+
+    // A page shortcut typed inside the dialog stays inside it.
+    const pageKeys = vi.fn()
+    window.addEventListener('keydown', pageKeys)
+    try {
+      fireEvent.keyDown(dismiss, { key: 'k', ctrlKey: true })
+      expect(pageKeys).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', pageKeys)
+    }
+
+    fireEvent.keyDown(dismiss, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Update error' })).toBeNull())
+  })
+
   it('falls back to the raw failure text when it is not a JSON body', async () => {
     vi.mocked(api.applyUpdate).mockRejectedValueOnce(new Error('no space left on device'))
     await startUpdate()
@@ -483,12 +513,13 @@ describe('App — notification popover dismissal', () => {
 describe('App — Electron bridges', () => {
   beforeEach(() => { localStorage.setItem('mc-last-version', '0.4.0') })
 
-  it('relays the boot dev-mode state to the native shell', async () => {
+  it('asks the native shell to show its Developer Tools menu item at boot', async () => {
     const setDevMode = vi.fn()
     setElectronBridge({ setDevMode })
     renderWithProviders(<App />, { route: '/chat' })
     await screen.findByTestId('chat-page')
-    expect(setDevMode).toHaveBeenCalledWith(false)
+    expect(setDevMode).toHaveBeenCalledWith(true)
+    expect(setDevMode).not.toHaveBeenCalledWith(false)
   })
 
   it('routes a plain in-app path from the native menu and ignores a host-relative one', async () => {
@@ -524,32 +555,22 @@ describe('App — Electron bridges', () => {
   })
 })
 
-describe('App — developer mode', () => {
+describe('App — Developer page route', () => {
   beforeEach(() => { localStorage.setItem('mc-last-version', '0.4.0') })
 
-  it('adds the Developer rail entry with an unseen dot, then clears it on visit', async () => {
-    renderWithProviders(<App />, { route: '/chat' })
-    await screen.findByTestId('chat-page')
-    expect(screen.queryByRole('button', { name: 'Developer' })).toBeNull()
-
-    act(() => { window.dispatchEvent(new CustomEvent('mc-dev-mode-changed', { detail: true })) })
-
-    const devRow = await screen.findByRole('button', { name: 'Developer' })
-    expect(devRow.querySelector('.animate-pulse')).toBeTruthy()
-
-    fireEvent.click(devRow)
-    await screen.findByTestId('developer-page')
-    expect(devRow.querySelector('.animate-pulse')).toBeNull()
+  it('has no Developer rail entry, even with the old dev-mode key set', async () => {
+    localStorage.setItem('mc-dev-mode', '1')
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      await screen.findByTestId('chat-page')
+      expect(screen.queryByRole('button', { name: 'Developer' })).toBeNull()
+    } finally {
+      localStorage.removeItem('mc-dev-mode')
+    }
   })
 
-  it('drops the Developer rail entry when developer mode is switched back off', async () => {
-    renderWithProviders(<App />, { route: '/chat' })
-    await screen.findByTestId('chat-page')
-
-    act(() => { window.dispatchEvent(new CustomEvent('mc-dev-mode-changed', { detail: true })) })
-    expect(await screen.findByRole('button', { name: 'Developer' })).toBeInTheDocument()
-
-    act(() => { window.dispatchEvent(new CustomEvent('mc-dev-mode-changed', { detail: false })) })
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Developer' })).toBeNull())
+  it('still serves the old /developer route', async () => {
+    renderWithProviders(<App />, { route: '/developer' })
+    expect(await screen.findByTestId('developer-page')).toBeInTheDocument()
   })
 })

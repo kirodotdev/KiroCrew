@@ -341,7 +341,7 @@ pre-projection state.
 | `model` | str | `""` = governed default |
 | `triage_model` | str | `""` = off: every turn runs on `model`. Set, a turn with no open item in an acting phase (`selected`, `claimed`, `investigating`, `implementing`, `addressing-review`) runs on this model, and any acting item puts the crew back on `model`. Switched between turns, never inside one. A model the account cannot run falls back to `model` and is named on the crew page as `triage_model_unavailable` |
 | `model_held` | bool | written by the runtime. True once a person picked the model of the crew's session by hand (the model picker or `session_set_model`) while `triage_model` is set: the crew stops switching that session's model, and the crew page names the held model with a Switch back to triage model action. A patch may only clear it (`false`, that action); an edit that changes `model` or `triage_model` clears it too |
-| `extra_prompt` | str | appended after the brief, never replacing it |
+| `extra_prompt` | str | appended after the brief, never replacing it: sent on every turn, before the nudge. Blank or whitespace-only adds nothing |
 | `labels` | [str] | its scope. Empty = every label |
 | `auto_resolve_conflicts` | bool | default true, structural files only |
 | `auto_merge` | bool | default true |

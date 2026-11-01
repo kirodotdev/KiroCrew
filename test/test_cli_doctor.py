@@ -12,6 +12,7 @@ channel sections and the cron and directory censuses live in
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -22,6 +23,7 @@ import pytest
 
 from conftest import make_dir_link
 from kiro_crew import cli_doctor
+from kiro_crew.doctor_checks import resources as doctor_resources
 
 
 class TestManagedServicePolicyDoctor:
@@ -121,6 +123,33 @@ class TestFfmpegLinuxHintResolvable:
         assert "dashboard" in cli_doctor._FFMPEG_LINUX_HINT
         assert decoder.artifact_for("Linux", "x86_64") is not None
         assert decoder.artifact_for("Linux", "aarch64") is not None
+
+
+class TestSttSettingsPathMatchesTheDashboard:
+    """The doctor's Speech-to-Text pointer names the tab and section the UI shows.
+
+    It once said ``Settings → Speech-to-Text``, a tab that does not exist: the
+    controls are a section of the Voice tab. The expected path is built from the
+    English catalog's own labels, so renaming the tab or the section in the UI
+    fails here instead of leaving the doctor pointing at nothing.
+    """
+
+    _LOCALES = Path(__file__).resolve().parents[1] / "website" / "src" / "i18n" / "locales"
+
+    def _ui_path(self) -> str:
+        manual = json.loads((self._LOCALES / "en.manual.json").read_text(encoding="utf-8"))
+        catalog = json.loads((self._LOCALES / "en.json").read_text(encoding="utf-8"))
+        tab = manual["settings"]["tabs"]["voice"]["label"]
+        section = catalog["pages"]["settings"]["voicePanel"]["speech_to_text"]
+        return f"Settings → {tab} → {section}"
+
+    def test_the_path_matches_the_dashboard_labels(self) -> None:
+        from kiro_crew.doctor_checks import features
+
+        assert features._STT_SETTINGS_PATH == self._ui_path()
+
+    def test_the_ffmpeg_hint_uses_that_path(self) -> None:
+        assert f"({self._ui_path()})" in cli_doctor._FFMPEG_LINUX_HINT
 
 
 class TestDataHome:
@@ -1281,8 +1310,11 @@ class TestRuntimeTmpfs:
     @staticmethod
     def _arrange(monkeypatch, usage_by_root: dict) -> list[str]:
         monkeypatch.setattr(cli_doctor.sys, "platform", "linux")
-        monkeypatch.setattr(cli_doctor, "_runtime_tmpfs_roots", lambda: list(usage_by_root))
         monkeypatch.setattr(cli_doctor, "_tmpfs_usage", lambda root: usage_by_root[root])
+        # Names added after the facade split live on the family module only.
+        monkeypatch.setattr(doctor_resources, "_measured_tmp_roots", lambda: list(usage_by_root))
+        # The real roots are host directories; never scan them from a test.
+        monkeypatch.setattr(doctor_resources, "_kirocrew_test_homes", lambda root: (0, False))
         return ["pre-existing"]
 
     def test_healthy_roots_pass(self, monkeypatch, capsys) -> None:
@@ -1348,6 +1380,77 @@ class TestRuntimeTmpfs:
         )
         assert cli_doctor._runtime_tmpfs_roots() == ["/run/user/7", "/dev/shm", "/tmp"]
 
+    def test_roots_append_pull_diagnostic_roots_missing_from_sandbox(self, monkeypatch) -> None:
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(
+            sandbox,
+            "_mount_source_candidate_roots",
+            lambda: ["/run/user/7", "/dev/shm"],
+        )
+        monkeypatch.setattr(
+            doctor_resources,
+            "_resource_status_tmp_roots",
+            lambda: ["/tmp", "/scratch/run-1"],
+        )
+        assert doctor_resources._measured_tmp_roots() == [
+            "/run/user/7",
+            "/dev/shm",
+            "/tmp",
+            "/scratch/run-1",
+        ]
+
+    def test_roots_do_not_repeat_tmp(self, monkeypatch) -> None:
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(sandbox, "_mount_source_candidate_roots", lambda: ["/dev/shm", "/tmp"])
+        monkeypatch.setattr(doctor_resources, "_resource_status_tmp_roots", lambda: ["/tmp"])
+        assert doctor_resources._measured_tmp_roots() == ["/dev/shm", "/tmp"]
+
+    def test_low_root_names_leftover_test_homes(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, {"/tmp": (86.0, 2.0, 20000, 0)})
+        monkeypatch.setattr(doctor_resources, "_kirocrew_test_homes", lambda root: (47, False))
+        cli_doctor._doctor_runtime_tmpfs(issues)
+        out = capsys.readouterr().out
+        assert "/tmp: ⚠" in out and "low on inodes" in out
+        assert "47 top-level dirs here look like leftover test homes" in out
+        assert "ENOSPC" in out
+        assert len(issues) == 2
+
+    def test_capped_test_home_count_says_at_least(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, {"/tmp": (86.0, 2.0, 20000, 0)})
+        monkeypatch.setattr(doctor_resources, "_kirocrew_test_homes", lambda root: (3, True))
+        cli_doctor._doctor_runtime_tmpfs(issues)
+        assert "at least 3 top-level dirs" in capsys.readouterr().out
+
+    def test_healthy_root_does_not_scan_for_test_homes(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, {"/tmp": (80.0, 90.0, 500000, 0)})
+        scanned: list[str] = []
+        monkeypatch.setattr(
+            doctor_resources,
+            "_kirocrew_test_homes",
+            lambda root: scanned.append(root) or (0, False),
+        )
+        cli_doctor._doctor_runtime_tmpfs(issues)
+        assert scanned == []
+
+    def test_test_homes_counts_dirs_holding_the_cache_marker(self, tmp_path) -> None:
+        for name in ("kc-sq-home9", "p14-home"):
+            (tmp_path / name / ".cache" / "kirocrew").mkdir(parents=True)
+        (tmp_path / "plain-dir" / ".cache").mkdir(parents=True)
+        (tmp_path / "a-file").write_text("x")
+        assert doctor_resources._kirocrew_test_homes(str(tmp_path)) == (2, False)
+
+    def test_test_homes_scan_stops_at_the_cap(self, monkeypatch, tmp_path) -> None:
+        for i in range(5):
+            (tmp_path / f"home{i}" / ".cache" / "kirocrew").mkdir(parents=True)
+        monkeypatch.setattr(doctor_resources, "_TEST_HOME_SCAN_CAP", 3)
+        count, capped = doctor_resources._kirocrew_test_homes(str(tmp_path))
+        assert capped and count == 3
+
+    def test_test_homes_unreadable_root_counts_zero(self, tmp_path) -> None:
+        assert doctor_resources._kirocrew_test_homes(str(tmp_path / "absent")) == (0, False)
+
     def test_usage_reads_statvfs_and_counts_sandbox_entries(self, monkeypatch, tmp_path) -> None:
         # Only the sandbox launcher's own mount-source dirs count; a foreign
         # ``tmp*`` entry is somebody else's and must not inflate the advice.
@@ -1389,6 +1492,286 @@ class TestRuntimeTmpfs:
         # The Windows shape: ``os`` has no ``statvfs`` at all.
         monkeypatch.delattr(cli_doctor.os, "statvfs", raising=False)
         assert cli_doctor._tmpfs_usage(str(tmp_path)) is None
+
+
+class TestTempDirectories:
+    """`kirocrew doctor` Temp directories section — the directory this doctor
+    run resolves as ``TMPDIR``. Reports its filesystem type and mount source,
+    whether swap backs the host, and whether a ``tmpfiles.d`` rule ages it.
+    Warns (advisory, never an ``issues`` entry) when it is tmpfs with no swap.
+    Space/inodes are NOT measured here — the Runtime tmpfs row owns that for the
+    same directory. Linux carries the probe; macOS/Windows are informational.
+    """
+
+    def _arrange(
+        self,
+        monkeypatch,
+        *,
+        temp_dir: str = "/tmp",
+        platform: str = "linux",
+        fs_type: str | None = "tmpfs",
+        swap_kib: int | None = 8388604,
+        aged: bool | None = False,
+    ) -> list[str]:
+        monkeypatch.setattr(cli_doctor.sys, "platform", platform)
+        monkeypatch.setattr(cli_doctor.tempfile, "gettempdir", lambda: temp_dir)
+        # The row reads the filesystem type through taskq's resolver.
+        from kiro_crew.taskq import store as _store
+
+        monkeypatch.setattr(_store, "_linux_mount_type", lambda _p: fs_type)
+        monkeypatch.setattr(cli_doctor, "_swap_total_kib", lambda: swap_kib)
+        monkeypatch.setattr(cli_doctor, "_tmpfiles_ages", lambda _p: aged)
+        return ["pre-existing"]
+
+    def test_healthy_disk_backed_dir_passes(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, fs_type="ext4")
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "Temp directories" in out
+        assert "path: /tmp (resolved by this doctor run)" in out
+        assert "filesystem: ext4" in out
+        assert "swap" not in out  # swap is not re-printed; Memory Pressure shows it
+        assert "⚠️" not in out
+        assert issues == ["pre-existing"], "the row is advisory and never adds an issue"
+
+    def test_does_not_measure_space_or_inodes(self, monkeypatch, capsys) -> None:
+        # The Runtime tmpfs row owns space/inodes for this dir; this row must
+        # not print them (First-Principles de-duplication).
+        issues = self._arrange(monkeypatch, fs_type="ext4")
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "space" not in out and "inode" not in out
+        assert issues == ["pre-existing"]
+
+    def test_tmpfs_with_no_swap_warns_but_never_blocks(self, monkeypatch, capsys) -> None:
+        # The dangerous quadrant: RAM-backed temp dir, no swap to absorb a spike.
+        issues = self._arrange(monkeypatch, fs_type="tmpfs", swap_kib=0)
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "⚠️" in out and "tmpfs (RAM-backed) with no swap" in out
+        assert "Point TMPDIR at a disk-backed path" in out
+        assert issues == ["pre-existing"]
+
+    def test_tmpfs_with_swap_does_not_warn(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, fs_type="tmpfs", swap_kib=8388604)
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "⚠️" not in out
+        assert issues == ["pre-existing"]
+
+    def test_disk_backed_dir_never_warns_regardless_of_swap(self, monkeypatch, capsys) -> None:
+        # A non-tmpfs dir with no swap is not the dangerous quadrant.
+        issues = self._arrange(monkeypatch, fs_type="ext4", swap_kib=0)
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "⚠️" not in out
+        assert issues == ["pre-existing"]
+
+    def test_ageing_rule_is_warned_informationally(self, monkeypatch, capsys) -> None:
+        # Ageing alone is informational: it does not trip the tmpfs-no-swap warning.
+        issues = self._arrange(monkeypatch, fs_type="ext4", aged=True)
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "ageing: ⚠️  a tmpfiles.d rule deletes files here by age" in out
+        assert "RAM-backed" not in out
+        assert issues == ["pre-existing"]
+
+    def test_fs_type_unreadable_degrades_cleanly(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, fs_type=None, swap_kib=8388604)
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "could not read the mount table" in out
+        # fs type unknown means the tmpfs-no-swap check cannot fire.
+        assert "RAM-backed" not in out
+        assert issues == ["pre-existing"]
+
+    def test_unreadable_swap_does_not_warn(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, fs_type="tmpfs", swap_kib=None)
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "swap" not in out  # not re-printed
+        # swap unknown (not 0) must NOT fire the tmpfs-no-swap warning.
+        assert "RAM-backed" not in out
+        assert issues == ["pre-existing"]
+
+    def test_tmpfiles_probe_unknown_is_informational(self, monkeypatch, capsys) -> None:
+        issues = self._arrange(monkeypatch, fs_type="ext4", aged=None)
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "ageing: ⏹ could not determine" in out
+        assert issues == ["pre-existing"]
+
+    def test_non_linux_reports_the_path_and_not_applicable(self, monkeypatch, capsys) -> None:
+        called: list[str] = []
+        issues = self._arrange(monkeypatch, temp_dir="/var/folders/xy/T", platform="darwin")
+        # The Linux-only probes must not run on macOS/Windows.
+        from kiro_crew.taskq import store as _store
+
+        monkeypatch.setattr(_store, "_linux_mount_type", lambda _p: called.append("fs") or "apfs")
+        monkeypatch.setattr(cli_doctor, "_swap_total_kib", lambda: called.append("swap") or 0)
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "path: /var/folders/xy/T" in out
+        assert "not applicable (darwin" in out
+        assert called == [], "no Linux procfs/systemd probe runs off Linux"
+        assert issues == ["pre-existing"]
+
+    def test_unresolvable_tempdir_degrades_cleanly(self, monkeypatch, capsys) -> None:
+        issues = ["pre-existing"]
+        monkeypatch.setattr(cli_doctor.sys, "platform", "linux")
+
+        def _boom() -> str:
+            raise FileNotFoundError("no usable temp directory")
+
+        monkeypatch.setattr(cli_doctor.tempfile, "gettempdir", _boom)
+        cli_doctor._doctor_temp_directories(issues)
+        out = capsys.readouterr().out
+        assert "could not resolve the temp directory" in out
+        assert issues == ["pre-existing"]
+
+
+class TestTmpfilesAges:
+    """`_tmpfiles_ages`: whether a tmpfiles.d rule ages the temp dir, via
+    ``systemd-tmpfiles --cat-config`` resolved through the trusted-bin pin."""
+
+    def _run(self, monkeypatch, *, present: bool, stdout: str = "", rc: int = 0) -> bool | None:
+        return self._run_for(monkeypatch, "/tmp", present=present, stdout=stdout, rc=rc)
+
+    def _run_for(
+        self, monkeypatch, target: str, *, present: bool, stdout: str = "", rc: int = 0
+    ) -> bool | None:
+        import subprocess
+
+        monkeypatch.setattr(
+            cli_doctor.platform_compat,
+            "trusted_system_bin",
+            lambda _n: "/usr/bin/systemd-tmpfiles" if present else None,
+        )
+        monkeypatch.setattr(cli_doctor.os.path, "realpath", lambda p: p)
+
+        def fake_run(cmd, **_k):
+            return subprocess.CompletedProcess(args=cmd, returncode=rc, stdout=stdout)
+
+        monkeypatch.setattr(cli_doctor.subprocess, "run", fake_run)
+        return cli_doctor._tmpfiles_ages(target)
+
+    def test_age_rule_on_tmp_is_true(self, monkeypatch) -> None:
+        # The systemd default: clean /tmp of files older than 10 days.
+        assert self._run(monkeypatch, present=True, stdout="q /tmp 1777 root root 10d\n") is True
+
+    def test_rule_on_a_subdir_does_not_age_the_temp_dir(self, monkeypatch) -> None:
+        # A rule on /tmp/sub ages that subdirectory, not files written to /tmp.
+        assert (
+            self._run(monkeypatch, present=True, stdout="d /tmp/sub 0755 root root 1d\n") is False
+        )
+
+    def test_rule_on_a_parent_ages_the_temp_dir(self, monkeypatch) -> None:
+        # A rule on /var covering /var/tmp (realpath of a resolved temp dir) ages it.
+        import subprocess
+
+        monkeypatch.setattr(
+            cli_doctor.platform_compat,
+            "trusted_system_bin",
+            lambda _n: "/usr/bin/systemd-tmpfiles",
+        )
+        monkeypatch.setattr(cli_doctor.os.path, "realpath", lambda p: p)
+        monkeypatch.setattr(
+            cli_doctor.subprocess,
+            "run",
+            lambda cmd, **_k: subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="d /var 0755 root root 30d\n"
+            ),
+        )
+        assert cli_doctor._tmpfiles_ages("/var/tmp") is True
+
+    def test_no_age_field_is_false(self, monkeypatch) -> None:
+        assert self._run(monkeypatch, present=True, stdout="d /tmp 1777 root root -\n") is False
+
+    def test_rule_elsewhere_is_false(self, monkeypatch) -> None:
+        assert (
+            self._run(monkeypatch, present=True, stdout="d /var/log 0755 root root 30d\n") is False
+        )
+
+    def test_comments_and_blanks_ignored(self, monkeypatch) -> None:
+        assert (
+            self._run(monkeypatch, present=True, stdout="# a comment\n\nq /tmp 1777 - - 10d\n")
+            is True
+        )
+
+    def test_specifier_in_rule_path_returns_unknown(self, monkeypatch) -> None:
+        # systemd expands %T to /tmp and ages it, but this reader cannot expand
+        # specifiers, so a literal match would falsely say "not aged" -- unknown.
+        assert self._run(monkeypatch, present=True, stdout="q %T 1777 root root 10d\n") is None
+
+    def test_mid_component_wildcard_covering_target_returns_unknown(self, monkeypatch) -> None:
+        # `/tmp/crew-*` is anchored at /tmp; for a /tmp/crew-work target it could
+        # cover, and a naive first-glob-char prefix (`/tmp/crew-`) would miss it.
+        out = "e /tmp/crew-* - - - 10d\n"
+        assert self._run_for(monkeypatch, "/tmp/crew-work", present=True, stdout=out) is None
+
+    def test_quoted_rule_path_returns_unknown(self, monkeypatch) -> None:
+        # A quoted/escaped path is not resolved here; a literal match would be
+        # wrong, so an ageing one is unknown rather than a false negative.
+        assert self._run(monkeypatch, present=True, stdout='q "/tmp" 1777 root root 10d\n') is None
+
+    def test_quoted_path_with_spaces_returns_unknown(self, monkeypatch) -> None:
+        # A quoted path containing whitespace shifts every positional field, so
+        # the age cannot be trusted; the line is unreadable here -> unknown, not
+        # a false "no ageing rule" from a mis-aligned age of "-".
+        out = 'd "/tmp/crew work" 1777 root root 10d\n'
+        assert self._run_for(monkeypatch, "/tmp/crew work", present=True, stdout=out) is None
+
+    def test_quote_only_in_argument_field_does_not_blind_the_probe(self, monkeypatch) -> None:
+        # Stock systemd ships f+! /run/nologin ... "System is booting up." -- a
+        # quote in the ARGUMENT (field 7) must not force unknown; the plain
+        # `q /tmp 10d` ageing rule still wins.
+        out = 'f+! /run/nologin 0644 - - - "System is booting up."\n' "q /tmp 1777 root root 10d\n"
+        assert self._run(monkeypatch, present=True, stdout=out) is True
+
+    def test_absent_tool_is_unknown(self, monkeypatch) -> None:
+        assert self._run(monkeypatch, present=False) is None
+
+    def test_nonzero_exit_is_unknown(self, monkeypatch) -> None:
+        assert self._run(monkeypatch, present=True, stdout="q /tmp 1777 - - 10d\n", rc=1) is None
+
+    def test_probe_failure_is_unknown(self, monkeypatch) -> None:
+        import subprocess
+
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "trusted_system_bin", lambda _n: "/usr/bin/systemd-tmpfiles"
+        )
+
+        def _boom(cmd, **_k):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
+
+        monkeypatch.setattr(cli_doctor.subprocess, "run", _boom)
+        assert cli_doctor._tmpfiles_ages("/tmp") is None
+
+    def test_exclusion_rule_on_tmp_returns_unknown(self, monkeypatch) -> None:
+        # An x/X exclusion covering /tmp itself means a parent ageing rule may
+        # not actually clean it — the honest answer is unknown.
+        out = "q /tmp 1777 root root 10d\nx /tmp - - - -\n"
+        assert self._run(monkeypatch, present=True, stdout=out) is None
+
+    def test_exclusion_strictly_below_does_not_block_parent_ageing(self, monkeypatch) -> None:
+        # Stock systemd ships x /tmp/systemd-private-* etc. under /tmp; an
+        # exclusion of a CHILD must not suppress the D /tmp ageing verdict.
+        out = (
+            "D /tmp 1777 root root 30d\n"
+            "x /tmp/systemd-private-%b-* - - - -\n"
+            "X /tmp/snap-private-tmp - - - -\n"
+        )
+        assert self._run(monkeypatch, present=True, stdout=out) is True
+
+    def test_glob_rule_that_could_match_returns_unknown(self, monkeypatch) -> None:
+        # A wildcard rule whose literal prefix leads into /tmp cannot be
+        # evaluated here (full glob semantics belong to systemd) — report unknown.
+        assert self._run(monkeypatch, present=True, stdout="e /tmp/* - - - 10d\n") is None
+
+    def test_glob_rule_elsewhere_does_not_force_unknown(self, monkeypatch) -> None:
+        # A glob anchored outside /tmp must not poison the verdict.
+        out = "q /tmp 1777 - - 10d\ne /var/*/cache - - - 30d\n"
+        assert self._run(monkeypatch, present=True, stdout=out) is True
 
 
 class TestGatewayMemoryLines:

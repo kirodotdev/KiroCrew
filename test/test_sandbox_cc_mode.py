@@ -282,11 +282,23 @@ class TestBuildSeatbeltProfileCcMode:
         # the subpath rule stays -- a directory entry still needs it
         assert f'(deny file-read* (subpath "{leaf}"))' in profile
 
-    def test_cc_does_not_deny_aws(self):
-        """CC seatbelt does NOT deny .aws — macOS needs full .aws access for
-        credential_process and SSO token caches. LLM deny patterns provide
-        the security layer instead."""
+    def test_cc_denies_aws_except_config(self):
+        """CC seatbelt hides ~/.aws (credentials, SSO caches) and re-exposes
+        only ~/.aws/config, the same shape as strict's ~/.ssh/known_hosts."""
         profile = _build_seatbelt_profile("cc")
+        aws = _home(".aws")
+        rules = profile.splitlines()
+        assert (
+            f'(deny file-read* (require-all (subpath "{aws}")'
+            f' (require-not (literal "{aws}/config"))))'
+        ) in rules
+        assert f'(deny file-link (subpath "{aws}"))' in rules
+        assert f'(deny file-read* (subpath "{aws}"))' not in rules
+        assert f"{aws}/credentials" not in profile
+        assert f"{aws}/sso" not in profile
+
+    def test_standard_does_not_deny_aws(self):
+        profile = _build_seatbelt_profile("standard")
         assert ".aws" not in profile
 
     def test_cc_denies_kube(self):
@@ -328,13 +340,17 @@ class TestWrapArgvCcMode:
         assert cleanup is None
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
-    def test_cc_seatbelt_does_not_deny_aws(self, _mock_backend):
-        """CC seatbelt does NOT deny .aws on macOS — full access needed."""
+    def test_cc_seatbelt_denies_aws_except_config(self, _mock_backend):
+        """The profile wrap_argv writes for cc on macOS hides ~/.aws but config."""
         wrapped, cleanup = wrap_argv(["echo", "hi"], mode="cc")
         assert cleanup is not None
         try:
             content = open(cleanup).read()
-            assert ".aws" not in content
+            aws = _home(".aws")
+            assert (
+                f'(deny file-read* (require-all (subpath "{aws}")'
+                f' (require-not (literal "{aws}/config"))))'
+            ) in content.splitlines()
         finally:
             os.unlink(cleanup)
 

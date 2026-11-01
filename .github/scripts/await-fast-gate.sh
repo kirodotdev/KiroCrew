@@ -181,6 +181,90 @@ on_superseded() {
   exit 1
 }
 
+# A run whose status lags its jobs. GitHub rolls finished jobs up into the run
+# asynchronously, and the run-level status has been seen reading `in_progress`
+# for over 30 minutes after every job of it concluded `success`. So at the TOTAL
+# budget, before failing closed, the barrier reads the run's jobs once: when the
+# run is on its first attempt, the attempt has jobs, every one is `completed`
+# with `success` or `skipped`, at
+# least one is `success`, and the newest finished at least ROLLUP_SETTLE seconds
+# ago (so a job that `needs:` the others has had time to be created), the gate
+# is green in fact and the matrix is released with a warning saying why. Any
+# read failure, an unfinished or failed job, or a run awaiting fork approval
+# keeps the fail-closed exit, and says in the log which condition it was: a
+# decline is otherwise indistinguishable from the barrier never having looked,
+# which leaves the only error naming the run-level status that is not what
+# withheld the release. Read only, like every other call here.
+ROLLUP_SETTLE=60
+JOBS_SEEN=""
+jobs_all_passed() {
+  local gate="$1" gid attempt jobs verdict
+  JOBS_SEEN=""
+  gid="$(printf '%s' "$gate" | jq -r '.id')"
+  attempt="$(printf '%s' "$gate" | jq -r '.run_attempt // 1')"
+  # A later attempt lists only the jobs it ran again, so one green job there
+  # says nothing about another job that failed in an earlier attempt. Only a
+  # first attempt holds every job of the run.
+  if [ "$attempt" != "1" ]; then
+    echo "::warning::Fast Gate run $gid is on attempt $attempt; a later attempt's job list leaves out earlier attempts, so its status is taken as read."
+    return 1
+  fi
+  if ! jobs="$(gh api --method GET \
+    "repos/$REPO/actions/runs/$gid/attempts/$attempt/jobs" -f per_page=100 2>/dev/null)"; then
+    echo "::warning::Could not read the jobs of Fast Gate run $gid, so its status is taken as read."
+    return 1
+  fi
+  # Every answer carries its reason, because a bare "no" is indistinguishable in
+  # the log from never having consulted the jobs at all. The conditions are the
+  # ones above and the verdict they produce is unchanged; only the text is new.
+  #
+  # Two guards on the text itself, both so the reason survives to be read:
+  #   * the whole verdict is collapsed onto one line (`gsub`, applied to every
+  #     branch rather than to the job names alone, so no field interpolated
+  #     here or added later can reopen it). `jq -r` prints an embedded newline
+  #     as a real break, which would cut the annotation short and let the
+  #     remainder be read as another runner command -- the one thing a
+  #     diagnostic must not do. Names are workflow-authored, so on a fork PR
+  #     they are the fork's text (which already supplies this step's own run:,
+  #     so this is legibility, not a trust boundary).
+  #   * a `completed_at` jq cannot parse drops out of $done (`try ... catch`)
+  #     instead of erroring the whole program, which would have reported the
+  #     catch-all "could not be parsed" over the real reason. Dropping it still
+  #     trips the count check below, so no input changes verdict.
+  verdict="$(printf '%s' "$jobs" \
+    | jq -r --argjson now "$(now)" --argjson settle "$ROLLUP_SETTLE" \
+        '(.jobs // []) as $j
+         | ($j | map(select(.status != "completed"
+                            or (.conclusion != "success" and .conclusion != "skipped"))))
+             as $bad
+         | ($j | map(.completed_at // "" | select(. != "")
+                     | (try fromdateiso8601 catch empty))) as $done
+         | if (.total_count // -1) <= 0 or ($j | length) != .total_count
+           then "no the attempt lists \($j | length) job(s) against total_count=\(.total_count // -1)"
+           elif ($bad | length) > 0
+           then "no \($bad | length) of \($j | length) job(s) are not completed-green: "
+                + ($bad
+                   | map("\(.name // .id)=\(.status)/\(.conclusion // "null")")
+                   | join(", "))
+           elif ($j | any(.conclusion == "success")) | not
+           then "no all \($j | length) job(s) were skipped, so no gate ran"
+           elif ($done | length) != ($j | length)
+           then "no \(($j | length) - ($done | length)) of \($j | length) job(s) report no completed_at"
+           elif ($now - ($done | max)) < $settle
+           then "no the newest job finished \($now - ($done | max))s ago, inside the \($settle)s settle"
+           else "yes \($j | length)" end
+         | gsub("[\r\n]+"; " ")' 2>/dev/null \
+    || echo "no the jobs read could not be parsed")"
+  case "$verdict" in
+    yes\ *)
+      JOBS_SEEN="${verdict#yes }"
+      return 0
+      ;;
+  esac
+  echo "::warning::Fast Gate run $gid: its jobs do not prove it green, so its status is taken as read -- ${verdict#no }"
+  return 1
+}
+
 started="$(now)"
 seen=false
 
@@ -219,19 +303,38 @@ while :; do
   # back another PR's run, and selecting max_by(.id) out of an unfiltered
   # list would pick the NEWEST such run -- the most likely one to be a
   # different PR's. Filter first, collapse second.
-  latest="$(printf '%s' "$runs" \
+  # A selector that FAILS is not a listing with no match, and the difference is
+  # the whole diagnosis: the read above already succeeded, so "no run found"
+  # would send the author hunting for a missing Fast Gate run when the response
+  # was simply unparseable. Kept apart the way the read-failure branch above
+  # keeps its own cause.
+  select_err=""
+  if ! latest="$(printf '%s' "$runs" \
     | jq -c --arg branch "$BRANCH" --arg repo "$HEAD_REPO" \
         '[(.workflow_runs // [])[]
           | select(.head_branch == $branch)
           | select(.head_repository.full_name == $repo)]
          | if length == 0 then null else max_by(.id) end' \
-        2>/dev/null || echo null)"
+        2>/dev/null)"; then
+    select_err="the listing read back but jq could not select a run from it"
+    latest=null
+  fi
 
   if [ "$latest" = "null" ] || [ -z "$latest" ]; then
+    if [ -n "$select_err" ]; then
+      echo "::warning::Fast Gate listing unusable after ${elapsed}s: $select_err"
+    fi
     if [ "$elapsed" -ge "$APPEAR_BUDGET" ]; then
-      echo "::error::No Fast Gate run found for $SHA on $HEAD_REPO@$BRANCH" \
-           "($EVENT) after ${elapsed}s. The gates cannot be confirmed, so the" \
-           "matrix is not cleared to run."
+      if [ -n "$select_err" ]; then
+        echo "::error::The Fast Gate listing for $SHA on $HEAD_REPO@$BRANCH" \
+             "($EVENT) could not be parsed after ${elapsed}s, so no run could be" \
+             "named: $select_err. The gates cannot be confirmed, so the matrix" \
+             "is not cleared to run; this is not a verdict on the code."
+      else
+        echo "::error::No Fast Gate run found for $SHA on $HEAD_REPO@$BRANCH" \
+             "($EVENT) after ${elapsed}s. The gates cannot be confirmed, so the" \
+             "matrix is not cleared to run."
+      fi
       exit 1
     fi
     nap 10
@@ -279,6 +382,13 @@ while :; do
   fi
 
   if [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
+    if [ "$status" != "completed" ] && [ "$status" != "awaiting maintainer approval" ] \
+        && jobs_all_passed "$latest"; then
+      echo "::warning::Fast Gate run $url still reads '$status' after ${elapsed}s, but all" \
+           "$JOBS_SEEN of its jobs completed green at least ${ROLLUP_SETTLE}s ago: GitHub has" \
+           "not rolled them up into the run yet. Releasing the heavy jobs."
+      exit 0
+    fi
     echo "::error::Fast Gate still '$status' after ${elapsed}s ($url)." \
          "Failing closed rather than starting the matrix unverified." \
          "This is not a verdict on the code: re-run this job once that run completes."

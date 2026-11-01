@@ -667,6 +667,12 @@ class TestRuntimeProjectedLaunchDocuments:
         process.stderr = None
         process.stdout = None
         TestRuntimeShieldSurvivesAFailedAppend._patch_prelude(monkeypatch, tmp_path, process)
+        # The launch record refuses any guide under Path.home()/.kiro/crew, and an
+        # agent session's TMPDIR puts tmp_path there. Pin home to a sibling that is
+        # not an ancestor of the workspace so the result does not depend on TMPDIR.
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
         project = tmp_path / "workspace"
         guide = project / ".kiro" / "steering" / "guide.md"
         guide.parent.mkdir(parents=True)
@@ -1210,7 +1216,11 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         # scratch owner probes, or browser socket discovery.
         monkeypatch.setattr(runtime_mod, "finish_suspended_spawn", lambda *a, **kw: None)
         monkeypatch.setattr(
-            runtime_mod, "agent_scratch", SimpleNamespace(allocate_scratch=lambda _: None)
+            runtime_mod,
+            "agent_scratch",
+            SimpleNamespace(
+                allocate_scratch=lambda _: None, drop_inherited_scratch_env=lambda env: ()
+            ),
         )
         monkeypatch.setattr(runtime_mod, "browser_session_env", lambda env: {})
 

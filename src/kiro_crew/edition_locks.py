@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from types import SimpleNamespace
 from typing import Any, Dict
 
 from kiro_crew import edition
@@ -35,17 +36,22 @@ LOCKED_BY_POLICY = "locked by policy"
 #: Control id -> the local source that is ignored and what the feature does instead.
 #: Ids follow the RFC appendix "Crew key" column.
 UNKEYED_LOCKS: Dict[str, str] = {
-    "app_dev_mode": "app dev mode toggles are ignored; every app is served as installed",
-    "updates.channel": "the release channel file is ignored; the install follows stable",
-    "computer_use": "the computer_use.json opt-in is ignored; desktop control stays off",
     "tunnel": "tunnel.enabled is ignored; no tunnel is started",
-    "telemetry.otlp_hosts": "telemetry.otlp_endpoint is ignored; no metrics leave the host",
+    "telemetry.otlp_hosts": (
+        "telemetry.otlp_endpoint and telemetry.otlp_endpoints are ignored; "
+        "only endpoints this build ships may receive metrics"
+    ),
+    # Named for the RFC "developer_mode" policy term; the key that replaces this row
+    # is separate work.
+    "developer_mode": "KIROCREW_DEV_MODE is ignored; developer-only features stay off",
 }
 
 #: config.json path -> the control whose lock makes that local value inert.
 CONFIG_PATH_LOCKS: Dict[str, str] = {
     "tunnel.enabled": "tunnel",
+    "slack.use_tunnel_url": "tunnel",
     "telemetry.otlp_endpoint": "telemetry.otlp_hosts",
+    "telemetry.otlp_endpoints": "telemetry.otlp_hosts",
 }
 
 _logged: "set[str]" = set()
@@ -119,6 +125,103 @@ def follows_policy(decision: object) -> bool:
     if not locked_off():
         return True
     return getattr(decision, "layer", "") in _POLICY_LAYERS
+
+
+def policy_governs(scope: str) -> bool:
+    """Whether a policy answers *scope* here: always in an enterprise build (the
+    baseline fills an unnamed scope), otherwise when the installed policy names it.
+
+    Fail-closed: a context that cannot be composed answers ``True``.
+    """
+    if locked_off():
+        return True
+    try:
+        from kiro_crew.platform.context import current_context, installed_context
+
+        ctx = installed_context()
+        if ctx is None:
+            ctx = current_context()
+        ceiling = getattr(ctx, "governance", None)
+    except Exception:
+        logger.debug("could not read the %s ceiling; treating it as governed", scope)
+        return True
+    return ceiling is not None and ceiling.get(scope) is not None
+
+
+def policy_permits(scope: str, item: str = "", *, audit_tool: str = "") -> bool:
+    """Whether the POLICY layer permits *item* in *scope*, for a process-wide switch.
+
+    For a control with no session behind it (the bind address, the origin set, the
+    tailnet, the desktop-control opt-in). The question is asked of the installed
+    ceiling alone (``resolve(ceiling, None, ...)``): a profile is per surface, and
+    an unprimed store answers a transient deny-all, so no profile is read. That is
+    also pure in-memory work, safe on the event loop. In an enterprise build a
+    permit must come from the policy layer (:func:`follows_policy`); with no policy
+    loaded the baseline answers. Fail-closed: an evaluation error, or a context that
+    cannot be composed, answers ``False``. An ``oss`` build whose INSTALLED policy
+    does not name *scope* permits without evaluating anything, as before the key
+    existed; with no context installed it evaluates through ``current_context()``.
+
+    Pass *audit_tool* from an enforcement call so the decision this returns is
+    written to SEL (``log_governance_decision``), including the ``oss`` shortcut's
+    permit (layer ``default``); a pure read passes nothing.
+    """
+    decision: object = None
+    try:
+        if not locked_off():
+            from kiro_crew.platform.context import installed_context
+
+            ctx = installed_context()
+            if ctx is not None:
+                ceiling = getattr(ctx, "governance", None)
+                if ceiling is None or ceiling.get(scope) is None:
+                    if audit_tool:
+                        _audit_policy_decision(audit_tool, scope, item, True, _NOT_GOVERNED)
+                    return True
+        from kiro_crew.platform.context import current_context
+        from kiro_crew.platform.governance import resolve
+
+        decision = resolve(getattr(current_context(), "governance", None), None, scope, item)
+        permitted = bool(getattr(decision, "permitted", False)) and follows_policy(decision)
+    except Exception:
+        logger.debug("governance probe for %s failed; denying", scope, exc_info=True)
+        permitted = False
+    if audit_tool:
+        _audit_policy_decision(audit_tool, scope, item, permitted, decision)
+    return permitted
+
+
+#: What :func:`policy_permits` records when no installed policy names the scope.
+_NOT_GOVERNED = SimpleNamespace(rule="default", layer="default", reason="not governed")
+
+
+def audit_refusal(tool_name: str, scope: str, item: str, reason: str) -> None:
+    """SEL record of a refusal decided before the evaluator was asked. Never raises."""
+    _audit_policy_decision(
+        tool_name, scope, item, False, SimpleNamespace(rule="shape", layer="policy", reason=reason)
+    )
+
+
+def _audit_policy_decision(
+    tool_name: str, scope: str, item: str, permitted: bool, decision: object
+) -> None:
+    """Best-effort SEL record of the answer :func:`policy_permits` gave. Never raises."""
+    try:
+        from kiro_crew.sel import sel
+
+        sel().log_governance_decision(
+            session_key="",
+            tool_name=tool_name,
+            scope=scope,
+            item=item,
+            outcome="allowed" if permitted else "denied",
+            rule=getattr(decision, "rule", "") or "",
+            layer=getattr(decision, "layer", "") or "",
+            reason=getattr(decision, "reason", "") or "governance error; denied (fail-closed)",
+            critical=decision is None,
+        )
+    except Exception:
+        logger.debug("could not audit the %s decision", scope, exc_info=True)
 
 
 def sandbox_mode_floor(mode: Any, default: Any) -> Any:

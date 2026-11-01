@@ -36,6 +36,10 @@ def _isolated_module_state(monkeypatch, tmp_path):
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
     monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
     monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
+    # The apply tests fake every git spawn, so the repo-config probe would read
+    # their minimal fixture checkout as unreadable. The refusal itself is covered
+    # against a real repo in test_host_git_repo_exec_neutralization.
+    monkeypatch.setattr(updates, "repo_exec_config_reason", lambda proj, **_k: "")
     saved_info = dict(updates._update_info)
     saved_ring = list(updates._log_ring)
     saved_cache = updates._changelog_cache
@@ -167,6 +171,9 @@ def _git_proj(monkeypatch, tmp_path) -> str:
     (git_dir / "objects").mkdir(parents=True)
     (git_dir / "refs").mkdir()
     (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    # A config file git can list: the update check refuses a checkout whose
+    # local config it cannot read (``repo_exec_config_reason``).
+    (git_dir / "config").write_text("[core]\n\trepositoryformatversion = 0\n", encoding="utf-8")
     monkeypatch.setattr(
         "kiro_crew.platform.update_capability.running_from_checkout",
         lambda root, **kw: True,

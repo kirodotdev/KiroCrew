@@ -571,11 +571,11 @@ class TestBootReconcile:
         assert "other:keep" in remaining  # unrelated entry untouched
 
     def test_enabled_app_never_healthy_mcp_entry_scrubbed(self, tmp_path, app_env, monkeypatch):
-        # Review scenario: an ENABLED port:"auto" app registered with an optimistic
-        # pre-health port whose backend never passes /health must NOT leave a dead HTTP MCP
-        # url behind — that's the exact shape that broke every kiro-cli session. The
-        # health-gated path calls _gate_mcp_registration(healthy=False) on health failure,
-        # which scrubs the entry. (Closes the disabled-only asymmetry the reviewer flagged.)
+        # An ENABLED port:"auto" app registered with an optimistic pre-health port whose
+        # backend never passes /health must NOT leave a dead HTTP MCP url behind: that
+        # shape breaks every kiro-cli session. The health-gated path calls
+        # _gate_mcp_registration(healthy=False) on health failure, which scrubs the entry
+        # the same way the disabled path does.
         import kiro_crew.apps.backend as backend_mod
         import kiro_crew.apps.bridges as bmod
 

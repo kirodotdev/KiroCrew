@@ -302,9 +302,9 @@ class TestSpecTranslation:
         )
 
     def test_runtime_args_precede_target_package_args_follow(self):
-        """Regression (review finding): runtime args fed to npx/uvx must come
-        BEFORE the package target and package args AFTER it — the v0 merge
-        passed runtime flags to the package and persisted the broken spec."""
+        """Runtime args fed to npx/uvx must come BEFORE the package target and
+        package args AFTER it — otherwise runtime flags reach the package and
+        the broken spec is persisted."""
         server = {
             "packages": [
                 {

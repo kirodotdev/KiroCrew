@@ -92,6 +92,7 @@ async def reset(
     refuse_only_on_active_turn: bool = False,
     clear_conversation: bool = False,
     ends_conversation: bool = False,
+    stop_shared_children: bool = False,
     scope: _TeardownScope | None = None,
 ) -> bool:
     """Kill a live session while preserving the exact reset semantics.
@@ -132,6 +133,15 @@ async def reset(
     is why the default stays the recycle. Nothing structural catches an omission,
     because a keyword is invisible to the AST ratchet, which is exactly why
     ``test_the_conversation_ending_reset_callers_say_so`` pins the callers BY PATH.
+
+    ``stop_shared_children=True`` is the hard Stop's recycle (``stop_turn``). The
+    conversation survives, but the provider shutdown below kills the process this
+    parent's session-sharing runs live on, which would record each as a runtime
+    death. The flag stops exactly those runs first, as a user stop named after the
+    hard Stop, between the pop and the shutdown: after the pop so a holder of the
+    popped permit is already recorded as orphaned, and before the shutdown so each
+    run ends through its own teardown. Runs on a dedicated process keep running.
+    Ignored with ``ends_conversation``, which stops every run of the parent.
 
     ``refuse_only_on_active_turn`` narrows ``skip_if_busy`` to a DECLARED turn, which a
     caller acting on an explicit user request needs: a channel member holds its lease for
@@ -191,6 +201,13 @@ async def reset(
         # name the successor's runs. A recycle takes no snapshot at all -- its children
         # keep running and deliver into the resumed conversation.
         teardown_children = self._snapshot_parent_children(key) if ends_conversation else ()
+        # Same lock hold, for the same reason: named before any await lets a
+        # successor's runs register under this key.
+        shared_children = (
+            self._select_shared_children(key)
+            if stop_shared_children and not ends_conversation and session is not None
+            else ()
+        )
         owner._advance_session_generation(key)
         owner._compact_cooldown_until.pop(key, None)
         # ``clear_conversation`` means the conversation is being THROWN AWAY,
@@ -229,8 +246,7 @@ async def reset(
             # Order matters: the holder is recorded BEFORE its waiters are
             # woken, so the successor a woken waiter creates is already
             # shielded from the holder's late release.
-            self._orphan_turn_holder(key, session)
-            self._wake_turn_waiters(session)
+            self.retire_turn_permit(key, session)
             # Same event-loop tick as the pop, for the reason the clear_sid
             # call below documents: the awaits further down let a racing cold
             # start register a SUCCESSOR under this key, and recording the
@@ -266,6 +282,8 @@ async def reset(
         # wakes its waiter without yielding, so control reaches this line before
         # any of them runs, and this clear cannot erase a successor's pointer.
         owner._session_map.clear_sid(key)
+    if shared_children:
+        await self._stop_shared_children(key, shared_children)
     shutdown_error: BaseException | None = None
     if session:
         await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
@@ -444,9 +462,13 @@ async def remove(self: SessionLifecycleService, key: str) -> None:
         self._origin_links.pop(key, None)
         self.state.stop_requests.pop(key, None)
         self._discard_replay_gap(key)
-        self.state.orphaned_holders.pop(key, None)
+        # ``orphaned_holders`` is deliberately kept: a holder an earlier reset
+        # recorded still owes its late release, and dropping the record would
+        # let that release unlock the next session registered under the key.
         self._release_turn_ceiling(key, requested_key)
         if session is not None:
+            # Before the await below, in the same lock hold as the pop: see reset.
+            self.retire_turn_permit(key, session)
             # Same tick as the pop: see reset for why recording after the
             # teardown awaits would consume a successor's start.
             await record_session_ended(key, end_reason=END_REASON_REMOVED)
@@ -548,7 +570,8 @@ async def remove_if_unclaimed(self: SessionLifecycleService, key: str) -> bool:
             self._origin_links.pop(key, None)
             self.state.stop_requests.pop(key, None)
             self._discard_replay_gap(key)
-            self.state.orphaned_holders.pop(key, None)
+            # ``orphaned_holders`` is kept, as in ``remove``. The popped permit is
+            # idle (checked above), so there is no holder to record or waiter to wake.
             self._release_turn_ceiling(key, requested_key)
             # Same tick as the removal: see reset.
             await record_session_ended(key, end_reason=END_REASON_UNCLAIMED)
@@ -621,8 +644,11 @@ async def destroy(
         owner._compact_pending_verdict.pop(key, None)
         self.state.stop_requests.pop(key, None)
         self._discard_replay_gap(key)
-        self.state.orphaned_holders.pop(key, None)
+        # ``orphaned_holders`` is kept, as in ``remove``.
         self._release_turn_ceiling(key, requested_key)
+        if session is not None:
+            # Same lock hold as the pop, before any await: see reset.
+            self.retire_turn_permit(key, session)
         # Ordinary permanent destroy starts a new conversation on reuse and
         # therefore clears the old threshold. History deletion can race a
         # same-key transcript claim in another process, so its explicit
@@ -802,6 +828,8 @@ async def discard_conversation(
         else:
             self._suppress_replay.add(key)
         if session is not None:
+            # Before the await below, in the same lock hold as the pop: see reset.
+            self.retire_turn_permit(key, session)
             # Same lock hold as the pop, exactly like the clear_sid below.
             await record_session_ended(key, end_reason=END_REASON_DISCARDED)
     # The registry lock, not an absence of suspension points, is what keeps a

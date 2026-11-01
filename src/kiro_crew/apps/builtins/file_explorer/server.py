@@ -368,6 +368,11 @@ def _safe_path(raw: str, must_exist: bool = True) -> Path:
 
 
 def _is_within(path: Path, root: Path) -> bool:
+    # Windows' ``\\?\`` prefix is folded off both sides first: a path resolved
+    # mid-replace can keep it while the root does not, and the lone prefix would
+    # read as an escape. Lexical, so it cannot bless a redirect.
+    path = platform_compat.strip_extended_length_prefix(path)
+    root = platform_compat.strip_extended_length_prefix(root)
     try:
         path.relative_to(root)
         return True

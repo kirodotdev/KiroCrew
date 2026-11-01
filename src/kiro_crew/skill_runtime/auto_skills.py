@@ -557,12 +557,13 @@ def _auto_slug_claim_lock(loader: SkillsLoader) -> Iterator[bool]:
     entries.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.platform_compat import open_create_or_existing
 
     lock_path = loader._dir / sk.AUTO_SLUG_CLAIM_LOCK_NAME
     fd: int | None = None
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        fd = open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     except OSError:
         fd = None
     if fd is None:
@@ -673,6 +674,8 @@ def stage_skill_candidate(
     target: str | None = None,
     base_version: int | None = None,
     refusal: ClaimRefusal | None = None,
+    missing_scripts: list[str] | None = None,
+    rejected_scripts: dict[str, list[str]] | None = None,
 ) -> str | None:
     """Write a skill candidate to the pending queue (not live).
 
@@ -693,8 +696,14 @@ def stage_skill_candidate(
     version the merge was based on. These are written into ``.meta.json``
     (``kind`` always; ``target`` / ``base_version`` only when provided) so
     existing new-candidate callers are unaffected.
+
+    ``missing_scripts`` names scripts the procedure cites that the candidate does
+    not ship, and ``rejected_scripts`` maps each script the static validator
+    refused to its findings. Each is written into ``.meta.json`` only when
+    non-empty, so the reviewer sees why a cited script is absent.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.skills_script_refs import bound_rejected_scripts, shippable_script_name
 
     if not sk._AUTO_NAME_PATTERN.match(slug):
         logger.warning("Rejected pending skill: slug %r failed validation", slug)
@@ -776,7 +785,7 @@ def stage_skill_candidate(
                 for s in clean_scripts:
                     fn = str(s.get("filename", "")).strip()
                     # Guard the script filename against traversal / nesting.
-                    if not fn or "/" in fn or "\\" in fn or ".." in fn:
+                    if not shippable_script_name(fn):
                         continue
                     (sdir / fn).write_text(str(s.get("content", "")), encoding="utf-8")
                     script_names.append(fn)
@@ -795,6 +804,10 @@ def stage_skill_candidate(
                 meta["target"] = target
             if base_version is not None:
                 meta["base_version"] = base_version
+            if missing_scripts:
+                meta["missing_scripts"] = list(missing_scripts)
+            if rejected_scripts:
+                meta["rejected_scripts"] = bound_rejected_scripts(rejected_scripts)
             (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         except Exception:
             # A partial write (e.g. disk full) must not leave a CLAIMED but empty

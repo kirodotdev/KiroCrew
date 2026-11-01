@@ -267,11 +267,22 @@ def tunnel_origin_if_opted_in(use_tunnel_url: bool) -> str:
     does not pull in the tunnel manager, matching the deferred-import style the
     call sites already use.
     """
-    if not use_tunnel_url:
+    if not slack_tunnel_opt_in(use_tunnel_url):
         return ""
     from kiro_crew.tunnel import get_tunnel_url
 
     return get_tunnel_url()
+
+
+def slack_tunnel_opt_in(use_tunnel_url: bool) -> bool:
+    """``slack.use_tunnel_url`` as read; an enterprise build reads it as off.
+
+    The opt-in is a local switch that can point links at, and provision, a public
+    tunnel, so it shares the ``tunnel`` lock (RFC D3, ``kiro_crew.edition_locks``).
+    """
+    from kiro_crew.edition_locks import local_enable_locked
+
+    return use_tunnel_url and not local_enable_locked("tunnel")
 
 
 # ---------------------------------------------------------------------------
@@ -371,8 +382,34 @@ def bind_address_for(local_only: bool) -> str:
                 _ENV_BIND,
                 override,
             )
-            return override
-    return _BIND_LOCAL if local_only else _BIND_ALL
+            return _governed_bind(override)
+    return _governed_bind(_BIND_LOCAL if local_only else _BIND_ALL)
+
+
+def _governed_bind(address: str) -> str:
+    """*address*, or loopback when the ``bind_address`` policy refuses it.
+
+    ``127.0.0.1`` is the floor and is never asked. Any other address is asked as its
+    canonical IP text (``edition_locks.policy_permits``): in an enterprise build only
+    a policy that names it can widen the bind (RFC D3), and an ``oss`` build with no
+    policy naming the key binds as before. Fail-closed: an error binds loopback.
+    """
+    if address == _BIND_LOCAL:
+        return address
+    from kiro_crew.edition_locks import policy_permits
+
+    try:
+        item = str(ipaddress.ip_address(address))
+    except ValueError:
+        item = address
+    if policy_permits("bind_address", item, audit_tool="gateway_bind"):
+        return address
+    logger.warning(
+        "bind address %s is not permitted by governance (bind_address); binding %s",
+        address,
+        _BIND_LOCAL,
+    )
+    return _BIND_LOCAL
 
 
 # ---------------------------------------------------------------------------
@@ -542,8 +579,11 @@ def build_allowed_origins(
     origins: set[str] = {
         f"http://127.0.0.1:{port}",
         f"http://localhost:{port}",
+        f"http://[::1]:{port}",
         f"http://kirocrew.localhost:{port}",
     }
+    # Each also as a browser sends it (``dashboard_origin`` drops port 80).
+    origins |= {dashboard_origin(o) for o in origins}
     if os.environ.get("KIROCREW_HOME"):
         origins.add("http://localhost:3000")
         origins.add("http://127.0.0.1:3000")
@@ -582,7 +622,90 @@ def build_allowed_origins(
             origins.add(f"http://localhost:{_p}")
             origins.add(f"http://[::1]:{_p}")
             origins.add(f"http://kirocrew.localhost:{_p}")
-    return origins
+    return _governed_origins(origins, port, tailnet_host)
+
+
+def origin_policy_item(origin: str) -> str:
+    """The ``dashboard_origins`` item for *origin*: the host it will really trust.
+
+    ``build_allowed_hosts`` trusts ``urlparse(origin).hostname``, so the policy is
+    asked about that host, never the raw text: ``https://evil.com/.example.com``
+    is asked as ``https://evil.com``, and so is ``https://evil.com:bad``.
+    """
+    canonical = dashboard_origin(origin)
+    if canonical:
+        return canonical
+    try:
+        parsed = urlparse(_ensure_scheme(origin))
+        host = parsed.hostname
+    except ValueError:
+        host = None
+    if host:
+        return f"{parsed.scheme}://[{host}]" if ":" in host else f"{parsed.scheme}://{host}"
+    return origin
+
+
+def origin_permitted(origin: str, *, audit_tool: str = "") -> bool:
+    """Whether the ``dashboard_origins`` policy lets *origin* be trusted.
+
+    Asked about :func:`origin_policy_item`. An item that is not exactly
+    ``scheme://host[:port]`` cannot be matched, so while a policy governs the key it
+    is refused rather than read as a deny-list miss (fail-closed).
+    """
+    from kiro_crew.edition_locks import audit_refusal, policy_governs, policy_permits
+    from kiro_crew.platform.governance_parts.matching import _ORIGIN_ITEM_RE, _origin_form
+
+    item = origin_policy_item(origin)
+    if not _ORIGIN_ITEM_RE.match(_origin_form(item)) and policy_governs("dashboard_origins"):
+        if audit_tool:
+            audit_refusal(audit_tool, "dashboard_origins", item, "not an origin")
+        return False
+    return policy_permits("dashboard_origins", item, audit_tool=audit_tool)
+
+
+def _governed_origins(origins: set[str], port: int, tailnet_host: str) -> set[str]:
+    """*origins* without the extras the ``dashboard_origins`` policy refuses.
+
+    This machine's loopback origins on the bound *port* are the floor and are never
+    asked. The tailnet origin answers to ``capabilities.tailnet_origin``
+    (``dashboard/tailnet.py``; off in an enterprise build), so it is not asked twice. Every
+    other origin is asked by its own text (``edition_locks.policy_permits``): in an
+    enterprise build none passes unless a policy names it (RFC D3); an ``oss`` build
+    with no policy naming the key keeps every origin, as before.
+    """
+    floor = {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        f"http://[::1]:{port}",
+        f"http://kirocrew.localhost:{port}",
+    }
+    floor |= {dashboard_origin(o) for o in floor}
+    if tailnet_host:
+        floor.add(f"https://{tailnet_host}")
+    extras = sorted(origins - floor)
+    if not extras:
+        return origins
+    refused = {o for o in extras if not origin_permitted(o, audit_tool="dashboard_origin")}
+    if refused:
+        logger.warning(
+            "dashboard origins not permitted by governance (dashboard_origins): %s",
+            ", ".join(sorted(refused)),
+        )
+    approved = set(extras) - refused
+    return (origins - set(extras)) | {stored_origin(o) for o in approved}
+
+
+def stored_origin(origin: str) -> str:
+    """The spelling an approved extra *origin* is kept in ``allowed_origins``.
+
+    In an enterprise build that is :func:`origin_policy_item`, the item the policy
+    approved and the form a browser sends. ``check_origin`` matches a non-loopback
+    Origin exactly there, so a configured ``https://Crew.Example.com:443`` is kept as
+    ``https://crew.example.com``. An ``oss`` build keeps the text as configured.
+    """
+    from kiro_crew import edition
+
+    return origin_policy_item(origin) if edition.is_enterprise() else origin
 
 
 def build_allowed_hosts(allowed_origins: set[str]) -> set[str]:

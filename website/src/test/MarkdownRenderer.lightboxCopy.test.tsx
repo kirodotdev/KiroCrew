@@ -96,7 +96,14 @@ describe('Lightbox copy image', () => {
       const { container } = render(<Lightbox />)
       act(() => open())
       openMenu(container)
-      selectItem(copyItem()!)
+      // Async act: the rejected clipboard write settles inside this scope, so the
+      // failure notice is set within act rather than after the test returns.
+      await act(async () => {
+        const el = copyItem()!
+        fireEvent.pointerDown(el, { button: 0 })
+        fireEvent.pointerUp(el)
+        fireEvent.click(el)
+      })
       await vi.waitFor(() => expect(errorNotice(container)).not.toBeNull())
       // The success tick auto-clears; a failure must not — it carries the only
       // recovery hint, so advancing well past the success-flash window leaves it up.

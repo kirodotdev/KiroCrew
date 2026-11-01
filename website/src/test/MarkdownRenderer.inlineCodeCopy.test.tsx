@@ -18,21 +18,21 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     expect(code.tagName).toBe('CODE')
     expect(code).toHaveAttribute('role', 'button')
 
-    fireEvent.click(code)
+    await act(async () => { fireEvent.click(code) })
     expect(copyToClipboard).toHaveBeenCalledWith('npm test')
   })
 
   it('copies on Enter keydown', async () => {
     render(<MarkdownRenderer content={'Try `curl -s https://example.com`.'} />)
     const code = await screen.findByText('curl -s https://example.com')
-    fireEvent.keyDown(code, { key: 'Enter' })
+    await act(async () => { fireEvent.keyDown(code, { key: 'Enter' }) })
     expect(copyToClipboard).toHaveBeenCalledWith('curl -s https://example.com')
   })
 
   it('copies on Space keydown', async () => {
     render(<MarkdownRenderer content={'Set `NODE_ENV=production`.'} />)
     const code = await screen.findByText('NODE_ENV=production')
-    fireEvent.keyDown(code, { key: ' ' })
+    await act(async () => { fireEvent.keyDown(code, { key: ' ' }) })
     expect(copyToClipboard).toHaveBeenCalledWith('NODE_ENV=production')
   })
 

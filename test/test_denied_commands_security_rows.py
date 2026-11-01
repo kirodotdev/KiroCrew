@@ -539,6 +539,53 @@ class TestRecursiveForceRmFloor:
             "> /dev/null RM -fr /",
             "X=1 Y=2 >log RM -rf /",
             "&>/dev/null RM -fr /",
+            # A reserved word or ``!`` / ``time`` leaves the next word the program.
+            "if :; then RM -fr ~; fi",
+            "if false; then :; else RM -fr ~; fi",
+            "for i in 1; do RM -fr ~; done",
+            "while :; do RM -fr /; done",
+            "{ RM -fr ~; }",
+            "! RM -fr ~",
+            "time RM -fr ~",
+            "time -p RM -fr /",
+            "! time RM -fr ~",
+            "case x in x) RM -fr /;; esac",
+            "echo ${x:-$(RM -fr ~)}",
+            # A substitution in command position may expand to nothing.
+            "$(true)RM -fr ~",
+            "$(true) RM -fr ~",
+            "echo hi | `true`RM -fr /",
+            '"$(true)"RM -fr ~',
+            # An unquoted backtick still cuts the argv, as on base.
+            "RM -fr ~/`true`",
+            # A leading redirection keeps its substitution target.
+            ">$(mktemp) RM -fr ~",
+            '>"$(mktemp)" RM -fr ~',
+            "2>`mktemp` RM -fr /",
+            "<$(x) RM -fr ~",
+            "2>$(printf /dev/null) RM -fr ~",
+            # ``#`` and ``<<`` inside ``${…}`` / ``$[…]`` are data, not a comment or heredoc.
+            "echo ${x:- #}; RM -fr /",
+            "echo ${x:- <<EOF}; RM -fr /",
+            "echo ${a[1]:- #}; RM -fr ~",
+            "echo $[ 1 << 2 ]\nRM -fr /",
+            "echo ${x:-[} # don't remove this marker\nRM -fr ~",
+            # ``$$`` is the PID, so ``$${`` opens no expansion and the comment is skipped.
+            "echo $${x:- # don't remove this marker\nRM -fr ~",
+            "echo $${x:- #} don't\nRM -fr ~",
+            # A comment inside a tracked ``${…}`` cannot quote away the wipe.
+            "unset x; echo ${x:-$( # don't\nRM -fr ~\n# '\n)}",
+            "unset x; echo ${x:-` # don't\nRM -fr ~\n# '\n`}",
+            "echo ${x:-$( # it's\nRM -fr /\n# '\n)}",
+            "echo $[ $( # don't\nRM -fr ~\n# '\n) ]",
+            # An expansion that never closes is also read as if it were not there.
+            "echo \\$${x # don't\nRM -fr ~",
+            # An unset parameter in the program word expands to nothing.
+            "${x}RM -fr ~",
+            "$x RM -fr ~",
+            '"${x}"RM -fr ~',
+            "${x}${y}RM -fr /",
+            "$1RM -fr ~",
         ],
     )
     def test_a_recursive_force_wipe_of_root_or_home_is_denied(self, command):
@@ -551,8 +598,18 @@ class TestRecursiveForceRmFloor:
             "RM -rf $HOME/.cache",
             "RM -rf ./build",
             "RM -f /",
+            "RM -r /",
+            "RM -r ~",
             "RM -r /tmp/x",
             "RM -fr $HOME_BACKUP",
+            # A parameter glued to the program word that leaves no ``rm`` stays allowed.
+            "${x}echo hi",
+            "${x}RM -fr /tmp/x",
+            "${x}RM -f ~",
+            "$xrm -fr ~",
+            "'${x}'RM -fr ~",
+            "\\${x}RM -fr ~",
+            "echo ${x}RM -fr ~",
             "echo RM -fr /",
             # Quoted text and heredoc bodies are data, not commands.
             'git commit -m "pin floor; RM -fr / and RM -fr ~ are refused"',
@@ -580,10 +637,37 @@ class TestRecursiveForceRmFloor:
             # still a descendant, not the root operand.
             "RM -fr /tmp/2>/dev/null",
             ">> log RM -rf ./build",
+            # A keyword as an argument, or a substitution operand, is not a root/home target.
+            "echo then RM -fr ~",
+            "RM -fr $(mktemp -d)",
+            "echo ${a[1]} # RM -fr ~",
+            "echo $((1 << 2)) # RM -fr ~",
+            # A substitution inside a target is a real path: cache clears stay allowed.
+            'RM -rf "$(pip cache dir)"/*',
+            'RM -rf "$(go env GOCACHE)"/*',
+            'cd build && RM -rf "$(pwd)"/*',
+            'RM -rf "$HOME/$(basename "$PWD")"',
         ],
     )
     def test_descendants_and_partial_flags_stay_allowed(self, command):
         assert is_denied(command.replace("RM", "rm")) is None
+
+    def test_nested_open_expansions_are_read_a_bounded_number_of_times(self, monkeypatch):
+        """Twenty ``"$( ${`` levels cost a linear number of walks, not 2**20."""
+        from kiro_crew.security import rm_floor
+
+        calls = 0
+        real = rm_floor._segments
+
+        def _counted(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(rm_floor, "_segments", _counted)
+        command = 'echo "$( ${ ' * 20 + "rm -fr /tmp/x" + ' )"' * 20
+        rm_floor._rm_wipe_targets(command)
+        assert calls <= 4 * 20 + 2
 
     def test_the_floor_reports_the_catalog_row(self):
         reason = is_denied("rm -fr /")
@@ -628,3 +712,346 @@ class TestRecursiveForceRmFloor:
 
         monkeypatch.setattr(rm_floor, "_rm_wipe_targets", _boom)
         assert is_denied(command) is None
+
+
+class TestRmFloorReadsNestedShellPayloads:
+    """The rm floor reads every nested-shell payload, and a redirect hides none of them."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -c 'RM -fr /'",
+            "busybox sh -c 'RM -fr /'",
+            'bash -c $" RM -fr ~"',
+            'bash -c "RM -fr "$"~"',
+            "bash -c 'cd x && RM -fr ~'",
+            'bash -c "RM -fr \\$HOME"',
+            # A redirect is no operand: bash runs the script after it.
+            "bash -c 2>/dev/null 'RM -fr ~'",
+            "sh -c >/tmp/o 'RM -fr /'",
+            "sh -c > /tmp/o 'RM -fr /'",
+            "bash -c 2>&1 -- 'RM -fr ~'",
+            "eval bash -c 'RM -fr /'",  # the shell's own -c payload is still read
+            "bash -c > eval 'RM -fr /'",  # a redirect target named eval is a file
+            "bash -c 2> source 'RM -fr ~'",
+            "bash -c 2>$(printf /dev/null) 'RM -fr ~'",  # a target spanning words
+            "env -S 2>/dev/null 'RM -fr /'",
+            # A quoted ``(`` is a file name; the target's end cannot be told, so fail closed.
+            "bash -c 2>'(' 'RM -fr ~'",
+            "bash -c 2>\\( 'RM -fr /'",
+            "bash -c 2> $(printf /dev/null) 'RM -fr ~'",
+            "bash -c 2>/dev/null 2>'(' 'RM -fr /'",
+            "env -S 2>'(' 'RM -fr ~'",
+            # An inert echo argument equal to a glued payload exempts nothing.
+            "echo 'RM -r -f /' ; bash<<<'RM -r -f /'",
+            "echo 'RM -r -f /' ; bash -c'RM -r -f /'",
+            "source 'RM -fr ~' || bash<<<'RM -fr ~'",  # nor does a source argument
+            "bash -c -c 2>/dev/null 'RM -fr ~'",  # a later -c carrier behind a redirect
+            "echo benign\nbash -c 'RM -fr ~'",  # a newline ends the echo
+            "echo hi # it's\nbash -c 'RM -fr ~'",  # a comment's quote opens nothing
+            "bash -c 'RM -fr ~' # it's",  # nor on the payload's own line
+            "echo hi # x \\\nbash -c 'RM -fr ~'",  # a comment's backslash continues nothing
+            "bash -c 2> ';' 'RM -fr ~'",  # a quoted ``;`` target ends nothing
+            # bash folds a backslash-newline in the payload it runs.
+            "bash -c 'RM -fr \\\n~'",
+            "RM -fr \\\n~",
+            # A substitution body runs as its own command; its outer echo / cat exempts nothing.
+            "echo $( bash -c 'RM -fr ~' )",
+            "cat <( bash -c 'RM -fr ~' )",
+            "cat >( bash -c 'RM -fr /' )",
+            "echo `bash -c 'RM -fr ~'`",
+            # A splice marker anywhere voids the echo exemption: fail closed.
+            "echo $\\\n( bash -c 'RM -fr ~' )",
+            "echo ok # it's\necho $( bash -c 'RM -fr ~' )",
+            # The heredoc marker's own line still runs; only the body is data.
+            "cat <<'EOF' && bash -c 'RM -fr ~'\nbody\nEOF",
+            # The payload as yielded is read, quotes and all.
+            'bash -c "echo \'a\\"b\'; RM -fr ~"',
+            "bash -c \"bash -c 'RM -fr ~'\"",
+            # The payload as yielded is read too: an unescaped view hides this wipe.
+            "bash -c $'echo \\\\$\\'foo\\\\\\';RM -fr ~'",
+            # A redirect glued to the carrier flag hides no payload either.
+            "bash -c</dev/null 'RM -fr ~'",
+            "bash -ce 2>/dev/null 'RM -fr ~'",
+            "bash -c &>/dev/null 'RM -fr ~'",
+            "bash -c >|/tmp/o 'RM -fr /'",
+            "bash -c <>/tmp/o 'RM -fr ~'",
+            "sh -c>/tmp/o 'RM -fr /'",
+            "env -S</dev/null 'RM -fr ~'",
+            # bash drops a double-quoted ``\\$``, so the payload expands it.
+            'sh -c "RM -rf \\${HOME}"',
+            'bash <<< "RM -fr \\$HOME"',
+            "bash -c 'bash -c \"RM -fr \\$HOME\"'",
+            # The outer shell expands a ``$`` after ``\\\\``; the inner one strips the ``\\``.
+            'bash -c "RM -fr \\\\$HOME"',
+            'bash <<< "RM -fr \\\\${HOME}"',
+            # A backtick body drops the ``\\`` before ``$``, even in a single-quoted payload.
+            "bash -c 'echo `RM -fr \\$HOME`'",
+            "bash -c 'echo \"`RM -fr \\$HOME`\"'",
+            # So does an enclosing backtick, and a nested ``$'…'`` decodes ``\\\\`` first.
+            "echo `bash -c 'RM -fr \\$HOME'`",
+            "x=`sh -c 'RM -rf \\${HOME}'`",
+            "echo \"`bash <<< 'RM -fr \\$HOME'`\"",
+            "bash -c \"bash -c $'RM -fr " + "\\" * 4 + "$HOME'\"",
+            # A live ``$`` or any ``"`` or ``\\\\`` beside the payload: its ``\\$`` fails closed.
+            'bash -c "RM -fr \\\\"$HOME',
+            'sh -c "RM -fr \\\\"${HOME}',
+            'bash <<< "RM -fr \\\\"$HOME',
+            "bash -c 'RM -fr \\'\"$HOME\"",
+            "bash -c 'RM -fr \\'$HOME",
+            "bash -c 'RM -fr \"\\$HOME\"'",
+            # Only a lone shell keeps a ``\\$`` literal: GNU sed's ``e`` flag unescapes it.
+            "printf x | sed 's/.*/RM -fr \\$HOME/e'",
+            "printf x | sed -e 's|.*|RM -fr \\${HOME}/*|e'",
+            # Only the shell's own script stays literal, not argv it forwards.
+            "bash -c 'IFS=;$@' _ sed 's/.*/RM -fr \\$HOME/e' /etc/hostname",
+            # A live control operator glued to a word ends the command.
+            "echo x&&bash -c 'RM -fr /'",
+            "echo x &&bash -c 'RM -fr ~'",
+            "cat f&&sh -c 'RM -fr /'",
+            "echo x&bash -c 'RM -fr /'",
+            "echo x||bash -c 'RM -fr ~'",
+            "echo x|bash -c 'RM -fr ~'",
+        ],
+    )
+    def test_a_nested_wipe_is_refused_by_the_floor(self, command):
+        reason = is_denied(command.replace("RM", "rm"))
+        assert reason is not None and "component=argv-floor" in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -c 'RM -rf /tmp/x'",
+            "bash -c 'RM -fr /tmp/x'",
+            "echo bash -c 'RM -fr /'",
+            "echo build done: bash -c and sh -c both ran",  # plain multi-word echo
+            "bash -c 2>/dev/null 'ls'",
+            "bash -c 'echo hi > /tmp/o'",
+            "echo 'RM -fr \\\n~'",  # a single-quoted continuation is printed, not run
+            "bash -c 'RM -fr \\\n/tmp/x'",
+            "echo $( bash -c 'ls' )",
+            # Each command is read on its own: this echo prints the script.
+            "echo \"$(date)\" bash -c 'RM -fr ~'",
+            "echo x && bash -c 2>/dev/null 'ls'",
+            # A redirect target ends at its word; the commit message is no script.
+            "bash -c 2>/dev/null 'make lint' && git commit -m 'refuse RM -fr ~ respellings'",
+            "sh -c '>/tmp/o' && git commit -m 'note: bash -c RM -fr /'",
+            "cat <( bash -c 'RM -fr /tmp/x' )",
+            # A heredoc body is data git, gh or a file stores, never run.
+            "git commit -F - <<'EOF'\nfix: refuse bash -c 'RM -r -f ~' respellings\nEOF",
+            "gh pr create --body-file - <<'EOF'\nRefuses sh -c 'RM -r -f /' and bash -c 'RM -fr ~'.\nEOF",
+            "cat > docs/notes.md <<-EOF\n- bash -c 'RM -r -f /' is refused\nEOF",
+            "git commit -F - <<'EOF'\nnote: $(bash -c 'RM -fr ~') blocked\nEOF",
+            "cat > f <<'EOF'\necho $( bash -c 'RM -fr /' )\nEOF",
+            # A single-quoted ``\\$`` reaches the payload as is: a literal ``$HOME`` path.
+            "bash -c 'RM -fr \\$HOME'",
+            "sh -c 'RM -rf \\${HOME}'",
+            "bash <<< 'RM -fr \\$HOME'",
+            "bash -c 'cd /tmp; RM -fr \\$HOME/*'",
+        ],
+    )
+    def test_a_nested_harmless_command_keeps_its_verdict(self, command):
+        command = command.replace("RM", "rm")
+        reason = is_denied(command)
+        assert reason is None or "component=argv-floor" not in reason
+
+    def test_a_quoted_separator_in_a_nested_commit_message_is_data(self):
+        """A single quote inside the payload keeps its ``;`` as data, as on main."""
+        wipe = "r" + "m -r -f ~"
+        assert is_denied(f"bash -c \"git commit -m 'test: refuse a; {wipe} respelling'\"") is None
+
+    @pytest.mark.parametrize("home", ["'$HOME'", "'${HOME}'"])
+    def test_a_single_quoted_home_in_a_double_quoted_payload_is_left_as_on_main(self, home):
+        """``bash -c "rm -fr '$HOME'"`` expands ``$HOME`` in bash; the floor does not read
+        it, so its verdict is main's: only the catalog rows decide."""
+        from kiro_crew.security import rm_floor
+
+        command = f'bash -c "{"r" + "m"} -fr {home}"'
+        assert rm_floor._rm_wipe_targets_nested(command) == rm_floor._rm_wipe_targets(command)
+
+    def test_a_later_command_is_no_script_of_a_redirected_carrier(self):
+        """The script ends at its command's separator; a commit message is not read."""
+        push = "git " + "push origin main"
+        command = f"bash -c 2>/dev/null 'make lint' && git commit -m '{push}'"
+        assert is_denied(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -c <<< harmless 'RM -fr ~'",
+            "bash <<< harmless -c 2>/dev/null 'RM -fr ~'",
+            "bash -c 2>/dev/null <<< harmless 'RM -fr ~'",
+            "bash <<< 'RM -fr ~'",  # the herestring itself is the script
+        ],
+    )
+    def test_a_herestring_hides_no_script(self, command):
+        """``<<<`` takes one word and is no heredoc, so bash still runs the ``-c`` script."""
+        reason = is_denied(command.replace("RM", "rm"))
+        assert reason is not None and "component=argv-floor" in reason
+
+    @pytest.mark.parametrize("command", ["cat <<< hello", "grep x <<< 'a b' > out"])
+    def test_a_harmless_herestring_stays_allowed(self, command):
+        assert is_denied(command) is None
+
+    def test_a_glued_amp_redirect_still_refuses_the_dash_wipe(self):
+        """dash reads ``true&>x`` as ``true &`` then ``>x``, so the rm after it runs."""
+        reason = is_denied("true&>x " + "r" + "m -r -f ~")
+        assert reason is not None and "component=argv-floor" in reason
+
+    @pytest.mark.parametrize(
+        "carrier",
+        [
+            "bash -c 2>/dev/null",
+            "env -S 2>/dev/null",  # the walk lowercases ``-S``
+            "bash -ce 2>/dev/null",  # ``c`` inside a flag group
+            "bash -c &>/dev/null",
+            "bash -c &>> /tmp/o",
+            "bash -c >|/tmp/o",
+            "bash -c <>/tmp/o",
+        ],
+    )
+    def test_a_redirect_hides_no_payload_from_the_deny_views(self, carrier):
+        wipe = "d" + "d " + '"if=/dev/zero" of=/dev/sda'
+        assert is_denied(f"{carrier} '{wipe}'") is not None
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            "env -S 2>/dev/null '{}'",
+            "env -S 2>/dev/null 'bash -c \"{}\"'",
+            "bash -ce &>/dev/null '{}'",
+            # A quoted or escaped carrier flag is the same word to the shared reader.
+            'bash "-c" 2>/dev/null "{}"',
+            "sh \"-c\" 2>/dev/null '{}'",
+            "bash -'c' 2>/dev/null '{}'",
+            "bash -\\c 2>/dev/null '{}'",
+            "env \"-S\" 2>/dev/null '{}'",
+            "bash -c -- 2>/dev/null '{}'",
+            "bash -c 2>/dev/null -- '{}'",
+            "bash -c \\\n2>/dev/null '{}'",  # a continuation before the redirect
+        ],
+    )
+    def test_a_redirect_hides_no_publish_from_the_git_floor(self, shape):
+        assert is_denied(shape.format("git " + "push origin main")) is not None
+
+    @pytest.mark.parametrize(
+        "command, argvs",
+        [
+            ("bash -c &>/dev/null 'x'", [["bash", "-c", "'x'"]]),
+            ("bash -c >|/tmp/o 'x'", [["bash", "-c", "'x'"]]),
+            ("a&&>b", [["a"], []]),  # ``&&`` then a redirect, as bash reads it
+        ],
+    )
+    def test_the_reader_keeps_both_stream_and_clobber_redirects_whole(self, command, argvs):
+        from kiro_crew.security import shell_commands
+
+        got = [[w.raw for w in cmd.argv] for cmd in shell_commands.read_commands(command)]
+        assert got == argvs
+
+    def test_a_frame_with_no_redirect_char_is_not_read(self, monkeypatch):
+        """Every walk frame asks for views, so a frame without a ``<`` or ``>`` (which
+        every redirection needs) costs no read of its nested substitutions."""
+        from kiro_crew.security import shell_commands
+
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("read")
+
+        monkeypatch.setattr(shell_commands, "read_commands", _boom)
+        for frame in ('echo "$(' * 40 + "true" + ')"' * 40, "ls -la", "bash -c 'x' -- y"):
+            assert shell_commands.redirect_free_views(frame) == []
+
+    def test_many_redirects_split_each_command_once(self, monkeypatch):
+        """The view test is linear in redirects: each command's words are split once,
+        not once per redirect (2,000 redirects would split it 4,000 times)."""
+        from kiro_crew.security import shell_commands
+
+        calls = 0
+        split = shell_commands.ShellCommand._parts
+
+        def _counting(self):  # type: ignore[no-untyped-def]
+            nonlocal calls
+            calls += 1
+            return split(self)
+
+        monkeypatch.setattr(shell_commands.ShellCommand, "_parts", _counting)
+        assert shell_commands.redirect_free_views("echo RM " + ">x " * 2000) == []
+        assert calls == 1
+
+    def test_one_gate_call_reads_each_frame_once_and_keeps_nothing(self, monkeypatch):
+        from kiro_crew.security import shell_commands
+
+        seen: list[str] = []
+        real = shell_commands.redirect_free_views
+        monkeypatch.setattr(
+            shell_commands, "redirect_free_views", lambda text: seen.append(text) or real(text)
+        )
+        is_denied("bash -c 'make lint' 2>&1 | tee build.log")
+        assert seen and len(seen) == len(set(seen))
+        assert shell_commands._CALL_VIEWS.get() is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo '{}' | tee x; sh run.sh",
+            "echo '{}' | grep rm && bash build.sh",
+            "echo '{}' 2>&1 | less; sh x",
+            "echo 'x' >| bash -c '{}'",
+        ],
+    )
+    def test_a_later_shell_is_not_read_as_the_pipes_consumer(self, command):
+        """The printed text reaches ``tee`` / ``grep`` / ``less`` or a file, as on main."""
+        reason = is_denied(command.format("r" + "m -fr ~"))
+        assert reason is None or "component=argv-floor" not in reason
+
+    @pytest.mark.parametrize("separator", [";", "&&", "&", "\n"])
+    def test_a_separator_ends_the_command(self, separator):
+        """``echo x <sep> sh`` runs ``sh`` with no input: the printed wipe stays printed."""
+        from kiro_crew.security import rm_floor
+
+        command = f"echo '{'r' + 'm'} -fr ~'{separator}sh"
+        assert rm_floor._rm_wipe_targets_nested(command) == set()
+        assert ["sh"] in rm_floor._command_tokens(command)  # the shared reader split it
+
+    @pytest.mark.parametrize(
+        "command", ["git log --oneline | head -3", "echo 'RM -fr ~' | tee notes.txt"]
+    )
+    def test_a_safe_pipeline_stays_allowed(self, command):
+        reason = is_denied(command.replace("RM", "r" + "m"))
+        assert reason is None or "component=argv-floor" not in reason
+
+    def test_many_heredoc_markers_on_one_line_read_in_linear_time(self):
+        """The line reader ends at the first heredoc; the rest of its line is one read."""
+        from kiro_crew.security import rm_floor
+
+        assert len(rm_floor._command_lines("r" + "m x " + "<<a " * 5000)) == 1
+
+    def test_a_view_reads_only_its_own_frame(self):
+        from kiro_crew.security import shell_commands
+
+        command = 'bash -c 2>/dev/null "$(sh -c >x ls)"'
+        listed = shell_commands.read_commands(command, nested=False)
+        assert [cmd.separator for cmd in listed] == [""]
+        assert shell_commands.redirect_free_views(command) == ['bash -c "$(sh -c >x ls)"']
+
+    def test_the_regex_rows_keep_their_verdicts(self):
+        for command in ("rm -rf /tmp/x", "rm -rf ~/.cache/foo"):
+            assert is_denied(command) is not None, command
+
+    @pytest.mark.parametrize("wrapper", ["bash -c 2>/dev/null {}", "sh -c >/tmp/o {}"])
+    def test_a_redirect_hides_no_payload_from_the_self_protection_floor(self, wrapper):
+        verb = "to" + "ken"
+        assert is_denied(wrapper.format(f"'{_NAME} {verb}'")) is not None
+
+    def test_an_eval_argument_is_left_to_the_rows(self, monkeypatch):
+        """``eval`` re-joins its words under each level; the floor does not model that."""
+        from kiro_crew.security import rm_floor
+
+        frames: list[str] = []
+        real = rm_floor._rm_wipe_targets
+        monkeypatch.setattr(
+            rm_floor, "_rm_wipe_targets", lambda text: frames.append(text) or real(text)
+        )
+        command = "eval " * 1200 + "echo " + "r" + "m"
+        assert rm_floor._rm_wipe_targets_nested(command) == set()
+        # No eval argument is walked: only the command itself reaches its tail.
+        assert [frame for frame in frames if "echo" in frame] == [command]

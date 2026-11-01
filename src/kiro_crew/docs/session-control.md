@@ -1,20 +1,21 @@
 # Session Control — driving another session
 
 One chat session can open, fork, seed, watch, stop, retry, continue, rename, retitle, close and revive
-another one, change its model, reload its agent process, and take another one under itself in
-the sidebar. The tools come from the
+another one, change its model, reload its agent process, color it, and take another one under
+itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 38 of its tools, written for the agent that is about to use them.
+for all 40 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`, `session_retry`,
-  `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_close`, `session_revive`,
-  `session_history_list`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`,
-  `session_move_to_column`. These reach another session.
+  `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`,
+  `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_broadcast`,
+  `session_status`, `session_adopt`, `session_handoff`, `session_release`,
+  `session_move_to_column`, `work_dispatch`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
   `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -167,6 +168,44 @@ is heading the wrong way, or the thing it is grinding on is already done.
 The message lands in the target's transcript tagged as sent by your session, so
 the person reading it can tell it from their own typing.
 
+### `work_dispatch`
+
+Dispatches one work item in one call, for a conductor whose agent mounts
+`@kirocrew-work`: `work_ledger_record` `action=create`, then `session_create`,
+then `work_ledger_record` `action=bind`, then `session_send` with the seed. Each
+step is the same route the four calls use, sent as you, so it is refused
+whatever the step would be refused on its own. It is not auto-approved.
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `title`, `acceptance` | yes | As `action=create` takes them |
+| `agent` | yes | The worker's agent, as `session_create` takes it |
+| `seed` | yes | The seed prompt, sent only after the bind succeeded |
+| `agent_kind`, `folder`, `model`, `reasoning_effort` | no | As `session_create` takes them |
+| **session_title** | no | The session's sidebar title; defaults to `title` |
+
+The reply names the `item_id` and `worker_session_key`. A failure names the step
+(`create`, `session_create`, `bind`, `seed`), the route's refusal code, and each
+cleanup it ran:
+
+| Failed step | Cleanup |
+|---|---|
+| `create` | none |
+| `session_create` | the item is closed `abandoned` |
+| `bind` | the session is closed, then the item |
+| `seed` | none: the item is bound and the session exists |
+
+`outcome=outcome_unknown` means a reply was lost, not that the step was refused.
+After a lost `create` or `session_create` reply, read your board and sidebar
+before dispatching again. After a lost `seed` reply, read the session with
+`session_read_message` before resending, or it may be seeded twice. To bind an
+existing session, use the four calls one at a time.
+
+`work_dispatch` never opens a work ledger. If your session owns none, step
+`create` is refused `no_ledger` and nothing is created. Open the ledger first with
+`work_ledger_record` `action=goal`, which needs the `kirocrew-work` server, then
+dispatch.
+
 ### `session_broadcast`
 
 One message, several sessions. Use it when the thing you have to say is true of
@@ -176,7 +215,16 @@ every worker rather than of one: the base moved, the approach changed, stop.
 |---|---|---|
 | `message` | yes | Becomes each target's next user-role turn |
 | `mode` | yes | `queue` or `steer`. No default |
-| `targets` | no | Session keys or titles. Omit to reach every session you created |
+| `targets` | one of `targets` / `all` | Session keys or titles. Name at least one, or pass `all: true` instead. An empty list counts as no list |
+| `all` | one of `targets` / `all` | `true` reaches every session you created. Not together with `targets` |
+
+A call that selects no audience is refused and delivers nothing. The tool
+refuses it before sending a request, and the gateway refuses it too. A session
+that started before `all` existed still holds the old tool text ("omit the target
+list to reach everything"); its first fleet-wide call is refused once with a reply
+that names `all: true`. While a tool and a gateway of different versions meet,
+the tool never sends a body without a target list unless `all: true` is set, so an
+older gateway cannot read an empty audience as every session you created.
 
 `mode` is required because the two are different instructions, not two settings
 of one. `queue` lets every target finish what it is doing; `steer` cuts into
@@ -187,7 +235,7 @@ meant the other.
 
 Each delivery goes through the same checks a single `session_send` does, so a
 broadcast can reach nothing a `session_send` could not — including the ownership
-fence, which is why the default audience (what you created) is always within
+fence, which is why the `all: true` audience (what you created) is always within
 reach.
 
 **Partial delivery is normal.** Deliveries happen one at a time, and a target
@@ -379,11 +427,24 @@ agent.
 resolved from the connection — there is no argument for it, so no session can
 rearrange a part of the tree it is not in.
 
-The case it exists for is a takeover. Open one session, adopt each of the
-sessions you are now running, and the workers THEY opened come along with them:
-a session hangs under another session, not under a path, so one call moves a
-whole branch. A target that already has a parent can be adopted, and the parent
-it had is kept in the record.
+Adopt moves a branch. Open one session, adopt each of the sessions you are now
+running, and the workers THEY opened come along with them: a session hangs under
+another session, not under a path, so one call moves a whole branch. A target
+that already has a parent can be adopted, and the parent it had is kept in the
+record.
+
+What you may adopt depends on who you are. A fenced session (one an agent
+created, a crewmate's chat, a scheduled run, a channel session, or the owner's
+Conductor while `agent.session_control` is off) may adopt only
+a session it already manages: one it created and has not handed away, or one that
+was handed to it with `session_handoff`. With `agent.session_manager_chain` on,
+it also reaches a session managed by a session it manages. Any other target is
+refused `not_creator` (403), and that includes a session another conductor
+opened. To take that over, the session that manages it must first hand it to
+you. When that session is no longer open, no fenced session can take the target
+over. An agent in a person's own tab, which no session created, is not held to
+this rule and can still adopt it, except the Conductor while
+`agent.session_control` is off, which is fenced like the rest.
 
 | Refusal | Why |
 |---|---|
@@ -408,8 +469,13 @@ own.
 
 Takes `target` and `to`. It makes `to` the session that MANAGES `target`: from then
 on `to` can send to, read, summarize, stop, close, adopt, release and hand on the
-target, and you cannot, unless it is handed back. Use it after opening a conductor
-and its workers: hand each worker to the conductor.
+target. With `agent.session_manager_chain` off (the default), a fenced session
+(see the `not_creator` row below) can no longer do those on a session it handed
+away; with it on, it keeps that reach while it still manages `to`. An agent in a person's own tab is not fenced for
+send, read, stop, close and adopt; `session_handoff` still needs it to manage the
+target and `to`, or it is refused `not_manager`.
+Use it after opening a conductor and its workers: hand each worker to the
+conductor.
 
 Only the target's current manager may hand it over (the session that created it,
 until a handoff names another), and `to` must be a session you manage too. Who
@@ -418,9 +484,18 @@ CREATED the target does not change, so `session_fork`, `session_rename` and
 sessions against the creator's memory. The target moves under `to` in the
 sidebar, and its transcript gets one note saying who manages it now.
 
+The new manager cannot hand the session back to the one that gave it. `to` must
+be a session the caller manages, and the giver manages the new manager, not the
+other way round, so the call is refused `not_creator`. A fenced
+giver takes direct management back only with `agent.session_manager_chain` on, by
+handing the session to itself while it still manages the new manager. With the
+switch off, no fenced session can. The new manager may hand it on to a session it
+manages itself.
+
 | Refusal | Why |
 |---|---|
-| `not_manager` | You do not manage the target or `to`. Holds for every caller, so an agent in a person's own tab cannot hand another of the person's tabs, which has no manager, to anyone. |
+| `not_creator` | HTTP 403. You are a fenced session (one an agent created, a crewmate's chat, a scheduled run, a channel session, or the owner's Conductor while `agent.session_control` is off) and you do not manage the target or `to`. The ownership fence answers first, with this code. |
+| `not_manager` | HTTP 403. The same rule for an agent in a person's own tab, which the ownership fence does not cover (the Conductor while `agent.session_control` is off is covered, and gets `not_creator`): it cannot hand another of the person's tabs, which has no manager, to anyone. |
 | `self_manager` | `to` is the target itself. |
 | `already_manager` | `to` already manages the target. |
 | `would_cycle` | The target manages `to`, directly or up the line, so the handoff would make a loop. |
@@ -474,6 +549,11 @@ leave a tab for the person to dismiss. It is the same archival as closing a
 peer, and it cancels the turn that asked for it, so make it your last call and
 write whatever the person should read before it. `session_close` is the only
 verb (besides `session_release`) that accepts its own caller as the target.
+
+A crewmate's own thread is the exception: it may not close itself
+(`member_thread_self_close`, HTTP 403), because only the person dismisses it. A
+crewmate closes the workers it created without an approval prompt, under the same
+ownership fence as `session_stop`.
 
 ### `session_end_wait`
 
@@ -635,6 +715,25 @@ The session-control audit line records your session key as the caller and the
 `body` that was sent; the target's own `dashboard_continue` line records
 `via=session_control`.
 
+### `session_set_color`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title of a session you created; your own session is refused `self_target` |
+| `color` | yes | `"0"` to `"6"` for one of the seven palette swatches the sidebar color menu shows, or `"none"` to clear |
+
+Sets the sidebar color, the same thing as picking a swatch from the session's
+color menu; a custom hex the person set is cleared. Swatches follow the
+viewer's theme. The menu's custom `#rrggbb` cell is not offered here, and any
+other value is refused with `invalid_color` and nothing changes. The
+transcript, model and any running turn are untouched.
+
+Reach is narrower than `session_stop`'s: only sessions the caller created, for
+every caller. The caller itself is refused (`self_target`), and so are a
+person's own tabs (`not_creator`), even when session control is switched on
+for everyone. Everything else
+`authorize_target` refuses stays refused.
+
 ### `session_revive`
 
 | Argument | Required | Meaning |
@@ -678,6 +777,7 @@ Refusals only a revive gives:
 | `resume_conflict` | HTTP 409: the session is being deleted. Try again |
 | `resume_session_deleted` | HTTP 409: the session was deleted while it was being resumed |
 | `reopen_failed` | HTTP 503: the session could not be reopened. Try again |
+| `reopen_retention_failed` | HTTP 503: the session's remote workspace is still scheduled for deletion and that could not be cancelled, so it was not reopened. Try again |
 | `reopen_rollback_failed` | HTTP 503: the revive was refused but the session's closed mark could not be put back, so it may come back as open. Close it again from the History tab |
 
 ### `session_history_list`
@@ -782,7 +882,7 @@ The sidebar tree the person organizes their sessions in.
 |---|---|---|
 | `chat_folder_tree` | none | Every folder (id, human path, project dir, default agent, declared steering directories) with the live sessions nested under it, plus an `(unfiled)` group. Listed in **sidebar order**, not alphabetically |
 | `chat_folder_create` | `name` (required), `parent` | Create a folder. `parent` is an id or a `/`-separated path; missing segments are created (`mkdir -p`). Omit or pass `root` for top level. Creating never moves anything. An app agent or crew member may nest only under a folder it owns or the folder its own session is filed in. A same-name sibling it owns is reused; any other same-name sibling is refused `409 folder_name_exists` |
-| `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded |
+| `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded. A move into a parent that already holds a folder of the same name (trimmed, case-folded) is refused (`folder_name_exists`): rename one of them first |
 | `chat_folder_update` | `folder` (required), `name`, `icon`, `color` | Rename a folder, set its emoji icon, or set its palette color. Cannot set `project_dir`, `default_agent` or `steering_dirs`; for steering, `propose_change(kind="folder.steering")` asks the person on a change card |
 | `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
 | `chat_folder_delete` | `folder` (required) | Delete an **empty** folder **this session created**. Refused for the person's folders, and while it holds a subfolder, a live session or an archived session |
@@ -970,7 +1070,8 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `invalid_broadcast_mode` | `session_broadcast` needs `mode` to be `queue` or `steer`; there is no default |
 | `caller_changed_mid_broadcast` | The calling session moved workspace while a broadcast was in flight, so its per-target report is withheld. The deliveries already happened — do not re-send |
 | `too_many_targets` | A broadcast reaches at most 50 sessions. Refused, never truncated — name a subset |
-| `target_required` | A broadcast was given a target list that names no session. Omit the list to reach everything you created |
+| `target_required` | The broadcast selected no session. Name the sessions, or pass `all: true`. Leaving the target list out, or sending an empty one, reaches nobody |
+| `audience_conflict` | The broadcast named sessions and also passed `all: true`. Pass one of the two |
 | `delivery_timeout` | One target exceeded its per-delivery bound, so the broadcast cancelled that call and continued. Re-send only when the row says the steer await was never entered (the hand-over was not reached). Inside or after the steer await the outcome is unknown: do not re-send. Pending or queued text may still run: never re-send. An unavailable original slot means the outcome is unknown and the row advises neither action. No case claims delivery or certain execution |
 | `caller_unidentified` | The calling session could not be resolved from the connection, so nothing was done |
 | `caller_changed_mid_read` | session_status: the calling session moved workspace while its roster was read. Call again |
@@ -1033,9 +1134,9 @@ retry.
 
 | Knob | Default | Effect |
 |---|---|---|
-| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec |
+| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec, except crew member DM sessions and the owner's own-tab Conductor, which keep driving workers they created unless `agent.member_dispatch` is also off |
 | `agent.session_manager_chain` | `false` | Let a session reach the whole line of sessions under it through `session_handoff`, and hand a closed manager's sessions up |
-| `agent.member_dispatch` | `true` | A crew member's DM session drives workers it created even when session control is off. Turn it off to put member callers back under the switch |
+| `agent.member_dispatch` | `true` | A crew member's DM session, and the Conductor in the owner's own dashboard tab, drive workers they created even when session control is off. Turn it off to put both back under the switch |
 | `agent.crew_panel` | `true` | A crew member publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session

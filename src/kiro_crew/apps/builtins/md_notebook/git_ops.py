@@ -305,11 +305,42 @@ _GIT_NEUTRALIZERS: list[tuple[str, str]] = [
     ("pull.verifySignatures", "false"),
     # Local/file transports exec the config-named pack programs directly —
     # GIT_ALLOW_PROTOCOL does not gate them because they are not a protocol.
-    # Every invocation here uses the literal remote name `origin`, so pinning
-    # these two keys restores git's own defaults over anything in .git/config.
+    # These two pins are NOT the guarantee: git keeps the FIRST value it reads
+    # for `remote.<name>.uploadpack`/`.receivepack`, and `.git/config` is read
+    # before any `-c`/GIT_CONFIG_* entry, so a vault-set value wins over them.
+    # The `--upload-pack`/`--receive-pack` flags from `_pack_program_args` are
+    # what closes it.
     ("remote.origin.uploadpack", "git-upload-pack"),
     ("remote.origin.receivepack", "git-receive-pack"),
 ]
+
+
+#: The remote-side program each subcommand would run, pinned by a command-line
+#: flag. The flag beats every config file for that invocation, whatever value
+#: the vault's ``.git/config`` sets and whichever remote is selected.
+_PACK_PROGRAM_FLAGS: dict[str, str] = {
+    "push": "--receive-pack=git-receive-pack",
+    "pull": "--upload-pack=git-upload-pack",
+    "fetch": "--upload-pack=git-upload-pack",
+    "ls-remote": "--upload-pack=git-upload-pack",
+    "clone": "--upload-pack=git-upload-pack",
+}
+
+
+def _pack_program_args(args: list[str]) -> list[str]:
+    """Insert the pack-program pin right after the subcommand, when it takes one.
+
+    Applied in :func:`run_git`, the one chokepoint every git call here passes
+    through, so a new remote-speaking call site cannot forget it. Only these
+    subcommands accept the flag; others (``status``, ``add``, a ``-c``-prefixed
+    ``merge``) are returned unchanged.
+    """
+    if not args:
+        return list(args)
+    flag = _PACK_PROGRAM_FLAGS.get(args[0])
+    if flag is None:
+        return list(args)
+    return [args[0], flag, *args[1:]]
 
 
 def _auth_env(pat: Optional[str]) -> dict[str, str]:
@@ -494,7 +525,7 @@ async def run_git(
     proc = await asyncio.create_subprocess_exec(
         _git_bin(),
         *hook_off,
-        *args,
+        *_pack_program_args(args),
         cwd=cwd,
         env=env,
         stdout=asyncio.subprocess.PIPE,
@@ -876,11 +907,11 @@ async def status(dir_: str, subfolder: Optional[str] = None) -> list[FileChange]
     # OWNERSHIP, NOT NAME SHAPE, is what authorizes hiding a file. `<name>.<32
     # hex>.tmp` is the shape this module PRODUCES; it is not a shape only this
     # module can produce. A user -- or another tool -- may genuinely create a
-    # file with that name, and an earlier revision of this filter excluded it on
-    # the shape alone. That file then vanished from the pending badge, from the
-    # commit, and from the remote, with nothing to tell anyone it had been
-    # dropped. Silently withholding unknown filesystem content from the user's
-    # own git repository is a worse failure than committing a stray temp.
+    # file with that name. Excluding it on the shape alone would make that file
+    # vanish from the pending badge, from the commit, and from the remote, with
+    # nothing to tell anyone it had been dropped. Silently withholding unknown
+    # filesystem content from the user's own git repository is a worse failure than
+    # committing a stray temp.
     #
     # So only `is_inflight_temp` may hide a path: a temp THIS process currently
     # knows it is publishing, registered for the whole stage-and-retry

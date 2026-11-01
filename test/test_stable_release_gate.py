@@ -90,7 +90,7 @@ def _git(repo: Path, *args: str) -> None:
         cwd=repo,
         check=True,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         env={
             **os.environ,
             "GIT_AUTHOR_NAME": "gate test",
@@ -183,7 +183,7 @@ def _run(
         ["bash", "-c", _gate_script()],
         cwd=repo,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         env={
             "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
             "HOME": str(repo),

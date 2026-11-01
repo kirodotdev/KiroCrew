@@ -33,8 +33,7 @@ from kiro_crew.service.common import SERVICE_NAME
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture on the shared monkeypatch, moved verbatim; tracked for a de-flake pass
-def _clear_sudo_user(monkeypatch):
+def _clear_sudo_user(_floor_monkeypatch):
     """Keep ``User=`` resolution deterministic across hosts.
 
     ``_current_user()`` prefers ``SUDO_USER`` (so ``sudo … service install``
@@ -43,12 +42,11 @@ def _clear_sudo_user(monkeypatch):
     for every test in this module; tests that exercise the SUDO_USER path set it
     explicitly themselves.
     """
-    monkeypatch.delenv("SUDO_USER", raising=False)
+    _floor_monkeypatch.delenv("SUDO_USER", raising=False)
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture on the shared monkeypatch, moved verbatim; tracked for a de-flake pass
-def _no_host_env_file(monkeypatch, tmp_path):
+def _no_host_env_file(_floor_monkeypatch, tmp_path):
     """Keep the system scope's overrides file off the host's ``/etc``.
 
     Uninstall reads ``ENV_FILE_PATH`` directly to decide whether it still holds
@@ -60,8 +58,8 @@ def _no_host_env_file(monkeypatch, tmp_path):
     from kiro_crew.service import linux as svc_linux
 
     env_dir = tmp_path / "absent-etc-kirocrew"
-    monkeypatch.setattr(svc_linux, "ENV_DIR", env_dir)
-    monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_dir / "kirocrew.env")
+    _floor_monkeypatch.setattr(svc_linux, "ENV_DIR", env_dir)
+    _floor_monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_dir / "kirocrew.env")
 
 
 @pytest.fixture(autouse=True)
@@ -134,14 +132,13 @@ class _FakeClock:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture on the shared monkeypatch, moved verbatim; tracked for a de-flake pass
-def _restart_settle_without_waiting(monkeypatch):
+def _restart_settle_without_waiting(_floor_monkeypatch):
     """Every ``restart()`` here confirms the unit through a fake clock: the
     window (``_RESTART_SETTLE_SECS``) is still walked, poll by poll, but takes
     no wall time. Tests reach the clock as ``svc_linux.time``."""
     from kiro_crew.service import linux as svc_linux
 
-    monkeypatch.setattr(svc_linux, "time", _FakeClock(), raising=False)
+    _floor_monkeypatch.setattr(svc_linux, "time", _FakeClock(), raising=False)
 
 
 _UNIT = f"{SERVICE_NAME}.service"

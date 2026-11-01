@@ -14,7 +14,7 @@
  * effect and its close handler get run) and @testing-library keeps working.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { waitFor } from '@testing-library/react'
+import { act, waitFor } from '@testing-library/react'
 import type { Root } from 'react-dom/client'
 
 const created: Root[] = []
@@ -95,13 +95,13 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  for (const root of created.splice(0)) root.unmount()
+  for (const root of created.splice(0)) act(() => { root.unmount() })
 })
 
 describe('panel window entry', () => {
   it('themes, seeds i18n, and mounts the chat app plus the capture host inside the boundary', async () => {
     const el = mountPoint()
-    await import('../panel/main')
+    await act(async () => { await import('../panel/main') })
     expect(applyTheme).toHaveBeenCalledTimes(1)
     expect(initMochiI18n).toHaveBeenCalledTimes(1)
     expect(createRootSpy).toHaveBeenCalledWith(el)
@@ -112,7 +112,7 @@ describe('panel window entry', () => {
   })
 
   it('does not mount when the document has no #root', async () => {
-    await import('../panel/main')
+    await act(async () => { await import('../panel/main') })
     // Still themed and seeded — those are unconditional — but no mount attempt,
     // which is what keeps module evaluation from throwing.
     expect(applyTheme).toHaveBeenCalledTimes(1)
@@ -123,7 +123,7 @@ describe('panel window entry', () => {
 describe('avatars window entry', () => {
   it('mounts the gallery inside the boundary', async () => {
     const el = mountPoint()
-    await import('../avatar/main')
+    await act(async () => { await import('../avatar/main') })
     expect(applyTheme).toHaveBeenCalledTimes(1)
     expect(initMochiI18n).toHaveBeenCalledTimes(1)
     expect(createRootSpy).toHaveBeenCalledWith(el)
@@ -131,7 +131,7 @@ describe('avatars window entry', () => {
   })
 
   it('does not mount when the document has no #root', async () => {
-    await import('../avatar/main')
+    await act(async () => { await import('../avatar/main') })
     expect(createRootSpy).not.toHaveBeenCalled()
   })
 })
@@ -139,7 +139,7 @@ describe('avatars window entry', () => {
 describe('settings window entry', () => {
   it('titles the window and closes the WINDOW, not just the panel', async () => {
     const el = mountPoint()
-    await import('../settings/main')
+    await act(async () => { await import('../settings/main') })
     expect(initMochiI18n).toHaveBeenCalledTimes(1)
     expect(createRootSpy).toHaveBeenCalledWith(el)
 
@@ -149,12 +149,12 @@ describe('settings window entry', () => {
     expect(document.title).toBe('Settings')
 
     const btn = el.querySelector('button')!
-    btn.click()
+    act(() => { btn.click() })
     expect(closeSettings).toHaveBeenCalledTimes(1)
   })
 
   it('does not mount when the document has no #root', async () => {
-    await import('../settings/main')
+    await act(async () => { await import('../settings/main') })
     expect(initMochiI18n).toHaveBeenCalledTimes(1)
     expect(createRootSpy).not.toHaveBeenCalled()
     // The effect never ran, so the title stays whatever the shell set.

@@ -123,6 +123,10 @@ use:
   new read family gets an owner of its own; a name both projections need goes
   to `history_projection_contract.py`. `test/test_history_projection_facade.py`
   pins the owners, the exception's module, the logger and the patch reach.
+  `history_page_index.py` is such an owner, outside the facade: it keeps the
+  bounded-page index base on disk and carries it across first-line rewrites
+  (see "Bounded transcript pages"), and the reads owner imports it inside the
+  functions that use it, so the facade serves none of its names.
 - `history_rewrite.py` owns locked compaction rewrites and size-based rotation.
 - `history_consolidation.py` defines `HistoryConsolidator` (construction,
   `reconfigure`, retry accounting, off-loop counting and every scheduling entry
@@ -163,7 +167,7 @@ binds from them. New work goes to the owner of its responsibility:
 | `history_files.py` | transcript stems and their Slack aliases (`transcript_stem(s)`, `transcript_lock_stems`, `_safe_key`), the sessions and archive directories, the durable archive write (`_archive_lines`) and its retention sweep (`_cleanup_old_archives`), the file stamps (`_safe_mtime`, `_cache_identity`, `_restore_mtime`) |
 | `history_schema.py` | which metadata keys a rebuilding writer owns (`SLOT_OWNED_META_KEYS`, `ROWS_ONLY_*`, `carry_unowned_metadata`), row provenance (`carry_provenance`), `HUMAN_TURN_META_KEY`, `mint_row_mid`, and the spelling and order of transcript timestamps (`transcript_sort_key`, `metadata_now_iso`, `monotonic_transcript_ts`, `latest_transcript_ts`) |
 | `history_offload.py` | the on-loop persistence discipline (`OnLoopPersistError`, `allow_on_loop_persist`, `on_loop_persist_strict`) and the off-loop writers (`append_off_loop`, `append_if_absent_off_loop`, `append_rows_if_absent_off_loop`, `update_metadata_off_loop`) |
-| `history_locks.py` | the transcript lock: `_locked`, `locked_stems`, `atomic_appends`, the per-stem reentrant lock and cross-process `flock` (`_locked_stem`, `HistoryLockTimeout`, the acquire bounds), the deferred release and its proof-of-hold witness, and the delete-in-flight marks |
+| `history_locks.py` | the transcript lock: `_locked`, `locked_stems`, `atomic_appends`, the per-stem reentrant lock and cross-process `flock` (`_locked_stem`, `_try_acquire_named_sidecar`, `HistoryLockTimeout`, the acquire bounds), the deferred release and its proof-of-hold witness, and the delete-in-flight marks |
 | `history_derivation.py` | the header's privacy contract (`INCOGNITO_MEMORY_MODES`, `memory_mode_from_header_line`, `is_incognito_transcript`, `transcript_privacy_mode`) and the derivation seam (`derivation_hold`, `publication_hold`, `derive_messages*`, `derive_recent`, `TranscriptWithheld`, `TranscriptBusy`) |
 | `history_threads.py` | the reply-thread sidecar: its location, `read_threads`, `append_thread_reply` and `ThreadStoreUnreadable` |
 | `history_summaries.py` | the one-line and intent summary sidecar caches |
@@ -207,18 +211,42 @@ entry would exceed 1024 checkpoints, so an entry's size is capped regardless of
 transcript length. A file-stamp or invalidation-generation change makes the
 cached entry unusable; an exact revision reuses it. The next scan then either
 starts at byte zero or resumes from the last complete scan: the projection keeps
-that scan (`_page_index_base`: device, inode, the record boundary it stopped at,
-a blake2b digest of the 4 KiB before the boundary, the row count and the
+that scan (`_page_index_base`: the first line's length, the record boundary it
+stopped at, a blake2b digest of three 4 KiB body windows -- the start of the body,
+the last checkpoint and the bytes before the boundary -- plus the byte before and
+the 64 bytes after EVERY checkpoint, the row count and the
 checkpoints) across invalidation, because `ConversationLog.append` invalidates on
-every write and the file only grows by appends. The scan resumes only when the
-open handle it is about to read has the same device and inode, is longer than the
-boundary, and has the same digest before the boundary; it then scans only the
-appended rows. Compaction, rotation and metadata updates replace the file through
-`atomic_write` (a new inode), so they always rebuild from byte zero, and a final
-row without a line terminator is never used as a boundary. The premise is that
-product writes are `O_APPEND` appends or atomic replaces; an in-place edit that
-keeps the inode and the 4 KiB before the old end and also lengthens the file would
-not be noticed. A key with
+every write and the file only grows by appends. The base is identified by content,
+never by inode (`history_page_index.relocate`): the open handle it is about to read
+is checked with every offset moved by the first line's change in length, must reach
+the moved boundary (equal means nothing was appended, and nothing is scanned), and
+must hash to the saved digest there; the scan then covers only the rows after the
+boundary. A final row without a line terminator is never used as a boundary. When
+the first line is itself a row (a legacy file with no metadata line) it is part of
+the digested body, and a change to its length refuses the base.
+
+The base also survives a restart, a copy and every rewrite that keeps the rows
+(`kiro_crew.history_page_index`). For a transcript of 256 KiB or more it is
+persisted to `<transcripts>/.page-index/<file>.json` (format version 2) after a
+build, again after each further 256 KiB, and whenever the base no longer extends
+the one this process last wrote; a read with no usable in-memory base loads it,
+checks its shape, and applies the same relocation check, so a stale, damaged or
+version-1 sidecar costs one rebuild and never a wrong page. `delete_session`
+removes it. Because the check follows the rows, no writer has to move the base: the
+metadata-line writers (`update_metadata`, `clear_closed`, `mark_consolidated`,
+`advance_consolidation_sub_offset`), the dashboard's full save (which rewrites the
+whole file through `atomic_write` behind a new first line on every flush), a copy of
+the data home and a restore all resume. An inode-keyed base failed every one of
+those, which on a live data home left most large transcripts framing from byte zero
+on their first page after a restart. Compaction, rotation and body rewrites that
+change a row's length move the windows after it off their expected offsets, so they
+rebuild from byte zero; the per-checkpoint windows matter for a rewrite whose length
+changes cancel out before the end, which would otherwise leave the end windows in
+place while every checkpoint between the edits points at the wrong row
+(`test_interior_row_length_changes_that_cancel_out_are_rescanned`). Not noticed: a
+rewrite that changes rows outside all those windows while keeping every row's length,
+which leaves the offsets correct and only the row count at risk if a row's validity
+changed. A key with
 no transcript file is a stable empty revision (`total=0`); any other stat error
 propagates rather than reading as empty.
 The index is built lazily by the first paginated read of a revision (one O(rows)
@@ -232,8 +260,10 @@ members yields a row is served from the key's own file); there is no second
 lineage model, and a chain whose membership changes during a page read is treated
 as a revision change.
 
-The index stores counts and offsets only, never message content, and never crosses
-a process boundary or trusts agent-writable derived state. In-memory validity
+The index stores counts and offsets only, never message content. The persisted base
+is trusted no further than the in-memory one: it sits beside the transcript with the
+same permissions, every row a page returns is decoded from the transcript itself,
+and a writer able to forge it can rewrite the transcript directly. In-memory validity
 requires the full file stamp (`mtime_ns`, `ctime_ns`, size, inode, device) and the process-wide
 history invalidation generation. An unpinned page read whose revision changes
 mid-read is retried once; a read pinned to an `expected_revision` is not, since
@@ -245,6 +275,14 @@ so the endpoint never returns a mixed revision. Indexed reads use the strict fra
 (`strict_raw_records_with_offsets`): a record over `RECORD_CAP` raises instead of
 being skipped, because a skipped row would shift every cursor above it; the
 endpoint then serves the request from the full reader, which has no per-record cap.
+The framer (`jsonl_util._frames_with_offsets`) reads the handle in 1 MiB chunks
+(`_FRAME_CHUNK`) and serves its line requests from them, so a scan drops and
+retakes the GIL once per megabyte rather than once per line; while turns and
+searches run Python threads in the same process, each retake can cost a switch
+interval, and per-line reads made a cold page read of a 20 MB transcript take about
+50 times longer than it does alone. Framing and offsets are unchanged; a caller that
+stops early finds the handle up to one chunk further on, which is why every caller
+takes positions from the yielded offsets.
 
 `ConversationLog.read_messages_chained_tail(key, limit)` answers the newest *limit*
 rows of `read_messages_chained` without building that index: it reads the end of
@@ -264,7 +302,9 @@ fields. The no-limit route and callers requiring complete history remain on
 the sparse index nor page projection stores a redacted or alternate transcript.
 
 A poller of the newest page reads it incrementally (`dashboard/slot_detail_delta.py`;
-its one caller is the app-sdk `ChatEmbed`). A paged read passing `cursor=1` also
+its one caller is the app-sdk `ChatEmbed`, which issues the read on a poll and,
+when its host passes a push channel, on each change signal for the slot -- see
+app-kit-platform.md, *ChatEmbed live updates*; the read itself is unchanged). A paged read passing `cursor=1` also
 gets `cursor: {from, since, digest}`: the page's first and last row indices and a
 digest over the rows in `[from, since)`, so the last row (the folded streaming
 row) is never inside it. The digest is built from each row's render-memo identity
@@ -344,7 +384,7 @@ The hook is a facade over composed owners, each holding one responsibility:
 | Owner (`website/src/hooks/virtualizer/`) | Owns |
 |---|---|
 | `useVirtualChat.ts` | option wiring, row identity (display key, stable id, alt id), and the hook-call order the owners depend on |
-| `windowRange.ts` | the mounted window as the reader scrolls: the scroll recompute and its merge, the near/far jump rule behind `mountIndex`, sentinel expansion, the coverage watchdog, the older-history index trigger. A placement that moves the scroller (follow's tail and jump, a prepend rebase, the reading position's entry, visibility and restore) mounts its own window from its owner, through the same window math |
+| `windowRange.ts` | the mounted window as the reader scrolls: the scroll recompute and its merge, the near/far jump rule behind `mountIndex`, sentinel expansion, the coverage watchdog, the older-history index trigger, and the tail-append mount (rows appended under a followed reader join the window in the render that first sees them, so they never commit as estimate-priced spacer). A placement that moves the scroller (follow's tail and jump, a prepend rebase, the reading position's entry, visibility and restore) mounts its own window from its owner, through the same window math |
 | `measurement.ts` | the per-scope `HeightIndex`, the spacer geometry read from it, and every measurement writer (resize observer, row ref seed, measure farm), each gated on the caller's `canMeasure` so a width-transition measurement never lands in the old scope, plus the mounted-row reseed a scope change runs after the reading-position restore. Only the cache WRITE stands down for the gate: the observer classifies every fire (first mount vs resize, the above-fold delta the compensation adds to scrollTop) against the height the DOM last showed for that node, tracked per mounted element apart from any scope, so a re-wrap during the transition is compensated once and a repeated fire adds nothing. The write a fire makes is the RESIDUAL for the reader's row — the row seen highest among those reaching below the fold at the last frame the reader saw — between where it is after layout and where it was last seen (moved by its own credited change: a re-wrapped straddler keeps its bottom, an appending or in-place one its top), never the batch's summed growth: Chromium's native scroll anchoring adjusts scrollTop during the reprice layout, before any observer callback, so the summed growth was paid twice there and a row native pushed under the fold read as straddling. Row positions are re-read at scroll events and seeds (the last painted frame), carried arithmetically by a fire's own write, and never re-read at the end of a fire (a layout is delivered over several callbacks). The record cannot be stale against the reader's own input: a user scroll reaches scrollTop at the start of a rendering update and dispatches its scroll event in that update's scroll steps, before layout and the observer, so the record is refreshed before any rect the fire reads; only a row that is no longer mounted stands the write down (a click or key that scrolls nothing leaves the record valid). The scope reseed announces immediately rather than through the debounce, so the cold owner's estimate spacer is replaced in the swap commit's layout phase |
 | `geometryScheduling.ts` | when a measurement becomes geometry: the debounced sync, its deferral while the reader moves, the streaming row's immediate path, the rail-collapse window |
 | `shiftCompensation.ts` | holding a scrolled-up reader still across prepends, splices, window shifts in either direction (rows mounting above the reader are re-priced from the estimate; rows unmounting above them are replaced by a spacer the tree prices, which is short by every re-wrap the tree has not been allowed to learn during a width transition), appends, height syncs and the width-scope swap, and planning which row measurements a commit retires. The swap: the settled bucket's cold owner re-prices the before-spacer from estimates in the render that constructs it, so a same-session swap over an unchanged list captures the reader's row render-phase into the height-sync slot; the consumer is keyed on the owner's identity as well as its announced version (two owners can report equal versions) and stands down on the swap commit itself, leaving the capture for the reseed's announcement in that commit's layout phase, which is where the committed spacer it must be paid against exists. That stand-down also reads the engine's RANGE CLAMP: the cold document prices every unmounted row at the flat estimate, so it can be shorter than the reader's scrollTop, and the engine then drags scrollTop to its ceiling (`scrollHeight - clientHeight`) with no application write anywhere and leaves it there when the reseed grows the document back (Firefox and Chromium alike at a matched depth; a shallower reader never reaches the ceiling). When the pending capture's scrollTop is above that ceiling and the live scrollTop is exactly the ceiling (within `SELF_SCROLL_EPSILON`), the capture is re-based to the clamped value with its candidates' painted geometry kept, so the reseed pays the whole move; a drop that is not the ceiling (native anchoring's spacer-delta move) is left alone, and any movement after the clamp still differs from the re-based value, so the scrollTop freshness guard still drops the capture. A followed reader keeps the tail pin; a true session switch captures nothing |
@@ -516,16 +556,17 @@ mode, so a restricted transcript is cached and paged like any other.
 ### Warm task brief rows
 
 A return-triggered task summary stores one hidden `notice` claim followed by
-ordinary `assistant` rows. `warm_task_brief_claim` contains only the fingerprint
+ordinary `assistant` rows. `warm_task_brief_claim` contains only the fingerprint and the ledger digest
 and is suppressed by transcript renderers. Its `ts` also counts as owner
-presence when the next return measures time away. The deterministic opener row and
-the model-written result carry normal mate message roles and classes. The
+presence when the next return measures time away. The one result row (the
+model-written brief, the fixed quiet line, or the fixed failure line) carries
+normal mate message roles and classes; older builds also wrote a deterministic
+opener row (`warm_task_brief_preparing`), which still reads as a brief row. The
 result row's `meta.brief` holds the validated, redacted fields (`status`,
-`headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, and the
-gateway-counted `progress`; an older row holds `asked`, `now`, `needs_you` and
-`next`) that the transcript draws as a fixed plain-text card; its
-`content` is the same brief as plain text, for export and any reader without
-the card.
+`headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, `body`,
+an optional HTML `widget`, and the goal-scoped `progress`; an older row holds `asked`, `now`, `needs_you` and `next`) that the
+transcript draws as a fixed card; its `content` is the same brief as plain
+text, for export and any reader without the card.
 Their metadata marks them only for fingerprint and model-input
 exclusion. They remain ordinary visible chat messages but are excluded from
 model replay, session-summary extraction, and their own task fingerprint. The
@@ -679,7 +720,7 @@ order, and pins that no owner imports the facade:
 | `scope.ts` | the shell's interface: `ChatSidebarProps`, and `SidebarScope`, the one object of props, shell state, owner-hook results and confirming callbacks the shell builds after its last hook call and hands every render owner below |
 | `laneRows.tsx` | how a lane draws its rows: `renderSessionRow` (each row behind its window stub, stamped in paint order and clamped at `SIDEBAR_DISPLACEMENT_WINDOW`), the dormant section and its hover hold, the Older Sessions hint that ends a lane, and the crew groups |
 | `folderBlocks.tsx` | the tree's folder blocks: the folder header row and its hover cluster, the shared dropdown/context action renderer used by tree and board headers, the body with the pinned conductor card and the sorted and dormant rows, the hidden-folder reveal, and the folder-scoped create-failure notice |
-| `listLanes.tsx`, `boardLane.tsx` | the conductor, flat and tree lanes, with the drag overlay and chat-pane drop target the flat and tree lanes share (the conductor lane has no drag and drop); the tag-column board with its column headers, filter popover, card drop, column folder blocks and unfile strip |
+| `listLanes.tsx`, `boardLane.tsx`, `columnDragFeedback.ts` | the conductor, flat and tree lanes, with the drag overlay and chat-pane drop target the flat and tree lanes share (the conductor lane has no drag and drop); the tag-column board with its column headers, filter popover, card drop, column folder blocks and unfile strip; and what a column reorder shows while a header grip is dragged: the whole column is the drag image, the dragged column dims, and the column under the pointer draws an accent bar on the side the dragged column takes on release (data attributes on the columns rather than shell state, because `dragover` repeats many times a second) |
 | `SidebarHeader.tsx`, `SearchDock.tsx` | the header (list menu and split New button); the dock over the lanes: its field (the search row's lane toggle and sort and filter menu, with the filter and sort label tables) and its shelf (the active filter chips and the list-level notices) |
 | `HistoryPane.tsx`, `folderModal.tsx` | the Older Sessions splitter, footer and pane; the one folder create / settings modal |
 | `sessionCleanup.tsx`, `bulkModelSwitch.tsx` | the cleanup panel (`useSessionCleanup`: window, dry-run preview, archive write) and the model switch panel (`useBulkModelSwitch`: pick, roster, skip-running, switch write) |
@@ -688,12 +729,13 @@ order, and pins that no owner imports the facade:
 | `rows.ts` | the row model: the one declaration of every filter dimension and what each consumer derives from it (`filteredSlots`, `listNarrowed`, the reveal registry), the status-chip predicates and badge counts, the one lane order, the drag freeze, the split of the filtered rows between the `Local` lanes and the crew groups (each crew group's rows, the folder hide applied), the flat lane, the tree's ungrouped rows and per-folder rows, the board's pool (local rows the folder filter does not conceal), the dormant split's gates, and each rendered row's `SessionRowView` and window |
 | `search.ts` | the debounced backend session search, and the folder-name matches the search box adds |
 | `rowIdentity.ts` | origin-qualified identity for live and history rows, and the peer test on local folder state for the owners that hold their own lists |
-| `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, collapsed crews, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`, and two keys declared beside their own logic (`mc-pinned-session-order` in `utils/pinnedSessionOrder.ts`, `kc-board-folder-collapsed:*` in `utils/boardFolderCollapse.ts`); the session sort is not among them, being gateway config (`dashboard.session_sort`, see `sessionSort.ts`); and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips and the folders-shelved flag (`filters.tsx`); and the model filter's one key (`mc-session-model-filter`, its selection and direction) |
+| `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, collapsed crews, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`, and two keys declared beside their own logic (`mc-pinned-session-order` in `utils/pinnedSessionOrder.ts`, `kc-board-folder-collapsed:*` in `utils/boardFolderCollapse.ts`); the session sort is not among them, being gateway config (`dashboard.session_sort`, see `sessionSort.ts`); and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips, the folders-shelved flag and the group-by-kind flag (`filters.tsx`); and the model filter's one key (`mc-session-model-filter`, its selection and direction) |
 | `filters.tsx` | the status chips (`SESSION_FILTERS`; a chip's stored value is `'0'` off, `'1'` on, `'2'` on and paused, and the chips and the pause are one state object so a mutation cannot leave a pause with no chip; while paused, the Recent heartbeat stops and the unread auto-drain neither removes the chip nor records the count), the folder, tag and model filter state (with the reveal's folder un-hide), the Recent window, the local running, recent and unread sets, and the unread auto-drain |
 | `lanes.ts`, `conductor.ts` | the lane preference, the lane actually drawn (`renderedLane`) and the lane cycle; the conductor lane's lineage availability (pushed `slot_patch`, no poll), population, lineage tree and open conductors |
 | `folders.ts` | folder sort mode, visibility, the subtree index and ancestor expansion, the filter-menu rows, the tree's root folders, and folder writes |
 | `board.ts` | the tag-column board: columns, the column popover, column writes, lane seeding (it widens the sidebar through `resize.ts`), per-column collapse and membership |
 | `stale.ts`, `pinnedOrder.ts`, `hoverHold.ts` | the dormant-session collapse state and exemptions, the manual pinned order, and the hover hold |
+| `kindSections.tsx` | the filter menu's **Group by kind** view option (`mc-session-group-by-kind`, off by default): each row's kind (Crew Mode: `crew_mode_root` or `crew_root`; From Mates: `agent_kind`/`surface` `member`, or opened by such a session up the local `parent.key` chain; Normal: the rest), the per-list split (pinned rows first, then Crew Mode, Normal, From Mates, each in lane order; no headers in a list with one kind; off while a search ranks the list, and on the tag board), the section headers, the hover hold's section rank (a captured row is counted in the section it was last drawn in), and the roster it reads (`rowAgents`, kept across a session switch). While it applies in a list lane, the unpinned rows are no manual-order targets (`RowShell.manualReorderOff`: no drop target, no Alt+Arrow), as under a ranked search; the pinned band keeps its order. Applied by the tree root, folder bodies, their expanded sleeping rows, the flat lane and the conductor lane's top level |
 | `manualOrder.ts` | the manual order of the unpinned rows (sort "Manual"): their places from each row's `manual_rank` (the latest queued gesture outranks them, as for the pinned order), the order drawn now, the drop between two rows in any sort (switching the sort to Manual) and, under Manual, the Alt+Arrow move, the seed, move and clear writes to `POST /api/chat/manual-order` queued one at a time per store, and the "Sorted by hand" Undo offer, which shares the move-undo bar's slot |
 | `rowAnimSettle.ts` | when the lane may start animating its rows: until the slot, folder and tag-column reads settle and the rows have painted once, rows mount with their layout projection but snap instead of springing and skip their slide-in, so the first load does not collapse and re-expand; no time cap, so a slow read is never cut off (the slot read counts as settled once any slot list has landed, `slotsGeneration`, which a socket connect does not reset); mirrored on the sidebar root as `data-row-anim` |
 | `sessionSort.ts` | the session sort key: read from the gateway config (`dashboard.session_sort`, through `hooks/useSessionSortKey.ts`), written by the sort menu as an optimistic config save, and the one-time carry-over of the retired browser key `mc-session-sort` |
@@ -795,7 +837,7 @@ Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line i
 - **Cache-fill staleness guard** — transcript memos use a cache identity of `(st_mtime_ns, st_ctime_ns, st_size, st_ino)` (`_cache_identity`), rather than mtime alone. That makes the normal atomic rewrite visible even when housekeeping restores its pre-write mtime via `_restore_mtime`; the replacement inode or changed ctime forces a miss. `st_size` catches an in-place append that lands on the same clock tick, which the timestamps alone miss on NTFS (coarse write clock, and Windows `st_ctime` is creation time); it cannot catch a same-length rewrite, which the generation below (this process) and the flock witness (another process) cover. A per-key invalidation **generation** still closes in-process fill races: `_invalidate_cache` bumps it BEFORE dropping entries, and each fill snapshots it before `stat` then re-checks it around publish via `_publish_if_current`, discarding a fill if it moved. `_meta_cache`, `_recent_cache`, `_folded_cache`, `_snippet_cache`, and `_msg_cache` record both identity and generation; `_folded_cache`/`_snippet_cache` serialize stat → read → store under `_file_lock`, while `_msg_cache`'s unlocked on-loop fallback additionally needs a cross-process flock-hold witness. The generation table is process-wide (class-level, keyed by transcript directory + sanitized stem), and invalidation covers each spelling of one session — logical key, sanitized `path.stem`, and canonical/legacy Slack aliases in both directions (`_cache_key_identities`).
 - `recent(key)` — last 20 messages for context injection
 - `recent_with_provenance(key)` — entries with source citations. Never a display-only row (`DISPLAY_ONLY_ROLES`, the `notice` and `card` roles): notices are drawn for the reader, not conversation, and the consolidator's memory and skill-detection prompts skip them the same way while its offset still passes them (the Slack thread-parent row reaches a model only through its fenced block)
-- `list_sessions(*, keys=None)` — lists all sessions with title (first user message or LLM-generated). Sort key uses ISO `created` string consistently (defaults to ISO from `st_mtime` if no metadata `created` field, ensuring string-only comparisons). Each returned session's meta dict also carries `folder_id` when present in the persisted metadata line, so sessions can be grouped by the folder they were filed in. Given `keys`, it reads only those sessions' files (the app-ownership screen uses this).
+- `list_sessions(*, keys=None)` — lists all sessions with title (first user message or LLM-generated). Sort key uses ISO `created` string consistently (defaults to ISO from `st_mtime` if no metadata `created` field, ensuring string-only comparisons). Each returned session's meta dict also carries `folder_id` when present in the persisted metadata line, so sessions can be grouped by the folder they were filed in. Given `keys`, it reads only those sessions' files (the app-ownership screen uses this). A whole-directory listing is memoized per directory, shared by every `ConversationLog` over it (`history_listing_memo`), keyed on the directory's `st_mtime_ns` and the process-wide write epoch (`_dir_write_epoch`), and served for at most `history_listing_memo.TTL_SECS` (2s) as fresh row copies. Every write through a log in this process moves the epoch, so it is seen at once; another process's write is seen within the TTL. A listing that was incomplete, raced an in-process write or failed to read a head is not stored.
 - `agent_usage()` — returns `{agent_name: (session_count, last_used_mtime)}`; built on `list_sessions()` so it inherits canonical-session dedup + symlink-skip (counts per logical conversation). Used by `GET /api/agents` to order the roster most-used-first, degrading to config order on failure.
 - `history_index.py` stores file freshness identities without truncation: signed-64-bit
   `st_dev`/`st_ino` values remain SQLite INTEGERs; wider values use prefixed decimal
@@ -811,6 +853,7 @@ Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line i
 - Forge references (pull requests, merge requests, issues) are a query dimension of their own, because one item has several written spellings and a transcript carries whichever one its author used. A term naming an item — `#4411`, `PR #4411`, `pr 4411`, `pull request 4411`, `pr4411`, `pull/4411`, a full PR/MR URL, `owner/repo#4411` — becomes ONE required needle carrying every spelling of that item (`SearchNeedle.alts`, counted by the shared `count_needle`), so any spelling finds every spelling. The words that introduce the number are dropped from the gate: they are not part of the reference, and requiring the literal "pr" would disqualify a transcript that names the item only by URL. Spellings are `digit_bounded` on both sides, so `#4411` matches neither `#44110` nor the run id `1544110293`. The TYPED sigil decides the family, never a word before it: `mr#12` is read as `#12`, because letting the word win produced a reference none of whose spellings was the string the user typed. Coverage of every accepted shape is pinned by a property test that drives each one against a transcript quoting it verbatim, rather than by inspection of the spelling list. GitHub's pull/issue sequence is shared (`#4411` ≡ `/pull/4411` ≡ `/issues/4411`) while GitLab numbers merge requests separately, so `!12` and `#12` stay distinct families and never match each other; bare `merge` is not a GitLab word (GitLab is `MR 12` / `merge request 12` / `!12`). Plain digits remain one of the spellings exactly when the QUERY typed no sigil (`issue 42`, `PR 4411`, `pr4411`): such a query would otherwise lose a gate on the digits, so dropping them would HIDE the transcript that says "we hit issue 42 in prod", and keeping them makes the recall of the literal AND it replaces hold with ONE intended exception — a session whose only claim to the old match was the digits sitting inside a longer number, which is what the boundary exists to exclude. The LEFT edge of that boundary applies only to a spelling that starts with a digit: for a delimited spelling the character before it says nothing about the number's length, and demanding a non-digit there would refuse `#4411` inside `owner/repo2#4411` — a repo whose name ends in a digit, matched against the very reference the query named. Only a lead-in run that actually NAMES a type turns a following number into a reference: `pr 4411`, `issue 42`, `pull request 4411` and `merge request 12` (the two-word GitLab form) do; `requests 12` and `merge 1234` do NOT and stay literal terms, since dropping such a word from the gate would trade a real term for every session mentioning that number. A query that DID type a sigil never gated on bare digits, so it keeps them out and stays precise (a standalone "12" is ordinary prose). A BARE number with no naming word is not a reference at all: it keeps its plain substring needle — numeric content search (ports, error codes, run ids) is unchanged — and gains the spellings as scoring-only needles at `_FORGE_REF_WEIGHT`, so the session that references the pull request outranks one that merely contains those digits. Those ranking needles are NOT adjacency evidence (`SearchNeedle.adjacency`, which only CJK bigrams set), or they would arm the adjacency floor and turn a ranking hint into a hidden gate. Two limitations are accepted rather than special-cased, both needing a query nobody writes and both only widening the result set: a chain-only word wedged between the type word and the number (`issue merge 42`) is swallowed, and because the gate is keyed by term text a query repeating a suffix word as its own term (`pull the pull request 12`) loses that term. Closing either means keying the gate by token position instead of by text. Expansions per query are capped at `_SEARCH_MAX_FORGE_REFS`, each costing one scan per spelling per scanned session (up to eight for a named reference, up to thirteen for a bare number's both-families ranking needle, plus up to eight more for a registered provider's own prefixed id — see below); a token past the cap degrades to a plain needle.
 - A REGISTERED source provider contributes its OWN id spellings through the same machinery, so an edition whose reviews are written `REV-987654321` is searchable without any provider vocabulary in core. The seam is one optional plugin hook, `search_ref(token) -> (canonical, alts) | None` on `SourceProviderPlugin`, discovered with `getattr` exactly like `path_markers()`; `source_search_ref()` fans out across the registered plugins (asking each registered plugin until one answers, then handing that answer through unjudged — shape is the normalizer's job, and skipping a malformed answer would only serve the same two-registrant case the merge below is declined for), and `register_source_provider()` publishes that collector DOWNWARD into `history_search.register_search_ref_resolver` at registration time — never from a route handler, because `parse_search_query` is also reached from paths that serve no HTTP (the Discord title-only resume gate, the `kirocrew memory search` CLI) and a process that never ran a route would otherwise answer the same query differently. One slot holds the resolver, not a list: the per-plugin fan-out already lives in the collector. The FIRST plugin to recognize a token WINS, for every token shape: a prefixed id names ONE item, so merging would conflate distinct items, and a cross-plugin merge for a bare number would exist only to serve two registrants holding a real item at the same number — which this repo, registering no provider at all, cannot produce. Cost stays bounded in ONE place: `_MAX_SEARCH_REF_SPELLINGS` (8, sized to the sibling per-plugin `_MAX_PLUGIN_PATH_MARKERS` because it bounds the same kind of thing — what ONE plugin hands core for one lookup) bounds the single answer that arrives, with no collector-side ceiling to drift from it. A bare number is NOT a provider token at all: a provider's ids are prefixed, so a run of digits names nothing it owns and the resolver is not consulted for one. `_provider_search_ref` is the single normalizer — it casefolds every spelling (the query is casefolded before parsing and `count_needle` requires already-folded needles, so a capitalized spelling produces a needle that matches NOTHING, silently), de-duplicates, drops empties, applies the fan-in ceiling, and DROPS an answer none of whose spellings carries the typed token, since such an answer describes some other item and would otherwise rank a query on text it never named. Every way a resolver can fail is contained and costs no more than a debug log — carrying a traceback where an exception was raised, and the offending value where a shape was merely wrong, so none of them is silent: raising when called, returning a malformed answer, and raising while its `alts` are READ — the hook promises a `Sequence`, which cannot do that, but a resolver ignoring the contract can, so the read sits inside the same boundary and the answer is dropped WHOLE rather than half-read, since an exception there would otherwise escape the parse as a 500 on every search. A provider is consulted only for a token no built-in shape recognized (built-ins always win), contributes SPELLINGS ONLY and never lead-in vocabulary (the words a provider would want — "review", "cr" — are common English, so admitting them would trade a real search term for every session mentioning that number), and can never gate a BARE all-digit token, which it is never even asked about — so no number of registered providers can spend the `_SEARCH_MAX_FORGE_REFS` budget on one numeric token. The purity contract — pure, allocation-cheap, no I/O — is documented and not enforced: a resolver is consulted for every term of every query and the parse runs at least twice per search, so a blocking resolver becomes per-keystroke latency in the search box.
 - `_read_messages` — identity-guarded message cache with the same double-checked, miss-only locking `_folded_content` uses for this identical race. A warm hit is served lock-free; only a MISS takes the session's in-process writer lock (`_file_lock`) and re-checks identity + cache under it. The identity `(st_mtime_ns, st_ctime_ns, st_size, st_ino)` changes on the normal atomic rewrite even when housekeeping restores the previous mtime, so a stale cache entry cannot remain current. ON the event loop the lock is acquired non-blockingly and a busy lock falls back to an unlocked fill, so an on-loop read never stalls behind a writer holding the RLock across its cross-process flock wait (`_FLOCK_ACQUIRE_TIMEOUT_S`). An unlocked fill publishes through two witnesses: a per-key invalidation **generation** covering local writers and a cross-process **flock-hold witness** covering external processes (`_flock_hold_witness`: publish only while this process provably held the sidecar flock for the whole fill window). A fill that cannot prove its window clean is discarded. Every transcript memo (`_msg_cache`, `_meta_cache`, `_recent_cache`, `_folded_cache`, and `_snippet_cache`) records identity and generation; a warm hit requires both, so a write through another `ConversationLog` instance also invalidates it through the process-wide generation table keyed by `(transcript dir, sanitized filename stem)`, with canonical and legacy Slack spellings closed over bidirectionally (`_cache_key_identities`).
+- `_msg_cache` is bounded by weight as well as entry count: each entry weighs its transcript's file size times `_PARSED_BYTES_PER_FILE_BYTE` (2, measured 1.58–2.34 on the five largest real transcripts), and the LRU evicts until the total fits `_TRANSCRIPT_CACHE_MAX_BYTES` (32 MiB). A count bound alone let a few multi-ten-MiB transcripts hold 210 MiB of parsed rows (tracemalloc, live data copy). A transcript heavier than the whole budget is never cached, so a full read of one re-parses it.
 - `delete_session(key)` — permanently removes a session JSONL file. Dashboard
   deletion may tear down the exact live slot and idle SessionManager generation
   captured before unlink, but it preserves chat pins, work ledgers, and
@@ -1464,6 +1507,12 @@ no longer destroy older turns.
   patiently to a bounded deadline. The same discipline applies to every other
   session-JSONL writer: `clear_closed` (resume un-flags `closed` under `_locked`,
   offloaded via `asyncio.to_thread`) and all `ConversationLog` mutators hold `_locked`.
+  On POSIX a taken sidecar `flock` counts only while the sidecar NAME still reaches
+  the locked inode (`_try_acquire_named_sidecar`): the session janitor prunes an
+  unheld `<stem>.jsonl.lock` whose transcript is gone (`session.md`, transcript
+  staging temps), so a writer that opened the sidecar before that unlink re-opens
+  the name and retries, at most `_SIDECAR_REOPEN_LIMIT` (3) times per attempt,
+  instead of holding an inode no other process can reach.
 - **Delete-won guard**: `delete_session` unlinks the session file under the
   same `_locked` and leaves no tombstone, and the patient off-loop acquire
   means a save can legitimately sit waiting while a permanent delete runs to
@@ -1625,14 +1674,74 @@ no longer destroy older turns.
   escape hatch if the guard's warn-and-proceed production fallback ever proves
   insufficient (e.g. a hot on-loop path that must not be lost).
 - **Rewrite path** (`rewrite=True`, an explicit `messages` snapshot, or a slot
-  left in `_pending_rewrite` — rewind/regenerate/fork): writes
+  left in `_pending_rewrite` — rewind/fork, and a Regenerate's replace write): writes
   `metadata + frozen_prefix + serialize(snapshot)`. These INTENTIONALLY drop the
   post-edit window tail, so the dropped lines are archived first via
   `_archive_dropped_lines` → `_archive_lines` (the frozen prefix appears
   unchanged in both old and new, so it is never archived). `_pending_rewrite` is
-  set by rewind/regenerate after they truncate the window and cleared only on a
+  set by rewind after it truncates the window and cleared only on a
   successful rewrite save, so a failed inline rewrite still gets retried as an
   archive-safe rewrite by the next flush (never silently overwritten).
+  A Regenerate truncates nothing up front: the previous reply stays until the
+  turn ends, and `chat_turn/regenerate_swap.settle_regenerate` replaces it only
+  when the turn produced a reply, through one rewrite pinned to the transcript
+  and slot the Regenerate was authorized against that names the rows it removes
+  (`retired_rows`). The variants stashed at the press keep the endpoint's
+  existing cap (`_MAX_VARIANTS`, the newest kept). They stay stashed while
+  the turn runs: the segment flush attaches none to a reply of a turn that owns
+  the target, and the reply gets them only from the committed rewrite, so a
+  declined swap (refused or failed write, a reply trimmed into the frozen
+  prefix, a restart mid-turn) never saves the previous reply as a variant of
+  the new one beside its own row.
+  While the turn runs, the history it hands the model leaves the previous
+  reply out: the cold-start replay excludes the target's rows from the disk
+  transcript and the live window by delivery identity
+  (`build_session_replay(exclude_messages=regenerate_replaced_rows(slot))`),
+  and the interrupted-turn preamble walks
+  `rows_before_regenerate_target`. The question is asked again, so its old
+  answer must not precede it as an answer to nothing.
+  A previous reply partly trimmed off the window's front
+  into the frozen prefix cannot be retired by a rewrite, so that swap is
+  refused. While a swap is in flight (from its snapshot to its memory
+  update, `_swap_in_flight`) the window's front trim waits, so no append can
+  credit a row the swap is retiring to the frozen prefix; the first append
+  after the swap trims the whole excess. An empty turn, or a refused or failed replace, leaves both
+  memory and disk as they were, so nothing is owed and `_pending_rewrite` is
+  never set.
+  A recovery the Regenerate turn queues before it has a reply (a
+  session-not-found replay, a refusal fallback, a continuation) is the same
+  Regenerate's next attempt: `_queue_recovery` hands the target to it
+  (`carry_regenerate_target`), the empty first attempt keeps it waiting with
+  the stashed variants held on it, and the drain gives it to the replay turn
+  when that turn starts alone (`adopt_regenerate_target`), so the replay's
+  reply replaces the previous one. A replay that leaves the queue without
+  running drops the target, and the previous reply stays.
+  A row made of nothing but backend control notices (the Claude adapter's
+  `Compacting...`, streamed as assistant text and flagged
+  `AcpEvent.control_notice`) is not a reply: the target records each notice
+  chunk (`note_regenerate_notice`), and a row whose text is blank once they are
+  removed (`is_regenerate_answer`) is neither recorded as the reply nor given
+  the stashed variants. So a notice-only turn that dies leaves the previous
+  reply, and one that ends normally hands the target to the compaction
+  continuation it queues, whose real reply replaces the previous one.
+  Both seams that save such a row (the segment flush and the cancel path's
+  `_persist_partial_reply`) tag it `meta.kind="compaction"`,
+  `meta.notice="regenerate_notice_only"` (`_segment_row_meta`). It is then a
+  system notice on disk and after a reload, so the next Regenerate's scan,
+  in the handler and in the frontend, passes over it to the reply that was
+  kept, and a later success keeps that reply as a version.
+- **Swap-won guard** (`write_guards.swap_basis` / `snapshot_predates_swap`):
+  every save reads the slot's swap epoch before it copies the window, and a
+  committed Regenerate swap publishes itself inside the transcript lock
+  (`publish_swap`, the replace write's `after_commit_under_lock`). A save whose
+  copy predates that commit, or falls between the commit and the event loop
+  applying it to memory (`finish_swap`), would write the retired reply back and
+  drop the new reply's variants. Under the lock such a save re-takes its copy
+  from memory and applies the committed swap to it (`apply_committed_swap`,
+  with the swap record read before the re-copy, since the event loop may
+  apply and clear it meanwhile);
+  a caller's own `messages` snapshot cannot be re-taken, so that save is refused
+  and the caller re-decides.
 - **Foreign-append merge & id-first dedup** (`_frozen_prefix_and_foreign_appends`):
   a default save captures its `window` snapshot BEFORE taking `_locked`, so a
   cross-process writer (subagent / cron / CLI) can fully append + release the
@@ -1726,8 +1835,17 @@ no longer destroy older turns.
     the id through. The
     `test_foreign_append_content_identity_dedup_semantics` contract test pins
     that fallback; the `TestForeignFoldMidIdentity` cases pin pass 0.
-  - **Residual window (rewrite saves).** The scan runs only for default saves
-    (`collect_foreign = not rewrite`). Rewrite saves (rewind / regenerate / fork)
+  - **Residual window (rewrite saves).** The scan runs for default saves and for
+    a rewrite that names `retired_rows` (`collect_foreign = not rewrite or
+    retired_entries is not None`): the retired rows are matched, so their disk
+    copies drop, but never emitted, and any other window-region line the snapshot
+    lacks is kept. The Regenerate replace write is that case, so a workflow result
+    landing during its await survives. Such a row is a same-process dual write:
+    its window copy can reach the slot after the save that kept its disk line
+    as foreign. The cached fast path therefore re-emits a cached foreign line
+    only while no window (or retired) entry carries it, by the scan's id tier
+    (`_drop_carried_foreign`: equal `meta.mid`, corroborated by
+    `(role, content)` or `ts`), so the next save writes that row once. Other rewrite saves (rewind / fork)
     intentionally truncate the window and are same-session/same-process, so they
     **skip** the foreign scan and can still clobber a concurrent cross-process
     append that lands between the pre-lock window snapshot and the lock — a known,
@@ -1860,8 +1978,8 @@ archived instead of being permanently deleted:
 - **Fail closed**: an archive failure never lets the rewrite drop the rows.
   Rotation declines to rotate, compaction (`rewrite_session`) raises with the
   transcript untouched, the dashboard rewrite path raises so the save writes
-  nothing (a rewind answers `503 rewind_save_failed`; a regenerate keeps
-  `_pending_rewrite` and the next save retries), the file-change bound keeps the
+  nothing (a rewind answers `503 rewind_save_failed`; a Regenerate's replace
+  write that raises keeps both replies, in memory and on disk), the file-change bound keeps the
   prefix as read, and foreign-dedup keeps its lines.
 - **Retention**: configurable via `session.archive_retention_days` (default 30
   days; `-1` or `null` disables cleanup so the user manages deletion manually).
@@ -1989,11 +2107,13 @@ writer:
   `get_metadata_status` answers `readable=False` for two different facts, and
   the writers tell them apart through `metadata_line_state` (`readable`,
   `transient`, `corrupt`; `METADATA_LINE_*`). A TRANSIENT failure -- the file
-  could not be opened or decoded after the bounded retries -- clears on its
-  own, so the full save raises and `_dirty` stays armed, the empty-window merge
-  and `update_metadata_if` return without writing, and the next attempt
-  re-decides. A CORRUPT first line -- bytes on disk that are not JSON, which
-  every atomic line writer makes permanent rather than a write in flight --
+  could not be opened after the bounded retries -- clears on its own, so the
+  full save raises and `_dirty` stays armed, the empty-window merge and
+  `update_metadata_if` return without writing, and the next attempt re-decides.
+  A CORRUPT first line -- bytes on disk that are not JSON, or not UTF-8 at all,
+  which every atomic line writer makes permanent rather than a write in flight
+  (the first line is read as bytes and decoded on its own, so undecodable bytes
+  are never mistaken for a read in flight) --
   never clears, and a writer that kept deferring on it would never persist a
   row again: `closed` could never land and the tab would resurrect on every
   restart. So the WRITERS rewrite it: the full save and `_update_metadata_locked`
@@ -2009,9 +2129,22 @@ writer:
   line carries no `created_at` when the title or merge writer heals it (the
   identity is unknowable, and a minted one would read to the owning slot's next
   full save as a fresh incarnation after a delete); the full save's own heal
-  stamps the slot's recorded identity. READERS are unchanged: the derivation seam
+  stamps the slot's recorded identity. `_update_metadata_locked` splits the file
+  by bytes, so an undecodable first line reaches this rewrite like one that is
+  not JSON while the rows after it still decode strictly, and it stages the
+  result through `atomic_write`, which writes every byte, so a short write never
+  publishes a prefix of the transcript. The full save's frozen-prefix and
+  rewrite-archive reads split the file the same way, and its frozen prefix takes
+  the rows after an undecodable first line by position, so the rows older than
+  the in-memory window survive the heal. The first `append` likewise creates a
+  transcript through `atomic_write`: it appears with its whole metadata line or
+  not at all. READERS are unchanged: the derivation seam
   and every identity-sensitive reader refuse both states, a corrupt line before
   the heal because it cannot be read and after it because it is restricted.
+  `read_session_execution` names the two refusals apart: a CORRUPT line answers
+  "session record is unreadable (its first line is damaged); start a new chat
+  (memory is intact) or archive this one", because no retry reads it, and a
+  TRANSIENT one keeps the plain "session record is unreadable".
 - **A restricted line names no `memory_store`.** See
   [session.md](session.md): with no carrier written for a restricted session,
   the store name is what the restart would read as a legacy owner claim and
@@ -2182,6 +2315,11 @@ writer:
 
 Background task that fires once a session's message count reaches
 `_CONSOLIDATION_THRESHOLD` (30) messages past its last consolidation offset.
+A preference-only pass whose result is discarded because the user spoke while
+the model read the window (`_CONSOLIDATION_STALE`, "conversation changed during
+extraction") keeps the window pending and waits
+`_CONSOLIDATION_STALE_RETRY_SECS` (300 s) before the next turn may start another,
+so a live chat does not start and bill a discarded pass on every turn.
 Global history extraction uses its own lazily created `_consolidate` session to extract:
 - `history_entry` → appended to today's daily history file
 - `preferences_update` → overwrites `preferences.md` if changed
@@ -2259,7 +2397,15 @@ session-end pass may have claimed the transcript meanwhile), then the
 task. The idle sweep schedules a count only for a key past its throttle, not busy
 and outside its retry deadline, so a key in backoff costs one metadata read and no
 count. `_prefs_offset` advances to the counted total only when the prefs pass
-completes without a refusal, raise or cancellation, and the idle throttle is set
+completes without a refusal, raise or cancellation. A prefs pass whose turn came
+back with no reply or an unparseable one, or could not be dispatched, returns
+`_CONSOLIDATION_EMPTY`; a parsed `{}` is a completed pass with nothing to write,
+because the prefs-only prompt asks the model to omit unchanged keys. On
+`_CONSOLIDATION_EMPTY` the offset stays put, the history span's attempt cap is
+not charged, and `_prefs_retry` arms an in-memory retry-at for the key from
+`_CONSOLIDATION_BACKOFF_BASE_SECS`, doubling per consecutive empty pass up to
+`_CONSOLIDATION_BACKOFF_MAX_SECS`. `maybe_consolidate` schedules nothing for a
+key inside that deadline, and a completed prefs pass clears it. The idle throttle is set
 only when the history pass completes without one. A pass that raises has already
 logged it. A count that fails to read logs a warning and skips that check.
 
@@ -2647,7 +2793,13 @@ with the previewed row, so roster recency ordering is unaffected.
 After a cancelled turn, `context.build_cancelled_turn_preamble` reads the
 cancelled user prompt and partial assistant output from this log and
 prepends them to the next prompt as a bracketed preamble, because kiro-cli
-discards cancelled turns from its own ACP conversation log. The flag
+discards cancelled turns from its own ACP conversation log. A mid-turn steer
+(a `user` row marked `meta.steer`) is not taken as the cancelled prompt: the
+plain `user` row that opened the turn is, and each steer the turn took is
+carried, labelled and in order, inside the partial assistant output, outside the
+cap on the assistant text. A steer marked `requeued` is left out, because it
+runs as the next prompt (see "Context restore after a soft cancel" in
+`docs/architecture/design-notes/soft-stop.md`). The flag
 `_Session.prev_turn_cancelled` (set by `SessionManager.stop_turn` on
 soft-cancel success) gates the one-shot re-injection.
 

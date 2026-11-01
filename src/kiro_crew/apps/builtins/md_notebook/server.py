@@ -85,6 +85,7 @@ from kiro_crew.apps.builtins.md_notebook.server_store import (
     _clone_root,
     _coerce_auto_sync_mins,
     _home,
+    _is_app_clone,
     _write_pat_sync,
     _write_settings_sync,
     logger,
@@ -342,6 +343,7 @@ def _gh_token_sync() -> Optional[str]:
                 [gh, "auth", "token"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=GH_TIMEOUT_SEC,
                 check=False,
                 env=_trusted_env(),
@@ -531,12 +533,12 @@ async def api_health(request: web.Request) -> web.Response:
 
 
 async def api_vaults(request: web.Request) -> web.Response:
-    clone_root = str(_clone_root())
     vaults = []
     for v in await read_vaults():
         # `external` = attached in place rather than cloned by this app.
         # Computed on read, never persisted.
-        vaults.append({**v, "external": not str(v["localPath"]).startswith(clone_root)})
+        cloned = await asyncio.to_thread(_is_app_clone, str(v["localPath"]))
+        vaults.append({**v, "external": not cloned})
     return web.json_response(
         {
             "vaults": vaults,
@@ -1524,10 +1526,12 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.apps.builtins.md_notebook.server_host import (  # noqa: F401
+        _F,
         PICK_FOLDER_SCRIPT,
         PICK_FOLDER_TIMEOUT_SEC,
         REVEAL_BINARIES,
         REVEAL_TIMEOUT_SEC,
+        _timeout_as_api_error,
         _windows_gh_candidates,
     )
     from kiro_crew.apps.builtins.md_notebook.server_http import (  # noqa: F401

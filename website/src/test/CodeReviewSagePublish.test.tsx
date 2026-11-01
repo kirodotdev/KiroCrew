@@ -194,6 +194,27 @@ it('keeps the keyboard on the confirm and lets Escape back out', async () => {
   expect(mockApi.submitPullRequestReview).not.toHaveBeenCalled()
 })
 
+it('leaves focus on Cancel when the bar re-renders under an armed verdict', async () => {
+  // The confirm takes focus once, on mount. A later re-render (a refetch, a
+  // parent update) must not pull it back off Cancel, or Tab would never get past it.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const bar = () => (
+    <QueryClientProvider client={client}>
+      <DraftReviewActions url={PR_URL} draftDelivered expectedReviewId="4242" />
+    </QueryClientProvider>
+  )
+  const view = render(bar())
+  fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+  const confirm = await screen.findByRole('button', { name: 'Approve' })
+  expect(document.activeElement).toBe(confirm)
+
+  const cancel = screen.getByRole('button', { name: 'Cancel' })
+  cancel.focus()
+  view.rerender(bar())
+  expect(screen.getByText('Approve this pull request?')).toBeTruthy()
+  expect(document.activeElement).toBe(cancel)
+})
+
 it('disarms when the pull request changes under an armed verdict', async () => {
   // The armed confirmation belongs to the PR that was on screen when it was armed.
   // Carrying it across a selection change would publish on a PR never looked at.

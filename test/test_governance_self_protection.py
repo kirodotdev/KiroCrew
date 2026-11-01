@@ -109,8 +109,8 @@ def test_the_named_ceiling_and_secret_leaves_are_fenced_at_the_OS_LAYER():
     wrong layer, and the layer it tested could not hold: a spawned shell reaches a file
     through an ``open()`` that never routes through the tool gate, so a path fenced only
     there is readable in any sandbox mode whatever the text matcher recognises. Matching
-    one more spelling never converged -- six review rounds produced a new one each time
-    (``/./``, a glued redirect, ``pushd``, an assignment, a conditional assignment).
+    one more spelling never converges (``/./``, a glued redirect, ``pushd``, an
+    assignment, a conditional assignment).
 
     What binds a subprocess is the OS layer in :mod:`kiro_crew.sandbox`, so that is what
     is pinned: every leaf named here carries a HIDDEN (bind-masked in every mode) or

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import {
@@ -71,6 +71,7 @@ function CopyBtn({ value, label }: { value: string; label: string }) {
  *  step that repeats it renders two identical icons stacked, which reads as a
  *  rendering fault rather than as emphasis. */
 const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
+  policy_off: ShieldOff,
   pinned: ShieldOff,
   untrusted_cli: ShieldAlert,
   install: Download,
@@ -89,6 +90,7 @@ const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
  *  them statically (a computed `components.tailnetMobile.${step}.title` cannot
  *  be verified and the strict gate rejects it). */
 const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
+  policy_off: 'components.tailnetMobile.policy_off_title',
   pinned: 'components.tailnetMobile.pinned_title',
   untrusted_cli: 'components.tailnetMobile.untrusted_cli_title',
   install: 'components.tailnetMobile.install_title',
@@ -104,6 +106,7 @@ const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
 }
 
 const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
+  policy_off: 'components.tailnetMobile.policy_off_body',
   pinned: 'components.tailnetMobile.pinned_body',
   untrusted_cli: 'components.tailnetMobile.untrusted_cli_body',
   install: 'components.tailnetMobile.install_body',
@@ -120,7 +123,12 @@ const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
 
 /** Which steps are a normal part of setting mobile access up (neutral framing)
  *  versus a state that needs attention. Drives the badge only. */
-const ATTENTION_STEPS = new Set<TailnetMobileStep>(['occupied', 'pinned', 'untrusted_cli'])
+const ATTENTION_STEPS = new Set<TailnetMobileStep>([
+  'occupied',
+  'policy_off',
+  'pinned',
+  'untrusted_cli',
+])
 
 /** Steps whose `detail` is ABOUT that step, so surfacing the daemon's verbatim
  *  text helps rather than confuses.
@@ -257,9 +265,9 @@ function writeInviteExpanded(expanded: boolean): void {
  * (or in the query cache) by itself.
  *
  * **`published: null` is not `false`.** An undeterminable serve state arrives as
- * the `occupied` step, so the card renders the manual command (see the
- * `occupied` branch below, which prints `kirocrew tailnet up`) instead of a
- * publish button that would overwrite a mount it could not identify.
+ * the `occupied` step, so the card renders the manual `serve_command` (see the
+ * `occupied` branch below) instead of a publish button that would overwrite a
+ * mount it could not identify.
  *
  * **Setup is one explicit mutation, even across a gateway restart.** The click
  * itself is the operator's consent to every in-scope step, so the mutation may
@@ -510,20 +518,53 @@ export function TailnetMobileCard() {
           ) : null}
 
           {/* The command `occupied_body` tells the user to run. Without this the
-              copy ("Publish it yourself if you are sure it is safe to
-              overwrite") is an instruction with no means to follow it — and
-              `occupied` is the ONE state whose remedy is deliberately manual,
-              because publishing here would replace whatever Tailscale is
-              already serving. No copy button: the row already carries two, and
-              `max-two-buttons-per-row` counts a link styled as one.
+              copy ("publish it yourself if it is safe to overwrite") is an
+              instruction with no means to follow it — and `occupied` is the ONE
+              state whose remedy is deliberately manual, because publishing here
+              would REPLACE whatever Tailscale is already serving.
 
-              No `break-all` on this one, unlike the origin and detail spans: it
-              is a FIXED 19-character command, so it cannot overflow even at
-              320px, and breaking a command mid-token would only make it harder
-              to read. */}
+              It renders `serve_command`, the same `tailscale serve` publish the
+              gateway would run (built server-side so it names the real port),
+              not the `kirocrew tailnet up` shown here before — that command runs
+              the very publish path that just refused, so it could never resolve
+              the conflict. No copy button: `occupied` reads as a hand-run remedy
+              and `max-two-buttons-per-row` counts a link styled as one.
+
+              `break-words`, matching the `untrusted_cli` command span: a
+              host:port target can overflow at 320px.
+
+              The body states only the consequence; the two ways out sit under
+              it as labelled lines. "Replace it" renders only with a command to
+              run (the server sends none when it does not know its port), so the
+              copy never points at a command that is not on screen. */}
+          {step === 'occupied' && data.serve_command ? (
+            <p className="mt-2">
+              {/* Each token is kept whole so a narrow card wraps between
+                  arguments, never after the `--` of a flag. The command is a
+                  self-closing tag so translators never see or alter it. */}
+              <Trans
+                i18nKey="components.tailnetMobile.occupied_replace"
+                components={{
+                  cmd: (
+                    <code className="select-all break-words min-w-0">
+                      {data.serve_command.split(' ').map((token, i) => (
+                        <Fragment key={i}>
+                          {i > 0 ? ' ' : null}
+                          <span className="whitespace-nowrap">{token}</span>
+                        </Fragment>
+                      ))}
+                    </code>
+                  ),
+                }}
+              />
+            </p>
+          ) : null}
           {step === 'occupied' ? (
-            <p className="mt-2 text-muted">
-              <code className="select-all">kirocrew tailnet up</code>
+            <p className="mt-2">
+              <Trans
+                i18nKey="components.tailnetMobile.occupied_keep_both"
+                components={{ cmd: <code className="select-all">tailscale serve --set-path</code> }}
+              />
             </p>
           ) : null}
 
@@ -620,7 +661,10 @@ export function TailnetMobileCard() {
                 a fix. Expanding the invite refetches instead, so returning from
                 the Tailscale install still re-probes immediately rather than
                 waiting out the poll. */}
-            {step !== 'pinned' && step !== 'ready' && step !== 'install' ? (
+            {step !== 'policy_off' &&
+            step !== 'pinned' &&
+            step !== 'ready' &&
+            step !== 'install' ? (
               <Btn disabled={busy} onClick={invalidate}>
                 <RefreshCw className="lucide-inline" />
                 {i18nT('components.tailnetMobile.recheck')}

@@ -332,7 +332,6 @@ class TestFolderWatcherScan:
         source_id = store.add_source("test", "local_folder", str(vault))
         source = {"id": source_id, "uri": str(vault), "source_type": "local_folder", "properties": "{}"}
 
-        # Mock ingest to create items
         async def fake_ingest(path, *, on_committed=None, **kwargs):
             item_id = store.add_item("title", "content", "doc", source_id=source_id)
             if on_committed is not None:
@@ -606,13 +605,11 @@ class TestFolderWatcherFailedFiles:
         source_id = store.add_source("test", "local_folder", str(vault))
         source = {"id": source_id, "uri": str(vault), "source_type": "local_folder", "properties": "{}"}
 
-        # Make pipeline raise on ingest
         pipeline.ingest_file = AsyncMock(side_effect=RuntimeError("parse error"))
 
         stats = await fw.scan_source(source)
         assert stats["failed"] == 3  # all 3 files fail
 
-        # Check error recorded in state
         rows = store.db.execute(
             "SELECT status, error_message FROM folder_file_state WHERE source_id = ?",
             (source_id,)).fetchall()

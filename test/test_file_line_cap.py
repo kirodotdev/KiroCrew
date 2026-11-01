@@ -987,20 +987,62 @@ class TestCiWiring:
     def _runs(job: dict) -> list[str]:
         return [str(step.get("run") or "") for step in job.get("steps") or []]
 
-    @pytest.mark.parametrize("job", ["backend-lint", "frontend-lint"])
-    def test_a_lint_job_runs_the_guard_on_full_history(self, job: str) -> None:
+    #: Every gate in these jobs that scopes itself through
+    #: ``scripts/ratchet_scope.py``. The resolver needs ANCESTRY, not merely the
+    #: base commit: it diffs ``HEAD^1..HEAD`` only once
+    #: ``merge-base --is-ancestor HEAD^1 origin/main`` has confirmed ``HEAD^1``
+    #: really is a base commit, so a checkout with no reachable base makes every
+    #: one of them fall back to the whole tree at once.
+    _SCOPED_GATES = (
+        "check_file_line_cap.py",
+        "check_subprocess_encoding.py",
+        "check_agent_sdk_boundary.py",
+        "check_sync_io_in_async.py",
+    )
+
+    @pytest.mark.parametrize("job", ["backend-ratchets", "frontend-ratchets"])
+    def test_ratchet_gates_run_on_a_reachable_diff_base(self, job: str) -> None:
+        """The cap gate's two homes, and the diff base every scoped gate needs.
+
+        These gates run off ``lint-gate``'s path, in the ``*-ratchets`` siblings
+        of ``backend-lint`` and ``frontend-lint``. A sibling whose checkout
+        loses the diff base fails silently: a shallow clone leaves the scope
+        undeterminable, the guard then judges the whole tree, and a pull request
+        fails for every other change's file -- a green-to-red that names files
+        the author never opened. Nothing else reports it, so it is pinned here
+        per job rather than once.
+        """
         spec = self._job("ci.yml", job)
         checkouts = [
             step.get("with") or {}
             for step in spec["steps"]
             if str(step.get("uses", "")).startswith("actions/checkout@")
         ]
-        # A shallow clone leaves the scope undeterminable, and the guard then
-        # judges the whole tree, failing this change for every other change's file.
         assert [c.get("fetch-depth") for c in checkouts] == [0], checkouts
         runs = "\n".join(self._runs(spec))
         assert "python3 scripts/check_file_line_cap.py --test" in runs
         assert "python3 scripts/check_file_line_cap.py\n" in runs + "\n"
+        # Any OTHER scoped gate that lands in this job shares the one checkout
+        # above, so it is covered -- but a gate placed in a job that is not
+        # pinned here would not be. Assert the pin covers what the job runs.
+        present = {gate for gate in self._SCOPED_GATES if gate in runs}
+        assert present, f"{job} runs no scope-resolving gate; are its gates back in a lint job?"
+
+    @pytest.mark.parametrize("job", ["backend-lint", "frontend-lint"])
+    def test_a_lint_job_does_not_run_the_guard(self, job: str) -> None:
+        """The guard must not come onto the gate path by accident.
+
+        Adding it to a lint job puts every test shard behind it, which is the
+        wait the ratchet siblings exist to avoid; the gate's policy is the same
+        in either place, and a cap failure reds the pull request from the
+        sibling job.
+        """
+        runs = "\n".join(self._runs(self._job("ci.yml", job)))
+        assert "check_file_line_cap.py" not in runs, (
+            f"{job} feeds lint-gate, so running the cap guard there holds the heavy "
+            "matrix behind a baselined ratchet again; it belongs in the "
+            f"{job.split('-')[0]}-ratchets sibling"
+        )
 
     def test_the_main_audit_judges_the_whole_tree(self) -> None:
         spec = self._job("main-ratchet-audit.yml", "ratchet-gates")

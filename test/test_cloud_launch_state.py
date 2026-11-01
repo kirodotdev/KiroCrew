@@ -439,7 +439,7 @@ class TestTheOperatorsFileIsNeverWritten:
 
         The sandbox pre-creates ``{}`` so its seal has something to bind to. Read as a record,
         that stub would answer "no previous launch" for every install whose pointer still lives
-        in ``cloud.json`` -- so ``cloud resume`` would break the first time an agent spawned.
+        in ``cloud.json`` -- so ``cloud launch`` would break the first time an agent spawned.
         """
         import json as _json
 

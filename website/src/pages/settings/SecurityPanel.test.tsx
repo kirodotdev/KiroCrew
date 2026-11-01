@@ -56,11 +56,6 @@ vi.mock('../../api/client', () => ({
     // crash on an undefined queryFn; the section's behaviour is covered in
     // SecurityPanel.tailnet.test.tsx.
     tailnetStatus: vi.fn(),
-    // Read by the rail on every mount to summarise the flagged-file-delivery
-    // section, for the same reason as `tailnetStatus` above. The section's own
-    // behaviour is covered in SecurityPanel.fileDelivery.test.tsx.
-    fileDeliveryConsent: vi.fn(),
-    revokeFileDeliveryConsent: vi.fn(),
     listTrustedApps: vi.fn(),
     trustApp: vi.fn(),
     untrustApp: vi.fn(),
@@ -76,7 +71,7 @@ import { api } from '../../api/client'
 import type { GovernanceDistributionData, GovernancePolicyData, TrustedAppsData } from '../../api/client'
 import { SecurityPanel, trustFailureMessage, humaniseScopeLeaf } from './SecurityPanel'
 import { i18nT } from '../../i18n/t'
-import { TAILNET_OFF, CONSENT_NONE, snapshot, posture, govNoPolicy } from '../../test/SecurityPanelTestUtils'
+import { TAILNET_OFF, snapshot, posture, govNoPolicy } from '../../test/SecurityPanelTestUtils'
 
 /** Copy is asserted through `i18nT`, not literal English.
  *
@@ -182,7 +177,6 @@ describe('SecurityPanel — governance policy viewer', () => {  beforeEach(() =>
     ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
-    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
   })
 
   it('shows the standalone "no enterprise policy" state when has_policy is false', async () => {
@@ -504,7 +498,6 @@ describe('SecurityPanel — central policy distribution', () => {
     ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
-    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
   })
 
   it('reports the transport, the poller, the cache age and the last refresh', async () => {
@@ -648,7 +641,6 @@ describe('SecurityPanel — posture disclosure', () => {
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
-    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
   })
 
   it('renders a pill per control using the server-derived count and unit', async () => {
@@ -818,7 +810,7 @@ describe('SecurityPanel — posture disclosure', () => {
     )
     renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
 
-    expect(await screen.findByText('1 built-in rules')).toBeInTheDocument()
+    expect(await screen.findByText('1 built-in rule')).toBeInTheDocument()
     expect(screen.queryByText('137 built-in rules')).not.toBeInTheDocument()
     expect(screen.queryByText('129 built-in rules')).not.toBeInTheDocument()
   })
@@ -867,7 +859,7 @@ describe('SecurityPanel — posture disclosure', () => {
             summary: '', source: '', count: null, items: [], unavailable: true,
           },
           {
-            key: 'audit_surfaces', label: 'SEL audit logging', unit: 'audited surfaces',
+            key: 'audit_surfaces', label: 'SEL audit logging', unit: 'session-key surfaces',
             summary: '', source: '', count: 2, unavailable: false,
             items: [{ label: 'Slack handler', detail: '' }, { label: 'MCP core', detail: '' }],
           },
@@ -879,7 +871,7 @@ describe('SecurityPanel — posture disclosure', () => {
 
     // The badge is the row's payload, so it belongs in the accessible name.
     expect(
-      await screen.findByLabelText('Show SEL audit logging details — 2 audited surfaces'),
+      await screen.findByLabelText('Show SEL audit logging details — 2 session-key surfaces'),
     ).toBeInTheDocument()
     // A control with nothing to expand is a plain row, not an aria-disabled button.
     expect(screen.getByText('unavailable')).toBeInTheDocument()

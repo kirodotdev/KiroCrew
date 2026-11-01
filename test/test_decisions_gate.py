@@ -767,6 +767,37 @@ class TestScrub:
         assert row["error"] in gate_mod.SCRUB_ERRORS
         assert row["answers"] is None
 
+    def test_a_credential_the_point_clipped_in_half_still_refuses(self, install_impl, log_home):
+        """The clipped state alone carries a fragment no pattern matches."""
+        message = "w " * 995 + "sk-" + "a" * 32
+        clipped = {"message": message[:2000]}
+        assert gate_mod.scrub_reason(clipped, QUESTIONS) is None
+        oracle = install_impl(_ExplodingOracle())
+        assert (
+            asyncio.run(decide(POINT, clipped, QUESTIONS, config=_config(), unclipped=message))
+            is None
+        )
+        assert oracle.entered is False
+        assert log_home()[0]["error"] == gate_mod.ERROR_SCRUBBED_CREDENTIAL
+
+    def test_unclipped_text_past_the_scan_bound_refuses(self):
+        """A JWT whose second dot falls past the bound is a fragment to any cut scan."""
+        jwt = "ey" + "J" + "a" * 20 + "." + "ey" + "J" + "b" * 7000 + "." + "c" * 40
+        message = "w " * 900 + jwt
+        assert message.index(jwt) < 2000 and len(message) > gate_mod.MAX_UNCLIPPED_SCAN_CHARS
+        clipped = {"message": message[:2000]}
+        assert (
+            gate_mod.scrub_reason(clipped, QUESTIONS, unclipped=message)
+            == gate_mod.ERROR_SCRUBBED_SCAN_BOUND
+        ), "refused under its own category, so the log never reads it as a scanner fault"
+
+    def test_clean_unclipped_text_just_under_the_bound_passes(self):
+        message = ("w " * gate_mod.MAX_UNCLIPPED_SCAN_CHARS)[
+            : gate_mod.MAX_UNCLIPPED_SCAN_CHARS - 2
+        ]
+        clipped = {"message": message[:2000]}
+        assert gate_mod.scrub_reason(clipped, QUESTIONS, unclipped=message) is None
+
     def test_the_two_scanners_are_distinguished_in_the_row(self, install_impl, log_home):
         """Which scanner refused is the finding; one category for both would lose it."""
         install_impl(_ExplodingOracle())

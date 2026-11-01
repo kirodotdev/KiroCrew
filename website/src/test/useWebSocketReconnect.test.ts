@@ -93,7 +93,7 @@ describe('useWebSocket reconnect unread suppression', () => {
     )
   }
 
-  it('clears stale subagents before authoritative snapshot replay', () => {
+  it('drops the cards an authoritative snapshot replay does not name', () => {
     vi.useFakeTimers()
     testStore = createTestStore({
       chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot: 'chat-active' },
@@ -104,6 +104,9 @@ describe('useWebSocket reconnect unread suppression', () => {
     const { unmount } = renderHook(() => useWebSocket(), { wrapper })
     const ws1 = WS_INSTANCES[0]
     act(() => { ws1.simulateOpen() })
+    // Held until the replay ends: a replay that names a card reconciles into it.
+    expect(testStore.getState().chat.subagents['stale-active']).toBeDefined()
+    act(() => { ws1.simulateMessage({ type: 'subagent_replay_done', data: {} }) })
 
     expect(testStore.getState().chat.subagents).toEqual({})
     expect(testStore.getState().chat.slotActivity['chat-other']?.subagents).toEqual({})
@@ -121,13 +124,12 @@ describe('useWebSocket reconnect unread suppression', () => {
     const ws2 = WS_INSTANCES[1]
     act(() => { ws2.simulateOpen() })
 
-    expect(testStore.getState().chat.subagents).toEqual({})
-
     act(() => {
       ws2.simulateMessage({
         type: 'subagent_snapshot',
         data: { id: 'live-2', slot: 'chat-active', task: 'Current live task', agent: 'kirocrew', streaming: '', last_tool: '', started: Date.now() / 1000 },
       })
+      ws2.simulateMessage({ type: 'subagent_replay_done', data: {} })
     })
     expect(testStore.getState().chat.subagents['live-2']?.status).toBe('running')
     expect(testStore.getState().chat.subagents['live-1']).toBeUndefined()
@@ -149,6 +151,7 @@ describe('useWebSocket reconnect unread suppression', () => {
     const { unmount } = renderHook(() => useWebSocket(), { wrapper })
     const ws1 = WS_INSTANCES[0]
     act(() => { ws1.simulateOpen() })
+    act(() => { ws1.simulateMessage({ type: 'subagent_replay_done', data: {} }) })
 
     // Running card is cleared; the pending approval card survives with its approval_id intact.
     expect(testStore.getState().chat.subagents['stale-running']).toBeUndefined()
@@ -171,15 +174,15 @@ describe('useWebSocket reconnect unread suppression', () => {
     const { unmount } = renderHook(() => useWebSocket(), { wrapper })
     const ws1 = WS_INSTANCES[0]
     act(() => { ws1.simulateOpen() })
-    // Reconnect clears the (now stale) running card.
+    // Reconnect holds the running card until its replay item arrives.
     act(() => { ws1.onclose?.(new CloseEvent('close')) })
     act(() => { vi.advanceTimersByTime(2000) })
     const ws2 = WS_INSTANCES[1]
     act(() => { ws2.simulateOpen() })
-    expect(testStore.getState().chat.subagents['native:s1']).toBeUndefined()
+    expect(testStore.getState().chat.subagents['native:s1']?.status).toBe('running')
 
     // The gateway replays the completion (it finished while the socket was down)
-    // as a subagent_done — the terminal card must be rebuilt, not lost.
+    // as a subagent_done — the card turns terminal and survives the replay's end.
     act(() => {
       ws2.simulateMessage({
         type: 'subagent_done',
@@ -207,6 +210,9 @@ describe('useWebSocket reconnect unread suppression', () => {
     expect(afterStaleSnapshot?.status).toBe('done')
     expect(afterStaleSnapshot?.elapsed).toBe(3)
     expect(afterStaleSnapshot?.result).toBe('done feed')
+    // The replay named it, so its end keeps the card.
+    act(() => { ws2.simulateMessage({ type: 'subagent_replay_done', data: {} }) })
+    expect(testStore.getState().chat.subagents['native:s1']?.status).toBe('done')
 
     unmount()
     vi.useRealTimers()

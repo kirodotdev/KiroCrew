@@ -12,7 +12,7 @@ default (``medium`` for claude-opus-5.5) whatever Crew had configured.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -78,9 +78,11 @@ async def test_session_start_pushes_the_configured_level(
     override: str, defaults: dict[str, str], expected: str
 ) -> None:
     provider = _kas_provider(override=override, defaults=defaults)
+    assert provider._resolve_effort() == expected
     await provider._apply_initial_effort()
-    provider._client.set_config_option.assert_awaited_once_with("effortLevel", expected)
-    provider._client.send_command.assert_not_awaited()
+    assert provider._client.set_config_option.await_args_list == [call("effortLevel", expected)]
+    # The kiro /effort slash command answers -32603 on KAS, so it is never sent.
+    assert provider._client.send_command.await_count == 0
 
 
 @pytest.mark.asyncio

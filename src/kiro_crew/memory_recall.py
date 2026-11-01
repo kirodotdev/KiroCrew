@@ -276,9 +276,11 @@ def bound_recall_payload(
         # context and may expand again in the MCP JSON wrapper, so shorten the
         # largest snippet before discarding an entire row.
         largest: tuple[int, list[dict], int, str] | None = None
+        rows_left = len(facts) + len(episodes)
         # A lone result can still carry useful text below the normal snippet
-        # floor when the caller requests a small context budget.
-        snippet_floor = 1 if len(facts) + len(episodes) == 1 else 256
+        # floor when the caller requests a small context budget, but only once
+        # the lessons block is gone: a lesson outranks a one-character snippet.
+        snippet_floor = 1 if rows_left == 1 and not result.get("lessons_context") else 256
         for rows, field in ((episodes, "text"), (facts, "snippet")):
             for index, row in enumerate(rows):
                 size = len(row.get(field, ""))
@@ -292,10 +294,10 @@ def bound_recall_payload(
                 rows[index]["text_truncated"] = True
             else:
                 rows[index]["snippet_truncated"] = True
-        elif result.get("lessons_context"):
-            result["lessons_context"] = ""
-            retrieval["lessons_omitted_for_payload_budget"] = True
-        elif facts or episodes:
+        elif rows_left > 1 or (rows_left == 1 and not result.get("lessons_context")):
+            # Tail rows go before the lessons block, which recall reserved its
+            # own share for: the lowest-ranked snippet must not outlive the
+            # best-matching lesson. One row is kept until the lessons are gone.
             # A shared relevance scale is supplied when Markdown is merged.
             # Missing scores retain the store's original ranked selection.
             candidates = [
@@ -304,6 +306,9 @@ def bound_recall_payload(
             _, rows = min(candidates, key=lambda candidate: candidate[0])
             rows.pop()
             omitted += 1
+        elif result.get("lessons_context"):
+            result["lessons_context"] = ""
+            retrieval["lessons_omitted_for_payload_budget"] = True
         else:
             # Defensive refusal for a future caller adding unbounded metadata.
             return {

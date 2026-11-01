@@ -450,7 +450,7 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
               </span>
             </span>
           ) : busy ? (
-            <span className="inline-flex items-center gap-1 text-[12px] text-muted/60">
+            <span className="inline-flex items-center gap-1 text-[12px] text-muted">
               <Loader2 size={12} className="animate-spin shrink-0" />{i18nT('pages.chat.elicitationCard.sending')}
             </span>
           ) : (

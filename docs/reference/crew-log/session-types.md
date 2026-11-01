@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Forty-seven types. Read [envelope.md](envelope.md) first for the fields every entry
+Fifty-one types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -27,6 +27,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`session/opened`](#sessionopened) | The crew log was created, or a claim re-attached to it. | live | `gateway` | — |
 | [`session/class`](#sessionclass) | The session's class changed after its log was opened. | live | `gateway` | supersedes `session/opened.class` |
 | [`session/closed`](#sessionclosed) | The gateway stopped serving this session. | live | `gateway` | — |
+| [`session/unrestored`](#sessionunrestored) | This session's tab was listed as open at startup and did not come back. | live | `gateway` | — |
 | [`session/adopted`](#sessionadopted) | Another session took this one over. | live | `gateway` | supersedes `session/opened.parent` |
 | [`session/released`](#sessionreleased) | This session's parent let it go. | live | `gateway` | retracts the parent edge |
 | [`session/spawned`](#sessionspawned) | This session created another one. | live | `gateway` | the creator's side of `session/opened.parent` |
@@ -60,12 +61,15 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`object/observed`](#objectobserved) | The state of an object outside the session, as a named producer observed it. | live | `gateway` | — |
 | [`radar/recorded`](#radarrecorded) | One Issue Radar crew-ledger update: the work-item fields it set and the event explaining them. | live | `gateway` | — |
 | [`work/recorded`](#workrecorded) | One work-board mutation: who acted, on which item, and the fields it set. | live | `gateway` | — |
+| [`work/charged`](#workcharged) | One bound worker's charge, relayed by the gateway into the board's own log. | live | `gateway` | — |
 | [`panel/published`](#panelpublished) | One publish of a crew's own webview: the data, and the template that renders it. | live | `gateway` | — |
 | [`dashboard/instance_changed`](#dashboardinstance_changed) | One mate dashboard-instance change: adopted, edited or rolled back. | live | `gateway` | — |
 | [`dashboard/agentic_value`](#dashboardagentic_value) | One agent-written dynamic dashboard value. | live | `gateway` | — |
 | [`dashboard/agentic_refused`](#dashboardagentic_refused) | A refused agentic dashboard write (the mistake book's input), or a correction. | live | `gateway` | — |
 | [`dashboard/goal_recorded`](#dashboardgoal_recorded) | A crewmate's goal record after a change: goals and milestones. | live | `gateway` | — |
 | [`dashboard/waiting_changed`](#dashboardwaiting_changed) | What a crewmate waits on the person for, after it changed. | live | `gateway` | — |
+| [`dashboard/custom_value`](#dashboardcustom_value) | One record a script cron or an installed app appended for a crewmate, stamped with who wrote it. | live | `gateway` | — |
+| [`dashboard/custom_failed`](#dashboardcustom_failed) | A run of a script cron bound to this crewmate ended in error, stamped by the gateway. | live | `gateway` | — |
 | [`card/proposed`](#cardproposed) | The agent proposed a change card, at this point in the conversation. | live | `gateway` | opener of `card/finished` |
 | [`card/finished`](#cardfinished) | A change card reached a finished status. | live | `gateway` | closer, by `card_id`; may repeat |
 | [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
@@ -282,6 +286,37 @@ may land after it.
 corruption. Read to the end of the last segment.
 
 **Since** — #10091.
+
+### `session/unrestored`
+
+This session's tab was listed as open at startup and did not come back.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once per dropped tab, after a dashboard restart's tab restore
+finishes (`dashboard/chat_persistence_parts/restore_drivers.py`), on the DROPPED session's own
+log. Carries no `turn`.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `listed` | integer | required | Keys the open-tab snapshot listed this boot. | |
+| `restored` | integer | required | How many of them became tabs. | |
+| `kept` | integer | required | How many listed keys this restore dropped, this one included. A dropped key stays in the reopen seed; it is only not shown. | |
+
+**Invariants** — **Not a close.** The session is intact; only the registry of open
+tabs lost it. All three counts are written together, because one tab only means
+something against the set.
+
+```json
+{"type":"session/unrestored","seq":12,"time":1789000095000,"src":"gateway","data":{"listed":16,"restored":15,"kept":1}}
+```
+
+**Reader hint** — Read it as "this tab was not shown", never as "this session ended".
+`kept` against `listed` tells a lost working set from one unreadable transcript.
+
+**Since** — #18262.
 
 ### `session/adopted`
 
@@ -1118,6 +1153,7 @@ A child this session dispatched.
 |---|---|---|---|---|
 | `agent_id` | string | required | The child's id. | |
 | `turn` | int | optional | The asking turn. Absent when no turn asked — a slash command, a cron, a hook. | |
+| `attempt` | int | optional | Which try at `turn` asked, matching `turn/started`'s attempt. Written only beside `turn`. Absent means not observed, which is not attempt 1: the dispatch can be pinned before the turn's attempt is derived. | |
 | `agent` | string | optional | Agent name. | |
 | `model` | string | optional | The child's model. | |
 | `task` | string | optional | What the child was asked to do, redacted and clipped. Absent when the dispatch carried no task text. | |
@@ -1439,9 +1475,11 @@ One work-board mutation: who acted, on which item, and the fields it set.
 
 **When written** — One entry per work-ledger write, appended to the ACTING
 session's log: a conductor action (`work_ledger_record`) or a worker report
-(`work_report`). The `work` fold rebuilds the board from these entries across the
-conductor's and its bound workers' units, so the ledger's files are a cache of the
-log rather than a record beside it; the routes still read that cache.
+(`work_report`). A worker report is written a second time into the conductor's own
+log, and the gateway relays a sub-board's entries into its parent board's log (with
+`relay` set). The `work` fold rebuilds the board from the conductor's own units
+alone, so the ledger's files are a cache of the log rather than a record beside it;
+the routes still read that cache.
 
 **Pairing** — None.
 
@@ -1463,8 +1501,9 @@ log rather than a record beside it; the routes still read that cache.
 | `verdict` | string | optional | The acceptance verdict, set by `verdict`. | `pass`, `fail`, `pending`, `refused`, `error` (closed) |
 | `decision` | string | optional | The conductor's decision text, set by `decide`. | |
 | `worker_session_key` | string | optional | The worker slot bound to the item, set by `bind`. | |
+| `worker_instance_id` | string | optional | The remote crew the bound worker runs on, set by a remote `bind` beside `worker_session_key` (then the peer's slot key). | |
 | `fails` | int | optional | The item's failed-verdict count, when it moved. | |
-| `status` | string | optional | The worker's status, set by `report`. | `progress`, `done`, `blocked`, `question` (closed) |
+| `status` | string | optional | The worker's status, set by `report`. | `progress`, `done`, `blocked`, `question`, `reply` (closed) |
 | `summary` | string | optional | The worker's summary, set by `report`. | |
 | `artifacts` | object | optional | String-to-string pointers replacing the item's map, set by `report`. The members are the worker's own keys and are checked for shape. | |
 | `pr` | int | optional | The pull request number, set by `report`. | |
@@ -1480,6 +1519,9 @@ log rather than a record beside it; the routes still read that cache.
 | `board_created_at` | string | optional | The board's committed creation stamp, carried by a baseline entry. | |
 | `goal_version` | int | optional | The header's goal-write count after this write, set by `goal`. | |
 | `baseline` | bool | optional | `true` when the entry carries the WHOLE committed item rather than a delta. | |
+| `board_copy` | bool | optional | True on the copy of a worker's report the gateway wrote into the board's own log. A report without it is a worker-log copy, which the rebuild's join of worker logs never lets undo a board copy. | |
+| `mirror` | bool | optional | True on the worker's own copy of a report whose board copy landed. The work and worktree folds skip it (the board copy is the record); the workers fold reads it as the worker's own report. | |
+| `relay` | string | optional | Set on a copy relayed up from a sub-board's log into its parent board's log: the origin entry as `<unit>:<seq>`. | |
 
 **Invariants** — A delta: only the fields the one `action` set are present,
 except on a baseline entry. A conductor entry never carries a worker field and a
@@ -1506,12 +1548,43 @@ and `board_created_at`.
 {"type":"work/recorded","seq":72,"time":1789000002600,"src":"gateway","data":{"slot":"dashboard:3","actor":"worker","by":"dashboard:9","action":"report","item_id":"it_0badc0de","status":"progress","summary":"scoped tests green, opening the PR next","artifacts":{"branch":"feat/x","pr":"123"},"pr":123,"event":"progress: scoped tests green","event_kind":"report"}}
 ```
 
-**Reader hint** — One board spans several logs: the conductor slot's units and each
-bound worker slot's units. Fold them all, oldest unit first, and key items by
-`item_id`; a report seen before its item's `create` belongs to a unit the reader has
-not folded yet, not to a missing item.
+**Reader hint** — A board is folded from the conductor slot's own units, oldest
+first, keyed by `item_id`. A bound worker's report reaches them as the board's own
+copy; an open bound item with no report there yet is waiting for the worker's next
+report. A sub-board's entries arrive with `relay` set and their own `slot`.
 
 **Since** — #12314.
+
+### `work/charged`
+
+One bound worker's charge, relayed by the gateway into the board's own log.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — When a `turn/completed`, `subagent/completed`, `subagent/failed`
+or `background/completed` entry that bills credits or measures time lands in a
+session bound to a work item, the gateway appends one `work/charged` entry into the
+newest unit of the board that bound it. A board whose conductor is itself bound to a
+parent board relays each `work/charged` it receives up into the parent's log. The
+`workstreams` fold costs tasks from these, so it reads the board's own units only.
+
+**Pairing** — Copies the closer named by `closer`.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `slot` | string | required | The board whose log this copy lands in: the conductor slot. | |
+| `by` | string | required | The worker session key that incurred the charge. | |
+| `source` | string | required | Which kind of closer carried the charge. | `turn`, `subagent`, `background` (closed) |
+| `closer` | string | required | The closer this copies, as `<unit>:<seq>` of the worker's log. | |
+| `credits` | float | optional | What the closer billed. Absent is not zero. | |
+| `duration_ms` | int | optional | How long the closer's work ran. | |
+
+**Invariants** — A reader bills one closer once however many copies of it reach a
+log (`closer` is the identity), so a retried or doubly relayed copy costs nothing.
+
+```json
+{"type":"work/charged","seq":81,"time":1789000003100,"src":"gateway","data":{"slot":"dashboard:3","by":"dashboard:9","source":"turn","closer":"acp-worker:41","credits":0.25,"duration_ms":1200}}
+```
 
 ## The member panel
 
@@ -1575,6 +1648,114 @@ the file still serves that crew's panel.
 
 **Since** — #13440.
 
+## The dynamic dashboard
+
+A crewmate's Dashboard tab: its own copy of a template, the values it writes into
+that copy, and the writes that were refused. All three land on the crewmate's own
+DM session log and fold under its slot.
+
+### `dashboard/instance_changed`
+
+One accepted change to a crewmate's own dynamic dashboard.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once per accepted adopt, edit or rollback, by the instance store
+(`dashboard_templates/instance.py`), after the version file is written. The change
+waits a bounded flush (`_APPEND_FLUSH_SECONDS`) for the entry but never fails on it:
+the file is the record of the current page, and this entry is its history.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `slug` | string | required | Whose dashboard changed, so one entry names its crewmate without resolving the slot. | |
+| `instance_version` | integer | required | The instance's own counter after this change. Never the template's version. | |
+| `action` | string | required | What the change was. Closed: the store clamps it to this list. | `adopted`, `edited`, `rolled_back` |
+| `template_id` | string | required | Id of the template this instance was copied from. | |
+| `template_version` | integer | required | The template version copied at adopt. An edit does not move it. | |
+| `from_version` | integer | optional | The instance version this change came from. Absent for an adopt. | |
+| `fields` | integer | optional | How many fields the copied manifest declares after this change. | |
+| `html_bytes` | integer | optional | Size of the page this version holds, in bytes. | |
+| `at_ms` | integer | optional | When the change was accepted, epoch milliseconds. | |
+
+**Invariants** — Carries what changed, never the page, so it is bounded by
+construction. The instance's history is a fold over these entries.
+
+```json
+{"type":"dashboard/instance_changed","seq":91,"time":1789000004000,"src":"gateway","data":{"slug":"conductor","instance_version":3,"action":"edited","template_id":"goal-board","template_version":2,"from_version":2,"fields":9,"html_bytes":14210,"at_ms":1789000004000}}
+```
+
+**Reader hint** — Read the current page from the instance file, not from here. A
+change with the log off still succeeds, so a missing entry is not a missing change.
+
+**Since** — #17507.
+
+### `dashboard/agentic_value`
+
+One agentic dashboard value the crewmate wrote, already type-checked.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once per accepted `dashboard_write`, by the agentic write path
+(`dashboard/handlers/agent_panel_dashboard.py`), after the value is checked against
+the live manifest. The write waits for the append, because this log is the value's
+only home. Folded as `agentic`.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `field` | string | required | The manifest field this value fills. The fold keys on it. | |
+| `type` | string | required | The type the manifest declared for the field. | |
+| `value` | object | required | A wrapper holding the value under the one key `v`, so any of the five manifest types fits. | |
+| `instance_version` | integer | optional | The instance version the value was written against. | |
+| `crew_key` | string | optional | Digest of the writing crew's exact name, for ownership on a shared slot. | |
+
+**Invariants** — Each write replaces ONE field and leaves the others alone. The fold
+re-checks `v` against `type`, because these are bytes off a file.
+
+```json
+{"type":"dashboard/agentic_value","seq":92,"time":1789000004100,"src":"gateway","data":{"field":"open_prs","type":"number","value":{"v":3},"instance_version":3,"crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
+```
+
+**Reader hint** — Unwrap `value.v`. Compare `instance_version` with the instance's
+current one to spot a value written for a field set since edited away.
+
+**Since** — #17507.
+
+### `dashboard/agentic_refused`
+
+One refused agentic write, or one write that corrected an earlier refusal.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — On the refusal path of `dashboard_write`, and again when a later
+accepted write uses a field an earlier refusal reached wrongly. Best-effort: the
+refusal is already on its way back to the caller. Folded as `mistakes`.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `code` | string | required | Why it was refused, or `corrected` on a correction. The mistake book groups on it. | |
+| `field` | string | optional | The field the write named. Absent for a refusal about no field. | |
+| `reason` | string | optional | The sentence the agent was given. | |
+| `corrects` | array of string | optional | On a correction: the field names an earlier refusal reached wrongly. | |
+| `crew_key` | string | optional | Digest of the refused caller's exact crew name. | |
+
+**Invariants** — Two shapes on one type. A refusal carries a refusal code; a
+correction carries `code` `corrected` and `corrects`.
+
+```json
+{"type":"dashboard/agentic_refused","seq":93,"time":1789000004200,"src":"gateway","data":{"code":"unknown_field","field":"credits_total","reason":"credits_total is not a field of this dashboard; did you mean credits?","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
+```
+
+**Reader hint** — Branch on `code`, not on whether `corrects` is present. Read the
+`mistakes` fold, not the raw entries, to get each group's latest correction.
+
+**Since** — #17507.
+
 ## A crewmate's own record
 
 Two snapshots the gateway appends to a crewmate's own DM session log so its
@@ -1582,7 +1763,7 @@ Dashboard page can bind them (`dashboard/crewmate_feed.py`). Each replaces the
 last one whole in its slot fold, so a page reading it moves when the fact does,
 with no value the crewmate typed.
 
-#### `dashboard/goal_recorded`
+### `dashboard/goal_recorded`
 
 Kind `session`, `src` `gateway`. Written after every write of the crewmate's goal
 record (a goal set, milestones applied, a reading recorded), through
@@ -1598,7 +1779,11 @@ the thread's next growth, when its session is known. Folded as `goal`.
 | `goals_total` | integer | how many goals the record holds in all |
 | `milestones_total` | integer | how many milestones the record holds in all |
 
-#### `dashboard/waiting_changed`
+```json
+{"type":"dashboard/goal_recorded","seq":94,"time":1789000004300,"src":"gateway","data":{"goals":[{"text":"Land our open PRs"}],"milestones":[{"text":"PRs merged this week","target":"20","current":"12 merged","at":"2026-10-28T14:00:00Z"}],"goals_total":1,"milestones_total":1}}
+```
+
+### `dashboard/waiting_changed`
 
 Kind `session`, `src` `gateway`. Written when the list
 `dashboard.member_waiting.waiting_items` reads off the thread differs from the
@@ -1610,6 +1795,65 @@ an `[OPTIONS]` chip, a card raised or pressed, a turn ending). Folded as
 | --- | --- | --- |
 | `items` | array of `{kind, text, options, options_total, asked_at}` | newest first; `kind` is `options`, `question` or `card`; at most `CREWMATE_WAITING_LIMIT`, each with at most `CREWMATE_OPTION_LIMIT` choices and `options_total` counting them all |
 | `total` | integer | how many items wait in all, including any past `items` |
+
+```json
+{"type":"dashboard/waiting_changed","seq":95,"time":1789000004400,"src":"gateway","data":{"items":[{"kind":"options","text":"Merge the release PR now?","options":["Merge it","Wait"],"options_total":2,"asked_at":"2026-10-28T14:05:00Z"}],"total":1}}
+```
+
+### `dashboard/custom_value`
+
+Kind `session`, `src` `gateway`. Written when a script cron bound to this crewmate
+calls `ctx.crew_log_append(type, data)`, through
+`POST /api/agent-panel/dashboard/record` (`dashboard/handlers/agent_panel_record.py`),
+or when an installed app holding the `/api/member-records/*` grant posts to
+`POST /api/member-records/<slug>` (`dashboard/handlers/agent_panel_record_app.py`); both
+routes hand the record to the same append. The body carries `type`, `data` and an
+optional `max_age_s` only;
+`writer`, `member` and `crew_key` are stamped by the gateway from the caller's attested
+identity (the job's scope, or the token's app claim), so neither a script nor an app can
+choose who it writes as. A job bound to no crewmate is refused; an app names the
+crewmate in the path and is refused for a slug no crewmate has or two share. An app's
+`type` is stored as `<app id with - as _>__<type>`, one bindable path segment that
+splits one way, so two apps never share a key and `__` is refused in every caller's
+type. Folded as
+`custom`, which keeps the latest record per `type`, so a Dashboard page binds
+`custom.latest.<type>.data.<key>`. The data is the writer's own words: a page draws it
+as text, and nothing frames it as an instruction to an agent.
+
+| field | type | notes |
+| --- | --- | --- |
+| `type` | string | the record type the writer named (for an app, `<app id with - as _>__<type>`): one plain name without `__`, at most `CUSTOM_TYPE_NAME_LIMIT` characters |
+| `data` | object | the record, at most `CUSTOM_RECORD_BYTES` serialized and `CUSTOM_RECORD_DEPTH` deep; its members are the writer's own |
+| `writer` | string | `cron:<job id>` or `app:<app id>`, stamped by the gateway |
+| `member` | string | the slug of the crewmate written for (the job's binding, or the app route's path), stamped by the gateway |
+| `crew_key` | string | digest of that crewmate's exact name, for ownership on a shared slot |
+| `max_age_s` | integer | optional; how many seconds the writer says the record stays current, `CUSTOM_MAX_AGE_MIN_S` to `CUSTOM_MAX_AGE_MAX_S`; the fold renders `stale_after` from the entry's own `time` plus this |
+
+```json
+{"type":"dashboard/custom_value","seq":96,"time":1789000004500,"src":"gateway","data":{"type":"build_health","data":{"green":41,"red":2},"writer":"cron:nightly-build","member":"conductor","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
+```
+
+### `dashboard/custom_failed`
+
+Kind `session`, `src` `gateway`. Written by the gateway's scheduler
+(`slack/gateway_runtime/cron_fire.py` through `agent_panel_record.record_cron_failure`)
+when a run of a script cron bound to this crewmate ends with `last_status` `error`: an
+exception, a refused `ctx.crew_log_append` (`quota_exceeded` among them), a timeout or a
+denial. Best-effort: a crewmate with no crew log yet gets none. No script can write one,
+because the record route only appends `dashboard/custom_value`. Folded by `custom`: each
+latest record the same `writer` wrote before it gains `failed_at` and `last_error`, until
+that writer's next record replaces the row, and `custom.failures` lists the writer.
+
+| field | type | notes |
+| --- | --- | --- |
+| `writer` | string | `cron:<job id>`, from the scheduler's own record of the job |
+| `error` | string | the run's `last_error`, redacted and cut to `CUSTOM_ERROR_LIMIT` characters |
+| `member` | string | the slug of the crewmate the job is bound to |
+| `crew_key` | string | digest of that crewmate's exact name |
+
+```json
+{"type":"dashboard/custom_failed","seq":97,"time":1789000004600,"src":"gateway","data":{"writer":"cron:nightly-build","error":"crew_log_append() failed: this cron job has sent 30 records in the last minute; wait before sending more","member":"conductor","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
+```
 
 ## Change cards and guides
 

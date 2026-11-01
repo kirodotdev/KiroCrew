@@ -3,6 +3,7 @@ import { animate, type MotionValue } from 'framer-motion'
 import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold'
 import { deepActiveElement } from '../utils/editableTarget'
 import { haptic } from '../lib/haptic'
+import { isModalLayer } from './modalLayer'
 
 /**
  * Finger-tracking open/close gesture for a mobile edge panel — the sessions
@@ -90,9 +91,9 @@ const PLATFORM_EDGE = 24
  * than that takes, and it makes a slow deliberate pull feel like it snapped back
  * for no reason.
  */
-const COMMIT_DRAG_SHARE = 0.2
+export const COMMIT_DRAG_SHARE = 0.2
 /** Release faster than this (px/ms) commits regardless of how far it got. */
-const COMMIT_VELOCITY = 0.4
+export const COMMIT_VELOCITY = 0.4
 /**
  * Trailing window the release speed is measured over.
  *
@@ -106,7 +107,7 @@ const VELOCITY_WINDOW_MS = 100
 /** Shortest base the speed may be measured over. A finger that was still for
  *  most of the window and twitched once just before lifting would otherwise
  *  read as a hard throw off two adjacent samples. */
-const VELOCITY_MIN_SPAN_MS = 16
+export const VELOCITY_MIN_SPAN_MS = 16
 /** Samples retained for the window — 100ms at 60Hz is ~6, with headroom for a
  *  higher-rate digitizer and one baseline sample outside the window. */
 const VELOCITY_SAMPLES = 16
@@ -759,10 +760,10 @@ function dragOwnedBelow(chain: HTMLElement[], root: HTMLElement, side: Side): bo
     // is not necessarily portaled out of the shell: the changelog and
     // update-error overlays are plain `fixed inset-0` JSX inside it, so a drag
     // across one used to pull the nav drawer out BEHIND the dialog. Read as a
-    // rule rather than a list of overlays, since `src/` declares dozens of
-    // dialogs and the next one would have to remember an attribute.
-    const role = node.getAttribute('role')
-    if (role === 'dialog' || role === 'alertdialog') return true
+    // rule rather than a list of overlays (`isModalLayer`, shared with the
+    // desktop trackpad swipe), since `src/` declares dozens of dialogs and the
+    // next one would have to remember an attribute.
+    if (isModalLayer(node)) return true
     // Computed, not inline: a drag widget declares this through a class
     // (Tailwind's `touch-none`), and the computed value covers both that and an
     // inline style in every engine including jsdom.

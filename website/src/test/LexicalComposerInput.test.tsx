@@ -775,8 +775,7 @@ describe('LexicalComposerInput', () => {
       )
     })
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('second'))
-    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 0, end: 0 }))
-    act(() => controlRef.current!.setSelection('second'.length))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 6, end: 6 }))
     act(() => {
       editorRef.current!.dispatchCommand(
         KEY_ARROW_DOWN_COMMAND,
@@ -797,6 +796,63 @@ describe('LexicalComposerInput', () => {
     })
     return handled
   }
+
+  it('leaves the caret at the end of a recall and walks a multi-line prompt by line', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    const recalled = 'line1\nline2\nline3'
+    render(
+      <ControlledHost editorRef={editorRef} controlRef={controlRef} sentMessages={['first', recalled, 'third']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^third$/))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 5, end: 5 }))
+    // ↑ from the end of a one-line recall steps older with no Home press.
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(recalled))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: recalled.length, end: recalled.length }))
+    // Last and middle lines: ↑ moves the caret; first and middle lines: ↓ does.
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    act(() => controlRef.current!.setSelection(8))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(false)
+    act(() => controlRef.current!.setSelection(3))
+    expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(false)
+    expect(screen.getByTestId('value').textContent).toBe(recalled)
+    // Anywhere on the first line, ↑ steps older.
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^first$/))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 5, end: 5 }))
+    // ↓ from the end steps newer at once, and lands on the recall's last line.
+    expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(recalled))
+    act(() => controlRef.current!.setSelection(14))
+    expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^third$/))
+  })
+
+  it('keeps the caret in place when ↑ on the oldest multi-line prompt has nowhere older to go', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    const oldest = 'line1\nline2'
+    render(
+      <ControlledHost editorRef={editorRef} controlRef={controlRef} sentMessages={[oldest, 'newest']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^newest$/))
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(oldest))
+    act(() => controlRef.current!.setSelection(3))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    // Let any deferred caret move run before asserting it did not happen.
+    await act(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
+    expect(screen.getByTestId('value').textContent).toBe(oldest)
+    expect(controlRef.current!.getSelection()).toEqual({ start: 3, end: 3 })
+  })
 
   it('keeps the recalled prompt when older history loads in front mid-browse', async () => {
     const editorRef = createRef<LexicalEditor>()

@@ -142,7 +142,15 @@ REVIEW_CONTRACT_SCRIPT = SCRIPT.with_name("_review_contract.py")
 GREEN_AGE_SCRIPT = SCRIPT.with_name("green_age.py")
 # The owner modules pr_status.py loads the same way.
 STATUS_OWNERS = tuple(
-    SCRIPT.with_name(n) for n in ("pr_status_issue_links.py", "pr_status_verdict.py")
+    SCRIPT.with_name(n)
+    for n in (
+        "pr_status_issue_links.py",
+        "pr_status_verdict.py",
+        # The owners _review_contract.py loads.
+        "_review_fences.py",
+        "_review_pushes.py",
+        "_review_rounds.py",
+    )
 )
 
 _HEAD = "f" * 40

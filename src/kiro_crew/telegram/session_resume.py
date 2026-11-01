@@ -373,7 +373,8 @@ class TelegramSessionResume:
 
     @staticmethod
     def _parse_choice(data: str) -> tuple[str, int]:
+        """Parse ``s:<nonce>:<index>``; ASCII digits only, as ``int("²")`` raises."""
         parts = data.split(":")
-        if len(parts) != 3 or parts[0] != "s" or not parts[2].isdigit():
+        if len(parts) != 3 or parts[0] != "s" or not (parts[2].isascii() and parts[2].isdigit()):
             return "", -1
         return parts[1], int(parts[2])

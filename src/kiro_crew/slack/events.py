@@ -42,7 +42,6 @@ from typing import (
 import aiohttp
 from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
-from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeClient
 from slack_sdk.web.async_client import AsyncWebClient
 
 import kiro_crew._facade_mirror as _facade_mirror
@@ -98,6 +97,8 @@ from kiro_crew.session_lifecycle import (
     hand_queue_to_successor,
 )
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.slack.agent_sessions.session_events import AGENT_SESSION_EVENTS
+from kiro_crew.slack.agent_sessions.session_events import dispatch as dispatch_agent_session_event
 from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.blocks import (
     build_stopping_blocks,
@@ -106,6 +107,7 @@ from kiro_crew.slack.blocks import (
     dashboard_link_block,
     voice_config_modal,
 )
+from kiro_crew.slack.channel_policy import SlackChannelRefused
 from kiro_crew.slack.enterprise import trusted_bot_admission, validated_self_user_id
 from kiro_crew.slack.files import (
     VOICE_MEMO_DURATION_UNVERIFIED,
@@ -116,6 +118,7 @@ from kiro_crew.slack.files import (
     process_slack_files,
     voice_memo_notes,
 )
+from kiro_crew.slack.format import assemble_forward_message
 from kiro_crew.slack.handler import (
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
@@ -143,6 +146,10 @@ from kiro_crew.slack.sessions_view import (
     _message_surface_limit,
     sessions_include_ended,
 )
+
+# The proxy-selecting subclass under the SDK client's name, which is this
+# module's patch surface for the Socket Mode client.
+from kiro_crew.slack.socket_mode_proxy import ProxySelectingSocketModeClient as WSSocketModeClient
 from kiro_crew.slack.transport_dispatch import flat_dm_session_key, handle_message_transport
 from kiro_crew.start_priority import person_priority
 from kiro_crew.stats import Stats
@@ -160,6 +167,36 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Socket Mode setup
 # ---------------------------------------------------------------------------
+
+
+def _wire_slack_code_capability_probe(
+    orch: GatewayOrchestrator, web_client: AsyncWebClient
+) -> None:
+    """Re-read the install's Slack Code capability on every socket (re)connect.
+
+    Slack sends ``{"type": "hello"}`` each time a Socket Mode connection opens,
+    so a message listener that answers it covers the first connect and every
+    reconnect. The probe runs as its own task: the listener must not hold the
+    socket's receive loop for an HTTP round trip.
+    """
+    from kiro_crew.slack import features, scope_probe
+
+    state = orch.dashboard_state
+    features.set_capability_notifier(
+        scope_probe.capability_notifier(state.notify if state is not None else None)
+    )
+    tasks: set[asyncio.Task[None]] = set()
+
+    async def _on_message(_client: Any, message: dict, _raw: Any = None) -> None:
+        if not isinstance(message, dict) or message.get("type") != "hello":
+            return
+        task = asyncio.create_task(scope_probe.refresh_capabilities(web_client))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    listeners = getattr(orch._socket_client, "message_listeners", None)
+    if isinstance(listeners, list):
+        listeners.append(_on_message)
 
 
 async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
@@ -222,6 +259,7 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         app_token=orch._app_token,
         web_client=web_client,
     )
+    _wire_slack_code_capability_probe(orch, web_client)
 
     async def _on_event(client: WSSocketModeClient, req: SocketModeRequest) -> None:
         # Reserve before the ACK's first suspension. A paused update returns
@@ -290,6 +328,11 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
                         source="slack",
                         error="unauthorized sender",
                     )
+            return
+
+        # ── Agent sessions: native Stop and user renames (agent_sessions) ──
+        if event_type in AGENT_SESSION_EVENTS:
+            dispatch_agent_session_event(orch, req.payload or {}, event)
             return
 
         # ── Messages and mentions ──
@@ -371,6 +414,20 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     register_drain(_CHANNEL, lambda session_key: _drain_slack_queue(orch, session_key))
 
 
+async def _post_stop_notice(orch: Any, channel: str, text: str, ts: str | None) -> str:
+    """Post a ``!stop`` reply; ``""`` when the channel policy refuses the write.
+
+    A pure ``!stop`` is exempt from the channel list so a withdrawn channel can
+    still halt its turn; its replies are not, and a refused one must not abort
+    the stop or the audit that follows it.
+    """
+    try:
+        return await orch.slack.post_message(channel, text, ts)
+    except SlackChannelRefused:
+        logger.info("!stop notice withheld: channel refused by policy")
+        return ""
+
+
 async def _route_message(
     orch: GatewayOrchestrator,
     event: dict,
@@ -387,18 +444,51 @@ async def _route_message(
     team_id = event.get("team", "")
     files = event.get("files", [])
 
-    # Slack forwards carry content in attachments, not text — recover it so the
-    # forward isn't silently dropped by the (not text and not files) guard below.
-    # A positively admitted trusted bot may also carry card text in an ordinary
-    # attachment; keep that recovery unavailable to every other sender.
-    if not text or text in _SLACK_BLOCK_FALLBACKS:
+    # A native Slack forward carries the real body in ``attachments``
+    # (``is_share`` / ``is_msg_unfurl``), not in top-level ``text``; a note typed
+    # with the forward occupies ``text``. So detect share attachments whether or
+    # not ``text`` is set, quarantine each forwarded body (and its file metadata)
+    # in the same untrusted-content fence the message shortcut uses (XPIA
+    # guard), and keep the owner's note OUTSIDE the fence as first-party intent.
+    # The thread-follow "addressed to someone else" check reads what the
+    # message opens with: the owner's note when there is one, else the first
+    # forwarded body, never the fence framing.
+    address_text = text
+    is_forward = _has_share_attachments(event)
+    if is_forward:
+        note = "" if text in _SLACK_BLOCK_FALLBACKS else text
+        forwards = _forwarded_messages(event, has_note=bool(note))
+        # Event-level blocks are the note's own: its tables stay with it,
+        # outside the fence, as first-party text.
+        note_tables = _extract_table_text(event, include_attachments=False) if note else ""
+        if note_tables and note_tables not in note:
+            note = f"{note}\n\n{note_tables}"
+        if forwards:
+            address_text = note or forwards[0].text
+            text = "\n\n".join(
+                assemble_forward_message(fwd, note=note if index == 0 else "")
+                for index, fwd in enumerate(forwards)
+            )
+        else:
+            text = note
+            if not text and from_trusted_bot:
+                text = _extract_trusted_bot_attachment_text(event)
+            address_text = text
+    # Slack may also put a message's content only in event-level blocks, or set
+    # text to a generic Block Kit placeholder. A positively admitted trusted bot
+    # may carry card text in an ordinary attachment; keep that recovery
+    # unavailable to every other sender.
+    elif not text or text in _SLACK_BLOCK_FALLBACKS:
         fallback = "" if text in _SLACK_BLOCK_FALLBACKS else text
         text = _extract_shared_text(event)
         if not text and from_trusted_bot:
             text = _extract_trusted_bot_attachment_text(event)
         text = text or fallback
+        address_text = text
     # Pasted tables live only in blocks: append them even when text is present.
-    table_text = _extract_table_text(event)
+    # A forward's tables are already placed: the note's beside it, the
+    # forwarded ones inside their fence (_forwarded_messages).
+    table_text = "" if is_forward else _extract_table_text(event)
     if table_text and table_text not in text:
         text = f"{text}\n\n{table_text}" if text else table_text
 
@@ -656,6 +746,24 @@ async def _route_message(
                 error="channels governance policy",
             )
             return
+        # The channel itself: channels.posture.slack.allowed_channel_ids. In an
+        # enterprise build no channel is admitted until the policy names the list.
+        # A pure ``!stop`` stays exempt for the reason above.
+        from kiro_crew.slack.channel_policy import channel_refusal
+
+        # Audited just below with the sender, so not a second time inside.
+        channel_refused = channel_refusal(channel, audit=False)
+        if channel_refused:
+            logger.info("slack inbound dropped: %s", channel_refused)
+            sel().log_api_access(
+                caller=sender_id,
+                operation="slack.message",
+                outcome="denied",
+                source="slack",
+                resources=channel,
+                error="channel_not_allowed_by_policy",
+            )
+            return
 
     # Resolve sender's Slack display name so the LLM uses the actual
     # profile name instead of guessing from memory. Cached on channel
@@ -693,7 +801,7 @@ async def _route_message(
             thread_follow=ch_cfg.thread_follow,
             activation=activation,
             thread_ts=thread_ts,
-            text=text,
+            text=address_text,
             sender_id=sender_id,
             channel=channel,
         ):
@@ -710,7 +818,7 @@ async def _route_message(
             thread_follow=ch_cfg.thread_follow,
             activation=activation,
             thread_ts=thread_ts,
-            text=text,
+            text=address_text,
             sender_id=sender_id,
             channel=channel,
         ):
@@ -854,7 +962,7 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             if orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
+                await _post_stop_notice(orch, channel, "Nothing running.", thread_ts or msg_ts)
             return
         _flat_stop_key = flat_dm_session_key(
             channel, thread_ts, enabled=_dm_single_session_enabled(orch, channel)
@@ -918,8 +1026,8 @@ async def _route_message(
                 # The post hands back the ts of what landed, so a falsy one is a
                 # warning this member never saw and must arm nothing.
                 return bool(
-                    await orch.slack.post_message(
-                        channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
+                    await _post_stop_notice(
+                        orch, channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
                     )
                 )
 
@@ -979,13 +1087,18 @@ async def _route_message(
                 try:
                     # Post ephemeral "Stopping…" block with Kill Now button
                     if orch.slack:
-                        await orch.slack.post_ephemeral(
-                            channel,
-                            sender_id,
-                            "Stopping…",
-                            blocks=build_stopping_blocks(session_key),
-                            thread_ts=stop_post_ts,
-                        )
+                        try:
+                            await orch.slack.post_ephemeral(
+                                channel,
+                                sender_id,
+                                "Stopping…",
+                                blocks=build_stopping_blocks(session_key),
+                                thread_ts=stop_post_ts,
+                            )
+                        except SlackChannelRefused:
+                            # A channel the policy refuses still gets its
+                            # stop; only the notice is withheld.
+                            logger.info("!stop notice withheld: channel refused by policy")
 
                     async def _on_soft() -> None:
                         if orch.slack:
@@ -1038,8 +1151,8 @@ async def _route_message(
                         # The ts of what landed: a falsy one is a warning this
                         # member never saw and must arm nothing.
                         return bool(
-                            await orch.slack.post_message(
-                                channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
+                            await _post_stop_notice(
+                                orch, channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
                             )
                         )
 
@@ -1093,7 +1206,7 @@ async def _route_message(
             # If stop_turn returned "idle" (no active turn), neither callback
             # fired — dismiss the stale "Stopping…" ephemeral explicitly.
             if outcome == "idle" and orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", stop_post_ts)
+                await _post_stop_notice(orch, channel, "Nothing running.", stop_post_ts)
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
@@ -1112,7 +1225,7 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             if orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
+                await _post_stop_notice(orch, channel, "Nothing running.", thread_ts or msg_ts)
         return
 
     # ── !restart: bang alias for /kirocrew restart — intercept here so it
@@ -1318,7 +1431,7 @@ async def _route_message(
                 spool_attachments=_spool_attachments,
             )
         )
-        orch._session_tasks[session_key] = t
+        _track_router_task(orch, session_key, t, thread_ts)
 
         def _on_transport_done(task: asyncio.Task) -> None:  # type: ignore[type-arg]
             orch._handler_tasks.discard(task)
@@ -1343,7 +1456,7 @@ async def _route_message(
                         _q_t = asyncio.ensure_future(
                             _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw)
                         )
-                        orch._session_tasks[session_key] = _q_t
+                        _track_router_task(orch, session_key, _q_t, _q_kw.get("thread_ts"))
                         orch._handler_tasks.add(_q_t)
                         _q_t.add_done_callback(_on_transport_done)
             except Exception:
@@ -1386,7 +1499,7 @@ async def _route_message(
         _cleanup_attachment_temps()
         return
 
-    orch._session_tasks[session_key] = t
+    _track_router_task(orch, session_key, t, thread_ts)
 
     def _on_done(task: asyncio.Task) -> None:  # type: ignore[type-arg]
         orch._handler_tasks.discard(task)
@@ -1409,7 +1522,7 @@ async def _route_message(
                     _q_t = asyncio.ensure_future(
                         _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw)
                     )
-                    orch._session_tasks[session_key] = _q_t
+                    _track_router_task(orch, session_key, _q_t, _q_kw.get("thread_ts"))
                     orch._handler_tasks.add(_q_t)
                     _q_t.add_done_callback(_on_done)
         except Exception:
@@ -1429,6 +1542,8 @@ from kiro_crew.slack.events_block_text import _SLACK_BLOCK_FALLBACKS  # noqa: E4
 from kiro_crew.slack.events_block_text import _extract_shared_text  # noqa: E402
 from kiro_crew.slack.events_block_text import _extract_table_text  # noqa: E402
 from kiro_crew.slack.events_block_text import _extract_trusted_bot_attachment_text  # noqa: E402
+from kiro_crew.slack.events_block_text import _forwarded_messages  # noqa: E402
+from kiro_crew.slack.events_block_text import _has_share_attachments  # noqa: E402
 from kiro_crew.slack.events_block_text import _string_field  # noqa: E402
 from kiro_crew.slack.events_home_tab import _publish_home_tab  # noqa: E402
 from kiro_crew.slack.events_inbound import SeenCache  # noqa: E402
@@ -1448,6 +1563,7 @@ from kiro_crew.slack.events_queue import _resolve_approval_mode  # noqa: E402
 from kiro_crew.slack.events_queue import _settle_stop_hold  # noqa: E402
 from kiro_crew.slack.events_queue import _StopHold  # noqa: E402
 from kiro_crew.slack.events_queue import _stops_in_flight  # noqa: E402
+from kiro_crew.slack.events_queue import _track_router_task  # noqa: E402
 from kiro_crew.slack.events_slash import _handle_restart  # noqa: E402
 from kiro_crew.slack.events_slash import _handle_slash  # noqa: E402
 from kiro_crew.slack.events_slash import _safe_log  # noqa: E402
@@ -1476,13 +1592,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_block_text import _BoundedBlockText  # noqa: F401
     from kiro_crew.slack.events_block_text import _MAX_RECOVERED_TEXT_CHARS  # noqa: F401
     from kiro_crew.slack.events_block_text import _extract_blocks_text  # noqa: F401
+    from kiro_crew.slack.events_block_text import _extract_share_attachment_text  # noqa: F401
+    from kiro_crew.slack.events_block_text import _is_share_attachment  # noqa: F401
     from kiro_crew.slack.events_block_text import _normalize_message_blocks  # noqa: F401
     from kiro_crew.slack.events_block_text import _render_rich_text_element  # noqa: F401
     from kiro_crew.slack.events_block_text import _table_row_fragments  # noqa: F401
     from kiro_crew.slack.events_block_text import _until_full  # noqa: F401
     from kiro_crew.slack.events_queue import _bg_tasks  # noqa: F401
     from kiro_crew.slack.events_queue import _on_tracked_done  # noqa: F401
+    from kiro_crew.slack.events_queue import _router_task_threads  # noqa: F401
     from kiro_crew.slack.events_queue import _spawn_tracked  # noqa: F401
+    from kiro_crew.slack.events_queue import router_task_thread  # noqa: F401
     from kiro_crew.slack.events_queue import slack_stop_in_flight  # noqa: F401
     from kiro_crew.slack.events_slash import SLASH_REGISTRY  # noqa: F401
     from kiro_crew.slack.events_slash import SlashHandler  # noqa: F401
@@ -1511,4 +1631,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_inbound import _MAX_SEEN  # noqa: F401
     from kiro_crew.slack.events_inbound import _USER_MENTION_RE  # noqa: F401
     from kiro_crew.slack.events_inbound import _addressed_to_someone_else  # noqa: F401
+    from kiro_crew.slack.format import ForwardedMessage  # noqa: F401
+    from kiro_crew.slack.format import count_forwarded_files  # noqa: F401
+    from kiro_crew.slack.format import forwarded_files_from_slack  # noqa: F401
 # isort: on

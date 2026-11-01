@@ -121,7 +121,10 @@ class RunClaims:
     run generation this process has allocated per job (see
     :meth:`next_generation`): service state, not job state, because every store
     reload replaces the job objects and a counter kept on one of them would be
-    lost with it before the run's merge persisted it.
+    lost with it before the run's merge persisted it. Its entry is dropped with
+    the claim on :meth:`release` -- by then the run's generation lives on the
+    persisted ``job.run_generation`` the reseed reads, so the in-process entry
+    has done its job and a one-shot's would otherwise leak forever.
     """
 
     def __init__(self) -> None:
@@ -159,10 +162,29 @@ class RunClaims:
         return stored is not None and stored is claim and not stored.taken
 
     def release(self, job_id: str, claim: _RunClaim | None) -> bool:
-        """Release ``claim`` -- every field at once -- if it still owns the job."""
+        """Release ``claim`` -- every field at once -- if it still owns the job.
+
+        Drops the job's run-generation entry too. Keeping it was a leak: a
+        one-shot job (``at``/delay) is minted with a fresh ``uuid4`` id, fires
+        once and is removed from the store, so its ``generations`` entry became
+        dead weight that lived for the gateway's life, one int per reminder ever
+        fired. Dropping it is safe because the next number for the job is
+        reseeded from the max of the PERSISTED ``job.run_generation`` and this
+        in-process counter (:meth:`next_generation`): by the time a release runs,
+        the run's terminal record -- carrying the generation this run drew -- has
+        been held onto the listed job object and is re-applied across every store
+        reload (``_hold_run_record``), so ``job.run_generation`` already stands at
+        that value and a restarted run of the same id still draws a strictly
+        higher one. A late result from an old run is fenced on ``run_generation``
+        too (``_merge_job_result``), never on this map, so its rejection is
+        unaffected. Dropped only on a true release (``holds``): a claim a teardown
+        has taken keeps its entry, because ``cancel()``/``_force_reap`` draw the
+        terminal row's generation after finishing the claim.
+        """
         if not self.holds(job_id, claim):
             return False
         del self.claims[job_id]
+        self.generations.pop(job_id, None)
         return True
 
     def take(self, job_id: str, expected: _RunClaim | None = None) -> _RunClaim | None:

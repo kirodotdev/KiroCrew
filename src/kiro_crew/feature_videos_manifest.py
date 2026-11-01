@@ -647,8 +647,8 @@ def _create_release_dir_held(root: Path, release: str) -> int:
             #
             # Matched on the CONDITION, not on the class. CPython maps a not-found
             # ``winerror`` onto ``FileNotFoundError``, but nothing here needs to
-            # depend on that: review asked whether the subclass really arrives on a
-            # real Windows host, and a translation that silently never fires is worse
+            # depend on that: whether the subclass really arrives on a real Windows
+            # host is unverified, and a translation that silently never fires is worse
             # than one errno test. Anything that is not a not-found propagates
             # unchanged, exactly as it did before.
             if exc.errno != errno.ENOENT and getattr(exc, "winerror", None) not in _WIN_NOT_FOUND:

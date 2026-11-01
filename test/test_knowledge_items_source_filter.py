@@ -279,6 +279,89 @@ async def test_scoped_search_stops_at_the_escalation_cap(seeded):
     assert all(x <= 20000 for x in limits)
 
 
+@pytest.mark.parametrize(
+    "filter_query",
+    [{"type": "runbook"}, {"status": "archived"}, {"namespace": "team"}],
+    ids=["type", "status", "namespace"],
+)
+@pytest.mark.asyncio
+async def test_filtered_search_widens_the_window_while_the_page_is_short(seeded, filter_query):
+    """type/status/namespace are applied after ranking too, so when every hit
+    in the window fails the filter, the window widens until retrieval runs
+    out. A fixed window would hide every match behind higher-ranked hits."""
+    store, _alpha, _beta = seeded
+    retriever = MagicMock()
+
+    def _search(_q, limit):
+        return [{"id": "x", "score": 1.0, "match_type": "fts"}] * (
+            limit if limit <= 400 else limit - 1
+        )
+    retriever.search.side_effect = _search
+    req = _request(store, {"q": "content", "limit": "20", **filter_query})
+    with (
+        patch("kiro_crew.dashboard.handlers.knowledge._store", return_value=store),
+        patch(
+            "kiro_crew.dashboard.handlers.knowledge.HybridRetriever",
+            return_value=retriever,
+        ),
+    ):
+        await list_items(req)
+    limits = [c.kwargs["limit"] for c in retriever.search.call_args_list]
+    assert limits == [60, 200, 400, 800]
+
+
+@pytest.mark.asyncio
+async def test_default_status_search_keeps_one_narrow_call(seeded):
+    """The dashboard sends status=active on every search. When the window's
+    hits pass the filter, the search must stay one limit * 3 retriever call
+    rather than paying the escalation."""
+    store, _alpha, _beta = seeded
+    real_ids = [r["id"] for r in store.db.execute("SELECT id FROM items").fetchall()]
+    retriever = MagicMock()
+    retriever.search.side_effect = lambda _q, limit: [
+        {"id": real_ids[i % len(real_ids)], "score": 1.0, "match_type": "fts"}
+        for i in range(limit)
+    ]
+    req = _request(store, {"q": "content", "limit": "20", "status": "active"})
+    with (
+        patch("kiro_crew.dashboard.handlers.knowledge._store", return_value=store),
+        patch(
+            "kiro_crew.dashboard.handlers.knowledge.HybridRetriever",
+            return_value=retriever,
+        ),
+    ):
+        resp = await list_items(req)
+    data = json.loads(resp.body.decode())
+    assert [c.kwargs["limit"] for c in retriever.search.call_args_list] == [60]
+    assert len(data["items"]) == 20
+
+
+@pytest.mark.asyncio
+async def test_type_filtered_search_finds_a_match_ranked_past_the_window(store):
+    """Real store, real retriever: 80 higher-ranked `document` hits push the one
+    `runbook` hit past the limit * 3 window. Searching with Type: runbook must
+    still report it, as the list view (no q) already does."""
+    src = store.add_source("docs", "local_folder", "/tmp/docs")
+    for i in range(80):
+        store.add_item(
+            f"kubernetes doc {i}",
+            "kubernetes kubernetes kubernetes cluster rollout " * 3,
+            "document",
+            source_id=src,
+        )
+    store.add_item(
+        "deploy runbook",
+        "a helper that mentions kubernetes once among many other words " * 2,
+        "runbook",
+        source_id=src,
+    )
+    listed = await _call(store, {"limit": "20", "type": "runbook"})
+    assert listed["total"] == 1
+    data = await _call(store, {"q": "kubernetes", "limit": "20", "type": "runbook"})
+    assert data["total"] == 1
+    assert [i["title"] for i in data["items"]] == ["deploy runbook"]
+
+
 @pytest.mark.asyncio
 async def test_unscoped_search_keeps_the_narrow_pool(seeded):
     """Without a source scope the existing limit * 3 window is unchanged."""

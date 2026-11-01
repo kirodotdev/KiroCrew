@@ -523,9 +523,13 @@ def _board(unit: str, board: str, worker: str) -> None:
     _write(unit, **base, action="bind", item_id="it_p", worker_session_key=worker)
 
 
+#: Each board's own unit, where the report route writes the board's copy of a report.
+_BOARD_UNITS = {CONDUCTOR: "acp-c", OTHER: "acp-o"}
+
+
 def _report(unit: str, board: str, worker: str, stamp: str, *, status: str = "done") -> None:
-    _write(
-        unit,
+    """A worker's report as the route records it: the worker's copy, then the board's."""
+    fields = dict(
         slot=board,
         actor="worker",
         by=worker,
@@ -535,6 +539,9 @@ def _report(unit: str, board: str, worker: str, stamp: str, *, status: str = "do
         summary="s",
         last_report_at=stamp,
     )
+    _write(unit, **fields)
+    if _BOARD_UNITS[board] != unit:
+        _write(_BOARD_UNITS[board], **fields)
 
 
 async def _until(predicate, timeout: float | None = None) -> bool:

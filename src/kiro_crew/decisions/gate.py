@@ -179,6 +179,9 @@ ERROR_INVALID_RESULT = "invalid-result"
 ERROR_SCRUBBED_CREDENTIAL = "scrubbed:credential"
 ERROR_SCRUBBED_URL = "scrubbed:exfiltration-url"
 ERROR_SCRUBBED_SCAN_FAILED = "scrubbed:scan-failed"
+#: The unclipped text was longer than :data:`MAX_UNCLIPPED_SCAN_CHARS`, so it was
+#: not scanned. Its own category so a long paste never reads as a scanner fault.
+ERROR_SCRUBBED_SCAN_BOUND = "scrubbed:scan-bound"
 #: ``provider.model`` is not a model id (``types.MODEL_ID_RE``). The field is in
 #: the agent-writable config and goes on the wire verbatim, so anything but a
 #: short identifier is refused as an egress channel, not sent as a model name.
@@ -190,8 +193,15 @@ SCRUB_ERRORS = (
     ERROR_SCRUBBED_CREDENTIAL,
     ERROR_SCRUBBED_URL,
     ERROR_SCRUBBED_SCAN_FAILED,
+    ERROR_SCRUBBED_SCAN_BOUND,
     ERROR_SCRUBBED_MODEL,
 )
+
+#: Longest *unclipped* text the scrub reads (see :func:`decide`). A point clips its
+#: excerpt at a few thousand characters; this leaves room past that clip for a
+#: credential that starts inside it, a PEM block included. Longer text refuses:
+#: any cut of the scan can leave a credential's anchor past the cut.
+MAX_UNCLIPPED_SCAN_CHARS = 8192
 
 #: Credential spellings refused locally, before the canonical scanner. Compiled
 #: here because ``credential_patterns`` exports pattern SOURCE strings. This is the
@@ -353,11 +363,19 @@ def _targets_denied(
 
     try:
         jev = lane == LANE_JEV
+        endpoint = configured_endpoint(config) if jev else None
+        if endpoint is not None:
+            from kiro_crew.decisions.impl_sagemaker import is_sagemaker_endpoint, policy_endpoint
+
+            # The ceiling is asked about the AWS host the request reaches, not the
+            # endpoint name; an address that names no host raises and denies below.
+            if is_sagemaker_endpoint(endpoint):
+                endpoint = policy_endpoint(endpoint)
         return targets_denied(
             session_key or DASHBOARD_SURFACE_KEY,
             point=point,
             model=model if jev else None,
-            endpoint=configured_endpoint(config) if jev else None,
+            endpoint=endpoint,
         )
     except Exception as exc:
         logger.debug("decisions: %s target check failed (%s)", point, type(exc).__name__)
@@ -682,6 +700,12 @@ def _oracle(lane: str, provider: Any, model: str = "") -> Any:
         # anything: without it the call inherits whatever the boot-time runner
         # captured. The inherit sentinel is not a model to ask for.
         return LlmOracle(model="" if model == JUDGE_MODEL_DEFAULT else model)
+    # A ``sagemaker://`` endpoint is the same System One request sent through
+    # SageMaker's InvokeEndpoint with SigV4 instead of over HTTP with a key.
+    from kiro_crew.decisions.impl_sagemaker import SageMakerOracle, is_sagemaker_endpoint
+
+    if is_sagemaker_endpoint(getattr(provider, "endpoint", "")):
+        return SageMakerOracle(provider)
     from kiro_crew.decisions.impl_jev import JevOracle
 
     return JevOracle(provider)
@@ -903,7 +927,11 @@ def _scan_text(state: dict | str, questions: list[Question], model: str = "") ->
 
 
 def scrub_reason(
-    state: dict | str, questions: list[Question], *, model: str = _DEFAULT_MODEL
+    state: dict | str,
+    questions: list[Question],
+    *,
+    model: str = _DEFAULT_MODEL,
+    unclipped: str = "",
 ) -> str | None:
     """A :data:`SCRUB_ERRORS` category, or ``None`` when the request may be sent.
 
@@ -915,10 +943,19 @@ def scrub_reason(
     external request cannot be cleared by a scan that did not complete. The reason
     is a category, never the matched text, which would put the credential into
     the log.
+
+    *unclipped* is scanned with them but never sent: the text a point clipped to
+    build *state*. A credential the clip cut in half is a fragment no pattern
+    matches in *state*, yet the fragment is what would go on the wire, so the
+    refusal has to read the text before the cut. Text longer than
+    :data:`MAX_UNCLIPPED_SCAN_CHARS` is not read at all and refuses, so the scan
+    stays bounded without a cut of its own.
     """
     if not is_model_id(model):
         return ERROR_SCRUBBED_MODEL
-    text = _scan_text(state, questions, model)
+    if len(unclipped) > MAX_UNCLIPPED_SCAN_CHARS:
+        return ERROR_SCRUBBED_SCAN_BOUND
+    text = _scan_text(state, questions, model) + "\n" + unclipped
     if _CREDENTIAL_RE.search(text) is not None:
         return ERROR_SCRUBBED_CREDENTIAL
     try:
@@ -1002,6 +1039,7 @@ async def decide(
     extra: dict[str, Any] | None = None,
     receipt: dict[str, Any] | None = None,
     scopes: Sequence[str] = (),
+    unclipped: str = "",
 ) -> Answers | None:
     """Ask *questions* about *state* at *point*, or return ``None``.
 
@@ -1040,6 +1078,10 @@ async def decide(
     authorizes the endpoint, so a consent change between a caller's own check and
     the send cannot let the request through under the wider category; a missing,
     unknown or unreadable scope refuses with no row.
+
+    *unclipped* is the text a point clipped to build *state*, usually the new
+    message. It is scanned by :func:`scrub_reason` and never sent, so a credential
+    the clip halved still refuses the request.
     """
     if receipt is not None:
         receipt["row_written"] = False
@@ -1165,7 +1207,7 @@ async def decide(
     model = lane_model(cfg, lane=lane)
     # The scrub runs first: the list check below writes the model id to the SEL,
     # so an id the scrub refuses (a pasted credential) never reaches that row.
-    refusal = scrub_reason(state, questions, model=model)
+    refusal = scrub_reason(state, questions, model=model, unclipped=unclipped)
     if refusal is not None:
         await _write(latency_ms=0, answers=None, error=refusal)
         return None

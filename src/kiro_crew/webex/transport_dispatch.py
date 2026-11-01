@@ -332,8 +332,12 @@ class WebexDispatcher:
         *,
         interpret_commands: bool = True,
         drain: bool = True,
+        skill_trigger_text: str | None = None,
     ) -> None:
         """Drive one authorized inbound Webex message through TurnDriver.
+
+        ``skill_trigger_text`` is what skill triggers match when the text was
+        generated rather than typed (an AutoNudge cycle); ``None`` matches the text.
 
         ``interpret_commands=False`` is used by the drain: a queued ``/new`` is
         turn content the user typed mid-turn, so it must reach the model as
@@ -582,6 +586,7 @@ class WebexDispatcher:
                     conversation_id=conversation_id,
                     agent=agent,
                     user_text=body,
+                    skill_trigger_text=skill_trigger_text,
                     renderer=renderer,
                     # A GROUP space is a shared audience: the sender is allow-listed
                     # but the other members are not, and the operator's memory,

@@ -614,6 +614,7 @@ def _stage_skill_update(
     triggers: str,
     procedure_md: str,
     scripts: "list[dict] | None" = None,
+    rejected_scripts: "dict[str, list[str]] | None" = None,
     guard_publication: bool = False,
     commit_state: _RunCommitState | None = None,
     refusal: ClaimRefusal | None = None,
@@ -745,6 +746,7 @@ def _stage_skill_update(
             target=target_key,
             base_version=base_version,
             refusal=refusal,
+            rejected_scripts=rejected_scripts,
         )
         if name:
             publication.mark_committed()
@@ -826,6 +828,9 @@ def _process_auto_skills(
         # only individually-clean scripts survive. A script-bearing
         # candidate ALWAYS routes to approval (never auto-published).
         valid_scripts: list[dict] = []
+        # Validator findings per refused script, kept for the reviewer: the
+        # candidate's ``.meta.json`` says why a script its body cites is absent.
+        rejected_scripts: dict[str, list[str]] = {}
         scripts_supplied = False
         if self._generate_scripts:
             raw_scripts = new_skill.get("scripts")
@@ -845,6 +850,7 @@ def _process_auto_skills(
                             fn,
                             "; ".join(_findings),
                         )
+                        rejected_scripts[fn or "<unnamed>"] = [_redact(f) for f in _findings]
         if not (slug and description and procedure_md):
             # Required fields missing (or stripped empty by redaction).
             # Audit the rejection so operators can see that a create
@@ -914,6 +920,7 @@ def _process_auto_skills(
                     triggers=triggers,
                     procedure_md=procedure_md,
                     scripts=valid_scripts or None,
+                    rejected_scripts=rejected_scripts or None,
                     guard_publication=guard_publication,
                     commit_state=commit_state,
                     refusal=refusal,
@@ -923,6 +930,31 @@ def _process_auto_skills(
                     session_key=key,
                     created_at=AutoSkillProvenance.now_iso(),
                 )
+                # Imported here, not at module top: every top-level name of this
+                # module is served by the ``kiro_crew.history`` facade.
+                from kiro_crew import skills_script_refs
+
+                # A cited script that did not ship (never emitted, or refused
+                # by the validator above) is marked on its citing line. An
+                # annotation that would push the body past the size cap is
+                # dropped so the candidate is not refused for it; the staged
+                # metadata still names every missing script.
+                marked_md, missing_scripts = skills_script_refs.reconcile_script_references(
+                    procedure_md,
+                    (
+                        s["filename"]
+                        for s in valid_scripts
+                        if skills_script_refs.shippable_script_name(s["filename"])
+                    ),
+                )
+                if missing_scripts:
+                    self._logger.info(
+                        "Auto-skill candidate %s cites scripts it does not ship: %s",
+                        slug,
+                        ", ".join(missing_scripts),
+                    )
+                    if len(marked_md) <= AUTO_SKILL_MAX_PROCEDURE_CHARS:
+                        procedure_md = marked_md
                 if scripts_supplied and not valid_scripts and not self._approval_required:
                     # The user opted out of prose review, but this candidate
                     # attempted to add executable content and every script
@@ -963,6 +995,8 @@ def _process_auto_skills(
                             provenance=provenance,
                             scripts=valid_scripts or None,
                             refusal=refusal,
+                            missing_scripts=missing_scripts or None,
+                            rejected_scripts=rejected_scripts or None,
                         )
                         if name:
                             publication.mark_committed()

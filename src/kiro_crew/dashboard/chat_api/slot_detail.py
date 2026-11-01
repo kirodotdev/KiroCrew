@@ -100,6 +100,14 @@ async def api_chat_slots(request: web.Request) -> web.Response:
             for p in payloads
             if member_owns_slot(state, state._slots.get(str(p.get("key") or "")), caller_key)
         ]
+    # A person's list leaves Crew Mode workers out; an agent's read keeps them
+    # (``crew_mode.list_view``). Imported here: this body is re-bound into the
+    # ``chat_handlers`` facade's namespace, so it may name only what it imports.
+    from kiro_crew import crew_mode
+
+    payloads = crew_mode.list_view(
+        payloads, request.query.get("crew", ""), agent=request.get("internal_auth") is True
+    )
     if include_check_status:
         # Only the OWNER's GET drives provider work. Both the visibility probe
         # and the status refresh run the operator's `gh`/`glab` credentials, so
@@ -1258,6 +1266,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     turn_running = slot.turn_running
     verdict_key = slot_history_key(slot)
     running = slot.running
+    from kiro_crew.shared_crew.admission_entry import admission_pending
+
+    admission_queued = admission_pending(key)
     # A turn another path runs on this slot's linked session (the Slack thread a
     # channel-born tab is bound to) has no task here but IS in flight: the same
     # read the slots summary makes, so the open pane and the sidebar agree and
@@ -1372,7 +1383,12 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 # LLM-generated or set by a rename, so they are content, not
                 # configuration.
                 "title": _redact_for_display(display_title),
+                # A turn waiting in fair admission is still the accepted,
+                # in-flight turn: ``running`` stays true so the composer keeps
+                # its Stop control, and ``admission_queued`` says it has not
+                # started yet (``shared_crew.admission_entry.admission_pending``).
                 "running": running,
+                "admission_queued": admission_queued,
                 **turn_identity,
                 "stopping": stopping,
                 "stop_state": stop_state,

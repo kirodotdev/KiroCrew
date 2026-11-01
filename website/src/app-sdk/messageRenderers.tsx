@@ -35,10 +35,12 @@ import NudgeCard from '../pages/chat/NudgeCard'
 import ElicitationCard from '../pages/chat/ElicitationCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
+import { replyShowsFooter } from '../pages/chat/replyFooter'
+import { toolRailColor } from '../utils/toolRailColor'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
-import { resolveTransientNotice } from '../pages/chat/transientNotice'
+import { resolveGatewayNotice } from '../pages/chat/gatewayNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { ToolDetails } from '../pages/chat/ToolDetails'
@@ -208,6 +210,9 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   // the panel exists, this toggles how tall it is. Collapsing the pill and
   // re-opening it returns to the short form, which is the cheaper default.
   const [showAll, setShowAll] = React.useState(false)
+  // Losing the toggle closes the panel for good, so a host that hides details
+  // and then shows them again gets a collapsed pill, not the panel it hid.
+  React.useEffect(() => { if (!expandable) setExpanded(false) }, [expandable])
   type CopyOutcome = 'idle' | 'copied' | 'failed'
   const [copyOutcome, setCopyOutcome] = React.useState<CopyOutcome>('idle')
   const copyResetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -301,9 +306,10 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
       ? rawLabel + '\n\n' + (message.content || '')
       : (message.content || '')
   const detailsId = React.useId()
-  // Rail colour mirrors the pill's status tone, at the main chat's 70% mix.
+  // Rail colour mirrors the pill's status tone, through the mapping the main
+  // chat's tool row uses too.
   const detailsRail = {
-    color: `color-mix(in srgb, ${isRejected ? 'var(--danger)' : isAutoDenied ? 'var(--warn)' : isDone ? 'var(--ok)' : hasPendingPerm ? 'var(--warn)' : 'var(--accent)'} 70%, transparent)`,
+    color: toolRailColor({ isRejected: !!isRejected, isAutoDenied, isDone: !!isDone, hasPendingPerm: !!hasPendingPerm }),
   }
   // The two budgets above are width-blind, so the collapsed box is also measured
   // once it is on screen: a real browser then detects the wrap case exactly,
@@ -526,11 +532,11 @@ export interface AssistantBubbleOptions {
 
 /**
  * The assistant reply as the SDK draws it, minus the row layout: the footer
- * rule (a finished reply shows its footer once the turn is over — another user
- * or assistant row follows, or nothing follows and the session is idle) and
- * every prop the bubble takes off the message. Exported so a host that places
- * the reply differently (a crewmate's chat draws it as a bordered bubble in a
- * run) renders the SAME bubble rather than a second copy of this logic.
+ * rule (`replyShowsFooter`: a finished reply shows its footer once its turn is
+ * over) and every prop the bubble takes off the message. Exported so a host
+ * that places the reply differently (a crewmate's chat draws it as a bordered
+ * bubble in a run) renders the SAME bubble rather than a second copy of this
+ * logic.
  * Returns null for a say-nothing row (bare U+200B): invisible-only content
  * would draw as an empty bubble.
  */
@@ -562,25 +568,10 @@ export function renderAssistantBubble(
   // Same skip as ChatPage's inline chain — see utils/invisibleText.
   if (isHiddenInvisibleAssistantRow(m)) return null
   const isStreaming = m.role === 'streaming'
-  // The footer belongs to a FINISHED reply. It shows once the turn is over,
-  // which is either because another user or assistant row follows, or
-  // because nothing follows and the session has gone idle.
-  let showFooter = false
-  if (!isStreaming) {
-    let nextRelevant = false
-    for (let j = ctx.index + 1; j < ctx.messages.length; j++) {
-      if (ctx.messages[j].role === 'user') { showFooter = true; nextRelevant = true; break }
-      // A hidden invisible-only row draws nothing, so it cannot host the
-      // footer; pass over it to the row that renders.
-      if (isHiddenInvisibleAssistantRow(ctx.messages[j])) continue
-      // A system-notice row (compaction / session reload) draws a system
-      // card, not a reply, so it cannot end the turn either.
-      if (isSystemNoticeRow(ctx.messages[j])) continue
-      if (ctx.messages[j].role === 'assistant' || ctx.messages[j].role === 'streaming') { nextRelevant = true; break }
-    }
-    if (!nextRelevant) showFooter = !ctx.running
-    if (opts.forceFooter) showFooter = true
-  }
+  // The footer belongs to a FINISHED reply, by the rule every surface shares
+  // (`replyShowsFooter`); a host that groups rows into runs claims it at the
+  // run's end (`forceFooter`).
+  const showFooter = !isStreaming && (opts.forceFooter === true || replyShowsFooter(m, ctx.messages, ctx.index, ctx.running))
   const bubble = (
     <AssistantMessage
       content={m.content}
@@ -763,10 +754,10 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     // The shared ErrorCard, deliberately without `onContinue`: omitting the
     // handler selects its settled (non-continuable) shape, and the app-sdk
     // surface has no turn to resume, so it must never grow the affordance.
-    // Same transient-notice split as transcriptRenderers: a pending gateway
+    // Same gateway-notice split as transcriptRenderers: a pending gateway
     // retry is a soft localized NoticeCard, not a red error.
     render: (m, ctx) => {
-      const transient = resolveTransientNotice(m, ctx.messages, ctx.index)
+      const transient = resolveGatewayNotice(m, ctx.messages, ctx.index)
       if (transient?.card === 'notice') {
         return ctx.row(<NoticeCard content={transient.text} tone={transient.tone} />)
       }
@@ -782,7 +773,13 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
   {
     id: 'notice',
     roles: ['notice'],
-    render: (m, ctx) => ctx.row(<NoticeCard content={m.content} />),
+    // A gateway notice row (empty response, model fallback) draws localized
+    // copy keyed on its token; any other notice keeps its own text.
+    render: (m, ctx) => {
+      const notice = resolveGatewayNotice(m, ctx.messages, ctx.index)
+      if (notice?.card === 'notice') return ctx.row(<NoticeCard content={notice.text} tone={notice.tone} />)
+      return ctx.row(<NoticeCard content={m.content} />)
+    },
   },
   {
     // Grouped and lifecycle-only roles have no row of their own: a thinking or

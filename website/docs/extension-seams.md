@@ -9,10 +9,10 @@ The backend has the sibling mechanism, Composed Platform Providers: see
 [`docs/system-specs/modules/platform-context.md`](../../docs/system-specs/modules/platform-context.md).
 The two are independent. Nothing here reads `CONTRACT_VERSION`.
 
-## The fifteen registry seams
+## The sixteen registry seams
 
 Each entry is one registrar the edition may call, paired with the reader the core
-already calls. `src/extensions.ts` names exactly these fifteen in its header.
+already calls. `src/extensions.ts` names exactly these sixteen in its header.
 `src/test/extensionSeams.test.tsx` exercises each one except the source-provider
 seam, which has its own suite in `src/test/sourceProviderSeam.test.ts`.
 
@@ -36,6 +36,7 @@ POSTs the file context to the app's endpoint — see the App Kit publishing guid
 | Source providers (Changes panel + sidebar chips) | `utils/pullRequestLinks.ts` | `registerSourceProvider()` to `sourceProviderDescriptor()` |
 | Phone-connection method renderers | `components/mobileConnectRenderers.tsx` | `registerMobileConnectRenderer()` to `getMobileConnectRenderers()` / `canRenderMobileConnectKind()` |
 | Remote-instance provisioner forms | `components/remoteProvisionerRenderers.tsx` | `registerRemoteProvisionerRenderer()` to `getRemoteProvisionerRenderer()` / `canRenderRemoteProvisionerKind()` |
+| Remote-crew row actions (keyed by the row's `provisioner_id`; refuses `aws_ec2`, a chained row, an empty contribution and a duplicate) | `components/remoteCrewRowActions.tsx` | `registerCrewRowActions()` to `getCrewRowActions(inst)` |
 | Bare-token autolink rules | `utils/autolinkRules.ts` | `registerAutolinkRules()` to `getAutolinkRules()` |
 
 Plus two **exported-setter** seams for a value the core consumes itself (the
@@ -46,9 +47,9 @@ methods" and "Highlighting languages" below.
 
 Other `register*()` functions in `src/` (built-in surfaces, command-palette
 providers, tool pills, terminal sockets) are core-internal wiring, not edition
-seams. Only the fifteen above are called from the composition root.
+seams. Only the sixteen above are called from the composition root.
 
-Fourteen of the fifteen are **additive** — the edition contributes a surface. The
+Fifteen of the sixteen are **additive** — the edition contributes a surface. The
 remaining one is **subtractive**: `suppressOverviewBuiltin()` removes a built-in
 Overview surface for a distribution whose environment makes it permanently
 inapplicable, which no additive seam can express. It is named `suppress*` rather
@@ -771,13 +772,17 @@ without an ordering hazard against `extensions.ts`.
 The core's own methods sit on the same helpers. They are defined by domain in
 `api/client/*.ts`, one module per product area (chat, memory, security, …), each
 a `create*Endpoints` factory that `client.ts` hands the transport it owns
-(`ClientTransport`, `api/client/transport.ts`): the five helpers, the three
-parsers, the shared `X-Session-Key` header, the session-expiry hooks a
+(`ClientTransport`, `api/client/transport.ts`): the five helpers, the parsers,
+the shared `X-Session-Key` header, the session-expiry hooks a
 method that reads its own response calls, and `withJournaledDeadline` (a
-deadline that also records a timed-out read in the error journal). The third parser
-(`jInstancesDisabled`) is core-only and deliberately absent from `ApiTransport`
-above: it opts one specific benign denial on one core route out of the error
-journal, which is not an edition's decision to make. None of them imports a
+deadline that also records a timed-out read in the error journal). The
+route-specific parsers (`jInstancesDisabled`, `jCrewBoard`, `jSlotEnvironment` and
+`jSharedCrewPreview`)
+are core-only and deliberately absent from `ApiTransport` above: each opts one
+specific benign denial on one core route out of the error journal (a disabled
+instances control plane's 403, a conductor with no ledger's 404 `no_ledger`, and
+the slot-environment read's and the Shared Crew preview read's 403 `owner_only`
+for a caller that is not the dashboard owner), which is not an edition's decision to make. None of them imports a
 runtime value
 from `client.ts` (the telemetry module takes the Kiro usage types defined there
 as types only), so the transport and its recovery keep one definition.

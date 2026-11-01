@@ -903,6 +903,83 @@ class TestMemberChildExecutionContext:
         assert actual.store == legacy.store
         assert actual.memory_mode == getattr(caller, "memory_mode", "persistent")
 
+    def test_template_child_of_a_member_with_no_persisted_id_restores_as_its_template(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The record above keeps the creator's selection, so a restore that reads
+        # the selection alone binds the worker to its CREATOR after a restart.
+        from kiro_crew.dashboard.slot_persistence.restore_inputs import _restored_agent_name
+        from kiro_crew.execution_context import (
+            ExecutionContext,
+            MemoryStoreRef,
+            bind_session_execution,
+        )
+
+        state, caller, _execution = self._prepare(tmp_path, monkeypatch, member=False)
+        legacy = ExecutionContext(
+            None, MemoryStoreRef("default"), "member", "radar-template", selection_name="radar"
+        )
+        bind_session_execution(slot_history_key(caller), legacy)
+        self._template_resolver(monkeypatch, "kirocrew-worker", "worker-template")
+
+        result = asyncio.run(
+            sc.create_session(
+                state, caller_session_key=slot_history_key(caller), agent="kirocrew-worker"
+            )
+        )
+        child = state.get_slot(result["target"])
+        key = slot_history_key(child)
+        meta = state.conversation_log.get_metadata(key)
+        monkeypatch.setattr(
+            "kiro_crew.config.loader.resolve_agent_bindings", sc.resolve_agent_bindings
+        )
+        assert _restored_agent_name(key, meta) == "kirocrew-worker"
+
+    def test_worker_with_no_persisted_member_id_rejects_a_provisional_transcript_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard.slot_persistence.restore_inputs import _restored_agent_name
+        from kiro_crew.execution_context import (
+            ExecutionContext,
+            MemoryStoreRef,
+            bind_session_execution,
+            read_session_execution,
+        )
+
+        state, caller, _execution = self._prepare(tmp_path, monkeypatch, member=False)
+        key = slot_history_key(caller)
+        worker = ExecutionContext(
+            None, MemoryStoreRef("default"), "member", "worker-template", selection_name="radar"
+        )
+        bind_session_execution(key, worker)
+        state.conversation_log.update_metadata(key, {"agent": "other-agent"})
+
+        assert _restored_agent_name(key, state.conversation_log.get_metadata(key)) == "radar"
+        assert read_session_execution(key, required=True) == worker
+
+    def test_member_with_no_persisted_id_on_its_own_template_restores_as_the_member(
+        self, tmp_path, monkeypatch
+    ):
+        # An interrupted switch can leave a provisional agent on the line while the
+        # record still runs the member's own template: the record's choice wins.
+        from kiro_crew.config.loader import KiroCrewConfig, member_template_id
+        from kiro_crew.dashboard.slot_persistence.restore_inputs import _restored_agent_name
+        from kiro_crew.execution_context import (
+            ExecutionContext,
+            MemoryStoreRef,
+            bind_session_execution,
+        )
+
+        state, caller, _execution = self._prepare(tmp_path, monkeypatch, member=False)
+        own = member_template_id(KiroCrewConfig.load().agents["radar"])
+        bind_session_execution(
+            slot_history_key(caller),
+            ExecutionContext(
+                None, MemoryStoreRef("default"), "member", own, selection_name="radar"
+            ),
+        )
+        assert _restored_agent_name(slot_history_key(caller), {"agent": "other"}) == "radar"
+
     def test_malformed_caller_refuses_without_publishing_child(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):

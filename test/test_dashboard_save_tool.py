@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import importlib
+import inspect
 import json
 import re
 import sys
@@ -36,8 +37,6 @@ from kiro_crew import platform_compat
 from kiro_crew.artifact_store.dashboard_package import DASHBOARD_KIND, parse_package
 from kiro_crew.dashboard.handlers import agent_panel as routes
 from kiro_crew.testing.wait import async_wait_until, await_until
-
-pytestmark = pytest.mark.asyncio
 
 CREW = "fleet-crew"
 SLUG = "fleet-crew"
@@ -1968,3 +1967,11 @@ def test_the_tool_sends_the_empty_theme_when_the_client_dropped_it(monkeypatch):
     monkeypatch.setattr(mcp_panel, "_post", _post)
     mcp_panel._call_tool_inner("dashboard_save", {"model": {"types": {}}, "view": {"html": "x"}})
     assert sent and sent[0]["theme"] == {"tokens": {}}
+
+
+# Mark only the async tests: a module-wide ``pytestmark`` also lands on the sync
+# ones and warns. One loop, because a decorator per test would push this file
+# past the 2,000-line cap.
+for _name, _test in list(globals().items()):
+    if _name.startswith("test_") and inspect.iscoroutinefunction(_test):
+        globals()[_name] = pytest.mark.asyncio(_test)

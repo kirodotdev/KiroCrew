@@ -58,6 +58,11 @@ _LINUX_X86_64_REQUIRED_CPU_FLAGS = frozenset(
     {"avx", "avx2", "bmi2", "f16c", "fma", "sse3", "ssse3"}
 )
 _LINUX_CPUINFO_PATH = Path("/proc/cpuinfo")
+# Linux arm64 ships two builds of the same llama.cpp: `linux_aarch64` (upstream's
+# armv8-a wheel) and this one, rebuilt with the int8 dot-product instructions
+# (`sdot`), about 5x faster per core on the shipped Q8_0 model. Loaded only
+# where _linux_aarch64_has_dotprod says every core has them.
+_LINUX_AARCH64_DOTPROD_DIRNAME = "linux_aarch64_dotprod"
 
 #: MSVC runtime DLLs the vendored Windows libs IMPORT but which are not shipped
 #: beside them. All four ship with the Microsoft Visual C++ 2015-2022
@@ -68,9 +73,12 @@ _LINUX_CPUINFO_PATH = Path("/proc/cpuinfo")
 #: ``ggml-base.dll``/``ggml-cpu.dll`` additionally pull ``VCOMP140.DLL``, the MSVC
 #: OpenMP runtime. Both Linux payloads DO vendor their equivalent
 #: (``libgomp-*.so.1.0.0``), which is what makes this an omission on the Windows
-#: lane rather than a deliberate asymmetry. They are not vendored here because
-#: redistributing Microsoft's runtime is a licensing decision, not a packaging one
-#: — so the gap is reported precisely instead of being papered over.
+#: lane rather than a deliberate asymmetry. Redistributing the runtime is
+#: allowed when the files come from Microsoft's own redistributable and are
+#: sha256-pinned: the Windows desktop build does exactly that for the bundled
+#: kiro-cli (``packaging/vc_runtime.py``, ``packaging/vc-runtime-pin.json``).
+#: This package does not vendor them yet, so the gap is reported precisely
+#: instead of being papered over.
 _WINDOWS_MSVC_RUNTIME_DLLS = (
     "MSVCP140.dll",
     "VCRUNTIME140.dll",
@@ -96,6 +104,41 @@ def _platform_libs_dirname() -> str | None:
         if machine in ("amd64", "x86_64"):
             return "win_amd64"
     return None
+
+
+def _linux_aarch64_cpu_features(
+    cpuinfo_path: Path = _LINUX_CPUINFO_PATH,
+) -> frozenset[str] | None:
+    """Return the ``Features`` tokens shared by every visible Linux AArch64 core.
+
+    The repository's one AArch64 cpuinfo reader, as :func:`_linux_x86_64_cpu_flags`
+    is its x86 one; ``kiro_crew.stt.preflight.host_flags`` reads both through here.
+    ``None`` means the file is unreadable or has no ``Features`` line.
+    """
+    try:
+        cpuinfo = cpuinfo_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    per_cpu: list[frozenset[str]] = []
+    for line in cpuinfo.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip().lower() == "features":
+            per_cpu.append(frozenset(tok.lower() for tok in value.split()))
+    if not per_cpu:
+        return None
+    return frozenset.intersection(*per_cpu)
+
+
+def _linux_aarch64_has_dotprod(cpuinfo_path: Path = _LINUX_CPUINFO_PATH) -> bool:
+    """Whether every visible Linux arm64 core reports ``asimddp`` (int8 ``sdot``).
+
+    False on any doubt: an unreadable file, no ``Features`` line, or one core
+    without it (a big.LITTLE host may run the thread on its weakest core). A
+    wrong True loads :data:`_LINUX_AARCH64_DOTPROD_DIRNAME`, whose first ``sdot``
+    on such a core is a SIGILL that kills the process.
+    """
+    features = _linux_aarch64_cpu_features(cpuinfo_path)
+    return features is not None and "asimddp" in features
 
 
 def _missing_windows_msvc_runtime() -> list[str]:
@@ -335,6 +378,27 @@ def _log_dropped_inherited_lib_path() -> None:
         )
 
 
+def _linux_aarch64_libs_dir(default_dir: Path) -> Path:
+    """Pick the dot-product arm64 build when this CPU and the install allow it.
+
+    *default_dir* is today's ``linux_aarch64`` and is the answer on any doubt:
+    a core without ``asimddp``, an unreadable ``/proc/cpuinfo``, or an
+    incomplete dotprod directory.
+    """
+    if not _linux_aarch64_has_dotprod():
+        return default_dir
+    dotprod_dir = default_dir.parent / _LINUX_AARCH64_DOTPROD_DIRNAME
+    if any(
+        not (dotprod_dir / name).is_file()
+        for name in _REQUIRED_VENDORED_LIBS[_LINUX_AARCH64_DOTPROD_DIRNAME]
+    ):
+        logger.info(
+            "Dot-product llama.cpp build incomplete at %s; using %s", dotprod_dir, default_dir
+        )
+        return default_dir
+    return dotprod_dir
+
+
 @functools.lru_cache(maxsize=1)
 def _load_llama_class():
     """Import the vendored llama-cpp-python runtime. Returns the Llama class or None.
@@ -480,6 +544,8 @@ def _load_llama_class():
                     _LIB_PATH_ENV,
                 )
                 return None
+        if libs_dirname == "linux_aarch64":
+            libs_dir = _linux_aarch64_libs_dir(libs_dir)
     # The bundled directory reaches the vendored loader through the process-local
     # seam; an operator-provided override (e.g. a GPU build) is left in the
     # environment as they set it, and the seam is absent so the loader reads it.

@@ -114,9 +114,73 @@ export interface FeatureVideoStatus {
   /** That clip's title, which is what the panel shows. Null when nothing is in
    *  flight or the manifest gave no title; absent on a gateway that predates it. */
   downloading_title?: string | null
+  /** The permanent per-video verdicts, `{<id>: {status, ts}}`. Empty for a
+   *  session that withholds reads. */
+  state?: Record<string, { status: 'seen' | 'dismissed'; ts: number }>
 }
 
+/** A new-feature row's starter task (RFC "Milestones for New-User Feature
+ *  Discovery", 4.1). Its text is not here: it lives in the i18n catalog under
+ *  `milestone.<id>.starter_prompt`, so nothing the server sends reaches a model. */
+export interface MilestoneStarter {
+  kind: 'prompt' | 'route'
+  /** `send` only for the reviewed low-cost rows; anything else reads as prefill. */
+  send: 'prefill' | 'send'
+  route?: string
+  agent?: string
+  crew_mode?: boolean
+}
+
+export interface MilestoneFeatureItem {
+  id: string
+  state: 'done' | 'open' | 'skipped' | 'unavailable'
+  done_at: number | null
+  source: 'event' | 'backfill' | 'manual' | null
+  video: FeatureVideo | null
+  starter: MilestoneStarter | null
+  doc?: string
+}
+
+export interface MilestoneUsageItem {
+  id: string
+  value: number
+  tiers: number[]
+  tiers_reached_at: Record<string, number>
+}
+
+export type MilestoneGroup =
+  | { id: 'features'; items: MilestoneFeatureItem[] }
+  | { id: 'sessions' | 'turns' | 'streak' | 'concurrent'; items: MilestoneUsageItem[] }
+
+/** GET /api/milestones. A restricted session or a switched-off install
+ *  answers `{ enabled: false }` alone. */
+export interface Milestones {
+  enabled: boolean
+  features?: { done: number; total: number }
+  streak?: { current: number; best: number }
+  groups?: MilestoneGroup[]
+  recommended?: string[]
+  notices?: string[]
+}
+
+export type MilestoneEventAction = 'starter_clicked' | 'notice_shown' | 'panel_opened'
+
+/** Where an event happened, as the server's metric labels it. */
+export type MilestoneSurface = 'empty_state' | 'panel'
+
 export function createFeatureDiscoveryEndpoints({ get, post, j, jfetch: fetch, jNullable }: ClientTransport) {
+  // Milestones. Every route carries the active slot's key for the same reason
+  // the feature-video routes do: the server's restricted-session guard must see
+  // the real session, not the shared default.
+  const milestones = {
+    milestones: (sessionKey?: string) => get('/api/milestones', sessionKey).then(j) as Promise<Milestones>,
+    /** `surface` names where a starter was clicked; the server defaults it to `empty_state`. */
+    milestoneEvent: (id: string, action: MilestoneEventAction, sessionKey?: string, surface?: MilestoneSurface) =>
+      post('/api/milestones/event', surface ? { id, action, surface } : { id, action }, sessionKey).then(j) as Promise<unknown>,
+    milestoneMarkDone: (id: string, sessionKey?: string) =>
+      post('/api/milestones/mark-done', { id }, sessionKey).then(j) as Promise<unknown>,
+  }
+
   const suggestions = {
     // Items are a bare string (legacy / cached payloads) or `{ text, kind }`.
     suggestions: (force?: boolean) => fetch(`/api/suggestions${force ? '?force=1' : ''}`).then(j) as Promise<{ suggestions: SuggestionItem[]; generated_at: number; stale: boolean }>,
@@ -179,5 +243,5 @@ export function createFeatureDiscoveryEndpoints({ get, post, j, jfetch: fetch, j
     tipsFeedback: (id: string, action: 'shown' | 'ack' | 'dismiss' | 'snooze' | 'helpful' | 'optout' | 'optin') => post('/api/tips/feedback', { id, action }).then(j),
   }
 
-  return { suggestions, featureVideos, tips }
+  return { suggestions, featureVideos, tips, milestones }
 }

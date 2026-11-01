@@ -75,9 +75,12 @@ def test_two_contenders_on_one_name_serialize(model):
 
 def test_the_mutex_stays_reentrant_within_one_thread(model):
     cfg, _state = model
+    key = f"{cfg.unit_prefix}@demo"
     with rt.pod_name_mutex(cfg, "demo"):
         with rt.pod_name_mutex(cfg, "demo"):
-            pass
+            assert rt._MUTEX_STATE.held[key] == 2
+        assert rt._MUTEX_STATE.held[key] == 1
+    assert rt._MUTEX_STATE.held[key] == 0
 
 
 def test_a_stuck_holder_refuses_rather_than_running_unserialized(model, monkeypatch):

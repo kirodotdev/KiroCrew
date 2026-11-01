@@ -27,11 +27,26 @@ from kiro_crew.platform.context import redact_log_via_context
 from . import pr_description as D
 from .contracts import Proposal
 from .driver_git import _full_head_id, _git
+from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 from .push_policy import normalize_branch
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from .contracts import BugGateResult
     from .driver import Driver
+
+
+def _apply_argv(clone: Path, extra: list[str]) -> list[str]:
+    """``git apply`` argv for the shared clone, with the host-side exec pins.
+
+    ``git apply`` runs on the HOST in the clone the agent edits: it reads the index
+    (spawning ``core.fsmonitor``) and passes file content through
+    ``filter.<name>.clean``/``smudge`` (both measured on git 2.47). It takes stdin, so it
+    cannot go through ``_git``; it carries the same pins as ``_git`` instead.
+    """
+    require_pinned(clone)
+    return ["git", "-C", str(clone), *GIT_SAFE_CONFIG, *hook_off_args(clone), "apply", *extra]
 
 
 def _publishing_is_halted(self: Driver) -> bool:
@@ -147,7 +162,7 @@ def _stage_winner(self: Driver, winner: Proposal) -> bool:
     if not winner.diff.strip():
         return True
     ap = subprocess.run(
-        ["git", "-C", str(self.clone), "apply"],
+        _apply_argv(self.clone, []),
         input=winner.diff,
         capture_output=True,
         # surrogateescape re-encodes the captured payload back to the exact
@@ -416,7 +431,7 @@ def _stage_bug_winner(self: Driver, winner: Proposal) -> bool:
     # when the base matches.
     def _apply(extra: list[str]):
         return subprocess.run(
-            ["git", "-C", str(self.clone), "apply", *extra],
+            _apply_argv(self.clone, extra),
             input=winner.diff,
             capture_output=True,
             # Same byte-exact payload round-trip as the plain apply above.

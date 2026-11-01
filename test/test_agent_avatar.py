@@ -15,6 +15,7 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.appearance_packs import MAX_PACK_ID_LEN, safe_pack_id
 from kiro_crew.config.loader import (
@@ -98,7 +99,14 @@ class TestSafeAvatar:
         assert _safe_avatar({"kind": "image", "file": "0" * 16 + ".exe"}) == {"kind": "image"}
         assert _safe_avatar({"kind": "image", "file": 3}) == {"kind": "image"}
 
-    def test_missing_traits_collapses(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_missing_traits_collapses"),
+            *named_cases("test_bare_ghost_still_collapses"),
+        ],
+    )
+    def test_a_bare_ghost_collapses(self):
         assert _safe_avatar({"kind": "ghost"}) == {}
 
     def test_non_dict_traits_collapses(self):
@@ -1059,9 +1067,6 @@ class TestSafeAvatarGhostReactions:
     def test_empty_traits_dict_also_yields_no_traits_key(self):
         got = _safe_avatar({"kind": "ghost", "traits": {}, "sounds": {"done": "ding"}})
         assert got == {"kind": "ghost", "sounds": {"done": "ding"}}
-
-    def test_bare_ghost_still_collapses(self):
-        assert _safe_avatar({"kind": "ghost"}) == {}
 
     def test_ghost_whose_reactions_all_drop_out_collapses(self):
         """``kind`` alone is not an override -- it must read as "no override"."""

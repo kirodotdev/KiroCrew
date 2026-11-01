@@ -1102,6 +1102,50 @@ class TestQrRefusals:
         assert "boot" not in (captured["extra"] or {})
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("preview", [True, False], ids=["preview", "no-preview"])
+    async def test_a_host_that_cannot_prove_the_proxy_mints_the_boot_bound_shape(
+        self, _unrestricted, _quiet_audit, preview: bool
+    ) -> None:
+        """No ``require_peer`` link where the proxy proof can never succeed (macOS).
+
+        Only under the preview: without it the proof never runs, so the
+        operator's persistent session keeps its shape.
+        """
+        captured: dict[str, object] = {}
+
+        def _fake_mint(_sub, ttl_seconds=0, **kw):
+            captured["extra"] = kw.get("extra")
+            return "tok"
+
+        with _machine(
+            qr_session_persist_across_restart=True,
+            trust_identity=True,
+            allowed_logins=("someone@example.com",),
+        ):
+            with (
+                patch.object(tailnet_mobile, "generate_token", side_effect=_fake_mint),
+                patch.object(
+                    tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
+                ),
+                patch(
+                    "kiro_crew.dashboard.tailnet_proxy_proof.proof_support",
+                    return_value="platform_unprovable",
+                ),
+                patch.object(tailnet_mobile, "preview_enabled", return_value=preview),
+            ):
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(
+                    _request(tailnet_host=_HOST, cookie_token=_owner_session_token())
+                )
+        assert resp.status == 200
+        extra = captured["extra"] or {}
+        if preview:
+            assert "require_peer" not in extra
+            assert "boot" in extra
+        else:
+            assert extra.get("require_peer") == "1"
+            assert "boot" not in extra
+
+    @pytest.mark.asyncio
     async def test_persistent_shape_drops_the_boot_bound(self, _unrestricted, _quiet_audit) -> None:
         """Opted in WITH identity trust: no ``boot``, so one scan outlives a restart.
 
@@ -1124,6 +1168,7 @@ class TestQrRefusals:
                 patch.object(
                     tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
                 ),
+                patch("kiro_crew.dashboard.tailnet_proxy_proof.proof_support", return_value=""),
             ):
                 resp = await tailnet_mobile.api_tailnet_mobile_qr(
                     _request(tailnet_host=_HOST, cookie_token=_owner_session_token())
@@ -1837,6 +1882,59 @@ class TestStatusIsOwnerOnly:
         # the command to run by hand, for the port this server listens on.
         port = tailnet_mobile._dashboard_port(_request())
         assert port
+        assert body["serve_command"] == (
+            f"tailscale serve --bg --https=443 http://127.0.0.1:{port}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_occupied_reaches_the_card_with_the_publish_command(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """`occupied` gets the same manual publish command as `untrusted_cli`.
+
+        Serve already holds this mount for something else, so the gateway refuses
+        to publish (it would REPLACE it). The card's copy tells the operator to
+        run the command if the existing mapping is safe to overwrite — so the
+        command has to be there, and it must be the real `tailscale serve`
+        publish, not `kirocrew tailnet up`, which re-runs the path that refused.
+        """
+        # `occupied` sits late in the step order (past trust_off and
+        # restart_gateway), so the derivation only reaches it with the origin
+        # trusted (config enabled) and the running host matching the resolved
+        # name. Stub those inputs and let the real _derive_step run, rather than
+        # injecting the step — the wiring under test is that an `occupied` state
+        # produces the command.
+        cfg = SimpleNamespace(
+            dashboard=SimpleNamespace(
+                tailscale=SimpleNamespace(
+                    enabled=True,
+                    keep_awake=True,
+                    trust_identity=False,
+                    allowed_logins=[],
+                ),
+                qr_session_until_restart=True,
+                qr_session_persist_across_restart=False,
+            )
+        )
+        healthy = DaemonProbe(
+            name=_HOST,
+            installed=True,
+            reachable=True,
+            logged_in=True,
+            detail="",
+        )
+        stranger = tailnet_mobile.tailnet_serve.ServeState(
+            published=False, configured=True, detail="not ours", port_free=False
+        )
+        with (
+            patch.object(tailnet_mobile.KiroCrewConfig, "load", classmethod(lambda cls: cfg)),
+            patch.object(tailnet_mobile.tailnet, "probe_daemon", return_value=healthy),
+            patch.object(tailnet_mobile.tailnet_serve, "serve_state", return_value=stranger),
+        ):
+            resp = await tailnet_mobile.api_tailnet_mobile_status(_request(tailnet_host=_HOST))
+        body = json.loads(resp.body)
+        port = tailnet_mobile._dashboard_port(_request())
+        assert body["step"] == "occupied"
         assert body["serve_command"] == (
             f"tailscale serve --bg --https=443 http://127.0.0.1:{port}"
         )

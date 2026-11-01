@@ -134,7 +134,7 @@ class AutonomyRule:
         # including the empty string — the provider-wide act grant this design states is
         # inexpressible, reachable from Settings. A glob has to carry at least one
         # LITERAL character to narrow anything; one made only of `*`/`?` narrows nothing
-        # and is refused for the same reason omitting it is. Found in review (GPT 5.6).
+        # and is refused for the same reason omitting it is.
         # Whitespace is not a literal for this purpose: `"*  *"` would otherwise "narrow"
         # to two spaces, and no resource id is whitespace, so it still matches everything
         # a bare `*` does.
@@ -153,7 +153,7 @@ class AutonomyRule:
         # dropping unrecognised verbs inverted the operator's intent: `actions: ["resovle"]`
         # filtered down to nothing and the rule then authorized ack, resolve, comment AND
         # silence — one typo turning a narrow grant into the blanket one this design refuses to
-        # let anyone express. Found in review.
+        # let anyone express.
         #
         # A malformed narrowing is now a REJECTED rule, not a widened one. `save_rules` surfaces
         # that as a 400 naming the index, so the operator fixes the typo instead of unknowingly
@@ -435,7 +435,7 @@ def _definitely_off_shift() -> bool:
                 # "no information" let an off-shift instance write during the exact window a
                 # rotation API is down, which is also when a real incident is most likely.
                 #
-                # But the review's fix (deny whenever any source is unknown) would break the
+                # But denying whenever any source is unknown would break the
                 # documented property that a broken rotation must not lock the operator out: an
                 # UNCONFIGURED source, an absent schedule file, or a PagerDuty with no
                 # `schedule_ids` all legitimately report `unknown`, and on a solo install that
@@ -677,7 +677,7 @@ def is_primary() -> bool:
         # meant to withhold -- and hand-repair is exactly what the corruption
         # refusals above send the operator to do. The settings route only writes
         # real booleans, so any other type is an unknown state, and an authority
-        # check that cannot type its input refuses. Found in review (GPT 5.6).
+        # check that cannot type its input refuses.
         logger.warning(
             "ops-mission-control: primary_instance is not a boolean; refusing "
             "primary-tier authority until it is repaired"
@@ -790,7 +790,7 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
 
     # Off the loop, same reason as `dispatch.run_cycle`: `tier_states` can reach a `gh`
     # subprocess, and `apply_tiers` is awaited from `POST /rotation/arm` (the default-enabled
-    # 300s rotation-check cron). Found in review.
+    # 300s rotation-check cron).
     states = await asyncio.to_thread(tier_states, shift)
     protected = protected_cron_names()
     # ONLY the `on_shift` tier is armed from here, which is exactly the scope the agent
@@ -825,7 +825,7 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
     # body never runs, and this returned `{"ok": True, "changed": []}` over a broken
     # store. A gated instance that believes it armed was indistinguishable from one
     # that did, which is the quiet-versus-broken conflation this whole function
-    # exists to prevent. Found in review.
+    # exists to prevent.
     #
     # Ordered AFTER the read on purpose: `list_jobs_async` is what refreshes the
     # latch under the store lock, so asking first would answer one poll stale. The

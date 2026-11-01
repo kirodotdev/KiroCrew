@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
-from typing import Any, Awaitable, Callable
+from typing import IO, Any, Awaitable, Callable
 
 # The proactor check lives in a neutral leaf, because the dashboard's WebSocket hub
 # needs it too and may not import this package. Bound here under the name this
@@ -90,6 +90,27 @@ def encode_frame(message: dict[str, Any]) -> bytes:
     if "\\ud" in data:
         data = json.dumps(_repair_lone_surrogates(message))
     return (data + "\n").encode()
+
+
+#: Ceiling for :func:`write_frames_blocking`: well under the smallest pipe buffer
+#: (4 KiB on some hosts), so the one write can never wait on a reader.
+_BLOCKING_FRAMES_MAX_BYTES = 4096
+
+
+def write_frames_blocking(stdin: IO[bytes], messages: list[dict[str, Any]]) -> None:
+    """Write *messages* as ndjson frames to a SYNCHRONOUS pipe, for a read-back child.
+
+    The bounded async writers above guard a live session's shared stdin. A harness's
+    read-back boots a throwaway child on a blocking ``subprocess`` pipe from a worker
+    thread and sends it a couple of fixed requests; this is that write, kept here so
+    every stdin write under ``acp/`` still passes through this module. It refuses a
+    payload over :data:`_BLOCKING_FRAMES_MAX_BYTES`, so it never blocks.
+    """
+    data = b"".join(encode_frame(message) for message in messages)
+    if len(data) > _BLOCKING_FRAMES_MAX_BYTES:
+        raise ValueError(f"read-back frames are {len(data)} bytes, over the blocking-write cap")
+    stdin.write(data)
+    stdin.flush()
 
 
 async def _drain_oversize_line(

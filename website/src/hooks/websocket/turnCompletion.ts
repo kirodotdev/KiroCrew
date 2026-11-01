@@ -19,6 +19,7 @@ import { i18nT } from '../../i18n/t'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { attendArrival, isSlotOnScreen } from './attention'
 import { takeIdleRowRefresh } from './idleRowRefresh'
+import { crewRootOf } from '../../lib/crewMode'
 import { refreshPullRequestsAfterTurn, refreshSessionControlStatusesAfterTurn } from './serverState'
 import type { FrameData } from './frames'
 
@@ -85,12 +86,17 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         // and a silenced failure stalls it unseen. The unread badge is a
         // separate axis (criterion 7), exempt only for that failure.
         const muteSuppresses = muted && !completionNeedsInput && !turnErrored
+        // A Crew Mode worker's finished turn is its conductor's to read: no chime
+        // and no toast for the person. Gated like the mute above: a worker that
+        // paused on a question or errored has stopped, and until the conductor's
+        // own routing lands nothing else would say so, so those still sound.
+        const crewWorkerQuiet = !!crewRootOf(soundSlot) && !completionNeedsInput && !turnErrored
         completionNeedsAttention = shouldChimeOnTurnDone({
           slot: data.slot,
           reconnecting: reconnectingRef.current,
           continuing,
           needsInput: completionNeedsInput,
-        }) && !muteSuppresses
+        }) && !muteSuppresses && !crewWorkerQuiet
         // A live question card already requested audio. Keep its named
         // desktop toast eligible, but do not request a second chime.
         if (completionNeedsAttention && !questionPending) dispatchMcNotification(TURN_DONE_KIND)
@@ -162,6 +168,15 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
           isActive,
         )
         refreshSessionControlStatusesAfterTurn(queryClient, data.slot, isActive)
+        // Milestones are counted at turn start and when a feature happens, so
+        // the end of the turn in view is when a new one can be due (RFC 4.3).
+        // Only when something has read them: with no milestones query in the
+        // cache (Explore off, or never mounted) there is nothing to refresh.
+        // "In view" includes a thread a non-chat page shows (the Mate DM on
+        // Members), not only the active chat (`isSlotOnScreen`).
+        if (isSlotOnScreen(data.slot) && !reconnectingRef.current && queryClient.getQueryCache().find({ queryKey: ['milestones'], exact: false })) {
+          void queryClient.invalidateQueries({ queryKey: ['milestones'] })
+        }
       }
     },
   }), [dispatch, queryClient, reconnectingRef])

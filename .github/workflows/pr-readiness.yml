@@ -113,7 +113,9 @@ on:
     # since this status is the branch-protection handle for the entire
     # fan-out, armed auto-merge can merge a revision whose lane is at that
     # moment failing. A sweep cannot close that: its evidence is COMPLETED
-    # checks, and a running lane has none yet. The event does, in seconds.
+    # checks, and a running lane has none yet. The event does, as soon as its
+    # hold job reaches a runner -- see the `runs-on` note below for what that
+    # depends on.
     #
     # What an `in_progress` run does is therefore deliberately minimal: it
     # resolves the pull request, confirms the run the event names is still
@@ -186,18 +188,63 @@ concurrency:
   # merge guard's other half: the cancelled run's reads predate the re-run, so
   # it must not publish. The hold this run writes instead stands until the
   # sweep's recompute, which reads the re-run's completion.
+  #
+  # The `workflow_run` key carries a FOURTH segment, `hold` or `noop`, and it is
+  # the job gate's COMPLETE admission condition for this event, not just the
+  # attempt clause. A run is in the cancelling hold group if and only if the job
+  # will run; everything else collapses among itself in a sibling `noop` group
+  # and skips without ever allocating a runner. Mirroring only part of the gate
+  # is a defect, not a smaller version of this: the gate admits `dynamic` runs
+  # and Sensitive Change Review `pull_request_review` runs on a FIRST attempt,
+  # so an attempt-only suffix would label those `noop` and park an admitted hold
+  # in a cancelling group with the dispatches this change gates -- the next one
+  # would cancel it and then skip, publishing nothing and leaving the previous
+  # verdict standing. The predicate CANNOT live in the `if:` alone:
+  # workflow-level `concurrency` is evaluated when the run is created, before
+  # any job condition is read, so a single group would let a gated dispatch
+  # cancel a real in-flight hold and then skip -- leaving no hold published
+  # while a monitored lane re-runs, which is the exact stale-green window this
+  # subscription exists to close (#25037, and #24715 for why a job-level `if:`
+  # cannot carry it). It cannot move to `cancel-in-progress` either: a `false`
+  # there leaves the superseded run PENDING in the group rather than gone, which
+  # is the pathology behind the runs stuck in `queued` on this repository.
+  #
+  # THE TWO EXPRESSIONS MUST NEVER DRIFT. GitHub offers nowhere to write the
+  # predicate once -- `concurrency` can read only the `github`, `inputs` and
+  # `vars` contexts, not `env` and not a job output -- so
+  # `test/test_ai_review_workflows.py` compares them two ways: the suffix is
+  # literally the gate with its leading non-`workflow_run` clause removed, and
+  # the two agree on every admission case the gate's own table enumerates.
+  # Change one, change the other, or those tests fail.
+  #
+  # `Issue Gate` and `Security Scope Review` are exempt unconditionally because
+  # they are the only monitored lanes that start on `labeled`/`unlabeled`, which
+  # this workflow's `pull_request_target` trigger does not subscribe to. For
+  # those two a FIRST attempt can be the only hold a running blocking lane ever
+  # gets. Every other monitored lane's attempt-1 start path is either already
+  # excluded by the event clauses below (`merge_group`, `push`, `schedule`,
+  # `workflow_dispatch`) or an event `pull_request_target` already hears.
   group: >-
     ${{
       github.event_name == 'pull_request_target'
       && format('pr-readiness-pt-{0}', github.run_id)
       || github.event_name == 'workflow_dispatch'
       && format('pr-readiness-wd-{0}-{1}', inputs.pr, inputs.sha)
-      || format('pr-readiness-wr-{0}-{1}-{2}',
+      || format('pr-readiness-wr-{0}-{1}-{2}-{3}',
            github.event.workflow_run.head_repository.full_name
              || github.run_id,
            github.event.workflow_run.head_branch || '',
            github.event.workflow_run.head_sha
-             || github.run_id)
+             || github.run_id,
+           ((github.event.workflow_run.event == 'pull_request'
+             && github.event.workflow_run.name != 'Sensitive Change Review'
+             && (github.event.workflow_run.run_attempt > 1
+                 || github.event.workflow_run.name == 'Issue Gate'
+                 || github.event.workflow_run.name == 'Security Scope Review'))
+            || github.event.workflow_run.event == 'dynamic'
+            || (github.event.workflow_run.event == 'pull_request_review'
+                && github.event.workflow_run.name == 'Sensitive Change Review'))
+             && 'hold' || 'noop')
     }}
   cancel-in-progress: true
 
@@ -231,10 +278,26 @@ jobs:
     # the shared pool. A review run is the opposite case: no other event this
     # workflow hears follows a review. Both clauses name the lane by its
     # `name:`, the same field the trigger allowlist matches on.
+    #
+    # The `run_attempt > 1` clause is the other half of the fourth concurrency
+    # key segment above, and the comment there is the full account: the group
+    # key decides which runs may cancel a hold, and this condition decides which
+    # of them publish one. EVERYTHING BELOW THE FIRST CLAUSE IS COPIED INTO THAT
+    # KEY, every branch of it, and `test/test_ai_review_workflows.py` fails if
+    # the two diverge by a character or on any admission case. The first clause
+    # is the exception, and only because the key's `format()` branch it would
+    # guard is unreachable for a non-`workflow_run` event. A first attempt
+    # of a monitored lane needs no hold here because the
+    # `pull_request_target: synchronize` run for the same head has already
+    # published `checking`; a re-run is the only start this workflow hears that
+    # no other event covers.
     if: >-
       github.event_name != 'workflow_run'
       || (github.event.workflow_run.event == 'pull_request'
-          && github.event.workflow_run.name != 'Sensitive Change Review')
+          && github.event.workflow_run.name != 'Sensitive Change Review'
+          && (github.event.workflow_run.run_attempt > 1
+              || github.event.workflow_run.name == 'Issue Gate'
+              || github.event.workflow_run.name == 'Security Scope Review'))
       || github.event.workflow_run.event == 'dynamic'
       || (github.event.workflow_run.event == 'pull_request_review'
           && github.event.workflow_run.name == 'Sensitive Change Review')
@@ -242,13 +305,29 @@ jobs:
     # bursts. A same-repository PR's `pull_request_target` run from a listed
     # actor uses the CodeBuild fleet so it stays out of the shared hosted
     # queue. The job never checks out or runs PR code (see `on:`), so every PR
-    # activity may use it, as for Sensitive Change Review. A fork stays hosted.
-    # `workflow_run` stays hosted: it carries the `in_progress` merge-guard
-    # hold, and a hold stuck on a fleet runner would leave a green verdict up
-    # over a re-running lane. `workflow_dispatch` stays hosted: its payload
-    # names no head to check. Unset CODEBUILD_ACTOR_IDS to send every new run
-    # back to hosted.
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # activity may use it, as for Sensitive Change Review. Unset
+    # CODEBUILD_ACTOR_IDS to send every new run off the fleet.
+    #
+    # Every other run EXECUTING in this repository takes the `kirocrew-runners`
+    # group's own label, which keeps this lane's bursts off the standard pool
+    # whose concurrency is shared enterprise-wide. A fork repository running its
+    # own copy of this workflow cannot reach an organization runner group at
+    # all, so it stays on the hosted image -- a label no runner there carries
+    # would leave the job queued until GitHub cancelled it. A fork pull
+    # request's runs here are base-repository runs, so they take the group like
+    # any other.
+    #
+    # The `workflow_run` leg takes the group as well, and that is a trade rather
+    # than a free move. It carries the `in_progress` merge-guard hold, so for as
+    # long as the hold is queued for a runner the pre-re-run `success` stands
+    # over a lane that is running, and armed auto-merge can act on it. NOTHING
+    # ELSE CLOSES THAT WINDOW: the sweep's evidence is COMPLETED checks (see
+    # "Why `in_progress` stays" above), so it corrects the verdict only once the
+    # re-running lane finishes, and `merge-queue-readiness.yml` polls neither the
+    # review lanes nor Issue Gate nor Security Scope Review. What the move
+    # changes is which queue that window's length comes from: the group's own
+    # cap instead of the enterprise-shared pool.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       # The same-repo workflow-run lanes of the verdict step's spec list, read

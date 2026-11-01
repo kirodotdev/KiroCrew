@@ -36,6 +36,15 @@ def _app(crons: object, *, app_claim: str | None = None) -> web.Application:
             return await handler(request)
 
         middlewares.append(_claim)
+    else:
+        # The dashboard owner's cookie session, the caller the Schedule page is.
+        @web.middleware
+        async def _owner(request: web.Request, handler):  # type: ignore[no-untyped-def]
+            request["user"] = "local-app"
+            request["app"] = ""
+            return await handler(request)
+
+        middlewares.append(_owner)
     app = web.Application(middlewares=middlewares)
     app["state"] = SimpleNamespace(
         crons=crons,

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, within, waitFor, fireEvent } from '@testing-library/react'
 import { act } from 'react'
 import { createTestStore, renderWithProviders } from './helpers'
-import { triggerRefresh } from '../store/dashboardSlice'
+import { triggerCronRefresh } from '../store/dashboardSlice'
 import SchedulePage from '../pages/SchedulePage'
 import type { CronJob } from '../types'
 
@@ -103,7 +103,7 @@ describe('Schedule list mate schedules', () => {
 
     // Radar's last schedule is deleted elsewhere; the list reloads.
     vi.mocked(api).crons.mockResolvedValue({ jobs: JOBS.filter(j => j.id !== 'radar-1') })
-    act(() => { store.dispatch(triggerRefresh()) })
+    act(() => { store.dispatch(triggerCronRefresh()) })
 
     expect(await screen.findByText('Scout sweep')).toBeInTheDocument()
     expect(screen.getByText('Template job')).toBeInTheDocument()

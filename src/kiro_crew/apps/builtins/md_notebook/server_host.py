@@ -9,14 +9,17 @@ this module is reached through, beside the token memo it fills.
 
 from __future__ import annotations
 
+import functools
 import os
 import subprocess
 import sys
-from typing import Optional
+from typing import Any, Callable, Optional, TypeVar, cast
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.apps.builtins.md_notebook.server_http import ApiError
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 # Native folder picker.
 PICK_FOLDER_TIMEOUT_SEC = 120
@@ -130,6 +133,28 @@ def _reveal_binary() -> Optional[str]:
     return binary if binary and os.path.isfile(binary) else None
 
 
+def _timeout_as_api_error(message: str, code: str) -> Callable[[_F], _F]:
+    """Report a spawn that outlives its ``timeout=`` as a coded 500 ``ApiError``.
+
+    ``subprocess.run`` raises ``TimeoutExpired`` for that case. The wrapped
+    function already maps every other failure to an ``ApiError``, so without this
+    the timeout alone would reach the error middleware as an uncoded 500.
+    """
+
+    def decorate(fn: _F) -> _F:
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return fn(*args, **kwargs)
+            except subprocess.TimeoutExpired:
+                raise ApiError(message, 500, code=code) from None
+
+        return cast(_F, wrapper)
+
+    return decorate
+
+
+@_timeout_as_api_error("the file manager did not respond", "folder_open_timeout")
 def _reveal_folder_sync(path: str) -> None:
     """Open a directory in the OS file manager.
 
@@ -168,6 +193,7 @@ def pick_folder_supported() -> bool:
     return sys.platform == "darwin" and not os.environ.get("MD_NOTEBOOK_NO_PICKER")
 
 
+@_timeout_as_api_error("the folder chooser timed out", "folder_chooser_timeout")
 def _pick_folder_sync() -> Optional[str]:
     """Show the OS folder chooser. Returns the path, or None if cancelled."""
     proc = subprocess.run(

@@ -157,7 +157,7 @@ jobs:
           echo "name=ghcr.io/${OWNER}/kirocrew" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -208,27 +208,24 @@ jobs:
 
       - name: Set up QEMU (arm64 emulation)
         if: steps.existing.outputs.exists == 'false' && !inputs.promote
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
         if: steps.existing.outputs.exists == 'false'
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      # Resolve the kiro-cli version BEFORE the build so (a) the Dockerfile
-      # can cross-check that the manifest did not move mid-build and (b) the
-      # resolved version lands in the dev.kirocrew.kiro-cli.version OCI
-      # label — an auditable record of the agent runtime a digest carries.
-      # The Dockerfile independently sha256-verifies the downloaded bytes
-      # against the manifest (fail-closed).
+      # Read the pinned kiro-cli version BEFORE the build so it lands in the
+      # dev.kirocrew.kiro-cli.version OCI label -- an auditable record of the
+      # agent runtime a digest carries. The Dockerfile installs the same pin
+      # (packaging/kiro-cli-version), sha256-verified against
+      # packaging/kiro-cli-sha256, and fails if the two disagree.
       - name: Resolve kiro-cli version
         if: steps.existing.outputs.exists == 'false' && !inputs.promote
         id: kirocli
         run: |
           set -euo pipefail
-          VERSION_RESOLVED=$(curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json" \
-            | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')
-          echo "Resolved kiro-cli ${VERSION_RESOLVED}"
+          VERSION_RESOLVED="$(tr -d '[:space:]' < packaging/kiro-cli-version)"
+          echo "Pinned kiro-cli ${VERSION_RESOLVED}"
           echo "version=${VERSION_RESOLVED}" >> "$GITHUB_OUTPUT"
 
       # Version tag ONLY here — channel aliases move after attestation.

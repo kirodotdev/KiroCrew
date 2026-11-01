@@ -686,7 +686,7 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         # An opt-out that only SOME paths honour is worse than no opt-out. This
         # check exists because the two can now disagree: a record stored with a
         # monitor but no ``gate`` key -- one armed while the default was True,
-        # or upgraded from an earlier build of this branch -- decodes to
+        # or written by an earlier build -- decodes to
         # ``gate=False`` with its monitor intact. Reading only the monitor would
         # poll such a loop anyway and let a terminal verdict DEACTIVATE it,
         # which is exactly the harm the opt-out exists to prevent. The stored
@@ -996,8 +996,7 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         #
         # Deliberately NOT counted as a wake: no turn is delivered here. A
         # terminal observation that incremented ``wakes`` would report a turn
-        # that never ran, in the very counters this change exists to make
-        # trustworthy.
+        # that never ran, in counters that have to be trustworthy.
         # Record the finish ON THE MONITOR, not only on the loop. Without
         # this the record reads as merely paused, and the generic resume path
         # -- the goal popover's Save, which is allowed to revive a current
@@ -1006,13 +1005,13 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         # revivable again: a loop that cannot be told apart from a working
         # one. Reaching the end of the thing you were watching is a SUCCESS,
         # so the outcome says so rather than borrowing a bound's vocabulary.
-        # ONE transition, committed once. Four rounds of review landed on this
-        # hunk and each earlier shape had a gap: announcing before the write
-        # promised a finish the record did not have; announcing after it was
-        # swallowed by ``update``'s cancel reaching this very task; and doing
-        # both left TWO await points, so a write failure killed the timer with
-        # the loop still active, and a retarget landing between them let an old
-        # verdict deactivate a subject that had never been observed.
+        # ONE transition, committed once. Every other shape has a gap:
+        # announcing before the write promises a finish the record does not
+        # have; announcing after it is swallowed by ``update``'s cancel reaching
+        # this very task; and doing both leaves TWO await points, so a write
+        # failure kills the timer with the loop still active, and a retarget
+        # landing between them lets an old verdict deactivate a subject that
+        # has never been observed.
         #
         # So there is no ``update`` call here at all. The marks go on in memory
         # with no await between them, one durable write commits them, and the
@@ -1403,18 +1402,16 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
             # that never ran, and since the honest free-tick figure is
             # ``quiet_ticks`` minus ``floor_ticks``, an over-counted floor
             # UNDERSTATES the saving -- the safe direction, but still a wrong
-            # number in the one artifact this PR exists to produce.
+            # number.
             #
-            # GPT's prescribed remedy was to revert this counter until it could be
-            # charged after delivery. Declined: the counter is what separates a
-            # quiet verdict from a free tick, so deleting it would remove the
-            # subtraction that makes the metering honest. The substance -- charge
-            # only on confirmed delivery -- is adopted instead, by the mechanism
-            # the wake charge already uses.
+            # The counter stays rather than being reverted until it can be charged
+            # after delivery: it is what separates a quiet verdict from a free
+            # tick, so deleting it would remove the subtraction that makes the
+            # metering honest. It is charged only on confirmed delivery, by the
+            # mechanism the wake charge already uses.
             #
-            # Two counters now carry the same owed-charge shape through the same
-            # fire cycle. They belong in one structure; that is the collapse
-            # recommended on the pull request rather than a third set later.
+            # Two counters carry the same owed-charge shape through the same fire
+            # cycle. They belong in one structure rather than a third set later.
             self._pending_floor_tick.add(loop.id)
             # And durably, because that claim is in memory while the reset above
             # is not: a process that stops between this decision and the turn

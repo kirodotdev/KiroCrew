@@ -106,7 +106,7 @@
 .csb4{display:flex;gap:5px;padding:2px 0}
 .csb4 .slot{position:relative;width:14px;height:14px}
 .csb4 .slot .lyr{position:absolute;inset:0;display:block;color:var(--accent)}
-.csb4 .slot .lyr>svg,.csb4 .slot .lyr>img{display:block;width:100%;height:100%;overflow:visible}
+.csb4 .slot .lyr>svg,.csb4 .slot .lyr>img,.csb4 .slot .lyr>canvas{display:block;width:100%;height:100%;overflow:visible}
 .csb4 .slot .lyr:nth-child(1){animation:csb-a 2.8s ease-in-out infinite both}
 .csb4 .slot .lyr:nth-child(2){animation:csb-b 2.8s ease-in-out infinite both}
 .csb4 .slot:nth-child(2) .lyr{animation-delay:.25s}
@@ -249,6 +249,8 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
 /* Amethyst OLED gives --card the page colour too (#000000 in dark, a near-match in light), so its
    borderless user bubble takes the same --bg-hover step as kiro-light's. */
 [data-theme="amethyst-oled-dark"] .user-bubble,[data-theme="amethyst-oled-light"] .user-bubble{background-color:var(--bg-hover)}
+/* Color-blind safe light keeps a white --card on a white page as well. */
+[data-theme="colorblind-light"] .user-bubble{background-color:var(--bg-hover)}
 /* Crewmate bubble (`crewmateBubbleClass`, a crewmate's chat, #17839): filled with the theme's
    `--bg-hover`, the one neutral step every theme keeps above the page. Its CONTENTS paint with
    the same tokens — kiro-light's inline-code patch is `var(--bg-hover)` (rule above), every
@@ -489,3 +491,21 @@ file-tree-container{
 [data-pinned-standin="folding"] [data-role="user"] > [data-message-actions]{visibility:visible;opacity:1}
 [data-pinned-standin] [data-message-edit]{display:none}
 
+
+/* A side panel sliding under a trackpad drag (utils/panelSlide.ts): the
+   text reflows under a still pointer on every frame, so the hovered message
+   (and the action bar it mounts) changed on every frame. No hover over the
+   transcript until the panel rests; the swipe's wheel events still reach the
+   page listener above the scroller. */
+:root[data-panel-sliding] .chat-container {
+  pointer-events: none;
+}
+/* The transcript's own reading-position anchor while a panel slides
+   (TranscriptScrollShell's useSlideAnchor): the browser's scroll anchoring
+   would pick another node and pull against it. */
+.chat-container[data-slide-anchor] {
+  overflow-anchor: none !important;
+}
+/* Plain text an app's link-preview `textPatterns` match (linkPreview/remarkLinkPreviewText.ts): hoverable, not a link. */
+/* A solid accent underline, so it never reads as inline code's dotted click-to-copy one. */
+.link-preview-text{text-decoration:underline solid;text-decoration-thickness:1px;text-decoration-color:color-mix(in srgb,var(--accent) 60%,transparent);text-underline-offset:3px;cursor:default}

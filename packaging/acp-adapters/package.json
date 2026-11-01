@@ -1,0 +1,9 @@
+{
+  "name": "kirocrew-acp-adapters",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The exact version of each ACP adapter the installers (install.sh, setup.sh, minimal_install.sh) put on PATH with `npm install -g <name>@<version>`. Read through scripts/lib/acp-adapter-pin.sh; nothing here is installed from this directory. Exact versions only: a range or `latest` would let an install pick up a release published minutes earlier. Dependabot proposes a bump weekly, after a 7-day cooldown. To bump by hand: edit the exact version, keep it at or above CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION in src/kiro_crew/acp/client_claude_session.py, and run test/test_installer_pins.py.",
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.93.0"
+  }
+}

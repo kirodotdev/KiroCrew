@@ -49,12 +49,14 @@ from kiro_crew.config.loader import (  # noqa: F401
     dispatch_kiro_agent,
     published_autocompact_pct,
     resolve_agent_bindings,
+    resolve_effective_model,
 )
 from kiro_crew.config.sections import (  # noqa: F401 -- read by chat_api.slot_settings
     AutocompactPctError,
     parse_autocompact_pct,
 )
 from kiro_crew.dashboard import display_verdicts  # noqa: F401 -- read by chat_api.slot_detail
+from kiro_crew.dashboard.approval_posture import trust_reaches_subagents  # noqa: F401
 from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed  # noqa: F401
 from kiro_crew.dashboard.chat_api import agent_switch as _owner_agent_switch
@@ -81,8 +83,11 @@ from kiro_crew.dashboard.chat_api import slot_summary as _owner_slot_summary
 from kiro_crew.dashboard.chat_api import source_links as _owner_source_links
 from kiro_crew.dashboard.chat_api import turn_stop as _owner_turn_stop
 from kiro_crew.dashboard.chat_api.agent_switch import (  # noqa: F401
+    CREW_MODE_LOCKED,
     SlotAgentSwitchCaller,
     _append_session_switch_notice,
+    _crew_mode_lock_refusal,
+    _has_user_message,
     _MemberMemoryRequiresNewConversation,
     agent_switch_outcome,
     api_chat_slot_agent,
@@ -104,12 +109,27 @@ from kiro_crew.dashboard.chat_api.app_admission import (  # noqa: F401
     _slot_not_found,
 )
 from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
+    _CREW_PERSON_STEER,
+    _HELD_CREW_STEERS,
+    CREW_STEER_QUEUE_KEY,
+    _api_chat_send,
+    _committed_if_accepted,
+    _composer_locked_answer,
+    _person_crew_worker_root,
     _send_binds_agent,
     _send_harness_command,
+    _send_id_of,
     _send_writes_persona,
+    _settle_send_race,
     _sweep_stale_permissions,
+    _take_held,
     api_chat,
+    crew_steer_consumed,
+    crew_steer_discarded,
+    crew_steer_requeued,
     decided_message_handling,
+    hold_crew_steer,
+    mark_crew_steer,
     steer_is_auto,
     write_sse_or_abort,
 )
@@ -165,6 +185,7 @@ from kiro_crew.dashboard.chat_api.prompt_queue import (  # noqa: F401
     api_chat_slot_queue_cancel,
     api_chat_slot_queue_edit,
     api_chat_slot_queue_reorder,
+    api_chat_slot_steer_retract,
 )
 from kiro_crew.dashboard.chat_api.resume import (  # noqa: F401
     _hydrate_slot_from_history,
@@ -186,6 +207,7 @@ from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     reload_slot_session,
 )
 from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
+    _apply_inherited_postures,
     _approval_target_required,
     _deny_approval_mode,
     _deny_trust_pattern,
@@ -197,6 +219,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _internal_session_approval_refusal,
     _pending_elicitation_ids,
     _still_owning,
+    _sweep_pending_approvals,
     api_chat_mode,
     api_chat_slot_approve,
     apply_approval_mode,
@@ -204,9 +227,13 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     deny_session_approval_caller,
 )
 from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
+    _birth_default_project,
+    _check_new_slot_assignment,
     _created_slot_row,
     _default_template_stamp,
+    _mate_home_locked_response,
     _persist_app_agent_owner,
+    _persist_birth_line,
     _retract_failed_newborn,
     api_chat_slot_create,
 )
@@ -231,6 +258,7 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
     _configured_backend_for_slot,
+    _own_models_field,
     api_chat_slot_reasoning_effort,
     api_chat_slot_selection_capabilities,
 )
@@ -246,6 +274,7 @@ from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _await_guarded_history_write,
     _close_slot,
+    _drain_file_changes_flush,
     _NudgeRetireFailed,
     _pending_guarded_history_writes,
     _release_closed_execution,
@@ -253,6 +282,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _retire_slot_nudge_loop,
     _slot_still_ours,
     api_chat_slot_delete,
+    api_chat_slot_repair_images,
     api_chat_slot_reset_conversation,
     api_chat_slots_cleanup,
     close_slot,
@@ -266,6 +296,7 @@ from kiro_crew.dashboard.chat_api.slot_model import (  # noqa: F401
     _wire_model_id,
     api_chat_slot_model,
     api_chat_slots_model,
+    switch_slot_model,
 )
 from kiro_crew.dashboard.chat_api.slot_note import (  # noqa: F401
     _discard_held_note,
@@ -277,6 +308,7 @@ from kiro_crew.dashboard.chat_api.slot_note import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_settings import (  # noqa: F401
     _autocompact_txn_lock,
     _slot_agent_autocompact_fields,
+    _slot_harness_managed_backend,
     _slot_next_agent_autocompact_default,
     _turn_timeout_body_value,
     _turn_timeout_payload,
@@ -427,6 +459,11 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     cron_mode_refusal,
     cron_slot_creator,
     read_bounded_json,
+    string_field_error,
+)
+from kiro_crew.dashboard.handlers.agents_harness_effort import (  # noqa: F401
+    harness_effort,
+    own_models_backend,
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request  # noqa: F401
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal  # noqa: F401
@@ -445,6 +482,7 @@ from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
     note_hold_durable,
     persist_deferred_notes_sync,
 )
+from kiro_crew.dashboard.slot_color import write_slot_color  # noqa: F401
 from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     SESSION_CONTROL_DENIED,
     app_may_control_session,
@@ -909,6 +947,14 @@ class SlotCloseError(Exception):
 # and leaves the tab the user still has open, rather than retracting the name
 # while a worker thread is still on its way to the rename.
 _GUARDED_WRITE_WAIT_SECS = 5.0
+
+#: Seconds a close waits for the turn's in-flight file-change flush before it
+#: archives without the chips. The loop watchdog
+#: (``dashboard.loop_stall_exit_after_secs``, 25 s) is the bound the same read
+#: had when it ran ON the event loop: past it the whole gateway was killed, so a
+#: read this long never produced chips there either. Here only this close waits,
+#: and past the bound it goes on to archive what the window holds.
+_FILE_CHANGES_DRAIN_SECS = 25.0
 
 
 # Serializes slot SWITCH transactions that share one session, keyed by

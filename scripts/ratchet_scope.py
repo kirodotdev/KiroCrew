@@ -114,6 +114,35 @@ def _first_parent_is_base() -> bool:
     return False
 
 
+def _pr_own_head() -> str:
+    """The PR's own head commit: ``HEAD^2`` on a CI pull-request merge-commit.
+
+    ``actions/checkout`` on a ``pull_request`` event produces a synthetic MERGE
+    commit (``refs/pull/N/merge`` = base_tip merged with PR_head).  The PR's own
+    commits live under ``HEAD^2`` (the second parent).
+
+    Diffing from ``resolve_base(base.sha)`` to the working tree (= the merge
+    commit) therefore spans base.sha through the merge commit -- it includes
+    every file the base branch changed AFTER the PR was opened.  On a stale PR
+    that means hundreds of test files appear "changed" and the stability gate
+    repeats the near-full suite (observed on a stale PR: 268 files, 3 passes).
+
+    The return value is ``"HEAD^2"`` only when THREE conditions all hold: the
+    process is running in a GitHub Actions ``pull_request`` event
+    (``GITHUB_EVENT_NAME``), HEAD is a merge commit, and the first parent is
+    reachable from the base branch.  All other cases -- local runs, push events,
+    a shallow clone where the ancestry probe cannot complete -- return ``"HEAD"``,
+    leaving :func:`changed_paths_at` and :func:`resolve_base` with their existing
+    working-tree-diff semantics.
+    """
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return "HEAD"
+    code, out = _git("rev-list", "--parents", "-n", "1", "HEAD")
+    if code == 0 and len(out.split()) >= 3 and _first_parent_is_base():
+        return "HEAD^2"
+    return "HEAD"
+
+
 def changed_paths() -> tuple[set[str] | None, str]:
     """This change's paths plus how they were determined, for the log.
 
@@ -329,7 +358,7 @@ def resolve_base(base: str) -> str:
 
 
 def changed_paths_at(frm: str) -> list[str]:
-    """Paths the diff from ``frm`` to the WORKING TREE touches, in git's order.
+    """Paths the diff from ``frm`` to the PR head (or working tree) touches, in git's order.
 
     The explicit-base counterpart of :func:`changed_paths`: the caller names
     the base (CI passes the PR's ``base.sha`` through ``*_BASE_REF``, so a run
@@ -340,6 +369,28 @@ def changed_paths_at(frm: str) -> list[str]:
     a changed file is worse than no gate. ``--diff-filter=d`` drops deletions:
     a removed file has no lines to judge.
 
+    On a CI ``pull_request`` checkout :func:`_pr_own_head` returns ``HEAD^2``
+    (detecting the CI merge-commit shape), so the diff runs ``HEAD^1..HEAD``
+    rather than from *frm* to the working tree.  ``HEAD^1`` is the base-branch
+    tip; ``HEAD`` is the merge commit; the diff is exactly what the PR
+    contributes to the merge, using merged path names that exist in the working
+    tree.  That keeps main-branch moves landing after the PR was opened out of
+    scope: on a stale PR every test file main touched would otherwise count as a
+    PR change (observed: 268 files, 3×).  On that shape *frm* is not used.
+    The guard requires ``GITHUB_EVENT_NAME == "pull_request"``, so local runs
+    and push events always reach the *frm*-to-working-tree path.
+
+    Note: :func:`added_lines_at` still diffs from *frm* to the working tree on
+    every shape.  The two functions therefore describe different bases on a CI
+    merge-commit checkout.  Callers that feed ``changed_paths_at``'s output into
+    ``added_lines_at`` (the ratchet gates) will see lines from *frm* to the merge
+    commit for each returned path, which may include lines main added to a
+    file the PR also touched.
+
+    On push events and local non-merge-commit runs the diff target is the
+    working tree and *frm* is used normally, which preserves existing behaviour
+    including uncommitted local edits.
+
     A list, not a set, because git emits the names path-sorted and the
     consuming gates' reports inherit that order — a set would make a
     violation listing nondeterministic. A failing git raises
@@ -348,7 +399,17 @@ def changed_paths_at(frm: str) -> list[str]:
     whole-tree scope, an env-base gate that cannot see its base must refuse to
     pass, not widen.
     """
-    out = _git_strict("diff", "--name-only", "-z", "--diff-filter=d", frm)
+    if _pr_own_head() == "HEAD^2":
+        # CI pull_request merge-commit: use HEAD^1..HEAD to scope to the PR's
+        # own contribution.  HEAD^1 is the base-branch tip; diffing to HEAD
+        # (the merge commit) gives exactly what the PR adds, using the MERGED
+        # path names that match the working tree -- a rename main introduced
+        # is reflected here, while a bare diff against HEAD^2 would return the
+        # pre-merge path that no longer exists in the checked-out tree.
+        out = _git_strict("diff", "--name-only", "-z", "--diff-filter=d", "HEAD^1", "HEAD")
+    else:
+        # push events / local runs: diff to working tree (captures uncommitted changes).
+        out = _git_strict("diff", "--name-only", "-z", "--diff-filter=d", frm)
     return [p for p in out.split("\0") if p]
 
 

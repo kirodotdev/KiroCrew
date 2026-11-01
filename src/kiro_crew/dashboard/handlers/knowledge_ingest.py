@@ -67,6 +67,10 @@ async def ingest_text(request: web.Request) -> web.Response:
         text = body.get("text", "")
         if not text:
             return web.json_response({"error": "no text provided"}, status=400)
+        if not isinstance(text, str):
+            return web.json_response(
+                {"error": "text must be a string", "code": "invalid_field_type"}, status=400
+            )
         redacted = _redact(text)
         text = redacted if redacted is not None else text
         name = body.get("name", source["name"])

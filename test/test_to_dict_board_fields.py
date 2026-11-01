@@ -42,10 +42,92 @@ def test_options_ts_stays_on_reply_after_system_notice():
     assert after["options_ts"] == before["options_ts"] == "t1"
 
 
+# ── stale options ending ──
+# A reply ending in [OPTIONS:] older than the cutoff does not count as waiting,
+# so a finished session leaves the Waiting lane and the Needs-you list on its own.
+
+
+def _iso_ago(seconds: float) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+
+def test_old_options_ending_no_longer_waits():
+    ts = _iso_ago(8 * 24 * 3600)
+    s = _slot({"role": "assistant", "content": "Done.\n[OPTIONS: Ship it | Hold]", "ts": ts})
+    d = s.to_dict()
+    assert d["has_options"] is False
+    # The reply is unchanged: its labels and stamp still travel.
+    assert d["options"] == ["Ship it", "Hold"]
+    assert d["options_ts"] == ts
+    # A finished turn with nothing owed reads like any other finished turn.
+    assert d["waiting_for_input"] is True
+
+
+def test_recent_options_ending_still_waits():
+    from kiro_crew.dashboard.slot_projection import OPTIONS_WAITING_MAX_AGE_SECS
+
+    ts = _iso_ago(OPTIONS_WAITING_MAX_AGE_SECS - 3600)
+    s = _slot({"role": "assistant", "content": "Pick.\n[OPTIONS: A | B]", "ts": ts})
+    d = s.to_dict()
+    assert d["has_options"] is True
+    assert d["waiting_for_input"] is False
+
+
+def test_options_ending_cutoff_edges():
+    from kiro_crew.dashboard.slot_projection import (
+        OPTIONS_WAITING_MAX_AGE_SECS,
+        options_ending_is_stale,
+    )
+
+    now = 1_800_000_000.0
+    from datetime import datetime, timezone
+
+    def stamp(at: float) -> str:
+        return datetime.fromtimestamp(at, timezone.utc).isoformat()
+
+    assert options_ending_is_stale(stamp(now - OPTIONS_WAITING_MAX_AGE_SECS - 1), now) is True
+    assert options_ending_is_stale(stamp(now - OPTIONS_WAITING_MAX_AGE_SECS), now) is False
+    # An unreadable stamp keeps the old behaviour: still waiting.
+    assert options_ending_is_stale("t1", now) is False
+    assert options_ending_is_stale("", now) is False
+
+
 def test_options_ts_empty_without_options():
     assert _slot().to_dict()["options_ts"] == ""
     s = _slot({"role": "assistant", "content": "Done.", "ts": "t1"})
     assert s.to_dict()["options_ts"] == ""
+
+
+def test_no_options_after_a_goal_loop_cycle_ran_past_the_ask():
+    """A silent cycle (``nothing_to_do``) writes only its ``nudge`` row.
+
+    The loop has run past the ask, so the slot must not read as waiting on it.
+    """
+    s = _slot(
+        {"role": "assistant", "content": "Armed.\n[OPTIONS: Stop | Keep going]", "ts": "t1"},
+        {"role": "nudge", "content": "Check the PR and report.", "ts": "t2"},
+        {"role": "tool_call", "content": "", "ts": "t3"},
+    )
+    d = s.to_dict()
+    assert d["has_options"] is False
+    assert d["options"] == []
+    assert d["options_ts"] == ""
+    assert d["prompt_preview"] == ""
+
+
+def test_options_kept_when_the_cycle_reply_carries_them():
+    """A cycle whose own reply ends in an ask still holds for the user."""
+    s = _slot(
+        {"role": "assistant", "content": "Old.\n[OPTIONS: A | B]", "ts": "t1"},
+        {"role": "nudge", "content": "Check the PR and report.", "ts": "t2"},
+        {"role": "assistant", "content": "Red CI.\n[OPTIONS: Fix it | Skip]", "ts": "t3"},
+    )
+    d = s.to_dict()
+    assert d["has_options"] is True
+    assert d["options"] == ["Fix it", "Skip"]
+    assert d["options_ts"] == "t3"
 
 
 def test_no_options_when_user_last():

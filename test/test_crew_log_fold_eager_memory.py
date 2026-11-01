@@ -395,6 +395,24 @@ def _append_row(handle: CrewLog, name: str, slot: str, index: int) -> None:
             {"items": [dict(item) for _ in range(min(index + 1, crew_log.CREWMATE_WAITING_LIMIT))]},
             src=GATEWAY,
         )
+    elif name == "custom":
+        # The WIDEST custom row: a distinct record type per entry (so each adds a
+        # counted row), its data at the record ceiling once serialized, and the writer,
+        # member and ownership cells at their clamps. ASCII, for the agentic fold's
+        # reason: the data is measured in serialized bytes, so a wide character would
+        # hit the byte cap before the clamp.
+        handle.append(
+            "dashboard/custom_value",
+            {
+                "type": f"{_WIDE_ASCII[: crew_log.CUSTOM_TYPE_NAME_LIMIT - 6]}{index:06d}",
+                # ``{"v": "<n>"}`` serializes to len + 9 bytes; exactly AT the ceiling.
+                "data": {"v": "n" * (crew_log.CUSTOM_RECORD_BYTES - 9)},
+                "writer": _WIDE_ASCII[: crew_log.CUSTOM_WRITER_LIMIT],
+                "member": _WIDE_ASCII[: crew_log.CUSTOM_WRITER_LIMIT],
+                "crew_key": f"{_WIDE_ASCII[: crew_log.PANEL_CREW_KEY_LIMIT - 4]}{index:04d}",
+            },
+            src=GATEWAY,
+        )
     elif name == "workers":
         # One unit can only hold the crewmate's own creates: each worker's task and
         # lines live in the worker's own log. The unit's opener names this slot, so

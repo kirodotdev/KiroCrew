@@ -1010,7 +1010,6 @@ class TestContextBuildSurvivesLinkedRoot:
         assert "from target" not in ctx
 
     def test_rebuild_index_does_not_erase_the_index_on_a_refused_root(self, tmp_path, monkeypatch):
-        # Build a real index first.
         store = MemoryStore(workspace=tmp_path)
         store.init()
         store.write_projects("# Active Projects\n\n- PROJ-123 sentinel\n")

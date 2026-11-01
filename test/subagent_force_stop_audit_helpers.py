@@ -26,8 +26,7 @@ _REFUSAL = ValueError("kill_process_group: refusing broadcast/self process group
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the test_subagent_force_stop_audit suites' autouse pin; none of them calls monkeypatch.undo()
-def _kill_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+def _kill_seam(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """The kill path is POSIX-shaped here unless a test pins ``IS_WINDOWS`` itself.
 
     The cron reaper's tests hold the same pin (``cron_reaper_helpers.py::_kill_seam``):
@@ -39,7 +38,7 @@ def _kill_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     Windows runner than on Linux. A test of the Windows shape sets ``IS_WINDOWS``
     True in its own body, after this fixture, and wins.
     """
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    _floor_monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
 
 
 @pytest.fixture(autouse=True)

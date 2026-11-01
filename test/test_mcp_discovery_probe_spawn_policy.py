@@ -1209,6 +1209,7 @@ class TestProbeRefusesSecretReferences:
             raise AssertionError("probe spawned a server holding a secret:// reference")
 
         monkeypatch.setattr("kiro_crew.mcp_discovery._probe_on_private_loop", _no_spawn)
+        monkeypatch.setattr("kiro_crew.mcp_discovery_probe._served_by_gateway", lambda _n: False)
         server = McpServerInfo(
             name="srv", command="srv-mcp", env={"API_TOKEN": "secret://NAME", "MODE": "x"}
         )
@@ -1222,3 +1223,66 @@ class TestProbeRefusesSecretReferences:
         assert out.status == "outdated"
         assert "API_TOKEN" in out.error
         assert "NAME" not in out.error.replace("API_TOKEN", "")
+
+    @pytest.mark.asyncio
+    async def test_server_the_gateway_serves_reports_routed(self, monkeypatch) -> None:
+        """A ``secret://`` server the running gateway starts is not told
+        to route itself through the gateway. Its row says it is routed, with no
+        not-probed reason (the dashboard hangs the routing guide off that
+        reason) and no health verdict, and nothing is spawned or cached."""
+
+        def _no_spawn(*_a, **_kw):
+            raise AssertionError("probe spawned a server holding a secret:// reference")
+
+        def _no_cache(*_a, **_kw):
+            raise AssertionError("a routed row carries no probe result to cache")
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery._probe_on_private_loop", _no_spawn)
+        monkeypatch.setattr("kiro_crew.mcp_discovery._cache_probe", _no_cache)
+        monkeypatch.setattr(
+            "kiro_crew.agent_materialization.mcp_sources._gateway_routed_names",
+            lambda: frozenset({"srv"}),
+        )
+        server = McpServerInfo(name="srv", command="srv-mcp", env={"API_TOKEN": "secret://NAME"})
+        out = await probe_server(server)
+        from kiro_crew.mcp_quarantine import FAILING_STATUSES
+
+        assert out.status == "routed"
+        assert out.error == ""
+        assert out.status not in FAILING_STATUSES and out.status != "ok"
+
+    @pytest.mark.asyncio
+    async def test_server_the_gateway_does_not_serve_keeps_the_refusal(self, monkeypatch) -> None:
+        """Another server being routed does not make this one routed."""
+        monkeypatch.setattr(
+            "kiro_crew.agent_materialization.mcp_sources._gateway_routed_names",
+            lambda: frozenset({"other"}),
+        )
+        server = McpServerInfo(name="srv", command="srv-mcp", env={"API_TOKEN": "secret://NAME"})
+        out = await probe_server(server)
+        assert out.status == "outdated"
+        assert "API_TOKEN" in out.error
+
+    def test_routing_matches_the_alias_like_the_rebuild(self, monkeypatch) -> None:
+        """The routing list may hold the raw name while the row uses the alias."""
+        from kiro_crew.mcp_discovery_probe import _served_by_gateway
+        from kiro_crew.mcp_gateway.secret_uri import mcp_server_alias
+
+        monkeypatch.setattr(
+            "kiro_crew.agent_materialization.mcp_sources._gateway_routed_names",
+            lambda: frozenset({"npm:@acme/mcp"}),
+        )
+        assert _served_by_gateway(mcp_server_alias("npm:@acme/mcp"))
+        assert not _served_by_gateway("unrelated")
+
+    def test_unreadable_routing_answers_not_routed(self, monkeypatch) -> None:
+        """Cannot tell means the refusal row and its routing guidance stay."""
+        from kiro_crew.mcp_discovery_probe import _served_by_gateway
+
+        def _boom() -> frozenset[str]:
+            raise RuntimeError("overlay unreadable")
+
+        monkeypatch.setattr(
+            "kiro_crew.agent_materialization.mcp_sources._gateway_routed_names", _boom
+        )
+        assert _served_by_gateway("srv") is False

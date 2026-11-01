@@ -522,8 +522,8 @@ class TestEveryCeilingFieldHasAComposeClass:
 
     #: Folded field-by-field by ``_intersect_ceilings`` (tighten-only). ``updates``
     #: folds its two restriction pins and keeps the commands the authority's; see
-    #: ``TestUpdatePinsFoldAsRestrictions``.
-    COMPOSED = frozenset({"boot", "controls", "updates"})
+    #: ``TestUpdatePinsFoldAsRestrictions``. ``yolo_max_seconds`` folds to the lower cap.
+    COMPOSED = frozenset({"boot", "controls", "updates", "yolo_max_seconds"})
     #: "Absence means no choice expressed": the highest tier that declared one wins,
     #: re-applied by ``compose_tier_ladder``.
     LOWER_MAY_SUPPLY = frozenset({"distribution"})
@@ -893,6 +893,27 @@ class TestUpdatePinsFoldAsRestrictions:
         subordinate = governance.parse_policy(_doc("subordinate", updates={"min_version": lower}))
         merged = governance._intersect_ceilings(authority, subordinate)
         assert merged.updates.min_version == expected
+
+    @pytest.mark.parametrize(
+        ("upper", "lower", "expected"),
+        [
+            (None, False, False),  # a subordinate turning installs off narrows: kept
+            (False, True, False),  # a subordinate cannot turn them back on
+            (False, None, False),
+            (True, None, True),
+            (None, None, True),  # silent on both sides: unattended installs stay on
+        ],
+    )
+    def test_unattended_apply_folds_to_off_when_either_tier_turns_it_off(
+        self, upper, lower, expected
+    ):
+        def _updates(value):
+            return {} if value is None else {"updates": {"unattended_apply": value}}
+
+        authority = governance.parse_policy(_doc("authority", **_updates(upper)))
+        subordinate = governance.parse_policy(_doc("subordinate", **_updates(lower)))
+        merged = governance._intersect_ceilings(authority, subordinate)
+        assert merged.updates.unattended_apply is expected
 
     def test_update_commands_stay_the_authoritys_even_when_it_declares_none(self):
         authority = governance.parse_policy(_doc("authority"))

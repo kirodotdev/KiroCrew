@@ -141,12 +141,19 @@ def _parse_ts(raw: Any) -> datetime | None:
         return None
 
 
+#: Event kinds that answer a worker's question: the conductor's decision, and the
+#: person's own steer into that worker.
+_ANSWER_KINDS = frozenset({"decision", "steer"})
+
+
 def _is_outstanding(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
     """Whether this item is a question the conductor has not yet answered.
 
     A bare "has a decision" test is wrong: an item can be decided, sent back, and
     then ask something new, and the old decision must not silence the new question.
-    So the newest ``decision`` must be NEWER than the report that asked.
+    So the newest ``decision`` must be NEWER than the report that asked. A person's
+    ``steer`` newer than the ask answers it too: the person outranks the conductor,
+    and the worker already has the answer.
 
     Falls back to ``last_report_at`` when the asking report has aged off the event
     tail, and treats an unparseable or missing ask as outstanding — a question the
@@ -164,7 +171,7 @@ def _is_outstanding(item: work_ledger.WorkItem, events: list[dict[str, Any]]) ->
         if kind == "report" and event.get("status") == _ASKING_STATUS:
             if asked is None or stamp > asked:
                 asked = stamp
-        elif kind == "decision":
+        elif kind in _ANSWER_KINDS:
             if answered is None or stamp > answered:
                 answered = stamp
     if asked is None:
@@ -248,6 +255,45 @@ def work_item_is_terminal(state: object) -> bool:
     return state in work_ledger.TERMINAL_ITEM_STATES
 
 
+def work_item_answered(item: work_ledger.WorkItem) -> bool:
+    """Whether the conductor's ``decide`` answered *item*'s last report: the
+    ledger's own hand-back rule, so the next move is the worker's again."""
+    return work_ledger._decided_after_report(item) is not None
+
+
+def answered_since_report(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
+    """Whether *item*'s last report has been answered: the conductor's ``decide``
+    (:func:`work_item_answered`), or a ``decision`` / person's ``steer`` event at or
+    after that report on the item's event tail -- the answers :func:`_is_outstanding`
+    counts, so the conductor row and this board agree that the worker has its answer.
+
+    Stamps are seconds-precision, so when the tail holds the report itself the tail's
+    ORDER decides: only an answer recorded after the newest report answers it, and a
+    steer in the same second just before a new question does not."""
+    if work_item_answered(item):
+        return True
+    last_report = max(
+        (n for n, e in enumerate(events) if isinstance(e, dict) and e.get("kind") == "report"),
+        default=None,
+    )
+    if last_report is not None:
+        return any(
+            isinstance(e, dict) and e.get("kind") in _ANSWER_KINDS
+            for e in events[last_report + 1 :]
+        )
+    # Through ``work_ledger.parse_stamp``, which answers offset-aware datetimes only:
+    # a peer's report stamp may carry no offset, and an aware/naive compare raises.
+    reported = work_ledger.parse_stamp(item.last_report_at or "")
+    for event in events:
+        if not isinstance(event, dict) or event.get("kind") not in _ANSWER_KINDS:
+            continue
+        raw = event.get("ts")
+        stamp = work_ledger.parse_stamp(raw) if isinstance(raw, str) and raw else None
+        if stamp is not None and (reported is None or stamp >= reported):
+            return True
+    return False
+
+
 def closed_items(slot_key: str) -> list[dict[str, Any]]:
     """The closed items on thread *slot_key*'s own ledger, as this board reads them.
 
@@ -291,6 +337,13 @@ def _alive_of(state: DashboardState, worker_key: str) -> str:
     if _slot_open(state, worker_key) or _find_slot(state, worker_key) is not None:
         return "idle"
     return "closed"
+
+
+def _remote_alive(running: bool, closed: bool) -> str:
+    """``running`` / ``idle`` / ``closed`` for a remote worker, from its stored record."""
+    if running:
+        return "running"
+    return "closed" if closed else "idle"
 
 
 async def api_work_ledger_board(request: web.Request) -> web.Response:
@@ -369,15 +422,21 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         lambda: {item.item_id: work_ledger.read_undelivered(key, item) for item in items}
     )
 
+    remote_live = await asyncio.to_thread(work_ledger.remote_liveness_map, key, items)
     rows: list[dict[str, Any]] = []
     for item in items:
         row = item.to_dict()
         row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
-        row["stale"] = work_ledger.is_stale(
+        running, closed, looping = work_ledger.item_liveness(
+            key,
             item,
-            worker_running=_slot_running(state, item.worker_session_key or ""),
-            worker_closed=_slot_closed(state, item.worker_session_key or ""),
-            worker_looping=_slot_looping(item.worker_session_key or ""),
+            running=lambda k: _slot_running(state, k),
+            closed=lambda k: _slot_closed(state, k),
+            looping=_slot_looping,
+            remote=remote_live.get(item.item_id) or (False, False),
+        )
+        row["stale"] = work_ledger.is_stale(
+            item, worker_running=running, worker_closed=closed, worker_looping=looping
         )
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
         row["report_undelivered"] = undelivered.get(item.item_id)
@@ -385,7 +444,11 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         rows.append(
             _project_item(
                 row,
-                alive=_alive_of(state, item.worker_session_key or ""),
+                alive=(
+                    _remote_alive(running, closed)
+                    if item.worker_instance_id
+                    else _alive_of(state, item.worker_session_key or "")
+                ),
                 outstanding=_is_outstanding(item, row["events"]),
                 terminal=item.is_terminal,
             )
@@ -551,6 +614,21 @@ async def api_work_ledger_board_action(request: web.Request) -> web.Response:
             resources=f"conductor={key} item={item_id}:no_worker_bound",
         )
         return _refuse("no_worker_bound", "this item has no bound worker to stop", 409)
+    if item.worker_instance_id:
+        # A remote worker runs on another crew: its slot is not in this gateway's
+        # table, so the local stop below cannot reach it. Said plainly, rather than
+        # the "worker closed" a local miss would answer for a worker still running.
+        _audit(
+            caller,
+            "crew_board_action",
+            "denied",
+            resources=f"conductor={key} item={item_id}:remote_worker",
+        )
+        return _refuse(
+            "remote_worker",
+            "this item's worker runs on another crew; stop it from that crew's window",
+            409,
+        )
     slot = _find_slot(state, worker_key)
     if slot is None:
         _audit(

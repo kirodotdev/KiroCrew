@@ -198,7 +198,7 @@ async function clickEnable() {
   })
   fireEvent.click(trigger)
   const btn = await screen.findByRole('menuitem', { name: /installedAppCard\.enable$/ })
-  fireEvent.click(btn)
+  await act(async () => { fireEvent.click(btn) })
   return btn
 }
 

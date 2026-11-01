@@ -993,12 +993,11 @@ def _scan_linux(
         return roster
 
     edges = _parent_edges(proc_root, pids)
-    # Read argv WHOLE, deliberately. An earlier revision cut it here to bound
-    # this transient whole-table map, and that cut is the same silent credential
-    # leak the retained fields had: a secret straddling it loses the pattern the
-    # redactor matches on. Two reviews weighed the pair and the memory concern
-    # was adjudicated disproportionate while the credential one was upheld, so
-    # the transient buffer stays unbounded and every cut happens AFTER redaction.
+    # Read argv WHOLE, deliberately. Cutting it here to bound this transient
+    # whole-table map is a silent credential leak: a secret straddling the cut
+    # loses the pattern the redactor matches on. The credential risk outweighs
+    # the memory one, so the transient buffer stays unbounded and every cut
+    # happens AFTER redaction.
     # What the roster RETAINS is still capped, by MAX_NODES and the field bounds.
     cmdlines = {pid: session_pid._pid_cmdline(pid, proc_root) for pid in edges}
     markers = {pid: session_pid._read_env_has_kirocrew_marker(pid, proc_root) for pid in edges}
@@ -1178,9 +1177,8 @@ def _build_linux_node(
     former = _as_str(past.get("former_owner"))
     if former is not None:
         # Bounded even though it arrives from a caller rather than from the
-        # process table. The Opus lane weighed this and dropped it, reasoning a
-        # recorder would only ever store an already-bounded owner label -- but
-        # that recorder does not exist yet, and one `_bounded` call is cheaper
+        # process table. A recorder may only ever store an already-bounded owner
+        # label, but that recorder does not exist yet, and one `_bounded` call is cheaper
         # than depending on a module nobody has written behaving well.
         former = _bounded(former, MAX_OWNER_CHARS, roster, "former owner label")
     futex = threads.futex_wait or 0

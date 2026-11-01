@@ -47,20 +47,27 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_FILE_MENU_ITEMS_PER_APP,
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
+    _MAX_LINK_PREVIEW_HOSTS,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
     _MAX_TITLE,
     _PANEL_TAB_ID_RE,
     _SESSION_CONTROL_ID_RE,
     _SESSION_CONTROL_STATUS_PATH_RE,
+    _TEXT_PATTERN_FLAGS_RE,
+    _TEXT_PATTERN_KEYS,
     ARGUMENT_TOKEN,
     FILE_MENU_SURFACES,
+    MAX_LINK_PREVIEW_TEXT_PATTERN_LEN,
+    MAX_LINK_PREVIEW_TEXT_PATTERNS,
+    MAX_LINK_PREVIEWS_PER_APP,
     MAX_SESSION_CONTROLS_PER_APP,
     CommandArgument,
     CommandContribution,
     Contributes,
     FileMenuItemConfig,
     FileMenuWhen,
+    LinkPreviewConfig,
     PanelTabConfig,
     SessionControlContribution,
     _mirrored_len,
@@ -80,6 +87,8 @@ from kiro_crew.apps.manifest_names import (  # noqa: F401
 from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _CHANNEL_PRIORITIES,
     _OVERLAY_SLUG_RE,
+    LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT,
+    LIFECYCLE_SCRIPT_TIMEOUT_MAX,
     MAX_NOTIFICATION_CHANNELS,
     BackendConfig,
     CapabilityDependencies,
@@ -98,6 +107,10 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     UIPage,
     UISidebar,
     _granted_list,
+    clamp_lifecycle_timeout,
+    lifecycle_timeout_error,
+    lifecycle_timeout_seconds,
+    logger,
 )
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
@@ -180,6 +193,7 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "dev",
         "disable",
         "enable",
+        "frames",
         "manifest",
         "migrate-cleanup",
         "open",
@@ -501,6 +515,11 @@ class AppManifest:
             refusal = path_refusal(tab.entry)
             if refusal:
                 report_path(refusal, f"contributes.panelTabs entry {refusal}: {tab.entry!r}")
+        # A link-preview entry is imported by the same ESM host, so same check.
+        for preview in self.contributes.linkPreviews:
+            refusal = path_refusal(preview.entry)
+            if refusal:
+                report_path(refusal, f"contributes.linkPreviews entry {refusal}: {preview.entry!r}")
 
         # UI page validation
         for page in self.ui.pages:
@@ -562,9 +581,7 @@ class AppManifest:
                     refusal,
                     f"session control contribution entryPoint {refusal}: {ctl.entryPoint!r}",
                 )
-            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
-                ctl.statusPath
-            ):
+            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(ctl.statusPath):
                 # Refused rather than ignored: a status route the dashboard
                 # declines to call would leave the chip permanently stateless
                 # with nothing saying why.
@@ -641,6 +658,9 @@ class AppManifest:
 
         # Backend hooks validation
         errors.extend(self.backend.hooks.validate())
+
+        # onEnable / onDisable timeouts that are not a number at all
+        errors.extend(self.setup.validate())
 
         # Platform names the install and enable gates compare against
         errors.extend(self.platform.validate())
@@ -734,6 +754,9 @@ class AppManifest:
             or self.contributes.sessionControls
             or self.contributes.panelTabs
             or self.contributes.fileMenuItems
+            # A link-preview `entry` is an ESM module the dashboard imports and runs
+            # in its own origin, like a panel tab's: same reason to sign it.
+            or self.contributes.linkPreviews
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -972,7 +995,12 @@ class AppManifest:
             config_keys = list(config_keys_raw)
             config_keys_error = ""
 
+        # A present non-list value for a list field reads as absent: `get` returns a
+        # stored `null` instead of the default, and iterating it would raise (or split
+        # a string into characters). The same guard covers every top-level list below.
         crons_raw = data.get("crons", [])
+        if not isinstance(crons_raw, list):
+            crons_raw = []
         crons = [CronEntry.from_dict(c) for c in crons_raw if isinstance(c, dict)]
 
         ui_raw = data.get("ui", {})
@@ -1038,13 +1066,19 @@ class AppManifest:
             minKiroCrewVersion=str(data.get("minKiroCrewVersion", "")),  # noqa: N815
             signer=str(data.get("signer", "")),
             signature=str(data.get("signature", "")),
-            agents=[str(a) for a in data.get("agents", []) if a],
+            agents=[
+                str(a)
+                for a in (data["agents"] if isinstance(data.get("agents"), list) else [])
+                if a
+            ],
             skills=[
                 str(s.get("path", s.get("name", "")) if isinstance(s, dict) else s)
-                for s in data.get("skills", [])
+                for s in (data["skills"] if isinstance(data.get("skills"), list) else [])
                 if s
             ],
-            sops=[str(s) for s in data.get("sops", []) if s],
+            sops=[
+                str(s) for s in (data["sops"] if isinstance(data.get("sops"), list) else []) if s
+            ],
             mcpServers=dict(data.get("mcpServers", {})),  # noqa: N815
             config_keys=config_keys,
             config_keys_error=config_keys_error,
@@ -1058,8 +1092,14 @@ class AppManifest:
             publishProvider=publish_provider,
             notifications=notifications,
             contributes=contributes,
-            tags=[str(t) for t in data.get("tags", []) if t],
-            jobFamilies=[str(j) for j in data.get("jobFamilies", []) if j],  # noqa: N815
+            tags=[
+                str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
+            ],
+            jobFamilies=[  # noqa: N815
+                str(j)
+                for j in (data["jobFamilies"] if isinstance(data.get("jobFamilies"), list) else [])
+                if j
+            ],
             extra=extra,
         )
 
@@ -1166,9 +1206,7 @@ def has_stdio_mcp_server(manifest: AppManifest) -> bool:
     from the app's provisioned deps tree, which is why its presence is what
     makes ``bridges_mcp.py`` provision at registration.
     """
-    return any(
-        isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
-    )
+    return any(isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values())
 
 
 def file_entry_point_refusal(entry_point: str, app_root: Path) -> str:

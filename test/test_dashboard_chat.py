@@ -480,7 +480,7 @@ class TestRunChatModelFallback:
 
     @pytest.mark.asyncio
     async def test_stop_during_fallback_backoff_drops_the_requeue(self, tmp_path, monkeypatch):
-        """REGRESSION (review finding on 1a61ddcf): a Stop pressed during the
+        """A Stop pressed during the
         fallback backoff sleep resolves while no prompt is active; without the
         post-sleep guard the cancelled prompt is requeued and executes on the
         fallback anyway."""
@@ -819,7 +819,7 @@ class TestRunChatModelFallback:
     async def test_restore_probe_honors_explicit_pick_of_the_fallback_itself(
         self, tmp_path, monkeypatch
     ):
-        """REGRESSION (review finding): a user who EXPLICITLY picks the very
+        """A user who EXPLICITLY picks the very
         model the session fell back to changes slot.model but not the served
         model — the probe must drop the sticky state without restoring the
         old primary over their pick."""
@@ -900,7 +900,7 @@ class TestRunChatModelFallback:
 
     @pytest.mark.asyncio
     async def test_backfill_never_persists_the_fallback_candidate(self, tmp_path, monkeypatch):
-        """REGRESSION (review finding, the span invariant): while a fallback is
+        """The span invariant: while a fallback is
         ACTIVE, the automatic model backfill must not write the served
         candidate into slot.model — slot.model is PERSISTED, and the in-memory
         sticky state is not, so a gateway restart would turn the temporary

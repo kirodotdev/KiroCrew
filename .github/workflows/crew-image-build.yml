@@ -85,7 +85,14 @@ concurrency:
 jobs:
   build:
     name: Build every crew image recipe
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
+    # than by GROUP. A fork PR into this repository arrives on `pull_request`,
+    # which executes here, so it takes the group too; the fallback is for a fork
+    # running this file in its own repository, where an organization runner group
+    # is unreachable and a job asking for a label no runner there carries would
+    # wait out GitHub's pending limit instead of running. See "Larger runners
+    # for the review lanes and CodeQL" in docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # A fork that enables Actions should not spend its own minutes on a weekly
     # lane it never asked for; a fork's pull_request runs are unaffected.
     # It also skips while the PR is a draft; `ready_for_review` above runs it

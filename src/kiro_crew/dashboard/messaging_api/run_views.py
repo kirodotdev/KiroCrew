@@ -205,6 +205,11 @@ async def api_spawn_status(request: web.Request) -> web.Response:
             no_calls = getattr(info, "made_no_tool_calls", None)
             if isinstance(no_calls, bool):
                 data["made_no_tool_calls"] = no_calls
+            # A completed run whose last tool call was written as text and
+            # never ran (``SubagentInfo.leaked_tool_call``).
+            leaked = getattr(info, "leaked_tool_call", None)
+            if isinstance(leaked, bool):
+                data["leaked_tool_call"] = leaked
         # Read full result from disk (info.result is truncated to 3000 chars)
         result = info.result
         if info.result_path and not is_sensitive_path(info.result_path):

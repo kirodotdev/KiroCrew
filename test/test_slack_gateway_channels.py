@@ -174,7 +174,7 @@ class TestUnreadyChannelBadge:
             section = getattr(orch._cfg, name)
             for key, value in values.items():
                 object.__setattr__(section, key, value)
-        orch._cfg.load_credentials = lambda: {}
+        orch._cfg.load_credentials = lambda **kw: {}
         boot = tuple(ChannelDescriptor(channel_type=name, start=AsyncMock()) for name in sections)
         return orch, boot
 
@@ -213,7 +213,9 @@ class TestUnreadyChannelBadge:
         orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": ""})
         orch._cfg.load_credentials = MagicMock(side_effect=RuntimeError("cred store down"))
         orch._badge_unready_channels(boot)
-        orch._cfg.load_credentials.assert_called_once_with()
+        # propagate=False: a post-boot read must not re-seed os.environ with a
+        # credential the live .env watcher just removed.
+        orch._cfg.load_credentials.assert_called_once_with(propagate=False)
         assert not isinstance(orch.dashboard_state.telegram_connect_error, str)
 
     def test_no_dashboard_state_is_tolerated(self):

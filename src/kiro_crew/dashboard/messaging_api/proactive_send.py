@@ -42,8 +42,11 @@ if TYPE_CHECKING:
         _is_slack_ts,
         _sel,
         _send_to_channel_target,
+        _vet_app_messaging,
+        body_not_object_error,
         build_options_blocks,
         dashboard_slot_key,
+        effective_request_app,
         format_overflow,
         generate_token,
         logger,
@@ -54,6 +57,7 @@ if TYPE_CHECKING:
         remember_slack_options,
         slack_options_owner_key,
         slot_history_key,
+        string_field_error,
     )
 
 
@@ -296,8 +300,16 @@ async def api_delete_message(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    channel = body.get("channel", "").strip()
-    ts = body.get("ts", "").strip()
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
+    channel = body.get("channel", "")
+    ts = body.get("ts", "")
+    for field, value in (("channel", channel), ("ts", ts)):
+        not_string = string_field_error(field, value)
+        if not_string is not None:
+            return not_string
+    channel, ts = channel.strip(), ts.strip()
     if not channel or not ts:
         return web.json_response({"error": "channel and ts required"}, status=400)
     slack = state.slack_client
@@ -346,6 +358,9 @@ async def api_update_message(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     channel = body.get("channel", "")
     if not isinstance(channel, str):
         return web.json_response(
@@ -516,7 +531,14 @@ async def _read_send_message(
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    text = body.get("text", "").strip()
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
+    text = body.get("text", "")
+    not_string = string_field_error("text", text)
+    if not_string is not None:
+        return not_string
+    text = text.strip()
     if not text:
         return web.json_response({"error": "text required"}, status=400)
     title = body.get("title", "Agent Message")
@@ -601,11 +623,23 @@ async def _read_send_message(
         # send naming no session) degrades to the host sentinel inside the leg.
         addressed_caller = body.get("caller_session", "") if request.get("internal_auth") else ""
         return await _send_to_channel_target(
-            state, addressed_channel, target_id, text, caller_session=addressed_caller
+            state,
+            addressed_channel,
+            target_id,
+            text,
+            caller_session=addressed_caller,
+            # Off the attested token or the calling session's owner, never the
+            # body, so it is not gated on ``internal_auth`` like the key above.
+            request_app=effective_request_app(state, request),
         )
 
-    target_channel = body.get("channel", "").strip()
-    target_user = body.get("user", "").strip()
+    target_channel = body.get("channel", "")
+    target_user = body.get("user", "")
+    for field, value in (("channel", target_channel), ("user", target_user)):
+        not_string = string_field_error(field, value)
+        if not_string is not None:
+            return not_string
+    target_channel, target_user = target_channel.strip(), target_user.strip()
     unfurl_links = body.get("unfurl_links")
     unfurl_media = body.get("unfurl_media")
     if (unfurl_links is not None and not isinstance(unfurl_links, bool)) or (
@@ -831,6 +865,7 @@ async def _deliver_send_message_fallback(
     attribution_session: str,
     is_cron_caller: bool,
     send_to_slack: bool,
+    request_app: str = "",
 ) -> None:
     """Deliver a send no origin session took: the bell, then a channel or Slack.
 
@@ -877,6 +912,19 @@ async def _deliver_send_message_fallback(
     source_line = _proactive_source_line(
         state, caller_session, declared_session, is_cron_caller=is_cron_caller
     )
+    # The calling app's own messaging grant, asked once for whichever egress leg
+    # below would run (the route lets at most one of them take a send). A refusal
+    # sends on none of them, and answers 403 like a refused channel DM.
+    if channel_target or channel_type or (send_to_slack and state.slack_client):
+        app_refusal = await asyncio.to_thread(
+            _vet_app_messaging,
+            request_app,
+            caller_session if is_cron_caller else declared_session,
+        )
+        if app_refusal:
+            outcome.channel_code = "channel_not_permitted"
+            outcome.channel_detail = app_refusal
+            return
     if channel_target:
         outcome.sent_channel, outcome.channel_code, outcome.channel_detail = (
             await _deliver_channel_dm(
@@ -1252,7 +1300,10 @@ def _send_message_response(
 
     if outcome.channel_code:
         safe_detail = redact(outcome.channel_detail)
-        detail = f"{channel_target} delivery failed: {safe_detail}"
+        # The app-messaging refusal sets a code on the channel_type and Slack legs
+        # too, which carry no channel_target, so name whichever leg it was.
+        named_leg = channel_target or channel_type or "slack"
+        detail = f"{named_leg} delivery failed: {safe_detail}"
         # Both responses are spelled out inline, with a literal status and a
         # literal body, rather than sharing a hoisted dict or computing the
         # status. `test_error_code_contract` ratchets BOTH of those shapes for the

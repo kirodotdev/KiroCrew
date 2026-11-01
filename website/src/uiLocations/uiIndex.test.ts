@@ -2,7 +2,7 @@
  * The find_ui index generator (`scripts/lib/ui-index.mjs`): marker scanning,
  * label resolution and index assembly on synthetic sources, plus golden
  * assertions on the committed index. The full freshness check
- * (`npm run gen:ui -- --check`) runs once in frontend-lint and in the build, not
+ * (`npm run gen:ui -- --check`) runs once in frontend-ratchets and in the build, not
  * here.
  */
 import { describe, expect, it, afterEach } from 'vitest'
@@ -564,6 +564,20 @@ describe('index assembly', () => {
     expect(missing['zh-CN']).toContain('k.toggle')
   })
 
+  it('gives a setting and a sub-page on a preview-gated tab the tab\'s preview requirement', () => {
+    const { index, errors } = build({
+      settingsTabPreview: { chat: 'mc-preview-x' },
+      previewEnablers: { 'mc-preview-x': 'chat.a-setting' },
+      settingsSubs: { chat: [{ id: 'sub', key: 'tab.chat' }] },
+    })
+    expect(errors).toEqual([])
+    const byId = Object.fromEntries(index.locations.map(l => [l.id, l]))
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-x', location: 'setting:chat.a-setting' }]
+    expect(byId['settings.tab.chat'].placements[0].requires).toEqual(want)
+    expect(byId['settings.sub.chat.sub'].placements[0].requires).toEqual(want)
+    expect(byId['setting:chat.a-setting'].placements[0].requires).toEqual(want)
+  })
+
   it('derives a chain through a registered parent', () => {
     const descriptors = {
       ...baseInputs().descriptors,
@@ -808,7 +822,7 @@ describe('ui.show select and gate steps', () => {
     },
     markerSites: [...baseInputs().markerSites, site('chat.picker', 'k.inner', 3)],
     selectionScopes: { session_open: { picker: 'chat.picker', entity: 'session' } },
-    gates: { developer_mode: { setting: 'chat.a-setting' } },
+    gates: { terminal_enabled: { setting: 'chat.a-setting' } },
     ...over,
   })
   const plan = (b: ReturnType<typeof build>) => b.index.locations.find(l => l.id === 'chat.older')?.guide_plan as UiGuidePlan | undefined
@@ -826,18 +840,18 @@ describe('ui.show select and gate steps', () => {
   })
 
   it('a gate condition or a preview flag becomes a leading gate step naming its setting', () => {
-    const b = build(withPicker([{ kind: 'condition', id: 'developer_mode' }, { kind: 'shown_by', location: 'chat.toggle' }]))
+    const b = build(withPicker([{ kind: 'condition', id: 'terminal_enabled' }, { kind: 'shown_by', location: 'chat.toggle' }]))
     expect(b.errors).toEqual([])
-    expect(plan(b)!.placements[0].steps.map(s => s.id)).toEqual(['any:gate:developer_mode', 'any:chat.toggle', 'any:chat.older'])
-    expect(plan(b)!.placements[0].steps[0]).toEqual({ id: 'any:gate:developer_mode', kind: 'gate', gate: 'developer_mode', setting_id: 'chat.a-setting' })
+    expect(plan(b)!.placements[0].steps.map(s => s.id)).toEqual(['any:gate:terminal_enabled', 'any:chat.toggle', 'any:chat.older'])
+    expect(plan(b)!.placements[0].steps[0]).toEqual({ id: 'any:gate:terminal_enabled', kind: 'gate', gate: 'terminal_enabled', setting_id: 'chat.a-setting' })
     const flagged = build(withPicker([], { previewEnablers: { 'mc-preview-x': 'chat.a-setting' } }))
     const raw = flagged.index as unknown as { guide_gates: Record<string, unknown> }
     expect(raw.guide_gates['preview_flag:mc-preview-x']).toEqual({ setting_id: 'chat.a-setting' })
   })
 
   it('refuses a gate on an unknown setting, a picker that is not registered, and an overlap with a predicate', () => {
-    expect(build(withPicker([], { gates: { developer_mode: { setting: 'no.such' } } })).errors)
-      .toContainEqual(expect.stringMatching(/gate 'developer_mode' names unknown setting 'no.such'/))
+    expect(build(withPicker([], { gates: { terminal_enabled: { setting: 'no.such' } } })).errors)
+      .toContainEqual(expect.stringMatching(/gate 'terminal_enabled' names unknown setting 'no.such'/))
     expect(build(withPicker([], { selectionScopes: { session_open: { picker: 'no.picker', entity: 'session' } } })).errors)
       .toContainEqual(expect.stringMatching(/picker 'no.picker' is not a registered location/))
     expect(build(withPicker([], { selectionScopes: { has_open_sessions: { picker: 'chat.picker', entity: 'session' } } })).errors)
@@ -1402,11 +1416,18 @@ describe('the committed index', () => {
     expect(preview.placements[0].parent_ids).toEqual(['page.settings', 'settings.tab.chat', 'settings.sub.chat.transcript'])
   })
 
-  it('keeps Mates behind its preview, naming the switch that shows it', () => {
-    expect(byId.get('page.members')!.placements[0].requires).toEqual([
-      { kind: 'preview_flag', flag: 'mc-preview-crew', location: 'setting:developer.mates' },
-    ])
-    expect(byId.has('setting:developer.mates')).toBe(true)
+  it('keeps the Session Environments tab and every setting on it behind its preview', () => {
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-session-environments', location: 'setting:developer.session-environments' }]
+    expect(byId.get('settings.tab.session-environments')!.placements[0].requires).toEqual(want)
+    const onTab = committed.locations.filter(l => l.kind === 'setting' && l.setting_id?.startsWith('session-environments.'))
+    expect(onTab.map(l => l.setting_id)).toContain('session-environments.coder-url')
+    for (const loc of onTab) expect(loc.placements[0].requires).toEqual(want)
+    // The switch that shows the tab is not itself behind it.
+    expect(byId.get('setting:developer.session-environments')!.placements[0].requires).toEqual([])
+  })
+
+  it('shows Mates with no prerequisite', () => {
+    expect(byId.get('page.members')!.placements[0].requires).toEqual([])
   })
 
   it('resolves every parent, prerequisite and label it references', () => {

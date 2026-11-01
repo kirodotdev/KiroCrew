@@ -1,12 +1,11 @@
-"""Round-18 review finding: the re-validation was applied to one branch of two.
+"""The re-validation must run on both branches of the report write, not one.
 
-The pinned branch re-checks where the parent resolves to now. The
-no-``dir_fd`` fallback kept acting on a verdict given earlier, so a retargeted ancestor
-could still move the write -- and on that branch the write is an ``os.replace``, which
-would put report JSON where a governance file was. Same rule, one of two sites: the
-defect class this module keeps closing.
+The pinned branch re-checks where the parent resolves to now. A no-``dir_fd`` fallback
+that acts on a verdict given earlier lets a retargeted ancestor still move the write --
+and on that branch the write is an ``os.replace``, which would put report JSON where a
+governance file was.
 
-Both writers now re-validate on both branches, and where the parent cannot be pinned to
+Both writers re-validate on both branches, and where the parent cannot be pinned to
 a descriptor a reparse point in the ancestor chain is refused outright.
 """
 

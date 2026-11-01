@@ -27,7 +27,7 @@
  * component keys the branch off.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import type { CrewFabricItem, CrewFabricResponse, RepoRef } from '../api'
@@ -163,7 +163,7 @@ async function mountBoard(items: CrewFabricItem[], opts: { width?: number; gener
   // mounted, so an emit below reaches a live observer.
   const firstLabel = `IS-${items[0].number}`
   await waitFor(() => expect(screen.getByText(firstLabel)).toBeTruthy())
-  FakeResizeObserver.emit(opts.width ?? 1500)
+  act(() => { FakeResizeObserver.emit(opts.width ?? 1500) })
   return utils
 }
 
@@ -401,5 +401,37 @@ describe('PipelineView — empty state', () => {
     // state either (a repo IS connected).
     expect(screen.queryByText(/^IS-\d+$/)).toBeNull()
     expect(screen.queryByTestId('atp-no-repo')).toBeNull()
+  })
+})
+
+describe('PipelineView — failed read', () => {
+  it('says the read failed, not that the queue is empty, and retries on request', async () => {
+    // A failed fabric read is not an idle queue: the empty card's "No crew
+    // activity yet" in front of an outage is a claim nobody could make.
+    crewFabric.mockRejectedValue(Object.assign(new Error('503 Service Unavailable'), { status: 503 }))
+    renderView()
+
+    const card = await screen.findByTestId('atp-fabric-error')
+    expect(within(card).getByText('Could not load the pipeline')).toBeTruthy()
+    expect(within(card).getByText('503 Service Unavailable')).toBeTruthy()
+    expect(screen.queryByTestId('atp-empty')).toBeNull()
+
+    crewFabric.mockResolvedValue(fabric([], null))
+    fireEvent.click(within(card).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.getByTestId('atp-empty')).toBeTruthy())
+    expect(screen.queryByTestId('atp-fabric-error')).toBeNull()
+    expect(crewFabric).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the board from an earlier read and flags it when a refetch fails', async () => {
+    crewFabric.mockResolvedValue(fabric([item({ number: 7 })]))
+    renderView()
+    await screen.findByText('IS-7')
+
+    crewFabric.mockRejectedValue(new TypeError('Failed to fetch'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh the pipeline' }))
+
+    await screen.findByTestId('atp-fabric-error')
+    expect(screen.getByText('IS-7')).toBeTruthy()
   })
 })

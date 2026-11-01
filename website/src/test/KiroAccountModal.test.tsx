@@ -435,20 +435,6 @@ describe('KiroAccountModal', () => {
     expect(screen.queryByText('Account details unavailable')).not.toBeInTheDocument()
   })
 
-  it('explains API-key auth instead of spinning or claiming a generic failure', async () => {
-    // 'api-key' is terminal by construction: the usage API needs an SSO/OIDC
-    // token that auth type never has (#5728). The panel must say so — not spin,
-    // and not show the generic unavailable line that reads as a transient error.
-    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="api-key" />)
-
-    expect(
-      await screen.findByText('Credit usage isn’t available for API key authentication'),
-    ).toBeInTheDocument()
-    expect(screen.queryByText('Could not read your balance.')).not.toBeInTheDocument()
-    expect(screen.queryByText('Checking account…')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument()
-  })
-
   it('tells the user to sign in again and offers no Refresh for it', async () => {
     // 'signin-required' is terminal until the user re-authenticates. The /usage
     // read needs the same sign-in, so a Refresh here could only fail again.
@@ -482,21 +468,16 @@ describe('KiroAccountModal', () => {
   })
 
   it('leaves the hand-off off the state that reports a configuration, not a failure', async () => {
-    // 'api-key' describes how the account is set up; there is no error for the
-    // agent to act on, so it keeps the passive notice. This pins the split — a
-    // blanket migration would put a recovery button next to a line that needs
-    // no recovery.
-    for (const usage of ['api-key'] as const) {
-      const { unmount } = renderWithProviders(
-        <KiroAccountModal open onClose={vi.fn()} usage={usage} />,
-      )
+    // An account-only sign-in (a provider named, no user) describes how the
+    // account is set up; there is no error for the agent to act on, so it keeps
+    // the passive notice. This pins the split — a blanket migration would put a
+    // recovery button next to a line that needs no recovery.
+    const usage = { accountOnly: true, accountType: 'ExternalIdP' } as const
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
 
-      expect(
-        screen.queryByRole('button', { name: /Ask the agent/i }),
-      ).not.toBeInTheDocument()
-
-      unmount()
-    }
+    expect(
+      screen.queryByRole('button', { name: /Ask the agent/i }),
+    ).not.toBeInTheDocument()
   })
 
   it('calls onClose from the accessible close control', async () => {
@@ -613,9 +594,9 @@ describe('KiroAccountModal refresh', () => {
       expect(screen.getByRole('button', REFRESH)).toBeEnabled()
       unmount()
     }
-    // API-key auth has no credit readout to refresh; an expired sign-in would
-    // fail again; a loading cache has nothing to refresh yet.
-    for (const usage of ['api-key', 'signin-required', null] as const) {
+    // An expired sign-in would fail again; a loading cache has nothing to
+    // refresh yet.
+    for (const usage of ['signin-required', null] as const) {
       const { unmount } = renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
       expect(screen.queryByRole('button', REFRESH)).not.toBeInTheDocument()
       unmount()
@@ -650,6 +631,41 @@ describe('KiroAccountModal refresh', () => {
 
     settle({ usage: { credits_plan: 1000, credits_used: 41 } })
     await screen.findByRole('progressbar', { name: 'Kiro credit usage' })
+  })
+
+  // #23655: the label swap used to resize the button while `transition-all`
+  // animated it, which left a second, stale button painted over it on mobile
+  // WebKit. Both labels now always occupy the button, so its width never
+  // depends on the state, and only colors transition.
+  it('keeps one button the same size while it flips to refreshing and back (#23655)', async () => {
+    let settle: (v: { usage: Record<string, unknown> }) => void = () => {}
+    refreshMock.mockImplementation(() => new Promise(resolve => { settle = resolve }))
+    renderWithProviders(<QueryFedModal initial={{ ...BASE_USAGE }} />)
+    const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
+    const labels = [i18nT('components.kiroAccountModal.refresh_balance'), i18nT('components.kiroAccountModal.refreshing_balance')]
+    // Every label the button can show sits in it, and only the shown one is
+    // visible and named.
+    const expectSized = (button: HTMLElement, shown: string) => {
+      expect(button.className).not.toMatch(/\btransition-all\b/)
+      expect(button.className).toMatch(/\btransition-colors\b/)
+      for (const text of labels) {
+        const span = within(button).getByText(text)
+        const hidden = text !== shown
+        expect(span.classList.contains('invisible')).toBe(hidden)
+        expect(span.getAttribute('aria-hidden') === 'true').toBe(hidden)
+      }
+    }
+
+    const idle = within(dialog).getByRole('button', REFRESH)
+    expectSized(idle, labels[0])
+    fireEvent.click(idle)
+    const pending = await within(dialog).findByRole('button', REFRESHING)
+    expect(pending).toBe(idle)
+    expectSized(pending, labels[1])
+
+    settle({ usage: { credits_plan: 1000, credits_used: 41 } })
+    const settled = await within(dialog).findByRole('button', REFRESH)
+    expectSized(settled, labels[0])
   })
 
   it('renders the meter from the refreshed payload and keeps Refresh beside it', async () => {

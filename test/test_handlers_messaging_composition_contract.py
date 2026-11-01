@@ -131,7 +131,7 @@ _BASE_NAMES = frozenset("""
         extract_options format_overflow generate_token get_command_bus
         guard_owner_surface_routes internal_memory_scope is_direct_local_request
         is_proxied_request is_sensitive_path live logger mint_options_token
-        parent_template_allowlists parent_work_supported persisted_replay_denial_reason
+        parent_project_dirs parent_template_allowlists parent_work_supported persisted_replay_denial_reason
         persisted_snapshot_denial_reason pip_extra_install_command platform_compat
         read_bounded_json read_config_text read_panel_records read_state read_tombstone
         record_panel_dismissal_outcome redact_credentials redact_exfiltration_urls
@@ -252,7 +252,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the facade before the split that moved it: each
 #: moved name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "2c20b392e339e1d74c03a21bebc7aa0baa18f2f15e0d1dbe32adaa416fe46dd0"
+_BASE_SHAPE_DIGEST = "32afbb324bcb7429bd46b174a7e0d5966be4b6c38d4af4ba6f5ec62cacaf536f"
 
 
 #: Helpers the split of ``api_send_message`` added to the send owner: the body it
@@ -413,7 +413,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
     assert len({id(h) for h in served}) >= 28
     assert [h.__name__ for h in served if getattr(msg, h.__name__) is not h] == []
     reexports = _package_reexports()
-    assert len(reexports) == 59
+    assert len(reexports) == 60
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(msg, n)] == []
     server_names = _server_handler_names()
     assert {"api_spawn", "api_send_message", "stop_browser_install"} <= server_names
@@ -1629,6 +1629,20 @@ def _telegram_put(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: dict) -
         ({"allow_forum": "yes"}, "allow_forum must be a boolean"),
         ({"allowed_forum_chat_ids": "x"}, "allowed_forum_chat_ids must be a list"),
         ({"allowed_forum_chat_ids": ["abc"]}, "invalid Telegram chat ID: abc (integer IDs only)"),
+        # "²".isdigit() is True while int("²") raises: a 400, never a crash.
+        ({"allowed_user_ids": ["²"]}, "invalid Telegram user ID: ² (numeric IDs only)"),
+        ({"allowed_user_ids": ["١"]}, "invalid Telegram user ID: ١ (numeric IDs only)"),
+        ({"allowed_forum_chat_ids": ["-²"]}, "invalid Telegram chat ID: -² (integer IDs only)"),
+        ({"allowed_forum_chat_ids": ["-١"]}, "invalid Telegram chat ID: -١ (integer IDs only)"),
+        # Past int()'s digit limit it raises too: a 400, never a crash.
+        (
+            {"allowed_user_ids": ["1" * 21]},
+            f"invalid Telegram user ID: {'1' * 21} (numeric IDs only)",
+        ),
+        (
+            {"allowed_forum_chat_ids": ["-" + "1" * 21]},
+            f"invalid Telegram chat ID: -{'1' * 21} (integer IDs only)",
+        ),
     ],
 )
 def test_the_telegram_saver_refuses_a_bad_field_with_its_text(

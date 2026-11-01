@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -60,11 +61,16 @@ if TYPE_CHECKING:
         shutdown_event,
         spawn_guarded_turn,
     )
+    from kiro_crew.dashboard.chat_turn.recipient import (
+        MIRROR_ECHO_OWED_META_KEY,
+        _batch_recovery_echo_owed,
+    )
     from kiro_crew.dashboard.chat_turn.recovery import (
         _drop_revoked_replays,
         _forget_swept_replays,
         _purge_superseded_continuations,
     )
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import adopt_regenerate_target
     from kiro_crew.dashboard.chat_turn.steer_queue import (
         _actor_for_queue_items,
         _drop_stale_admissions,
@@ -252,6 +258,8 @@ def _arm_parked_queue_drain(state: DashboardState, slot: _ChatSlot, *, notice: b
     next send. With *notice*, the slot gets one notice row per
     task so the user can see why its queued cards are not running.
     """
+    from kiro_crew.dashboard import gateway_notice as gn
+
     task = getattr(state, "memory_startup_task", None)
     if task is None or task.done():
         return
@@ -271,7 +279,12 @@ def _arm_parked_queue_drain(state: DashboardState, slot: _ChatSlot, *, notice: b
     noticed = parked.get(slot.key, False)
     parked[slot.key] = noticed or notice
     if notice and not noticed:
-        slot.append("notice", MEMORY_PREPARATION_PARKED_TEXT, "msg msg-info")
+        slot.append(
+            "notice",
+            MEMORY_PREPARATION_PARKED_TEXT,
+            "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_MEMORY_PREPARING),
+        )
         state.push_slots_update()
 
 
@@ -294,13 +307,21 @@ def _parked_queue_drain_admitted() -> bool:
     return True
 
 
+# Recovery turns and memory-ready callbacks inherit only their accepted card ids.
+_RESTORED_DRAIN_IDS: ContextVar[dict[str, frozenset[str]]] = ContextVar(
+    "restored_drain_ids", default={}
+)
+
+
 async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> None:
     """Start the next queued turn on each parked slot that is still idle.
 
     Runs once when memory preparation finishes. Each slot is re-checked under
     its own lock, the same guard the dispatch routes take, so a send or a
     Continue that landed in the meantime is never doubled: a running slot
-    drains its own queue at its turn end.
+    drains its own queue at its turn end. A slot that started closing after
+    the caller scheduled this drain keeps its queue, so teardown never races
+    a turn it would have to cancel.
     """
     for key in slot_keys:
         slot = state._slots.get(key)
@@ -312,10 +333,11 @@ async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> N
                     state._slots.get(slot.key) is not slot
                     or not slot._queue
                     or slot.running
+                    or slot.is_closing
                     or slot._stop_state != "idle"
                 ):
                     continue
-                if not _parked_queue_drain_admitted():
+                if not _memory_preparation_pending(state) and not _parked_queue_drain_admitted():
                     return
                 started = await _start_next_queued_turn(state, slot)
             if started:
@@ -393,6 +415,28 @@ def _is_own_recovery(items: "list[dict]", predecessor_actor: str, predecessor_tu
 _REPLAYS_COMPLETION_KEY = "_replays_completion"
 
 
+def idle_slot_admits_drain(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Whether an injector may start the queued head of an idle *slot* now.
+
+    Read under ``slot._lock``. The slot is still the one registered under its
+    key, owns no turn (its task, when set, is done), holds no send's admission
+    reservation, is not closing, is not held for sign-in and has no Stop in
+    flight. Shutdown and memory preparation are refused by
+    :func:`_start_next_queued_turn` itself.
+    """
+    task = slot.task
+    return (
+        state.get_slot(slot.key) is slot
+        and not slot.running
+        and (task is None or task.done())
+        and not slot._turn_admission_reserved
+        and not slot.is_closing
+        and not slot._last_turn_auth_required
+        and not slot._stopping
+        and slot._stop_state == "idle"
+    )
+
+
 def subagents_hold_user_messages(state: DashboardState, session_key: str) -> bool:
     """Whether a live child of *session_key* should keep user messages queued.
 
@@ -401,12 +445,55 @@ def subagents_hold_user_messages(state: DashboardState, session_key: str) -> boo
     before its completion path ran never sets ``done``, so counting it parks
     every user message until the wall-clock timeout. The flag clears when the
     child streams again, and the hold with it.
+
+    A child parked on its spawn approval does not hold either. It has no
+    process, and the reaper never flags it stalled, so an unanswered card
+    would otherwise park every user message indefinitely. Once approved it
+    holds like any running child.
     """
     subs = state.subagents
     if subs is None:
         return False
     agents = subs.running_agents_for(session_key) or []
-    return any(not (isinstance(a, dict) and a.get("stalled")) for a in agents)
+    return any(
+        not (isinstance(a, dict) and (a.get("stalled") or a.get("awaitingSpawnApproval")))
+        for a in agents
+    )
+
+
+def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> None:
+    """Record the person's queued steers into a Crew Mode worker as they are delivered.
+
+    A send the person typed into a busy worker is queued with ``(root, worker)``
+    on its entry (``chat_send.mark_crew_steer``). The ``steer`` event is written
+    HERE, when the drain hands the entry to the worker, from the entry's text as it
+    is now (an edit while queued is what the worker gets), so a cancelled entry
+    records nothing. Off the drain's path: a tracked task, and a fault never
+    blocks the turn. The marker is in memory only, so an entry a restart restores
+    is delivered and never recorded.
+    """
+    from kiro_crew.dashboard.chat_handlers import CREW_STEER_QUEUE_KEY
+
+    for item in consumed:
+        marker = item.pop(CREW_STEER_QUEUE_KEY, None)
+        if not (isinstance(marker, tuple) and len(marker) == 2):
+            continue
+        root, worker = marker
+        text = item.get("content")
+        if not isinstance(text, str) or not text:
+            continue
+        try:
+            from kiro_crew.dashboard.handlers import crew_workers
+
+            task = asyncio.get_running_loop().create_task(
+                crew_workers.person_steer(state, root, worker, text)
+            )
+            tasks = getattr(state, "_background_tasks", None)
+            if isinstance(tasks, set):
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+        except Exception:
+            logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
 
 
 async def _start_next_queued_turn(
@@ -432,6 +519,8 @@ async def _start_next_queued_turn(
     also zeroes the batch's completion-turn count; the drain itself reads no
     store.
     """
+
+    from kiro_crew.dashboard import gateway_notice as gn
 
     # Nothing starts while the process is going away. The successor would write
     # its own in-flight marker before the session gate refuses it, and that marker
@@ -550,6 +639,17 @@ async def _start_next_queued_turn(
     if await _drop_revoked_replays(state, slot):
         return False
 
+    from kiro_crew.shared_crew.admission_entry import queued_work_ids
+    from kiro_crew.shared_crew.admission_gate import installed_service
+
+    service = installed_service()
+    if service is not None:
+        for item in list(slot._queue):
+            work_ids = queued_work_ids([item])
+            if work_ids and await service._cancelled_parked(work_ids) is not None:
+                slot.queue_remove_by_id(item["id"])
+                state.broadcast_ws("queue_pop", {"slot": slot.key, "queue_id": item["id"]})
+
     try:
         merge = KiroCrewConfig.load().dashboard.merge_queued_messages
     except Exception:
@@ -571,10 +671,31 @@ async def _start_next_queued_turn(
         required_queue_id = priority_id
         allow_user_during_subagents = True
 
+    # A completion counts as a child until it has run: while it is still being
+    # handed to this tab, or waits in the queue behind another system entry, a
+    # user message held for the children must not run ahead of it. The hold still
+    # drains system entries, so that completion is what runs next.
     hold_users = bool(
         not allow_user_during_subagents
-        and subagents_hold_user_messages(state, effective_session_key(slot))
+        and (
+            slot._subagent_deliveries_inflight > 0
+            or any(item.get("kind") == SUBAGENT_COMPLETION_KIND for item in slot._queue)
+            or subagents_hold_user_messages(state, effective_session_key(slot))
+        )
     )
+    restored_ids = _RESTORED_DRAIN_IDS.get().get(slot.key)
+    if restored_ids is not None and not required_queue_id and not hold_users:
+        required_queue_id = next(
+            (
+                item["id"]
+                for item in slot._queue
+                if not item.get(RESTORED_QUEUE_KEY) or item["id"] in restored_ids
+            ),
+            None,
+        )
+        if required_queue_id is None:
+            return False
+
     if required_queue_id and hold_users:
         # The hold dequeues only system entries, so it could start a different
         # entry than the one card asked for. That card stays queued instead.
@@ -602,6 +723,7 @@ async def _start_next_queued_turn(
         )
     if next_msg is None:
         return False
+    _record_queued_crew_steers(state, consumed)
 
     # A successor turn is now certain to dispatch (every no-successor path above
     # already returned False), so the predecessor turn's assistant bubble must be
@@ -645,11 +767,18 @@ async def _start_next_queued_turn(
     directive_channel_origin = bool(consumed) and any(
         item.get("_directive_channel_origin") is True for item in consumed
     )
+    # The owner mark reduces like the user one: EVERY consumed entry must carry
+    # it, since a batch that folds another dashboard user's words in with the
+    # owner's would otherwise run them under the owner's crew-read authority.
+    directive_owner_origin = bool(consumed) and all(
+        item.get("_directive_owner_origin") is True for item in consumed
+    )
     if slot._stopping and not is_system_injection:
         slot.append(
             "error",
             "⟳ Session reset — processing next message with conversation history",
             "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_RESET_CONTINUING),
         )
         slot._stopping = False
 
@@ -888,7 +1017,7 @@ async def _start_next_queued_turn(
     # A merged row's text is every entry's, so the row keeps an address only
     # when every consumed entry carries that same address; otherwise the union's
     # last writer would be quoted another sender's words.
-    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY):
+    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY, "author"):
         _addresses = [
             (
                 (item.get("meta") or {}).get(_address_key)
@@ -907,6 +1036,9 @@ async def _start_next_queued_turn(
     _drained_meta.pop(AUTOMATION_STEER_META, None)
     if automation_nudge is not None:
         _drained_meta["nudge"] = dict(automation_nudge)
+    # Read off the consumed entries (``_batch_recovery_echo_owed``); the merged
+    # row's union says nothing about each entry, so it does not ride along.
+    _drained_meta.pop(MIRROR_ECHO_OWED_META_KEY, None)
     # Queue plumbing like the steer mark above, read the way the channel origin is:
     # ANY consumed entry a channel hand-off stamped keeps the merged text content,
     # so a batch cannot smuggle a channel's "/clear" into a command by sitting
@@ -1057,6 +1189,10 @@ async def _start_next_queued_turn(
         )
     if _commands_off:
         _run_kwargs["_commands_off"] = True
+    # A verbatim replay of a dashboard prompt that died before its mirror echo:
+    # set only when every consumed entry carries the stamp, so it is echoed once.
+    if _batch_recovery_echo_owed(consumed):
+        _run_kwargs["_recovery_echo_owed"] = True
     # Provenance for the session's log, from the enqueue-time ``kind`` tag — the
     # same unforgeable source ``is_system_injection_item`` classifies on, and for
     # the same reason: the banner these injections wrap their text in is something
@@ -1118,12 +1254,31 @@ async def _start_next_queued_turn(
                 if isinstance(_loop_id, str) and _loop_id:
                     _run_kwargs["_directive_loop_id"] = _loop_id
                 break
-    task = spawn_guarded_turn(
-        state,
-        slot,
-        _run_chat(state, slot, next_msg, **_run_kwargs),
+    # Shared Crew: the drained turn is charged to the person who queued it, read
+    # from the server-stamped author on the entries. Entries restored from disk
+    # or written by different people name no one, so the turn falls to the
+    # bounded Unknown or automation budget (shared_crew.turn_gate).
+    from kiro_crew.shared_crew.turn_gate import (
+        independent_turn,
+        initiated_by,
+        queued_initiator,
+        queued_work,
     )
+
+    # The owner mark is the dispatcher's fact about who queued the words; it rides
+    # this turn's own call, so it ends with this dispatch (``turn_entry`` adopts
+    # it only for a user-sent opener).
+    _run_kwargs["_directive_owner_origin"] = directive_owner_origin
+    with independent_turn(), initiated_by(queued_initiator(consumed)), queued_work(consumed):
+        task = spawn_guarded_turn(
+            state,
+            slot,
+            _run_chat(state, slot, next_msg, **_run_kwargs),
+        )
     slot.task = task
+    # A recovery replay of a Regenerate's message takes over its target now
+    # that ``slot.task`` gave it the slot's generation.
+    adopt_regenerate_target(slot, consumed, task)
     if _settleable:
         # Open the retention clock on the result files this row promises — but
         # only once the turn has actually run and the model has consumed the

@@ -105,9 +105,10 @@ class TestTransportFilter:
     def test_a_MEANINGLESS_transport_type_is_dropped_TOO(self):
         """The adapter validates the ``type`` field at all, so the filter must.
 
-        A deliberately meaningless ``{"type": "nonsense-type"}`` element is accepted
-        by codex-acp exactly as an unadvertised ``sse`` one is: ``session/new``
-        answers with a ``sessionId`` and the server is never wired. Keeping only
+        A deliberately meaningless ``{"type": "nonsense-type"}`` element fares
+        exactly as a bare unadvertised ``sse`` one does: up to codex-acp 2.2.2 it was
+        accepted and never wired, and since 2.3.0 it fails the whole ``session/new``
+        with ``-32602``. Keeping only
         transports that were POSITIVELY advertised is what covers both, where a
         denylist of known-bad spellings would cover neither.
         """
@@ -235,14 +236,14 @@ class TestIdentityEnvCarriage:
         assert _env(el) == {}
 
     def test_an_OPT_IN_crew_server_gets_no_identity_EITHER(self):
-        """The deliberate line, and the one that shrank this PR.
+        """The deliberate line: opt-in crew servers carry no identity.
 
         ``kirocrew-work`` and ``kirocrew-dashboard`` are Crew's own binaries, but
         they are ``opt_in`` sets that arrive from the agent spec UNREPLACED — so the
-        spec chose their command, args and env. Earlier revisions tried to hand them
-        the key behind a provenance check, and the reviewer found two ways through it
-        in two rounds (a borrowed name, then a spec-supplied ``PYTHONPATH`` beside a
-        genuine command). The credential now rides only what Crew derives itself.
+        spec chose their command, args and env. A provenance check cannot make them
+        safe to hand the key: a borrowed name, or a spec-supplied ``PYTHONPATH``
+        beside a genuine command, gets through it. The credential rides only what
+        Crew derives itself.
 
         Reaching this function at all would be a bug — ``codex_withheld_servers``
         drops them upstream — so this pins the second half of the rule rather than

@@ -289,13 +289,12 @@ class TestRssThresholdCheck:
         monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
 
     def test_shipped_default_reaches_the_enforcement_point(self) -> None:
-        """The ceiling is off by default: a manager built from the shipped
-        SessionConfig default holds 0, so ``_rss_threshold_check`` never
-        recycles a session until an operator sets a ceiling."""
+        """A manager built from the shipped SessionConfig default holds the
+        shipped ceiling, so ``_rss_threshold_check`` enforces it out of the box."""
         from kiro_crew.config.sections import DEFAULT_WATCHDOG_RSS_MAX_MB, SessionConfig
 
         manager = _make_manager(rss_max_mb=SessionConfig().watchdog_rss_max_mb)
-        assert manager._rss_max_mb == DEFAULT_WATCHDOG_RSS_MAX_MB == 0
+        assert manager._rss_max_mb == DEFAULT_WATCHDOG_RSS_MAX_MB == 4096
 
     @pytest.mark.asyncio
     async def test_explicit_zero_disables(self) -> None:
@@ -351,6 +350,8 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert bm.call_count == 1  # one /proc scan for the whole tick
         assert rt.call_count == 2  # measured once per candidate
+        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
     async def test_windows_measures_per_candidate_without_a_shared_map(self) -> None:
@@ -378,6 +379,8 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert gs.call_count == 2
         assert manager.reset.await_count == 2
+        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
     async def test_one_failed_victim_does_not_skip_the_rest(self) -> None:
@@ -426,6 +429,8 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert rt.call_count == 1  # one walk per DISTINCT pid
         assert manager.reset.await_count == 1
+        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        assert recycled == {"dashboard:a": 2048}
 
     @pytest.mark.asyncio
     async def test_distinct_runtimes_over_threshold_are_each_recycled(self) -> None:
@@ -443,6 +448,8 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert rt.call_count == 2
         assert manager.reset.await_count == 2
+        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
     async def test_a_skipped_co_tenant_lets_the_next_one_be_recycled(self) -> None:
@@ -609,6 +616,9 @@ class TestRssThresholdCheck:
         probe.assert_called_once_with("dashboard:x")
         manager.reset.assert_awaited_once()
         assert manager.reset.await_args.args[0] == "dashboard:x"
+        assert [(key, rss) for key, (_, rss) in _rss_recycled(manager).items()] == [
+            ("dashboard:x", 2048)
+        ]
 
     @pytest.mark.asyncio
     async def test_raising_subagent_probe_counts_as_attached(self, caplog) -> None:

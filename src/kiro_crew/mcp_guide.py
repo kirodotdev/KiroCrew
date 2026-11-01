@@ -67,6 +67,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import math
 import re
 import urllib.parse
 from pathlib import Path
@@ -78,6 +79,7 @@ from kiro_crew.mcp_core import (
     _resolve_session_key,
     require_strict_session_key,
 )
+from kiro_crew.mcp_instructions import GUIDE as _INSTRUCTIONS
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import MCP_GUIDE_SCHEMAS, validate_tool_args
@@ -223,8 +225,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "List the change-card kinds you can propose (settings, schedules, "
                 "crewmates, capabilities, templates, MCP servers, connections, "
-                "secrets, app trust, denied commands), each with its params schema "
-                "and which fields the user may edit on the card."
+                "secrets, app trust, denied commands, saved workflows), each with "
+                "its params schema and which fields the user may edit on the card."
             ),
             "inputSchema": {"type": "object", "properties": {}},
         },
@@ -356,7 +358,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "find_ui",
             "description": (
                 "Find where something is in the dashboard, e.g. 'older sessions' or "
-                "'较早的会话'. Call it first for every where-is or how-do-I-find question "
+                "'较早的会话'. Call it first for every where-is or how-do-I-find question, "
+                "with no text before the call (no 'let me check the layout first': the "
+                "user sees every word), "
                 "and quote only what it returns: never guess or recall a location. Pass the user's words as `query` and the language of "
                 "their words as `lang` (e.g. 'zh-CN') when known. Labels and paths "
                 "come back in the language the user's dashboard shows "
@@ -408,7 +412,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "offscreen, hidden, unmounted, disabled, ambiguous, unknown, with "
                 "observed_at), or not_observed when their tab did not answer; it "
                 "never reads page text. A result may also carry blocker: "
-                "gate_off (a setting such as developer mode is off; setting_id "
+                "gate_off (a setting such as a feature preview is off; setting_id "
                 "names it, or is null when no setting turns it on), "
                 "needs_selection (the user must first open one item, e.g. a "
                 "crewmate, named in selection), "
@@ -913,7 +917,61 @@ _DOCS_MAX_RESULTS = 5
 _DOCS_MAX_LINES = 3
 _DOCS_LINE_CHARS = 240
 _DOCS_PAGE_CHARS = 12000
+#: A page's title and opening lines: a query word there earns half a name match.
+_DOCS_HEAD_CHARS = 400
 _WORD_RE = re.compile(r"[\w-]{2,}", re.UNICODE)
+#: Question words that say nothing about which page answers it ("how do I set
+#: up ..."). They are dropped from a query unless nothing else is left.
+_DOCS_STOPWORDS = frozenset(
+    "a an and are as at be by can could do does did for from get how i if in is it its"
+    " me my of on or our should so that the their them then there these this those to"
+    " up us was we what when where which who why will with would you your".split()
+)
+
+
+def _query_terms(query: str) -> list[re.Pattern[str]]:
+    """One pattern per distinct query word stem, matching at the start of a word.
+
+    Word-start matching lets ``remind`` find ``reminders`` while ``do`` no
+    longer counts inside ``window``. ``_`` starts a word too, so ``cycles``
+    still finds ``max_cycles``.
+    """
+    words = list(dict.fromkeys(w.lower() for w in _WORD_RE.findall(query or "")))
+    kept = [w for w in words if w not in _DOCS_STOPWORDS] or words
+    stems = dict.fromkeys(_word_stem(w) for w in kept)
+    return [re.compile(r"(?<![^\W_])" + s) for s in stems]
+
+
+#: Endings that keep a stem the same word: ``updat`` + ``e``, ``automatic`` +
+#: ``ally``. Anything longer after the stem makes it another word ("model").
+_WORD_ENDINGS = r"(?:ers|ing|ally|er|ed|es|ly|e|s|d)?"
+
+
+def _whole_word(term: re.Pattern[str]) -> re.Pattern[str]:
+    """*term* matched only as a whole word, allowing one of ``_WORD_ENDINGS``."""
+    return re.compile(term.pattern + _WORD_ENDINGS + r"(?![^\W_])")
+
+
+def _part_score(whole: re.Pattern[str], term: re.Pattern[str], text: str, full: int) -> float:
+    """*full* when *text* holds the whole word, half for only a longer word's start."""
+    if whole.search(text):
+        return full
+    return full / 2 if term.search(text) else 0
+
+
+def _word_stem(word: str) -> str:
+    """A regex for the start of *word* without one common English ending.
+
+    ``reminder`` and ``reminders`` both become ``remind``. A ``y`` / ``ies``
+    pair becomes one stem for both, so ``reply`` finds ``replies`` and back.
+    """
+    for end in ("ies", "y"):
+        if word.endswith(end) and len(word) - len(end) >= 3:
+            return re.escape(word[: -len(end)]) + "(?:y|ie)"
+    for end in ("ers", "ing", "er", "ed", "es", "s"):
+        if word.endswith(end) and len(word) - len(end) >= 4:
+            return re.escape(word[: -len(end)])
+    return re.escape(word)
 
 
 def _doc_pages() -> dict[str, Path]:
@@ -970,29 +1028,57 @@ def search_docs(query: str = "", page: str = "", offset: int = 0) -> dict[str, A
         if start + _DOCS_PAGE_CHARS < len(text):
             out["next_offset"] = start + _DOCS_PAGE_CHARS
         return out
-    words = list(dict.fromkeys(w.lower() for w in _WORD_RE.findall(query or "")))
-    if not words:
+    terms = _query_terms(query)
+    if not terms:
         return {"error": "give a 'query' to search or a 'page' to read"}
-    scored: list[tuple[int, str, str, list[str]]] = []
+    matched: list[tuple[str, str, str, list[re.Pattern[str]]]] = []
     for name, path in pages.items():
         try:
             text = _doc_text(path)
         except OSError:
             continue
         lower, lname = text.lower(), name.lower()
-        hits = [w for w in words if w in lower or w in lname]
+        hits = [t for t in terms if t.search(lower) or t.search(lname)]
+        matched.append((name, text, lower, hits))
+    # How rare each word is across the pages: 1.0 on one page, 0.0 on all.
+    # A word on nearly every page ("set", "agent") then barely adds to the
+    # count part, so a long page cannot win on it alone.
+    n = len(matched)
+    whole = {t: _whole_word(t) for t in terms}
+    rarity: dict[re.Pattern[str], float] = {}
+    for t in terms:
+        df = sum(1 for *_rest, hits in matched if t in hits)
+        rarity[t] = math.log(n / df) / math.log(n) if df and n > 1 else 1.0
+    scored: list[tuple[int, str, str, list[str]]] = []
+    for name, text, lower, hits in matched:
         if not hits:
             continue
-        score = 100 * len(hits) + 50 * sum(1 for w in hits if w in lname)
-        score += min(sum(lower.count(w) for w in hits), 99)
+        lname = name.lower()
+        # The page name, then its title and opening lines, say what it is about.
+        head = lower[:_DOCS_HEAD_CHARS]
+        score = 0.0
+        count = 0.0
+        for t in hits:
+            w = whole[t]
+            # The word itself counts full; only the start of a longer word
+            # ("mode" in "model", "run" in "runner") counts half.
+            score += (0.2 + 0.8 * rarity[t]) * (
+                (100 if w.search(lower) or w.search(lname) else 50)
+                + _part_score(w, t, lname, 100)
+                + _part_score(w, t, head, 50)
+            )
+            n_whole = len(w.findall(lower))
+            count += rarity[t] * (n_whole + 0.5 * (len(t.findall(lower)) - n_whole))
+        score = round(score) + min(round(count), 99)
         lines = [
             ln.strip()[:_DOCS_LINE_CHARS]
             for ln in text.splitlines()
-            if ln.strip() and any(w in ln.lower() for w in words)
+            if ln.strip() and any(t.search(ln.lower()) for t in terms)
         ]
-        lines.sort(key=lambda ln: -sum(1 for w in words if w in ln.lower()))
+        lines.sort(key=lambda ln: -sum(1 for t in terms if t.search(ln.lower())))
         scored.append((score, name, _doc_title(text, name), lines[:_DOCS_MAX_LINES]))
-    scored.sort(key=lambda r: (-r[0], r[1]))
+    # A tie goes to the shorter page name: it is the closer match.
+    scored.sort(key=lambda r: (-r[0], len(r[1]), r[1]))
     return {
         "results": [
             {"page": name, "title": title, "lines": lines}
@@ -1370,6 +1456,7 @@ def run_mcp_server() -> None:
         _list_tools,
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+        instructions=_INSTRUCTIONS,
     )
 
 

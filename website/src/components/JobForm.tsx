@@ -10,10 +10,12 @@ import SegmentedControl from './SegmentedControl'
 import SimpleSelect from './SimpleSelect'
 import type { ChatFolder, CronJob } from '../types'
 import { orderFoldersWithPaths } from '../utils/folderTree'
+import { isMateManaged } from '../utils/mateFolders'
 import { useFolderSortMode } from '../hooks/useFolderSortMode'
 import type { CronPrefill } from '../utils/schedulePresets'
 import { SaveCreateLabel, expandDow } from '../utils/cronUtils'
 import { adviseCronMode } from '../utils/cronModeAdvice'
+import { browserTimeZone } from '../utils/tz'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
@@ -71,7 +73,7 @@ export function jobKindOf(job?: CronJob): JobKind {
   return 'message'
 }
 
-/** Highest auto-pause limit the backend accepts (`_AUTO_PAUSE_MAX`). */
+/** Highest auto-pause and alert-after limit the backend accepts (`_AUTO_PAUSE_MAX`). */
 const AUTO_PAUSE_MAX = 10000
 
 /** A run's time limit when the job sets none: the cron service's own
@@ -125,7 +127,11 @@ function parseJobDefaults(job?: CronJob) {
     !seg.split('-').some(tok => /^\d+$/.test(tok) && parseInt(tok, 10) > 7) && expandDow(seg).length > 0)
   const isWeekly = !isInterval && cronParts.length === 5 && cronParts[4] !== '*' && cronParts[2] === '*' && cronParts[3] === '*'
     && isPlainField(cronParts[0], 59) && isPlainField(cronParts[1], 23) && isRepresentableDow(cronParts[4])
-  const schedMode = isInterval ? 'interval' as const : isWeekly ? 'weekly' as const : 'cron' as const
+  // A one-shot job carries neither a cron expression nor an interval, and the
+  // server renders its run time as "at …". The form has no editor for that time,
+  // so it shows the stored text and leaves the schedule out of the save (#25898).
+  const isOneShot = !isInterval && !cronRaw && /^at\s/.test(job.schedule || '')
+  const schedMode = isOneShot ? 'once' as const : isInterval ? 'interval' as const : isWeekly ? 'weekly' as const : 'cron' as const
   // Read cron time and days directly (stored in job timezone, not UTC)
   let weekDays: number[] = []
   let weekTime = '09:00'
@@ -191,7 +197,9 @@ function buildBody(
   // that unchecking restores what was there, and a reader who checks the box,
   // saves, and unchecks it later would instead find the folder silently gone.
   body.chat_folder_id = isLlmless ? '' : f.chatFolderId
-  if (f.schedMode === 'interval') {
+  if (f.schedMode === 'once') {
+    // The PATCH keeps the stored run time and timezone when none is sent.
+  } else if (f.schedMode === 'interval') {
     body.every = f.intVal * (f.intUnit === 'minutes' ? 60 : f.intUnit === 'hours' ? 3600 : 86400)
   } else if (f.schedMode === 'weekly') {
     if (f.weekDays.length === 0) { setError(i18nT('components.jobForm.select_at_least_one_day')); return null }
@@ -387,6 +395,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // stopped the save. Kept apart from `error` so it is never shown through
   // ErrorNotice (errors-use-error-notice).
   const [autoPauseHint, setAutoPauseHint] = useState('')
+  const showAlertAfter = !!job && typeof job.alert_after_failures === 'number'
+  const [initialAlertAfter] = useState(() => (showAlertAfter ? String(job?.alert_after_failures) : ''))
+  const [alertAfter, setAlertAfter] = useState(initialAlertAfter)
+  const [alertAfterHint, setAlertAfterHint] = useState('')
   // The limit the field was seeded from, held in state rather than read off
   // `defaults`: `job` is re-fetched while the form is open (another tab's save,
   // a window refocus), and comparing the stale field against the NEW stored
@@ -411,7 +423,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [intUnit, setIntUnit] = useState(init.intUnit)
   const [weekDays, setWeekDays] = useState(init.weekDays)
   const [weekTime, setWeekTime] = useState(init.weekTime)
-  const [tz, setTz] = useState(() => job ? (job.timezone || 'UTC') : Intl.DateTimeFormat().resolvedOptions().timeZone)
+  const [tz, setTz] = useState(() => job ? (job.timezone || 'UTC') : browserTimeZone())
   const [cronExpr, setCronExpr] = useState(init.cronExpr)
   // Touched = any field diverged from what the form OPENED with. Compared
   // against `init`/`defaults` (the same sources the state seeded from), so a
@@ -504,12 +516,19 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
    *  move-to-folder submenu and the launcher's folder rows, so this picker lists
    *  folders in the order and with the ancestry labels the reader already knows --
    *  and a fix to either (a cycle guard, a non-string name off disk) reaches all
-   *  of them at once. */
+   *  of them at once.
+   *
+   *  A mate's home and the folders inside it are left out: they hold only that
+   *  mate's sessions, so the save would be refused. The job's own saved folder
+   *  stays listed, so an existing value is still shown as it is. */
   const { mode: folderSortMode, error: folderSortError } = useFolderSortMode()
+  const savedChatFolderId = job?.chat_folder_id || ''
   const folderOptions = useMemo(() => {
-    const ordered = orderFoldersWithPaths(chatFolders, folderSortMode)
+    const ordered = orderFoldersWithPaths(chatFolders, folderSortMode).filter(
+      f => f.folder.id === savedChatFolderId || !isMateManaged(f.folder, chatFolders),
+    )
     return { values: ordered.map(f => f.folder.id), labels: ordered.map(f => f.path) }
-  }, [chatFolders, folderSortMode])
+  }, [chatFolders, folderSortMode, savedChatFolderId])
   /** `hide_in_chat` is the explicit "this job gets no tab" opt-out, and a run with
    *  no tab has nothing to file -- so with it on the picker cannot do anything.
    *  Saying that and refusing input beats accepting a setting whose only
@@ -596,6 +615,15 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         return
       }
       if (limit !== job?.auto_pause_after_failures) body.auto_pause_after_failures = limit
+    }
+    if (showAlertAfter && alertAfter.trim() !== initialAlertAfter) {
+      const limit = Number(alertAfter.trim())
+      if (alertAfter.trim() === '' || !Number.isInteger(limit) || limit < 1 || limit > AUTO_PAUSE_MAX) {
+        setAlertAfterHint(i18nT('components.jobForm.alert_after_failures_invalid'))
+        setSaving(false)
+        return
+      }
+      if (limit !== job?.alert_after_failures) body.alert_after_failures = limit
     }
     if (privateMember && !isLlmless) {
       // Keyed on `privateMember`, not on `boundMember`, and BOTH lines depend on
@@ -809,6 +837,9 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       {/* Schedule */}
       {vertical && <div className="flex flex-col gap-0.5"><span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.schedule')}</span><span className="text-[11px] text-muted/70">{i18nT('components.jobForm.how_often_this_job_runs')}</span></div>}
       <div className={`flex gap-2 items-center flex-wrap ${vertical ? '' : ''}`}>
+        {schedMode === 'once' ? (
+          <span className="text-[13px] text-text" data-testid="jobform-one-shot-schedule">{job?.schedule}</span>
+        ) : (<>
         <SimpleSelect
           options={['interval', 'weekly', 'cron']}
           optionLabels={[i18nT('components.jobForm.every_interval'), i18nT('components.jobForm.weekly_schedule'), i18nT('components.jobForm.cron_expression')]}
@@ -836,6 +867,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         </>) : (<>
           <Input value={cronExpr} onChange={e => setCronExpr(e.target.value)} placeholder="0 9 * * 1-5" />
           {tzSelect}
+        </>)}
         </>)}
         {!vertical && !externalSubmit && <SendBtn onClick={submit} disabled={saving}>{saving ? i18nT('components.jobForm.saving') : (job ? i18nT('components.jobForm.save') : i18nT('components.jobForm.add'))}</SendBtn>}
       </div>
@@ -1051,6 +1083,28 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             {/* Plain text, not an ErrorNotice: see `autoPauseHint`. */}
             {autoPauseHint && (
               <span id="jobform-auto-pause-hint" className="text-[11px] text-text">{autoPauseHint}</span>
+            )}
+          </div>
+        )}
+        {showAlertAfter && (
+          <div className="flex flex-col gap-1">
+            <label htmlFor="jobform-alert-after" className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.alert_after_failures')}</label>
+            <span id="jobform-alert-after-help" className="text-[11px] text-muted/70">{i18nT('components.jobForm.alert_after_failures_description')}</span>
+            <Input
+              id="jobform-alert-after"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={AUTO_PAUSE_MAX}
+              step={1}
+              aria-describedby={alertAfterHint ? 'jobform-alert-after-help jobform-alert-after-hint' : 'jobform-alert-after-help'}
+              aria-invalid={alertAfterHint ? true : undefined}
+              className="w-full sm:w-32 flex-none"
+              value={alertAfter}
+              onChange={e => { setAlertAfter(e.target.value); setAlertAfterHint('') }}
+            />
+            {alertAfterHint && (
+              <span id="jobform-alert-after-hint" className="text-[11px] text-text">{alertAfterHint}</span>
             )}
           </div>
         )}

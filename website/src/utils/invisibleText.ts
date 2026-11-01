@@ -15,6 +15,13 @@ import type { ChatMessage } from '../types'
 
 const FORMAT_CHARS_RE = /\p{Cf}/gu
 
+/** True for a user row whose steer was taken back before the running turn read it. */
+export function isRetractedSteerRow(
+  m: Pick<ChatMessage, 'role' | 'meta'>,
+): boolean {
+  return m.role === 'user' && m.meta?.steer === true && m.meta?.steerState === 'retracted'
+}
+
 /** True when `text` renders as nothing: only Cf format chars and whitespace. */
 export function isInvisibleOnly(text: string): boolean {
   return text.replace(FORMAT_CHARS_RE, '').trim() === ''

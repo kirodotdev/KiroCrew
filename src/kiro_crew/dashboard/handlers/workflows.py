@@ -25,7 +25,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Optional
+import math
+from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import web
 
@@ -51,12 +52,24 @@ def _redact_obj(obj):
     …}``) and a values-only walk would pass it through untouched. Two distinct
     credential-shaped keys can collapse into one redacted key — losing a
     pathological key is strictly preferable to leaking the secret.
+
+    A non-finite float (``inf``, ``-inf``, ``nan``) becomes ``None``: Python's
+    ``json`` writes it as a bare ``Infinity``/``NaN`` token, which no browser
+    ``JSON.parse`` accepts. A script reaches one through ``ctx.budget.remaining()``
+    on a run without a budget.
+
+    A tuple is walked like a list and comes back as one. The live
+    ``workflow_run_event`` broadcast passes a run's raw result through here, so
+    a script that returns a tuple holding ``inf`` would otherwise reach
+    ``json.dumps`` untouched.
     """
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
     if isinstance(obj, str):
         s, _ = redact_exfiltration_urls(obj)
         s, _ = redact_credentials(s)
         return s
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [_redact_obj(x) for x in obj]
     if isinstance(obj, dict):
         return {_redact_obj(k): _redact_obj(v) for k, v in obj.items()}
@@ -88,9 +101,101 @@ async def _json_response_off_loop(payload: Any, *, status: int = 200) -> web.Res
     return web.Response(text=text, status=status, content_type="application/json")
 
 
+def _workflow_worker_keys(run_id: str) -> tuple[str, ...]:
+    """The keys a run's worker sessions sit under (``wf:<run>:<n>`` and its kin).
+
+    Bound to the run's admitted budget at attach, so a worker's ``spawn_run`` is
+    charged to the person who started the workflow (``AdmissionService._binding``).
+    """
+    return tuple(f"{prefix}:{run_id}" for prefix in ("wf", "wf-pool", "wf-unpooled", "wf-worker"))
+
+
 def _svc(request: web.Request):
     state: DashboardState = request.app["state"]
     return getattr(state, "workflow_service", None)
+
+
+async def _resolve_fallback_folder_id(
+    request: web.Request, ref: str
+) -> tuple[str, Optional[web.Response]]:
+    """Resolve a fallback-slot folder reference to an EXISTING folder id.
+
+    ``ref`` is the opt-in folder for the ``workflow-<run_id>`` fallback session:
+    a sidebar folder id or a ``/``-separated human path, like
+    ``session_create``'s ``folder``. It must name a folder that ALREADY exists —
+    nothing is created here. The run owns no identity under which to create a
+    folder in the person's sidebar, so a reference that does not resolve is a
+    caller-visible error, not a silent create or a silent drop.
+
+    Resolution goes through the ONE canonical read-only resolver
+    ``_resolve_chat_folder_id`` — imported here through the MCP facade
+    ``kiro_crew.mcp_dashboard`` (which re-exports it), NOT from the owner module
+    directly, so the facade-family boundary stays intact
+    (``test_no_module_outside_the_family_imports_an_owner``). It accepts an id or
+    a human path, refuses an ambiguous path (two folders rendering the same
+    path, or a name that is both a folder and a nested path) with a message
+    naming the candidates, and never builds a client or writes. The import is
+    lazy (inside the function) to avoid an import cycle at module load. An empty
+    ref (or ``root``) means "do not file" — ``("", None)`` — today's default.
+
+    Returns ``(folder_id, None)`` on success, or ``("", response)`` with a ready
+    400 the caller returns as-is when the folder is missing or ambiguous.
+    """
+    from kiro_crew.mcp_dashboard import _resolve_chat_folder_id
+
+    ref = (ref or "").strip()
+    if not ref or ref.lower() == "root":
+        # No folder given (the common case): do not file, and do NOT touch
+        # request state — a caller/test that passes no folder need not carry it.
+        return "", None
+    # A crew-member caller may not aim the fallback slot at the PERSON's sidebar
+    # tree. ``_resolve_chat_folder_id`` below walks the whole unfiltered tree,
+    # while ``api_chat_folders`` scopes a member's view to the folders it owns
+    # plus its own home chain; resolving the raw ref here would let a member
+    # probe the person's layout (existence vs 400, an ambiguous path's error
+    # names ids) and file into a folder its read scope hides. There is no
+    # reusable member-scoped filter to resolve against (``api_chat_folders``
+    # builds its view inline), so the smallest fail-safe is to refuse any
+    # non-empty folder for a member caller BEFORE resolving it, with one uniform
+    # 400 whose text does not depend on whether the folder exists — nothing is
+    # learned and nothing reaches the person's tree. ``workflow_expected_store``
+    # is the verified member store ``_private_memory_refusal`` already read (set
+    # non-empty only for an internal-auth member caller, ``None`` for the owner),
+    # so the person's own calls are unchanged.
+    if request.get("workflow_expected_store"):
+        return "", web.json_response(
+            {"error": "folder is not available for this caller", "code": "folder_unresolvable"},
+            status=400,
+        )
+    state: DashboardState = request.app["state"]
+    folder_id, err = _resolve_chat_folder_id(ref, state._folders)
+    if err:
+        return "", web.json_response({"error": err, "code": "folder_unresolvable"}, status=400)
+    if not folder_id:
+        return "", web.json_response(
+            {"error": f"folder not found: {ref}", "code": "folder_unresolvable"},
+            status=400,
+        )
+    # A mate's home folder (and everything inside it) holds only that mate's own
+    # sessions. A fallback ``workflow-<run_id>`` slot may run on any store, so it
+    # must never be filed there — the same refusal ``slot_create`` makes at a
+    # chat's birth (``home_owner_of`` → ``mate_home_locked`` 403). The run's own
+    # store is not resolved until admission (it is captured inside the service),
+    # so this refuses on the one principal the handler already has: a mate's home
+    # is refused for every caller, which is the fail-safe direction. It may turn
+    # away the rare legitimate case of a run bound to that mate's store, but it
+    # can never file into a home it should not; delivery re-checks against the
+    # run's real store. The 403 body matches ``slot_create._mate_home_locked_response``
+    # exactly; it is built here through this module's ``_error`` rather than
+    # imported, because that helper is a private chat_api owner name the facade
+    # boundary keeps behind ``chat_handlers``.
+    from kiro_crew.dashboard.mate_folders import home_owner_of
+
+    if home_owner_of(state._folders, folder_id):
+        return "", _error(
+            "this folder belongs to a mate and is managed for you", "mate_home_locked", 403
+        )
+    return folder_id, None
 
 
 def _sel():
@@ -257,6 +362,9 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
     source_format = body.get("format", "python")
     if source_format not in ("python", "task-plan"):
         return _error("format is invalid", "workflow_format_invalid", 400)
+    exact_slug = body.get("exact_slug", False)
+    if not isinstance(exact_slug, bool):
+        return _error("exact_slug must be a boolean", "workflow_exact_slug_invalid", 400)
     try:
         out = await asyncio.to_thread(
             svc.save_definition,
@@ -267,6 +375,7 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
             ),
             slug=body.get("slug", "") if isinstance(body.get("slug"), str) else "",
             source_format=source_format,
+            exact_slug=exact_slug,
             **lineage_kwargs,
         )
     except Exception:
@@ -274,6 +383,8 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
         return _error("could not save workflow", "workflow_definition_write_failed", 500)
     if out.get("ok"):
         return web.json_response(_redact_obj(out), status=201)
+    if out.get("slug_taken"):
+        return _error("that command is already a saved workflow", "workflow_slug_taken", 409)
     return web.json_response(
         {
             "error": _redact_obj(out.get("error") or "invalid workflow"),
@@ -405,20 +516,34 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
     budget_total = body.get("budget_total")
     if isinstance(budget_total, bool) or not isinstance(budget_total, int):
         budget_total = None
+    folder_id, folder_refusal = await _resolve_fallback_folder_id(
+        request, str(body.get("folder") or "")
+    )
+    if folder_refusal is not None:
+        return folder_refusal
     try:
-        out = await svc.start_definition(
-            request.match_info.get("workflow_ref", ""),
-            input_text=input_text,
-            args=body.get("args") if isinstance(body.get("args"), dict) else {},
-            author=session_key,
-            session_key=session_key,
-            expected_store=request.get("workflow_expected_store"),
-            budget_total=budget_total,
-            timeout_secs=_opt_int(body.get("timeout_secs")),
+        out = await _start_admitted(
+            request,
+            svc,
+            ("definition_run", request.match_info.get("workflow_ref", ""), body),
+            lambda: svc.start_definition(
+                request.match_info.get("workflow_ref", ""),
+                input_text=input_text,
+                args=body.get("args") if isinstance(body.get("args"), dict) else {},
+                author=session_key,
+                session_key=session_key,
+                expected_store=request.get("workflow_expected_store"),
+                budget_total=budget_total,
+                timeout_secs=_opt_int(body.get("timeout_secs")),
+                fallback_title=str(body.get("title") or ""),
+                fallback_folder_id=folder_id,
+            ),
         )
     except Exception:
         logger.exception("saved workflow start failed")
         return _error("could not start saved workflow", "workflow_definition_start_failed", 500)
+    if isinstance(out, web.Response):
+        return out
     if "run_id" in out:
         return web.json_response(_redact_obj(out))
     error = _redact_obj(out.get("error") or "could not start saved workflow")
@@ -444,7 +569,10 @@ async def api_workflow_author(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    intent = (body.get("intent") or "").strip()
+    intent = body.get("intent") or ""
+    if not isinstance(intent, str):
+        return _error("intent must be a string", "invalid_field_type", 400)
+    intent = intent.strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
     author = request.headers.get("X-Session-Key", "")
@@ -475,6 +603,56 @@ def _opt_int(value: Any) -> Optional[int]:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+async def _admit_workflow_run(request: web.Request, svc: Any, body: object) -> Any:
+    """Fair admission (Shared Crew) for a workflow run: it starts now or is refused."""
+    from kiro_crew.shared_crew.admission import OperationKind
+    from kiro_crew.shared_crew.admission_entry import admit_background_run, workflow_probe
+
+    return await admit_background_run(
+        request,
+        operation=OperationKind.WORKFLOW,
+        session_key=request.headers.get("X-Session-Key", "") or "workflow",
+        probe=workflow_probe(svc),
+        cancel=getattr(svc, "cancel", None),
+        body=body,
+    )
+
+
+async def _start_admitted(
+    request: web.Request,
+    svc: Any,
+    body: object,
+    start: Callable[[], Awaitable[dict[str, Any]]],
+) -> dict[str, Any] | web.Response:
+    """Start a workflow run under fair admission (Shared Crew): now, or refused.
+
+    Returns the refusal response, or the start's own result. An admitted start
+    that produced no run gives its slot back.
+    """
+    from kiro_crew.shared_crew.containment import principal_scope
+
+    run_admission = await _admit_workflow_run(request, svc, body)
+    if run_admission.rejected:
+        return run_admission.refusal_response()
+    if run_admission.replayed:
+        from kiro_crew.shared_crew.admission_entry import background_replay_response
+
+        return background_replay_response(run_admission)
+    try:
+        with principal_scope(None if run_admission.work is None else run_admission.work.budget_key):
+            out = await start()
+    except BaseException:
+        await run_admission.abandon()
+        raise
+    if "run_id" in out:
+        await run_admission.attach_child(
+            str(out["run_id"]), also=_workflow_worker_keys(str(out["run_id"]))
+        )
+    else:
+        await run_admission.abandon()
+    return out
 
 
 async def api_workflow_run(request: web.Request) -> web.Response:
@@ -511,20 +689,48 @@ async def api_workflow_run(request: web.Request) -> web.Response:
     refusal = await _private_memory_refusal(request, "workflow.run")
     if refusal is not None:
         return refusal
+    # Resolve the opt-in fallback folder to an EXISTING folder id BEFORE
+    # admission reserves capacity, so an unresolvable folder returns 400 without
+    # leaving an ADMITTED record behind (the sibling handlers resolve before
+    # admission/start for the same reason).
+    folder_id, folder_refusal = await _resolve_fallback_folder_id(
+        request, str(body.get("folder") or "")
+    )
+    if folder_refusal is not None:
+        return folder_refusal
+    from kiro_crew.shared_crew.containment import principal_scope
+
+    run_admission = await _admit_workflow_run(request, svc, body)
+    if run_admission.rejected:
+        return run_admission.refusal_response()
+    if run_admission.replayed:
+        from kiro_crew.shared_crew.admission_entry import background_replay_response
+
+        return background_replay_response(run_admission)
     try:
-        out = await svc.start(
-            source,
-            name=body.get("name", "") or "",
-            args=body.get("args") if isinstance(body.get("args"), dict) else {},
-            author=request.headers.get("X-Session-Key", ""),
-            session_key=request.headers.get("X-Session-Key", ""),
-            expected_store=request.get("workflow_expected_store"),
-            budget_total=budget_total,
-            timeout_secs=_opt_int(body.get("timeout_secs")),
-        )
+        with principal_scope(None if run_admission.work is None else run_admission.work.budget_key):
+            out = await svc.start(
+                source,
+                name=body.get("name", "") or "",
+                args=body.get("args") if isinstance(body.get("args"), dict) else {},
+                author=request.headers.get("X-Session-Key", ""),
+                session_key=request.headers.get("X-Session-Key", ""),
+                expected_store=request.get("workflow_expected_store"),
+                budget_total=budget_total,
+                timeout_secs=_opt_int(body.get("timeout_secs")),
+                fallback_title=str(body.get("title") or ""),
+                fallback_folder_id=folder_id,
+            )
     except Exception:
         logger.exception("workflow run failed")
+        await run_admission.abandon()
         return _error("could not start workflow", "workflow_run_failed", 500)
+    if "run_id" in out:
+        await run_admission.attach_child(
+            str(out["run_id"]), also=_workflow_worker_keys(str(out["run_id"]))
+        )
+    else:
+        await run_admission.abandon()
     status = 200 if "run_id" in out else 400
     return web.json_response(_redact_obj(out), status=status)
 
@@ -559,7 +765,10 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    intent = (body.get("intent") or "").strip()
+    intent = body.get("intent") or ""
+    if not isinstance(intent, str):
+        return _error("intent must be a string", "invalid_field_type", 400)
+    intent = intent.strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
     budget_total = body.get("budget_total")
@@ -568,20 +777,34 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     refusal = await _private_memory_refusal(request, "workflow.run_intent")
     if refusal is not None:
         return refusal
+    folder_id, folder_refusal = await _resolve_fallback_folder_id(
+        request, str(body.get("folder") or "")
+    )
+    if folder_refusal is not None:
+        return folder_refusal
     try:
-        out = await svc.start_from_intent(
-            intent,
-            name=body.get("name", "") or "",
-            args=body.get("args") if isinstance(body.get("args"), dict) else {},
-            author=request.headers.get("X-Session-Key", ""),
-            session_key=request.headers.get("X-Session-Key", ""),
-            expected_store=request.get("workflow_expected_store"),
-            budget_total=budget_total,
-            timeout_secs=_opt_int(body.get("timeout_secs")),
+        out = await _start_admitted(
+            request,
+            svc,
+            body,
+            lambda: svc.start_from_intent(
+                intent,
+                name=body.get("name", "") or "",
+                args=body.get("args") if isinstance(body.get("args"), dict) else {},
+                author=request.headers.get("X-Session-Key", ""),
+                session_key=request.headers.get("X-Session-Key", ""),
+                expected_store=request.get("workflow_expected_store"),
+                budget_total=budget_total,
+                timeout_secs=_opt_int(body.get("timeout_secs")),
+                fallback_title=str(body.get("title") or ""),
+                fallback_folder_id=folder_id,
+            ),
         )
     except Exception:
         logger.exception("workflow run_intent failed")
         return _error("could not start workflow", "workflow_run_intent_failed", 500)
+    if isinstance(out, web.Response):
+        return out
     status = 200 if "run_id" in out else 400
     return web.json_response(_redact_obj(out), status=status)
 
@@ -755,16 +978,23 @@ async def api_workflow_run_rerun(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
     try:
-        out = await svc.rerun_subtree(
-            run_id,
-            from_index,
-            source=edited_source,
-            caller_session=request.headers.get("X-Session-Key", ""),
-            owner=request.get("app") == "" and request.get("internal_auth") is not True,
+        out = await _start_admitted(
+            request,
+            svc,
+            ("rerun", run_id, body),
+            lambda: svc.rerun_subtree(
+                run_id,
+                from_index,
+                source=edited_source,
+                caller_session=request.headers.get("X-Session-Key", ""),
+                owner=request.get("app") == "" and request.get("internal_auth") is not True,
+            ),
         )
     except Exception:
         logger.exception("workflow rerun failed")
         return _error("could not rerun workflow", "workflow_rerun_failed", 500)
+    if isinstance(out, web.Response):
+        return out
     # 400 on validation error (bad edited script), 404 when the run is missing.
     if "run_id" in out:
         status = 200

@@ -62,7 +62,7 @@ hooks, the disable path has to spell it out.
 | POST | `/calibrate` | owner | prove the ruler (Phase 1) before any improvement cycle |
 | GET | `/progress` | enabled | the cumulative-best staircase for the chart |
 | GET | `/events` | enabled | server-sent live run events |
-| GET | `/deps` | enabled | external tool availability (git / gh / ruff) |
+| GET | `/deps` | enabled | external tool availability (git / gh / pytest in the gate interpreter / ruff) |
 | POST | `/deps/install` | owner | install the optional linter |
 | POST | `/draft-pr/{fp}` | owner | draft a PR from an already-queued change |
 | GET | `/profiles` | enabled | every captured profiler frame tree |

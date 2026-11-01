@@ -389,6 +389,11 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         dispatch_ready = asyncio.Event()
         dispatch_commit = False
 
+        # Decided at request time, carried by the dispatch: see ``api_chat``.
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        _owner_sent = is_owner_dashboard_request(request)
+
         async def _rewind_dispatch() -> None:
             await dispatch_ready.wait()
             if request_app and state._slots.get(name) is not slot:
@@ -399,6 +404,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     slot,
                     redacted_content,
                     _directive_user_origin=not bool(request_app),
+                    _directive_owner_origin=_owner_sent,
                     # See ``api_chat``: an observed app must be NAMED, because the
                     # actor resolver's fallback is ``user``. ``""`` is the
                     # parameter's own default and reads as "not named".

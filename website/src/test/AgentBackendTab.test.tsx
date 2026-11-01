@@ -122,14 +122,14 @@ describe('AgentBackendTab list', () => {
     expect(row('Kiro Agent')).toBeInTheDocument()
   })
 
-  it('puts KAS first, Kiro CLI second, and sorts adapters after', async () => {
+  it('puts KAS first, Kiro CLI second, Strands third, and sorts adapters after', async () => {
     acpBackendsMock.mockResolvedValue({
-      backends: [probeRow('kiro'), probeRow('claude'), probeRow('kas'), probeRow('zephyr')],
+      backends: [probeRow('kiro'), probeRow('claude'), probeRow('strands'), probeRow('kas'), probeRow('zephyr')],
     })
-    schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'kas', 'zephyr']))
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'strands', 'kas', 'zephyr']))
     wrap()
-    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(4))
-    expect(rows()).toEqual(['Kiro Agent', 'Kiro CLI', 'Claude Code', 'zephyr'])
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(5))
+    expect(rows()).toEqual(['Kiro Agent', 'Kiro CLI', 'Strands', 'Claude Code', 'zephyr'])
   })
 
   it('marks the configured backend as the current one', async () => {
@@ -436,6 +436,36 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     expect(rowLabel('Kiro CLI').textContent).not.toContain('In use')
   })
 
+  it('calls a harness on an unverified release "Wrong version", with the fix on the row', async () => {
+    // UX BLOCK on #22403: the probe once looked only for the binary, so a Copilot
+    // CLI on any release but the verified one read "Installed" here and then
+    // refused every chat. The gateway now reports that release as missing the
+    // verified one; this row must say so in its own word and carry the command.
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'copilot']))
+    const command = 'npm i -g @github/copilot@1.0.100'
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('kiro', card()),
+        probeRow('copilot', {
+          installed: 'missing',
+          missing_components: ['copilot 1.0.100'],
+          install_command: command,
+          found_version: '1.0.103',
+          ...card(),
+        }),
+      ],
+    })
+    wrap()
+    const name = acpBackendName({ id: 'copilot', policy_id: 'copilot' })
+    await waitFor(() => expect(rowLabel(name).textContent).toContain('Wrong version'))
+    expect(rowLabel(name).textContent).not.toContain('Not installed')
+    expect(rowLabel(name).textContent).not.toContain('Installed')
+    highlight(name)
+    await waitFor(() => expect(detail().textContent).toContain(`This host has ${name} 1.0.103`))
+    expect(detail().textContent).toContain(command)
+    expect(useButton(name)).toBeDisabled()
+  })
+
   it('says "In use" visibly on the row, not only to a screen reader', async () => {
     // The configured harness has no Use button, so the row is the one place a
     // sighted reader learns which agent is running. The word is on the row itself,
@@ -515,9 +545,9 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
-    highlight('deepseek')
-    const count = panel().getByText(/deepseek supports \d+ of \d+ features/)
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
+    highlight('DeepSeek Harness')
+    const count = panel().getByText(/DeepSeek Harness supports \d+ of \d+ features/)
     expect(count.parentElement?.className).toContain('opacity-60')
 
     // An offered harness's list is not muted.
@@ -570,13 +600,13 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'codex', 'pi']))
     wrap()
-    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
 
     expect(rowLabel('Kiro CLI').textContent).toContain('Installed')
     expect(rowLabel('Claude Code').textContent).toContain('Not installed')
-    expect(rowLabel('codex').textContent).toContain('Check failed')
-    expect(rowLabel('pi').textContent).toContain('Installed, not active yet')
-    expect(rowLabel('deepseek').textContent).toContain('Not offered')
+    expect(rowLabel('OpenAI Codex').textContent).toContain('Check failed')
+    expect(rowLabel('Pi').textContent).toContain('Installed, not active yet')
+    expect(rowLabel('DeepSeek Harness').textContent).toContain('Not offered')
 
     // The accessible name stays the harness name alone.
     expect(row('Claude Code')).toHaveAccessibleName('Claude Code')
@@ -694,10 +724,10 @@ describe('AgentBackendTab switching', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    await waitFor(() => expect(row('codex')).toBeInTheDocument())
-    highlight('codex')
+    await waitFor(() => expect(row('OpenAI Codex')).toBeInTheDocument())
+    highlight('OpenAI Codex')
     expect(panel().getByText('This build does not offer this agent.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Use codex' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Use OpenAI Codex' })).toBeNull()
     expect(panel().queryByText(/New sessions switch from/)).toBeNull()
   })
 
@@ -1264,7 +1294,7 @@ describe('AgentBackendTab check again', () => {
     await waitFor(() => expect(acpBackendRecheckMock).toHaveBeenCalledWith('claude'))
 
     // The reader moves on BEFORE the rejection arrives.
-    highlight('codex')
+    highlight('OpenAI Codex')
     await waitFor(() => expect(panel().getByText(/codex-acp/)).toBeInTheDocument())
     reject(new Error('500'))
 
@@ -1295,8 +1325,8 @@ describe('AgentBackendTab check again', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
-    highlight('deepseek')
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
+    highlight('DeepSeek Harness')
     expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
   })
 

@@ -12,8 +12,9 @@
  *   1. the MODEL picker's filter box   (components/ModelEffortDropdown.tsx)
  *   2. the AGENT picker's filter box   (ComposerDockView.tsx, agent dropdown portal)
  *
- * and, as the deliberate CONTRAST, a model-list row's model NAME
- * (components/ModelDropdownList.tsx, `[data-model-name]`), which must STAY mono:
+ * and, as the deliberate CONTRAST, a model-list row's model ID
+ * (components/ModelDropdownList.tsx, `[data-model-name]` when the row shows its id,
+ * `[data-model-id-hint]` beside a backend-reported name), which must STAY mono:
  * a model id is an identifier the user transcribes, not chrome prose. Without
  * that third read the evidence cannot distinguish "the filter box now follows
  * the setting" from "mono was swept out of the popover wholesale".

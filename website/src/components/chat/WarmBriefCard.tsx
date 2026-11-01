@@ -3,24 +3,28 @@
  * active thread (`meta.kind === 'warm_task_brief_result'`).
  *
  * The gateway validates the model's JSON into `meta.brief` and this card draws
- * it in a FIXED order, like a manager's report: status and headline, what
- * needs the owner, progress (the gateway's own `accepted of total` count, never
- * the model's) and what is left, what the owner asked for, what got done, what
- * comes next, then up to two sections the model chose. An older brief
- * (`asked`, `now`, `needs_you`, `next`) still draws, `now` as the headline and
- * with no status chip. The card is the BODY of the ordinary assistant bubble,
+ * it: status and headline, then the `WarmBriefOrb` picture (the gateway's own
+ * `accepted of total` count as a glowing orb, with the work items waiting on
+ * the owner floating above it as cards), then the model's free-form `body`.
+ * The model writes words only; the orb is fixed code fed by gateway data. A
+ * brief stored before that still carries the model's `widget` HTML, drawn last. Briefs in the older shapes still draw their
+ * fields (`asked`, `remaining`, `done`, `next`, `extra`), and one with `now`
+ * draws it as the headline with no status chip. The card is the BODY of the ordinary assistant bubble,
  * so the row keeps its timestamp and row actions (Copy, Reply in thread) and
  * Copy takes the row's plain-text `content`. Only an assistant row is ever a
  * brief: the kind is a key in `meta`, which a user row can carry too, and
  * drawing that as the crewmate's card would put words in the crewmate's mouth.
  * Every field is untrusted model output grounded in an untrusted snapshot, so
- * each one is drawn as a plain React text node: never markdown, never HTML,
- * never a link or a button. A row without a valid `meta.brief` (an older prose
+ * each text field is drawn as a plain React text node: never markdown, never
+ * HTML, never a link or a button. The widget is HTML and goes only into the
+ * same sandboxed `WidgetFrame` a chat `<mcwidget>` uses. A row without a valid `meta.brief` (an older prose
  * brief) is not claimed here and keeps its ordinary bubble.
  */
 import type { ReactNode } from 'react'
 import { i18nT } from '../../i18n/t'
 import type { ChatMessage } from '../../types'
+import WidgetFrame from '../WidgetFrame'
+import WarmBriefOrb, { SHOWN, type WarmBriefCardItem } from './WarmBriefOrb'
 
 export type WarmBriefStatus = 'on_track' | 'needs_you' | 'blocked' | 'done'
 
@@ -35,14 +39,27 @@ export interface WarmBrief {
   needsYou: string[]
   next: string[]
   extra: { title: string; items: string[] }[]
+  /** Free-form plain text; line breaks are kept. */
+  body: string
+  /** Work items waiting on the owner, read by the gateway from the ledger. */
+  waiting: WarmBriefCardItem[]
+  /** How many wait in all; above `waiting.length` only past the gateway's bound. */
+  waitingTotal: number
+  /** HTML a brief stored before the orb carried, or ''. New briefs have none. */
+  widget: string
 }
 
 // The gateway caps every field already; these are the renderer's own bound so
 // a hand-edited or foreign row can never stretch the card.
 const MAX_FIELD = 240
-const MAX_ITEMS = 3
+const MAX_ITEMS = 4
+// Matches the gateway's bound on listed waiting items.
+const MAX_WAITING = 50
 const MAX_DONE = 4
 const MAX_EXTRA = 2
+const MAX_BODY = 3000
+// A widget over this is dropped whole: cut HTML would draw broken.
+const MAX_WIDGET = 8000
 const STATUSES: readonly WarmBriefStatus[] = ['on_track', 'needs_you', 'blocked', 'done']
 
 function text(value: unknown): string {
@@ -52,6 +69,17 @@ function text(value: unknown): string {
 function items(value: unknown, limit = MAX_ITEMS): string[] {
   if (!Array.isArray(value)) return []
   return value.map(v => text(v)).filter(Boolean).slice(0, limit)
+}
+
+function waitingOf(value: unknown): WarmBriefCardItem[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map(raw => {
+      const s = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+      return { title: text(s.title), ask: text(s.ask) }
+    })
+    .filter(w => w.title)
+    .slice(0, MAX_WAITING)
 }
 
 function progressOf(value: unknown): WarmBrief['progress'] {
@@ -84,6 +112,8 @@ export function warmBriefOf(m: ChatMessage): WarmBrief | null {
   const b = raw as Record<string, unknown>
   const headline = text(b.headline) || text(b.now)
   if (!headline) return null
+  const waiting = waitingOf(b.waiting)
+  const total = b.waiting_total
   return {
     status: STATUSES.find(s => s === b.status) ?? null,
     headline,
@@ -94,6 +124,10 @@ export function warmBriefOf(m: ChatMessage): WarmBrief | null {
     needsYou: items(b.needs_you),
     next: items(b.next),
     extra: extraOf(b.extra),
+    body: typeof b.body === 'string' ? b.body.trim().slice(0, MAX_BODY) : '',
+    waiting,
+    waitingTotal: Number.isInteger(total) && (total as number) > waiting.length ? (total as number) : waiting.length,
+    widget: typeof b.widget === 'string' && b.widget.length <= MAX_WIDGET ? b.widget.trim() : '',
   }
 }
 
@@ -117,15 +151,41 @@ export function warmBriefVisibleText(brief: WarmBrief): string {
   const lines: string[] = []
   if (brief.status) lines.push(statusLabel(brief.status))
   lines.push(brief.headline)
-  if (brief.needsYou.length) lines.push(i18nT('components.warmBriefCard.needs_you'), ...brief.needsYou)
-  if (brief.progress || brief.remaining) lines.push(i18nT('components.warmBriefCard.progress'))
-  if (brief.progress) lines.push(countText(brief.progress))
+  if (hasOrb(brief)) {
+    const cards = cardsOf(brief)
+    for (const card of cards.slice(0, SHOWN)) lines.push(card.title, ...(card.ask ? [card.ask] : []))
+    if (cards.length > SHOWN) {
+      const folded = cards.length - SHOWN + brief.waitingTotal - brief.waiting.length
+      lines.push(i18nT('components.warmBriefCard.more_waiting', { count: folded }))
+    }
+    if (brief.progress) lines.push(countText(brief.progress))
+  } else if (brief.needsYou.length) {
+    lines.push(i18nT('components.warmBriefCard.needs_you'), ...brief.needsYou)
+  }
   if (brief.remaining) lines.push(remainingText(brief))
+  if (brief.body) lines.push(brief.body)
   if (brief.asked) lines.push(askedText(brief))
   if (brief.done.length) lines.push(i18nT('components.warmBriefCard.done'), ...brief.done)
   if (brief.next.length) lines.push(i18nT('components.warmBriefCard.next'), ...brief.next)
   for (const section of brief.extra) lines.push(section.title, ...section.items)
   return lines.join('\n')
+}
+
+/** The orb's cards: the gateway's waiting items, then the model's other asks. */
+function cardsOf(brief: WarmBrief): WarmBriefCardItem[] {
+  return [...brief.waiting, ...brief.needsYou.map(title => ({ title, ask: '' }))]
+}
+
+/** A brief with a status (every brief since the status chip) or a count takes
+ *  the orb's shape; an older `now` brief with neither keeps its plain shape.
+ *  The orb itself draws only with a count, so a no-goal brief shows just cards. */
+function hasOrb(brief: WarmBrief): boolean {
+  return brief.progress !== null || brief.status !== null
+}
+
+/** Whether the orb component has anything to draw: a count or a card. */
+function orbHasContent(brief: WarmBrief): boolean {
+  return brief.progress !== null || cardsOf(brief).length > 0
 }
 
 /** The card as the assistant bubble's body, or undefined for any other row. */
@@ -175,36 +235,22 @@ export default function WarmBriefCard({ brief }: { brief: WarmBrief }) {
         )}
         <span className="min-w-0 font-semibold text-text-strong" data-testid="warm-brief-headline">{brief.headline}</span>
       </div>
-      {brief.needsYou.length > 0 && (
-        <div className="rounded-lg bg-warn-subtle text-text px-2.5 py-1.5 forced-colors:border" data-testid="warm-brief-needs-you">
-          <div className={`${SECTION_LABEL} text-warn-text`}>{i18nT('components.warmBriefCard.needs_you')}</div>
-          <ul className="m-0 pl-4 list-disc">
-            {brief.needsYou.map((item, i) => <li key={i}>{item}</li>)}
-          </ul>
-        </div>
-      )}
-      {(progress || brief.remaining) && (
+      {((hasOrb(brief) && orbHasContent(brief)) || brief.needsYou.length > 0 || brief.remaining) && (
         <div data-testid="warm-brief-progress">
-          <div className={`${SECTION_LABEL} text-muted`}>{i18nT('components.warmBriefCard.progress')}</div>
-          {progress && (
-            <div className="flex items-center gap-2">
-              {/* Static width, no transition: the card never animates. */}
-              <div
-                className="h-1.5 flex-1 min-w-[48px] overflow-hidden rounded-full bg-border forced-colors:border"
-                role="progressbar"
-                aria-valuemin={0}
-                aria-valuemax={progress.total}
-                aria-valuenow={progress.accepted}
-                aria-label={i18nT('components.warmBriefCard.progress')}
-              >
-                <div className="h-full bg-accent" style={{ width: `${(progress.accepted / progress.total) * 100}%` }} />
-              </div>
-              <span className="shrink-0 text-[12px] leading-4 tabular-nums" data-testid="warm-brief-progress-count">{countText(progress)}</span>
+          {hasOrb(brief) ? (
+            orbHasContent(brief) && <WarmBriefOrb progress={progress} cards={cardsOf(brief)} unlisted={brief.waitingTotal - brief.waiting.length} />
+          ) : brief.needsYou.length > 0 && (
+            <div className="rounded-lg bg-warn-subtle text-text px-2.5 py-1.5 forced-colors:border" data-testid="warm-brief-needs-you">
+              <div className={`${SECTION_LABEL} text-warn-text`}>{i18nT('components.warmBriefCard.needs_you')}</div>
+              <ul className="m-0 pl-4 list-disc break-words">
+                {brief.needsYou.map((item, i) => <li key={i}>{item}</li>)}
+              </ul>
             </div>
           )}
-          {brief.remaining && <div className="text-[12px] leading-4 mt-0.5">{remainingText(brief)}</div>}
+          {brief.remaining && <div className="text-[12px] leading-4 mt-1 text-center break-words">{remainingText(brief)}</div>}
         </div>
       )}
+      {brief.body && <div className="whitespace-pre-line break-words" data-testid="warm-brief-body">{brief.body}</div>}
       {brief.asked && (
         <div className="text-[12px] leading-4 text-muted" data-testid="warm-brief-asked">
           {/* One text node, the same string search counts (`warmBriefVisibleText`):
@@ -217,6 +263,11 @@ export default function WarmBriefCard({ brief }: { brief: WarmBrief }) {
       {brief.extra.map((section, i) => (
         <Section key={i} title={section.title} list={section.items} testId="warm-brief-extra" />
       ))}
+      {brief.widget && (
+        <div className="min-w-0" data-testid="warm-brief-widget">
+          <WidgetFrame html={brief.widget} title={i18nT('components.warmBriefCard.label')} />
+        </div>
+      )}
     </div>
   )
 }

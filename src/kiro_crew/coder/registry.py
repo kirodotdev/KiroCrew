@@ -96,7 +96,6 @@ class WorkspaceBindingRegistry:
         self._cache_lock = threading.Lock()
         self._cache_signature: tuple[int, int, int] | None = None
         self._cache_bindings: dict[str, WorkspaceBinding] = {}
-        self._cache_valid = False
 
     @staticmethod
     def _now() -> str:
@@ -107,12 +106,12 @@ class WorkspaceBindingRegistry:
             with self._cache_lock:
                 self._cache_signature = None
                 self._cache_bindings = {}
-                self._cache_valid = True
             return {}
         stat_result = self.path.stat()
         signature = (stat_result.st_ino, stat_result.st_size, stat_result.st_mtime_ns)
         with self._cache_lock:
-            if self._cache_valid and signature == self._cache_signature:
+            # `None` (nothing cached, or the file was absent) never equals a stat tuple.
+            if signature == self._cache_signature:
                 return dict(self._cache_bindings)
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
@@ -135,7 +134,6 @@ class WorkspaceBindingRegistry:
         with self._cache_lock:
             self._cache_signature = signature
             self._cache_bindings = dict(parsed)
-            self._cache_valid = True
         return parsed
 
     def _write_unlocked(self, bindings: dict[str, WorkspaceBinding]) -> None:
@@ -158,7 +156,6 @@ class WorkspaceBindingRegistry:
                 stat_result.st_mtime_ns,
             )
             self._cache_bindings = dict(bindings)
-            self._cache_valid = True
 
     def _open_lock(self) -> BinaryIO:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)

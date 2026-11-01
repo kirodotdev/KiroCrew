@@ -1611,9 +1611,8 @@ class TestAnAuditNeverDecidesTheOperation:
     async def test_every_audit_on_this_surface_goes_through_the_one_chokepoint(self):
         """Pinned structurally, because the defect was one call site out of four.
 
-        Three review rounds each found a different obligation missing from these
-        routes, every time because the surface re-derived it by hand. A direct
-        ``_sel().log_api_access`` here is that mistake reappearing.
+        A route that re-derives the audit by hand drops one of its obligations.
+        A direct ``_sel().log_api_access`` here is that mistake reappearing.
         """
         from kiro_crew.dashboard.handlers import appearances as handlers_mod
 

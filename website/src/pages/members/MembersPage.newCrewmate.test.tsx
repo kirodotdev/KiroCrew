@@ -31,7 +31,6 @@ vi.mock('../../api/client', () => ({
     // The warm greeting's read of the crewmate's work ledger. No ledger is the
     // state every case not about the greeting wants: the chat opens bare.
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
-    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
     memberThread: vi.fn(),
     // Mate's first greeting: the server decides, so the page only asks.
     memberGreet: vi.fn(() => Promise.resolve({ outcome: 'started' })),
@@ -218,7 +217,6 @@ vi.mock('../../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => true,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 
 // The profile settings write the live slot; the stub shows which slot the page
 // handed it, so a refused thread is proven to get none.
@@ -235,13 +233,12 @@ const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
 const chatPaneMounts = vi.hoisted(() => ({ count: 0 }))
 vi.mock('../../components/ChatPane', async () => {
   const { useEffect } = await import('react')
-  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, crewmateGreeting, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown; crewmateGreeting?: import('react').ReactNode } & Record<string, unknown>) {
+  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown } & Record<string, unknown>) {
     // Mount count: the New crewmate card must HIDE the pane, never unmount it.
     useEffect(() => { chatPaneMounts.count += 1 }, [])
     return (
-      <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'}>
+      <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'} data-push-to-talk={rest.pushToTalk ? '1' : '0'}>
         {slotKey}
-        {crewmateGreeting}
         {/* A static opening card is gone: no host may pass one. */}
         {'assistantWelcome' in rest && <div data-testid="assistant-welcome-stub" />}
         {/* Stands in for rendered transcript links (markdown anchors). */}
@@ -325,9 +322,6 @@ beforeEach(() => {
   resetFirstGreetingRequests()
   // The remembered member must not leak between cases.
   localStorage.clear()
-  // The page is reached only with the Crewmates preview on; the cases that
-  // pin what happens with it off turn it off themselves.
-  localStorage.setItem('mc-preview-crew', '1')
   // Nor the crewmate-created receipts (browser-session record).
   sessionStorage.clear()
   chatPaneMounts.count = 0
@@ -532,7 +526,7 @@ describe('New mate dialog', () => {
     // Lower-case name: the thread stub answers `member: slug`, and the page
     // treats a name/answer mismatch as a slug collision (its own guard).
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    fireEvent.change(screen.getByLabelText('What it looks after'), { target: { value: 'Triage new issues' } })
+    fireEvent.change(screen.getByLabelText('Goal'), { target: { value: 'Triage new issues' } })
     // The roster the page re-reads after the create carries the new row.
     membersMock.mockResolvedValue({
       members: [row(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
@@ -600,6 +594,45 @@ describe('New mate dialog', () => {
     await act(async () => {})
     expect(api.memberGreet).toHaveBeenCalledTimes(1)
     expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('a just-created mate at work on its greeting moves its body and eyes in one chain in its row, with nothing animating inside them', async () => {
+    // Right after create the greeting turn runs, so the new row is the first
+    // place the working icon shows. An SVG that animates itself is re-rastered
+    // in pieces on iOS Safari: head, tail and one eye out of step.
+    const membersMock = api.members as ReturnType<typeof vi.fn>
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await clickAddCrewmate()
+    await screen.findByTestId('crewmate-create-look')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    membersMock.mockImplementation(() => {
+      const sent = vi.mocked(api.createKirocrewAgent).mock.calls[0]?.[0] as { avatar?: unknown } | undefined
+      return Promise.resolve({
+        members: [
+          row(),
+          row({ name: 'radar', slug: 'radar', dashboard_created: true, avatar: sent?.avatar, running: true, bound: true, slot_key: 'member-radar' }),
+        ],
+        default_agent: 'kirocrew',
+      })
+    })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+    const radar = (await rosterRow('radar')).closest('li') as HTMLElement
+    // Running, as a fresh mate is while it greets: the presence dot is on.
+    await within(radar).findByTestId('member-presence-dot', undefined, PANE_READY)
+    const motion = await within(radar).findByTestId('crew-icon-motion', undefined, PANE_READY)
+    // One moving root in the row, holding the silhouette and one eye layer
+    // inside the same body-motion wrappers, so they share every body transform.
+    expect(within(radar).getAllByTestId('crew-icon-motion')).toHaveLength(1)
+    expect(within(radar).getAllByTestId('crew-icon-eyes')).toHaveLength(1)
+    const imgs = radar.querySelectorAll('img')
+    expect(imgs).toHaveLength(2)
+    const sq = motion.querySelector('.crew-icon-sq') as HTMLElement
+    for (const img of imgs) {
+      expect(sq.contains(img)).toBe(true)
+      expect(decodeURIComponent(img.getAttribute('src') ?? '')).not.toMatch(/<style|animation|@keyframes/)
+    }
   })
 
   it('a mate not created on the dashboard asks for no greeting when opened', async () => {
@@ -934,7 +967,7 @@ describe('New mate dialog', () => {
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    fireEvent.change(screen.getByLabelText('What it looks after'), { target: { value: 'Triage new issues' } })
+    fireEvent.change(screen.getByLabelText('Goal'), { target: { value: 'Triage new issues' } })
     // The reconcile read finds radar — this request's, or another tab's; the
     // dialog cannot tell, so it claims neither.
     membersMock.mockResolvedValue({
@@ -1126,5 +1159,22 @@ describe('New mate dialog', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(api.memberGreet).toHaveBeenCalledTimes(1)
     expect(sendMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('MembersPage: the dictation key under the New crewmate card (#24967)', () => {
+  it('disarms the DM pane\'s dictation key while the card covers it, and re-arms it when the card closes', async () => {
+    await renderPage([row()])
+    const pane = await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    await waitFor(() => expect(pane).toHaveAttribute('data-push-to-talk', '1'))
+    await clickAddAdvanced()
+    await screen.findByTestId('crewmate-create-form')
+    // The key listens on the whole document: under the card it would dictate
+    // into, and could send to, the hidden chat.
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveAttribute('data-push-to-talk', '0'))
+    // An empty card closes on the rail's Crewmates entry (no draft to guard).
+    clickRailMembers()
+    await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveAttribute('data-push-to-talk', '1'))
   })
 })

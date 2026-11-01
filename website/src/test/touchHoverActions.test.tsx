@@ -115,7 +115,7 @@ describe('PinnedMessagesPanel row actions on touch devices', () => {
 
 describe('CodeBlock header actions on touch devices', () => {
   const row = (container: HTMLElement) =>
-    container.querySelector('[class*="group-hover/code"]') as HTMLElement
+    container.querySelector('div[class*="group-hover/code"]') as HTMLElement
 
   it('reveals and enlarges the copy action where the pointer cannot hover', () => {
     const { container } = render(<CodeBlock code="const x = 1" lang="ts" complete />)
@@ -128,6 +128,23 @@ describe('CodeBlock header actions on touch devices', () => {
     expect(cls).toContain('opacity-0')
     expect(cls).toContain('group-hover/code:opacity-100')
     expect(cls).toContain('group-focus-within/code:opacity-100')
+  })
+
+  it('reveals and enlarges the wrap toggle where the pointer cannot hover', () => {
+    render(<CodeBlock code="const x = 1" lang="ts" complete />)
+    const btn = screen.getByTestId('code-block-wrap-toggle')
+    expect(btn.className).toContain('[@media(hover:none)]:opacity-100')
+    expect(btn.className).toContain('[@media(hover:none)]:p-2.5')
+    expect(btn.className).toContain('[@media(hover:none)]:[&_svg]:h-5')
+    expect(btn.className).toContain('[@media(hover:none)]:[&_svg]:w-5')
+  })
+
+  it('keeps the wrap toggle hover-revealed for hover-capable pointers', () => {
+    render(<CodeBlock code="const x = 1" lang="ts" complete />)
+    const btn = screen.getByTestId('code-block-wrap-toggle')
+    expect(btn.className).toContain('opacity-0')
+    expect(btn.className).toContain('group-hover/code:opacity-100')
+    expect(btn.className).toContain('group-focus-within/code:opacity-100')
   })
 })
 

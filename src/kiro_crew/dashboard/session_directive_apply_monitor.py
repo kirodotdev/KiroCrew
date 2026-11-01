@@ -660,9 +660,8 @@ async def _monitor_update(
     # legacy chokepoint ``authorize_and_update_nudge`` holds an opaque loop id
     # and no session identity (its REST caller is user-token gated), so the mode
     # rule has to be applied HERE, where the provenance lives: ``message`` is
-    # the instruction every future wake executes, and before this PR a
-    # crew/member slot could hold no loop at all, so a revision of one is a
-    # NEW surface. Only the session's own turn (``self_arm_ok``) may revise it;
+    # the instruction every future wake executes. Only the session's own turn
+    # (``self_arm_ok``) may revise it;
     # a cron injection, an app-driven turn or a sub-agent sharing the slot is
     # refused with the same reason the arm path gives. Same predicate as the
     # arm path (``is_self_arm``) so the two never drift apart. The mode is read

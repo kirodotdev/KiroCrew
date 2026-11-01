@@ -571,7 +571,6 @@ class TestSendReply:
         from kiro_crew.feishu.client import LarkClient
 
         client = LarkClient(app_id="a", app_secret="s")
-        # Make the reply fail
         client._lark.im.v1.message.succeed = False
         result = await client.send_reply("msg-1", "Hi")
         assert result is False
@@ -1043,7 +1042,6 @@ class TestStart:
         assert client._thread.daemon is True
         assert client._thread.is_alive()
 
-        # Clean up: stop and join
         client._ws_client.stop()
         client._thread.join(timeout=1.0)
         assert not client._thread.is_alive()

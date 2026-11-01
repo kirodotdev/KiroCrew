@@ -34,6 +34,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import (
     AWS_PROFILE_ENV,
@@ -64,6 +65,12 @@ from kiro_crew.start_priority import (
 
 if TYPE_CHECKING:
     from kiro_crew.session_allocation import LLMProvider, ProviderFactory, SessionAllocationService
+
+
+def _model_is_a_launch_argument(provider: Any) -> bool:
+    """Whether *provider*'s harness fixes its model at launch and refuses a switch."""
+    backend = getattr(getattr(provider, "client", None), "backend", None)
+    return isinstance(backend, str) and backend in ACP_BACKENDS_MODEL_AT_LAUNCH
 
 
 async def _session_runs_remotely(session_key: str) -> bool:
@@ -128,14 +135,20 @@ async def _reacquire_and_validate(
 
 
 def _release_reacquired(self: SessionAllocationService, key: str, session: Any) -> None:
-    """Give back the permit :meth:`_reacquire_and_validate` took, unless a reset already did.
+    """Give back the permit :meth:`_reacquire_and_validate` took, unless a teardown already did.
 
-    A reset that pops the session while this task waits for the lock records
+    A teardown that pops the session while this task waits for the lock records
     this task as the permit's holder and releases the permit to wake the
-    claimants parked on it (``session_lifecycle._wake_turn_waiters``), so a
+    claimants parked on it (``session_lifecycle.retire_turn_permit``), so a
     second release here would over-release it. Only a popped session can
     carry that record, so a session still registered is always released.
     """
+    # The holding ends here whichever branch gives the permit back, so the record
+    # goes first: a teardown that pops the session later must not name this task
+    # as the holder of a permit it has given back (or one already handed to the
+    # next claimant), or it would release that permit a second time.
+    if session.turn_owner is asyncio.current_task():
+        session.turn_owner = None
     if self._sessions.get(key) is not session and self._owner.absorb_orphaned_release(key):
         return
     session.semaphore.release()
@@ -149,6 +162,10 @@ async def _evict_stale_session(self: SessionAllocationService, key: str, session
             del self._sessions[key]
             self.advance_ownership_generation(key)
             dead = session.provider
+            # Same lock hold as the removal, before any await: a turn still
+            # holding this permit is recorded and its parked claimants woken,
+            # exactly as every lifecycle teardown verb does.
+            self._owner.retire_turn_permit(key, session)
             # Same tick as the removal. Left unrecorded, the start crumb
             # survives and the next boot calls this a crash.
             await record_session_ended(key, end_reason=END_REASON_EVICTED)
@@ -434,6 +451,10 @@ async def _get_or_create_impl(
     # no provider factory is handed a key it does not know; each retry below
     # hands it back.
     app_name = str(extra_factory_kwargs.pop("app_name", "") or "")
+    # The app whose governance profile the session runs under, for a caller
+    # (a subagent's spawn) that must carry an app's governance without taking
+    # its model. Defaults to ``app_name``: an app slot's own session is both.
+    owning_app = str(extra_factory_kwargs.pop("owning_app", "") or "") or app_name
     # The app launch copy kiro-cli is asked for in place of ``agent``
     # (``apps.agent_launch``); ``agent`` stays the session's identity. Stamped
     # on the cold-started provider below, never handed to a factory.
@@ -484,6 +505,11 @@ async def _get_or_create_impl(
                         stale_session = session
                         del self._sessions[key]
                         self.advance_ownership_generation(key)
+                        # Same lock hold as the removal, before any await: a
+                        # turn still holding the dead session's permit is
+                        # recorded and its parked claimants woken, as in
+                        # ``_evict_stale_session``.
+                        owner.retire_turn_permit(key, session)
                         # Same tick as the removal. Left unrecorded, the
                         # start crumb survives and the next boot calls this
                         # a crash rather than an eviction.
@@ -569,6 +595,7 @@ async def _get_or_create_impl(
             start_priority=start_priority,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
+            owning_app=owning_app,
             **extra_factory_kwargs,
         )
 
@@ -727,7 +754,8 @@ async def _get_or_create_impl(
     pooled = None if pool_decision else await owner._drain_and_claim(agent)
     if not pool_decision:
         pool_decision = "hit" if pooled is not None else "miss_empty"
-    owner._record_pool_decision(pool_decision, key)
+    if pooled is None:
+        owner._record_pool_decision(pool_decision, key)
     # Assigned by the cold-start branch inside its semaphore section (the
     # spawn-identity stamp read there must already run under the shield);
     # the pool-claim branch leaves it None and is shielded after the
@@ -735,6 +763,7 @@ async def _get_or_create_impl(
     starting_pid: int | None = None
     if pooled is not None:
         provider = pooled
+        launch_pin = False
         # A warm-pool claim owns a LIVE process from this line on -- the pool
         # path's spawn door. Marked exactly like a cold start past its
         # pre-spawn check, so a claim the ending fence refuses at registration
@@ -745,6 +774,8 @@ async def _get_or_create_impl(
         cast(Any, provider).memory_mode = memory_mode
         if self._deps.is_acp_provider(provider):
             cast(Any, provider).member_context = member_context
+            # Trusted: the caller's slot app, never transcript metadata.
+            cast(Any, provider).owning_app = owning_app
         try:
             if self._deps.is_acp_provider(provider):
                 claim_kwarg = extra_factory_kwargs.get("crew_agent")
@@ -834,6 +865,11 @@ async def _get_or_create_impl(
                                 switch_model,
                                 pool_model,
                             )
+                        elif _model_is_a_launch_argument(provider):
+                            # The harness takes its model only at launch and
+                            # refuses a live switch: this claim cannot honour
+                            # the pin, so the chat cold-starts on it instead.
+                            launch_pin = True
                         else:
                             await cast(Any, provider).client.set_model(_send_model)
                             self._deps.logger.info(
@@ -841,7 +877,7 @@ async def _get_or_create_impl(
                                 _send_model,
                             )
                 _effort_override = extra_factory_kwargs.get("reasoning_effort_override")
-                if _effort_override:
+                if _effort_override and not launch_pin:
                     _eff = str(_effort_override)
                     try:
                         if not await provider.change_effort(_eff):
@@ -867,19 +903,36 @@ async def _get_or_create_impl(
                             key or "?",
                             exc_info=True,
                         )
-            self._deps.logger.info(
-                "Claimed warm-pool process for %s (agent=%s)",
-                key,
-                agent or owner._pool_agent,
-            )
-            owner._schedule_replenish()
+            if launch_pin:
+                # Same teardown as any failed claim, then the cold start below. The
+                # reservation stays in the spawning set the claim put it in, so an
+                # ending caller's read still sees a process in flight; the cold
+                # start's own fence check and cleanup take it from there exactly as
+                # for a fresh spawn.
+                owner._dispatch_hard_kill(provider)
+                owner._schedule_replenish()
+                pooled = None
+                pool_decision = "bypass_model_at_launch"
+            else:
+                self._deps.logger.info(
+                    "Claimed warm-pool process for %s (agent=%s)",
+                    key,
+                    agent or owner._pool_agent,
+                )
+                owner._schedule_replenish()
         except (asyncio.CancelledError, Exception):
+            owner._record_pool_decision(pool_decision, key)
             owner._dispatch_hard_kill(provider)
             raise
-    else:
+        owner._record_pool_decision(pool_decision, key)
+    if pooled is None:
         # A defaulted KAS waits (bounded) for the kiro-cli floor's verdict, so
         # the factory below picks the backend the verdict decided.
         await await_kas_floor_verdict(member=_is_member_key(key))
+        # The verdict can install a new factory before it releases this wait (a
+        # confirmed v3 reloads the live config), so a waiting spawn takes the
+        # factory in force now, not the one it copied before waiting.
+        factory = owner._provider_factory or factory
         provider = factory(
             key,
             agent=agent,
@@ -893,6 +946,8 @@ async def _get_or_create_impl(
         if self._deps.is_acp_provider(provider):
             cast(Any, provider).member_context = member_context
             cast(Any, provider).app_launch_agent = app_launch_agent
+            # Trusted: the caller's slot app, never transcript metadata.
+            cast(Any, provider).owning_app = owning_app
         if memory_mode != "persistent":
             resume_sid = None
         provider_switched = False
@@ -1149,7 +1204,7 @@ async def _get_or_create_impl(
                 # earlier cleanup path may kill unconditionally.
                 await acquire_session_lease(provider)
                 try:
-                    await record_session_started(key)
+                    await record_session_started(key, provider)
                 except BaseException:
                     # See open_task_session: a cancellation here would leave a
                     # registered session whose provider the caller is about to
@@ -1281,6 +1336,7 @@ async def _get_or_create_impl(
             start_priority=start_priority,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
+            owning_app=owning_app,
             **extra_factory_kwargs,
         )
 

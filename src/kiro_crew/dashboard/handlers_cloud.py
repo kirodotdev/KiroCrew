@@ -8,7 +8,8 @@ Like the instances control plane, every route is **owner-only, never reachable
 via Slack**, and emits a SEL audit event. Provisioning is a deliberate
 **human/installer action** (the owner clicking Launch is the consent), which is
 exactly the caller ``cloud.aws.assert_human_action`` permits — the gateway
-process carries no ``KIROCREW_SESSION_KEY``, so the destructive verbs
+process carries none of the agent markers ``cloud.aws._in_agent_session``
+reads, so the destructive verbs
 (stop/start/destroy) are allowed here but blocked from any agent subprocess.
 
 POSIX-only: the deploy engine shells to ``bash``/``aws``; Windows returns 400.
@@ -23,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import json
 import logging
 import sys
 import threading
@@ -446,7 +448,30 @@ async def api_cloud_iam_policy(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     _audit("iam_policy", "success")
-    return web.json_response({"policy": iam.policy_json()})
+    body: dict = {"policy": iam.policy_json()}
+    # The edition's host-policy addendum, a second policy to apply beside the
+    # first; absent when the edition adds none. An invalid descriptor is
+    # reported rather than raised, the same refusal a launch would give.
+    # ``host_policies_notice`` is the status line the setup tab shows beside its
+    # copy button, so a dashboard user learns the second policy exists;
+    # ``host_policies_error`` is shown as an error when it cannot be built.
+    try:
+        addendum = iam.host_policy_document()
+    except AWSError as exc:
+        body["host_policies_error"] = str(exc)
+    else:
+        if addendum is not None:
+            body["host_policies"] = json.dumps(addendum, indent=2)
+            body["host_policies_notice"] = _HOST_POLICIES_NOTICE
+    return web.json_response(body)
+
+
+#: Shown beside the copied main policy when the edition attaches host policies.
+_HOST_POLICIES_NOTICE = (
+    "This build also attaches host policies to each instance role, so apply a "
+    "second policy beside this one: run `kirocrew cloud iam-policy --host-policies` "
+    "and attach its output too."
+)
 
 
 async def api_cloud_identity(request: web.Request) -> web.Response:

@@ -53,6 +53,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``token_auth.middleware`` treats ``/api/computer-use/invoke/...`` as
         # strict too, which is correct — nothing else lives under it.
         "/api/computer-use/invoke",
+        # Mediated-secret egress. The only legitimate caller is the in-sandbox
+        # ``kirocrew-secrets`` MCP subprocess over loopback with the internal
+        # secret; no browser ever posts to these, and keeping them strict means a
+        # dashboard cookie cannot reach the handler that resolves a vault secret
+        # and performs a credential-bearing egress.
+        "/api/mediated-secret-capability",
+        "/api/mediated-secret-request",
         # Computer use: the live-view (PiP) frame ingress. STRICT for the same
         # reason as ``invoke`` — its body is a frame of the operator's own desktop
         # and its only caller is this gateway's own capture thread, so no browser
@@ -90,20 +97,8 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # boundary, and the handler re-asserts host-locality itself because a
         # local_only=False deployment reclassifies strict paths as mixed.
         "/api/update/approve",
-        # Flagged-file delivery approval step-up, the exact mirror
-        # of /api/update/approve above and STRICT for the identical reason: its
-        # only legitimate caller is `kirocrew file-delivery approve` on the gateway
-        # host presenting the sandbox-masked nonce plus X-Internal-Secret. As with
-        # update approve, "no browser ever posts to it -- the SPA can only ARM;
-        # keeping it off the cookie fall-through means a dashboard bearer cannot
-        # even reach the handler whose refusal is the boundary". The handler
-        # (api_file_delivery_consent_approve -> _approve_is_local) re-asserts
-        # host-locality itself, so the STRICT entry is the outer of two fences and
-        # a local_only=False deployment that reclassifies strict paths as mixed is
-        # still caught by the handler's own check.
-        "/api/file-delivery/consent/approve",
         # Dev Fleet pod lifecycle — the agent surface behind the ``pod_up`` /
-        # ``pod_down`` / ``pod_status`` / ``pod_ls`` MCP tools. An agent session
+        # ``pod_restart`` / ``pod_down`` / ``pod_status`` / ``pod_ls`` MCP tools. An agent session
         # runs behind a sandbox with its own user namespace, so its shells cannot
         # connect the systemd user bus every pod verb needs; the gateway holds the
         # host bus and does the systemd part on the agent's behalf. Without these
@@ -118,12 +113,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``local_only=False`` deployment reclassifies strict paths as mixed —
         # same reason ``/api/computer-use/frame`` re-asserts both.
         #
-        # FOUR EXACT paths, never the ``/api/apps/dev-fleet/pod`` prefix. The
+        # FIVE EXACT paths, never the ``/api/apps/dev-fleet/pod`` prefix. The
         # match is ``path == p or path.startswith(p + "/")``, so a prefix entry
         # would silently admit every future route under that segment — and this
         # app's neighbourhood includes worktree PRUNE and the Make Live cutover,
         # which must never become reachable by holding the internal secret.
         "/api/apps/dev-fleet/pod/up",
+        "/api/apps/dev-fleet/pod/restart",
         "/api/apps/dev-fleet/pod/down",
         "/api/apps/dev-fleet/pod/status",
         "/api/apps/dev-fleet/pod/list",
@@ -146,6 +142,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/slack/reactions",
         "/api/slack-profile",  # MCP-only (slack_profile tool); no browser caller
         "/api/sessions/summarize",  # MCP-only (list_sessions summarize leg); internal-secret, no browser caller
+        # MCP-only crew-scoped session reads (crew= scope on search_chat_history
+        # / list_sessions / get_chat_session). Prefix matching covers
+        # "/api/crew-sessions/search|list|read". No browser caller — the
+        # dashboard's own federated read is the owner-guarded
+        # "/api/instances/search-sessions". Without this entry the tools'
+        # internal-secret calls fall through to cookie auth and are refused.
+        "/api/crew-sessions",
         # MCP-only (session_ledger_read / session_ledger_record tools); no
         # browser caller. Prefix matching covers "/api/session-ledger/record".
         # Without this entry the tools' internal-secret calls fall through to
@@ -235,6 +238,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/retry",
         "/api/session-control/continue",
         "/api/session-control/set-model",
+        "/api/session-control/set-color",
         "/api/session-control/reload",
         "/api/session-control/rename",
         "/api/session-control/generate-title",

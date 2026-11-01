@@ -20,6 +20,7 @@ import { Link } from 'react-router-dom'
 import { Server, X } from 'lucide-react'
 import { api, ApiError } from '../../../api/client'
 import { crewPeerUrl } from '../../../api/client/instances'
+import { refreshDashboardReads } from '../../../api/dashboardRefresh'
 import { useAppSelector } from '../../../store'
 import { useSelectInstance } from '../../../hooks/useSelectInstance'
 import { Btn } from '../../../components/ui'
@@ -27,22 +28,26 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import RemoteBehindBadge from '../../../components/RemoteBehindBadge'
 import Glass from '../../../components/Glass'
 import ChatInput from '../../../components/ChatInput'
+import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
+import { busySteerFlag } from '../../../components/chat-input/busySend'
 import ChatMessageList from '../../../app-sdk/ChatMessageList'
 import ChatFooter from '../ChatFooter'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../../../components/QueueStack'
 import { hydrateQueuedBubbles, normalizeQueueEntries } from '../../../store/chatSlice'
+import { DOCK_CLEARANCE_PX } from '../composerDockMetrics'
 import { ReadOnlyCodeCtx } from '../../../components/markdown/contexts'
 import { SlotProvider } from '../../../providers/SlotContext'
 import { i18nT } from '../../../i18n/t'
 import { errMessage } from '../../../utils/thunkError'
 import type { ChatMessage, ChatSlot } from '../../../types'
-import { capsRetryInterval, closeCrewWindow, coverSiblings, markCrewWindowShown, readCrewDraft, subscribeCrewDraft, writeCrewDraft, type CrewWindowTarget } from './crewWindowStore'
+import { capsRetryInterval, closeCrewWindow, markCrewWindowShown, readCrewDraft, subscribeCrewDraft, writeCrewDraft, type CrewWindowTarget } from './crewWindowStore'
+import { coverSiblings } from '../../../utils/coverSiblings'
 import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers'
 import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowModelPicker'
 import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
 import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
-import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
+import { isHiddenInvisibleAssistantRow, isRetractedSteerRow } from '../../../utils/invisibleText'
 import { isSystemNoticeRow } from '../CompactionCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
@@ -97,7 +102,10 @@ function withoutHubRecords(m: ChatMessage): ChatMessage {
 export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { target: CrewWindowTarget; onClose?: () => void }) {
   const { instanceId, key } = target
   const queryClient = useQueryClient()
-  const slotPath = 'api/chat/slots/' + encodeURIComponent(key)
+  // `?crew=all` keeps a Crew Mode root's crew members in the peer's answer, the
+  // same way the local slot list asks for them.
+  const slotsPath = 'api/chat/slots'
+  const slotPath = slotsPath + '/' + encodeURIComponent(key)
   const slotKeyQ = useMemo(() => ['crew-window', instanceId, key, 'slot'] as const, [instanceId, key])
   const detailKeyQ = useMemo(() => ['crew-window', instanceId, key, 'detail'] as const, [instanceId, key])
   const instancesQ = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances() })
@@ -121,7 +129,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // detail carries the transcript. Both are the peer's own answers.
   const slotQ = useQuery({
     queryKey: slotKeyQ,
-    queryFn: async () => ((await api.crewPeerGet(instanceId, 'api/chat/slots')) as PeerSlot[]).find(s => s.key === key) ?? null,
+    queryFn: async () => ((await api.crewPeerGet(instanceId, slotsPath + '?crew=all')) as PeerSlot[]).find(s => s.key === key) ?? null,
     enabled: versionOk,
   })
   const detailQ = useQuery({
@@ -141,7 +149,9 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       if (timer) return
       timer = setTimeout(() => {
         timer = undefined
-        void queryClient.refetchQueries({ queryKey: detailKeyQ }, { cancelRefetch: false })
+        // A read already in flight began before this frame's write, so the
+        // helper owes one more read after it, however many frames ask.
+        refreshDashboardReads(queryClient, detailKeyQ)
       }, REFETCH_THROTTLE_MS)
     }
     const es = new EventSource(crewPeerUrl(instanceId, 'api/stream'))
@@ -242,6 +252,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       if (text.trim()) recoverIntoDraft(text)
     },
   })
+  const composerRef = useRef<ComposerHandle>(null)
   /** Send the draft. While the peer runs, the composer's busy choice picks:
    *  a plain send the peer queues, or `steer` into the running turn. */
   const send = (steer = false) => {
@@ -249,6 +260,9 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     if ((!typed && (rewindTs || !messageQuote.pendingQuote)) || action.isPending || !connected) return
     // A held rewind waits for an idle peer: mid-turn the peer refuses it.
     if (rewindTs && running) return
+    // A send ends live streaming dictation before the box is cleared, or the
+    // next partial rebuilds the sent text (see useComposerVoice.disarmForSend).
+    composerRef.current?.voice()?.disarmForSend()
     const { quote, text: message } = rewindTs ? { quote: null, text: typed } : messageQuote.consume(typed)
     const req = rewindTs
       ? { path: slotPath + '/rewind', body: { ts: rewindTs, content: message } }
@@ -260,11 +274,21 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     setRewindTs(null)
     action.mutate({ ...req, message, rewindTs, typed, quote })
   }
+  // Dictation runs on THIS machine (mic + STT); only the text goes to the
+  // peer, through the same send as a typed message. An auto-submit (endpoint
+  // or release) picks steer or queue the way Enter does, from this window's
+  // busy-send choice. It reads the latest `send` and run state through a ref.
+  const autoSubmitRef = useRef<() => void>(() => {})
+  const voiceOptions = useMemo<ComposerVoiceOptions>(() => ({ onAutoSubmit: () => autoSubmitRef.current() }), [])
 
   const running = slotQ.data?.running ?? detailQ.data?.running ?? false
   // When the crew cannot be reached, its last-known running state is stale:
   // stop the animation so the transcript does not contradict the notice.
   const displayRunning = running && !(action.error && isUnreachable(action.error))
+  autoSubmitRef.current = () => {
+    const live = running && !rewindTs
+    send(!!busySteerFlag({ slotKey: crewWindowSlot(instanceId, key), busy: live, turnRunning: live, stopState: slotQ.data?.stop_state, jevAutoConsented: false }))
+  }
   // Resume, as locally: only on a turn the peer itself calls interrupted,
   // and not while a refused rewind is held (Send retries that first).
   const continuable = connected && !running && !rewindTs && !slotQ.data?.stopping && !!slotQ.data?.interrupted
@@ -307,7 +331,12 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   }, [nativeApproval, instanceId, slotPath, settle, name])
   // The newest turn row the transcript draws as a bubble: a system notice
   // (compaction, reload) and a say-nothing reply are not one.
-  const lastTurn = [...messages].reverse().find(m => m.role === 'user' || (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m)))
+  const lastTurn = [...messages].reverse().find(m =>
+    !isRetractedSteerRow(m) && (
+      m.role === 'user' ||
+      (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m))
+    ),
+  )
   // An untitled session shows the shared "Untitled session" label, never the
   // internal slot key. The key still routes every request (crewWindowSlot,
   // slotPath); only the header text changes. The label is used ONLY once a
@@ -375,6 +404,13 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     return cover ? coverSiblings(cover) : undefined
   }, [])
   const placeholder = i18nT('pages.chat.crewWindow.placeholder', { name })
+  // Every condition the notices column draws something for; the glass chip
+  // behind them is mounted only then, so a quiet column stays empty. An error
+  // counts only with text to show: ErrorNotice draws nothing for an empty
+  // message, and the chip must not open over the transcript around nothing.
+  const hasNotice = (!!action.error && (isUnreachable(action.error) || !!errMessage(action.error)))
+    || (!!picker.error && !!errMessage(picker.error)) || !!agentMode.error || picker.effortCapsFailed
+    || agentMode.readFailed.agents || agentMode.readFailed.mode || !connected || !!rewindTs
 
   return (
     <div ref={rootRef} tabIndex={-1} className="flex flex-col h-full min-h-0 outline-none" data-testid="crew-chat-window">
@@ -405,7 +441,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         </div>
       )}
       <div className="relative flex-1 min-h-0">
-      <div className="absolute inset-0 overflow-y-auto pt-3 flex flex-col gap-1" aria-live="polite" style={{ paddingBottom: dockH + 16 }}>
+      <div className="absolute inset-0 overflow-y-auto pt-3 flex flex-col gap-1" aria-live="polite" style={{ paddingBottom: dockH + DOCK_CLEARANCE_PX }}>
         <div className="px-4 flex flex-col gap-3">
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {loadError && <ErrorNotice title={i18nT('pages.chat.crewWindow.load_failed', { name })} message={errMessage(loadError)} />}
@@ -435,12 +471,41 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
           )}
         </div>
       </div>
-      {/* Glass pins its own root to position: relative, so a plain box places
-          the dock; the transcript above pays for it with padding. */}
-      <div ref={dockRef} className="absolute left-0 right-0 bottom-0">
-      <Glass thickness="thin" radius={0} className="border-t border-border py-3 flex flex-col gap-2">
-        {/* The composer's own column, so a notice about a pick sits over the box and chip it is about. */}
-        <div className="px-4 mx-auto w-full flex flex-col gap-2" style={{ maxWidth: 'var(--mc-input-width, 900px)' }}>
+      {/* The composer dock, in the local page's shape (ComposerDockView): a bare
+          box floating over the bottom of the scroller, so the transcript passes
+          UNDER the composer's own glass at every scroll position
+          (docs/decisions/2026-10-02-chat-transcript-scrolls-under-the-composer-glass.md)
+          and the scroller pays for the covered strip with `paddingBottom: dockH +
+          DOCK_CLEARANCE_PX`, measured from this box by `dockRef`. No band, border
+          or padding of its own: the composer card is the only material here, as
+          on the local page, so the window shows the same air around the box (a
+          band with vertical padding of its own would sit the box in more empty
+          strip than the box is tall, and unevenly, since the composer pads its
+          top and bottom differently).
+          `pointer-events-none` on the root, restored on the CHILDREN of the two
+          `dock-inert` wrappers (liquid-glass.css): each child is its own 900px
+          column, so the empty width either side lets wheel and touch reach the
+          transcript underneath. No z-index on purpose, as on the local dock: the
+          box paints over the scroller because it follows it in DOM order. One
+          thing the local dock does that this one leaves out: it insets its right
+          edge by the scroller's gutter. Here the dock spans the full width, so in
+          a window wider than the column the root's `pointer-events-none` lets a
+          click beside the column reach the scrollbar beneath, while in a narrower
+          one the column itself covers the bottom of a classic scrollbar (overlay
+          scrollbars have no gutter); wheel, touch and keyboard still scroll. */}
+      <div ref={dockRef} className="absolute left-0 right-0 bottom-0 pointer-events-none" data-testid="crew-window-dock">
+        {/* The composer's own column, so a notice about a pick sits over the box
+            and chip it is about. `empty:hidden` because the column is usually
+            empty: left in flow it would still open its margin as a blank strip
+            above the box. With something to say, the notices share one glass
+            chip, as every bar in the local dock is a pane of its own: the column
+            floats over the scrolling transcript, and a bare text line there (the
+            offline readout, the rewind prompt, an inline read failure) would
+            paint straight onto the rows passing under it. */}
+        <div className="dock-inert">
+        <div className="px-4 mx-auto w-full flex flex-col gap-2 mb-2 empty:hidden" style={{ maxWidth: 'var(--mc-input-width, 900px)' }} data-testid="crew-window-notices">
+          {hasNotice && (
+          <Glass variant="chip" thickness="thick" radius={12} className="flex flex-col gap-2 px-3 py-2">
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {/* An unreachable crew did not say no: its own words, no raw error,
               and a way to the crew's own dashboard (which reconnects it). */}
@@ -482,7 +547,11 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
               <Btn onClick={() => { setRewindTs(null); setRewindText('') }}>{i18nT('pages.chat.crewWindow.cancel_rewind')}</Btn>
             </div>
           )}
-          {/* fuseBelow off: the stack stands as whole cards over the composer. */}
+          </Glass>
+          )}
+          {/* fuseBelow off: the stack stands as whole cards over the composer.
+              Beside the notices' chip, not inside it: each queue card is a
+              glass pane of its own. */}
           {(queuedMessages.length > 0 || systemDeliveryCount > 0) && (
             <div data-testid="crew-window-queue">
               <SubagentDeliveryProgress count={systemDeliveryCount} />
@@ -490,6 +559,11 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             </div>
           )}
         </div>
+        </div>
+        {/* `relative z-10 dock-inert`, the same wrapper the local dock gives its
+            input area: the composer's glass shelf fade (`.glass-shelf::before`,
+            liquid-glass.css) is drawn in this stacking context, behind the pane. */}
+        <div className="relative z-10 dock-inert">
         {/* The shared composer, under a slot key no local session can carry:
             its store reads (approvals, tool log, busy mode) then find nothing
             of the hub's own sessions. Menus, the optimizer and the approval
@@ -500,6 +574,16 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             name the hub's gateway, not this crew. */}
         <fieldset disabled={!connected} className="contents">
         <SlotProvider slotId={crewWindowSlot(instanceId, key)}>
+        {/* Voice is keyed per editor: a rewind edit and the saved draft are
+            two boxes, so switching between them ends the other box's
+            dictation instead of writing its words into this one. */}
+        <Composer
+          ref={composerRef}
+          slotKey={crewWindowSlot(instanceId, key) + (rewindTs ? ':rewind' : '')}
+          value={rewindTs ? rewindText : draft}
+          onChange={rewindTs ? setRewindText : setDraft}
+          voice={voiceOptions}
+        >
           <ChatInput
             value={rewindTs ? rewindText : draft}
             onChange={rewindTs ? setRewindText : setDraft}
@@ -540,9 +624,10 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             pendingQuote={rewindTs ? null : messageQuote.pendingQuote}
             onRemoveQuote={messageQuote.clearQuote}
           />
+        </Composer>
         </SlotProvider>
         </fieldset>
-      </Glass>
+        </div>
       </div>
       {picker.portal}
       {agentMode.portal}

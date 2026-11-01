@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
     PHASE_SESSION_START,
@@ -18,9 +19,17 @@ from kiro_crew.dashboard.chat_utils import (
     STEER_POSSIBLY_DELIVERED_NOTE,
     slack_mirror_is_paused,
 )
-from kiro_crew.dashboard.recovery_replays import ReplayRevocation, cancel_notice, replays_of
+from kiro_crew.dashboard.recovery_replays import (
+    ReplayRevocation,
+    cancel_notice,
+    cancel_notice_meta,
+    replays_of,
+)
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
+from kiro_crew.members import DM_SLOT_MODE
+from kiro_crew.metrics.feature_usage import record_context_composition
+from kiro_crew.milestones import record_user_turn
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -30,6 +39,7 @@ if TYPE_CHECKING:
         StructuredStatus,
         classify_stop_reason,
         crew_log_emit,
+        injection_receipts,
         logger,
         read_context_tokens,
         sel,
@@ -47,8 +57,10 @@ if TYPE_CHECKING:
         _scrub_dashboard_prefix,
     )
     from kiro_crew.dashboard.chat_turn.recipient import (
+        _MIRROR_THINKING,
         _deliver_cross_surface_user_message,
         _prepare_mirror_msg,
+        _prompt_typed_in_dashboard,
     )
     from kiro_crew.dashboard.chat_turn.steer_queue import _has_user_queued_followup
     from kiro_crew.dashboard.chat_turn.turn_context import _detach_appended_context
@@ -61,6 +73,7 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     """Load a person's recovery context, expand the input's skill mentions and settle the replay before the prompt is built."""
     slot_ctx_blocks: dict[str, int]
     slot_ctx_omitted: dict[str, dict[str, Any]]
+    slot_ctx_receipts: dict[str, dict[str, Any]]
     from kiro_crew.dashboard import responsive_chat
 
     _prompt_depth = turn._prompt_depth
@@ -173,6 +186,8 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     turn.slot_ctx_phase = slot_ctx_phase
     slot_ctx_omitted = {}
     turn.slot_ctx_omitted = slot_ctx_omitted
+    slot_ctx_receipts = {}
+    turn.slot_ctx_receipts = slot_ctx_receipts
     # Chars this turn prepends between the request header and the user's
     # text; set in _turn_build_prompt's context_builder branch, 0 elsewhere.
     _user_prepend_offset = 0
@@ -186,6 +201,10 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     turn._span_probe = _span_probe
     _span_base_len = -1
     turn._span_base_len = _span_base_len
+    # build_message's provenance segments for the prompt it returned, before
+    # the dashboard's own prefixes; empty when no context builder ran.
+    _prompt_segments: tuple = ()
+    turn._prompt_segments = _prompt_segments
     # Snapshot the ContextBuilder output before any dashboard-only prefixes
     # are added. Final prefix scrubbing can then preserve this trusted tail
     # (including its sole minted reply-format marker) byte-for-byte.
@@ -227,7 +246,6 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
 
 async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     """Pass the dispatch gates from the session's first turn up to the stream's start."""
-    _mirror_stream_ts: str
     injected: list[str]
     _attachments = turn._attachments
     _context_is_new = turn._context_is_new
@@ -270,6 +288,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     slot = turn.slot
     slot_ctx_blocks = turn.slot_ctx_blocks
     slot_ctx_omitted = turn.slot_ctx_omitted
+    slot_ctx_receipts = turn.slot_ctx_receipts
     slot_ctx_phase = turn.slot_ctx_phase
     state = turn.state
     turn_exit = turn.turn_exit
@@ -483,34 +502,52 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         turn._mirror_thread = _mirror_thread
         if _mirror_thread and _mirror_chan:
             try:
-                if not _is_synthetic:
+                # Only a prompt a person typed in the dashboard is quoted into
+                # the thread (see `_prompt_typed_in_dashboard`): a patrol wake,
+                # cron run, peer `session_send` or a message typed in Slack
+                # itself is never echoed. The placeholder and answer still post.
+                if _prompt_typed_in_dashboard(turn):
                     from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
-                        escape_mrkdwn,
+                        mirror_prompt_echo,
                     )
 
                     # The prompt is not only the operator's keystrokes (a
                     # session_send peer lands here too), and Slack parses
-                    # <!channel> / <@U…> in `text`, so escape at this sink.
-                    _mirror_msg = escape_mrkdwn(_prepare_mirror_msg(_user_msg_for_mirror))
+                    # <!channel> / <@U…> in `text`, so escape at this sink:
+                    # links and channel refs stay live, a user mention is
+                    # flattened so the echo never re-pings, and a broadcast
+                    # or stray bracket is escaped. Redaction runs first.
                     await state.slack_client.post_message(
-                        _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
+                        _mirror_chan,
+                        mirror_prompt_echo(_prepare_mirror_msg(_user_msg_for_mirror)),
+                        _mirror_thread,
                     )
-                # Start a stream for real-time tool animations
-                _mirror_stream_ts = (
-                    await state.slack_client.start_stream(
-                        _mirror_chan, _mirror_thread, initial_text="Thinking…"
+                # A separate placeholder, not the task stream's opening text:
+                # a stream only appends, so a "Thinking…" written into it stays
+                # above Slack's own "Thinking completed" plan header for good.
+                # The stream opens on the first tool call instead, and the
+                # placeholder is deleted then, before the answer is posted, or
+                # at turn end, whichever comes first.
+                turn._mirror_thinking_ts = (
+                    await state.slack_client.post_message(
+                        _mirror_chan, _MIRROR_THINKING, _mirror_thread
                     )
                     or ""
                 )
-                turn._mirror_stream_ts = _mirror_stream_ts
             except Exception:
                 logger.debug("Failed to mirror user message to Slack", exc_info=True)
+            # The Slack leg is done: a cancel landing in the cross-surface leg
+            # below must not have a requeue quote the question here twice.
+            turn._mirror_echo_posted = True
 
     # Channel-neutral leg: mirror the user message to a linked non-Slack
     # proactive channel (e.g. Telegram) so the remote conversation reads
     # coherently (question then reply), matching the Slack echo above.
-    if not is_slash and not _is_synthetic:
+    if not is_slash and _prompt_typed_in_dashboard(turn):
         await _deliver_cross_surface_user_message(state, session_key, _user_msg_for_mirror)
+    # Past this point every echo this turn owes has been made (or the surfaces it
+    # would go to were unlinked), so a recovery requeue of it owes none.
+    turn._mirror_echo_posted = True
 
     _stop_reason = ""
     turn._stop_reason = _stop_reason
@@ -583,10 +620,11 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # messages for the stats attach, which is a different question from which
     # turn this is. The two were already decoupled once, for the stats bug.
     #
-    # Regenerate and rewind keep their retry semantics for free. Both truncate
-    # the window before dispatching, so _turn_admit's hoisted expression returns the ordinal of
-    # the turn being re-run and the emitter's `attempt` increments -- no ordinal
-    # has to be threaded through either path.
+    # Rewind keeps its retry semantics for free: it truncates the window before
+    # dispatching, so _turn_admit's hoisted expression returns the ordinal of
+    # the turn being re-run and the emitter's `attempt` increments. Regenerate
+    # keeps the previous reply live until its turn ends, so the ordinal is
+    # computed without it (``rows_before_regenerate_target``) to the same effect.
     # `durable_row_count` is the SHARED counting rule every site that sets or
     # advances that base uses, so the ordinal cannot disagree with the base
     # about which rows are durable. It is resolved ONCE, in _turn_admit above its
@@ -688,6 +726,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             "notice",
             cancel_notice(ReplayFamily.CONTENT_FILTER, ReplayRevocation(superseded=True)),
             "msg msg-info",
+            meta=cancel_notice_meta(ReplayFamily.CONTENT_FILTER, ReplayRevocation(superseded=True)),
         )
         logger.info(
             "Aborting refusal replay for %s — a correction was queued while "
@@ -747,12 +786,56 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         phase=slot_ctx_phase,
         omitted=slot_ctx_omitted,
     )
+    # Memory and lesson use, for the same reason: only an admitted turn's
+    # composition reached the model. An in-memory add; never raises.
+    record_context_composition(slot_ctx_blocks, slot_ctx_receipts)
+    # Which lessons this composition carried, for the same reason the composition
+    # is written here: only an ADMITTED turn put them in front of the model. The
+    # write goes to a worker thread, so this adds no suspension point either.
+    if slot_ctx_receipts and injection_receipts.records_session(getattr(slot, "memory_mode", "")):
+        injection_receipts.schedule_write(
+            injection_receipts.build_line(
+                slot_ctx_receipts,
+                session_key=session_key,
+                turn_index=_crew_log_turn_no,
+                user_msg_id=injection_receipts.user_row_mid(turn._current_replay_message),
+                model=_crew_log_model(slot, slot.model or agent_model),
+                agent=getattr(slot, "agent", "") or "",
+                phase=slot_ctx_phase,
+                store=str(turn.memory_store or ""),
+            )
+        )
     crew_log_emit.on_turn_started(
         _crew_log_sid,
         _crew_log_turn_no,
         turn._crew_log_actor,
         depth=_prompt_depth,
     )
+    # Milestones count admitted, persistent human turns from dashboard or channel
+    # openers. Depth re-entries, synthetic recovery and replay turns must not count
+    # the same message again. ``_directive_user_origin`` alone is not enough: a
+    # script cron's ``ctx.send_to_session`` reaches /api/chat with it True, so the
+    # turn's structural actor must also be ``user`` (as the attended-turn checks
+    # above require). The write runs off-loop and never raises, adding no
+    # suspension point here.
+    from kiro_crew.dashboard.handlers._shared import is_restricted_session_key
+
+    if (
+        _prompt_depth == 0
+        and not _is_refusal_retry_turn
+        and not turn._synthetic_recovery_turn
+        and not turn._replay
+        and turn._directive_user_origin is True
+        and turn._crew_log_actor == "user"
+        and not is_restricted_session_key(turn.state, session_key)
+    ):
+        record_user_turn(
+            mate_thread=(
+                getattr(slot, "mode", "") == DM_SLOT_MODE
+                and getattr(slot, "agent", "") == ASSISTANT_MEMBER_NAME
+            ),
+            crew_mode=bool(getattr(slot, "crew_mode_agent", "")),
+        )
     # From here the turn owes a closer, and _turn_close_crew_log
     # (chat_turn/crew_log_attribution.py), from _run_chat's finally, is what pays it: a
     # `turn/started` left open in the file is read as a turn whose writer died,

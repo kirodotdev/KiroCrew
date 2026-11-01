@@ -120,11 +120,11 @@ KIROCREW_CONNECTIONS_GMAIL_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
 KIROCREW_CONNECTIONS_GMAIL_CLIENT_SECRET=GOCSPX-...
 ```
 
-After saving, the Gmail card on **Capabilities → Connections** switches from "Needs configuration" to "Connect".
+After saving, the Gmail card on **Customize → Connections** switches from "Needs configuration" to "Connect".
 
 ## 6. Verify the connection
 
-1. On **Capabilities → Connections**, click **Connect** on the Gmail card. Sign in with the mailbox owner's account. On External/Testing you first see "Google hasn't verified this app"; click **Continue**. The consent page should list "View your email messages and settings" (`gmail.readonly`) and, if declared and requested, "Manage drafts and send emails" (`gmail.compose`).
+1. On **Customize → Connections**, click **Connect** on the Gmail card. Sign in with the mailbox owner's account. On External/Testing you first see "Google hasn't verified this app"; click **Continue**. The consent page should list "View your email messages and settings" (`gmail.readonly`) and, if declared and requested, "Manage drafts and send emails" (`gmail.compose`).
 2. Approve. The browser lands on `http://127.0.0.1:48104/callback?...`. Locally the page closes itself; on a remote install paste the URL back into the dashboard.
 3. The card shows **Connected**.
 4. In a chat session, ask: **"What did Ariel say in her last email about our marketing plan?"** (use a real sender). Google's test description: the client "filters for emails from Ariel using `gmail.search_threads`, retrieves the latest thread's content with `gmail.get_thread`, and then summarizes it for you."

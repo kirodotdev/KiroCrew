@@ -589,6 +589,8 @@ describe('every api method issues one well-formed /api request', () => {
     // not a defect: a real caller hands this a Blob, exactly as here, and a Blob
     // body is left alone the same way a FormData one is.
     importSessionFromFile: [new Blob(['{}'], { type: 'application/gzip' })],
+    // `installThemeZip(file)` posts the archive's bytes the same way.
+    installThemeZip: [new Blob(['PK'], { type: 'application/zip' })],
     updateInstance: ['sw-1', {}, { signal: CALLER_SIGNAL }],
     chatSlotDetail: ['sw-1', undefined, undefined, CALLER_SIGNAL],
     // The second argument is the list of routes the dashboard cannot open; a
@@ -599,6 +601,9 @@ describe('every api method issues one well-formed /api request', () => {
     fileSearch: ['sw-1', 'sw-2', CALLER_SIGNAL],
     pathComplete: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],
     browseFiles: ['sw-1', CALLER_SIGNAL],
+    // The creator filter takes one query object (server-side filter and page).
+    sharedCrewSessions: [{ creator: 'mine', q: 'sw-1', cursor: 'sw-2', limit: 50 }],
+    sharedCrewCancelWork: ['sw-1', 3],
   }
 
   it('covers the whole surface (guards against the table silently shrinking)', () => {
@@ -682,5 +687,26 @@ describe('api.sideTurn keeps the response phases distinguishable', () => {
     await expect(api.sideTurn('s1', 'q')).rejects.toSatisfy(
       (e: unknown) => e instanceof ApiError && e.status === 409,
     )
+  })
+})
+
+describe('memory saves reject a refused write', () => {
+  // A bare `put()` resolves to the Response whatever its status, so a Save
+  // button awaiting it read a 403 as success. Each save parses with `j`.
+  const saves = [
+    ['saveMemorySettings', () => api.saveMemorySettings({ history_idle_hours: 2 })],
+    ['saveMemoryPreferences', () => api.saveMemoryPreferences('x')],
+    ['saveMemoryProjects', () => api.saveMemoryProjects('x')],
+    ['saveMemoryHistory', () => api.saveMemoryHistory('x')],
+  ] as const
+
+  it.each(saves)('%s rejects with an ApiError on a 403', async (_name, save) => {
+    fetchMock.mockResolvedValue(res(403, { error: 'owner only', code: 'owner_only' }))
+    await expect(save()).rejects.toBeInstanceOf(ApiError)
+  })
+
+  it.each(saves)('%s resolves the parsed body on a 2xx', async (_name, save) => {
+    fetchMock.mockResolvedValue(okJson({ ok: true }))
+    await expect(save()).resolves.toEqual({ ok: true })
   })
 })

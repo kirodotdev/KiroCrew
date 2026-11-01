@@ -360,14 +360,16 @@ describe('DetailView — copy and export', () => {
   it('copies the summary when the item has no content', async () => {
     itemFixture = item({ content: '', summary: 'Ledger summary only' })
     renderDetail()
-    fireEvent.click(await screen.findByRole('button', { name: /Copy Content/ }))
+    const copy = await screen.findByRole('button', { name: /Copy Content/ })
+    await act(async () => { fireEvent.click(copy) })
     expect(writeText).toHaveBeenCalledWith('Ledger summary only')
   })
 
   it('copies the title when the item has neither content nor summary', async () => {
     itemFixture = item({ content: '' })
     renderDetail()
-    fireEvent.click(await screen.findByRole('button', { name: /Copy Content/ }))
+    const copy = await screen.findByRole('button', { name: /Copy Content/ })
+    await act(async () => { fireEvent.click(copy) })
     expect(writeText).toHaveBeenCalledWith('Ledger design notes')
   })
 

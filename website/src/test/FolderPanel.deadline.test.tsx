@@ -370,6 +370,9 @@ describe('FolderPanel — bounded /api/file-search', () => {
     renderPanel()
     await search('zz')
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1))
+    // The timed-out notice is the state the wedged search produces; wait for it so the
+    // update lands inside the test rather than after it.
+    expect(await screen.findByText(/^Search timed out/)).toBeInTheDocument()
     // Past the backoff a retry would have waited, had either policy allowed one.
     await new Promise(r => setTimeout(r, 1_400))
     expect(spy).toHaveBeenCalledTimes(1)

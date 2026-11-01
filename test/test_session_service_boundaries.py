@@ -115,12 +115,12 @@ async def test_close_all_keeps_cross_boundary_teardown_order(cfg: KiroCrewConfig
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("operation", "clear_sid_calls", "delete_calls", "release_calls"),
+    ("operation", "clear_sid_calls", "delete_calls", "release_calls", "stored_sid"),
     [
-        (lambda manager: manager.reset("missing", clear_conversation=True), 0, 0, 0),
-        (lambda manager: manager.remove("missing"), 0, 0, 0),
-        (lambda manager: manager.destroy("missing"), 0, 1, 1),
-        (lambda manager: manager.discard_conversation("missing"), 1, 0, 1),
+        (lambda manager: manager.reset("missing", clear_conversation=True), 0, 0, 0, "sid-1"),
+        (lambda manager: manager.remove("missing"), 0, 0, 0, "sid-1"),
+        (lambda manager: manager.destroy("missing"), 0, 1, 1, None),
+        (lambda manager: manager.discard_conversation("missing"), 1, 0, 1, None),
     ],
     ids=("reset", "remove", "destroy", "discard"),
 )
@@ -130,17 +130,22 @@ async def test_missing_key_teardown_persistence_matrix(
     clear_sid_calls: int,
     delete_calls: int,
     release_calls: int,
+    stored_sid: str | None,
 ) -> None:
     manager = SessionManager(cfg, provider_factory=lambda **_: _provider())
-    manager._session_map.clear_sid = MagicMock()  # type: ignore[method-assign]
-    manager._session_map.delete = MagicMock()  # type: ignore[method-assign]
+    session_map = manager._session_map
+    session_map.set("missing", "sid-1")
+    session_map.clear_sid = MagicMock(wraps=session_map.clear_sid)  # type: ignore[method-assign]
+    session_map.delete = MagicMock(wraps=session_map.delete)  # type: ignore[method-assign]
     manager.release_subagent_runtime = AsyncMock()  # type: ignore[method-assign]
 
     await operation(manager)
 
-    assert manager._session_map.clear_sid.call_count == clear_sid_calls
-    assert manager._session_map.delete.call_count == delete_calls
+    assert session_map.clear_sid.call_count == clear_sid_calls
+    assert session_map.delete.call_count == delete_calls
     assert manager.release_subagent_runtime.await_count == release_calls
+    row = session_map._data.get("missing") or {}
+    assert (row.get("sid") or None) == stored_sid
 
 
 @pytest.mark.asyncio
@@ -160,7 +165,7 @@ async def test_hard_stop_orders_abort_reset_respawn_and_hook(cfg: KiroCrewConfig
         side_effect=lambda *_: events.append("abort-sent")
     )
     manager.reset = AsyncMock(  # type: ignore[method-assign]
-        side_effect=lambda _key: events.append("session-reset")
+        side_effect=lambda _key, **_kw: events.append("session-reset")
     )
 
     async def eager_respawn(_key: str) -> None:
@@ -182,6 +187,8 @@ async def test_hard_stop_orders_abort_reset_respawn_and_hook(cfg: KiroCrewConfig
         outcome = await manager.stop_turn("key", force=True, on_hard=on_hard)
 
     assert outcome == "hard"
+    # The hard Stop's recycle stops the runs that share the process it kills.
+    manager.reset.assert_awaited_once_with("key", stop_shared_children=True)
     assert events == [
         "queue-cleared",
         "abort-sent",

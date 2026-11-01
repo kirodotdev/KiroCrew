@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 import yaml
 from git_maintenance_helpers import git_maintenance_off_entries
+from named_cases_helpers import named_cases
 from skill_script_helpers import load_skill_script
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
@@ -54,16 +55,49 @@ def _check(section: str, title: str = "fix: stop the leak") -> list[str]:
 @pytest.mark.parametrize(
     "section",
     [
-        "Siblings: none -- single call site, grep found one",
-        "Swept: git grep -n redact\nSibling: src/a.py:12 -- changed here",
-        "Sibling: src/b.py -- tracked in #123",
-        "Sibling: src/b.py:7 -- not affected -- already guarded above",
-        "- Sibling: src/b.py -- not affected -- already guarded above\n- Sibling: src/c.py -- tracked in #9",
-        "Sibling: src/old.py -- changed here",  # a deleted file is in the diff, not the tree
-        "SIBLINGS: NONE -- single call site",
+        *named_cases(
+            "test_well_formed_sections_pass",
+            "section",
+            [
+                "Siblings: none -- single call site, grep found one",
+                "Swept: git grep -n redact\nSibling: src/a.py:12 -- changed here",
+                "Sibling: src/b.py -- tracked in #123",
+                "Sibling: src/b.py:7 -- not affected -- already guarded above",
+                "- Sibling: src/b.py -- not affected -- already guarded above\n- Sibling: src/c.py -- tracked in #9",
+                "Sibling: src/old.py -- changed here",  # a deleted file is in the diff, not the tree
+                "SIBLINGS: NONE -- single call site",
+            ],
+        ),
+        *named_cases(
+            "test_documented_forms_pass",
+            "section",
+            [
+                "Sibling: `src/a.py` -- changed here",
+                "Sibling: `src/a.py:12` -- changed here",
+                "Sibling: `src/a.py:10-20` -- changed here",
+                "Sibling: src/a.py:10-20 -- changed here",
+                "- Sibling: `src/b.py` -- tracked in #7",
+                "* Sibling: `src/b.py` -- tracked in #7",
+                "+ Sibling: src/b.py -- tracked in #7",
+                "1. Sibling: `src/b.py:7-9` -- not affected -- already guarded above",
+                "2) Sibling: src/b.py -- tracked in #7",
+                "Sibling: src/a.py \u2014 changed here",  # em dash
+                "Sibling: src/b.py \u2013 tracked in #7",  # en dash
+                "Sibling: src/b.py \u2014 not affected \u2014 already guarded above",
+                "Sibling: src/a.py -- changed here.",  # trailing period
+                "Sibling: src/b.py -- tracked in #7.",
+                "Siblings: none.  -- single call site",
+                "Siblings: none \u2014 single call site",
+                "- Siblings: none -- single call site.",
+                "Sibling:\tsrc/a.py\t--\tchanged here",  # tabs
+                "sibling: src/a.py -- Changed Here",  # case
+                "Sibling : src/a.py -- changed here",
+                "Sibling: src/a.py -- changed here\r\nSibling: `src/b.py` -- tracked in #9\r\n",  # CRLF
+            ],
+        ),
     ],
 )
-def test_well_formed_sections_pass(section: str) -> None:
+def test_the_section_passes(section: str) -> None:
     assert _check(section) == []
 
 
@@ -383,36 +417,6 @@ def test_the_step_reuses_the_merge_base_the_take_away_step_resolves() -> None:
 # ------------------------------------------- the documented forms, one site each
 # Reviewers wrote `Sibling: \`src/x.py\` -- ...` (backticks, line ranges, list markers,
 # an em dash) and the first parser rejected nearly all of it.
-
-
-@pytest.mark.parametrize(
-    "section",
-    [
-        "Sibling: `src/a.py` -- changed here",
-        "Sibling: `src/a.py:12` -- changed here",
-        "Sibling: `src/a.py:10-20` -- changed here",
-        "Sibling: src/a.py:10-20 -- changed here",
-        "- Sibling: `src/b.py` -- tracked in #7",
-        "* Sibling: `src/b.py` -- tracked in #7",
-        "+ Sibling: src/b.py -- tracked in #7",
-        "1. Sibling: `src/b.py:7-9` -- not affected -- already guarded above",
-        "2) Sibling: src/b.py -- tracked in #7",
-        "Sibling: src/a.py \u2014 changed here",  # em dash
-        "Sibling: src/b.py \u2013 tracked in #7",  # en dash
-        "Sibling: src/b.py \u2014 not affected \u2014 already guarded above",
-        "Sibling: src/a.py -- changed here.",  # trailing period
-        "Sibling: src/b.py -- tracked in #7.",
-        "Siblings: none.  -- single call site",
-        "Siblings: none \u2014 single call site",
-        "- Siblings: none -- single call site.",
-        "Sibling:\tsrc/a.py\t--\tchanged here",  # tabs
-        "sibling: src/a.py -- Changed Here",  # case
-        "Sibling : src/a.py -- changed here",
-        "Sibling: src/a.py -- changed here\r\nSibling: `src/b.py` -- tracked in #9\r\n",  # CRLF
-    ],
-)
-def test_documented_forms_pass(section: str) -> None:
-    assert _check(section) == []
 
 
 @pytest.mark.parametrize(

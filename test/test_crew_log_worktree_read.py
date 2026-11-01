@@ -1,17 +1,14 @@
-"""Reading the ``worktree`` fold off REAL logs, across several slots.
+"""Reading the ``worktree`` fold off REAL logs, from the root board's own units.
 
 The companion file (``test_crew_log_worktree_fold.py``) drives the fold's rules over
-hand-built entries, which is the right level for a rule. It cannot show the thing that
-makes this a third key kind: that the value is assembled from the logs of MANY SLOTS,
-reached by following what the record says rather than by asking the store what one slot
-ran under. So these cases build real crew logs -- one per board, each with its own slot
-header -- and read the tree through
+hand-built entries. This file builds a real three-board fleet through the crew-log
+writer, with the gateway's relay (``work_relay``) copying each nested board's records
+up into its parent's log, and reads the tree through
 :func:`~kiro_crew.crew_log.projection.read_tree_projection`.
 
-That is also the end-to-end claim the work item turns on. A block binds a fold NAME, and
-a name is only worth binding if a reader can get a value back from it. Both halves are
-here: the manifest's gate admits the name (companion file) and this file shows the value
-the bound path resolves to, folded from logs the key's own slot listing never names.
+The tree is folded from the ROOT board's own units only. A nested board reaches it as
+the relayed copies in the root's log, so no bind is walked and no other board's log is
+opened, and a read with nothing new reads no entry.
 """
 
 from __future__ import annotations
@@ -23,60 +20,59 @@ import pytest
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, eager, emit
 from kiro_crew.crew_log import projection as crew_log
-from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
+from kiro_crew.crew_log import work_relay
 
 FOLD = crew_log.WORKTREE_FOLD_NAME
-GATEWAY = "gateway"
 
 ROOT = "chat-1-root"
 MID = "chat-2-mid"
 LEAF = "chat-3-leaf"
+ROOT_UNIT = "s-root"
+MID_UNIT = "s-mid"
+LEAF_UNIT = "s-leaf"
 
 
 @pytest.fixture(autouse=True)
-def _isolated_home(tmp_path, _floor_monkeypatch):
-    """Every test writes into its own data home, never the live one.
+def _live_crew_log(tmp_path, _floor_monkeypatch):
+    """A real crew log on its own data home, with the relay's bindings pinned.
 
-    Through the isolation floor's OWN ``MonkeyPatch`` rather than the shared
-    ``monkeypatch`` a test also receives, because the two are undone independently.
-    ``monkeypatch.undo()`` reverts every record on the instance it is called on, so a
-    test that calls it to drop one of its own patches would drop this pin with them and
-    whatever ran next would resolve the operator's real data home.
+    Through the isolation floor's OWN ``MonkeyPatch``, so a test that undoes its own
+    patches cannot drop the data-home pin.
     """
     _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    bindings = {MID: ROOT, LEAF: MID}
+    _floor_monkeypatch.setattr(work_relay, "_bound_board", lambda worker: bindings.get(worker, ""))
+    _reset()
+    yield bindings
+    emit.flush()
+    _reset()
+
+
+def _reset() -> None:
     eager.stop_for_tests()
     crew_log.forget_slot_folds()
-    emit.reset_caches()
-    yield
-    eager.stop_for_tests()
-    crew_log.forget_slot_folds()
+    work_relay.forget_for_tests()
     emit.reset_caches()
 
 
 def _log(unit_id: str, slot: str) -> CrewLog:
-    """A session log whose HEADER names *slot*, which is what a slot read joins on."""
+    """A session log whose HEADER names *slot*."""
     return CrewLog.create(lg.KIND_SESSION, unit_id, owner="raymond", agent="kirocrew", slot=slot)
 
 
-def _work(
-    handle: CrewLog,
-    slot: str,
-    action: str,
-    *,
-    actor: str = "conductor",
-    by: str = "",
-    **data: Any,
-):
-    """One real ``work/recorded`` entry, through the store's own validation.
+def _settle() -> None:
+    # Each relay hop is queued from inside the append it copies, one round per hop.
+    for _ in range(3):
+        emit.flush()
+        assert eager.drain(timeout=10.0)
 
-    ``by`` defaults to the board's slot for a conductor action, which is what the
-    writer records: a conductor acts as the board. A worker's report passes its own.
-    """
-    return handle.append(
-        WORK_ENTRY_TYPE,
-        {"slot": slot, "actor": actor, "by": by or slot, "action": action, **data},
-        src=GATEWAY,
-    )
+
+def _work(unit: str, slot: str, action: str, *, actor: str = "conductor", **data: Any) -> None:
+    """One ``work/recorded`` through the real append path, relays included."""
+    fields = {"slot": slot, "actor": actor, "by": data.pop("by", slot), "action": action, **data}
+    assert emit.on_work_recorded(unit, fields, timeout=5.0) is True
+    _settle()
 
 
 def _row(value: dict[str, Any], board: str) -> dict[str, Any]:
@@ -88,20 +84,17 @@ def _row(value: dict[str, Any], board: str) -> dict[str, Any]:
 def _three_board_fleet() -> None:
     """ROOT conducts MID, MID conducts LEAF -- one log per board, as a real fleet is.
 
-    The shape that matters: every edge is recorded in TWO logs. The parent's log holds
-    the ``create`` that says which board owns the item, and the child's own log holds
-    the ``goal`` that cites it. Neither log alone places the child.
+    The parent's log holds the ``create`` that says which board owns an item, and the
+    child's goal cites it. The child's goal reaches the parent's log as a relayed copy.
     """
-    root = _log("s-root", ROOT)
-    _work(root, ROOT, "goal", goal="ship the fleet", round=1, generation="g-root")
-    _work(root, ROOT, "create", item_id="it-mid", title="run the middle", generation="g-root")
-    # The bind is what makes MID's log reachable from ROOT: the closure walk follows
-    # ``worker_session_key``, and nothing else in ROOT's log names MID.
-    _work(root, ROOT, "bind", item_id="it-mid", worker_session_key=MID, generation="g-root")
+    _log(ROOT_UNIT, ROOT)
+    _work(ROOT_UNIT, ROOT, "goal", goal="ship the fleet", round=1, generation="g-root")
+    _work(ROOT_UNIT, ROOT, "create", item_id="it-mid", title="run the middle", generation="g-root")
+    _work(ROOT_UNIT, ROOT, "bind", item_id="it-mid", worker_session_key=MID, generation="g-root")
 
-    mid = _log("s-mid", MID)
+    _log(MID_UNIT, MID)
     _work(
-        mid,
+        MID_UNIT,
         MID,
         "goal",
         goal="run the middle",
@@ -109,15 +102,17 @@ def _three_board_fleet() -> None:
         depth=1,
         generation="g-mid",
     )
-    _work(mid, MID, "create", item_id="it-leaf", title="run the leaf", generation="g-mid")
-    _work(mid, MID, "bind", item_id="it-leaf", worker_session_key=LEAF, generation="g-mid")
-    # MID also reports back against ROOT's item, in its own log. That entry names ROOT's
-    # board, and reading it as a claim on ``it-mid`` would invert the edge.
-    _work(mid, ROOT, "report", actor="worker", by=MID, item_id="it-mid", status="progress")
+    _work(MID_UNIT, MID, "create", item_id="it-leaf", title="run the leaf", generation="g-mid")
+    _work(MID_UNIT, MID, "bind", item_id="it-leaf", worker_session_key=LEAF, generation="g-mid")
+    # MID reports against ROOT's item: the board's copy in ROOT's log, the mirror in
+    # MID's. Reading the report as a claim on ``it-mid`` would invert the edge.
+    report = {"by": MID, "item_id": "it-mid", "status": "progress"}
+    _work(ROOT_UNIT, ROOT, "report", actor="worker", board_copy=True, **report)
+    _work(MID_UNIT, ROOT, "report", actor="worker", mirror=True, **report)
 
-    leaf = _log("s-leaf", LEAF)
+    _log(LEAF_UNIT, LEAF)
     _work(
-        leaf,
+        LEAF_UNIT,
         LEAF,
         "goal",
         goal="run the leaf",
@@ -127,13 +122,23 @@ def _three_board_fleet() -> None:
     )
 
 
-def test_the_tree_is_folded_from_the_logs_of_every_slot_it_reaches() -> None:
-    """THE THIRD KEY KIND, shown rather than argued.
+class _Opens:
+    """Which units ``CrewLog.open`` was asked for inside the block."""
 
-    Read from ROOT, and the answer contains boards whose entries are in MID's and LEAF's
-    logs. A slot read of ROOT sees ROOT's units only, so no slot-keyed fold could produce
-    this value however it was written.
-    """
+    def __init__(self, patch: pytest.MonkeyPatch) -> None:
+        self.units: list[str] = []
+        real = CrewLog.open.__func__  # type: ignore[attr-defined]
+        opens = self
+
+        def opened(cls: type, kind: str, unit_id: str, *args: Any, **kwargs: Any) -> CrewLog:
+            opens.units.append(unit_id)
+            return real(cls, kind, unit_id, *args, **kwargs)
+
+        patch.setattr(CrewLog, "open", classmethod(opened))
+
+
+def test_the_tree_is_folded_from_the_roots_own_units() -> None:
+    """Read from ROOT, and the answer holds the boards whose records were relayed up."""
     _three_board_fleet()
     value = crew_log.read_tree_projection(ROOT, FOLD).value
 
@@ -145,90 +150,62 @@ def test_the_tree_is_folded_from_the_logs_of_every_slot_it_reaches() -> None:
     assert value["roots"] == [ROOT]
     assert value["cycles"] == 0
     assert value["unresolved"] == 0
-
-    # The labels came from each board's OWN log, which is the other half of the join.
     assert _row(value, LEAF)["goal"] == "run the leaf"
     assert _row(value, LEAF)["depth"] == 2
 
 
-def test_the_population_is_wider_than_the_keys_own_slot() -> None:
-    """The key does not determine the population, which is reason 2 for a third kind.
-
-    ``tree_fold_units`` returns units from three slots; the store's listing for the key's
-    own slot returns one. A kind whose population were a property of its key could not
-    show this difference.
-    """
+def test_the_population_is_the_roots_own_units() -> None:
+    """The units are the root board's own, the same selection the project report uses."""
     _three_board_fleet()
-    from kiro_crew.crew_log.store import session_units_for_slot
-
     units, dropped = crew_log.tree_fold_units(ROOT, FOLD)
-    assert set(units) == {"s-root", "s-mid", "s-leaf"}
+    assert units == tuple(crew_log.session_ledger.work_crew_log_units(ROOT))
+    assert set(units) == {ROOT_UNIT}
     assert dropped == 0
-    assert set(session_units_for_slot(ROOT)) == {"s-root"}
 
 
-def test_a_bind_appended_later_widens_the_tree_with_the_key_unchanged() -> None:
-    """Reason 2 again, in the direction that matters for invalidation.
+def test_a_read_never_opens_a_nested_boards_log(monkeypatch) -> None:
+    _three_board_fleet()
+    opens = _Opens(monkeypatch)
+    crew_log.read_tree_projection(ROOT, FOLD)
+    assert MID_UNIT not in opens.units and LEAF_UNIT not in opens.units, opens.units
 
-    Nothing about ROOT changed; a record appended in ROOT's log brought a slot into the
-    closure that was not in it before. That is why the fold is lazy and has no bus
-    scope: the event a warm cell would need is "a member's log grew", and the member is
-    not known until the walk runs.
-    """
-    root = _log("s-root", ROOT)
-    _work(root, ROOT, "goal", goal="ship the fleet", generation="g-root")
-    _work(root, ROOT, "create", item_id="it-mid", title="run the middle", generation="g-root")
-    mid = _log("s-mid", MID)
-    _work(mid, MID, "goal", goal="run the middle", parent_item="it-mid", generation="g-mid")
 
+def test_a_nested_record_appended_later_reaches_the_tree_by_relay() -> None:
+    """A nested board's record lands in the root's log, so the next read shows it."""
+    _log(ROOT_UNIT, ROOT)
+    _work(ROOT_UNIT, ROOT, "goal", goal="ship the fleet", generation="g-root")
+    _work(ROOT_UNIT, ROOT, "create", item_id="it-mid", title="run the middle", generation="g-root")
     before = crew_log.read_tree_projection(ROOT, FOLD).value
     assert {row["board"] for row in before["boards"]} == {ROOT}
 
-    _work(root, ROOT, "bind", item_id="it-mid", worker_session_key=MID, generation="g-root")
+    _log(MID_UNIT, MID)
+    _work(MID_UNIT, MID, "goal", goal="run the middle", parent_item="it-mid", generation="g-mid")
     after = crew_log.read_tree_projection(ROOT, FOLD).value
     assert {row["board"] for row in after["boards"]} == {ROOT, MID}
     assert _row(after, MID)["parent"] == ROOT
 
 
 def test_a_tree_read_from_a_mid_tree_root_reports_its_edge_as_unresolved() -> None:
-    """Read from MID, whose own ``parent_item`` names an item in ROOT's board.
+    """Read from MID, whose ``parent_item`` names an item on ROOT's board.
 
-    The walk follows binds DOWNWARD only, so ROOT's log is not read and the ``create``
-    that owns ``it-mid`` is not folded. MID is therefore a root that still carries its
-    citation, and ``unresolved`` is what tells a reader "a parent outside this tree"
-    apart from "no parent".
-
-    ROOT still appears as a NODE, and that is the record's doing rather than the fold's:
-    MID's own log holds a report filed against ROOT's board, so this tree knows that
-    board exists while knowing nothing else about it. It renders headerless -- no goal,
-    no items -- which is the honest answer and the same posture the rest of this module
-    takes: degrade to a node with less, never invent the missing half.
+    MID's own units hold MID's records and LEAF's relayed ones. The ``create`` that owns
+    ``it-mid`` is in ROOT's log, which this read does not open, so MID is a root that
+    still carries its citation and ``unresolved`` says so. The report MID mirrored is
+    skipped, so ROOT is not a node here.
     """
     _three_board_fleet()
     value = crew_log.read_tree_projection(MID, FOLD).value
 
-    assert {row["board"] for row in value["boards"]} == {MID, LEAF, ROOT}
+    assert {row["board"] for row in value["boards"]} == {MID, LEAF}
     mid = _row(value, MID)
     assert mid["parent"] is None
     assert mid["parent_item"] == "it-mid"
     assert value["unresolved"] == 1
-    # ROOT, known only from the report, carries nothing it was not told.
-    headerless = _row(value, ROOT)
-    assert headerless["goal"] == ""
-    assert headerless["items"] == 0
-    assert headerless["parent_item"] is None
-    # LEAF's edge still resolves: the unresolvable one above it does not propagate down.
     assert _row(value, LEAF)["parent"] == MID
-    assert set(value["roots"]) == {MID, ROOT}
+    assert value["roots"] == [MID]
 
 
 def test_a_workers_report_against_its_parents_item_does_not_invert_the_edge() -> None:
-    """The report is in MID's log and names ROOT's board and ROOT's item.
-
-    Driven here rather than only over hand-built entries because this is the arrangement
-    a real record produces, and the wrong reading of it -- last writer owns the item --
-    would make MID own ``it-mid`` and hang ROOT under MID.
-    """
     _three_board_fleet()
     value = crew_log.read_tree_projection(ROOT, FOLD).value
     assert _row(value, MID)["parent"] == ROOT
@@ -237,14 +214,8 @@ def test_a_workers_report_against_its_parents_item_does_not_invert_the_edge() ->
 
 
 def test_the_read_does_not_steal_the_workstreams_folds_refused_count() -> None:
-    """The two folds share the closure WALK and must not share its side map.
-
-    ``_workstreams_units`` hands its refused-unit count to its own render through a
-    read-and-cleared map. A tree read that went through that function would overwrite
-    the entry and, not consuming it, leave the workstreams fold reading this read's
-    number -- or zero, if it read second. The tree read takes the walk's second return
-    instead, so the map is untouched.
-    """
+    """The tree read takes the selection's second return, never the workstreams
+    fold's read-and-cleared side map."""
     _three_board_fleet()
     crew_log._WORKSTREAMS_UNITS_DROPPED.clear()
     crew_log._WORKSTREAMS_UNITS_DROPPED[ROOT] = 7
@@ -255,37 +226,25 @@ def test_the_read_does_not_steal_the_workstreams_folds_refused_count() -> None:
     assert crew_log._workstreams_units_dropped(ROOT) == 7
 
 
-def test_the_extracted_walk_and_the_workstreams_selector_agree() -> None:
-    """The refactor is behaviour-preserving, pinned rather than asserted.
+def test_units_past_the_limit_are_reported_as_dropped(monkeypatch) -> None:
+    from kiro_crew.crew_log import projection_workstreams
 
-    ``_workstreams_units`` is now a thin caller of ``_board_closure_units``, so the units
-    it selects must be the walk's own and in the same order -- otherwise the workstreams
-    fold's answer changed under a change that was supposed to be about a different fold.
-    """
     _three_board_fleet()
-    walked, dropped = crew_log._board_closure_units(ROOT)
-    crew_log._WORKSTREAMS_UNITS_DROPPED.clear()
-    selected = crew_log._workstreams_units(ROOT)
-    assert selected == walked
-    assert crew_log._workstreams_units_dropped(ROOT) == dropped
+    _log("s-root-2", ROOT)
+    _work("s-root-2", ROOT, "goal", goal="ship the fleet", round=2, generation="g-root")
+    monkeypatch.setattr(projection_workstreams, "WORKSTREAMS_UNIT_LIMIT", 1)
+    crew_log.forget_slot_folds()
+    value = crew_log.read_tree_projection(ROOT, FOLD).value
+    assert value["dropped"] >= 1
 
 
 def test_the_bound_path_of_a_validated_block_resolves_against_the_folded_value() -> None:
-    """END TO END, both halves in one case.
-
-    A package field validates (the package gate admits the fold name and the catalog has
-    the path), and the SAME path walked over the value this fold produced from three logs
-    comes back with the rows. A fold that validated and returned nothing would pass every
-    other test in these two files.
-    """
+    """END TO END: a package field validates, and the same path walked over the value
+    this fold produced comes back with the rows."""
     _three_board_fleet()
     from kiro_crew.artifact_store import dashboard_package as dp
     from kiro_crew.dashboard.handlers import member_dashboard_fields as mdf
 
-    # THE PACKAGE SURFACE, which is the one that reads a tree fold: its page host calls
-    # ``read_tree_projection``, and its own gate is what admits the binding. A template
-    # is refused this fold, because the feed that renders one reaches a fold only by its
-    # bus scope and a tree has none.
     package = dp.validate_package(
         {
             "kind": "dashboard",
@@ -318,8 +277,6 @@ def test_the_bound_path_of_a_validated_block_resolves_against_the_folded_value()
 
 
 def test_an_unfolded_tree_is_an_empty_tree_and_not_a_refusal() -> None:
-    """A root with no log of its own is a tree of nothing, which is the same posture
-    every fold here takes: a missing unit is skipped rather than refused."""
     value = crew_log.read_tree_projection("chat-99-nothing", FOLD).value
     assert value["root"] == "chat-99-nothing"
     assert value["boards"] == []
@@ -328,25 +285,13 @@ def test_an_unfolded_tree_is_an_empty_tree_and_not_a_refusal() -> None:
 
 
 def test_the_checkpoint_reports_the_newest_units_last_seq() -> None:
-    """``last_seq`` is the only figure a later read can compare against -- the last entry
-    folded from the NEWEST unit, never a sum across files, which is a number no file
-    carries and a reader could not truncate against.
-    """
+    """``last_seq`` is the last entry folded from the newest unit, a seq that file holds."""
     _three_board_fleet()
     checkpoint = crew_log.fold_tree_checkpoint(FOLD, ROOT)
     assert checkpoint.name == FOLD
-    # LEAF's log is the newest unit in the walk and holds one work entry beside its
-    # opener, so the reached seq is that file's own and far below the three logs' total.
     units, _ = crew_log.tree_fold_units(ROOT, FOLD)
     newest = CrewLog.open(lg.KIND_SESSION, units[-1])
     assert newest is not None
     reached = max(int(entry.seq) for entry in newest.iter_from(1))
     assert 0 < checkpoint.last_seq <= reached
-    # And NOT a sum across the three files, which is the reading this guards against.
-    total = 0
-    for unit_id in units:
-        handle = CrewLog.open(lg.KIND_SESSION, unit_id)
-        assert handle is not None
-        total += max(int(entry.seq) for entry in handle.iter_from(1))
-    assert checkpoint.last_seq < total
     assert crew_log.state_is_serializable(checkpoint)

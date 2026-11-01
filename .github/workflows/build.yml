@@ -34,7 +34,7 @@ jobs:
     # is the macOS desktop build only. With the variable unset a push to main
     # builds everything.
     if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -127,17 +127,22 @@ jobs:
   #
   # On a pull_request it runs only when a Windows-packaging input changed (the
   # `windows_installer` output of desktop-matrix, the same paths-filter that
-  # gates the macos-15 leg). It is a hosted-only job -- the installer test needs
-  # an interactive desktop the CodeBuild Windows container lacks -- so running it
-  # on every PR spends the shared hosted pool on PRs that cannot change what it
-  # proves. Source-level Windows regressions stay covered per PR by ci.yml's
+  # gates the macos-15 leg). It cannot run on the CodeBuild fleet -- the
+  # installer test needs an interactive desktop the Windows container lacks --
+  # so running it on every PR spends billed larger-runner minutes on PRs that
+  # cannot change what it proves. Source-level Windows regressions stay covered
+  # per PR by ci.yml's
   # backend-test-windows; a source change deeper in the gateway's import
   # closure is proven installed only by the merge group or the push. A merge
   # group always runs it; a push to main runs it unless MERGE_QUEUE_ENABLED is
   # 'true' (build-wheel's skip then skips this job through `needs`).
   build-windows-installer:
     name: Build Windows Installer (x64)
-    runs-on: windows-latest
+    # `kirocrew-runners-windows` larger-runner group, targeted by GROUP not
+    # label; see "The Windows larger-runner group" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners-windows
     # Consumes build-wheel's artifact rather than building its own wheel: that
     # job already stages the frontend dist into the package before building, so
     # its wheel is the one users install. Building a second wheel here would add
@@ -216,6 +221,14 @@ jobs:
           New-Item -ItemType Directory -Force (Join-Path $out "bin") | Out-Null
           Set-Content -Encoding ascii -LiteralPath (Join-Path $out "bin\kirocrew.cmd") `
             -Value @('@echo off', 'setlocal', 'set "PYTHONPATH="', 'set "PYTHONHOME="', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
+          # pip's Scripts\kirocrew.exe embeds this runner's absolute python.exe
+          # path, so it fails with "Fatal error in launcher" once installed
+          # anywhere else. Replace it with the same relocatable shim:
+          # Scripts\ sits one level below the bundle root, like bin\.
+          Remove-Item -Force -ErrorAction SilentlyContinue `
+            -LiteralPath (Join-Path $out "Scripts\kirocrew.exe"), (Join-Path $out "Scripts\kirocrew-script.py")
+          Set-Content -Encoding ascii -LiteralPath (Join-Path $out "Scripts\kirocrew.cmd") `
+            -Value @('@echo off', 'setlocal', 'set "PYTHONPATH="', 'set "PYTHONHOME="', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
           # Self-containment gate, same as the packaging script's: a missing
           # dependency must fail here, not at gateway boot.
           & $python -s -P -m kiro_crew --version
@@ -285,7 +298,13 @@ jobs:
   # (build-desktop.yml) still ships every platform unconditionally.
   desktop-matrix:
     name: Resolve desktop matrix
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    # The work is seconds: a shallow checkout, a depth-1 fetch of one base SHA
+    # and a paths-filter. 5, not the 15 ci.yml's `changes` resolver carries --
+    # that one's `fetch-depth: 0` full-history fetch is what has run past 5 on
+    # a slow hosted runner, and this job never does one. Without any cap a hung
+    # job holds its runner until GitHub's own limit, which is hours.
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
@@ -414,7 +433,8 @@ jobs:
     # resolver output is ever empty.
     runs-on: ${{ matrix.os == 'ubuntu-22.04' && (needs.desktop-matrix.outputs.linux_x64_runner || 'ubuntu-22.04') || matrix.os }}
     # macOS bills at 10x, so an unbounded hang here is the costliest in the repo.
-    timeout-minutes: 45
+    # Its healthy build already takes ~35 min, so it gets 60 and Linux keeps 45.
+    timeout-minutes: ${{ matrix.os == 'macos-15' && 60 || 45 }}
     strategy:
       max-parallel: 4
       fail-fast: false

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ansiPaletteFromVars, brighten } from '../utils/terminalPalette'
+import { ansiPaletteFromVars, brighten, toHexColor } from '../utils/terminalPalette'
 
 /** A reader over a fixed map, standing in for getComputedStyle. */
 const reader = (vars: Record<string, string>) => (name: string) => vars[name] ?? ''
@@ -91,5 +91,42 @@ describe('brighten', () => {
     // degrades better than a wrong one.
     expect(brighten('rgb(10, 20, 30)', true)).toBe('rgb(10, 20, 30)')
     expect(brighten('', true)).toBe('')
+  })
+})
+
+describe('toHexColor', () => {
+  it('passes a hex colour through unchanged', () => {
+    expect(toHexColor('#fafafa')).toBe('#fafafa')
+    expect(toHexColor('#abc')).toBe('#abc')
+  })
+
+  it('converts an rgb() colour to 6-digit hex so the hex-only palette can read it', () => {
+    expect(toHexColor('rgb(250, 250, 250)')).toBe('#fafafa')
+    expect(toHexColor('rgb(34, 34, 34)')).toBe('#222222')
+  })
+
+  it('clamps an out-of-range rgb() channel to 0..255 like CSS does', () => {
+    // rgb(256, 256, 0) passes the value sanitizer; an unclamped 256 renders as
+    // the three hex digits "100" and overflows the 6-digit string.
+    expect(toHexColor('rgb(256, 256, 0)')).toBe('#ffff00')
+    expect(toHexColor('rgb(-5, 300, 128)')).toBe('#00ff80')
+  })
+
+  it('returns an unparseable or empty value unchanged', () => {
+    expect(toHexColor('not-a-colour')).toBe('not-a-colour')
+    expect(toHexColor('')).toBe('')
+  })
+
+  it('lets the ANSI palette order its extremes when the terminal colours are rgb()', () => {
+    // A light terminal given in rgb() must still resolve to light polarity, so
+    // ANSI black stays the dark foreground instead of collapsing onto the
+    // background and making bright-black output invisible.
+    const p = ansiPaletteFromVars((name) =>
+      name === '--bg' ? toHexColor('rgb(250, 250, 250)')
+        : name === '--text' ? toHexColor('rgb(34, 34, 34)')
+          : '')
+    expect(p.white).toBe('#fafafa')
+    expect(p.black).toBe('#222222')
+    expect(p.brightBlack).not.toBe(p.black)
   })
 })

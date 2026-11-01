@@ -122,7 +122,6 @@ describe('useFrameLinkBridge', () => {
     'file:///etc/hosts',
     'mailto:someone@example.test',
     'vscode://file/x',
-    '/relative/path',
     'https://user:pass@example.test/',
     'https://github.com@evil.example/',
   ])('refuses %s', (url) => {
@@ -137,6 +136,11 @@ describe('useFrameLinkBridge', () => {
     expect(webUrlOf({ type: OPEN_MESSAGE_TYPE, url: 'HTTPS://Example.TEST/a b' })).toBe('https://example.test/a%20b')
     expect(webUrlOf({ type: OPEN_MESSAGE_TYPE, url: 'http://example.test' })).toBe('http://example.test/')
     expect(webUrlOf({ type: 'kirocrew-dashboard:act', url: URL_A })).toBeNull()
+    // A path is a page of this dashboard.
+    expect(webUrlOf({ type: OPEN_MESSAGE_TYPE, url: '/artifacts/weekly-report' }))
+      .toBe(`${window.location.origin}/artifacts/weekly-report`)
+    expect(webUrlOf({ type: OPEN_MESSAGE_TYPE, url: '/chat?sid=chat-1-2' }))
+      .toBe(`${window.location.origin}/chat?sid=chat-1-2`)
     const long = `https://example.test/${'a'.repeat(4096)}`
     expect(webUrlOf({ type: OPEN_MESSAGE_TYPE, url: long })).toBe(long)
   })

@@ -166,6 +166,22 @@ export function replaceSessionTab(tabs: readonly string[], oldKey: string | null
   return next
 }
 
+/**
+ * Move `key` to `toIndex`, every other tab keeping its relative order. The
+ * index is clamped to the strip, so a caller stepping past either end gets the
+ * end rather than a hole. A key that is not a tab leaves the set unchanged.
+ */
+export function moveSessionTab(tabs: readonly string[], key: string, toIndex: number): string[] {
+  const from = tabs.indexOf(key)
+  if (from === -1) return [...tabs]
+  const to = Math.max(0, Math.min(tabs.length - 1, toIndex))
+  if (to === from) return [...tabs]
+  const next = [...tabs]
+  next.splice(from, 1)
+  next.splice(to, 0, key)
+  return next
+}
+
 /** The set without `key`. */
 export function closeSessionTab(tabs: readonly string[], key: string): string[] {
   return tabs.filter(k => k !== key)
@@ -275,5 +291,10 @@ export function tabStatusPulses(status: TabStatus): boolean {
 
 /** Ellipsize a tab label. Returns the input untouched when it already fits. */
 export function truncateTabTitle(title: string, max: number = TAB_TITLE_MAX): string {
-  return title.length > max ? title.slice(0, max) + '…' : title
+  if (title.length <= max) return title
+  // Cut on a code-point boundary: a UTF-16 slice through an emoji would leave
+  // its lone high surrogate, which renders as a replacement glyph.
+  const head = title.slice(0, max)
+  const last = head.charCodeAt(head.length - 1)
+  return (last >= 0xd800 && last <= 0xdbff ? head.slice(0, -1) : head) + '…'
 }

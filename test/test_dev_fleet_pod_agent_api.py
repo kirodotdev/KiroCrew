@@ -30,6 +30,7 @@ from kiro_crew.mcp_tools import apps as apps_tools
 
 _EXPECTED_ROUTES = {
     ("POST", "/api/apps/dev-fleet/pod/up"),
+    ("POST", "/api/apps/dev-fleet/pod/restart"),
     ("POST", "/api/apps/dev-fleet/pod/down"),
     ("GET", "/api/apps/dev-fleet/pod/status"),
     ("GET", "/api/apps/dev-fleet/pod/list"),
@@ -37,7 +38,7 @@ _EXPECTED_ROUTES = {
 
 
 def test_register_routes_mounts_exactly_the_agent_surface() -> None:
-    """A fifth route here would be one the strict-path table has not admitted."""
+    """A sixth route here would be one the strict-path table has not admitted."""
     app = web.Application()
     agent_pod_api.register_routes(app)
     mounted = {
@@ -257,7 +258,7 @@ async def test_provisioning_is_not_reachable_from_the_agent_surface(granted: Non
     """
     from kiro_crew.validation import POD_UP_SCHEMA
 
-    assert [f.name for f in POD_UP_SCHEMA.fields] == ["worktree"]
+    assert [f.name for f in POD_UP_SCHEMA.fields] == ["worktree", "memory", "cpu"]
     assert "provision" not in {
         k
         for t in apps_tools.schemas()
@@ -298,6 +299,7 @@ async def test_pod_up_returns_the_handle(monkeypatch: pytest.MonkeyPatch, grante
     ("handler", "req"),
     [
         ("handle_pod_up", {"body": {"worktree": "w"}}),
+        ("handle_pod_restart", {"body": {"worktree": "w"}}),
         ("handle_pod_down", {"body": {"worktree": "w"}}),
         ("handle_pod_status", {"query": {"worktree": "w"}}),
         ("handle_pod_list", {}),
@@ -316,6 +318,7 @@ async def test_every_verb_answers_an_unusable_checkout(
     whichever one raises, which is why this asserts on the verbs rather than on the
     raise sites.
     """
+    monkeypatch.setattr(agent_pod_api.platform_compat, "IS_WINDOWS", False)
     from kiro_crew.apps.builtins.dev_fleet import repository
 
     async def _aboom(*_a: Any, **_k: Any) -> Any:
@@ -323,6 +326,7 @@ async def test_every_verb_answers_an_unusable_checkout(
 
     class _Ops:
         _pod_up = staticmethod(_aboom)
+        _pod_restart = staticmethod(_aboom)
         _pod_down = staticmethod(_aboom)
         _pod_status = staticmethod(_aboom)
         _pod_ls = staticmethod(_aboom)
@@ -418,7 +422,7 @@ def test_ops_resolves_the_real_worktree_ops_module() -> None:
 def test_pod_tools_are_advertised_with_handlers() -> None:
     """A descriptor with no handler advertises a tool that cannot run."""
     advertised = {t["name"] for t in apps_tools.schemas()}
-    for name in ("pod_up", "pod_down", "pod_status", "pod_ls"):
+    for name in ("pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls"):
         assert name in advertised
         assert name in apps_tools.HANDLERS
 
@@ -427,7 +431,7 @@ def test_pod_tools_are_registered_for_argument_validation() -> None:
     """A tool absent from MCP_CORE_SCHEMAS has its arguments passed through raw."""
     from kiro_crew.validation import MCP_CORE_SCHEMAS
 
-    for name in ("pod_up", "pod_down", "pod_status", "pod_ls"):
+    for name in ("pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls"):
         assert name in MCP_CORE_SCHEMAS
 
 
@@ -673,3 +677,118 @@ def test_read_tools_ask_for_more_than_the_telemetry_timeout(
     monkeypatch.setattr(apps_tools.mcp_core, "_get", _fake_get)
     apps_tools.pod_ls("pod_ls", {})
     assert seen["timeout"] > 10
+
+
+# ---------------------------------------------------------------------------
+# Ceilings and the home-keeping restart
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pod_up_forwards_the_ceilings(monkeypatch: pytest.MonkeyPatch, granted: None) -> None:
+    seen: dict[str, Any] = {}
+
+    async def _fake_up(name: str, **limits: str) -> dict[str, Any]:
+        seen.update(name=name, **limits)
+        return {"ok": True, "port": 7913}
+
+    monkeypatch.setattr(
+        agent_pod_api, "_ops", lambda: type("Ops", (), {"_pod_up": staticmethod(_fake_up)})
+    )
+    resp = await agent_pod_api.handle_pod_up(
+        _Req(body={"worktree": "w", "memory": "16G", "cpu": "800%"})  # type: ignore[arg-type]
+    )
+    assert resp.status == 200
+    assert seen == {"name": "w", "memory": "16G", "cpu": "800%"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [16, "--cpu", " --json", "x" * 17])
+async def test_a_malformed_ceiling_is_a_400_before_any_pod_work(
+    monkeypatch: pytest.MonkeyPatch, granted: None, bad: object
+) -> None:
+    """The CLI validates the value; this only keeps argv flags and junk out of it."""
+    monkeypatch.setattr(agent_pod_api, "_ops", lambda: pytest.fail("no pod work for a bad body"))
+    resp = await agent_pod_api.handle_pod_restart(
+        _Req(body={"worktree": "w", "memory": bad})  # type: ignore[arg-type]
+    )
+    assert resp.status == 400
+    assert _payload(resp)["code"] == "invalid_limit"
+
+
+@pytest.mark.asyncio
+async def test_pod_restart_route_returns_the_handle(
+    monkeypatch: pytest.MonkeyPatch, granted: None
+) -> None:
+    monkeypatch.setattr(agent_pod_api.platform_compat, "IS_WINDOWS", False)
+    seen: dict[str, Any] = {}
+
+    async def _fake_restart(name: str, **limits: str) -> dict[str, Any]:
+        seen.update(name=name, **limits)
+        return {"ok": True, "port": 7913, "home_kept": True, "token": "tok-r"}
+
+    monkeypatch.setattr(
+        agent_pod_api,
+        "_ops",
+        lambda: type("Ops", (), {"_pod_restart": staticmethod(_fake_restart)}),
+    )
+    resp = await agent_pod_api.handle_pod_restart(
+        _Req(body={"worktree": "w", "cpu": "400%"})  # type: ignore[arg-type]
+    )
+    assert resp.status == 200
+    assert seen == {"name": "w", "cpu": "400%"}
+    assert _payload(resp)["home_kept"] is True
+
+
+@pytest.mark.asyncio
+async def test_pod_restart_route_reports_a_refusal_as_409(
+    monkeypatch: pytest.MonkeyPatch, granted: None
+) -> None:
+    monkeypatch.setattr(agent_pod_api.platform_compat, "IS_WINDOWS", False)
+
+    async def _refuse(name: str, **_l: str) -> dict[str, Any]:
+        return {"ok": False, "error": "nothing to restart"}
+
+    monkeypatch.setattr(
+        agent_pod_api, "_ops", lambda: type("Ops", (), {"_pod_restart": staticmethod(_refuse)})
+    )
+    resp = await agent_pod_api.handle_pod_restart(_Req(body={"worktree": "w"}))  # type: ignore[arg-type]
+    assert resp.status == 409
+    assert _payload(resp)["code"] == "pod_restart_failed"
+
+
+def test_pod_restart_tool_posts_to_restart_with_the_ceilings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _fake_post(path: str, body: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
+        calls.append((path, body or {}))
+        return {
+            "ok": True,
+            "port": 7913,
+            "base_url": "http://127.0.0.1:7913",
+            "token": "tok-r",
+            "memory": "16G",
+            "cpu": "200%",
+        }
+
+    monkeypatch.setattr(apps_tools.mcp_core, "_post", _fake_post)
+    out = apps_tools.pod_restart("pod_restart", {"worktree": "w", "memory": "16G", "cpu": ""})
+    assert calls == [("/api/apps/dev-fleet/pod/restart", {"worktree": "w", "memory": "16G"})]
+    assert "restarted with its data kept" in out
+    assert "memory=16G cpu=200%" in out
+
+
+@pytest.mark.asyncio
+async def test_pod_restart_route_refuses_on_windows_before_any_pod_work(
+    monkeypatch: pytest.MonkeyPatch, granted: None
+) -> None:
+    """The only Windows restart deletes the home, which this tool promises to keep."""
+    monkeypatch.setattr(agent_pod_api.platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(agent_pod_api, "_ops", lambda: pytest.fail("no pod work on Windows"))
+    resp = await agent_pod_api.handle_pod_restart(
+        _Req(body={"worktree": "w", "memory": "256M"})  # type: ignore[arg-type]
+    )
+    assert resp.status == 409
+    assert _payload(resp)["code"] == "pod_restart_unsupported"

@@ -359,6 +359,8 @@ class TestKasMemberProjection:
         # one approval prompt per worker on an unattended cycle.
         assert "session_broadcast" in rendered
         assert "session_stop" in rendered
+        # Cleanup of a finished or stuck worker, under the same fence.
+        assert "session_close" in rendered
 
     def test_spec_is_not_mutated(self):
         spec = {"tools": ["@kirocrew-core"], "allowedTools": ["@kirocrew-core"]}
@@ -906,6 +908,7 @@ class TestRuntimeMemberThreading:
             member_dispatch=False,
             crew_panel=False,
             session_key="",
+            skill_scope_rules=(),
         ):
             seen.append(member_dispatch)
             return [{"id": agent}]
@@ -983,6 +986,7 @@ class TestMemberServerJoinsSubtraction:
             member_dispatch=False,
             crew_panel=False,
             session_key="",
+            skill_scope_rules=(),
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
@@ -1021,6 +1025,7 @@ class TestMemberServerJoinsSubtraction:
             member_dispatch=False,
             crew_panel=False,
             session_key="",
+            skill_scope_rules=(),
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]

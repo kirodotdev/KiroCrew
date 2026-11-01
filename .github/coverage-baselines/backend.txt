@@ -18,9 +18,6 @@ src/kiro_crew/apple_speech/__init__.py 53.4   # 196/367
 src/kiro_crew/apps/builtins/auto_improvement/backend/clone_setup.py 49.3   # 112/227
 src/kiro_crew/apps/builtins/auto_improvement/backend/commit.py 33.9   # 40/118
 src/kiro_crew/apps/builtins/auto_improvement/backend/sse.py 26.1   # 12/46
-src/kiro_crew/apps/builtins/auto_improvement/spine/agent_discovery.py 56.8   # 166/292
-src/kiro_crew/apps/builtins/auto_improvement/spine/git_safety.py 46.4   # 45/97
-src/kiro_crew/apps/builtins/auto_improvement/spine/pr_pipeline.py 28.7   # 35/122
 src/kiro_crew/apps/builtins/file_explorer/server.py 71.9   # 396/551
 src/kiro_crew/apps/builtins/mochi/hooks.py 76.6   # 357/466
 src/kiro_crew/apps/builtins/mochi/queue_file.py 72.8   # 134/184
@@ -32,7 +29,6 @@ src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/cloudwatch.py 
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/http.py 53.8   # 35/65
 src/kiro_crew/apps/builtins/workflows/server.py 61.2   # 82/134
 src/kiro_crew/cli_cloud.py 61.2   # 178/291
-src/kiro_crew/cloud/ui.py 51.4   # 90/175
 src/kiro_crew/cloud/wizard.py 65.8   # 283/430
 src/kiro_crew/computer_use/cli.py 68.8   # 130/189
 src/kiro_crew/computer_use/macos_skylight.py 54.8   # 142/259
@@ -40,15 +36,9 @@ src/kiro_crew/conpty.py 27.9   # 12/43
 src/kiro_crew/dashboard/_types.py 0.0   # 0/3
 src/kiro_crew/dashboard/handlers/weixin_qr.py 47.0   # 119/253
 src/kiro_crew/dashboard/handlers_channel.py 40.4   # 84/208
-src/kiro_crew/dashboard/ws.py 64.4   # 130/202
-src/kiro_crew/discord/gateway.py 19.6   # 10/51
 src/kiro_crew/emoji_list.py 0.0   # 0/1
 src/kiro_crew/instances/ssm_token_mint.py 21.5   # 17/79
 src/kiro_crew/knowledge/readers.py 61.7   # 74/120
 src/kiro_crew/mcp_gateway/manager.py 28.7   # 96/335
 src/kiro_crew/mcp_gateway/transport.py 73.1   # 163/223
-src/kiro_crew/slack/allowlist.py 57.1   # 68/119
-src/kiro_crew/slack/client.py 67.2   # 246/366
-src/kiro_crew/telegram/gateway.py 15.5   # 11/71
 src/kiro_crew/webex/client.py 64.1   # 173/270
-src/kiro_crew/weixin/gateway.py 20.4   # 11/54

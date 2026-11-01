@@ -146,11 +146,11 @@ def test_the_body_contract_is_refused_by_shape(body, code):
 
     Checked through the module's own validation order rather than a live request:
     what matters is that an unusable body cannot reach the secret read, and the
-    order of the checks in ``api_crew_turn`` is what guarantees it.
+    order of the checks in ``_crew_turn`` is what guarantees it.
     """
     import inspect
 
-    source = inspect.getsource(mod.api_crew_turn)
+    source = inspect.getsource(mod._crew_turn)
     body_checks = source.index("message must be a non-empty string")
     secret_read = source.index("_read_control_secret")
     assert body_checks < secret_read, (

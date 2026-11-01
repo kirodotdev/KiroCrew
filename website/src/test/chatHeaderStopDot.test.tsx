@@ -53,6 +53,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { ThemeProvider } from '../hooks/useTheme'
 
 const SLOT = 'member-default'
 const OTHER = 'chat-1-main'
@@ -92,10 +93,12 @@ function mountPane(store: ReturnType<typeof makeStore>) {
     utils = render(
       <Provider store={store}>
         <QueryClientProvider client={qc}>
+          <ThemeProvider>
           <MemoryRouter>
             {/* NOT frameless: the header row (and its status dot) renders. */}
             <ChatPane slotKey={SLOT} agentLocked />
           </MemoryRouter>
+          </ThemeProvider>
         </QueryClientProvider>
       </Provider>,
     )
@@ -152,7 +155,7 @@ describe('ChatPane header status dot — #20397', () => {
     await killing.findByTestId('chat-pane-status-caption')
     const killingCaption = killing.getByTestId('chat-pane-status-caption')
     expect(killingCaption).toHaveClass('text-danger')
-    expect(killingCaption.textContent).toMatch(/Killing/)
+    expect(killingCaption.textContent).toMatch(/Force stopping/)
   })
 
   it('an idle pane with a stale slots-frame stopping flag shows no red dot and no caption', async () => {

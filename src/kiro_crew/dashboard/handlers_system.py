@@ -517,6 +517,7 @@ def _scan_mcp_processes() -> dict[str, object]:
                     ["ps", "-eo", "pid,command"],
                     timeout=5,
                     text=True,
+                    encoding="utf-8",
                 )
                 for line in out.splitlines():
                     parts = line.split(None, 1)

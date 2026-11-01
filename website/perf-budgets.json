@@ -1,0 +1,10 @@
+{
+  "note": "Upper bounds for scripts/bench-render.mjs at desktop 1440x900, 300 ticks (30 s). Each number is the median of several 3-run medians on main. --check fails a counter whose median exceeds its budget by more than `tolerance`. Raise a budget in the PR that adds the renders, and say why; lower it when a PR removes them.",
+  "tolerance": 0.15,
+  "scenarios": {
+    "idle": { "commits": 5, "renders": 1100, "dispatches": 6, "selectorCalls": 3800 },
+    "s1x1": { "commits": 10, "renders": 6000, "dispatches": 495, "selectorCalls": 199200 },
+    "s1x5": { "commits": 190, "renders": 9800, "dispatches": 1350, "selectorCalls": 219000 },
+    "s2": { "commits": 3450, "renders": 390000, "dispatches": 319, "selectorCalls": 229000 }
+  }
+}

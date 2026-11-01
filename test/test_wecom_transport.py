@@ -9,6 +9,7 @@ import pytest
 from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.wecom.client import (
+    CHAT_TYPE_SINGLE,
     WECOM_MAX_REPLY_BYTES,
     WECOM_SAFE_REPLY_CHARS,
     WeComInbound,
@@ -481,3 +482,341 @@ class TestDedupeIsReleasedOnFailure:
             "the msgid stayed in the dedupe window, so WeCom's redelivery is dropped "
             "as a duplicate and the user's message is never handled"
         )
+
+
+class TestWarmChatsAreBounded:
+    """``_warm_chats`` must not grow for the life of the gateway.
+
+    Under the supported ``wecom.allow_all_users`` policy ``authorize`` admits any
+    non-empty userid, so the key space is "every user who ever DMed the bot".
+    ``receive`` records each authorized 1:1 sender via ``note_warm_chat``, and the
+    container is a bounded LRU: these tests drive the REAL ``receive`` entry point
+    and assert the bound holds, while proving the three things it must NOT break
+    — a re-warmed peer stays advertised, and authorization (``may_send_to`` /
+    ``_may_push``) is independent of eviction.
+
+    The size/LRU assertions compare against the ``_EXPECTED_WARM_CAP`` literal
+    rather than importing the production constant, so a tool that reverts the
+    production hunks (prepare-pr ``prove.py``) still collects this module and sees
+    the assertion fail. ``test_cap_constant_matches_expected`` separately pins the
+    production constant to that literal.
+    """
+
+    #: The documented cap, duplicated as a literal so these tests do not import a
+    #: symbol the fix introduces. ``test_cap_constant_matches_expected`` pins the
+    #: real ``WECOM_WARM_CHATS_MAX`` to this value.
+    _EXPECTED_WARM_CAP = 512
+
+    @staticmethod
+    def _single(userid: str) -> WeComInbound:
+        # A distinct msgid per sender so the dedupe window never suppresses one;
+        # CHAT_TYPE_SINGLE so it clears the 1:1-only inbound gate.
+        return WeComInbound(
+            userid=userid,
+            text="hi",
+            response_url="https://r",
+            req_id=f"rq-{userid}",
+            chatid="",
+            msgid=f"m-{userid}",
+            chattype=CHAT_TYPE_SINGLE,
+        )
+
+    def test_cap_constant_matches_expected(self) -> None:
+        # The production constant is the single source of truth; pin it to the
+        # literal these tests use.
+        from kiro_crew.wecom.transport import WECOM_WARM_CHATS_MAX
+
+        assert WECOM_WARM_CHATS_MAX == self._EXPECTED_WARM_CAP
+
+    def test_an_empty_chat_id_is_not_recorded(self) -> None:
+        # A missing/empty userid never becomes a warm entry (and never triggers
+        # eviction): note_warm_chat drops it on the guard.
+        transport = WeComTransport(FakeClient(), allow_all=True)
+        transport.note_warm_chat("")
+        assert len(transport._warm_chats) == 0
+
+    @pytest.mark.asyncio
+    async def test_the_set_stays_capped_under_many_distinct_senders(self) -> None:
+        transport = WeComTransport(FakeClient(), allow_all=True)
+        baseline = len(transport._warm_chats)
+
+        cap = self._EXPECTED_WARM_CAP
+        n = cap * 2 + 1
+        for i in range(n):
+            await transport.receive(self._single(f"stranger-{i}"))
+
+        assert baseline == 0
+        assert len(transport._warm_chats) <= cap, (
+            f"_warm_chats grew to {len(transport._warm_chats)} after {n} distinct "
+            f"senders; it must be bounded (cap {cap}), not grow for the gateway's life"
+        )
+        # The cap keeps the MOST RECENT peers: the newest sender survives and is
+        # advertised. (configured_targets sorts keys for display, so recency is
+        # asserted by membership, not list position.)
+        assert f"stranger-{n - 1}" in transport._warm_chats
+        advertised = {t.target_id for t in transport.configured_targets()}
+        assert f"user:stranger-{n - 1}" in advertised
+        # The oldest peer is evicted: absent from the warm set and unadvertised.
+        assert "stranger-0" not in transport._warm_chats
+        assert "user:stranger-0" not in advertised
+
+    @pytest.mark.asyncio
+    async def test_a_rewarmed_peer_is_moved_to_the_most_recent_end(self) -> None:
+        # A peer that keeps writing must survive while newer-but-idle peers do
+        # not: re-warming refreshes recency (LRU move-to-end).
+        transport = WeComTransport(FakeClient(), allow_all=True)
+
+        cap = self._EXPECTED_WARM_CAP
+        # Warm "keeps-writing" as the OLDEST entry, then fill the cap exactly.
+        await transport.receive(self._single("keeps-writing"))
+        for i in range(cap - 1):
+            await transport.receive(self._single(f"filler-{i}"))
+        assert len(transport._warm_chats) == cap
+
+        # Re-warm "keeps-writing" so it becomes most-recent; "filler-0" is then
+        # the oldest. Push (cap - 1) brand-new peers, evicting the cap-1 oldest
+        # entries — all older fillers, but not "keeps-writing". With a plain set
+        # or without move_to_end, "keeps-writing" (the oldest) is evicted first.
+        await transport.receive(self._single("keeps-writing"))
+        for i in range(cap, cap * 2 - 1):
+            await transport.receive(self._single(f"filler-{i}"))
+
+        assert len(transport._warm_chats) <= cap
+        assert "keeps-writing" in transport._warm_chats, (
+            "a peer that re-warmed itself was evicted anyway, so move_to_end is "
+            "not refreshing recency"
+        )
+        # Control: an old filler that did not re-warm is evicted.
+        assert "filler-0" not in transport._warm_chats
+        advertised = {t.target_id for t in transport.configured_targets()}
+        assert "user:keeps-writing" in advertised
+
+    @pytest.mark.asyncio
+    async def test_eviction_does_not_change_who_may_be_pushed_to(self) -> None:
+        # Warmth is only an availability HINT; authorization is _allowed/_owner/
+        # allow_all. Evicting a LEARNED peer's warmth must not change
+        # may_send_to/_may_push for anyone.
+        transport = WeComTransport(FakeClient(), allowed_users=["Wei"], owner_id="Boss")
+
+        # Warm a learned peer, then evict it by flooding other learned peers.
+        transport.note_warm_chat("learned-peer")
+        for i in range(self._EXPECTED_WARM_CAP * 2):
+            transport.note_warm_chat(f"flood-{i}")
+
+        assert "learned-peer" not in transport._warm_chats  # evicted
+        # Authorization is unaffected by warmth either way: the roster members are
+        # still pushable, and a never-rostered peer is still refused.
+        assert transport.may_send_to("Wei") is True
+        assert transport._may_push("Wei") is True
+        assert transport._may_push("Boss") is True
+        assert transport.may_send_to("flood-0") is False
+        assert transport._may_push("flood-0") is False
+
+    @pytest.mark.asyncio
+    async def test_a_roster_member_is_never_evicted_by_the_cap(self) -> None:
+        # The owner and allow-listed users are advertised in configured_targets in
+        # their own right, and their `available` flag reads warmth. Evicting a
+        # roster member that HAS written would flip its row to unavailable with a
+        # reason ("none seen since this gateway started") that is false and would
+        # disable the dashboard's mirror toggle for a reachable, authorized DM. So
+        # the cap must evict only LEARNED (non-roster) peers.
+        transport = WeComTransport(
+            FakeClient(), allowed_users=["Wei"], owner_id="Boss", allow_all=True
+        )
+
+        # The owner and an allow-listed user each write once...
+        await transport.receive(self._single("Boss"))
+        await transport.receive(self._single("Wei"))
+        # ...then far more than a cap's worth of distinct strangers DM the bot.
+        for i in range(self._EXPECTED_WARM_CAP * 2):
+            await transport.receive(self._single(f"stranger-{i}"))
+
+        # The roster members kept their warmth despite the flood...
+        assert "Boss" in transport._warm_chats
+        assert "Wei" in transport._warm_chats
+        # ...so their configured_targets rows stay available with no false reason.
+        rows = {t.target_id: t for t in transport.configured_targets()}
+        assert rows["user:Boss"].available is True
+        assert rows["user:Boss"].unavailable_reason == ""
+        assert rows["user:Wei"].available is True
+        # The learned peers are still bounded (roster members do not inflate it
+        # beyond the small roster).
+        learned = [c for c in transport._warm_chats if c not in {"Boss", "Wei"}]
+        assert len(learned) <= self._EXPECTED_WARM_CAP
+
+    @pytest.mark.asyncio
+    async def test_a_roster_larger_than_the_cap_keeps_every_warmed_member(self) -> None:
+        # Degenerate case: more allow-listed users than the cap, all warm. Nothing
+        # is evicted — roster members are exempt from the cap and bounded by
+        # config size — so the map may sit above the cap, by roster size alone.
+        roster = [f"user-{i}" for i in range(self._EXPECTED_WARM_CAP + 5)]
+        transport = WeComTransport(FakeClient(), allowed_users=roster, allow_all=True)
+
+        for uid in roster:
+            await transport.receive(self._single(uid))
+
+        assert all(uid in transport._warm_chats for uid in roster)
+
+    @pytest.mark.asyncio
+    async def test_a_learned_peer_survives_a_full_roster(self) -> None:
+        # The cap bounds LEARNED peers alone, not the whole map: a roster of >=
+        # the cap that has all written must not consume the learned-peer budget.
+        # A fresh learned DM must appear and persist in configured_targets, never
+        # be inserted-then-self-evicted because every other slot is a roster
+        # member.
+        roster = [f"user-{i}" for i in range(self._EXPECTED_WARM_CAP)]
+        transport = WeComTransport(FakeClient(), allowed_users=roster, allow_all=True)
+        for uid in roster:
+            await transport.receive(self._single(uid))
+
+        # A non-roster peer DMs: it must become and stay warm/advertised.
+        await transport.receive(self._single("newcomer"))
+        assert "newcomer" in transport._warm_chats, (
+            "a learned peer was evicted by a full roster, so roster warmth "
+            "consumed the learned-peer capacity"
+        )
+        advertised = {t.target_id for t in transport.configured_targets()}
+        assert "user:newcomer" in advertised
+
+        # It stays warm even as more learned peers arrive, up to the cap; only an
+        # OLDER learned peer is displaced, never a roster member.
+        for i in range(self._EXPECTED_WARM_CAP - 1):
+            await transport.receive(self._single(f"later-{i}"))
+        assert "newcomer" in transport._warm_chats
+        assert all(uid in transport._warm_chats for uid in roster)
+        learned = [c for c in transport._warm_chats if c not in set(roster)]
+        assert len(learned) <= self._EXPECTED_WARM_CAP
+
+    @pytest.mark.asyncio
+    async def test_prune_converges_in_one_call_when_many_entries_are_over_cap(self) -> None:
+        # A single note_warm_chat must bring the learned set all the way back to
+        # the cap, not shed one entry per call: otherwise a one-in/one-out steady
+        # state would leave a permanently oversized set resident. Seed an
+        # over-cap learned set directly, then one warm call must trim to the cap.
+        transport = WeComTransport(FakeClient(), allow_all=True)
+        over = self._EXPECTED_WARM_CAP * 3
+        for i in range(over):
+            transport._warm_chats[f"seed-{i}"] = None
+        assert len(transport._warm_chats) == over
+
+        transport.note_warm_chat("trigger")
+
+        learned = [c for c in transport._warm_chats if not transport._is_roster_member(c)]
+        assert len(learned) == self._EXPECTED_WARM_CAP
+        # The most recent survivors are kept; "trigger" is newest so it stays.
+        assert "trigger" in transport._warm_chats
+
+    @pytest.mark.asyncio
+    async def test_demoted_peers_converge_on_the_next_inbound(self) -> None:
+        # Shrinking the allow-list demotes retained roster entries to learned ones
+        # all at once. reconfigure does NOT force a trim — the next inbound's
+        # one-pass prune drops every excess entry, converging the learned subset.
+        # Until that inbound the set may sit transiently over the cap, which is
+        # harmless (warmth is a non-authoritative availability hint).
+        from types import SimpleNamespace
+
+        roster = [f"user-{i}" for i in range(self._EXPECTED_WARM_CAP * 2)]
+        transport = WeComTransport(FakeClient(), allowed_users=roster, allow_all=True)
+        for uid in roster:
+            transport._warm_chats[uid] = None
+        assert len(transport._warm_chats) == len(roster)
+
+        # Operator clears the allow-list (allow_all stays on): every former roster
+        # member becomes a learned peer. reconfigure itself does not trim.
+        section = SimpleNamespace(allowed_users=[], allow_all_users=True)
+        with patch("kiro_crew.wecom.transport.sel"):
+            transport.reconfigure(section)
+
+        # One inbound converges the learned subset to the cap in a single pass.
+        await transport.receive(self._single("newcomer"))
+        learned = [c for c in transport._warm_chats if not transport._is_roster_member(c)]
+        assert (
+            len(learned) == self._EXPECTED_WARM_CAP
+        ), "the next inbound's prune did not converge the demoted set to the cap"
+        assert "newcomer" in transport._warm_chats
+
+    @staticmethod
+    def _overflow_rows(targets: list) -> list:
+        return [t for t in targets if t.target_id == "wecom:warm-peers-overflow"]
+
+    @pytest.mark.asyncio
+    async def test_snapshot_marks_the_list_truncated_once_peers_are_shed(self) -> None:
+        # A bounded set that sheds entries must say so in the snapshot itself
+        # (rule a-bound-bounds-every-field-it-retains): under allow_all the warm
+        # peers ARE the whole configured_targets list, so a dropped peer would
+        # otherwise vanish with no trace. An unavailable sentinel row marks it.
+        transport = WeComTransport(FakeClient(), allow_all=True)
+        assert self._overflow_rows(transport.configured_targets()) == []
+        for i in range(self._EXPECTED_WARM_CAP + 7):
+            await transport.receive(self._single(f"stranger-{i}"))
+
+        rows = self._overflow_rows(transport.configured_targets())
+        assert len(rows) == 1, "the snapshot must mark the list as truncated"
+        assert rows[0].available is False, "the marker must never be a send target"
+        assert rows[0].unavailable_reason == "warm_peers_truncated"
+        assert "truncated" in rows[0].label
+        assert await transport.resolve_configured_target(rows[0].target_id) is None
+
+    @pytest.mark.asyncio
+    async def test_every_snapshot_keeps_the_marker_while_truncated(self) -> None:
+        # Disclosure is per snapshot, not per change: a second dashboard read with
+        # no further eviction still omits the evicted peers, so it must still say
+        # the list is truncated.
+        transport = WeComTransport(FakeClient(), allow_all=True)
+        for i in range(self._EXPECTED_WARM_CAP + 1):
+            await transport.receive(self._single(f"stranger-{i}"))
+        for _ in range(3):
+            assert len(self._overflow_rows(transport.configured_targets())) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_userid_is_not_retained_but_still_served(self) -> None:
+        # The bound is on item SIZE as well as count: a non-roster userid longer
+        # than WECOM_MAX_RETAINED_USERID_LEN is not stored as warm (so 512 keys
+        # cannot hold arbitrary memory), but the message is still dispatched.
+        from kiro_crew.wecom.transport import WECOM_MAX_RETAINED_USERID_LEN
+
+        dispatched: list[WeComInbound] = []
+
+        async def dispatch(inbound: WeComInbound) -> None:
+            dispatched.append(inbound)
+
+        transport = WeComTransport(FakeClient(), allow_all=True, dispatch=dispatch)
+        huge = "x" * (WECOM_MAX_RETAINED_USERID_LEN + 1)
+        await transport.receive(self._single(huge))
+
+        assert huge not in transport._warm_chats, "an over-length userid must not be retained"
+        assert transport._warm_dropped == 1, "the skipped id must be counted"
+        assert len(dispatched) == 1, "the message must still be served"
+        # A normal-length id is retained as usual.
+        normal = "y" * WECOM_MAX_RETAINED_USERID_LEN
+        await transport.receive(self._single(normal))
+        assert normal in transport._warm_chats
+
+    def test_a_demoted_oversized_roster_userid_is_shed_on_the_next_prune(self) -> None:
+        # The length bound holds wherever a learned entry is retained, not only at
+        # insert: an over-length allow-listed id kept exempt, then removed from the
+        # allow-list under allow_all, must not stay resident as a learned peer.
+        from types import SimpleNamespace
+
+        from kiro_crew.wecom.transport import WECOM_MAX_RETAINED_USERID_LEN
+
+        long_id = "r" * (WECOM_MAX_RETAINED_USERID_LEN + 50)
+        transport = WeComTransport(FakeClient(), allowed_users=[long_id], allow_all=True)
+        transport.note_warm_chat(long_id)
+        assert long_id in transport._warm_chats
+        with patch("kiro_crew.wecom.transport.sel"):
+            transport.reconfigure(SimpleNamespace(allowed_users=[], allow_all_users=True))
+        transport.note_warm_chat("someone")
+        assert long_id not in transport._warm_chats
+        assert transport._warm_dropped == 1
+
+    def test_an_oversized_roster_userid_is_still_retained(self) -> None:
+        # Roster identities are config-authored and bounded, so the length cap
+        # does not apply to them: an allow-listed id is always kept warm.
+        from kiro_crew.wecom.transport import WECOM_MAX_RETAINED_USERID_LEN
+
+        long_roster_id = "r" * (WECOM_MAX_RETAINED_USERID_LEN + 50)
+        transport = WeComTransport(FakeClient(), allowed_users=[long_roster_id])
+        transport.note_warm_chat(long_roster_id)
+        assert long_roster_id in transport._warm_chats
+        assert transport._warm_dropped == 0

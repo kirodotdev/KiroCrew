@@ -331,7 +331,10 @@ def require_pod_safe_verb(argv: list[str], name: str) -> None:
     verb = argv[0] if argv else ""
     if verb in _POD_SAFE_VERBS:
         return
-    if verb in _POD_EQUIVALENT:
+    if verb == "restart" and not runtime.IS_WINDOWS:
+        # `pod restart` keeps the pod's HOME; Windows refuses it, so it keeps down/up.
+        hint = f" Use `kirocrew pod restart {name}` instead."
+    elif verb in _POD_EQUIVALENT:
         hint = f" Use `{_POD_EQUIVALENT[verb].format(name=name)}` instead."
     elif verb.startswith("-"):
         hint = " The verb must come first; put global flags after it."

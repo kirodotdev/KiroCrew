@@ -329,8 +329,10 @@ access token.
   either. A held port then fails the bind and the loop takes the next allowlisted port.
   `test/test_reuseaddr_platform_branch.py` fails any production `SO_REUSEADDR` set
   outside a platform branch.
-- `KIRO_API_KEY` remains a supported headless path (matches KAS `EnvAuthProvider`), and
-  its ApiKey identity must fail-fast on usage/credit APIs (existing lesson).
+- `KIRO_API_KEY` remains a supported headless path (matches KAS `EnvAuthProvider`). Its
+  ApiKey identity has no SSO/OIDC bearer, so the `GetUsageLimits` API is skipped for it
+  (that call can only answer 403); credit usage comes from the `/usage` scrape instead,
+  which kiro-cli answers locally for the signed-in key.
 
 ## Sign-in from a shell, and on a remote crew
 
@@ -377,6 +379,23 @@ answer. Unlike the refresh-rejected marker this one is not best-effort: it is th
 fence itself, so a bump that cannot be written raises `TokenStoreError` and the
 sign-out reports failure rather than publishing "signed out" while a pending approval
 can still undo it.
+
+**Sign-in generation.** Two accounts of one kind (Google A, then Google B) can come
+back with the same `profileArn`, so none of the claims `auth/bridge.vault_identity_fingerprint`
+hashes tells them apart. The store carries a second marker beside the sign-out one
+(`TokenStore.signin_generation` / `bump_signin_generation`, `kas/signed-in`, a fresh
+random value per sign-in) that `_persist_and_finish` bumps right before it saves the new
+credential, inside the same flock; a token refresh does not bump it. The fingerprint
+folds the marker in when it is set, so both of its readers (the KAS bundle-route model
+catalog and the pre-turn identity sweep) see every completed sign-in as an account
+change; a same-account re-sign-in therefore turns the catalog cold and retires sessions
+once. A vault no sign-in has marked yet keeps the fingerprint it had. The bump is
+not best-effort: a marker that cannot be written fails the login with
+`token_store_failed` before the credential is saved, since a saved sign-in the
+fingerprint cannot see would keep serving the previous account's state; a save that
+fails after the bump leaves only a moved marker, which reads as an account change.
+The fingerprint reads the token and the marker together under the sign-out lock, so
+it never pairs the previous account's token with a marker a login has just moved.
 
 The remote crew uses exactly these verbs: `kirocrew cloud login|logout` and the
 launch wizard run their sign-in scripts on the instance over SSM, and every script
@@ -438,7 +457,38 @@ engine instead ([aws-control.md](aws-control.md)).
 - A Crew sign-out deletes the vault entry under the identity's refresh lock and
   retires running identity-store processes (`dashboard/handlers/kas_login.py`), so
   neither a refresh in flight nor a process holding the old access token in memory
-  outlives the logout.
+  outlives the logout. The bundle-route model picker needs nothing from the
+  sign-in service: its recording carries the vault identity fingerprint the
+  producing session's request went out under, and it is served only while the
+  vault still names that account, so a sign-in or sign-out from the dashboard
+  or from `kirocrew kas login` / `kas logout` (`cli_kas_login.py`) turns it cold
+  ([model-selection.md](../common/model-selection.md)). The dashboard drops its
+  own copy as well: the sign-out button (`pages/developer/KiroSignInCard.tsx`)
+  and the authorized sign-in (`components/KasLoginGate.tsx`) drop the browser's
+  model-list caches (`clearCachedModels`, a reset of `['available-models']`),
+  because that query is otherwise refetched only when a session spawns.
+- The dashboard surfaces that NAME the signed-in account read the vault, never
+  `kiro-cli whoami`, whenever the vault is the harness's credential (the KAS bundle
+  route whatever the vault holds, or the relay route with a usable Crew sign-in --
+  the usage poll's `_vault_owns_usage` verdict): the credit reading's `account_type`
+  label and the identity door `fetch_local_identity` both come from
+  `auth/bridge.vault_identity_claims`, one `resolve()` that yields the identity
+  fingerprint and the token-free slot, provider and recorded start-URL claims
+  together, rendered by `auth/whoami.whoami_document_for` -- the same writer
+  `kirocrew kas whoami` prints -- and mapped onto the dashboard's field names by
+  `dashboard/handlers/kiro_vault_identity.py`. So a Crew sign-in shows its
+  provider kind and, for an Identity Center sign-in that recorded one, its portal
+  host (a token stored before the start URL was recorded shows it after one
+  re-login). The vault stores no e-mail: the vault-credential `GetUsageLimits`
+  call sends `isEmailRequired: true`, as kiro-cli does, and the reading carries
+  `userInfo.email` as `email` (the discovered-candidate path does not ask; its
+  e-mail is whoami's). A 400 answer to that call is retried once without the
+  flag, so a service that refuses it loses only the e-mail, not the reading. The
+  identity door keeps whoami's three-way answer: `{}` (nothing to inherit) only
+  for a vault `TokenStore.holds_no_identity` proves empty, `None` (unknown) for
+  one that did not read or holds an entry that will not decrypt, so an unreadable
+  vault never proposes the default Builder ID target to an Identity Center
+  operator. Spec: learn-cron-dashboard.md, GET `/api/sessions/usage`.
 - Known limit, by decision: the spawn-time probe (`auth/bridge.vault_holds_identity`)
   accepts a stored identity whose access token is live or which carries a refresh
   token; it cannot know without a network call that an issuer will reject that
@@ -456,9 +506,13 @@ engine instead ([aws-control.md](aws-control.md)).
   card, and the agent's "not signed in" error row with its sign-in deep link),
   never silently handed back to whatever `kiro-cli login` holds. Automatic
   demotion to cli-owned after a persistent refresh failure is therefore not a
-  gap to close but a behaviour deliberately not built (see #9772); the
-  pre-existing "expired access token with no refresh token" case, which the probe
-  already treats as no usable identity, is left as it is and not extended.
+  gap to close but a behaviour deliberately not built (see #9772). The spawn
+  owner is the shared sign-in resolver's pick (RFC crew-enterprise-edition D4,
+  `oss` order, amended 2026-10-30; delivered by #26841): any stored vault entry, including one whose access token has
+  expired with no refresh token, and a vault that cannot be read, keeps the spawn
+  Crew-owned and reports "not signed in"; only an empty vault hands it to
+  kiro-cli. Removing the Crew sign-in (`kirocrew kas logout`) is how a user goes
+  back to kiro-cli's.
 - The product entry point for the flow is the **Kiro sign-in** section on Settings >
   Agent Harness (`website/src/pages/developer/KiroSignInCard.tsx`, `compact`
   form), rendered by `AgentBackendTab` INSIDE the KAS row's detail and only while
@@ -477,19 +531,17 @@ engine instead ([aws-control.md](aws-control.md)).
   with the colon percent-encoded, from `pages/developer/kiroSignInLink.ts`,
   whose `highlight` rings the card through the `useSettingHighlight` hook
   SettingsPage mounts; the card's older home, `/developer?tab=agent-backend`,
-  is forwarded there by DeveloperPage with the `highlight` kept) and from the KAS remedy
+  is forwarded there by the `/developer` redirect with the `highlight` kept) and from the KAS remedy
   strings in `agent_sdk/host_auth.py`. Its intro sentence names the backend
   ("Used only by the Kiro Agent backend") and says Kiro CLI keeps its own
   kiro-cli login, because the card sits under a switch that also lists Kiro
   CLI. It is deliberately NOT on Settings > Overview and not indexed into
   Settings search: a provider chooser on the landing page read as a required
-  step to every user, first-run installs included. Overview carries only a
-  one-line signpost to the card (`KiroSignInMovedPointer`), rendered while
-  `agent.acp_backend` is `kas`, for the users who read token expiry there. The
-  switch and card moved from the Developer page (whose sidebar entry is behind
-  Developer Mode) to Settings once first-run setup began offering agents other
-  than Kiro CLI, so a user who set up with one of those can switch agents later
-  without turning on Developer Mode. `KasLoginGate` itself is still not mounted at the app
+  step to every user, first-run installs included, and Overview carries no
+  signpost to it. The
+  switch and card are a Settings tab of their own because first-run setup
+  offers agents other than Kiro CLI, so a user who set up with one of those can
+  switch agents later. `KasLoginGate` itself is still not mounted at the app
   root; the full-screen form stays available for that.
 - The persistent signal for a lapsed sign-in is the app-level **Kiro sign-in
   notice** (`website/src/components/KiroSignInNotice.tsx`, mounted in `App.tsx`

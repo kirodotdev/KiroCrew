@@ -52,7 +52,6 @@ class TestCronRegistration:
         assert len(registered) == 1
         assert "test-app/refresh" in registered
 
-        # Verify cron manifest written
         defs = load_app_cron_defs("test-app")
         assert len(defs) == 1
         assert defs[0]["name"] == "test-app/refresh"

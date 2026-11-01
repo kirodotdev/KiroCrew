@@ -952,9 +952,10 @@ def test_repo_has_no_python_syntax_regression(tmp_path):
     """
     env = {**os.environ, "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache")}
     proc = subprocess.run(
-        [sys.executable, "-m", "compileall", "-q", str(SRC)],
+        [sys.executable, "-X", "utf8", "-m", "compileall", "-q", str(SRC)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
         cwd=str(tmp_path),
     )

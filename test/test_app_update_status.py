@@ -134,6 +134,64 @@ class TestPrecedence:
         }
 
 
+class TestManifestFallback:
+    """A registry whose rows carry no ``version`` (the app's own app.json owns it)
+    is answered from the cached app.json of that exact source."""
+
+    def _manifest(self, monkeypatch, tmp_path, body: Any) -> None:
+        path = tmp_path / "demo-manifest.json"
+        if body is not None:
+            path.write_text(json.dumps(body), encoding="utf-8")
+        monkeypatch.setattr(
+            update_status, "_manifest_cache_path", lambda entry: path, raising=False
+        )
+
+    def test_a_row_without_a_version_is_answered_from_its_manifest(
+        self, monkeypatch, tmp_path, no_catalog
+    ):
+        _external(
+            monkeypatch, [{"name": "demo", "repo": "ssh://example/demo", "branch": "release"}]
+        )
+        self._manifest(monkeypatch, tmp_path, {"name": "demo", "version": "0.1.13"})
+        assert _update("demo", "0.1.12") == {
+            "available": True,
+            "latestVersion": "0.1.13",
+            "checkedAt": FIXED_ISO,
+        }
+
+    def test_the_rows_own_version_wins_over_the_manifest(self, monkeypatch, tmp_path, no_catalog):
+        _external(monkeypatch, [{"name": "demo", "version": "0.2.0"}])
+        self._manifest(monkeypatch, tmp_path, {"name": "demo", "version": "9.9.9"})
+        assert _update("demo", "0.1.0")["latestVersion"] == "0.2.0"
+
+    def test_no_manifest_cached_gives_no_answer(self, monkeypatch, tmp_path, no_catalog):
+        _external(monkeypatch, [{"name": "demo"}])
+        self._manifest(monkeypatch, tmp_path, None)
+        assert _update("demo", "0.1.0") is None
+
+    def test_a_manifest_naming_another_app_is_ignored(self, monkeypatch, tmp_path, no_catalog):
+        _external(monkeypatch, [{"name": "demo"}])
+        self._manifest(monkeypatch, tmp_path, {"name": "other", "version": "9.9.9"})
+        assert _update("demo", "0.1.0") is None
+
+    def test_a_symlinked_manifest_is_refused(self, monkeypatch, tmp_path, no_catalog):
+        target = tmp_path / "elsewhere.json"
+        target.write_text(json.dumps({"name": "demo", "version": "9.9.9"}), encoding="utf-8")
+        link = tmp_path / "demo-manifest.json"
+        link.symlink_to(target)
+        _external(monkeypatch, [{"name": "demo"}])
+        monkeypatch.setattr(
+            update_status, "_manifest_cache_path", lambda entry: link, raising=False
+        )
+        assert _update("demo", "0.1.0") is None
+
+    def test_the_catalog_still_wins_over_a_manifest(self, monkeypatch, tmp_path):
+        _catalog(monkeypatch, [{"name": "demo", "version": "1.0.0"}])
+        _external(monkeypatch, [{"name": "demo"}])
+        self._manifest(monkeypatch, tmp_path, {"name": "demo", "version": "9.9.9"})
+        assert _update("demo", "0.1.0")["latestVersion"] == "1.0.0"
+
+
 class TestPublishableVersion:
     """A published version is text a registry author controls; it is repeated only as a version."""
 

@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from apps_registry_helpers import _catalog_absent  # noqa: F401 - fixture
 from apps_registry_helpers import _explicit_registry_execution_admission  # noqa: F401 - fixture
+from apps_registry_helpers import _install_script_runs_on_this_host  # noqa: F401 - fixture
 from apps_registry_helpers import unsandboxed_spawn  # noqa: F401 - fixture
 from apps_registry_helpers import _identity_harness
 
@@ -579,7 +580,7 @@ async def test_every_post_script_refusal_removes_the_layout_files_that_appeared(
     monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
     monkeypatch.setattr(registry, "sel", lambda: MagicMock())
 
-    def _deny_what_the_script_wrote(name, *, manifest=None, action=""):
+    def _deny_what_the_script_wrote(name, *, manifest=None, action="", **_k):
         # The post-script re-check reads the manifest the script rewrote; every
         # earlier check reads the entering one and admits it.
         if manifest is not None and manifest.description == "rewritten by the script":
@@ -1382,3 +1383,62 @@ def test_a_failed_removal_is_reported_and_touches_nothing_else(monkeypatch, tmp_
     assert any(m.startswith("WARNING: could not remove requirements.txt") for m in messages)
     assert "Removed pyproject.toml, which appeared during the install script" in messages
     assert [p.name for p in (tmp_path / "app-sources").iterdir()] == ["demoapp"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refused_by", ["self_managed_version", "managed_install"])
+async def test_a_refusal_after_the_build_rolls_the_checkout_back(monkeypatch, tmp_path, refused_by):
+    """A refusal past the build gates (the self-managed ``app_versions`` re-check,
+    or ``install_app``/``update_app`` refusing) can come after an update has
+    fast-forwarded the checkout in place, which the ``finally`` does not restore.
+    It takes the shared post-script rollback, with the pre-pull commit."""
+    from kiro_crew.apps import admission
+    from kiro_crew.apps import manager as app_manager
+    from kiro_crew.apps.manager import AppResult
+    from kiro_crew.apps.registry_pipeline import install as install_mod
+
+    src = tmp_path / "app-sources" / "demoapp"
+    src.mkdir(parents=True)
+    (src / "app.json").write_text(
+        json.dumps({"name": "demoapp", "version": "2.0.0"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
+    monkeypatch.setattr(registry, "sel", lambda: MagicMock())
+    monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
+    entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}
+    if refused_by == "self_managed_version":
+        entry["resources"] = "app"
+    monkeypatch.setattr(registry, "get_registry_app", lambda n: dict(entry))
+    monkeypatch.setattr(
+        registry,
+        "_fetch_app_manifest",
+        AsyncMock(return_value={"name": "demoapp", "version": "2.0.0"}),
+    )
+
+    async def _fake_clone_build(git_url, app_name, log_lines, branch="main", **kwargs):
+        return {
+            "ok": True,
+            "pkg_dir": src,
+            "_checkout_preexisted": True,
+            "_pre_pull_commit": "b" * 40,
+        }
+
+    monkeypatch.setattr(registry, "_clone_build_app", _fake_clone_build)
+    refused = AppResult(ok=False, name="demoapp", error="blocked by admission policy: v2")
+    monkeypatch.setattr(registry, "install_app", lambda *a, **k: refused)
+    monkeypatch.setattr(registry, "update_app", lambda *a, **k: refused)
+    monkeypatch.setattr(
+        admission, "app_version_refusal", lambda *a, **k: "version '2.0.0' is not permitted"
+    )
+    monkeypatch.setattr(
+        app_manager, "register_external_app", lambda *a, **k: pytest.fail("registered")
+    )
+    rollback = AsyncMock()
+    monkeypatch.setattr(install_mod, "_roll_back_post_script_refusal", rollback)
+
+    result = await registry.install_from_registry("demoapp")
+
+    assert result["ok"] is False
+    assert rollback.await_count == 1
+    assert rollback.await_args.kwargs["pre_pull_commit"] == "b" * 40
+    assert rollback.await_args.kwargs["checkout_preexisted"] is True

@@ -371,10 +371,33 @@ $script:NpmCliJs = ""
 # Set by Install-Node so the npm fallback cannot loop: no npm in a tree we just
 # unpacked means a broken archive, not a reusable-Node problem.
 $script:NodeWasBootstrapped = $false
+# Why the last Try-Node call rejected its candidate, for a caller that must
+# explain the failure: Try-Node itself only answers yes or no.
+$script:NodeProbeFailure = ""
+$script:NodeProbeWrongArch = $false
+
+# Windows refuses an image built for another machine type with
+# ERROR_BAD_EXE_FORMAT (193) or ERROR_EXE_MACHINE_TYPE_MISMATCH (216). Only
+# those codes mean "wrong architecture"; any other launch or exit failure
+# (a policy block, a quarantined file, a crash) is something else.
+function Test-WrongMachineType([System.Exception]$Exception) {
+    for ($e = $Exception; $null -ne $e; $e = $e.InnerException) {
+        if ($e -is [System.ComponentModel.Win32Exception] -and
+            ($e.NativeErrorCode -eq 193 -or $e.NativeErrorCode -eq 216)) {
+            return $true
+        }
+    }
+    return $false
+}
 
 function Try-Node([string]$Candidate) {
+    $script:NodeProbeFailure = ""
+    $script:NodeProbeWrongArch = $false
     if ([string]::IsNullOrWhiteSpace($Candidate)) { return $false }
-    if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) { return $false }
+    if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
+        $script:NodeProbeFailure = "$Candidate is not there (security software may have removed it)"
+        return $false
+    }
     # Parity with the .sh guard against ':' in a candidate's directory. ';' is legal
     # in an NTFS name and is also the PATH separator, so accepting it would splice
     # bogus entries into the npm subprocess PATH and into the generated .cmd
@@ -385,18 +408,34 @@ function Try-Node([string]$Candidate) {
     # a native command's stderr as a NativeCommandError that 'Stop' promotes to
     # terminating. A Node that writes any warning to stderr during this probe
     # would then be classed unusable and a second Node downloaded, so the probe
-    # runs at 'Continue' and is judged on its exit code alone.
+    # runs at 'Continue' and is judged on its exit code alone. Its stderr is kept
+    # (as ErrorRecords in the merged stream) only to explain a rejection.
     $previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $major = & $Candidate -p 'process.versions.node.split(".")[0]' 2>$null
+        $output = @(& $Candidate -p 'process.versions.node.split(".")[0]' 2>&1)
+        $exitCode = $LASTEXITCODE
     } catch {
+        $script:NodeProbeFailure = $_.Exception.Message
+        $script:NodeProbeWrongArch = Test-WrongMachineType $_.Exception
         return $false
     } finally {
         $ErrorActionPreference = $previous
     }
-    if ($LASTEXITCODE -ne 0 -or $major -notmatch '^[0-9]+$') { return $false }
-    if ([int]$major -lt $MinNodeMajor) { return $false }
+    $stdout = @($output | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+    $stderr = (@($output | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } |
+        ForEach-Object { $_.ToString() }) -join " ").Trim()
+    if ($stderr.Length -gt 500) { $stderr = $stderr.Substring($stderr.Length - 500) }
+    $major = ($stdout | ForEach-Object { [string]$_ }) -join "`n"
+    if ($exitCode -ne 0 -or $major -notmatch '^[0-9]+$') {
+        $script:NodeProbeFailure = "exit code $exitCode" +
+            $(if ($stderr) { "; stderr: $stderr" } else { "; no stderr" })
+        return $false
+    }
+    if ([int]$major -lt $MinNodeMajor) {
+        $script:NodeProbeFailure = "it is Node $major, older than the required $MinNodeMajor"
+        return $false
+    }
     $script:NodeExe = $Candidate
     # Embedded in the generated wrapper too, and every candidate funnels through
     # here -- $env:KIROCREW_NODE_BIN_DIR, the marker file and a PATH lookup can
@@ -597,8 +636,15 @@ function Install-Node {
         # declined to restore, and deleted the rollback. Probing the staged tree
         # removes that interval instead of guarding it.
         if (-not (Try-Node (Join-Path $extracted "node.exe"))) {
-            Die $ExNodeBootstrap ("the Node just downloaded does not run on this host " +
-                "(wrong architecture for $($artifact.Base))")
+            if ($script:NodeProbeWrongArch) {
+                Die $ExNodeBootstrap ("the Node just downloaded does not run on this host " +
+                    "(wrong architecture for $($artifact.Base)): $($script:NodeProbeFailure)")
+            }
+            # No path to rerun is offered: the staged tree is removed by the
+            # `finally` below, so the recorded reason is all the user keeps.
+            Die $ExNodeBootstrap ("node.exe failed to run ($($artifact.Base)): " +
+                "$($script:NodeProbeFailure). Security software or an AppLocker policy " +
+                "may be blocking it")
         }
 
         $backup = ""

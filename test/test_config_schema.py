@@ -279,7 +279,6 @@ class TestConfigSchemaProperties:
                 entry.type in valid_types
             ), f"Entry '{entry.path}' has invalid type '{entry.type}'"
 
-            # Verify kind is set
             assert entry.kind == "core", f"Entry '{entry.path}' has unexpected kind '{entry.kind}'"
 
     # Feature: config-schema, Property 4: Python-to-schema type mapping is correct

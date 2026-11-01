@@ -49,7 +49,9 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.members_parts.dm_bindings import (  # noqa: F401
+        _read_canonical_binding,
         attributable_session_key,
+        dm_binding_depends_on_config,
         dm_binding_path,
         member_identity_for_session,
         read_dm_binding,
@@ -64,6 +66,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         record_activity,
     )
     from kiro_crew.members_parts.member_sessions import (  # noqa: F401
+        _CREWMATE_WORKER_MEMBERS,
         _CREWMATE_WORKER_PROMPT_IN_CONTEXT,
         _CREWMATE_WORKER_SLOTS,
         MEMBER_DISPATCH_SERVER,
@@ -73,6 +76,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _member_session_element,
         _slot_part,
         crew_panel_enabled,
+        crewmate_worker_member_id,
         crewmate_worker_prompt_in_context,
         forget_crewmate_worker_session,
         is_crewmate_worker_session,
@@ -113,11 +117,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stable_member_slug,
         canonical_member_key,
         check_crew_label,
+        count_person_created_crewmates,
         crew_id_for_display_name,
         crew_showing,
         is_configured_dispatchable_member,
         is_crew_id,
         is_dispatchable_member_name,
+        is_person_created_crewmate,
         is_readable_member_name,
         is_valid_member_name,
         key_new_crew,

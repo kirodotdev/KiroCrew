@@ -329,7 +329,13 @@ class TestCIProgress(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
         job = workflow["jobs"]["backend-test"]
-        self.assertEqual(job["timeout-minutes"], 60)
+        # 60 on CodeBuild, 70 on a non-fleet runner that shards four-wide and
+        # needs the longer per-shard budget.
+        self.assertEqual(
+            job["timeout-minutes"],
+            "${{ startsWith(needs.changes.outputs.linux_runner_large, "
+            "'codebuild-') && 60 || 70 }}",
+        )
         self.assertEqual(job["env"]["SHARD_COUNT"], 8)
         step = next(s for s in job["steps"] if s.get("name", "").startswith("Run tests"))
         command = step["run"]

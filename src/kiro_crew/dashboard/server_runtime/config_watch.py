@@ -7,7 +7,7 @@ once the listener serves.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -215,6 +215,24 @@ def _register_config_watch(
                     logger.debug("default-model failure notification failed", exc_info=True)
             raise
 
+    async def _apply_crew_mode_agent(change: Any) -> None:
+        # One switch for every Crew Mode chat: a new ``agent.crew_mode_agent`` moves
+        # every Crew Mode root onto it, busy ones at their next idle point.
+        from kiro_crew.dashboard import crew_mode_migration
+
+        # Off the applier: the watcher cancels an applier after 10 s, and a cancel
+        # landing inside a root's switch must never leave it half moved.
+        crew_mode_migration.schedule_on_config_change(state, getattr(change, "new", None))
+        state.push_refresh("agents")
+
+    def _push_feature_previews(change: ConfigChange) -> None:
+        # The Feature previews switches are read from the shared config query,
+        # which never goes stale on its own; a refresh frame is what makes every
+        # other open dashboard re-read it, so a switch flipped on one surface
+        # reaches the others without a reload.
+        if change.touched("dashboard.feature_previews"):
+            state.push_refresh("config")
+
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
@@ -228,6 +246,16 @@ def _register_config_watch(
         live.subscribe("agent.model", callback=_apply_default_model, name="agent.model"),
         live.subscribe(
             "agent.log_level", callback=apply_log_level_from_config, name="agent.log_level"
+        ),
+        live.subscribe(
+            "agent.crew_mode_agent",
+            callback=_apply_crew_mode_agent,
+            name="agent.crew_mode_agent",
+        ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_push_feature_previews,
+            name="dashboard.feature_previews",
         ),
     ]
     # Closures are held strongly by the registry; keep the handles on the app so

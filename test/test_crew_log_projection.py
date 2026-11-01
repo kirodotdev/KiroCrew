@@ -373,398 +373,6 @@ def test_usage_still_counts_a_recorded_zero_credit_charge_as_reported():
     assert value["credits"] == 0.0
 
 
-def test_usage_bills_injected_context_per_source():
-    handle = _log()
-    _opened(handle)
-    handle.append(
-        "context/composed",
-        {
-            "turn": 1,
-            "sources": [
-                {"kind": "system", "chars": 100, "tokens": 25},
-                {"kind": "memory", "chars": 40, "tokens": 10},
-            ],
-            "chars": 140,
-            "tokens": 35,
-            "tokens_estimated": True,
-        },
-        src=GATEWAY,
-    )
-    handle.append(
-        "context/composed",
-        {
-            "turn": 2,
-            "sources": [{"kind": "memory", "chars": 60, "tokens": 15}],
-            "chars": 60,
-            "tokens": 15,
-            "tokens_estimated": False,
-        },
-        src=GATEWAY,
-    )
-    context = crew_log.fold_usage(_entries(handle))["context"]
-    assert context["tokens"] == 50
-    assert context["estimated_turns"] == 1
-    assert context["by_source"]["memory"] == {"blocks": 2, "tokens": 25, "chars": 100}
-    assert context["by_source"]["system"] == {"blocks": 1, "tokens": 25, "chars": 100}
-    assert context["sources_omitted"] == 0
-
-
-def test_usage_counts_the_sources_a_row_leaves_out():
-    """A row past the per-turn source cap says so, and keeps adding to labels it holds.
-
-    Two NEW labels past the cap are left out and counted. A label the row already
-    holds, arriving again at the cap, still adds to that label rather than being
-    dropped, so a kept figure is never cut short.
-    """
-    limit = crew_log.CONTEXT_SOURCES_PER_TURN_LIMIT
-    sources = [{"kind": f"src{i}", "chars": 1, "tokens": 0} for i in range(limit + 2)]
-    sources.append({"kind": "src0", "chars": 5, "tokens": 0})
-    handle = _log()
-    _opened(handle)
-    handle.append(
-        "context/composed",
-        {"turn": 1, "sources": sources, "chars": limit + 7, "tokens": 0, "tokens_estimated": True},
-        src=GATEWAY,
-    )
-    context = crew_log.fold_usage(_entries(handle))["context"]
-    (row,) = context["turns"]
-    assert len(row["sources"]) == limit
-    assert row["sources"]["src0"] == 6
-    assert context["sources_omitted"] == 2
-
-
-def test_usage_a_retry_attempts_reading_does_not_stamp_the_first_attempts_rows():
-    """MUTATION-SENSITIVE: a rerun of one turn ordinal is a separate attempt.
-
-    A regenerate or rewind reruns a turn the ordinal already names, so one ordinal can
-    carry two attempts, each with its own compositions and its own closer. Matching a
-    reading to rows by TURN NUMBER alone conflates them: attempt 2's closer walking the
-    tail back would reach attempt 1's rows -- same ordinal -- and stamp them with
-    attempt 2's occupancy. It bites hardest when attempt 1 reported NO occupancy, so
-    its rows are unstamped and nothing else marks them closed. Each closer sealing its
-    own run is what keeps the two apart, whether or not attempt 1 measured anything.
-    """
-
-    def _completed(reading: dict[str, int] | None) -> dict[str, Any]:
-        done: dict[str, Any] = {
-            "turn": 1,
-            "stop_reason": "end_turn",
-            "depth": 0,
-            "duration_ms": 100,
-            "model": "opus",
-            "provider": "kiro",
-            "credits": 0.1,
-            "tokens": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0},
-        }
-        if reading is not None:
-            done["context"] = reading
-        return done
-
-    def _composed(kind: str, chars: int) -> dict[str, Any]:
-        return {
-            "turn": 1,
-            "sources": [{"kind": kind, "chars": chars, "tokens": chars // 4}],
-            "chars": chars,
-            "tokens": chars // 4,
-            "tokens_estimated": True,
-        }
-
-    handle = _log()
-    _opened(handle)
-    # Attempt 1 at ordinal 1 composes, then completes WITHOUT an occupancy reading.
-    handle.append("context/composed", _composed("memory", 40), src=GATEWAY)
-    handle.append("turn/completed", _completed(None), src=GATEWAY)
-    # Attempt 2 reruns ordinal 1, composes fresh rows, and completes WITH a reading.
-    handle.append("context/composed", _composed("system", 90), src=GATEWAY)
-    handle.append(
-        "turn/started", {"turn": 1, "actor": "user", "depth": 0, "attempt": 2}, src=GATEWAY
-    )
-    handle.append("turn/completed", _completed({"used": 8_000, "window": 200_000}), src=GATEWAY)
-    turns = crew_log.fold_usage(_entries(handle))["context"]["turns"]
-    # Attempt 1's row keeps NO reading; only attempt 2's row carries the 8_000. The
-    # reading did not walk back across the attempt boundary onto the earlier run.
-    assert [("used" in row) for row in turns] == [False, True]
-    assert [row.get("used") for row in turns] == [None, 8_000]
-
-
-def test_usage_each_attempt_of_one_turn_keeps_its_own_reading():
-    """MUTATION-SENSITIVE: two attempts that BOTH measured keep their own readings.
-
-    When each attempt reports occupancy the seal still matters: attempt 2's closer
-    must not overwrite attempt 1's already-stamped reading, and attempt 1's must not be
-    left for attempt 2 to claim.
-    """
-    handle = _log()
-    _opened(handle)
-    handle.append(
-        "context/composed",
-        {
-            "turn": 1,
-            "sources": [{"kind": "memory", "chars": 40, "tokens": 10}],
-            "chars": 40,
-            "tokens": 10,
-            "tokens_estimated": True,
-        },
-        src=GATEWAY,
-    )
-    _turn(handle, 1)  # the helper's closer carries a used=4_200 reading
-    handle.append(
-        "context/composed",
-        {
-            "turn": 1,
-            "sources": [{"kind": "system", "chars": 90, "tokens": 22}],
-            "chars": 90,
-            "tokens": 22,
-            "tokens_estimated": True,
-        },
-        src=GATEWAY,
-    )
-    handle.append(
-        "turn/started", {"turn": 1, "actor": "user", "depth": 0, "attempt": 2}, src=GATEWAY
-    )
-    handle.append(
-        "turn/completed",
-        {
-            "turn": 1,
-            "stop_reason": "end_turn",
-            "depth": 0,
-            "duration_ms": 100,
-            "model": "opus",
-            "provider": "kiro",
-            "credits": 0.1,
-            "tokens": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0},
-            "context": {"used": 8_000, "window": 200_000},
-        },
-        src=GATEWAY,
-    )
-    turns = crew_log.fold_usage(_entries(handle))["context"]["turns"]
-    assert [row.get("used") for row in turns] == [4_200, 8_000]
-
-
-def test_usage_snapshot_row_is_not_stamped_by_a_later_completion():
-    """MUTATION-SENSITIVE: a copied snapshot's rows are independent of the base's.
-
-    The ``turn/completed`` closer stamps the provider's occupancy reading onto the
-    rows of the turn it closes, AFTER those rows were appended. ``copy_state`` ships a
-    snapshot of the fold to socket owners, so if that snapshot shared the row objects
-    a later completion would stamp a reading into a snapshot a reader is still holding
-    -- an occupancy from a turn the snapshot was taken BEFORE. The copy must be deep
-    enough at the row level that the base can be stamped without touching it.
-    """
-    from kiro_crew.crew_log.schema import Entry
-
-    state = crew_log._usage_start()
-    crew_log._usage_step(
-        state,
-        Entry(
-            seq=1,
-            time=1000,
-            type="request/configured",
-            src=GATEWAY,
-            data={"turn": 1, "context_window": 200_000},
-        ),
-    )
-    crew_log._usage_step(
-        state,
-        Entry(
-            seq=2,
-            time=1001,
-            type="context/composed",
-            src=GATEWAY,
-            data={"turn": 1, "sources": [{"kind": "memory", "chars": 40}], "chars": 40},
-        ),
-    )
-    snapshot = crew_log._usage_copy(state)
-    assert "used" not in snapshot["context_turns"][0]
-    # The turn now closes with a reading. It must land on the base state's row only.
-    crew_log._usage_step(
-        state,
-        Entry(
-            seq=3,
-            time=1002,
-            type="turn/completed",
-            src=GATEWAY,
-            data={"turn": 1, "context": {"used": 9_000, "window": 200_000}},
-        ),
-    )
-    assert state["context_turns"][0]["used"] == 9_000
-    assert "used" not in snapshot["context_turns"][0]
-
-
-def test_usage_the_ordinal_memo_stays_bounded_over_a_long_session():
-    """MUTATION-SENSITIVE: the (unit, turn) memo must not grow without bound.
-
-    The memo lets a rewound turn reuse its ordinal, but it is checkpointed state, so it
-    is capped at ``CONTEXT_ORDINAL_MEMO_LIMIT`` keys and evicts oldest-first. Driving
-    more distinct turns than the cap must leave it at the cap, never larger -- while the
-    counter keeps advancing so each new turn still gets its true session-global ordinal
-    (the cap bounds the memory, not the numbering).
-    """
-    state = crew_log._usage_start()
-    limit = crew_log.CONTEXT_ORDINAL_MEMO_LIMIT
-    overflow = limit + 50
-    for turn in range(1, overflow + 1):
-        ordinal = crew_log._count_turn_ordinal(state, "acp-1", turn)
-        # Each distinct turn advances the counter, so its ordinal is its true position.
-        assert ordinal == turn
-    keys = state["context_turn_keys"]
-    # The memo never exceeds its cap, no matter how many turns passed through it.
-    assert keys.count(",") - 1 == limit
-    # The retained keys are the MOST RECENT ones; the oldest turns were evicted.
-    assert f",acp-1:{overflow}," in keys
-    assert f",acp-1:{overflow - limit + 1}," in keys
-    assert f",acp-1:{overflow - limit}," not in keys
-    # Retained turns at both ends still read back their own ordinal after eviction,
-    # and reading one back does not advance the counter.
-    assert crew_log._count_turn_ordinal(state, "acp-1", overflow) == overflow
-    assert crew_log._count_turn_ordinal(state, "acp-1", overflow - limit + 1) == (
-        overflow - limit + 1
-    )
-    assert state["context_turns_seq"] == overflow
-
-
-def test_usage_a_rewind_past_400_turns_keeps_the_turns_ordinal():
-    """MUTATION-SENSITIVE: a rewind deep into a long session reuses the turn's ordinal.
-
-    ``chat_rewind`` can re-run any user message in the slot's live list, which holds far
-    more than the fold's 200 rows. The memo once kept 400 keys, so rewinding to a turn
-    older than that counted it again: its label and every later ordinal moved up by one,
-    for good. A rewind to turn 10 after 1,000 turns must read ordinal 10 and advance
-    nothing.
-    """
-    state = crew_log._usage_start()
-    for turn in range(1, 1_001):
-        crew_log._count_turn_ordinal(state, 7, turn)
-    assert crew_log._count_turn_ordinal(state, 7, 10) == 10
-    assert state["context_turns_seq"] == 1_000
-    # The next NEW turn still takes the next ordinal.
-    assert crew_log._count_turn_ordinal(state, 7, 1_001) == 1_001
-    # The same turn number in another unit is a different turn.
-    assert crew_log._count_turn_ordinal(state, 8, 10) == 1_002
-
-
-def test_usage_a_regenerate_after_a_reattach_keeps_the_turns_ordinal():
-    """MUTATION-SENSITIVE: a re-attachment is the same unit, so its key space continues.
-
-    A gateway restart re-attaches to the same crew log and writes another
-    ``session/opened`` with ``resumed`` true. The conversation and its turn numbers are
-    the same unit's, so a regenerate of turn 1 after it is still turn 1: it must read
-    back ordinal 1 and count no extra turn. Keyed by the per-attachment counter, the
-    regenerate missed its key and took ordinal 2.
-    """
-
-    def _composed(turn: int) -> dict[str, Any]:
-        return {
-            "turn": turn,
-            "sources": [{"kind": "memory", "chars": 40, "tokens": 10}],
-            "chars": 40,
-            "tokens": 10,
-            "tokens_estimated": True,
-        }
-
-    def _completed(turn: int) -> dict[str, Any]:
-        return {
-            "turn": turn,
-            "stop_reason": "end_turn",
-            "depth": 0,
-            "duration_ms": 100,
-            "model": "opus",
-            "provider": "kiro",
-            "credits": 0.1,
-            "tokens": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0},
-        }
-
-    handle = _log()
-    _opened(handle)
-    handle.append("context/composed", _composed(1), src=GATEWAY)
-    handle.append("turn/completed", _completed(1), src=GATEWAY)
-    # The gateway process died and a new one re-attached to the same crew log.
-    _opened(handle, resumed=True)
-    handle.append(
-        "turn/started", {"turn": 1, "actor": "user", "depth": 0, "attempt": 2}, src=GATEWAY
-    )
-    handle.append("context/composed", _composed(1), src=GATEWAY)
-    handle.append("turn/completed", _completed(1), src=GATEWAY)
-    handle.append("context/composed", _composed(2), src=GATEWAY)
-
-    state = crew_log._usage_start()
-    for entry in _entries(handle):
-        crew_log._usage_step(state, entry)
-    assert [row["ordinal"] for row in state["context_turns"]] == [1, 1, 2]
-    assert state["context_turns_seq"] == 2
-
-
-def test_usage_the_ordinal_memo_covers_the_rewindable_range():
-    """The memo bound is the slot's live message cap, the range a rewind can reach.
-
-    ``crew_log`` cannot import the dashboard, so the figure is restated there and pinned
-    here: if the live cap grows, a rewind could again reach a turn the memo evicted.
-    """
-    from kiro_crew.dashboard import state as dashboard_state
-
-    assert crew_log.CONTEXT_ORDINAL_MEMO_LIMIT == dashboard_state._MAX_SLOT_MESSAGES
-
-
-def test_usage_an_interrupted_units_open_row_is_not_stamped_by_the_next_unit():
-    """MUTATION-SENSITIVE: the seal alone cannot close the unit boundary.
-
-    A slot's window merges every UNIT it ran under and turn ordinals restart in each
-    one, so a matching ordinal is not proof a row belongs to the turn now closing. The
-    ``_closed`` seal tells two FINISHED runs of one ordinal apart, because each closer
-    marks its own tail run. It cannot see a unit cut off mid-turn: that unit composed a
-    row and then died, so no closer ever sealed it, and the next unit's turn 1 walks
-    straight onto it and stamps an unmeasured turn with its own reading.
-    """
-    handle_a = _log("unit-a")
-    _opened(handle_a)
-    handle_a.append(
-        "context/composed",
-        {
-            "turn": 1,
-            "sources": [{"kind": "memory", "chars": 400, "tokens": 100}],
-            "chars": 400,
-            "tokens": 100,
-            "tokens_estimated": True,
-        },
-        src=GATEWAY,
-    )
-    # No closer: the gateway died mid-turn, so nothing seals that row.
-    handle_b = _log("unit-b")
-    _opened(handle_b)
-    handle_b.append(
-        "context/composed",
-        {
-            "turn": 1,
-            "sources": [{"kind": "memory", "chars": 800, "tokens": 200}],
-            "chars": 800,
-            "tokens": 200,
-            "tokens_estimated": True,
-        },
-        src=GATEWAY,
-    )
-    handle_b.append(
-        "turn/completed",
-        {
-            "turn": 1,
-            "stop_reason": "end_turn",
-            "depth": 0,
-            "duration_ms": 100,
-            "model": "opus",
-            "provider": "kiro",
-            "credits": 0.1,
-            "tokens": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0},
-            "context": {"used": 90_000, "window": 200_000},
-        },
-        src=GATEWAY,
-    )
-    turns = crew_log.fold_slot("usage", ["unit-a", "unit-b"], slot="dashboard:1").value["context"][
-        "turns"
-    ]
-    assert [row.get("used") for row in turns] == [None, 90_000]
-    # The counter is the fold's own bookkeeping and never reaches a reader.
-    assert all("unit" not in row for row in turns)
-
-
 def test_usage_bills_every_source_that_spends_and_says_which_spent_what():
     """A session's bill is its turns PLUS its children PLUS its helpers.
 
@@ -1265,3 +873,63 @@ def test_approvals_counts_a_decision_with_no_request_before_it():
     value = crew_log.fold_approvals(_entries(handle))
     assert value["unmatched_decisions"] == 1
     assert value["by_decision"] == {"deny": 1}
+
+
+def _fold_context(steps: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """The context part after *steps*, folded through its own apply."""
+    from kiro_crew.crew_log.schema import Entry
+
+    ctx = crew_log.context_start()
+    for seq, (entry_type, data) in enumerate(steps, start=1):
+        entry = Entry(
+            type=entry_type, seq=seq, time=1_700_000_000_000 + seq, src=GATEWAY, data=data
+        )
+        ctx = crew_log.context_apply(ctx, entry)
+    return ctx
+
+
+def _turn_steps(number: int) -> list[tuple[str, dict[str, Any]]]:
+    sources = [{"kind": "your_message", "chars": 40}]
+    return [
+        ("context/composed", {"turn": number, "chars": 40, "sources": sources}),
+        ("turn/completed", {"turn": number, "stop_reason": "end_turn"}),
+    ]
+
+
+def test_usage_a_rewind_past_400_turns_keeps_the_turns_ordinal():
+    """MUTATION-SENSITIVE: a rewind deep into a long session reuses the turn's ordinal.
+
+    ``chat_rewind`` can re-run any user message in the slot's live list, which holds far
+    more than the chart's 30 rows. A rewind to turn 10 after 1,000 turns, numbered as
+    the dashboard numbers them (the durable row count, two apart), must read ordinal 10:
+    the turns after it are cut, and the next new turn is 11.
+    """
+    steps: list[tuple[str, dict[str, Any]]] = [("session/opened", {})]
+    for k in range(1, 1_001):
+        steps += _turn_steps(2 * k - 1)
+    steps += _turn_steps(2 * 10 - 1)
+    ctx = _fold_context(steps)
+    view = crew_log.context_render(ctx)
+    assert view["latest"]["turn"] == 10
+    assert view["turns"] == 10
+    # Every ring row (turns 971..1,000) came after it, so the ring holds turn 10 alone
+    # and counts the nine before it.
+    assert [row["turn"] for row in view["trend"]] == [10]
+    assert view["earlier"] == 9
+    # The next NEW turn takes the next ordinal.
+    view = crew_log.context_render(_fold_context(steps + _turn_steps(2 * 11 - 1)))
+    assert view["latest"]["turn"] == 11
+    # The same turn number in another unit is a different turn.
+    other = _fold_context(steps + [("session/opened", {})] + _turn_steps(19))
+    assert crew_log.context_render(other)["latest"]["turn"] == 11
+
+
+def test_usage_the_ordinal_memo_covers_the_rewindable_range():
+    """The memo bound is the slot's live message cap, the range a rewind can reach.
+
+    ``crew_log`` cannot import the dashboard, so the figure is restated there and pinned
+    here: if the live cap grows, a rewind could again reach a turn the memo evicted.
+    """
+    from kiro_crew.dashboard import state as dashboard_state
+
+    assert crew_log.CONTEXT_ORDINAL_MEMO_LIMIT == dashboard_state._MAX_SLOT_MESSAGES

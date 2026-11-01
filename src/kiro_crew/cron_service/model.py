@@ -35,6 +35,9 @@ _AUTO_PAUSE_MAX = 10000
 # own schedule. A success resets the counter and with it the backoff.
 _NEVER_PAUSE_BACKOFF_BASE_SECS = 300
 _NEVER_PAUSE_BACKOFF_MAX_SECS = 3600
+# Default consecutive failures before a failure alert leaves the dashboard bell
+# for the job's channel or the owner's DM: 1 alerts on the first failure.
+_ALERT_AFTER_DEFAULT = 1
 
 
 def _lifts_default_pause(limit: object) -> bool:
@@ -67,6 +70,29 @@ def validate_auto_pause_after_failures(value: Any) -> int:
     return limit
 
 
+def validate_alert_after_failures(value: Any) -> int:
+    """Return *value* as a per-job alert threshold, or raise ``ValueError``.
+
+    ``1.._AUTO_PAUSE_MAX`` sends the failure message only once that many runs
+    have failed in a row. ``0`` is refused: "never alert" is what ``silent``
+    means. ``bool`` is refused like :func:`validate_auto_pause_after_failures`.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"alert_after_failures must be an integer, got {value!r}")
+    try:
+        limit = int(value)
+    except (TypeError, ValueError, OverflowError) as e:
+        raise ValueError(f"alert_after_failures must be an integer, got {value!r}") from e
+    if isinstance(value, float) and value != limit:
+        raise ValueError(f"alert_after_failures must be an integer, got {value!r}")
+    if not 1 <= limit <= _AUTO_PAUSE_MAX:
+        raise ValueError(
+            f"alert_after_failures must be within 1..{_AUTO_PAUSE_MAX} "
+            f"(1 = alert on the first failure), got {limit}"
+        )
+    return limit
+
+
 @dataclass
 class CronSchedule:
     """Schedule definition — ``every``, ``at``, or ``cron``."""
@@ -89,6 +115,10 @@ class CronJob:
     thread_ts: str | None = None
     enabled: bool = True
     user_paused: bool = False  # True when explicitly paused by user; never mutated by execution
+    # Monotonic per-job order for explicit pause/resume requests, including a
+    # repeated request whose booleans already have that value. A pending run
+    # record uses it to keep a newer user choice while merging runtime fields.
+    user_pause_generation: int = 0
     auto_paused: bool = (
         False  # True when paused by execution after repeated failures; cleared on re-enable/success
     )
@@ -179,6 +209,14 @@ class CronJob:
     # leave the store's pause state and failure count as they find them. None
     # for a record no run stamped: the run's pause state is applied as is.
     auto_paused_at_start: bool | None = None
+    # Runtime-only, set only on a scheduled cancel or reap's frozen settlement
+    # record (``cron_service/settlement.py``). ``settlement_failure_counted`` is
+    # True when the record counted this run's failure, so the job it lands on
+    # decides the auto-pause with its own stored limit.
+    # ``settlement_pause_audited`` is True once a save landed that pause and its
+    # ``cron_auto_pause`` row was written, so a later save writes no second row.
+    settlement_failure_counted: bool = False
+    settlement_pause_audited: bool = False
     context_enabled: bool = False
     agent_id: str = ""
     # Member identity is distinct from the provider template in agent_id.
@@ -249,6 +287,9 @@ class CronJob:
     # :meth:`auto_pause_limit`, never directly, so every threshold comparison
     # shares one meaning of 0.
     auto_pause_after_failures: int = _AUTO_PAUSE_THRESHOLD
+    # Consecutive failed runs before the failure message leaves the dashboard
+    # bell for the channel or DM. Read it through :meth:`alert_after_limit`.
+    alert_after_failures: int = _ALERT_AFTER_DEFAULT
     skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["YYYY-MM-DD"]
     timezone: str = ""  # IANA timezone for skip evaluation
     persistent_session: bool = True  # False → fresh ephemeral session per run
@@ -439,6 +480,21 @@ class CronJob:
             return _AUTO_PAUSE_THRESHOLD
         return limit or None
 
+    def alert_after_limit(self) -> int:
+        """Consecutive failures before a failure alert leaves the dashboard bell.
+
+        A value no writer can produce falls back to the default, so a damaged
+        record alerts on the first failure rather than never.
+        """
+        limit = self.alert_after_failures
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= _AUTO_PAUSE_MAX
+        ):
+            return _ALERT_AFTER_DEFAULT
+        return limit
+
     def failure_backoff_until(self) -> float | None:
         """Epoch before which a failing job must not fire, or ``None``.
 
@@ -529,15 +585,28 @@ class CronJob:
         that resume. ``failure_recorded`` is still set, so the
         timeout arm and the reaper treat this run's failure as handled.
         """
-        self.failure_recorded = True
-        if self.auto_paused_at_start and not self.auto_paused:
-            return
-        self.consecutive_failures += 1
-        limit = self.auto_pause_limit()
-        if limit is not None and self.consecutive_failures >= limit and not self.auto_paused:
+        if self.count_failure() and self.failure_limit_reached():
             self.enabled = False
             self.auto_paused = True
             self._audit_pause_change("auto_paused")
+
+    def count_failure(self) -> bool:
+        """The counting half of :meth:`record_failure`: True when the failure counted.
+
+        A scheduled cancel or reap counts on its frozen record and leaves the pause
+        to the job the store hands back, whose limit may have been saved during the
+        run (``cron_service/settlement.py``).
+        """
+        self.failure_recorded = True
+        if self.auto_paused_at_start and not self.auto_paused:
+            return False
+        self.consecutive_failures += 1
+        return True
+
+    def failure_limit_reached(self) -> bool:
+        """Whether a job not yet auto-paused has reached its consecutive-failure limit."""
+        limit = self.auto_pause_limit()
+        return limit is not None and self.consecutive_failures >= limit and not self.auto_paused
 
     def record_success(self) -> None:
         """Reset the failure counter and lift any execution auto-pause.

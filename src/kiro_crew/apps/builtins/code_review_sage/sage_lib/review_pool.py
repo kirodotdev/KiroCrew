@@ -102,8 +102,8 @@ except ImportError:  # pragma: no cover - standalone app fallback
 try:  # agents dir resolver — honors KIRO_HOME so a pod reads its own specs
     from kiro_crew.config.paths import kiro_agents_dir
 except Exception:  # pragma: no cover - standalone / test fallback
-    # Deliberately NOT a hard-coded ~/.kiro/agents fallback: a second spelling of
-    # that path is what this PR removes. Unavailable means "cannot look a spec
+    # Deliberately NOT a hard-coded ~/.kiro/agents fallback: that path has one
+    # spelling, in kiro_crew.config.paths. Unavailable means "cannot look a spec
     # up", and both call sites already degrade to their documented defaults.
     kiro_agents_dir = None  # type: ignore[assignment]
 
@@ -666,6 +666,25 @@ class ReviewPool:
     async def send(self, task: str, timeout: float = DEFAULT_TASK_TIMEOUT,
                    on_activity: Callable[[str, int], None] | None = None,
                    keep_session_key: str | None = None) -> str:
+        """:meth:`_send` through Shared Crew fair admission, charged to Crew automation.
+
+        A refusal raises ``TurnRefused`` (a ``RuntimeError`` naming the limit)
+        and the review task never runs. Outside a gateway it runs unchanged.
+        """
+        from kiro_crew.shared_crew.admission import OperationKind
+        from kiro_crew.shared_crew.turn_gate import run_admitted_or_raise
+
+        return await run_admitted_or_raise(
+            self._send(task, timeout, on_activity, keep_session_key),
+            session_key=f"code-review-sage:{keep_session_key or 'review'}",
+            text=task,
+            automation=True,
+            operation=OperationKind.BACKGROUND,
+        )
+
+    async def _send(self, task: str, timeout: float = DEFAULT_TASK_TIMEOUT,
+                    on_activity: Callable[[str, int], None] | None = None,
+                    keep_session_key: str | None = None) -> str:
         """Run one review task on its own session of the shared runtime and return
         the final assistant text. Auto-approves every tool permission (the reviewer
         runs the `gh` CLI + shell) and emits a per-tool SEL audit.

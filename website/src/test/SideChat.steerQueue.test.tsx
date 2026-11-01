@@ -4,9 +4,9 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import reducer, {
   sseSideResult, sseSideQueue, sideReleaseConsumed, sideOptimisticAppend, sideOptimisticRollback,
-  sideClose as sideCloseAction,
+  sideClose as sideCloseAction, sideResync,
 } from '../store/chatSlice'
-import { renderWithProviders, createTestStore } from './helpers'
+import { renderWithProviders as renderPanel, createTestStore } from './helpers'
 import dashboardReducer from '../store/dashboardSlice'
 
 vi.mock('../api/client', () => ({
@@ -39,10 +39,29 @@ beforeEach(() => {
   vi.mocked(api.sideQueueEdit).mockReset().mockResolvedValue({ ok: true, depth: 1 })
 })
 
+type TestStore = ReturnType<typeof createTestStore>
+
+// A frame the test dispatches reaches the mounted panel from outside React, so the store a test
+// holds sends it inside act(). The panel renders against the store underneath, so its own
+// dispatches stay plain.
+const underneath = new WeakMap<TestStore, TestStore>()
+function holdInAct(raw: TestStore): TestStore {
+  const dispatch = ((action: never) => { act(() => { raw.dispatch(action) }); return action }) as TestStore['dispatch']
+  const held = { ...raw, dispatch }
+  underneath.set(held, raw)
+  return held
+}
+const renderWithProviders: typeof renderPanel = (ui, options = {}) =>
+  renderPanel(ui, { ...options, store: options.store && (underneath.get(options.store) ?? options.store) })
+
+// The panel's last mount-time update: this file's api mock has no `sideTools`, so the footer read
+// fails into this notice. A test with nothing else to await waits for it before it ends.
+const footerSettled = () => screen.findByTestId('side-chat-tools-unknown')
+
 /** A side that is mid-turn: the answer is streaming, so a submit can only
  *  steer or queue. */
 function busyState(extra: Record<string, unknown> = {}) {
-  return createTestStore({
+  return holdInAct(createTestStore({
     dashboard: dashInitial,
     chat: {
       ...initial,
@@ -62,7 +81,7 @@ function busyState(extra: Record<string, unknown> = {}) {
         },
       },
     },
-  })
+  }))
 }
 
 describe('SideChat busy-send: steer vs queue', () => {
@@ -105,8 +124,9 @@ describe('SideChat busy-send: steer vs queue', () => {
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalledWith(SLOT, 'fresh question', undefined))
   })
 
-  it('the composer stays usable while a turn runs', () => {
+  it('the composer stays usable while a turn runs', async () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store: busyState() })
+    await footerSettled()
     expect(screen.getByLabelText('Ask a side question')).not.toBeDisabled()
   })
 
@@ -222,6 +242,83 @@ describe('SideChat queue cards', () => {
     // cleared" is no longer observable on the button; the card's absence is the
     // post-success state to assert.
     await waitFor(() => expect(screen.queryByLabelText('Cancel queued message')).not.toBeInTheDocument())
+  })
+
+  it('a cancel answered after a re-read dropped its card and the side then closed still returns its text', async () => {
+    const user = userEvent.setup()
+    let release!: () => void
+    vi.mocked(api.sideQueueCancel).mockImplementationOnce(
+      () => new Promise(resolve => { release = () => resolve({ ok: true, content: 'queued text', depth: 0 }) })
+    )
+    const store = busyState({
+      queue: [{ id: 'q-1', content: 'queued text', ts: '2026-05-20T00:00:02Z', raw: true }],
+    })
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+
+    await user.click(screen.getByLabelText('Cancel queued message'))
+    await waitFor(() => expect(api.sideQueueCancel).toHaveBeenCalledWith(SLOT, 'q-1'))
+
+    // The re-read lands before the cancel's answer, and its queue lacks the card.
+    const readFor = store.getState().chat.slotSide[SLOT]
+    act(() => {
+      store.dispatch(sideResync({ slot: SLOT, readFor, snapshot: {
+        open: true, created_at: readFor.createdAt, last_run_id: 'r1', running: false,
+        messages: [
+          { id: 'u1', run_id: 'r1', role: 'user', content: 'q1', ts: '2026-05-20T00:00:00Z' },
+          { id: 'a1', run_id: 'r1', role: 'assistant', content: 'partial', ts: '2026-05-20T00:00:01Z' },
+        ],
+        queue: [],
+      } }))
+    })
+    expect(store.getState().chat.slotSide[SLOT].queue).toEqual([])
+    act(() => { store.dispatch(sideCloseAction(SLOT)) })
+    // The gateway's frame for the same close reaches this tab too.
+    act(() => { store.dispatch(sideCloseAction(SLOT)) })
+
+    await act(async () => { release() })
+    await waitFor(() => expect(readSideChatDraft(SLOT)).toBe('queued text'))
+    // A later frame for the same cancel adds nothing.
+    act(() => { store.dispatch(sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-1', content: 'queued text' })) })
+    expect(readSideChatDraft(SLOT)).toBe('queued text')
+  })
+
+  it('a cancel answered after a re-read dropped its card, the side closed and a new question was sent still returns its text', async () => {
+    const user = userEvent.setup()
+    let release!: () => void
+    vi.mocked(api.sideQueueCancel).mockImplementationOnce(
+      () => new Promise(resolve => { release = () => resolve({ ok: true, content: '[REDACTED]', depth: 0 }) })
+    )
+    const store = busyState({
+      queue: [{ id: 'q-1', content: 'queued text', ts: '2026-05-20T00:00:02Z', raw: true }],
+    })
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+
+    await user.click(screen.getByLabelText('Cancel queued message'))
+    await waitFor(() => expect(api.sideQueueCancel).toHaveBeenCalledWith(SLOT, 'q-1'))
+
+    const readFor = store.getState().chat.slotSide[SLOT]
+    act(() => {
+      store.dispatch(sideResync({ slot: SLOT, readFor, snapshot: {
+        open: true, created_at: readFor.createdAt, last_run_id: 'r1', running: false,
+        messages: [
+          { id: 'u1', run_id: 'r1', role: 'user', content: 'q1', ts: '2026-05-20T00:00:00Z' },
+          { id: 'a1', run_id: 'r1', role: 'assistant', content: 'partial', ts: '2026-05-20T00:00:01Z' },
+        ],
+        queue: [],
+      } }))
+    })
+    act(() => { store.dispatch(sideCloseAction(SLOT)) })
+    // A new question opens the next conversation before the cancel is answered.
+    act(() => {
+      store.dispatch(sideOptimisticAppend({ slot: SLOT, message: { role: 'user', content: 'next question', ts: '2026-05-20T00:00:05Z' } }))
+    })
+    expect(store.getState().chat.slotSideClosed[SLOT]).toBeFalsy()
+
+    await act(async () => { release() })
+    await waitFor(() => expect(readSideChatDraft(SLOT)).toBe('queued text'))
+    // The cancel belongs to the closed conversation, so the open one is unchanged.
+    expect(store.getState().chat.slotSide[SLOT].removedQueueIds ?? []).not.toContain('q-1')
+    expect(store.getState().chat.slotSide[SLOT].releasedText).toBeUndefined()
   })
 
   it('a cancel frame with no HTTP response still releases the text', async () => {
@@ -443,7 +540,7 @@ describe('chatSlice steer frame placement', () => {
   })
 
   it('repairs the card even when it arrives BEFORE the steer response resolves', async () => {
-    // The other order. `submittedRaw` is a ref, so writing it triggers no render and the
+    // The other order. Recording submitted steer text does not trigger a render, so the
     // queue effect will not re-run — the repair has to happen in `onSuccess` too. A
     // deferred response reproduces the race deterministically.
     const raw = 'rotate AKIAIOSFODNN7EXAMPLE now'
@@ -974,6 +1071,9 @@ describe('chatSlice steer frame placement', () => {
     await waitFor(() => expect(api.sideQueueCancel).toHaveBeenCalledWith(SLOT, 'q-first'))
 
     releaseSecond?.({ ok: true, queued: true, queue_id: 'q-second', still_queued: true, depth: 1 })
+    await waitFor(() => {
+      expect(store.getState().chat.slotSide[SLOT]?.queue?.map(e => e.id)).toContain('q-second')
+    })
   })
 
   it('the tab holding the raw copy releases it even when ANOTHER tab cancels', () => {
@@ -1098,6 +1198,7 @@ describe('chatSlice steer frame placement', () => {
     // context reset, which is the whole purpose of this control.
     const store = busyState({ streaming: false, pending: false })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await footerSettled()
 
     expect(screen.getByRole('button', { name: /refresh/i })).toBeEnabled()
   })
@@ -1135,6 +1236,7 @@ describe('chatSlice steer frame placement', () => {
       pending: false,
     })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await footerSettled()
 
     expect(screen.queryByText(/\[OPTIONS:/)).toBeNull()
     expect(screen.getByRole('button', { name: 'Rebase first' })).toBeInTheDocument()
@@ -1466,6 +1568,7 @@ describe('chatSlice steer frame placement', () => {
       pending: false,
     })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await footerSettled()
 
     expect(screen.queryByText(/\[STEERING/)).toBeNull()
     expect(screen.getByText('Steered')).toBeInTheDocument()
@@ -1492,6 +1595,7 @@ describe('chatSlice steer frame placement', () => {
       pending: false,
     })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await footerSettled()
 
     // The danger treatment is the point: the same text in an assistant row proves nothing.
     expect(screen.getByText('the backend refused')).toHaveClass('text-danger-text')

@@ -58,6 +58,7 @@ vi.mock('../components/ProjectPicker', () => ({
 }))
 
 const RepoSettings = (await import('../apps/issue-radar/views/settings/RepoSettings')).default
+const { i18next } = await import('../i18n/all')
 
 const openSettings = vi.fn()
 
@@ -176,8 +177,8 @@ describe('RepoSettings — label roles and live counts', () => {
   it('counts the issues that match the current triage definition', async () => {
     renderPage()
     // Two of three: one carries a triage label, one has no labels at all.
-    await waitFor(() => expect(screen.getByText(/open issues currently need triage/)).toBeInTheDocument())
-    const line = screen.getByText(/open issues currently need triage/).parentElement as HTMLElement
+    await waitFor(() => expect(screen.getByText(/Open issues needing triage/)).toBeInTheDocument())
+    const line = screen.getByText(/Open issues needing triage/).parentElement as HTMLElement
     expect(line.textContent).toMatch(/1\s*of\s*3/)
   })
 
@@ -187,8 +188,17 @@ describe('RepoSettings — label roles and live counts', () => {
       settings: { ...DEFAULTS, good_first_issue_labels: ['zzq-good-first-issue'] },
     })
     renderPage()
-    const line = await screen.findByText(/open issues are marked first-issue-friendly/)
+    // One match takes the singular form: the count picks the noun, not a fixed "issues are".
+    const line = await screen.findByText(/open issue is marked first-issue-friendly/)
     expect((line.parentElement as HTMLElement).textContent).toMatch(/1/)
+  })
+
+  it('renders the triage count as one catalog sentence', async () => {
+    // en-XA brackets every catalog value, so "N" + "of" + "M" + "open issues…" would read `1 [of] 3 […]`.
+    await i18next.changeLanguage('en-XA')
+    renderPage()
+    const count = await screen.findByText('1', { selector: 'strong' })
+    expect((count.parentElement as HTMLElement).textContent).toMatch(/^\[[^[\]]*1[^[\]]*3[^[\]]*\]$/)
   })
 
   it('adds a label to a role set on click, and removes it on a second click', async () => {

@@ -500,6 +500,44 @@ def _manifest_negative_cache_path(entry: dict[str, Any]) -> Path:
     return success_path.with_name(success_path.name[: -len(".json")] + ".miss.json")
 
 
+def _installed_manifest_cache_path(entry: dict[str, Any]) -> Path:
+    """Cache of the INSTALLED checkout's app.json for *entry*, beside the source's.
+
+    Same source identity as :func:`_manifest_cache_path`, with an ``.installed``
+    infix: the listing reads an installed app's display info from its own
+    checkout, which names the installed version, and that answer must not sit
+    in the source's cache file, which the listing's ``version``, the update
+    status and the store-art prewarm's warm check all read as what the source
+    publishes. The ``.json`` suffix keeps it in the GC sweep and in reach of
+    :func:`_expire_cache_file`.
+    """
+    success_path = _manifest_cache_path(entry)
+    return success_path.with_name(success_path.name[: -len(".json")] + ".installed.json")
+
+
+def _read_installed_manifest_cache(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """The cached installed-checkout app.json for *entry*, or None if missing or stale."""
+    path = _installed_manifest_cache_path(entry)
+    try:
+        if time.time() - path.stat().st_mtime > _MANIFEST_CACHE_TTL:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_installed_manifest_cache(entry: dict[str, Any], data: dict[str, Any]) -> None:
+    """Cache the installed checkout's app.json for *entry* (best-effort)."""
+    path = _installed_manifest_cache_path(entry)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(path, json.dumps(data, indent=2) + "\n")
+    except OSError as exc:
+        logger.warning("Failed to cache installed manifest for %s: %s", entry.get("name", ""), exc)
+    _gc_manifest_cache_dir()
+
+
 def _read_manifest_negative_cache(entry: dict[str, Any]) -> bool:
     """Whether a fresh failure marker exists for *entry*'s source coordinates.
 

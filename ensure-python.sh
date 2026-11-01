@@ -147,7 +147,15 @@ fi
 echo "  → No usable Python >= $MIN_MAJOR.$MIN_MINOR found; installing python@$TARGET_PY via mise…"
 if [ -z "$MISE" ]; then
     echo "  → Installing mise…"
-    curl -fsSL https://mise.run | sh
+    # A pinned release checked against a recorded sha256, never a piped script.
+    _pinned_mise_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/lib/pinned-mise.sh"
+    if [ -f "$_pinned_mise_lib" ]; then
+        # shellcheck source=scripts/lib/pinned-mise.sh
+        . "$_pinned_mise_lib"
+        MISE_INSTALL_PATH="$HOME/.local/bin/mise" install_pinned_mise || true
+    else
+        echo "  ⚠  $_pinned_mise_lib not found — not installing mise"
+    fi
     MISE="$(_mise_bin)"
 fi
 if [ -z "$MISE" ]; then
@@ -161,6 +169,6 @@ if CAND="$(_usable "$CAND")"; then
     echo "  ✅ python $(_pyver "$CAND") installed ($CAND)"
     _record "$CAND"
 else
-    echo "  ⚠️  Python install failed — install manually: curl https://mise.run | sh && mise use -g python@$TARGET_PY"
+    echo "  ⚠️  Python install failed — install mise (https://mise.jdx.dev/installing-mise.html), then: mise use -g python@$TARGET_PY"
     exit 1
 fi

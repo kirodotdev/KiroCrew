@@ -609,6 +609,39 @@ def install_app_disable_hook(state: Any) -> bool:
     return True
 
 
+async def refresh_crew_loop_message(
+    state: Any,
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    root: Path | None = None,
+    key: provider.RepoKey | None = None,
+) -> bool:
+    """Recompose the armed loop's cached prompt from ``crew``. Best-effort.
+
+    An idle-timer fire sends the loop's stored message, composed at launch or at
+    the last wake. A record edit that changes what a turn is told (the operator's
+    ``extra_prompt``) reaches neither, so the crew update route calls this and the
+    next timer turn carries the edit. Returns whether a loop was updated.
+    """
+    svc = _autonudge_instance() if _autonudge_instance is not None else None
+    slot = state.get_slot(_slot_key(crew)) if hasattr(state, "get_slot") else None
+    if svc is None or slot is None:
+        return False
+    try:
+        loop = svc.get_by_slot(_slot_key(crew))
+        if loop is None:
+            return False
+        prompt = await compose_turn_prompt_async(slot, owner, repo, crew, root, key)
+        await svc.update(loop.id, message=prompt)
+        return True
+    except Exception:  # pragma: no cover - refresh is best-effort
+        logger.warning(
+            "issue-radar crew %s: loop message refresh failed", crew.get("id"), exc_info=True
+        )
+        return False
+
+
 async def watchdog_cycle(
     state: Any,
     owner: str,

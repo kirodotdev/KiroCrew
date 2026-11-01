@@ -83,16 +83,21 @@ def _planted_tree() -> dict[str, Any]:
     _work(root, ROOT, "create", item_id="it-worker", title="write the page", generation="g-root")
     _work(root, ROOT, "bind", item_id="it-worker", worker_session_key=WORKER, generation="g-root")
     worker = _log("s-worker", WORKER)
-    _work(
-        worker,
-        WORKER,
-        "goal",
-        goal="write the page",
-        round=1,
-        parent_item="it-worker",
-        generation="g-worker",
-    )
-    _work(worker, WORKER, "create", item_id="it-sub", title="draw a row", generation="g-worker")
+    worker_entries = [
+        {
+            "goal": "write the page",
+            "round": 1,
+            "parent_item": "it-worker",
+            "generation": "g-worker",
+            "action": "goal",
+        },
+        {"item_id": "it-sub", "title": "draw a row", "generation": "g-worker", "action": "create"},
+    ]
+    for fields in worker_entries:
+        entry = _work(worker, WORKER, **fields)
+        # The copy ``work_relay`` writes into the parent's log, which is what the tree
+        # read folds: it reads the root's own units only.
+        _work(root, WORKER, **fields, relay=f"s-worker:{entry.seq}")
     return crew_log.read_tree_projection(ROOT, FOLD).value
 
 

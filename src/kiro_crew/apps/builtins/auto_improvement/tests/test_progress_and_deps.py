@@ -133,12 +133,12 @@ class TestProgressSeries:
 
 
 class TestDeps:
-    def test_reports_git_and_gh_as_required(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_reports_git_gh_and_pytest_as_required(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(deps, "_which", lambda b: f"/usr/bin/{b}")
         monkeypatch.setattr(deps, "_gh_authenticated", lambda: (True, "authenticated"))
         out = deps.check_deps()
         required = {d["id"] for d in out["deps"] if d["required"]}
-        assert required == {"git", "gh"}
+        assert required == {"git", "gh", "pytest"}
         assert out["ok"] is True and out["blocking"] == []
 
     def test_unauthenticated_gh_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:

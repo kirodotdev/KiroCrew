@@ -675,6 +675,23 @@ def create_distribution(bucket: str, region: str, oac_id: str, site_id: str, pro
     return {"id": dist["Id"], "arn": dist["ARN"], "domain": dist["DomainName"]}
 
 
+#: The Sid of :func:`deny_insecure_transport_statement`, so a caller merging it into an
+#: existing policy can tell whether it is already there.
+DENY_INSECURE_TRANSPORT_SID = "KiroCrewDenyInsecureTransport"
+
+
+def deny_insecure_transport_statement(bucket: str, partition: str = "aws") -> dict:
+    """A bucket-policy statement that refuses every request not sent over TLS."""
+    return {
+        "Sid": DENY_INSECURE_TRANSPORT_SID,
+        "Effect": "Deny",
+        "Principal": "*",
+        "Action": "s3:*",
+        "Resource": [f"arn:{partition}:s3:::{bucket}", f"arn:{partition}:s3:::{bucket}/*"],
+        "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+    }
+
+
 def put_oac_bucket_policy(bucket: str, distribution_arn: str, profile: str) -> None:
     """Write the OAC bucket policy pinning AWS:SourceArn — MUST run after create_distribution."""
     policy = {
@@ -704,6 +721,9 @@ def put_oac_bucket_policy(bucket: str, distribution_arn: str, profile: str) -> N
                     f"arn:aws:s3:::{bucket}/_quarantine/*",
                 ],
             },
+            # TLS only, as base-stack.yaml's DenyInsecureTransport. CloudFront OAC
+            # and the deploy's own AWS CLI calls both use HTTPS, so neither is denied.
+            deny_insecure_transport_statement(bucket),
         ],
     }
     _checked(
@@ -739,7 +759,8 @@ def deploy(site_id: str, src_dir: str, profile: str, region: str = DEFAULT_REGIO
     """Idempotent deploy of ``src_dir`` to the site ``site_id``. Returns a result dict.
 
     First deploy: create bucket → OAC → distribution → bucket-policy → sync → invalidate.
-    Re-deploy (site exists by tag): reuse bucket+distribution, just sync + invalidate.
+    Re-deploy (site exists by tag): reuse bucket+distribution, re-write the bucket
+    policy (so an existing site carries the current statements), sync + invalidate.
     """
     region = region or DEFAULT_REGION
     existing = find_site_by_tag(site_id, profile, region)
@@ -747,6 +768,8 @@ def deploy(site_id: str, src_dir: str, profile: str, region: str = DEFAULT_REGIO
     if existing and existing.get("bucket") and existing.get("distribution_id"):
         bucket = existing["bucket"]
         dist_id = existing["distribution_id"]
+        if existing.get("distribution_arn"):
+            put_oac_bucket_policy(bucket, existing["distribution_arn"], profile)
         sync_dir(src_dir, bucket, profile)
         invalidate(dist_id, profile)
         status, domain = distribution_status(dist_id, profile)

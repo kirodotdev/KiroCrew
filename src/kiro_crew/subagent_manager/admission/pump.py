@@ -442,8 +442,13 @@ class _PumpMixin(ManagerComponent):
             # The parent agent spec's ``availableAgents`` declaration is re-read
             # here, off the loop, so the gate's re-check at dispatch costs the
             # loop no directory scan (same reason the record read is threaded).
+            # It is read from the project directories the row was accepted
+            # under as well as the parent's live ones, so a parent that has
+            # ended still has its project-scope declaration applied.
             policy = await asyncio.to_thread(
-                parent_spawn_policy, str(params.get("parent_session_key") or "")
+                parent_spawn_policy,
+                str(params.get("parent_session_key") or ""),
+                params.get("_parent_project_dirs"),
             )
             # Neither the queued entry nor the durable row carries a policy
             # (``queue_params`` never stores one, ``taskq_build_record`` drops
@@ -1177,7 +1182,7 @@ class _PumpMixin(ManagerComponent):
         # the same shape the chat runner's own host-cancelled approval writes.
         # Seeding them and writing in a ``finally`` is what makes the pair total
         # over every exit; an unanswered request left in the fold's ``pending``
-        # map forever is the same silence this fix removes, one step along.
+        # map forever is the same missing record of the wait, one step along.
         _log_origin: tuple[str, int] = ("", 0)
         _log_decision: str = "rejected"
         _log_by: str = "host"
@@ -1401,7 +1406,11 @@ class _PumpMixin(ManagerComponent):
         # The confirmed-start funnel: recorded only for a start that is
         # actually about to run, never for one refused or ended while waiting.
         self._manager._log_spawned(info)
-        await self._manager._run(info)
+        from kiro_crew.shared_crew.containment import principal_scope, run_principal
+
+        # The child's own admitted budget, not the parent session's next sender.
+        with principal_scope(run_principal(info)):
+            await self._manager._run(info)
 
     async def _admit_released_start_impl(self, info: SubagentInfo) -> str:
         """Wait for the pump to meter *info* -- released from the approval
@@ -1451,6 +1460,13 @@ class _PumpMixin(ManagerComponent):
             "parent_session_key": info.parent_session_key,
             "batch_id": info.batch_id,
         }
+        # Metered in the lane of the person the child was admitted for, not the
+        # parent session's latest sender.
+        from kiro_crew.shared_crew.containment import run_principal
+        from kiro_crew.taskq.lanes import PRINCIPAL_LANE_PREFIX
+
+        if principal := run_principal(info, own_only=True):
+            entry["_lane"] = PRINCIPAL_LANE_PREFIX + principal
         self._manager._queue.append(entry)
         self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
         # The wait is edge-driven (PID / first answer / terminal / stagger
@@ -1669,6 +1685,7 @@ class _PumpMixin(ManagerComponent):
                 context_groups=_context_groups_field(info),
                 delegation=info.delegation,
                 backend=info.backend,
+                depth=info.depth,
                 memory_store=info.memory_store,
                 execution_context=info.execution_context,
                 memory_mode=info.memory_mode,
@@ -1684,6 +1701,7 @@ class _PumpMixin(ManagerComponent):
             # settles the failure before allocating a provider, for every store.
             info.error = "memory_unavailable: could not persist this run's memory binding"
             return
+        info._folder_seeded = True
 
         # Written HERE, past the folder write, for the reason the stat below is:
         # this is the point a start is confirmed. A run whose memory binding

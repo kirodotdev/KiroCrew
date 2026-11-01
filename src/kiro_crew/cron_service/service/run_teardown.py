@@ -14,7 +14,8 @@ it on each call (``seams``).
 
 Instance fields written: ``_history``, ``_reaper_task``, ``_sessions``.
 
-Instance fields read: ``_jobs``, ``_push_refresh``, ``_runs``.
+Instance fields read: ``_held_run_records``, ``_held_run_records_guard``,
+``_held_settlements``, ``_jobs``, ``_push_refresh``, ``_runs``.
 """
 
 from __future__ import annotations
@@ -42,6 +43,20 @@ logger = logging.getLogger("kiro_crew.cron")
 
 # ── Reaper ──
 
+#: How often the reaper also removes stale per-run transcripts of stateless jobs.
+_RESIDUE_PRUNE_INTERVAL_SECS = 3600.0
+
+
+async def _prune_run_residue(service: CronService, now: float) -> None:
+    """Remove stale per-run transcripts off the loop; never fail the reaper."""
+    from kiro_crew.cron_service.run_residue import prune_stale_run_transcripts
+
+    active = service.active_session_keys()
+    try:
+        await asyncio.to_thread(prune_stale_run_transcripts, active_keys=active, now=now)
+    except Exception:
+        logger.debug("Reaper: cron run transcript prune failed", exc_info=True)
+
 
 def start_reaper(self: CronService, sessions: SessionManager) -> None:
     """Start the periodic reaper loop.  Call once after the event loop is running."""
@@ -59,10 +74,16 @@ async def _reaper_loop(self: CronService) -> None:
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
+    # The first residue pass waits a full interval, so it never adds to the
+    # startup burst of a gateway restoring its sessions.
+    next_residue_prune = seams.time.monotonic() + _RESIDUE_PRUNE_INTERVAL_SECS
     while True:
         await asyncio.sleep(seams._REAPER_INTERVAL)
         now = seams.time.time()
         now_mono = seams.time.monotonic()
+        if now_mono >= next_residue_prune:
+            next_residue_prune = now_mono + _RESIDUE_PRUNE_INTERVAL_SECS
+            await _prune_run_residue(self, now)
         # Snapshot the job list CACHE-ONLY — no store lock, no _sync, no
         # disk I/O on the loop (same rationale as list_jobs/get_job). The
         # batch-remove worker (remove_jobs → asyncio.to_thread) builds a
@@ -302,9 +323,10 @@ async def _force_reap(
                 and not ran.run_never_started
             )
             try:
-                await asyncio.to_thread(
-                    self._merge_terminal_state_locked,
+                await self._merge_terminal_state_with_retry(
+                    job,
                     job_id,
+                    scheduled=taken.trigger == "scheduled",
                     last_status="error",
                     last_error=last_error,
                     last_run_ts=last_run_ts,
@@ -318,6 +340,8 @@ async def _force_reap(
                     auto_paused_at_start=(
                         taken.job.auto_paused_at_start if taken.job is not None else None
                     ),
+                    dispatched=taken.outcome_reset,
+                    ran=ran,
                 )
             except Exception:
                 logger.exception("Reaper: failed to persist state for cron %s", job_id)
@@ -515,30 +539,41 @@ async def cancel(self: CronService, job_id: str) -> bool:
             # the job leaves the schedule in this process at once, so the next
             # tick does not run it while the save below is pending, but
             # ``user_paused`` is set only by the save that lands the park. A
-            # delete_after_run one-shot is left to _execute_with_timeout,
-            # whose failed-run auto-pause parks it.
-            park_one_shot = job.schedule.kind == "at" and not job.delete_after_run
+            # delete_after_run one-shot is parked too: _execute_with_timeout's
+            # failed-run auto-pause only reaches a run whose payload started,
+            # so a cancel that lands before that would leave it due.
+            park_one_shot = job.schedule.kind == "at"
             if park_one_shot:
                 job.enabled = False
             # Why the park was not saved, or None once a store write that
             # holds it has returned (the merge's own answer).
             park_failure: str | None = None
             try:
-                park_failure = await asyncio.to_thread(
-                    self._merge_terminal_state_locked,
+                park_failure = await self._merge_terminal_state_with_retry(
+                    job,
                     job_id,
+                    scheduled=claim.trigger == "scheduled",
                     last_status="error",
                     last_error=last_error,
                     last_run_ts=last_run_ts,
                     run_generation=generation,
                     result_produced=claim.started_monotonic is not None and job.result_produced,
                     park_one_shot=park_one_shot,
+                    # Off the object the run executed on, as the reaper reads it, so
+                    # an auto-pause the run started from is never taken as its own.
+                    auto_paused_at_start=(
+                        claim.job.auto_paused_at_start if claim.job is not None else None
+                    ),
+                    dispatched=claim.outcome_reset,
+                    ran=claim.job,
                 )
             except Exception as exc:
                 logger.exception("Cancel: failed to persist state for cron %s", job_id)
                 park_failure = failure_name(exc)
-            # A park that did not land is not retried later, so nothing can
-            # overwrite a choice made since. The history entry and the caller
+            # A scheduled terminal record that did not land is retried by
+            # the existing held-record owner. The history entry and caller still
+            # report this attempt's failure because no durable write returned.
+            # The held-record merge preserves choices made since. The caller
             # (below) say so, from the job as it is now: the cancel's own text
             # first, because another run of the job can replace
             # ``job.last_error`` while the merge is awaited. The merge's own
@@ -551,6 +586,31 @@ async def cancel(self: CronService, job_id: str) -> bool:
             # proof, so a job gone or paused here is read from the store.
             live = self.get_job(job_id)
             saved: str | None = None
+            with self._held_run_records_guard:
+                held = self._held_run_records.get(job_id)
+                # Only this cancel's own settlement is a pause hold. A newer
+                # run held in its place decides whether the job runs again,
+                # so the saved store is read below instead.
+                settlement_pending = False
+                if (
+                    held is not None
+                    and self._held_settlements.get(job_id) is held
+                    and held.run_generation == generation
+                    and live is not None
+                ):
+                    settlement_pending = live.user_pause_generation <= held.user_pause_generation
+                    # The user resumed the job after this cancel's record was
+                    # frozen, and the merge did not say so (a busy store raises
+                    # before it runs): no newer run was recorded, so report the
+                    # resume, as the merge would have. A pause meanwhile is left
+                    # to the saved store below, which alone shows it landed.
+                    if (
+                        park_one_shot
+                        and park_failure is not None
+                        and not settlement_pending
+                        and live.enabled
+                    ):
+                        park_failure = seams._PARK_NEWER_CHOICE
             if park_one_shot and park_failure is not None:
                 if live is not None and (
                     live.run_generation > generation or live.schedule.kind != "at"
@@ -558,9 +618,14 @@ async def cancel(self: CronService, job_id: str) -> bool:
                     live.enabled = not (live.user_paused or live.auto_paused)
                 elif live is not None and live.run_generation < generation:
                     live.enabled = False
+                # Read even while this cancel's settlement is pending: a pause
+                # saved before the cancel froze its record is in the store, and
+                # the saved store's "paused" answers success over the hold.
                 if live is None or live.user_paused or live.auto_paused:
                     saved = await asyncio.to_thread(self._saved_job_state, job_id)
-            note, message = seams._cancelled_park_report(live, park_failure, saved)
+            note, message = seams._cancelled_park_report(
+                live, park_failure, saved, held=settlement_pending
+            )
             history_error = f"{last_error}{note}" if park_one_shot else last_error
             if park_one_shot and park_failure is not None:
                 logger.warning(

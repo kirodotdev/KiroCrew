@@ -4,6 +4,7 @@ lifecycle event and relocating its ``source_path``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -582,7 +583,30 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
                 extra={"slug": slug, "source_path": source_path},
             )
             return _err("path traversal not allowed", status=403)
-        resolved_path = Path(os.path.expanduser(source_path)).resolve()
+        from kiro_crew.platform_compat import (
+            names_a_verbatim_only_file,
+            strip_extended_length_prefix,
+        )
+
+        resolved_path = await asyncio.to_thread(Path(os.path.expanduser(source_path)).resolve)
+        # The folded path is what gets stat'ed and stored, so a name only the
+        # ``\\?\`` spelling can reach (a trailing dot, a DOS device) is refused:
+        # its plain spelling names a different file.
+        if names_a_verbatim_only_file(resolved_path):
+            _audit(
+                tool="artifact_relocate",
+                request=request,
+                outcome="denied",
+                error="verbatim-only name",
+                extra={"slug": slug, "source_path": source_path},
+            )
+            return _err(
+                "source_path names a file Windows reaches only by its extended-length path",
+                status=400,
+            )
+        # Windows' ``\\?\`` prefix folded off (lexically), as the producer folds
+        # the roots, so a prefixed resolve is not read as an escape.
+        resolved_path = strip_extended_length_prefix(resolved_path)
         # Fixed-root containment. The root SET comes from the store's single
         # producer (``ArtifactStore.allowed_source_roots``) so this barrier and
         # the store's own read/write barriers cannot drift: a copy omitting the
@@ -626,9 +650,9 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
             )
             return _err("cannot point to a sensitive path", status=403)
         # `resolved_path` is now proven under an allowed root AND not sensitive.
-        if not resolved_path.exists():
+        if not await asyncio.to_thread(resolved_path.exists):
             return _err(f"path does not exist: {source_path}", status=400)
-        if resolved_path.is_dir():
+        if await asyncio.to_thread(resolved_path.is_dir):
             return _err("source_path must be a file, not a directory", status=400)
         source_path = str(resolved_path)
 

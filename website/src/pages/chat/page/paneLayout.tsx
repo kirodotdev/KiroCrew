@@ -18,6 +18,7 @@ import { PanelLeftLight, PanelLeftSolid } from '../../../components/icons/panels
 import { sidePanelDockMotion } from '../sidePanelMount'
 import { errMessage } from '../../../utils/thunkError'
 import { memorySwitchTimeoutMs } from '../../../utils/memorySwitchTimeout'
+import { forgetSlotSuccession } from '../../../utils/slotSuccession'
 import type { MemorySwitchContext } from '../memoryModeSwitch'
 import { crewWindowShown } from '../crew-window/crewWindowStore'
 import { i18nT } from '../../../i18n/t'
@@ -115,8 +116,9 @@ export function usePaneLayoutState({
     if (!safeSetItem(key, '1')) return
     // Without the Auto-Open Git setting the tab is only created for discovery,
     // so it is automatic: it neither stops Pin Summary's landing nor takes the
-    // focus from a Summary the landing chose.
-    tabsCtl.openView('git', { automatic: !autoOpenGitPanel })
+    // focus from a Summary the landing chose. An Ultra Mode chat keeps the
+    // Board (or the tab the person picked) in front either way.
+    tabsCtl.openView('git', { automatic: !autoOpenGitPanel || tabsCtl.boardFirst })
     if (autoOpenGitPanel) dispatch(openActivityPanel())
   }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
 
@@ -476,6 +478,8 @@ export function usePanelLayout({
       try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch (error) {
         // A rejected delete leaves the moved uploads with the replacement,
         // where the user is, and the old slot keeps its own later work.
+        // The old slot is still alive, so it is no longer replaced.
+        forgetSlotSuccession(activeSlot)
         showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
       }
     }

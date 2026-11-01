@@ -44,12 +44,14 @@ import {
 } from '../utils/pullRequestLinks'
 import { sourceProviderMeta, sourceTabQualifier } from '../utils/sourceProviderMeta'
 import CopyBranchButton from './CopyBranchButton'
+import SecretNameCopy from './SecretNameCopy'
 import { PierrePatch } from '../pierre'
 import SourceProviderMark from './SourceProviderMark'
 import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
 import CommentThreads from './CommentThreads'
 import { Btn } from './ui'
+import { useRovingTabs } from './Tablist'
 
 
 import { i18nT } from '../i18n/t'
@@ -1191,6 +1193,9 @@ export default function PullRequestPanel({
   // back to the first tab is derived rather than an effect, so the very first
   // render is already correct instead of flashing an empty section.
   const activeTab: SourceTab = tabs.some(item => item.id === tab) ? tab : 'changes'
+  // Both rails are one tab stop with arrow keys, like the shared Tablist.
+  const sourceRoving = useRovingTabs(cappedSources.map(item => ({ key: item.url })), selected?.url, onSelect)
+  const sectionRoving = useRovingTabs(tabs.map(item => ({ key: item.id })), activeTab, setTab)
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -1200,7 +1205,7 @@ export default function PullRequestPanel({
           exactly one tab that does nothing. */}
       {cappedSources.length > 1 && (
       <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_requests')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
-        {cappedSources.map(item => {
+        {cappedSources.map((item, i) => {
           const itemMeta = sourceProviderMeta(item.provider)
           const qualifier = tabQualifier(item)
           return (
@@ -1208,6 +1213,7 @@ export default function PullRequestPanel({
             key={item.url}
             type="button"
             role="tab"
+            {...sourceRoving(i)}
             aria-selected={item.url === selected?.url}
             onClick={() => onSelect(item.url)}
             className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none cursor-pointer text-[12px] transition-colors ${item.url === selected?.url ? 'bg-bg-hover text-text' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover/60'}`}
@@ -1237,8 +1243,14 @@ export default function PullRequestPanel({
           one, so the user knows the data is the last loaded version and how to
           fix the refresh. */}
       {query.error && !source && (
-        <div className="flex-1 flex items-center justify-center px-6">
-          <div className="max-w-md w-full flex flex-col items-center">
+        // A vertical scroller, centred with `m-auto` rather than
+        // `items-center`: a notice carrying a long per-host secret name has no
+        // height cap, and on a short phone pane it can be taller than the panel.
+        // `items-center` would push its top and the Retry button below it out
+        // of reach; `m-auto` centres it while it fits and lets it scroll once it
+        // does not.
+        <div className="flex-1 min-h-0 overflow-y-auto flex px-6 py-4" data-testid="pull-request-panel-load-error-scroller">
+          <div className="m-auto max-w-md w-full flex flex-col items-center">
             {/* askAgent on, as in the Issues panel: the panel is read-only (no
                 draft), and a provider CLI that is missing or logged out is the
                 kind of failure the agent can diagnose. The login command rides
@@ -1257,14 +1269,21 @@ export default function PullRequestPanel({
               />
             ) : (
               <ErrorNotice
-                className="w-full max-h-64 leading-relaxed"
+                // A notice carrying a secret name is two short sentences and the
+                // name block: it is shown whole, because the height cap would
+                // turn the sentence into a scroll area the block squeezes, and
+                // its last line says why the shorter shared name stopped working.
+                className={queryError.secretName ? 'w-full leading-relaxed' : 'w-full max-h-64 leading-relaxed'}
                 messageClassName="font-mono whitespace-pre-wrap break-words"
                 title={i18nT('components.pullRequestPanel.could_not_load_this_pull_request')}
                 message={queryError.message}
                 messagePlacement="below"
                 actionPlacement="below"
-                scrollMessage
+                scrollMessage={!queryError.secretName}
                 askAgent
+                // A provider read over its own REST API names the token's vault
+                // entry; the name rides beside the sentence so it is copied whole.
+                footer={queryError.secretName ? <SecretNameCopy name={queryError.secretName} /> : undefined}
                 testId="pull-request-panel-load-error"
               />
             )}
@@ -1351,11 +1370,12 @@ export default function PullRequestPanel({
           )}
 
           <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_request_sections')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
-            {tabs.map(item => (
+            {tabs.map((item, i) => (
               <Btn
                 key={item.id}
                 type="button"
                 role="tab"
+                {...sectionRoving(i)}
                 id={`pr-tab-${item.id}`}
                 aria-selected={activeTab === item.id}
                 aria-controls="pr-tabpanel"

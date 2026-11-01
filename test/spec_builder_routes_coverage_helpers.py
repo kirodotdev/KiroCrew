@@ -7,11 +7,12 @@ the app's state files at ``tmp_path`` and clears its process globals,
 which every test module binds; the index builders; the ``_FakeProc``, ``_Slot``
 and ``_State`` fakes; the spec-tree builder; and the mocked-request helpers
 (``_mk``, ``_body``) with the ``_no_dispatch`` and ``_armed`` fixtures and the
-handoff builders.
+handoff builders; ``_real_nudge`` is a real autonudge service holding one loop.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -235,6 +236,30 @@ def _no_autonudge():
     """Default to "no autonudge service" so nothing reaches a live loop registry."""
     with mock.patch.object(r, "_autonudge_instance", lambda: None):
         yield
+
+
+@contextlib.asynccontextmanager
+async def _real_nudge(base_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    """A started real autonudge service holding one loop on the ``demo`` spec's slot.
+
+    An ``async with`` helper rather than an async fixture: the pinned pytest-asyncio
+    does not collect async-generator fixtures declared with plain ``@pytest.fixture``.
+    The switch goes through ``monkeypatch``: ``mock.patch.dict(os.environ)`` restores
+    by clearing the environment first, and a background thread that resolves the data
+    home in that window drops the ``KIROCREW_HOME`` pin.
+    """
+    from kiro_crew.autonudge import AutoNudgeService
+
+    monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+    svc = AutoNudgeService(base_dir=base_dir)
+    await svc.start()
+    try:
+        loop = await svc.add(slot_key=r._slot_key("demo"), message="go", idle_secs=15)
+        svc._cancel_timer(loop.id)
+        with mock.patch.object(r, "_autonudge_instance", lambda: svc):
+            yield svc, loop
+    finally:
+        svc.stop()
 
 
 @pytest.fixture

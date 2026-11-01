@@ -36,6 +36,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from kiro_crew.acp.worker_pool import WorkerPool
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.security import redact
@@ -54,11 +55,16 @@ from kiro_crew.taskq.model import KIND_WORKFLOW_AGENT, SIDE_EFFECT_UNKNOWN
 # pooled vs fallback ceilings. ``test_workflows_agent_pool.py`` pins them equal.
 from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
+    WorkflowEffortInvalid,
     WorkflowSpawnRefused,
+    step_effort_kwargs,
     vet_step_spawn,
 )
 
 logger = logging.getLogger(__name__)
+
+# A warm sub-pool's identity: (agent, model, cwd, effort).
+_PoolKey = tuple[Optional[str], Optional[str], Optional[str], Optional[str]]
 
 
 def _log_unpooled_teardown_failure(action: str, exc: BaseException) -> None:
@@ -115,6 +121,7 @@ class _WorkflowSessionWorker:
         extra_env: Optional[dict[str, str]] = None,
         memory_scope: Any = None,
         context_builder: Any = None,
+        effort: Optional[str] = None,
     ) -> None:
         self._sessions = sessions
         self._key = key
@@ -122,6 +129,9 @@ class _WorkflowSessionWorker:
         self._model = model
         self._cwd = cwd
         self._extra_env = extra_env
+        # Fixed for the worker's life: a warm reuse keeps the session's effort,
+        # which is why the sub-pool key carries it.
+        self._effort_kwargs = step_effort_kwargs({"effort": effort})
         self._memory_scope = memory_scope
         self._context_builder = context_builder
         # Lifecycle only; EssentialDelivery owns successful delivery evidence.
@@ -133,14 +143,38 @@ class _WorkflowSessionWorker:
         """Cold-start THIS worker's session once (the only cold start it pays)."""
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
+        # Read before the session is acquired: a start cancelled in an await after
+        # the acquisition would leave the session held with no worker to release it.
+        delete_delay = await self._configured_delete_delay()
         provider, self._is_new, self._resumed = await self._sessions.get_or_create(
             self._key,
             agent=self._agent,
             model=self._model,
             cwd=self._cwd,
             extra_env=self._extra_env,
+            **self._effort_kwargs,
         )
         self._provider = provider
+        provider.set_delete_delay(delete_delay)
+
+    async def _configured_delete_delay(self) -> int:
+        """``session.kas_delete_delay_secs``, for the conversation the next reset ends.
+
+        Each reuse ends the previous step's conversation (``reset`` below). Where the
+        host can keep the record, it waits this long before Crew deletes it, so a
+        finished step can still be read. Read again before each reuse rather than
+        once at start, so a changed setting applies to the next conversation a
+        reuse ends.
+        """
+
+        def _configured() -> int:
+            try:
+                return KiroCrewConfig.load().session.kas_delete_delay_secs
+            except Exception:
+                # An unreadable config ends the conversation as before.
+                return 0
+
+        return await asyncio.to_thread(_configured)
 
     async def send_message(self, prompt: str, timeout: float = 1800.0) -> str:
         if self._provider is None:
@@ -184,10 +218,13 @@ class _WorkflowSessionWorker:
         (correctness over speed on the fallback path)."""
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
+        delete_delay = await self._configured_delete_delay()
         # Lifecycle only; EssentialDelivery owns successful delivery evidence.
         self._is_new = True
         self._resumed = False
         prov = self._provider
+        if prov is not None:
+            prov.set_delete_delay(delete_delay)
         new_conv = getattr(prov, "new_conversation", None) if prov is not None else None
         if new_conv is not None:
             # BEFORE ``new_conv()``, not after. The cheap path replaces the CONVERSATION and
@@ -215,6 +252,7 @@ class _WorkflowSessionWorker:
                 )
             try:
                 await new_conv()
+                await self._reapply_effort()
                 return
             except Exception:
                 logger.debug(
@@ -232,6 +270,27 @@ class _WorkflowSessionWorker:
             logger.debug("workflow pool: hard reset failed for %s", self._key, exc_info=True)
         self._provider = None
         await self.start()
+
+    async def _reapply_effort(self) -> None:
+        """Push this worker's effort onto the fresh conversation a cheap reset made.
+
+        ``new_conversation`` re-applies the model but not the effort, and a harness
+        that takes effort as a per-session config option (KAS, Codex) pushes it only
+        at cold start, so without this every reuse after the first would run at the
+        backend default. ``change_effort`` answering False means the model takes no
+        effort, which a cold start drops the same way; a raise sends the caller down
+        the hard reset, which cold-starts with the override.
+        """
+        level = self._effort_kwargs.get("reasoning_effort_override")
+        change_effort = getattr(self._provider, "change_effort", None)
+        if not level or change_effort is None:
+            return
+        # A level this session does not advertise is dropped on a cold start too;
+        # pushing it would raise and turn every reuse into a respawn for nothing.
+        accepts = getattr(self._provider, "accepts_effort_level", None)
+        if accepts is not None and not accepts(level):
+            return
+        await change_effort(level)
 
     async def shutdown(self) -> None:
         # A pooled worker owns an ephemeral ``wf-pool:`` session that can never
@@ -292,8 +351,8 @@ def build_pooled_agent_fn(
 
     The caller owns ``pool`` and MUST ``await pool.shutdown()`` when the run ends
     (e.g. in the runner's finally / on_done) so the warm sessions are released.
-    Per-call ``ctx.agent(agent=/model=/cwd=)`` overrides are honored: each
-    distinct ``(agent, model, cwd)`` identity gets its OWN warm sub-pool (so a
+    Per-call ``ctx.agent(agent=/model=/cwd=/effort=)`` overrides are honored: each
+    distinct ``(agent, model, cwd, effort)`` identity gets its OWN warm sub-pool (so a
     multi-specialist fan-out still gets warm reuse per specialist, and a worker
     built for one identity never serves a call that asked for another). Calls
     with no override share the default sub-pool. ``pool.shutdown()`` tears down
@@ -302,7 +361,10 @@ def build_pooled_agent_fn(
     worker_ids = itertools.count()
 
     def _make_pool(
-        agent: Optional[str], model: Optional[str], work_dir: Optional[str]
+        agent: Optional[str],
+        model: Optional[str],
+        work_dir: Optional[str],
+        effort: Optional[str] = None,
     ) -> WorkerPool:
         def _factory() -> _WorkflowSessionWorker:
             wid = next(worker_ids)
@@ -315,6 +377,7 @@ def build_pooled_agent_fn(
                 extra_env=extra_env,
                 memory_scope=memory_scope,
                 context_builder=context_builder,
+                effort=effort,
             )
 
         return WorkerPool(
@@ -328,16 +391,20 @@ def build_pooled_agent_fn(
     # sub-pools created on demand. ``pool`` (the default) is returned to the
     # caller for shutdown; it delegates to every sub-pool via _AggregatePool.
     default_pool = _make_pool(default_agent, default_model, cwd)
-    subpools: dict[tuple[Optional[str], Optional[str], Optional[str]], WorkerPool] = {}
+    subpools: dict[_PoolKey, WorkerPool] = {}
 
     def _pool_for(
-        agent: Optional[str], model: Optional[str], work_dir: Optional[str]
+        agent: Optional[str],
+        model: Optional[str],
+        work_dir: Optional[str],
+        effort: Optional[str],
     ) -> Optional[WorkerPool]:
         # ``agent=None`` on the call means "use the run default" — identical to
         # build_agent_fn's ``opts.get("agent") or default_agent``. Resolve first
         # so a call that explicitly asks for the default reuses the default pool.
-        key = (agent or default_agent, model or default_model, work_dir or cwd)
-        if key == (default_agent, default_model, cwd):
+        # Effort has no run default: an unset one is ``None`` on both sides.
+        key = (agent or default_agent, model or default_model, work_dir or cwd, effort or None)
+        if key == (default_agent, default_model, cwd, None):
             return default_pool
         sp = subpools.get(key)
         if sp is not None:
@@ -371,6 +438,7 @@ def build_pooled_agent_fn(
             model=opts.get("model") or default_model,
             cwd=opts.get("cwd") or cwd,
             extra_env=extra_env,
+            **step_effort_kwargs(opts),
         )
         try:
             # Same identity publication as the pooled worker (see
@@ -419,8 +487,9 @@ def build_pooled_agent_fn(
     async def agent_fn(prompt: str, opts: dict) -> Any:
         if memory_scope is not None:
             await memory_scope.validate()
-        # The same two gates the cold path runs, at the single entry: the pooled
+        # The same gates the cold path runs, at the single entry: the pooled
         # leg and the unpooled leg both allocate a child session.
+        step_effort_kwargs(opts)
         step_cwd = await vet_step_spawn(
             session_key=session_key,
             agent=opts.get("agent") or default_agent,
@@ -433,7 +502,9 @@ def build_pooled_agent_fn(
             opts = {**opts, "cwd": step_cwd}
         if opts.get("session") is not None:
             return await _run_unpooled(prompt, opts)
-        target = _pool_for(opts.get("agent"), opts.get("model"), opts.get("cwd"))
+        target = _pool_for(
+            opts.get("agent"), opts.get("model"), opts.get("cwd"), opts.get("effort")
+        )
         if target is None:
             return await _run_unpooled(prompt, opts)
         return await target.send(prompt)
@@ -451,7 +522,7 @@ class _AggregatePool:
     def __init__(
         self,
         default_pool: WorkerPool,
-        subpools: dict[tuple[Optional[str], Optional[str], Optional[str]], WorkerPool],
+        subpools: dict[_PoolKey, WorkerPool],
     ) -> None:
         self._default = default_pool
         self._subpools = subpools
@@ -536,14 +607,15 @@ def admitted_agent_fn(
                 # reconciler to re-dispatch.
                 handle.cancel("workflow run cancelled")
                 raise
-            except WorkflowSpawnRefused as exc:
-                # A policy refusal is TERMINAL and is settled before the dependency
-                # adapters see it. The step did not run and cannot run under this
-                # policy, so a wait buys nothing -- and the refusal text carries
-                # operator-supplied config (an allowed root, a profile reason),
-                # which the generic text adapters read for status tokens: a root
-                # spelled ``/srv/status 503`` would classify a refusal as a
-                # retryable outage and park rejected work in ``waiting_dependency``.
+            except (WorkflowSpawnRefused, WorkflowEffortInvalid) as exc:
+                # A policy refusal or an invalid effort is TERMINAL and is settled
+                # before the dependency adapters see it. The step did not run and
+                # cannot run as written, so a wait buys nothing -- and the text
+                # carries operator- or script-supplied values (an allowed root, a
+                # profile reason, the effort string), which the generic text
+                # adapters read for status tokens: a root spelled
+                # ``/srv/status 503`` or ``effort="HTTP 503"`` would classify the
+                # step as a retryable outage and park it in ``waiting_dependency``.
                 await handle.fail_async(f"{type(exc).__name__}: {exc}"[:500])
                 raise
             except Exception as exc:

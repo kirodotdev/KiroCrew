@@ -307,11 +307,12 @@ function DirChip({ label, fullPath, onOpen }: { label: string; fullPath: string;
       title={fullPath}
       aria-label={i18nT('pages.chatPage.open_folder', { path: fullPath })}
       onClick={e => {
-        // Shift+click copies the path on a remote session. Route through the
-        // shared helper, not bare `api.revealPath`: the transport call is
-        // side-effect-free, so the helper is what writes the clipboard (and,
-        // locally, drives the file manager). A bare call would silently copy
-        // nothing and break the chip's hover promise.
+        // Shift+click reveals. Route through the shared helper, not bare
+        // `api.revealPath`: the transport call is side-effect-free, so the
+        // helper is what writes the clipboard when the gateway host could not
+        // open a file manager (a remote session, a headless host), and
+        // it says so in the notice beside the chip rather than copying
+        // silently.
         if (e && 'shiftKey' in e && e.shiftKey) { void revealOrOpen(fullPath, 'reveal', reveal); return }
         onOpen(fullPath)
       }}
@@ -491,7 +492,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // inline-widget seam; a folder-referencing prompt with block markdown is
   // the uncommon combination.
   if (!parsedFiles.length && !dirKeys.length) {
-    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} />
+    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} />
   }
 
   // Pass the ORIGINAL ordered list (images included) so [attached_file N] token
@@ -524,7 +525,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // then the cards.
   if (!mentionMap.size && !dirKeys.length) {
     const caption = display.trim()
-    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
+    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
   }
 
   // Inline-mention path: the caption keeps files inline, so render it as a

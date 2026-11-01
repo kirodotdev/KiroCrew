@@ -28,8 +28,17 @@ def _safe_display(value: object) -> str:
 _INDENT = "               "
 
 
-def _print_wrapped(text: str) -> None:
+#: Stands in for a space inside a ``keep`` span while ``textwrap`` runs: not
+#: whitespace, so no break lands there, and absent from any printable text.
+_KEPT_SPACE = "\x00"
+
+
+def _print_wrapped(text: str, keep: tuple[str, ...] = ()) -> None:
     """Print ``text`` wrapped to the doctor's detail indent, never splitting a token.
+
+    Each non-empty string in ``keep`` is printed on one line even when it has
+    spaces, such as a sign-in command whose quoted path is ``/Applications/Kiro
+    Crew.app/...``: a break inside it would leave two halves that run as nothing.
 
     ``textwrap``'s two splitting defaults are both off for every caller, because at width
     80 they break a long data-home path across lines and insert a break after an embedded
@@ -39,13 +48,16 @@ def _print_wrapped(text: str) -> None:
     holds for every detail this function prints, so it is not a per-caller choice -- a flag
     here would leave the remedies that did not pass it broken for the same reason.
     """
+    for span in keep:
+        if span and " " in span:
+            text = text.replace(span, span.replace(" ", _KEPT_SPACE))
     for line in textwrap.wrap(
         text,
         width=80,
         break_long_words=False,
         break_on_hyphens=False,
     ):
-        print(f"{_INDENT}{line}")
+        print(f"{_INDENT}{line.replace(_KEPT_SPACE, ' ')}")
 
 
 @contextlib.contextmanager

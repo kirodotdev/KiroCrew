@@ -510,6 +510,54 @@ class TestParentRuntimeKwargs:
         assert mgr._parent_runtime_kwargs("d1") == {"sandbox_mode": "off"}
 
 
+class TestCompanionInheritsParentGatewaySocket:
+    """The composed socket hand-off, end to end.
+
+    ``TestParentRuntimeKwargs`` pins the mirror list with a ``SimpleNamespace``
+    client, and ``test_session_provider_abort_target`` pins the
+    ``AcpSessionProvider._mcp_gateway_socket`` property on its own. Neither runs
+    a *started* provider -- an ``AcpProvider`` whose ``_client`` is a real
+    ``AcpSessionProvider`` over a runtime that has a socket -- through
+    ``_parent_runtime_kwargs``. That composed path is the one a companion spawn
+    takes: the property feeds the mirror, so the mirror forwards the runtime's
+    socket onto the companion. This pins the two halves together, so a change to
+    either half that breaks the forward is caught.
+    """
+
+    @staticmethod
+    def _started_provider(socket_path: str | None):
+        """An ``AcpProvider`` whose ``_client`` is a real ``AcpSessionProvider``
+        over a runtime, exactly as the startup path leaves it."""
+        from unittest.mock import patch as _patch
+
+        from kiro_crew.acp.runtime import AcpRuntime
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+        from kiro_crew.providers.acp import AcpProvider
+
+        runtime = MagicMock(spec=AcpRuntime)
+        runtime._mcp_gateway_socket = socket_path
+        # Keep the backend mirror out of the assertion surface: a MagicMock would
+        # forward a truthy child Mock as ``acp_backend``. We only pin the socket.
+        runtime.acp_backend = None
+        with _patch("kiro_crew.providers.acp.AcpClient"):
+            provider = AcpProvider(acp_backend="")
+        provider._client = AcpSessionProvider(MagicMock(), runtime)  # type: ignore[assignment]
+        return provider
+
+    def test_socket_is_forwarded_through_the_started_provider(self, mgr) -> None:
+        provider = self._started_provider("/run/kc/gw.sock")
+        _register(mgr, "d1", provider=provider)
+        assert mgr._parent_runtime_kwargs("d1")["mcp_gateway_socket"] == "/run/kc/gw.sock"
+
+    def test_socket_is_omitted_when_the_runtime_has_none(self, mgr) -> None:
+        """A runtime with no socket forwards nothing: the key is absent, not
+        ``None`` (matching ``test_unset_posture_fields_are_omitted_not_nulled``:
+        a forwarded ``None`` reads to the runtime as an explicit "no socket")."""
+        provider = self._started_provider(None)
+        _register(mgr, "d1", provider=provider)
+        assert "mcp_gateway_socket" not in mgr._parent_runtime_kwargs("d1")
+
+
 class TestSessionSharingEligible:
     def test_unknown_parent_is_ineligible(self, mgr) -> None:
         assert mgr.is_session_sharing_eligible("nope") is False
@@ -694,10 +742,11 @@ class TestExpireIdle:
         mgr._active_dashboard_slots = {"dashboard:live"}
         _register(mgr, "dashboard:live")
 
-        with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
+        with patch.object(mgr, "reset", wraps=mgr.reset) as reset:
             await mgr._expire_idle(10_000)
 
         assert [c.args[0] for c in reset.await_args_list] == ["dashboard:gone"]
+        assert set(mgr._sessions) == {"dashboard:live"}
 
     @pytest.mark.asyncio
     async def test_uninitialised_slot_set_orphans_nothing(self, mgr) -> None:

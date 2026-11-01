@@ -16,7 +16,7 @@
 #
 # ## Why a script and not three copies of the same `if`
 #
-# Three steps in ci.yml need this (`frontend-lint`, `frontend-tests`, and the render
+# Three steps in ci.yml need this (`frontend-ratchets`, `frontend-tests`, and the render
 # gate in `e2e`). It used to be an inline three-liner in each, which was tolerable
 # while the only case was "a PR passes origin/<base>, a push passes nothing". It is
 # not tolerable now that a push passes a bare SHA, because the ref-vs-SHA handling

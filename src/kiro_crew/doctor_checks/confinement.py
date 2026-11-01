@@ -7,6 +7,7 @@ host where the sandbox is broken.
 
 from __future__ import annotations
 
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -237,57 +238,20 @@ def _doctor_kiro_internal_sandbox() -> None:
 
     Not an issue: delegation is a working, audited configuration, so it must not
     add to the ``issues`` list. It is reported because it changes which paths the
-    agent can reach, not because anything is broken.
+    agent can reach, not because anything is broken. The one failure this setting
+    does cause, Kiro Crew's MCP servers not starting under kiro-cli's sandbox, is
+    reported by :func:`_doctor_kiro_sandbox_blocks_crew_mcp` in the MCP Tools
+    section, which knows which harnesses are selected.
 
-    The remedy is conditional on the tier Kiro Crew would ACTUALLY apply
-    (:func:`sandbox.effective_sandbox_mode`, which includes the governance
-    clamp). Telling an operator to disable kiro-cli's sandbox while
-    ``agent.sandbox`` is ``"off"`` would remove the only layer confining the
-    spawn and make ``~/.aws`` and ``~/.ssh`` readable, and the two settings
-    correlate rather than being independently unlikely: ``"off"`` exists to defer
-    isolation to kiro-cli. A tier that cannot be read gets the cautious wording,
-    never the bare recommendation.
+    The remedy is conditional on the tier Kiro Crew would ACTUALLY apply; the one
+    copy of that decision is :func:`kiro_sandbox_conflict.self_sandbox_remedy`,
+    shared with the MCP Tools row and the session-start hint.
     """
-    if sys.platform != "darwin":
-        return
-    try:
-        delegated = cli_doctor.sandbox.kiro_internal_sandbox_enabled()
-    except Exception:  # noqa: BLE001 — doctor must survive an unreadable setting
-        return
-    if not delegated:
+    conflict = cli_doctor.kiro_sandbox_conflict
+    if not conflict.kiro_cli_self_sandboxes():
         return
     settings_path, key = cli_doctor.sandbox.kiro_internal_sandbox_switch()
-    try:
-        own_tier = cli_doctor.sandbox.effective_sandbox_mode(
-            cli_doctor.sandbox.configured_sandbox_mode()
-        )
-    except Exception:  # noqa: BLE001 — an unreadable tier must not shape the advice
-        own_tier = None
-    if own_tier is not None and own_tier != "off":
-        remedy = (
-            f'Set "{key}" to false to hand isolation back to Kiro Crew\'s own profile '
-            f'(agent.sandbox="{own_tier}"), which masks credential paths and leaves the '
-            "rest of your home readable; the value is re-read per spawn, so no restart "
-            "is needed."
-        )
-    elif own_tier == "off":
-        # The remedy inverts here. Recommending the internal sandbox off while
-        # agent.sandbox is also off would remove the ONLY layer confining the
-        # spawn, and the two settings correlate: "off" exists precisely to defer
-        # isolation to kiro-cli. Name the order that keeps a layer at all times.
-        remedy = (
-            f'Do NOT just set "{key}" to false here: agent.sandbox is "off" too, so Kiro '
-            "Crew builds no profile and turning this key off would leave the spawn with "
-            "no OS confinement at all, making credential paths such as ~/.aws and ~/.ssh "
-            'readable. Set agent.sandbox to "auto" first, then either layer owns isolation.'
-        )
-    else:
-        remedy = (
-            f'Before setting "{key}" to false, check that agent.sandbox is not "off": with '
-            "both off the spawn runs with no OS confinement at all and credential paths "
-            "such as ~/.aws and ~/.ssh become readable. Kiro Crew's own tier could not be "
-            "read from here."
-        )
+    remedy = conflict.self_sandbox_remedy()
     print("  kiro-cli:    ⚠️  confined by kiro-cli's own sandbox, not the backend above")
     render._print_wrapped(
         f'{settings_path} sets "{key}": true, so kiro-cli confines itself and Kiro Crew '
@@ -297,6 +261,41 @@ def _doctor_kiro_internal_sandbox() -> None:
         'can fail with "Operation not permitted" while files the session created stay '
         "readable. That is a Seatbelt profile, not macOS privacy: granting the app Full "
         f"Disk Access cannot restore those reads. {remedy}"
+    )
+
+
+def _doctor_kiro_sandbox_blocks_crew_mcp(issues: list[str], *, required: bool) -> None:
+    """Report kiro-cli's own sandbox when it stops Kiro Crew's MCP servers starting.
+
+    With ``"sandbox": true`` in kiro-cli's settings on macOS, kiro-cli confines the
+    MCP servers it starts, ``kirocrew-core`` fails to start there, and every kiro-cli
+    session fails with ``mcp-client(kirocrew-core): initial connection or tool
+    synchronization failed``. The MCP probe above starts the server outside
+    that sandbox, so it passes on that host; this row is the one that can say why
+    sessions still fail.
+
+    *required* is whether a harness selected for either role spawns kiro-cli (the
+    Kiro CLI backend, or KAS through kiro-cli's relay). Then every session on that
+    role fails, so the row is fatal. Otherwise the same finding is advisory and stays
+    out of ``issues``: failing doctor over a backend the host does not use would make
+    a working host red. Silent off macOS and while the setting is off or unreadable.
+    """
+    if not cli_doctor.kiro_sandbox_conflict.kiro_cli_self_sandboxes():
+        return
+    explanation = cli_doctor.kiro_sandbox_conflict.conflict_explanation()
+    if not required:
+        print(
+            "  kiro-cli sandbox: ⚠️  blocks Kiro Crew's MCP servers "
+            "(not used by the selected backends)"
+        )
+        render._print_wrapped(explanation)
+        return
+    print("  kiro-cli sandbox: ❌ blocks Kiro Crew's MCP servers, so sessions fail to start")
+    render._print_wrapped(explanation)
+    settings_path, key = cli_doctor.sandbox.kiro_internal_sandbox_switch()
+    issues.append(
+        f"kiro-cli's own sandbox ({settings_path} \"{key}\": true) stops Kiro Crew's "
+        "MCP servers from starting"
     )
 
 
@@ -312,6 +311,46 @@ def _doctor_sandbox(issues: list[str]) -> None:
     print("\nSandbox")
     _doctor_sandbox_backend(issues)
     _doctor_kiro_internal_sandbox()
+    _doctor_ssh_agent_forward()
+
+
+def _doctor_ssh_agent_forward() -> None:
+    """Name the agents that start without the ssh-agent socket for lack of consent.
+
+    Silent unless this shell runs an ssh-agent (``SSH_AUTH_SOCK`` is set) and at
+    least one harness, under the configured tier, keeps the socket only with the
+    ``ssh_auth_sock_consent.json`` consent, which is not granted. Each line comes
+    from ``sandbox.ssh_auth_sock_consent_notice``, the same reader the gateway uses
+    at that harness's spawn. Doctor judges the configured tier and each harness's
+    declared mask; a per-session mode override can differ.
+
+    Not an issue: a scrubbed socket is the configured behaviour, so it must not add
+    to the ``issues`` list. It is reported because the agent can only say that no
+    ssh keys are available, which does not point at the setting.
+    """
+    if cli_doctor.platform_compat.IS_WINDOWS or not os.environ.get("SSH_AUTH_SOCK"):
+        return
+    try:
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_ROUTING
+        from kiro_crew.agent_sdk.tool_gate import adapter_hidden_credential_dirs
+
+        mode = cli_doctor.sandbox.configured_sandbox_mode()
+        withheld: list[tuple[str, str]] = []
+        for backend in sorted(ACP_BACKEND_ROUTING):
+            notice = cli_doctor.sandbox.ssh_auth_sock_consent_notice(
+                backend, mode, tuple(adapter_hidden_credential_dirs(backend))
+            )
+            if notice:
+                withheld.append((backend, notice))
+    except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
+        print(f"  ssh-agent:   ⚠️  could not check ({render._safe_display(exc)})")
+        return
+    if not withheld:
+        return
+    names = ", ".join(backend for backend, _ in withheld)
+    print(f"  ssh-agent:   ⚠️  not forwarded to {names}")
+    # One harness's full line carries the remedy; it is the same for each.
+    render._print_wrapped(withheld[0][1])
 
 
 def _doctor_sandbox_backend(issues: list[str]) -> None:

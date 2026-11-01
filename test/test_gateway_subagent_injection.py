@@ -25,6 +25,7 @@ from test_gateway_subagent_wiring import (
     _LOST_RUN_SECS,
     _Done,
     _RecordingAsyncio,
+    _Slot,
     _until,
     harness,
     make_info,
@@ -58,6 +59,7 @@ async def test_a_result_collected_inline_is_not_injected_again(done: _Done) -> N
     current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     slot.task = current
     slot._pending_synthesis = True
+    slot._synthesis_armers = {"a1"}
     slot._subagents_inline_collected = {"a1"}
     info = make_info()
 
@@ -84,6 +86,53 @@ async def test_a_partial_inline_collection_keeps_synthesis_armed(done: _Done) ->
 
     assert slot._subagents_inline_collected == {"a2"}
     assert slot._pending_synthesis is True
+
+
+@pytest.mark.asyncio
+async def test_an_inline_skip_keeps_a_synthesis_another_child_armed(done: _Done) -> None:
+    slot = done.tab("main")
+    slot._pending_synthesis = True
+    slot._synthesis_armers = {"b1"}
+    slot._subagents_inline_collected = {"a1"}
+
+    await done.done(make_info())
+
+    assert slot._subagents_inline_collected == set()
+    assert slot._pending_synthesis is True
+    assert slot._synthesis_armers == {"b1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "order", [("a1", "b1"), ("b1", "a1")], ids=["wave-first", "background-first"]
+)
+async def test_a_background_completion_keeps_its_arm_when_an_inline_sibling_also_armed(
+    done: _Done, order: tuple[str, str]
+) -> None:
+    slot = done.tab("main")
+    slot.running = True
+    current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    slot.task = current
+    infos = {child: make_info(child) for child in order}
+
+    # Both arm at entry and wait behind the running turn, in either order; the
+    # blocking tool's collection of a1 lands during that wait.
+    deliveries = []
+    for count, child in enumerate(order, start=1):
+        deliveries.append(asyncio.ensure_future(done.on_done(infos[child])))
+        await _until(
+            lambda n=count: slot._subagent_deliveries_inflight == n,
+            f"{child} waiting behind the turn",
+        )
+    assert slot._synthesis_armers == {"a1", "b1"}
+    slot._subagents_inline_collected.add("a1")
+    current.set_result(None)
+    await asyncio.wait_for(asyncio.gather(*deliveries), _LOST_RUN_SECS)
+
+    assert infos["a1"]._report_delivered is True
+    assert len(slot.queued) == 1
+    assert slot._pending_synthesis is True
+    assert slot._synthesis_armers == {"b1"}
 
 
 @pytest.mark.asyncio
@@ -168,7 +217,7 @@ async def test_a_turn_that_fails_while_awaited_frees_the_tab_for_the_completion(
     await done.drain()
 
     assert [s for s, _text, _kw in done.chats] == [slot]
-    assert slot.queued == []
+    assert slot._queue == []
 
 
 @pytest.mark.asyncio
@@ -195,38 +244,181 @@ async def test_a_tab_still_busy_after_the_wait_queues_and_counts_one_turn(
 
 
 @pytest.mark.asyncio
-async def test_the_tab_turn_runs_as_the_sub_agent_and_owes_its_delivery(done: _Done) -> None:
+async def test_an_idle_tab_queues_the_completion_and_drains_it_at_once(done: _Done) -> None:
+    """The idle tab takes the queue drain's admission path, not a turn of its own."""
     slot = done.tab("main")
     info = make_info()
 
     await done.done(info)
     await done.drain()
 
-    ((turn_slot, text, kwargs),) = done.chats
+    ((text, kind, meta),) = slot.queued
+    assert kind == gw_mod.SUBAGENT_COMPLETION_KIND
+    assert sorted(meta) == [gw_mod.SUBAGENT_COMPLETION_META_KEY]
+    assert text.startswith(gw_mod.SUBAGENT_COMPLETION_PREFIX)
+    # The drain settles the delivery once the announce is consumed.
+    assert [content for content, _ids in slot.owed] == [text]
+    assert info._delivery_queued is True
+    assert done.drains == [slot]
+    assert [(s, t) for s, t, _kw in done.chats] == [(slot, text)]
     assert done.turn_is_slot_task == [True]
-    assert len(done.state._background_tasks.added) == 1
-    assert done.state._background_tasks == set()
-    assert turn_slot is slot and text.startswith(gw_mod.SUBAGENT_COMPLETION_PREFIX)
-    assert kwargs["_directive_user_origin"] is False
-    assert kwargs["_turn_actor"] == "subagent"
-    assert callable(kwargs["_on_consumed"])
+    assert slot._queue == [] and slot.task is None
+    assert slot._turn_admission_reserved is False
     assert slot._synthesis_completion_turns == 1
-    assert slot.task is None
-    gw_mod._arm_queued_delivery_settlement.assert_called_once()
-    assert gw_mod._arm_queued_delivery_settlement.call_args.args[3] == [text]
+    assert slot._subagent_deliveries_inflight == 0
     done.state.push_slots_update.assert_called_once_with()
 
 
 @pytest.mark.asyncio
 async def test_a_failed_solo_run_owes_nothing_to_the_tab_turn(done: _Done) -> None:
-    done.tab("main")
+    slot = done.tab("main")
 
     await done.done(make_info(error="boom"))
     await done.drain()
 
-    ((_slot, _text, kwargs),) = done.chats
-    assert "_on_consumed" not in kwargs
-    gw_mod._arm_queued_delivery_settlement.assert_not_called()
+    assert len(done.chats) == 1
+    assert [ids for _content, ids in slot.owed] == [[]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("_stop_state", "soft_pending"),
+        ("_stopping", True),
+        ("_last_turn_auth_required", True),
+        ("_turn_admission_reserved", True),
+    ],
+)
+async def test_an_idle_tab_that_cannot_admit_a_turn_keeps_the_completion_queued(
+    done: _Done, field: str, value: Any
+) -> None:
+    """A Stop being resolved, a sign-in hold or a send's reservation: the
+    completion waits as a card for the next drain."""
+    slot = done.tab("main")
+    setattr(slot, field, value)
+    info = make_info()
+
+    await done.done(info)
+    await done.drain()
+
+    assert done.chats == [] and done.drains == []
+    assert [entry["kind"] for entry in slot._queue] == [gw_mod.SUBAGENT_COMPLETION_KIND]
+    assert [content for content, _ids in slot.owed] == [slot._queue[0]["content"]]
+    assert info._delivery_queued is True
+    assert slot._subagent_deliveries_inflight == 0
+    done.state.push_slots_update.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["closing", "replaced"])
+async def test_a_tab_that_closes_while_the_completion_waits_gets_the_bell(
+    done: _Done, change: str
+) -> None:
+    """A closing tab drops a kinded queue entry with the slot, so the completion
+    is not queued there: it rings the bell, as for a tab already gone."""
+    slot = done.tab("main")
+    info = make_info()
+
+    async with slot._lock:
+        delivery = asyncio.ensure_future(done.on_done(info))
+        await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait for the lock")
+        if change == "closing":
+            slot.is_closing = True
+        else:
+            done.registry["main"] = _Slot("main")
+    await asyncio.wait_for(delivery, _LOST_RUN_SECS)
+
+    assert slot.queued == [] and slot.owed == [] and done.chats == []
+    assert slot._synthesis_completion_turns == 0
+    assert slot._subagent_deliveries_inflight == 0
+    assert info._report_delivered is True
+    ((args, kwargs),) = done.notices()
+    assert args[0] == "subagent" and kwargs == {"meta": {"slot": "main"}}
+
+
+@pytest.mark.asyncio
+async def test_a_completion_the_drain_refuses_stays_queued(done: _Done) -> None:
+    """Shutdown and memory preparation are refused inside the drain."""
+    slot = done.tab("main")
+    done.drain_refuses = True
+    info = make_info()
+
+    await done.done(info)
+    await done.drain()
+
+    assert done.drains == [slot] and done.chats == []
+    assert [entry["kind"] for entry in slot._queue] == [gw_mod.SUBAGENT_COMPLETION_KIND]
+    assert slot._turn_admission_reserved is False
+    done.mgr.notify_injection_failed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_system_entry_already_queued_runs_before_the_completion(done: _Done) -> None:
+    """A cron notice parked in the queue keeps its place; the completion waits
+    behind it, and that turn's failure is not reported as this completion's."""
+    slot = done.tab("main")
+    slot.queue_append("parked earlier", kind=gw_mod.CRON_NOTIFICATION_KIND)
+    done.chat_error = RuntimeError("the parked turn failed")
+    info = make_info()
+
+    await done.done(info)
+    await done.drain()
+
+    assert [t for _s, t, _kw in done.chats] == ["parked earlier"]
+    assert [entry["kind"] for entry in slot._queue] == [gw_mod.SUBAGENT_COMPLETION_KIND]
+    done.mgr.notify_injection_failed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_that_starts_no_turn_drains_what_it_held(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While a completion waits behind a turn, that turn's end keeps a held user
+    message queued. When the completion then turns out to be collected inline, the
+    last delivery out drains the idle tab, or the message would wait for the next
+    send."""
+    kick = AsyncMock()
+    monkeypatch.setattr(gw_mod, "drain_idle_parent_queue_for_stall", kick)
+    slot = done.tab("main")
+    slot.queue_append("sent while the children ran")
+    slot.running = True
+    current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    slot.task = current
+
+    delivery = asyncio.ensure_future(done.on_done(make_info()))
+    await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait behind the turn")
+    slot._subagents_inline_collected.add("a1")
+    slot.running = False
+    current.set_result(None)
+    await asyncio.wait_for(delivery, _LOST_RUN_SECS)
+    await done.drain()
+
+    kick.assert_awaited_once_with(done.state, "dashboard:main")
+    assert [entry["content"] for entry in slot._queue] == ["sent while the children ran"]
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_that_started_its_turn_does_not_drain_again(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kick = AsyncMock()
+    monkeypatch.setattr(gw_mod, "drain_idle_parent_queue_for_stall", kick)
+    slot = done.tab("main")
+    slot.queue_append("sent while the children ran")
+    gate = asyncio.Event()
+
+    async def _held_turn(_state: Any, _slot: Any, text: str, **_kw: Any) -> None:
+        done.chats.append((_slot, text, _kw))
+        await gate.wait()
+
+    done._run_chat = _held_turn  # type: ignore[method-assign]
+    await done.done(make_info())
+    try:
+        kick.assert_not_awaited()
+    finally:
+        gate.set()
+        await done.drain()
 
 
 @pytest.mark.asyncio
@@ -290,6 +482,7 @@ async def test_each_channel_attempt_builds_the_parent_turn_from_its_session(
         "provider_type": done.orch._cfg.agent.provider,
         "context_provider": done.client,
         "resumed": False,
+        "skill_trigger_text": "",
     }
     assert ("stream", f"built:{args[0]}") in done.calls
     assert info._report_delivered is True

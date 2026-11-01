@@ -160,6 +160,7 @@ def _baseline_fields(item: Any, header: Any) -> dict[str, Any]:
         "verdict": item.verdict,
         "decision": item.decision or None,
         "worker_session_key": item.worker_session_key or None,
+        "worker_instance_id": getattr(item, "worker_instance_id", None) or None,
         "round": item.round,
         "fails": item.fails,
         "status": item.status,
@@ -359,6 +360,21 @@ def _acting_unit(
             "this session's crew log unit is not known; there is nothing to record into",
         )
     return unit, None
+
+
+def _conductor_unit(state: DashboardState, conductor_key: str) -> str:
+    """The unit a board's own copy of a worker's report is written into, or ``""``.
+
+    The conductor's live unit when the session registry names one; otherwise the
+    conductor slot's newest unit (``session_ledger.newest_work_unit``), whether or not
+    that session is running now or has recorded anything yet.
+    """
+    unit = unit_for_session_key(getattr(state, "sessions", None), conductor_key)
+    if unit and unit != UNKNOWN:
+        return unit
+    from kiro_crew import session_ledger
+
+    return session_ledger.newest_work_unit(conductor_key)
 
 
 def _crew_store(conductor_slot_key: str) -> str:

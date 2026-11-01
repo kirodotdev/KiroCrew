@@ -38,11 +38,8 @@ def scrub_env(launch):
     # them with -F /dev/null.
     if not environ.get("GIT_SSH_COMMAND"):
         environ["GIT_SSH_COMMAND"] = (
-            "ssh -F /dev/null -o IdentityFile=~/.ssh/id_rsa"
-            " -o IdentityFile=~/.ssh/id_ecdsa"
-            " -o IdentityFile=~/.ssh/id_ed25519"
-            " -o UserKnownHostsFile=~/.ssh/known_hosts"
-            "%s" % launch.strict_host_key_opt
+            "ssh -F /dev/null%s -o UserKnownHostsFile=~/.ssh/known_hosts%s"
+            % (_git_ssh_identity_opts(launch), launch.strict_host_key_opt)
         )
 
     # Gradle would otherwise leave a daemon running after this sandboxed command exits,
@@ -59,6 +56,26 @@ def scrub_env(launch):
         environ["GRADLE_OPTS"] = (
             environ.get("GRADLE_OPTS", "") + " -Dorg.gradle.daemon=false"
         ).strip()
+
+
+def _git_ssh_identity_opts(launch):
+    """The ``-o IdentityFile=`` options for the default ``GIT_SSH_COMMAND``.
+
+    Only the named keys that exist, read after the masks are placed, so a strict
+    tier's tmpfs ``~/.ssh`` is what is looked at. A user-supplied ``IdentityFile``
+    that is missing is an error-level line on every ssh call ("no such identity"),
+    which reads as a failed fetch although the command exits 0.
+
+    The set offered never grows past these three: an explicit ``IdentityFile``
+    replaces ssh's own default list, which also tries ``id_dsa`` and the ``_sk``
+    and ``id_xmss`` keys. So when none of the three exists, all three are still
+    named, as before, rather than none, which would hand the choice back to that
+    wider default list.
+    """
+    # A local, not a module constant: a part holds only definitions below its marker.
+    names = ("id_rsa", "id_ecdsa", "id_ed25519")
+    present = [name for name in names if os.path.isfile(os.path.join(launch.ssh_dir, name))]
+    return "".join(" -o IdentityFile=~/.ssh/%s" % name for name in present or names)
 
 
 def drop_privileges(launch):
@@ -369,9 +386,26 @@ def enter_exec_cwd(launch):
     a writable or populated directory could be handed a spec that directory holds.
     Runs after the hardlinked-credential scan, which walks the workspace the launcher
     was started in.
+
+    With no ``exec_cwd`` the launcher still enters the directory it was started in
+    again, by the name it had before any mount, so the command it runs sees that
+    directory through the seals too. When that name does not reach a directory, the
+    command starts in the filesystem root instead of the old directory.
     """
     target = launch.exec_cwd
     if not target:
+        if launch.inherited_cwd:
+            try:
+                os.chdir(launch.inherited_cwd)
+                return
+            except OSError:
+                pass
+        try:
+            os.chdir(os.sep)
+        except OSError as exc:
+            sys.exit(
+                "sandbox: FATAL — cannot leave the inherited directory (%s)" % (exc.strerror or exc)
+            )
         return
     try:
         os.chdir(target)

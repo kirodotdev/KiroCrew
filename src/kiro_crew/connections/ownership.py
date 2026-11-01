@@ -405,6 +405,7 @@ async def remove_provider_entry(
     when NO owned artifact survived, because a half-removed pair reads as a
     definitive absence and would have the pool initiate consent over residue.
     """
+    from kiro_crew.connections.endpoint_migration import retired_urls
     from kiro_crew.connections.tool_aliases import normalized_endpoint
     from kiro_crew.dashboard.handlers.mcp import (
         _get_mcp_lock,
@@ -462,6 +463,14 @@ async def remove_provider_entry(
         """
         owned: list[str] = []
         owned_urls: dict[str, str] = {wanted_key: mcp_url}
+        # A URL the registry retired for this provider: its pair is this card's
+        # leftover sign-in, which the startup migration leaves on disk. It takes
+        # the same per-key sharer test below, so an entry that still names it --
+        # in any source, an open project's spec included -- keeps it.
+        for retired in retired_urls(slug):
+            retired_key = _artifact_key(retired)
+            if isinstance(retired_key, str) and retired_key != _UNPROVABLE:
+                owned_urls.setdefault(retired_key, retired)
         unprovable: set[str] = set()
         others: list[tuple[str, str, object]] = []
         mirrored_slug: list[tuple[str, str, object]] = []

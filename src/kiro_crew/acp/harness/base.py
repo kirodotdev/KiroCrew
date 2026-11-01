@@ -145,6 +145,9 @@ class ProcessSession(Protocol):
     _pi_steer_channel: Any
     _deepseek_gate_nonce: str
     _deepseek_read_only_issue: str
+    _copilot_mcp_config_path: str
+    _launch_mcp_servers: list[Any] | None
+    _mcp_relaunch_pending: bool
 
     def _agent_env_for_spawn(self) -> dict[str, str]:
         """``agent.env`` for the spawn in progress, read at most once per spawn: a
@@ -166,11 +169,17 @@ class ProcessSession(Protocol):
     def _pooled_mcp_servers(self) -> list[dict[str, Any]]:
         """The pooled broker stubs the session/new array appends (blocking)."""
 
+    async def _discard_copilot_mcp_config(self) -> None:
+        """Remove this session's Copilot CLI launch MCP config, if one was written."""
+
     async def _seed_session_settings(self) -> None:
         """Seed the session's own settings file, best-effort."""
 
     async def _prepare_claude_side_read_denies(self) -> None:
         """Build a Side Chat session's sensitive-path deny rules off the loop, fail closed."""
+
+    def _install_idle_reader(self) -> None:
+        """Have the session read stdout between turns (idempotent)."""
 
 
 @dataclass(frozen=True)
@@ -195,6 +204,18 @@ class SpawnPlan:
 
     native_context_documents: tuple[tuple[str, str], ...] = field(default=(), kw_only=True)
     """Admitted sources owned by this exact native launch configuration."""
+
+    kiro_cli_internal_sandbox: bool = field(default=False, kw_only=True)
+    """kiro-cli's internal sandbox confines this spawn.
+
+    Stated by the harness that built the argv: the argv runs kiro-cli's ACP relay
+    AND that sandbox confines it on this host (for KAS, macOS with kiro-cli's switch
+    on; see ``harness.kas._kiro_cli_sandbox_owns_relay``). A relay Crew still wraps
+    leaves it False, so no delegated-only guard refuses a workspace Crew's own layer
+    would have sealed. It moves the sandbox only for
+    a harness in ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX``
+    (``spawn_delegates_to_internal_sandbox``); any other harness is unaffected.
+    """
 
     host_auth: bool = False
     """Crew answers this process's credential callbacks.
@@ -272,6 +293,26 @@ class SessionExtras:
     Typed loosely so this module stays free of :mod:`kiro_crew.agent`, whose
     import chain reaches the config loader. ``None`` when the host mirrors
     nothing, or takes its agent at spawn time.
+    """
+
+    vault_identity: str = ""
+    """The Crew vault identity fingerprint read as this payload was built.
+
+    For a host that takes its credential from Crew's own vault per call (KAS):
+    the account the session's request goes out under, which the KAS catalog
+    recorder keeps with the response's ``model`` select
+    (``agent_sdk/kas_model_catalog.py``). ``""`` for every other host, which
+    records nothing; read here so no other host's session start gains a step.
+    """
+
+    managed_entries: Mapping[str, Any] | None = None
+    """The managed invocation per Crew-managed server the payload declares.
+
+    For a host whose payload carries agent-declared managed servers that the
+    runtime hoists and tokens (KAS): resolved in the same off-loop step as the
+    payload, because resolving the ``kirocrew`` launcher is filesystem and
+    ``PATH`` I/O that must not run on the event loop. Handed to
+    ``kas_agents.hoist_servers_for_session``. ``None`` on every other host.
     """
 
 
@@ -627,6 +668,19 @@ class HarnessAdapter(LaunchAdapter):
     @abc.abstractmethod
     def teardown(self) -> TeardownPolicy:
         """How one session ends, and whether ending it destroys the record."""
+
+    def release(self, agent_capabilities: Mapping[str, Any] | None) -> TeardownPolicy | None:
+        """The verb that frees a session from the process and KEEPS its record.
+
+        Asked only by a caller that wants the record to outlive the session for
+        a while, and deletes it later with :attr:`teardown`. ``None`` means this
+        host has no such verb distinct from its teardown, and the caller ends the
+        session with :attr:`teardown` as it always did. That is the answer for a
+        host whose teardown already keeps the record, and for one whose process
+        did not advertise the verb: the handshake is passed in so a host can
+        refuse when its running engine is older than the verb.
+        """
+        return None
 
     # How a live session's model changes, and how privileged tools are made to
     # ask, are deliberately NOT asked here. Both answers already live in a

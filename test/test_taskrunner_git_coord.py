@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from local_asyncio_helpers import asyncio_with_sleep
 
 from conftest import requires_git
 from kiro_crew.taskrunner import Step, TaskRun
@@ -147,7 +148,6 @@ class TestGitCoord:
         # work_dir should have been updated to the worktree
         assert run.work_dir == run.worktree_path
 
-        # Cleanup
         await git_coord.finalize(run)
 
     @pytest.mark.asyncio
@@ -1103,7 +1103,6 @@ class TestGitCoord:
 
         await git_coord.init_workspace(run)  # git repo → worktree, git_enabled=True
 
-        # Create a file and commit
         (Path(run.work_dir) / "new.py").write_text("print('hello')")
         step = Step(index=1, title="Add new.py", description="d")
         sha = await git_coord.commit_step(run, step)
@@ -1200,11 +1199,28 @@ class TestGitCoord:
         """revert_step with no commits → no-op."""
         from kiro_crew import git_coord
 
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir()
+        await git_coord._git(str(work_dir), "init")
+        (work_dir / "tracked.txt").write_text("v1")
+        await git_coord._git(str(work_dir), "add", "-A")
+        await git_coord._git(str(work_dir), "commit", "-m", "init")
+
         run = TaskRun(spec_path="/t.md", spec_content="s")
-        run.work_dir = str(tmp_path)
+        run.task_id = "revert_none"
+        run.work_dir = str(work_dir)
+        await git_coord.init_workspace(run)
+        (Path(run.work_dir) / "tracked.txt").write_text("v2")
+        assert await git_coord.commit_step(run, Step(index=1, title="change", description="d"))
+        # The run recorded no step commit, so there is nothing for it to revert.
         run.commit_hashes = []
 
-        await git_coord.revert_step(run)  # should not raise
+        await git_coord.revert_step(run)
+
+        assert run.commit_hashes == []
+        assert (Path(run.work_dir) / "tracked.txt").read_text() == "v2"
+
+        await git_coord.finalize(run)
 
     @pytest.mark.asyncio
     async def test_revert_success_pops_one_and_reverts_worktree(
@@ -1257,8 +1273,7 @@ class TestGitCoord:
         from kiro_crew import git_coord
 
         monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", True)
-        # flake-ok: pre-existing rebind of the stdlib asyncio.sleep through git_coord.asyncio for one test, undone at teardown, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(git_coord.asyncio, "sleep", AsyncMock())  # no real delay
+        monkeypatch.setattr(git_coord, "asyncio", asyncio_with_sleep(AsyncMock()))  # no real delay
 
         calls = {"n": 0}
 
@@ -1302,8 +1317,7 @@ class TestGitCoord:
         from kiro_crew import git_coord
 
         monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", True)
-        # flake-ok: pre-existing rebind of the stdlib asyncio.sleep through git_coord.asyncio for one test, undone at teardown, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(git_coord.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(git_coord, "asyncio", asyncio_with_sleep(AsyncMock()))
 
         calls = {"n": 0}
 
@@ -1347,8 +1361,7 @@ class TestGitCoord:
         # POSIX: a reset failure is a genuine fault — no retry window.
         monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", False)
         sleep_mock = AsyncMock()
-        # flake-ok: pre-existing rebind of the stdlib asyncio.sleep through git_coord.asyncio for one test, undone at teardown, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(git_coord.asyncio, "sleep", sleep_mock)
+        monkeypatch.setattr(git_coord, "asyncio", asyncio_with_sleep(sleep_mock))
 
         calls = {"n": 0}
 

@@ -38,7 +38,6 @@ vi.mock('../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => false,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as never
@@ -220,7 +219,7 @@ describe('side panel browser-tab strip', () => {
       renderPanel()
       expect(document.querySelector('.side-panel-strip')!.className).not.toContain('focus-caption-reserve')
     } finally {
-      setSidePanelDock('right')
+      act(() => { setSidePanelDock('right') })
     }
   })
 })

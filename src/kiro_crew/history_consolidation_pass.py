@@ -43,19 +43,24 @@ import time as _time
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
 from kiro_crew.history_consolidation_memory import (
     _SEMANTIC_OMISSION_NOTICE,
+    _audit_oversized_semantic,
     _bounded_semantic_table,
     _is_plausible_memory_file,
+    _refuse_oversized_semantic,
     _reroute_lesson_semantic_keys,
+    _semantic_snapshot_in_pages,
     _session_facets,
     _withhold_unseen_deletes,
 )
 from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_BUSY,
+    _CONSOLIDATION_EMPTY,
     _CONSOLIDATION_MAX_HEAD_SLICES,
     _CONSOLIDATION_REFUSED,
+    _CONSOLIDATION_STALE,
     AttemptedSpan,
     _consolidation_chunk,
     _consolidation_head_content,
@@ -77,6 +82,7 @@ from kiro_crew.history_projection import DISPLAY_ONLY_ROLES
 from kiro_crew.lesson_validation import LESSON_APPLIES_INSTRUCTION
 from kiro_crew.llm_helpers import ToolApprovalPolicy, background_turn
 from kiro_crew.vector_memory_constants import (
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
@@ -102,11 +108,18 @@ async def _consolidate(
     refuses the span, its transcript changes during extraction, or the
     pass loses its consolidation lease to a peer, and
     :data:`_CONSOLIDATION_BUSY` when another process already holds that
-    lease; every other completion returns ``None``. Callers distinguish
-    either from a completed pass with :func:`_no_pass_ran`, never against
-    one instance. A changed source remains pending rather than consuming
+    lease, and :data:`_CONSOLIDATION_EMPTY` when a preference-only pass
+    (*include_history* False) got no usable answer; every other completion
+    returns ``None``. Callers distinguish
+    any of them from a completed pass with :func:`_no_pass_ran`, never
+    against one instance. A changed source remains pending rather than consuming
     the failure/abandon budget of a different span.
     """
+    # Every store pass below runs on the background memory pool (mc-membg), so a
+    # backlog of consolidations never holds an mc-embed worker a turn needs.
+    from kiro_crew.consolidation_gate import consolidation_pass_gate as _consolidation_pass_gate
+    from kiro_crew.executors import run_in_memory_background_pool as _run_in_memory_background_pool
+
     # Capture the gateway loop so the thread-offloaded _process_auto_skills
     # can schedule the async dedupe judge back onto it.
     self._event_loop = asyncio.get_running_loop()
@@ -121,6 +134,7 @@ async def _consolidate(
     lease: str | None = None
     lease_heartbeat: asyncio.Future | None = None
     lease_lost = False
+    gate: asyncio.Semaphore | None = None
     owner = asyncio.current_task()
 
     def _abort_lost_lease() -> None:
@@ -171,6 +185,12 @@ async def _consolidate(
         metadata = await asyncio.to_thread(self._log.get_metadata, key)
         if isinstance(metadata, dict) and is_incognito_transcript(metadata.get("memory_mode")):
             return _CONSOLIDATION_REFUSED
+        # One pass at a time in this process. Queued before the lease, so a
+        # waiting pass holds no cross-process claim and its key stays in
+        # _running, which keeps duplicate triggers for it a no-op.
+        waiting = _consolidation_pass_gate()
+        await waiting.acquire()
+        gate = waiting
         # Acquire before reading the authoritative span: a peer may have
         # completed it since scheduling, and busy callers need no snapshot.
         acquisition = asyncio.create_task(asyncio.to_thread(self._acquire_consolidation_lease, key))
@@ -335,7 +355,7 @@ async def _consolidate(
             # retires an unprocessable span: advance the marker past the
             # whole chunk, log the reason, and fire the user-facing abandon
             # notice — never silently (silently marking unread content
-            # consolidated is the very bug this PR fixes). A head whose
+            # consolidated loses it for good). A head whose
             # remainder fits one more slice is NOT retired; it drains in full,
             # so no span that would fit a single extra slice is dropped
             # unread. The already-sliced prefix keeps whatever it extracted;
@@ -593,11 +613,11 @@ async def _consolidate(
         has_vector = vector_store is not None
         if has_vector and vector_store is not None:
             private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
-            # Offload: the fetch serializes on the store's _db_lock,
+            # Offload: each page of the fetch serializes on the store's _db_lock,
             # and this coroutine runs on the gateway event loop — a worker
             # holding the lock (backfill's FAISS rebuild, reconcile's bulk
             # UPDATEs) would otherwise block the whole loop here.
-            current_semantic = await asyncio.to_thread(vector_store.get_all_semantic)
+            current_semantic = await asyncio.to_thread(_semantic_snapshot_in_pages, vector_store)
 
             def _prompt_value(e: dict) -> object:
                 # A lesson row stores a mapping; the consolidation model
@@ -614,7 +634,7 @@ async def _consolidate(
                 return e["value_json"]
 
             if private_policy:
-                current_semantic = await run_in_embed_pool(
+                current_semantic = await _run_in_memory_background_pool(
                     vector_store.with_record_metadata, current_semantic
                 )
             semantic_entries = [
@@ -665,6 +685,34 @@ async def _consolidate(
                 if private_policy
                 else '"delete": false}. '
             )
+            from kiro_crew.memory_kind_routing import (
+                MODE_ENFORCE,
+                MODE_OFF,
+                configured_kind_routing_mode,
+            )
+
+            routing_mode = configured_kind_routing_mode()
+            # Under off (the default) the prompt is today's, word for word.
+            kind_field = '"kind": "fact" | "event" | "state", ' if routing_mode != MODE_OFF else ""
+            kind_rules = (
+                "Tag every item with kind. Ask two questions: Will this still be true in a month? "
+                "Can this be looked up somewhere else? "
+                'kind "fact" = still true in a month and not looked up elsewhere '
+                "(a decision, a root cause, how something works). "
+                'kind "event" = something that happened, worth a dated record. '
+                'kind "state" = the current status of a PR, issue, CI run, branch, round or SHA, '
+                "which GitHub, git or the work ledger already holds. "
+                "pref.* and user.* items are always facts. "
+                if routing_mode != MODE_OFF
+                else ""
+            )
+            # Only under enforce: in shadow the keys the model writes must stay
+            # what they are today, or the shadow log would not measure today.
+            key_naming = (
+                "Name keys by topic, never by PR, issue or round number. "
+                if routing_mode == MODE_ENFORCE
+                else ""
+            )
             deletion_policy = (
                 'To propose removal of a stale/invalidated key, set "delete": true. '
                 "Changes to existing values and deletions require owner review; confidence does not authorize overwrites. "
@@ -675,14 +723,20 @@ async def _consolidate(
             keys.append(
                 '"semantic": Array of structured facts to remember long-term. '
                 'Each: {"key": "<dotted.key>", "value": <json_value>, "confidence": 0.0-1.0, '
+                + kind_field
                 + semantic_fields
                 + "Rules: keys must start with pref.*, project.*, or user.* "
                 "(e.g. pref.color, user.favorite_language, project.name). "
                 "confidence 1.0 = user stated, 0.8-0.9 = clearly implied, <0.8 = uncertain (rejected). "
                 "value must be a JSON primitive (string, number, boolean) — NOT objects or arrays. "
+                f"Each value is at most {_MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS} characters: "
+                "a longer one is refused whole, never shortened, so split a long fact into "
+                "separate keys yourself, one fact per key. "
                 "IMPORTANT: Check existing semantic memory above. If a key already covers "
                 "the same topic, UPDATE that key instead of creating a new one. "
                 "Do NOT create near-duplicate keys (e.g. project.x.approach AND project.x.refined). "
+                + key_naming
+                + kind_rules
                 + deletion_policy
                 + f"Max {_MAX_SEMANTIC_PER_CONSOLIDATION} items."
             )
@@ -787,7 +841,10 @@ async def _consolidate(
             # on a widening interval instead of on every 60s tick.
             if include_history:
                 await self._note_environment_failure(key, str(exc))
-            return None
+                return None
+            # The preference-only window has no durable backoff; the caller
+            # keeps the window pending and arms its in-memory one.
+            return _CONSOLIDATION_EMPTY
         except _ConsolidationReplyUnusable as exc:
             result = None
             failure = str(exc)
@@ -799,9 +856,19 @@ async def _consolidate(
             # the in-memory throttle while the durable count still says
             # unconsolidated: the span re-bills a full turn every idle window,
             # and immediately after every restart. Charge the attempt.
-            if include_history and not await self._note_failed_attempt(
-                key, attempted, failure, lease
-            ):
+            if not include_history:
+                # A parsed ``{}`` is a valid answer here: the prefs-only prompt
+                # tells the model to omit every key that did not change, so the
+                # pass completed with nothing to write.
+                if isinstance(result, dict):
+                    return None
+                # The attempt cap writes the history span's abandon marker, so
+                # it is not charged here. The preference-only caller keeps the
+                # window pending and arms its in-memory backoff instead.
+                return _CONSOLIDATION_EMPTY
+            if isinstance(result, dict):
+                failure = "empty JSON answer"
+            if not await self._note_failed_attempt(key, attempted, failure, lease):
                 # The lease went to a peer: nothing was charged, and this
                 # is not a completed pass.
                 return _CONSOLIDATION_REFUSED
@@ -855,7 +922,7 @@ async def _consolidate(
                 "Discarding consolidation result for %s: conversation changed during extraction",
                 key,
             )
-            return _CONSOLIDATION_REFUSED
+            return _CONSOLIDATION_STALE
 
         if member_memory:
             stage = "member memory"
@@ -875,6 +942,22 @@ async def _consolidate(
             # the model never read is withheld here, the same fence the V1
             # writer applies, so the two paths cannot drift.
             consolidation, _ = _withhold_unseen_deletes(result, semantic_visible, self._logger)
+            # The same kind routing the V1 writer applies, on the same fenced answer;
+            # the member store writes its log inside the span's transaction.
+            from kiro_crew.memory_kind_routing import route_consolidation_by_kind
+
+            kind_routing = route_consolidation_by_kind(consolidation, self._logger)
+            consolidation = kind_routing.result
+            # The consolidation size bound, on the answer routing returned, as the V1
+            # writer applies it: routing reads and logs every item as it would without
+            # the bound (_refuse_oversized_semantic).
+            consolidation, oversized = _refuse_oversized_semantic(
+                consolidation,
+                self._logger,
+                vector_store=store,
+                source=f"consolidation:{key}",
+                member=True,
+            )
             # memory.lesson_extraction_enabled covers the member store too:
             # its extracted lessons are dropped from the payload, and every
             # other update still applies.
@@ -909,6 +992,9 @@ async def _consolidate(
 
             def _apply_member_consolidation() -> dict:
                 with self._publication_hold_checked(key, commit_state) as publication:
+                    # One memory_events row per refused value, under this hold and
+                    # before apply_consolidation opens its transaction.
+                    _audit_oversized_semantic(store, oversized, key)
                     applied = store.apply_consolidation(
                         source_id=source_id,
                         session_key=key,
@@ -917,11 +1003,12 @@ async def _consolidate(
                         snapshot={row["key"]: row for row in current_semantic},
                         messages=receipt_messages,
                         facets=facets,
+                        kind_routing=kind_routing,
                     )
                     publication.mark_committed()
                     return applied
 
-            await run_in_embed_pool(_apply_member_consolidation)
+            await _run_in_memory_background_pool(_apply_member_consolidation)
 
         if not member_memory and (entry := result.get("history_entry")):
             stage = "history entry"
@@ -936,7 +1023,7 @@ async def _consolidate(
                     memory.append_history(entry)
                     publication.mark_committed()
 
-            await run_in_embed_pool(_append_history_under_hold)
+            await _run_in_memory_background_pool(_append_history_under_hold)
             self._logger.info(
                 "Consolidated %d of %d unconsolidated messages for %s",
                 len(chunk),
@@ -951,8 +1038,11 @@ async def _consolidate(
         # if the embedding endpoint is slow/hung (heartbeats, Slack, dashboard).
         if vector_store and not member_memory:
             stage = "structured memory"
-            await run_in_embed_pool(
-                self._write_structured_memory,
+            from kiro_crew.consolidation_write_offload import write_structured_memory
+
+            await _run_in_memory_background_pool(
+                write_structured_memory,
+                self,
                 result,
                 key,
                 vector_store,
@@ -993,7 +1083,7 @@ async def _consolidate(
                                 publication.mark_committed()
                             return wrote
 
-                    wrote = await run_in_embed_pool(_write_preferences)
+                    wrote = await _run_in_memory_background_pool(_write_preferences)
                     if not wrote:
                         self._logger.info(
                             "Consolidated preferences for %s discarded: file "
@@ -1021,7 +1111,7 @@ async def _consolidate(
                                 publication.mark_committed()
                             return wrote
 
-                    wrote = await run_in_embed_pool(_write_projects)
+                    wrote = await _run_in_memory_background_pool(_write_projects)
                     if not wrote:
                         self._logger.info(
                             "Consolidated projects for %s discarded: file "
@@ -1039,8 +1129,11 @@ async def _consolidate(
             and (raw_lessons := result.get("lessons"))
         ):
             stage = "lessons"
-            await run_in_embed_pool(
-                self._save_lessons,
+            from kiro_crew.consolidation_write_offload import save_lessons
+
+            await _run_in_memory_background_pool(
+                save_lessons,
+                self,
                 raw_lessons,
                 vector_store,
                 lessons_store,
@@ -1202,6 +1295,10 @@ async def _consolidate(
         raise
     finally:
         self._running.discard(key)
+        # First, so a cancellation landing in the awaits below cannot strand
+        # the gate and stop every later pass in this process.
+        if gate is not None:
+            gate.release()
         if lease_heartbeat is not None:
             # The heartbeat stops before the release, so a renewal cannot
             # land after the lease is cleared and race a peer's fresh
@@ -1240,7 +1337,8 @@ async def _call_llm(
     prompt never reached the provider at all — no session manager, or the
     background session could not be acquired because kiro-cli is missing, not
     logged in, or failing to start — or the provider sent back no text and
-    billed nothing, as a throttled provider does once its own retries run out.
+    billed nothing, as a throttled provider does once its own retries run out,
+    or the turn failed with ``AcpAuthRequired`` because the login lapsed.
     Billing that reads zero counts as nothing only on a provider whose
     ``reports_turn_usage`` is True; elsewhere an empty reply is charged.
     That case is signalled separately rather than folded into ``None``
@@ -1255,7 +1353,9 @@ async def _call_llm(
 
     Once ``stream_and_collect_json`` is entered the prompt counts as sent: a
     failure inside it may still have been billed, so it returns ``None`` and is
-    charged rather than risk an unbounded retry loop over real spend.
+    charged rather than risk an unbounded retry loop over real spend. The one
+    exception is ``AcpAuthRequired`` raised before any text streamed, on a backend
+    that reports usage and shows none billed: a signed-out kiro-cli ran no model.
     """
     if not self._sessions:
         self._logger.warning("LLM consolidation skipped — no session manager")
@@ -1325,7 +1425,27 @@ async def _call_llm(
                 # attachment, so no readable file may become an image block.
                 allow_image=False,
             )
-        except Exception:
+        except Exception as exc:
+            # A signed-out kiro-cli runs no model and clears on the next login, so
+            # an overnight lapse must not spend the attempt cap. Only when nothing
+            # streamed and a usage-reporting backend shows no billing on any
+            # attempt: absent metering proves nothing, so that turn is charged.
+            # Matched by class name: the ACP exception type lives behind the
+            # agent-SDK import boundary, which application code may not cross
+            # (the same handle as ``_is_auth_required`` in dashboard/chat_threads.py).
+            if (
+                type(exc).__name__ == "AcpAuthRequired"
+                and not reply
+                and getattr(client, "reports_turn_usage", False) is True
+                and not usage_has_billing(
+                    provider_last_turn_usage(client, since=stats_before, consume=False)
+                )
+            ):
+                self._logger.warning(
+                    "LLM consolidation turn needs a kiro-cli login after %.1fs",
+                    _time.monotonic() - t_start,
+                )
+                raise _ConsolidationNotDispatched("kiro-cli not logged in") from exc
             # The model and the prompt size are the two facts a context-window
             # overflow or a 429 is diagnosed from.
             self._logger.warning(
@@ -1344,7 +1464,9 @@ async def _call_llm(
             _time.monotonic() - t_start,
             result is not None,
         )
-        if result:
+        # A parsed ``{}`` is an answer, not a missing one: the prefs-only prompt
+        # tells the model to omit every unchanged key, so the caller decides it.
+        if result is not None:
             return result
         text = "".join(reply)
         if not text.strip():

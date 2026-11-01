@@ -38,6 +38,9 @@ class _FakeProvider:
     def is_process_alive(self) -> bool:
         return True
 
+    def set_delete_delay(self, seconds: float) -> None:
+        return None
+
 
 class _FailingSessions:
     """Fake SessionManager whose teardown calls can be made to fail."""

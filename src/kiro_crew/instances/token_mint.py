@@ -249,7 +249,8 @@ def build_candidate_command(
 
     When *marker_port* is given, the snippet first consults the run-marker the
     *running* gateway wrote for that port (``<data-home>/run/gateway-<port>.bin``,
-    probing ``$KIROCREW_HOME`` then ``$HOME/.kiro/crew`` then the legacy
+    probing ``$KIROCREW_HOME`` (else the launcher the default run dir's
+    ``gateway-<port>.home`` names) then ``$HOME/.kiro/crew`` then the legacy
     ``$HOME/.kirocrew`` — see :func:`_run_marker_clause`) and execs the launcher
     it names — so mint uses the same venv as the live gateway instead of whatever
     ``~/.local/bin/kirocrew`` happens to point at. Falls through to the candidate
@@ -303,7 +304,12 @@ def _run_marker_clause(subcommand: str, port: int) -> str:
     data home and ``exec``s the first launcher it names that is an executable
     file:
 
-    1. ``$KIROCREW_HOME`` — an explicit override, if exported into this shell.
+    1. ``$KIROCREW_HOME`` — an explicit override, if exported into this shell;
+       else ``$HOME/<CONFIG_DIR_NAME>/run/gateway-<port>.home`` (``home`` then
+       ``launcher`` lines, never eval'd): when that home holds the port's marker
+       and the launcher is executable, it runs with ``KIROCREW_HOME`` set to that
+       home. The pointed marker is only a liveness gate — that home is unfenced,
+       so its marker is never read or run.
     2. ``$HOME/<CONFIG_DIR_NAME>`` — the current default data home.
     3. ``$HOME/<LEGACY_CONFIG_DIR_NAME>`` — the pre-move legacy home (older remotes).
 
@@ -346,8 +352,17 @@ def _run_marker_clause(subcommand: str, port: int) -> str:
             f'"$HOME/{LEGACY_CONFIG_DIR_NAME}/{fname}"',
         ]
     )
+    pointer = f'"$HOME/{CONFIG_DIR_NAME}/run/gateway-{int(port)}.home"'
+    # The pointed home is not the default one, so a bare ``restart`` would miss this gateway.
+    pointed = f"restart --port {int(port)}" if subcommand == "restart" else subcommand
     return " ".join(
         [
+            f'if [ -z "${{KIROCREW_HOME:-}}" ] && [ -f {pointer} ] && [ -r {pointer} ]; then',
+            f"  __kh= __kp=; {{ IFS= read -r __kh; IFS= read -r __kp; }} 2>/dev/null < {pointer};",
+            f'  if [ -n "${{__kp:-}}" ] && [ -x "$__kp" ] && [ -f "$__kh/{fname}" ]; then',
+            f'    KIROCREW_HOME="$__kh" exec "$__kp" {pointed};',
+            "  fi;",
+            "fi;",
             f"for __mk in {homes}; do",
             '  [ -n "$__mk" ] || continue;',
             '  if [ -f "$__mk" ]; then',

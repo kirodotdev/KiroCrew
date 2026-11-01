@@ -485,3 +485,6 @@ class TestFlushSegmentQuietPersist:
         state, slot = self._slot_with_chunks(tmp_path, monkeypatch)
         _flush_segment(state, slot, "normal segment", broadcast=False)
         slot._on_message.assert_called_once()
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("assistant", "normal segment")
+        ]

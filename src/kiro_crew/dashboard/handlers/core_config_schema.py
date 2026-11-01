@@ -9,6 +9,7 @@ import and patch; this module never imports it."""
 
 from __future__ import annotations
 
+import kiro_crew.config.session_environments as _session_environments
 from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
 from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
@@ -46,11 +47,16 @@ from kiro_crew.config.sections import (
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
     EXTERNAL_TERMINAL_APPS,
+    FEATURE_PREVIEW_FLAGS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
     SESSION_SORT_MODES,
+    SHARED_CREW_BOUNDS,
+    STRANDS_PROVIDER_CHOICES,
     TITLE_REFRESH_EVERY_TURNS_MAX,
+    validate_strands_env_patch,
 )
+from kiro_crew.config.service_sections import ON_BATTERY_MODES
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers.core_config_models import _validate_role_model
 from kiro_crew.effort import EFFORT_LEVELS
@@ -113,6 +119,21 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # against the one code owner, so this cannot drift from what ``AcpProvider``
     # will actually serve.
     "agent.acp_backend": {"type": "enum", "values_fn": _acp_backend_patch_values},
+    # The Strands harness's provider settings, written whole by Settings > Agent
+    # Harness. Names are the CLI's own and values `secret://` references only; the
+    # card stores each value in the vault and maps the reference here.
+    "agent.strands_env": {"type": "normalized", "normalize": validate_strands_env_patch},
+    # The CLI's provider ids, the one list the setting and the harness both read.
+    "agent.strands_provider": {"type": "enum", "values": list(STRANDS_PROVIDER_CHOICES)},
+    # A model id for that provider (its own '<provider>/' prefix is accepted once). Wider than
+    # `_MODEL_PIN_PATTERN` because Bedrock and Ollama ids carry a ':' (a version
+    # suffix, a tag); "auto" or empty passes no --model. Empty, or one token with
+    # no space or control character.
+    "agent.strands_model": {
+        "type": "str",
+        "max_len": 200,
+        "pattern": r"(?:[A-Za-z0-9][A-Za-z0-9._:/@\-\[\]]*)?\Z",
+    },
     # The KAS bundle route switch (Settings → Agent Harness → KAS). Boot-only on the
     # schema; the card says so after a save. No install is implied by turning it on:
     # a true value with nothing installed refuses the next KAS spawn by name.
@@ -306,6 +327,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # next click with no restart. Only a literal `true` turns it on — a
     # hand-edited non-boolean stays off.
     "dashboard.terminal.reuse_current": {"type": "bool"},
+    # The per-row unread dot on sidebar session cards (Settings → Display →
+    # Sidebar). Default on; only a literal `false` hides it.
+    "dashboard.show_unread_dot": {"type": "bool"},
     # The terminal app "Open in external terminal" starts (Settings → Display →
     # Terminal). "" = unset, the default, which withholds the action. Limited
     # to the desktop shell's launch allowlist; the launch gate in
@@ -372,15 +396,42 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # need for roaming, and the loader resolves anything non-boolean back to the
     # bound default — so a malformed write cannot reopen the replay path.
     "dashboard.tailscale.bind_refresh_chains": {"type": "bool"},
+    # Shared Crew's advanced settings (Settings > People). The integer bounds are
+    # the loader's own (SHARED_CREW_BOUNDS), so the gate admits exactly the domain
+    # the loader accepts rather than a second copy. Without the Feature preview
+    # the gateway reads every one of these as its default
+    # (``shared_crew.preview``), so a stored value waits for the preview.
+    # ``tailnet_direct`` takes effect on the next gateway start. ``hard_limits``
+    # and ``containment_enabled`` stay config-file-only: they refuse work or
+    # start per-person cgroup slices, which this surface does not offer.
+    "dashboard.shared_crew.admission_enabled": {"type": "bool"},
+    "dashboard.shared_crew.tailnet_direct": {"type": "bool"},
+    "dashboard.shared_crew.principal_concurrency": {
+        "type": "int",
+        "min": SHARED_CREW_BOUNDS["principal_concurrency"][0],
+        "max": SHARED_CREW_BOUNDS["principal_concurrency"][1],
+    },
+    "dashboard.shared_crew.crew_concurrency": {
+        "type": "int",
+        "min": SHARED_CREW_BOUNDS["crew_concurrency"][0],
+        "max": SHARED_CREW_BOUNDS["crew_concurrency"][1],
+    },
+    "dashboard.shared_crew.typing_idle_seconds": {
+        "type": "int",
+        "min": SHARED_CREW_BOUNDS["typing_idle_seconds"][0],
+        "max": SHARED_CREW_BOUNDS["typing_idle_seconds"][1],
+    },
     # Local OTEL metric collection — the Privacy panel's recording switch. Safe
     # to expose where beacon_endpoint is not: turning this on writes JSONL under
     # ~/.kiro/crew/metrics. It is NOT unconditionally local, though —
     # `_build_recorder` attaches an OTLP reader for every destination the active
-    # telemetry provider supplies (the default provider supplies one when
-    # `telemetry.otlp_endpoint` is set) — so the PATCH route's gate refuses the ENABLE on a
-    # host where egress would start, which is what keeps the switch's local-only
-    # promise true for every state it can reach. The endpoint itself stays
-    # config-file-only, so a
+    # telemetry provider supplies (the default provider supplies one for
+    # `telemetry.otlp_endpoint` and one per `telemetry.otlp_endpoints` entry, and
+    # an edition may return its own), so the PATCH route's
+    # gate refuses the ENABLE on a host where egress would start, which is what
+    # keeps the switch's local-only promise true for every state it can reach.
+    # Both endpoint keys stay config-file-only (deliberately absent from this
+    # table, so a PATCH to either is refused "field not editable"), so a
     # dashboard caller can neither choose a destination nor start sending to one.
     "telemetry.enabled": {"type": "bool"},
     # SSO login flags for an edition that supplies a real sso_login_handler.
@@ -420,7 +471,19 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": SWEEP_CHUNK_BUDGET_MAX},
     "knowledge.import_chunk_budget": {"type": "int", "min": 0, "max": IMPORT_CHUNK_BUDGET_MAX},
     "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": EMBED_RATE_LIMIT_MAX},
-    "knowledge.extraction_model": {"type": "str"},
+    # Background work on battery. Explicit adds never run through the sweeps it gates.
+    "power.on_battery": {"type": "enum", "values": list(ON_BATTERY_MODES)},
+    # Settings → Knowledge lists the same advertised model names as the role-model
+    # pickers and the installer writes the value into the knowledge agent's spec,
+    # so it shares their grammar. No entitlement check: the picker lists the
+    # default harness's models, while the pool's zero-tool workers may run on
+    # another backend (``llm_pool._get_acp_backend``), so neither catalog can judge
+    # every id the picker offers. ``agent.model`` takes the same grammar-only spec.
+    "knowledge.extraction_model": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": _MODEL_PIN_PATTERN,
+    },
     "knowledge.extraction_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "knowledge.extraction_pool_size": {
         "type": "int",
@@ -465,6 +528,34 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": DECISION_BUCKET_MIN,
         "max": DECISION_BUCKET_MAX,
     },
+    # Session Environments holds credential-free profiles only, so the masked GET
+    # may return it. ``normalize`` is the loader's own validator, so this gate
+    # refuses what a load would drop; leaf paths update one scalar key alone.
+    # Coder profiles have no leaf path: only the whole section writes them.
+    "session_environments": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_session_environments,
+    },
+    "session_environments.coder_url": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_coder_url,
+    },
+    "session_environments.sprites_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_sprites_profiles,
+    },
+    "session_environments.boxd_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_boxd_profiles,
+    },
+    "session_environments.default_profile": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_default_profile,
+    },
+    "session_environments.stop_on_shutdown": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_stop_on_shutdown,
+    },
 }
 
 
@@ -492,6 +583,15 @@ for _tier in DECISION_MODEL_ROUTE_TIERS:
         "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     }
+
+
+# The Feature previews switches (Settings > Developer > Feature previews), one
+# boolean per known preview name. The dashboard keeps a browser copy of each as a
+# cache and writes the switch here, so it holds on every browser and address of
+# this gateway. Only the names in ``FEATURE_PREVIEW_FLAGS`` are writable, so the
+# route cannot grow the section with arbitrary keys.
+for _preview in FEATURE_PREVIEW_FLAGS:
+    _EDITABLE_CONFIG[f"dashboard.feature_previews.{_preview}"] = {"type": "bool"}
 
 
 # The wake judge's two per-point settings. In the editable set where

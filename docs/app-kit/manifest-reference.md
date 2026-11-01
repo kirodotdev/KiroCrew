@@ -150,7 +150,7 @@ receive a vault secret is undecided
 | `env` | object | String environment variables passed to the job |
 | `persistent_session` | boolean | Default `true`; retain one agent session across runs |
 | `silent` | boolean | Default `false`; suppress automatic result delivery |
-| `folder` | string | Existing Schedule-folder name; an unknown name leaves the job ungrouped until a later enable finds it |
+| `folder` | string | Schedule-folder name. Installing, enabling or updating the app in a running gateway creates a missing folder; a name several folders share, registration during gateway startup, or a CLI enable leaves the job ungrouped |
 | `timezone` | string | IANA zone name the schedule and `skip_dates` are evaluated in, e.g. `America/New_York`. Optional, but an empty value falls back to the gateway config's timezone and then to **UTC** — so `"cron_expr": "0 6 * * *"` without it fires at 06:00 UTC, the wrong calendar day for most users. An unknown zone is rejected at manifest validation. A per-**user** zone is not manifest data: pass `timezone=` to `ctx.cron.add_job` instead |
 | `skip_dates` | string[] | Calendar dates the job must not fire on, evaluated in `timezone`. Must be zero-padded `YYYY-MM-DD` — `2026-1-1` parses but never matches the padded fire-time rendering, so it is rejected at manifest validation rather than silently skipping nothing |
 | `timeout` | number | Seconds a `command` or `script` subprocess may run. `0` or omitted uses the scheduler default: 30s for a script, 300s for a command |
@@ -178,8 +178,9 @@ manifest** always: a paused job gets the new values and stays paused. Settings t
 visibility, a secret grant -- are never touched. A change to `command`, `script`,
 `agent_sequence` or `env` is the exception: the scheduler accepts those fields at
 creation only, so the change is logged (and audited as
-`app_cron_resync_pending_reenable`) on every registration until the app is
-disabled and enabled again, which is when it reaches the job; the entry's other
+`app_cron_resync_pending_reenable`) on every registration until the job is
+recreated, which is when it reaches the job: the app is disabled and enabled
+again, or a Sync of an app with backend hooks reloads its code; the entry's other
 changed fields still land at once. A `message` cleared to empty is reported the
 same way, because the scheduler keeps the stored prompt on an empty value. A job registered
 by a build that did not yet record its entry is brought up to the manifest once,
@@ -228,20 +229,50 @@ each replaced field with its old and new value (a WARNING line ending in
 | `ui.entry` | string | | Path to ESM bundle (relative to ui/) |
 | `ui.pages[].route` | string | | URL path for the page |
 | `ui.pages[].label` | string | | Sidebar label |
-| `ui.pages[].icon` | string | | Lucide icon name (e.g. `"Shield"`, `"Package"`) |
+| `ui.pages[].icon` | string | | Lucide icon name (e.g. `"Shield"`, `"Package"`). Built-in apps only: an installed app's sidebar row shows the generic icon for it, so ship an image instead (`iconPath`, or `ui.pages[].iconUrl`) |
 | `ui.pages[].iconUrl` | string | | Custom active icon image path (relative to ui/) |
-| `ui.pages[].iconInactiveUrl` | string | | Optional inactive-state icon image path (relative to ui/) |
+| `ui.pages[].iconInactiveUrl` | string | | Optional sidebar icon for when the app is not selected (relative to ui/). Read from the first page. The sidebar row shows this file while another page is open, and the app's normal icon when its own page is open or the row is hovered. Use it for a greyed-out variant, the way built-in icons go grey. If the file fails to load, the row keeps the normal icon |
 | `ui.pages[].entryPoint` | string | | Per-page ESM bundle path, relative to ui/ (overrides `ui.entry`) |
 | `ui.pages[].mountFunction` | string | `"mount"` | Exported function name in the ESM bundle |
 | `ui.sidebar.section` | string | `"Apps"` | Sidebar section name |
 | `ui.sidebar.order` | number | `10` | Sort order within section |
 | `ui.overlays[].id` | string | | Overlay id; must match a bundled overlay component (see below) |
 | `ui.overlays[].replaces` | string | | Host overlay slot this app takes over while enabled |
+| `ui.loading.layout` | string | `"page"` | Placeholder shape shown while the bundle loads: `"page"`, `"rail"`, `"centered"` or `"split"` (see below) |
 | `contributes.sessionControls[].id` | string | | Control id, kebab-case; addressed as `<appName>:<id>` |
 | `contributes.sessionControls[].entryPoint` | string | | ESM bundle path for the control (relative to ui/) |
 | `contributes.sessionControls[].label` | string | | Accessible name, and the chip's tooltip |
 | `contributes.sessionControls[].icon` | string | | Icon name. Only `Shield`, `Bot`, `Search`, `Tag`, `Users`, `Zap`, `Star`, `Package`, `Cat`, `AudioLines` and `Mic` are rendered; any other name falls back to `Package`. Use `AudioLines` for a control that starts a voice conversation and `Mic` only for voice input: the composer's own dictation button already draws `Mic`, so a conversation chip with that glyph reads as a second dictation button |
 | `contributes.sessionControls[].statusPath` | string | | Optional backend route reporting per-session chip state (see below) |
+
+### `ui.loading` — Loading Placeholder Shape
+
+While your bundle downloads, the dashboard shows a placeholder. Nothing appears
+for the first 300 ms, so a fast load (the usual case on a local gateway) shows no
+placeholder at all. After that, the placeholder takes the shape you declare, so
+your page doesn't jump when it mounts:
+
+```json
+{
+  "ui": {
+    "entry": "dist/index.mjs",
+    "loading": { "layout": "rail" }
+  }
+}
+```
+
+| `layout` | Shape |
+|----------|-------|
+| `"page"` | Title bar, subtitle bar and content rows. The default |
+| `"rail"` | A 232px left column of list rows beside the main content |
+| `"centered"` | One narrow card in the middle of the page, e.g. a composer or a sign-in |
+| `"split"` | Two panes side by side, e.g. a list and a detail view |
+
+The shapes are drawn by the dashboard from its own skeleton pieces. You pick a
+name; you can't supply markup or styles. The match is exact: a missing or `null`
+`loading`, a non-object, a non-string `layout`, or an unknown name (including a
+different case, like `"Rail"`) all fall back to `"page"`. An invalid value is
+not an install error; it is dropped.
 
 ### `ui.overlays` — Replacing a Host Overlay Surface
 
@@ -541,6 +572,13 @@ installed at runtime.
 At most **10** rows per app.
 
 On activation core POSTs `{ item_id, surface, path, kind?, root? }` to `endpoint`.
+A successful JSON response may include a nonempty string `message` and an optional
+`url`. Core shows the message as plain text in a local
+host toast with a clickable HTTP(S) link. Unsafe URLs, including script/data
+schemes and credential-bearing URLs, are not linked. An absent, empty, or
+non-string message produces no toast. The toast holds only the latest result: a
+second result that arrives before the first hides replaces it. HTTP failures keep the existing host error
+notice; a toast neither grants access nor changes the endpoint's approval flow.
 
 **The file's PATH is sent, never its CONTENT.** A contributed row needs no
 permission to exist, so shipping file bytes with every activation would hand any
@@ -666,6 +704,180 @@ icon; an unrecognised or absent name renders a generic panel glyph.
 `Terminal`, `Users`, `Wrench`, `Zap`
 
 ## Backend
+
+### `contributes.linkPreviews` — Hover Cards for Links
+
+A link preview shows the app's own card when the user hovers a link in a chat
+message (links elsewhere in the dashboard never reach an app). The host owns detection (which links, the 300 ms hover delay, leave,
+Escape, scroll and blur); the app owns the card, which runs in a sandboxed frame.
+No app code runs until a link on one of the provider's `hosts` is hovered.
+
+```json
+{
+  "contributes": {
+    "linkPreviews": [
+      {
+        "id": "cards",
+        "entry": "dist/link-preview.mjs",
+        "hosts": ["tickets.example.com", ".example.dev"]
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Storage-safe slug, unique within the app |
+| `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
+| `hosts` | string[] | 1-64 hostnames; a leading dot means the domain and every subdomain. Only `https:` links match. Stored lowercased, in IDNA (punycode) form and without a trailing dot. A public suffix (`co.uk`, `.github.io`) or a bare TLD (`com`) is refused |
+| `textPatterns` | object[] | Optional. Plain text in chat messages that also opens a card; see below |
+| `fullUrl` | boolean | Optional. `show` gets the URL without its query and fragment unless this is `true` and the owner approved it |
+
+**Approval.** The hosts, the text patterns (id, flags and source) and `fullUrl` are
+part of what the owner approves for the app, like `permissions.api`. An update that
+adds a host, changes a pattern or turns `fullUrl` on waits on the app's page until
+the owner approves it, and
+until then the app previews only what was approved before. An update that only
+removes entries needs nothing. When no host and no pattern is approved, the
+provider is off: no frame is made, and a live frame's capability stops renewing and
+its fetches are refused.
+
+At most **one** provider per app; a link goes to the first enabled app whose
+`hosts` claim it.
+
+**Where the module runs.** Never in the dashboard's document. On the first hover
+the dashboard creates an iframe for the provider that is `sandbox="allow-scripts"`
+with no `allow-same-origin`, and loads a frame document the gateway serves at
+`/app-frame/<app>/linkPreviews/<id>/…` with its own `Content-Security-Policy: sandbox
+allow-scripts`. The frame's origin is opaque: it cannot read the dashboard's DOM,
+its cookies, its storage or its token. The iframe is `credentialless`, the frame's
+CSP starts from `default-src 'none'` (scripts and network on the gateway only,
+images from any `https:` host, no workers, frames, objects, forms or `<base>`),
+and it is sent with `Referrer-Policy: no-referrer`. A frame that navigates itself
+away is removed. The frame imports `entry` and calls
+`activate(ctx)` once. The dashboard sends it only the hovered URL or text, the
+anchor's rect, the theme and the modifier keys, over `postMessage`, and it
+positions and sizes the frame itself.
+
+```ts
+export function activate(ctx: {
+  appName: string
+  theme(): 'dark' | 'light'
+  /** fetch() to this app's own backend routes; `path` is relative. */
+  fetch(path: string, init?: RequestInit): Promise<Response>
+  /** Which `textPatterns` ids this app's settings turn off now. */
+  setTextPatternsOff(ids: string[]): void
+  // Overlay mode: the frame covers the viewport and is clipped to these rects.
+  setRegions(rects: { left: number; top: number; width: number; height: number }[]): void
+}): {
+  // A link: `url`. A `textPatterns` match: `text`. `rect` is where it is on screen.
+  show(link: {
+    url?: string; text?: string; theme: 'dark' | 'light'
+    rect: { left: number; top: number; width: number; height: number }
+    modifiers?: { alt: boolean; shift: boolean; ctrl: boolean; meta: boolean }
+    // Card mode: the controls for THIS show's card, placed next to its link.
+    card: {
+      open(): void
+      close(): void
+      resize(size: { width: number; height: number }): void
+      pin(pinned: boolean): void          // a pinned card stays on leave and chat scroll
+      dragBy(dx: number, dy: number): void
+      dock(edge: 'left' | 'right' | null): void
+    }
+  }): void
+  leave(): void              // the pointer left the link; the card may hold itself open
+  hide(reason: string): void // 'scroll' | 'escape' | 'blur' | 'other-provider' | 'disabled'
+  theme?(theme: 'dark' | 'light'): void
+  dispose?(): void           // the app was disabled
+}
+```
+
+Two ways to draw:
+
+- **Card mode** (the default). The module renders its card into the frame's
+  `document.body`, reports the size with `link.card.resize`, and shows it with
+  `link.card.open`. The dashboard places the frame below the link (above when there is
+  no room) and keeps it on screen. `card.pin(true)` keeps the card when the
+  pointer leaves or the chat scrolls; the next hover then gets a fresh frame, and
+  at most 8 cards stay pinned. `card.dragBy` moves it (use `screenX`/`screenY`
+  deltas: the frame moves under the pointer) and `card.dock` sticks it to an edge.
+  A scroll inside the card stays in the frame and never closes it.
+- **Overlay mode**, for a provider that keeps windows of its own (pinned cards, a
+  dock, a settings dialog). Its first `ctx.setRegions` makes the frame cover the
+  viewport, clipped to the rects it reports; outside them the page stays
+  clickable. The frame's viewport is then the dashboard's, so `rect` is exactly
+  where the link is. Card-mode calls are ignored, and `hide` is only a notice:
+  the module decides what closes.
+
+Every `show` starts a new invocation, and its `link.card` is bound to it. Keep the
+`card` of the show you are answering: a call on an earlier show's `card`, for
+example from a slow fetch that finished after the user moved to another link, is
+dropped. A message over 8 KB, or
+past a burst of 120 messages refilled at 60 a second, is dropped unread.
+
+Links in a card open through the dashboard's link bridge, only right after a click
+in the card. A plain key pressed in the dashboard while a card shows is passed to
+the frame as a `keydown`, so a card's own shortcuts work; never while the
+dashboard is taking text (a field, or an editor inside a shadow root), and never
+with Ctrl, Alt or Meta.
+
+**`ctx.fetch`** reaches the app's own backend routes and nothing else: the routes
+it registers through `backend.routes`, or its process backend through the same
+signed proxy as `/apps/<app>/api/`. Core routes under `/api/apps/<app>/` are not
+reachable. The request carries a capability the dashboard mints for that one
+frame (`X-KiroCrew-Capability`), short-lived and renewed while the frame lives;
+no cookie is sent and no other route accepts it. Only `GET`, `POST`, `PUT`,
+`PATCH` and `DELETE` are forwarded; any other method gets `405`.
+
+If the app list cannot be read, a hover on a chat link shows the same notice and
+the list is asked for again. If the frame does not report `ready` within 10 seconds, or the module fails to
+import, or `activate` throws, the host logs the error, shows a short "couldn't
+load this preview" notice under the hovered element, and tries again on a hover
+at least 30 seconds later. When the app is disabled the host sends `hide('disabled')`
+and `dispose`, then removes the frame.
+
+**Plain text (`textPatterns`).** Each entry names text that is not a link but should
+open the app's card:
+
+```json
+"textPatterns": [
+  { "id": "ticket", "pattern": "(?<![\\w-])(TK-\\d{4,})(?![\\w-])", "flags": "g" },
+  { "id": "team", "pattern": "(?<![\\w.-])(team\\.[a-z0-9]+)", "flags": "gi", "defaultOff": true }
+]
+```
+
+| Field | Description |
+|-------|-------------|
+| `pattern` | JavaScript regex source, at most 200 characters; at most 16 entries |
+| `flags` | Optional. A subset of `giu`; `g` is implied |
+| `id` | Optional slug the module names in `ctx.setTextPatternsOff` |
+| `defaultOff` | Optional. Not drawn until the module reports it on |
+
+- In chat messages only, the host wraps each match in
+  `<span class="link-preview-text" data-link-preview-text>`. It is never a link,
+  and never drawn inside code, inline code, math, raw HTML or an existing link. A
+  token an edition's autolink rule already linked stays that link.
+- Hovering the span calls `show({ text, rect })` on the app whose pattern matches
+  the span's whole text. The span carries no owner: the host re-derives it from the
+  text, so a span written in raw message HTML reaches nothing a pattern would not.
+- `ctx.setTextPatternsOff(ids)` reports which ids the app's own settings turn off.
+  The host remembers it across reloads, so the first paint after a reload already
+  follows the app's settings although the module only loads on the first hover.
+- A pattern must compile with its flags and must not match the empty string. It is
+  never run on the dashboard's thread, not even for that check: matching and the
+  empty-string test happen in a Web Worker, one batch per render, with a hard budget
+  of 250 ms per pattern, restarted as each pattern starts, so an overrun is charged
+  to the pattern that used up its own time. A pattern that matches
+  the empty string is turned off for the session. A pattern that overruns is
+  stopped (the worker is terminated), turned off for the rest of the session, and
+  logged once; the rest of the batch, and text already drawn, is matched again
+  without it, so a span it owned can move to the next app whose pattern takes it. A text node
+  longer than 2,000 characters is not scanned. Text renders plain until the worker
+  answers, then gains its spans. A span belongs to the first app (in app-list
+  order) whose pattern matches its whole text, the same in every message. At most
+  20,000 distinct text nodes are scanned per page load; later ones stay plain. If the worker does not start within 5 seconds,
+  plain-text previews are off for that page load. `textPatterns` is signed.
 
 ### `backend` — App Backend Process
 
@@ -908,7 +1120,7 @@ packages at all.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `permissions.api` | string[] | Allowed API path prefixes |
+| `permissions.api` | string[] | Allowed API path prefixes. `/api/member-records/*` is the one that lets the app put a value on a Dashboard page of ANY crewmate it names by slug; there is no per-crewmate form of the grant ([api-reference](api-reference.md#member-records)) |
 | `permissions.events` | string[] | Allowed WebSocket event types |
 | `permissions.mcpTools` | string[] | Allowed MCP tool names |
 | `permissions.storage` | boolean | Can use app-scoped storage |
@@ -1024,8 +1236,8 @@ the endpoint; it does not import provider code.
 | `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed** — no code path dispatches it. Put update-time work in an idempotent `onInstall`, which a registry update re-runs |
 | `setup.onEnable` | string | `""` | Shell command run when app is enabled |
 | `setup.onDisable` | string | `""` | Shell command run when app is disabled |
-| `setup.onEnableTimeout` | number | `30` | Timeout in seconds for `onEnable` script |
-| `setup.onDisableTimeout` | number | `30` | Timeout in seconds for `onDisable` script |
+| `setup.onEnableTimeout` | number | `30` | Timeout in seconds for `onEnable` script, 1 to 300. A numeric string such as `"60"` is read as its number and a fraction is truncated. A value below 1 (including `false`) runs at the 30s default; `true` is read as 1 second and one above 300 runs at 300, with a warning logged each time the script runs; the manifest still installs and its signature is unaffected. A value that is not a number (`"abc"`, `null`) fails validation |
+| `setup.onDisableTimeout` | number | `30` | Timeout in seconds for `onDisable` script, 1 to 300, clamped the same way as `onEnableTimeout` |
 | `setup.configSchema` | object | `{}` | JSON Schema for app configuration |
 
 If `onEnable` fails (non-zero exit), the enable is rolled back — the app
@@ -1036,10 +1248,11 @@ installs do not run `onInstall`; build first, then install. The `onEnable`,
 **not run on native Windows** (which has no `/bin/bash`): the runner refuses the
 hook before any process is started and reports a failure whose message names the
 unsupported platform, rather than letting the spawn fail opaquely and look like
-your script breaking. `onInstall` also runs through `/bin/bash`, without that
-up-front refusal, so a registry install of an app that declares it fails on a
-native-Windows host. Write hooks for POSIX shells; do not rely on them running
-on a native-Windows host.
+your script breaking. `onInstall` also runs through `/bin/bash` and gets the
+same up-front refusal: a registry install or update of an app that declares it
+fails on a native-Windows host with an error naming the unsupported platform,
+before the script is started. Write hooks for POSIX shells; do not rely on them
+running on a native-Windows host.
 
 **Exception — `platform.installMode: "client"` apps.** For a client app the
 script is **advisory**: a failure is reported on the response as
@@ -1247,7 +1460,10 @@ hints a desktop launch needs:
   is the list): shell and locale basics such as `HOME` and `PATH`, the XDG
   directories (including `XDG_RUNTIME_DIR`), toolchain roots (Java, Node,
   Python, Conda, Gradle/Maven), the git SSH overrides, and the Windows
-  equivalents of the basics.
+  equivalents of the basics. Proxy and CA-bundle variables (`HTTPS_PROXY`,
+  `NO_PROXY`, `SSL_CERT_FILE`, ...) are not on it: only the gateway's own
+  `git` clone, fetch and pull of app and registry repositories receive them,
+  because a proxy URL can carry a password.
 - **Removed again before the spawn** (`sandbox.scrub_env`): of the allowlisted
   names, the SSH agent socket `SSH_AUTH_SOCK`. The install and build commands
   run git against the owner's own repositories and need it; a launcher does

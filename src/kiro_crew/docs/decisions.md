@@ -102,6 +102,31 @@ Set `provider` in `config.json` by hand (the Decision model picker only offers J
 - Changing the endpoint withdraws your consent: turn the Decisions switch off and on again on the card, which shows the Cloudflare address you are agreeing to send messages to.
 - Pricing, rate limits and latency are Cloudflare's; see the [Clef model page](https://developers.cloudflare.com/workers-ai/models/clef/). Kiro Crew keeps its connection to the provider open between decisions, so only the first decision after a quiet spell pays the connection set-up (over a second to Cloudflare's API); raise `timeout_ms` if that one, or a busy model, times out, and remember that a slow answer only means the decision falls back.
 
+## Using a model on Amazon SageMaker
+
+A System One model you host yourself on an Amazon SageMaker real-time endpoint can answer decisions. The endpoint's container must accept the same JSON body Jev does (`/v1/systemone`) on SageMaker's `/invocations` route and answer with the same JSON. This is off unless you set it. Set `provider` in `config.json` by hand:
+
+```json
+{
+  "decisions": {
+    "provider": {
+      "endpoint": "sagemaker://my-argus-endpoint?region=us-west-2&profile=research",
+      "model": "argus-9b",
+      "timeout_ms": 8000
+    }
+  }
+}
+```
+
+- `endpoint` is `sagemaker://<endpoint-name>?region=<aws-region>`, with an optional `&profile=<aws-profile>` naming a profile from your AWS config files. Without `profile` the usual AWS credential chain is used (environment, config files, instance role). Nothing else may appear in the address; anything else is refused.
+- The request is SageMaker's `InvokeEndpoint`, signed with your AWS credentials (SigV4). No API key is read and `api_key` is ignored. The credentials need `sagemaker:InvokeEndpoint` on that endpoint only.
+- Install `boto3` (`pip install 'boto3>=1.34,<2'`) in the environment Kiro Crew runs in. Without it each decision fails with a clear error and falls back.
+- `timeout_ms` is the budget for the whole decision. A throttled or not-ready answer is retried, at most 3 attempts in total, and only while the budget has time left; a timeout is not retried. Set it with the endpoint's latency in mind.
+- Changing the endpoint name, the region or the profile withdraws your consent, the same as changing any other endpoint: turn the Decisions switch off and on again.
+- Requests always go to `runtime.sagemaker.<region>.amazonaws.com` (`.amazonaws.com.cn` in China regions), even if `AWS_ENDPOINT_URL` or your AWS config names another endpoint. An organisation's endpoint allow or deny list is checked against that host. The isolated AWS partitions are not supported.
+- A request that carries images (`assets`) or a Box question sends the custom attribute `TypeSafe-Danger-Zone-Images=true` in place of the HTTP header of that name, because `InvokeEndpoint` carries no other headers. Images travel inline as `data_base64`, and the whole request must stay under SageMaker's 25 MB limit. No decision point sends images yet; the client (`impl_sagemaker.invoke`, `box_answers`) is there for vision models with a Box head.
+- Errors name the cause without quoting your messages, images or credentials: no credentials, AWS refused the credentials, no endpoint by that name in that region, the endpoint is not ready, still throttled after every attempt, a timeout, or the container's error status.
+
 ## Running a model on this machine
 
 Instead of Jev, decisions can be answered by an open-weight model running on your own machine. It speaks the same request format as Jev, so every feature on this page works with it, and **nothing a decision point collects leaves the machine**. Pick it under **Decision model** on the Decisions card. The card offers three models and marks the one your machine's memory suits:

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         _start_next_queued_turn,
         _unblock_pending_waits,
         compaction_in_flight,
+        crew_steer_discarded,
         deny_app_slot_access,
         effective_session_key,
         logger,
@@ -536,6 +537,11 @@ async def stop_slot_turn(
         # when it was pressed, and a later send stays queued for the next turn.
         discarded = list(slot._queue)
         slot._queue.clear()
+        # A drop reported while the settle below suspends must find no take-back,
+        # or Queue instead would queue text this kill already discarded.
+        from kiro_crew.dashboard import steer_retract
+
+        steer_retract.on_hard_stop(slot)
         # A cross-session delivery among the taken entries has a sender holding a
         # "queued, will run later" receipt; nothing else here reaches that sender.
         # Told before the settle can suspend, so a cancellation of this stop
@@ -578,12 +584,14 @@ async def stop_slot_turn(
             slot._steer_send_ids.pop(_discarded, None)
             slot._steer_user_origin.pop(_discarded, None)
             slot._steer_channel_origin.pop(_discarded, None)
+            slot._steer_owner_origin.pop(_discarded, None)
             slot._steer_admissions.pop(_discarded, None)
             slot._steer_attachment_meta.pop(_discarded, None)
             slot._steer_act_now.discard(_discarded)
             slot._steer_automation.pop(_discarded, None)
             slot._steer_decision_strips.pop(_discarded, None)
             slot._steer_possibly_delivered.discard(_discarded)
+            crew_steer_discarded(slot, _discarded)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
@@ -825,7 +833,8 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return slot_not_found()
-    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_stop")
+    request_app = request.get("app", "")
+    denied = deny_app_slot_access(request_app, slot, name, "slot_stop")
     if denied is not None:
         return denied
     # Before ANY side effect — the escalation branch inside stop_slot_turn clears
@@ -838,7 +847,21 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     force = request.query.get("force", "").lower() == "true"
-    return web.json_response(await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key))
+    # The audit has to name who asked: ``stop_slot_turn`` defaults its
+    # ``source`` to ``dashboard`` and logs it as the SEL line's ``via``, so the
+    # default would audit an app's stop — soft, force or the escalated second
+    # press — as the owner's dashboard press. This route is the only layer
+    # holding the request the token rode on; the same value the deny checks
+    # just authorized against is the one recorded.
+    return web.json_response(
+        await stop_slot_turn(
+            state,
+            slot,
+            force=force,
+            cancel_key=cancel_key,
+            source=f"app:{request_app}" if request_app else "dashboard",
+        )
+    )
 
 
 async def api_chat_slot_interrupt(request: web.Request) -> web.Response:

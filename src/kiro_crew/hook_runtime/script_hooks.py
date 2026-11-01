@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
         _HOOK_BASE_ENV_KEYS,
+        _HOOK_REAP_SECS,
         _HOOK_STREAM_CAP_BYTES,
         _HOOK_TRUNCATION_MARKER,
         _HOOKS_FILE,
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
         _communicate_capped,
         _context_matches,
         _decode_capped,
+        _governance_pinned_command_ids,
         _read_capped_stream,
         _script_hooks_capability_denied,
         _tool_matches,
@@ -46,12 +48,15 @@ if TYPE_CHECKING:
         logger,
         platform_compat,
         redact_via_context,
+        security,
         validate_hook_fields,
         webhooks,
     )
 
 
-def _hook_subprocess_env(hook: "ScriptHook", context: str) -> dict[str, str]:
+def _hook_subprocess_env(
+    hook: "ScriptHook", context: str, acp_session_id: str | None = None
+) -> dict[str, str]:
     """Build the environment a script-hook subprocess runs with.
 
     A strict allowlist over ``os.environ`` (``_HOOK_BASE_ENV_KEYS``) plus the two
@@ -69,10 +74,18 @@ def _hook_subprocess_env(hook: "ScriptHook", context: str) -> dict[str, str]:
     nothing. Other events (e.g. AgentSpawn) carry no dedicated context key on
     stdin, so for them this cap bounds what the env var conveys; their in-repo
     callers pass a short context (a session key), well under the cap.
+
+    ``acp_session_id`` is the firing session's ACP session id, given only for an
+    agent spec's own hooks that Crew runs in kiro-cli's place (see
+    :mod:`kiro_crew.agent_sdk.spec_hooks`). It is set as ``KIRO_SESSION_ID``, the
+    name kiro-cli gives the hooks it runs itself, so a spec hook reads the same
+    value on either backend. Not known yet, it stays unset rather than empty.
     """
     env = {k: v for k, v in os.environ.items() if k in _HOOK_BASE_ENV_KEYS}
     env["KIROCREW_HOOK_EVENT"] = hook.event
     env["KIROCREW_HOOK_CONTEXT"] = context[:500]
+    if acp_session_id:
+        env["KIRO_SESSION_ID"] = acp_session_id
     return env
 
 
@@ -88,6 +101,13 @@ class ScriptHookResult:
     exit_code: int = -1
     error: str = ""
     duration_ms: int = 0
+    #: A policy (governance or the shell deny list) refused the hook, so it never
+    #: ran. ``exit_code`` stays 2 so a Hooks-page hook still blocks, fail-closed.
+    refused: bool = False
+    #: An agent spec's own hook, run by Crew in the harness's place. Taken from
+    #: the hook's in-memory ``spec_origin``, never from its id, which a
+    #: hand-written ``hooks.json`` controls.
+    from_spec: bool = False
 
     @property
     def blocked(self) -> bool:
@@ -98,17 +118,42 @@ class ScriptHookResult:
     def succeeded(self) -> bool:
         return self.exit_code == 0
 
+    @property
+    def pre_tool_blocks(self) -> bool:
+        """Whether this PreToolUse result blocks the tool call.
+
+        A Hooks-page hook fails closed: anything but exit 0 blocks. A spec hook
+        follows kiro-cli, which runs it on the kiro-cli backend: only a delivered
+        exit 2 blocks. A spec hook that a policy refused, or that crashed, was
+        killed or timed out, is a warning and the tool goes ahead, so one broken
+        hook in an agent package cannot stop every tool call.
+        """
+        if not self.from_spec:
+            return self.exit_code != 0
+        return self.exit_code == 2 and not self.refused
+
+    @property
+    def failure_detail(self) -> str:
+        """Why the hook failed, for logs: the refusal or error first, then stderr."""
+        if self.error:
+            return self.error[:200]
+        if self.stderr:
+            return self.stderr[-200:]
+        return f"exited with code {self.exit_code}"
+
 
 async def run_script_hook(
     hook: ScriptHook,
     context: str = "",
     hook_event: dict | None = None,
     cwd: str | None = None,
+    acp_session_id: str | None = None,
 ) -> ScriptHookResult:
     """Execute a script hook's command with timeout.
 
     Passes hook event as JSON via STDIN (Kiro CLI compatible). ``cwd`` is the
     directory the command runs in; ``None`` keeps the gateway's own.
+    ``acp_session_id`` becomes ``KIRO_SESSION_ID`` (see ``_hook_subprocess_env``).
     """
     start = time.monotonic()
     # Governance: the ``capabilities.script_hooks`` gate (default OFF) may forbid
@@ -120,9 +165,18 @@ async def run_script_hook(
     sk = ""
     if hook_event:
         sk = str(hook_event.get("parent_session_key") or hook_event.get("session_key") or "")
+    # The event this run fires for, read before any await: a dashboard edit
+    # rewrites ``hook.event`` in place, so the live field may name another event
+    # by the time the check below runs, while the stdin payload names this one.
+    firing_event = str((hook_event or {}).get("hook_event_name") or hook.event)
     # Offloaded: resolving the governance scope can walk the profile store, which
     # must not run on the gateway's shared event loop.
     gov_denied = await asyncio.to_thread(_script_hooks_capability_denied, sk)
+    if not gov_denied:
+        from kiro_crew.hook_event_governance import event_refusal
+
+        # The policy's ``events`` list names the trigger events a hook may fire on.
+        gov_denied = await asyncio.to_thread(event_refusal, sk, firing_event)
     if gov_denied:
         hook.last_run = time.time()
         hook.last_status = "blocked"
@@ -137,6 +191,7 @@ async def run_script_hook(
             event=hook.event,
             error=f"Blocked by governance policy: {gov_denied}",
             exit_code=2,  # PreToolUse "block tool" convention
+            refused=True,
             duration_ms=int((time.monotonic() - start) * 1000),
         )
     # Shell deny-list: the command runs via ``/bin/sh -c`` (``cmd /c`` on Windows)
@@ -155,12 +210,35 @@ async def run_script_hook(
     # itself, so no extra audit here. Off the loop like the governance check above: the
     # resolve reads the keystone file and the match runs regexes, neither of which
     # belongs on the gateway's shared event loop.
+    #
+    # A user-level agent spec's own hook skips the operator's own deny rules. The
+    # deny list stops commands a model or a sandboxed process chose; this one was
+    # written by the operator into the user-level agents tree, which every
+    # sandboxed process sees read-only, so no agent can plant or edit it. kiro-cli
+    # runs the same hook with no such vet, and 0.10 did too. An administrator's
+    # governance pins and the edition overlay still bind it: those are not the
+    # operator's to waive. A project spec's hook (a checkout an agent can write)
+    # and a Hooks-page hook (``hooks.json`` is writable in-sandbox) stay fully
+    # vetted. ``spec_origin`` is in-memory only, so a hand-written ``hooks.json``
+    # cannot claim the exemption. Governance above still applies to every hook.
     if hook.command:
 
         def _shell_deny_reason() -> str | None:
-            reason = current_context().security.is_denied(
-                hook.command, denied_regexes=effective_denied_regexes_from_config()
-            )
+            denied: list[str] | None = None
+            if hook.spec_origin == "user":
+                try:
+                    denied = security.compute_effective_denied(
+                        list(security.BUILTIN_DENIED_RULES) + security.edition_denied_rules(),
+                        (),
+                        True,
+                        (),
+                        _governance_pinned_command_ids(None),
+                    )
+                except Exception:  # fail closed to the full vet below
+                    logger.debug("governance pin resolution failed", exc_info=True)
+            if denied is None:
+                denied = effective_denied_regexes_from_config()
+            reason = current_context().security.is_denied(hook.command, denied_regexes=denied)
             return redact_via_context(reason) if reason else None
 
         deny_reason = await asyncio.to_thread(_shell_deny_reason)
@@ -176,11 +254,12 @@ async def run_script_hook(
                 error=deny_reason,
                 # PreToolUse "block tool" convention, as the governance deny above.
                 exit_code=2,
+                refused=True,
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
     # Build hook event JSON for STDIN
     if hook_event is None:
-        hook_event = {"hook_event_name": hook.event, "cwd": os.getcwd()}
+        hook_event = {"hook_event_name": firing_event, "cwd": os.getcwd()}
     stdin_data = json.dumps(hook_event).encode()
 
     proc: Any = None
@@ -196,7 +275,7 @@ async def run_script_hook(
         # (``_HOOK_BASE_ENV_KEYS``) plus the two hook-metadata variables — NOT a
         # copy of the whole gateway environment, which would expose the gateway's
         # AWS/model/OAuth/connection-string credentials to every hook command.
-        env = _hook_subprocess_env(hook, context)
+        env = _hook_subprocess_env(hook, context, acp_session_id)
         # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there).
         # The argv is what the sandbox/cgroup chokepoints below vet, on BOTH
         # platforms — only the eventual spawn form differs (see the Windows
@@ -344,11 +423,16 @@ async def run_script_hook(
                 # us during cleanup. Drain both pipes concurrently under
                 # the same cap and discard; sequential reads can deadlock when
                 # residual data fills the other pipe.
-                await asyncio.gather(
-                    _read_capped_stream(proc.stdout, _HOOK_STREAM_CAP_BYTES),
-                    _read_capped_stream(proc.stderr, _HOOK_STREAM_CAP_BYTES),
+                # Bounded too: a descendant that left the killed group (setsid)
+                # can hold a pipe open, and the caller's turn waits on this.
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        _read_capped_stream(proc.stdout, _HOOK_STREAM_CAP_BYTES),
+                        _read_capped_stream(proc.stderr, _HOOK_STREAM_CAP_BYTES),
+                        proc.wait(),
+                    ),
+                    timeout=_HOOK_REAP_SECS,
                 )
-                await proc.wait()
         except Exception:
             pass
         elapsed = int((time.monotonic() - start) * 1000)
@@ -692,6 +776,7 @@ class ScriptHookStore:
         extra_hooks_cwd: str | None = None,
         extra_hooks_tool_names: Sequence[str] | None = None,
         tool_match_names: Sequence[str] | None = None,
+        acp_session_id: str | None = None,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
 
@@ -730,6 +815,12 @@ class ScriptHookStore:
         per-session attribution; before it existed the dashboard runner reused
         ``parent_session_key`` for that, which made every composer turn look like
         a subagent to a hook keyed on the field's documented meaning.
+
+        ``acp_session_id`` is the firing session's ACP session id. Only the
+        ``extra_hooks`` get it, as ``KIRO_SESSION_ID`` in their env and
+        ``acp_session_id`` on their stdin: they are the spec hooks kiro-cli would
+        run with ``KIRO_SESSION_ID`` set. The stored hooks never had it on any
+        backend, so they still do not.
 
         For the Stop event, the full ``context`` (the final assistant segment) is
         used for matcher evaluation and echoed to stdin as ``assistant_text``;
@@ -781,6 +872,12 @@ class ScriptHookStore:
             extra_event["cwd"] = extra_hooks_cwd
         if extra_hooks_tool_names:
             extra_event["tool_name"] = extra_hooks_tool_names[0]
+        extra_run: dict[str, str] = {}
+        if extra_hooks_cwd:
+            extra_run["cwd"] = extra_hooks_cwd
+        if acp_session_id:
+            extra_event["acp_session_id"] = acp_session_id
+            extra_run["acp_session_id"] = acp_session_id
         # Only a hook that passes its matcher changes the status bookkeeping
         # (last_run / run_count / last_status). A fire that matched nothing has
         # nothing to record, so it must not rewrite hooks.json: that rewrite ran
@@ -830,6 +927,10 @@ class ScriptHookStore:
                 # Off the loop, as in run_script_hook: the scope lookup can walk
                 # the governance profile store.
                 gov_denied = await asyncio.to_thread(_script_hooks_capability_denied, sk)
+                if not gov_denied:
+                    from kiro_crew.hook_event_governance import event_refusal
+
+                    gov_denied = await asyncio.to_thread(event_refusal, sk, event)
                 if gov_denied:
                     hook.last_run = time.time()
                     hook.last_status = "blocked"
@@ -873,10 +974,9 @@ class ScriptHookStore:
                     len(hook.skills),
                 )
                 continue
-            if id(hook) in extra_ids and extra_hooks_cwd:
-                result = await run_script_hook(hook, context, extra_event, cwd=extra_hooks_cwd)
-            elif id(hook) in extra_ids:
-                result = await run_script_hook(hook, context, extra_event)
+            if id(hook) in extra_ids:
+                result = await run_script_hook(hook, context, extra_event, **extra_run)
+                result.from_spec = bool(hook.spec_origin)
             else:
                 result = await run_script_hook(hook, context, hook_event)
             results.append(result)

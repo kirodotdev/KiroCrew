@@ -4,7 +4,7 @@
 // real DOM, with everything else represented by the spacers -- and the rules
 // that move it as the reader scrolls: the scroll-path recompute and its merge,
 // the near/far jump rule behind `mountIndex`, the sentinel expansions, the
-// coverage watchdog and the older-history trigger. Recomputing the window never
+// coverage watchdog, the older-history trigger and the tail-append mount. Recomputing the window never
 // writes `scrollTop`.
 //
 // The placements that move the scroller also mount a window of their own, from
@@ -13,7 +13,7 @@
 // (shiftCompensation.ts), and the entry, visibility and restore windows
 // (readingPosition.ts). The pure window math is in WindowCalculator.ts.
 
-import { useCallback, useEffect, useRef, useState, type MutableRefObject, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MutableRefObject, type RefObject } from 'react'
 import type { HeightIndex } from './HeightIndex'
 import type { RetainedVirtualRange } from './types'
 import {
@@ -28,8 +28,9 @@ import {
   type HeightGetter,
   type WindowRange,
 } from './WindowCalculator'
-import { SCROLL_SETTLE_MS } from './FollowController'
+import { SCROLL_SETTLE_MS, scrollerCollapsed } from './FollowController'
 import type { FollowState, Pinning } from './followPolicy'
+import type { ShiftCapture } from './shiftCompensation'
 
 type Ref<V> = MutableRefObject<V>
 type SetWindowRange = (next: WindowRange | ((prev: WindowRange) => WindowRange)) => void
@@ -154,9 +155,98 @@ export function useWindowState(
   return { windowRange, setWindowRange, windowRangeRef, retainRange, resolveWindowRange }
 }
 
+/**
+ * Mount rows appended at the TAIL under a followed reader in the render that
+ * first sees them.
+ *
+ * The window is recomputed only from a scroll event or a resize, so a row
+ * appended under a reader following the tail -- the prompt they just sent, the
+ * reply that starts under it -- otherwise commits OUTSIDE the window, priced
+ * into the bottom spacer at the running height estimate. The append pin then
+ * carries the reader to the bottom of that estimate, and a frame later the
+ * pin's own scroll event mounts the row at its real height and the bottom
+ * moves back: under long replies a short prompt is estimated hundreds of px
+ * too tall, so every send moved the transcript up and then back down.
+ *
+ * Extending the range here makes React re-run the render before committing,
+ * so the first commit holding the rows renders them as rows and the append
+ * pin lands on their real bottom. Scoped to exactly that case: following a
+ * tail that already holds rows (the first rows of an empty list are the
+ * entry placement's) in a box with a real height, the committed window already
+ * reaching the committed tail, the tail key changed (an append; a prepend
+ * keeps the tail and is the follow owner's bulk-prepend shift or the re-base),
+ * and a growth small enough not to be the hydration replace the follow owner
+ * force-pins on its own (see useFollowPlacementPins). A reader who scrolled up
+ * owns their window, and the row stays off it as before.
+ */
+export function useTailAppendMount<T>(ctx: {
+  items: T[]
+  getKey: (item: T, index: number) => string
+  itemCount: number
+  overscan: number
+  sessionId: string
+  windowRange: WindowRange
+  setWindowRange: SetWindowRange
+  resolveWindowRange: (next: WindowRange) => WindowRange
+  scrollerRef: RefObject<HTMLDivElement | null>
+  shift: Pick<ShiftCapture, 'shiftStageRef'>
+  follow: Pick<FollowState, 'stickRef'>
+}): void {
+  const { items, getKey, itemCount, overscan, sessionId, windowRange, setWindowRange, resolveWindowRange } = ctx
+  const tailKey = itemCount > 0 ? getKey(items[itemCount - 1], itemCount - 1) : null
+  // The committed tail, advanced at COMMIT for the same reason as the shift
+  // capture's mirror: a discarded concurrent attempt must not move it.
+  const committedRef = useRef<{ session: string; count: number; tailKey: string | null } | null>(null)
+  const prev = committedRef.current
+  if (
+    prev !== null &&
+    prev.session === sessionId &&
+    prev.count > 0 &&
+    ctx.follow.stickRef.current &&
+    // Defence in depth: the prepend re-base arms only for a released reader.
+    ctx.shift.shiftStageRef.current !== 'awaiting-rebase' &&
+    itemCount > prev.count &&
+    itemCount - prev.count <= overscan + 1 &&
+    tailKey !== prev.tailKey &&
+    windowRange.end >= prev.count &&
+    windowRange.end < itemCount &&
+    // A collapsed box (backgrounded tab, display:none pane) writes no pin, so
+    // no scroll event ever trims the window's start behind these rows: every
+    // append there would stay mounted. The visibility return re-places it.
+    // Read LAST: it is a layout read, and every streamed token re-renders a
+    // followed transcript without appending a row.
+    ctx.scrollerRef.current !== null && !scrollerCollapsed(ctx.scrollerRef.current)
+  ) {
+    // Compared as the setter commits it (a retained selection widens every
+    // write). The re-run ends on `windowRange.end < itemCount` either way.
+    const target = resolveWindowRange({ start: windowRange.start, end: itemCount })
+    if (windowRange.start !== target.start || windowRange.end !== target.end) setWindowRange(() => target)
+  }
+  const next = { session: sessionId, count: itemCount, tailKey }
+  useLayoutEffect(() => {
+    committedRef.current = next
+  })
+}
+
+/** How many rows above the first visible one may mount on each frame while a
+ *  landed older page is staged in; after the last step the full overscan
+ *  applies again. A landing re-bases the window onto the reader's rows and then
+ *  widens it by the whole overscan above them, and mounting those rows in the
+ *  same task as the prepend commit was the one long task a phone fling showed
+ *  (7 rows, 51-55 ms, most of it row render, markdown and layout). The rows
+ *  are off-screen above the reader, so staging them across frames changes no
+ *  pixel the reader sees; the visible rows are never capped. */
+export const LANDING_LEADING_STEPS: readonly number[] = [1, 3]
+
 export interface WindowOperations {
   recomputeWindow: (expandOnly?: boolean) => void
   lastRecomputeAtRef: Ref<number>
+  /** Rows above the first visible one a recompute may mount, or null for the
+   *  full overscan. Armed by `stageLeadingOverscan`. */
+  leadingCapRef: Ref<number | null>
+  /** Mount the overscan above the reader over the next frames instead of in
+   *  this task (see LANDING_LEADING_STEPS). */
+  stageLeadingOverscan: () => void
   mountIndex: (index: number, opts?: { unionOnly?: boolean }) => boolean
   estimateRowTop: (index: number) => number | null
 }
@@ -178,6 +268,8 @@ export function useWindowOperations<T>(ctx: {
   // Written by every recomputeWindow entry; read only by the coverage
   // watchdog's yield check (see VIEWPORT_COVERAGE_YIELD_MS).
   const lastRecomputeAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
+  const leadingCapRef = useRef<number | null>(null)
+  const stageRafRef = useRef<number | null>(null)
 
   // ---- Window recomputation (pure; never touches scrollTop) ----
   //
@@ -233,6 +325,20 @@ export function useWindowOperations<T>(ctx: {
           start: Math.max(0, firstVisible - overscanN),
           end: Math.min(count, lastVisible + 1 + overscanN),
         }
+        const cap = leadingCapRef.current
+        if (cap !== null && cap < overscanN) {
+          // Staged landing: mount at most `cap` rows above the reader now. A
+          // row above that is already mounted stays mounted -- unmounting it
+          // only to mount it again a frame later is the cost being split.
+          const cappedStart = Math.max(0, firstVisible - cap)
+          const fullStart = next.start
+          const end = next.end
+          setWindowRange((prev) => mergeWindowRange(prev, {
+            start: Math.min(cappedStart, Math.max(fullStart, prev.start)),
+            end,
+          }, expandOnly))
+          return
+        }
       }
     } else {
       next = computeWindow(Math.max(0, el.scrollTop - leadingOffset(el)), el.clientHeight, count, getH, overscan)
@@ -243,6 +349,37 @@ export function useWindowOperations<T>(ctx: {
     // away to a no-op.
     setWindowRange((prev) => mergeWindowRange(prev, next, expandOnly))
   }, [getH, overscan, scrollerRef, leadingOffset, itemsRef, heightIndexRef, stickRef, setWindowRange])
+
+  // Each step lands on a LATER frame: a frame callback requested from this
+  // task runs before this frame paints, so the step waits for the callback
+  // after it. A new landing restarts the stages from the first.
+  // A step reads the CURRENT recompute: its identity changes as heights are
+  // measured, and the stages outlive the render that armed them.
+  const recomputeRef = useRef(recomputeWindow)
+  useEffect(() => { recomputeRef.current = recomputeWindow }, [recomputeWindow])
+  const stageLeadingOverscan = useCallback(() => {
+    if (LANDING_LEADING_STEPS.length === 0 || typeof requestAnimationFrame !== 'function') return
+    if (stageRafRef.current !== null) cancelAnimationFrame(stageRafRef.current)
+    let step = 0
+    leadingCapRef.current = LANDING_LEADING_STEPS[0]
+    const nextFrame = (fn: () => void) => {
+      stageRafRef.current = requestAnimationFrame(() => {
+        stageRafRef.current = requestAnimationFrame(() => { stageRafRef.current = null; fn() })
+      })
+    }
+    const advance = () => {
+      step++
+      leadingCapRef.current = step < LANDING_LEADING_STEPS.length ? LANDING_LEADING_STEPS[step] : null
+      recomputeRef.current(true)
+      if (leadingCapRef.current !== null) nextFrame(advance)
+    }
+    nextFrame(advance)
+  }, [])
+  useEffect(() => () => {
+    if (stageRafRef.current !== null) cancelAnimationFrame(stageRafRef.current)
+    stageRafRef.current = null
+    leadingCapRef.current = null
+  }, [])
 
   // Ensure `index` is mounted (in the window) so callers can scroll to an
   // off-window target. Near targets union with the current window (no flash);
@@ -299,7 +436,7 @@ export function useWindowOperations<T>(ctx: {
     [getH, leadingOffset, scrollerRef, itemsRef, heightIndexRef],
   )
 
-  return { recomputeWindow, lastRecomputeAtRef, mountIndex, estimateRowTop }
+  return { recomputeWindow, lastRecomputeAtRef, leadingCapRef, stageLeadingOverscan, mountIndex, estimateRowTop }
 }
 
 export function useCoverageWatchdog<T>(ctx: {
@@ -390,11 +527,13 @@ export function useWindowEdgeTriggers<T>(ctx: {
   onTopReachedRef: Ref<(() => void) | undefined>
   itemsRef: Ref<T[]>
   setWindowRange: SetWindowRange
+  ops: Pick<WindowOperations, 'leadingCapRef'>
 }): void {
   const {
     windowRange, itemCount, overscan, prefetchStartIndex, sessionId,
     scrollerRef, scrollerEl, topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange,
   } = ctx
+  const { leadingCapRef } = ctx.ops
 
   // ---- Row-count prefetch: fire the older-history fetch EARLY ----
   // The sentinel below still exists as the backstop (a fast fling can outrun
@@ -472,7 +611,9 @@ export function useWindowEdgeTriggers<T>(ctx: {
           // at start === 0 expandWindowUp is a no-op, and keying the capture
           // on the committed range moving up makes that case a non-event
           // instead of something this site has to screen for.
-          setWindowRange((prev) => expandWindowUp(prev, overscan))
+          // A staged landing widens by its current step, not the overscan.
+          const cap = leadingCapRef.current
+          setWindowRange((prev) => expandWindowUp(prev, cap === null ? overscan : Math.max(1, Math.min(overscan, cap))))
           onTopReachedRef.current?.()
         }
       },
@@ -492,5 +633,5 @@ export function useWindowEdgeTriggers<T>(ctx: {
     if (topSentinelRef.current) ioTop.observe(topSentinelRef.current)
     if (bottomSentinelRef.current) ioBottom.observe(bottomSentinelRef.current)
     return () => { ioTop.disconnect(); ioBottom.disconnect() }
-  }, [overscan, scrollerEl, topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange])
+  }, [overscan, scrollerEl, topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange, leadingCapRef])
 }

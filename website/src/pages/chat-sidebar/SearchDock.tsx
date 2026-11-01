@@ -7,7 +7,7 @@
  *  writes and order, create, rename, title, peer sessions). */
 import { Fragment } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { X, ArrowUpDown, EyeOff, ChevronRight, Clock, Check, List, ListTree, RotateCcw, Server, Pause, Play, WifiOff } from 'lucide-react'
+import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -20,6 +20,7 @@ import { errMessage } from '../../utils/thunkError'
 import { Btn, IconButton } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import { isEmbeddedPane } from '../../lib/embedded'
+import { crewModeEnabled } from '../../lib/crewMode'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FilterMenuLabel, FilterMenuContent } from '../../components/SearchFilterBar'
 import { FOLDER_SORT_MODES, folderHasCreatedStamp, type FolderSortMode } from '../../utils/folderTree'
 import { type RecentUnit, RECENT_WINDOW_PRESETS, formatRecentWindow } from '../recentWindow'
@@ -74,12 +75,14 @@ export const FILTER_LABEL_KEY: Record<SessionFilterKey, string> = {
   running: 'pages.chatSidebar.filter_running',
   pinned: 'pages.chatSidebar.filter_pinned',
   recent: 'pages.chatSidebar.filter_recent',
+  crew: 'pages.chatSidebar.filter_crew',
 }
 export const FILTER_DESCRIPTION_KEY: Record<SessionFilterKey, string> = {
   unread: 'pages.chatSidebar.filter_unread_description',
   running: 'pages.chatSidebar.filter_running_description',
   pinned: 'pages.chatSidebar.filter_pinned_description',
   recent: 'pages.chatSidebar.filter_recent_description',
+  crew: 'pages.chatSidebar.filter_crew_description',
 }
 
 /** Sort options, in menu order. The label lives in `SORT_LABEL_KEY`. */
@@ -145,7 +148,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
     closeRefused, columnsError, columnsFailed, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError, dispatch,
-    filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, flatLaneActive, folderActionError,
+    filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, flatLaneActive, folderActionError, groupByKind, toggleGroupByKind,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
     folderSortMut, folderSortRead, folders, foldersError, foldersFailed, foldersShelved,
     hasRemoteExecutedRow, hiddenFilters, hiddenFolderCount, instanceSessions, isMobile, lane,
@@ -247,6 +250,12 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   const active = activeFilters.has(filterDef.key)
                   const hidden = hiddenFilters.has(filterDef.key)
                   const slotCount = filterCounts[filterDef.key] ?? 0
+                  // The Crew Mode row is offered once a chat runs on the conductor
+                  // (a row the server stamps `crew_mode_root`), and stays while the
+                  // filter is on. With no such chat, on a gateway without Crew Mode
+                  // included, the menu reads as it does today.
+                  // With the Crew Mode preview off the row is never offered.
+                  if (filterDef.key === 'crew' && (!crewModeEnabled() || (!active && slotCount === 0))) return null
                   const isRecent = filterDef.key === 'recent'
                   if (isRecent) {
                     // The window picker is a NESTED FLYOUT on a wide viewport and
@@ -269,7 +278,6 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                         onMouseDown={e => e.stopPropagation()}
                         onKeyDown={e => e.stopPropagation()}
                       >
-                        <div className="px-1 pb-1 text-[11px] text-muted">{i18nT('pages.chatSidebar.within')}</div>
                         <div className="flex flex-wrap gap-1 px-1 mb-2">
                           {RECENT_WINDOW_PRESETS.map(preset => (
                             <DurationChip
@@ -340,7 +348,6 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                       return (
                         <Fragment key={filterDef.key}>
                           <DropdownMenuItem
-                            title={i18nT(FILTER_DESCRIPTION_KEY[filterDef.key])}
                             onSelect={e => { e.preventDefault(); toggleFilter('recent') }}
                           >
                             {rowBody}
@@ -362,7 +369,6 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     return (
                       <DropdownMenuSub key={filterDef.key}>
                         <DropdownMenuSubTrigger
-                          title={i18nT(FILTER_DESCRIPTION_KEY[filterDef.key])}
                           onClick={() => toggleFilter('recent')}
                           onKeyDown={e => {
                             if (e.key === 'Enter' || e.key === ' ') {
@@ -385,7 +391,6 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   const showRow = (
                     <DropdownMenuItem
                       key={filterDef.key}
-                      title={i18nT(FILTER_DESCRIPTION_KEY[filterDef.key])}
                       // Keep the menu open so multiple filters can be toggled.
                       onSelect={e => { e.preventDefault(); toggleFilter(filterDef.key) }}
                       className={canHide ? 'flex-1 min-w-0' : undefined}
@@ -417,35 +422,57 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   const hideLabel = hidden
                     ? i18nT('pages.chatSidebar.filter_unhide_named', { filter: filterLabel })
                     : i18nT('pages.chatSidebar.filter_hide_named', { filter: filterLabel })
+                  // "In progress" gets a named "Not in progress" row instead of the
+                  // hover-only EyeOff button, so hiding running sessions is discoverable
+                  // without hovering. Unread and Pinned keep the EyeOff. The row stays
+                  // in the menu while show-only is on, so the menu keeps its shape:
+                  // toggleHideFilter clears show-only and toggleFilter drops the hide,
+                  // so one click moves between the two.
+                  const notRow = filterDef.key === 'running'
                   return (
-                    <div
-                      key={filterDef.key}
-                      role="group"
-                      className="group/filter flex items-center rounded-md transition-colors hover:bg-bg-hover focus-within:bg-bg-hover"
-                    >
-                      {showRow}
-                      {!active && (
-                        <DropdownMenuItem
-                          aria-label={hideLabel}
-                          title={hideLabel}
-                          onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
-                          className="group/hide shrink-0"
-                          data-testid={`filter-hide-${filterDef.key}`}
-                          data-filter-hidden={hidden ? 'true' : undefined}
-                        >
-                          <span
-                            className={hidden
-                              ? 'inline-flex size-3.5 items-center justify-center rounded bg-accent-subtle text-accent ring-4 ring-accent-subtle'
-                              : 'inline-flex size-3.5 items-center justify-center text-muted group-focus/hide:text-text'}
+                    <Fragment key={filterDef.key}>
+                      <div
+                        role="group"
+                        className="group/filter flex items-center rounded-md transition-colors hover:bg-bg-hover focus-within:bg-bg-hover"
+                      >
+                        {showRow}
+                        {!active && !notRow && (
+                          <DropdownMenuItem
+                            aria-label={hideLabel}
+                            title={hideLabel}
+                            onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
+                            className="group/hide shrink-0"
+                            data-testid={`filter-hide-${filterDef.key}`}
+                            data-filter-hidden={hidden ? 'true' : undefined}
                           >
-                            <EyeOff
-                              size={12}
-                              className={hidden ? undefined : 'opacity-0 group-hover/filter:opacity-100 group-focus-within/filter:opacity-100 [@media(hover:none)]:opacity-100'}
-                            />
-                          </span>
+                            <span
+                              className={hidden
+                                ? 'inline-flex size-3.5 items-center justify-center rounded bg-accent-subtle text-accent ring-4 ring-accent-subtle'
+                                : 'inline-flex size-3.5 items-center justify-center text-muted group-focus/hide:text-text'}
+                            >
+                              <EyeOff
+                                size={12}
+                                className={hidden ? undefined : 'opacity-0 group-hover/filter:opacity-100 group-focus-within/filter:opacity-100 [@media(hover:none)]:opacity-100'}
+                              />
+                            </span>
+                          </DropdownMenuItem>
+                        )}
+                      </div>
+                      {notRow && (
+                        <DropdownMenuItem
+                          title={i18nT('pages.chatSidebar.filter_not_running_description')}
+                          onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
+                          data-testid={`filter-not-${filterDef.key}`}
+                          data-filter-hidden={hidden ? 'true' : undefined}
+                          role="menuitemcheckbox"
+                          aria-checked={hidden}
+                        >
+                          <ZapOff size={12} className={hidden ? 'text-[var(--warn)]' : 'text-muted'} />
+                          <span className="flex-1 truncate">{i18nT('pages.chatSidebar.filter_not_running')}</span>
+                          {hidden && <Check size={14} className="text-accent shrink-0" />}
                         </DropdownMenuItem>
                       )}
-                    </div>
+                    </Fragment>
                   )
                 })}
                 {/* Lift every active status filter at once, for a look at the
@@ -463,6 +490,31 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   >
                     {filtersPaused ? <Play size={12} className="text-muted" aria-hidden="true" /> : <Pause size={12} className="text-muted" aria-hidden="true" />}
                     <span className="flex-1 truncate">{filtersPaused ? i18nT('pages.chatSidebar.resume_all_filters') : i18nT('pages.chatSidebar.pause_all_filters')}</span>
+                  </DropdownMenuItem>
+                )}
+                {/* Why a Crew Mode chat's own sessions are not rows here: they are
+                    listed in its side panel. One line, so the absence is explained;
+                    shown with the Crew Mode row, so a list with no such chat says
+                    nothing about one. */}
+                {crewModeEnabled() && ((filterCounts['crew'] ?? 0) > 0 || activeFilters.has('crew')) && (
+                  <p className="px-2 pt-1 pb-1.5 text-[11px] text-muted max-w-[16rem]" data-testid="filter-crew-hint">{i18nT('pages.chatSidebar.filter_crew_hint')}</p>
+                )}
+                {/* A view option, not a filter: it hides nothing and splits each list
+                    into Crew Mode / Normal / From Mates sections (./kindSections).
+                    Not offered on the tag board, whose columns are already the
+                    grouping. */}
+                {!boardLaneActive && (
+                  <DropdownMenuItem
+                    data-testid="filter-group-by-kind"
+                    role="menuitemcheckbox"
+                    aria-checked={groupByKind}
+                    title={i18nT('pages.chatSidebar.group_by_kind_hint')}
+                    // Keep the menu open, like the filter rows above.
+                    onSelect={e => { e.preventDefault(); toggleGroupByKind() }}
+                  >
+                    <Rows3 size={12} className={groupByKind ? 'text-accent' : 'text-muted'} aria-hidden="true" />
+                    <span className="flex-1 truncate">{i18nT('pages.chatSidebar.group_by_kind')}</span>
+                    {groupByKind && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuSeparator />
@@ -930,9 +982,30 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
           </div>
         )
       })()}
-      {activeFilters.size > 0 && (
+      {/* The Crew Mode chip in its own row, above the status chips, for the same
+          AUTOSDE reason as the tag, model and hides chips: the status-chip row
+          below holds the base branch's four filter chips and must not grow
+          (max-two-buttons-per-row), so the fifth filter never joins it. */}
+      {activeFilters.has('crew') && (() => {
+        const slotCount = filterCounts['crew'] ?? 0
+        const filterLabel = i18nT(FILTER_LABEL_KEY['crew'])
+        return (
+          <div className="px-3 pb-1">
+            <FilterChip
+              testId="filter-chip-crew"
+              label={`${filterLabel}${slotCount > 0 ? ` (${slotCount})` : ''}`}
+              color="var(--accent)"
+              gradient
+              paused={filtersPaused}
+              clearLabel={i18nT('pages.chatSidebar.clear_named_filter', { filter: filterLabel })}
+              onClear={() => toggleFilter('crew')}
+            />
+          </div>
+        )
+      })()}
+      {SESSION_FILTERS.some(filterDef => filterDef.key !== 'crew' && activeFilters.has(filterDef.key)) && (
         <div className={FILTER_CHIP_ROW_CLS}>
-          {SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key)).map(filterDef => {
+          {SESSION_FILTERS.filter(filterDef => filterDef.key !== 'crew' && activeFilters.has(filterDef.key)).map(filterDef => {
             const slotCount = filterCounts[filterDef.key] ?? 0
             const filterLabel = i18nT(FILTER_LABEL_KEY[filterDef.key])
             // The label goes in as-is. It used to be `.toLowerCase()`d to read as

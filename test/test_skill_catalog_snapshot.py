@@ -1377,6 +1377,92 @@ class TestAStoredRowIsNotAnAdmission:
         # Falling back to the walk is what keeps the answer complete.
         assert _keys(second._iter()) == ["alpha"]
 
+    def test_a_root_under_a_linked_home_serves_its_own_rows(self, tmp_path, monkeypatch):
+        """A walk stores rows in the spelling of the root it walked.
+
+        When ``$HOME`` is a link, that spelling is not the root's realpath. The
+        screen must still admit the walk's own rows, or every restart refuses the
+        whole snapshot and lists no skills until a new walk finishes.
+        """
+        real_home = tmp_path / "real-home"
+        (real_home / "skills").mkdir(parents=True)
+        linked_home = tmp_path / "home"
+        make_dir_link(linked_home, real_home)
+        harness = _Harness(linked_home)
+        try:
+            _skill(harness.root, "alpha", description="the alpha skill")
+            first = harness.loader()
+            assert _keys(first._iter()) == ["alpha"]
+            _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
+
+            second = harness.loader()
+            walk = harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
+            assert _keys(second._iter()) == ["alpha"]
+            assert walk.calls == 0, "the stored rows were refused and the tree re-walked"
+            report = second.search_skills_report("", browse=True)
+            assert [m["key"] for m in report.matches] == ["alpha"]
+            assert report.matches[0]["description"] == "the alpha skill"
+        finally:
+            harness.settle()
+
+    def test_a_linked_home_still_refuses_a_row_outside_both_spellings(self, tmp_path, monkeypatch):
+        real_home = tmp_path / "real-home"
+        (real_home / "skills").mkdir(parents=True)
+        linked_home = tmp_path / "home"
+        make_dir_link(linked_home, real_home)
+        harness = _Harness(linked_home)
+        try:
+            _skill(harness.root, "alpha")
+            first = harness.loader()
+            assert _keys(first._iter()) == ["alpha"]
+            _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
+            outside = _skill(linked_home / "elsewhere", "injected")
+            index = first._search_index
+            assert index is not None
+            assert (
+                index.store_catalog(
+                    first._catalog_scope_id(""),
+                    [
+                        ("alpha", str(harness.root / "alpha" / "SKILL.md"), ""),
+                        ("injected", str(outside), ""),
+                    ],
+                    epoch=index.catalog_epoch(),
+                )
+                == "stored"
+            )
+            second = harness.loader()
+            assert second._load_catalog_snapshot("") is None
+        finally:
+            harness.settle()
+
+    def test_a_linked_home_row_resolving_outside_is_refused_at_the_read(
+        self, tmp_path, monkeypatch
+    ):
+        """The linked spelling admits a row only; the read still vets its target."""
+        real_home = tmp_path / "real-home"
+        (real_home / "skills").mkdir(parents=True)
+        linked_home = tmp_path / "home"
+        make_dir_link(linked_home, real_home)
+        harness = _Harness(linked_home)
+        try:
+            path = _skill(harness.root, "alpha")
+            first = harness.loader()
+            assert _keys(first._iter()) == ["alpha"]
+            _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
+            outside = _skill(tmp_path / "outside", "foreign")
+            path.unlink()
+            path.parent.rmdir()
+            make_dir_link(path.parent, outside.parent)
+
+            second = harness.loader()
+            harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
+            assert _keys(second._iter()) == ["alpha"]
+            refusals: list[str] = []
+            assert second._read_enumerated_skill_bytes(path, None, refusal_reasons=refusals) is None
+            assert refusals == ["snapshot_path_refused"]
+        finally:
+            harness.settle()
+
     @pytest.mark.parametrize("invalidate", [False, True])
     def test_a_row_swapped_to_a_sensitive_target_is_refused_at_the_read(
         self, harness, monkeypatch, invalidate

@@ -17,6 +17,8 @@ interface RawSchemaEntry {
   enumValues?: string[]
   defaultValue?: unknown
   requiresRestart?: boolean
+  /** The backend's reason string; present only on a path this build locks. */
+  lockedByPolicy?: string
 }
 
 async function fetchConfigSchema(): Promise<Map<string, SchemaEntry>> {
@@ -36,6 +38,8 @@ async function fetchConfigSchema(): Promise<Map<string, SchemaEntry>> {
       // Carried through as-is: the backend omits the key for every hot field, so
       // `undefined` and `false` both mean "applies live".
       requiresRestart: entry.requiresRestart === true ? true : undefined,
+      // Any reason string means locked; the UI shows its own translated copy.
+      lockedByPolicy: entry.lockedByPolicy ? true : undefined,
     })
   }
   return map

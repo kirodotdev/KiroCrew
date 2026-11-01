@@ -416,8 +416,35 @@ describe('fmtElapsed', () => {
     // magnitude: a tenth matters on a 4-second step and is noise on a 37-second
     // one.
     expect(fmtElapsed(4_200)).toBe('4.2s')
-    expect(fmtElapsed(9_990)).toBe('10.0s')
+    expect(fmtElapsed(9_900)).toBe('9.9s')
     expect(fmtElapsed(37_400)).toBe('37s')
+  })
+
+  it('never prints a band\'s own ceiling', () => {
+    // #24758. Each band used to be chosen by the raw value and then printed
+    // rounded, so a span just under a ceiling rendered AS that ceiling: `60s`
+    // inside the sub-minute band, `10.0s` inside the tenths band. Both are a
+    // unit the band it came from cannot express.
+    expect(fmtElapsed(59_500)).toBe('1m 0s')
+    expect(fmtElapsed(59_600)).toBe('1m 0s') // the issue's own repro
+    expect(fmtElapsed(59_990)).toBe('1m 0s')
+    expect(fmtElapsed(9_950)).toBe('10s')
+    expect(fmtElapsed(9_960)).toBe('10s') // the issue's own repro
+    expect(fmtElapsed(9_990)).toBe('10s')
+  })
+
+  it('leaves a span just below each ceiling in its own band', () => {
+    // The other half of the fix: rounding to the displayed precision must move
+    // only the values that would have printed the ceiling, not the band edge.
+    expect(fmtElapsed(59_490)).toBe('59s')
+    expect(fmtElapsed(9_940)).toBe('9.9s')
+  })
+
+  it('rolls a whole-second counter over the minute too', () => {
+    // `wholeSeconds` skips the tenths band, so the minute test is the only one
+    // left to get wrong.
+    expect(fmtElapsed(59_990, { wholeSeconds: true })).toBe('1m 0s')
+    expect(fmtElapsed(59_490, { wholeSeconds: true })).toBe('59s')
   })
 
   it('rounds the tenth up at the midpoint', () => {
@@ -513,6 +540,31 @@ describe('fmtBytes', () => {
     // 1000 bytes is `1kB`, not 1024. Intl offers no binary (kibibyte) unit, so
     // the divisor is 1000.
     expect(fmtBytes(1000)).toBe('1kB')
+  })
+
+  it('never prints a band\'s own ceiling', () => {
+    // Same class as #24758's `60s`: the band was chosen by the raw count and
+    // then printed to one decimal, so a size just under the next unit rendered
+    // as `1,000kB` — a quantity the kilobyte band cannot mean.
+    expect(fmtBytes(999_950)).toBe('1MB')
+    expect(fmtBytes(999_950_000)).toBe('1GB')
+    expect(fmtBytes(999_950_000_000)).toBe('1TB')
+    // The byte band prints no decimal at all, so its ceiling needs a fraction.
+    expect(fmtBytes(999.6)).toBe('1kB')
+  })
+
+  it('leaves a size just below each ceiling in its own band', () => {
+    expect(fmtBytes(999_940)).toBe('999.9kB')
+    expect(fmtBytes(999_940_000)).toBe('999.9MB')
+    expect(fmtBytes(999)).toBe('999B')
+  })
+
+  it('still honours a caller-supplied precision', () => {
+    // The band test reads `maximumFractionDigits`, so an override must move the
+    // ceiling with it rather than being ignored or double-rounded.
+    expect(fmtBytes(999_500, { maximumFractionDigits: 0 })).toBe('1MB')
+    expect(fmtBytes(999_400, { maximumFractionDigits: 0 })).toBe('999kB')
+    expect(fmtBytes(999_994, { maximumFractionDigits: 2 })).toBe('999.99kB')
   })
 
   it('localizes the unit and the separator', async () => {

@@ -350,6 +350,55 @@ def member_pin_matches(mode: object, current_agent: object, requested_agent: obj
     )
 
 
+def is_person_created_crewmate(name: object, agent_cfg: object) -> bool:
+    """Whether the crew record *agent_cfg* under *name* is a crewmate the PERSON created.
+
+    The Crewmates roster's ``dashboard_created`` rule, owned here so the roster and
+    the inventory gauge cannot drift apart: the crew manager's own origin
+    (``source == "kirocrew"``) AND a member id, which is assigned when the member's
+    memory is allocated. Both create paths the person takes write exactly that --
+    the Crewmates page's create, and Mate's ``crewmate.create`` /
+    ``crewmate.import`` card once approved. Mate itself (``source == "builtin"``),
+    package-synced rows, app-made rows, legacy rows and the reserved ``default``
+    member are not counted. ``member_id`` is never coerced by the loader, so only a
+    non-blank string counts.
+    """
+    member_id = getattr(agent_cfg, "member_id", None)
+    # "default" is the reserved main member every install carries; "kirocrew" is
+    # the crew manager's own origin, the one both person-driven create paths write.
+    return (
+        name != "default"
+        and getattr(agent_cfg, "source", None) == "kirocrew"
+        and isinstance(member_id, str)
+        and bool(member_id.strip())
+    )
+
+
+def count_person_created_crewmates(config=None) -> int:
+    """How many crewmates the person created on this install.
+
+    Walks the same rows ``GET /api/members`` builds -- a dispatchable name with a
+    resolvable slug -- and counts the ones :func:`is_person_created_crewmate`
+    accepts. Config only: no transcript, member directory or network is read, so
+    the cost is one (fingerprint-cached) config load.
+    """
+    if config is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    count = 0
+    for name, agent_cfg in config.agents.items():
+        if not is_dispatchable_member_name(name):
+            continue
+        try:
+            member_slug(name, config)
+        except MemberSlugError:
+            continue
+        if is_person_created_crewmate(name, agent_cfg):
+            count += 1
+    return count
+
+
 def members_root() -> Path:
     """Root directory for member spaces.
 
@@ -410,6 +459,13 @@ def canonical_member_key(name: str, config=None) -> str:
     one: those two already collide at the slug level, and the surfaces that care
     refuse that slug outright (``dashboard_slug_ambiguous``). Guessing here would
     turn a refusal into a write on whichever key sorted first.
+
+    When no key matches even by case, *name* is tried as a member id: a record
+    from before crews were keyed by id is keyed by its display name and is never
+    re-keyed, so its id answers with the key it is stored under. The match is
+    ``execution_context.member_config_for_id``'s, the one unique-id rule memory
+    resolution uses; a missing or ambiguous id leaves *name* unchanged. The
+    ``display_name`` label is never matched.
     """
     if not isinstance(name, str) or not name:
         return name
@@ -422,7 +478,17 @@ def canonical_member_key(name: str, config=None) -> str:
         return name
     folded = name.casefold()
     hits = [key for key in agents if isinstance(key, str) and key.casefold() == folded]
-    return hits[0] if len(hits) == 1 else name
+    if hits:
+        return hits[0] if len(hits) == 1 else name
+    if not agents:
+        return name
+    from kiro_crew.execution_context import member_config_for_id
+
+    try:
+        key, _ = member_config_for_id(config, name)
+    except ValueError:
+        return name
+    return key
 
 
 def member_slug(name: str, config=None) -> str:

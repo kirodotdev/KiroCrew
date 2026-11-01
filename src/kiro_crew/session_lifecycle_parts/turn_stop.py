@@ -28,6 +28,16 @@ if TYPE_CHECKING:
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
+#: How often stopping a parent's shared runs re-reads whether each run's reap has
+#: started. Short: the caller is held until they have.
+_SHARED_CHILD_POLL_SECS = 0.05
+
+#: Cap on how long stopping a parent's shared runs holds its caller. The wait
+#: ends once every reap has started, which takes a few loop turns, so this only
+#: bounds a reap that never starts. Short, because the hard Stop is the escape
+#: hatch for a parent process that has stopped responding.
+_SHARED_CHILD_STOP_WAIT_SECS = 2.0
+
 
 @dataclass(slots=True)
 class _ReplayGap:
@@ -124,12 +134,38 @@ def _discard_replay_gap(self: SessionLifecycleService, gap_key: str) -> None:
         gap.closed.set()
 
 
-def _orphan_turn_holder(self: SessionLifecycleService, key: str, session: Any) -> None:
-    """Remember the task holding a popped session's permit; see ``orphaned_holders``."""
+def _orphan_turn_holder(self: SessionLifecycleService, key: str, session: Any) -> bool:
+    """Remember the task holding a popped session's permit; see ``orphaned_holders``.
+
+    Returns whether a holder was recorded. A locked permit with no named holder
+    is one a release has just handed to a parked claimant that has not run yet
+    (``release`` clears ``turn_owner`` in the same step): nobody here owes it a
+    release, and the claimant gives it back itself when it finds the session
+    gone. Records of holders that already finished are dropped on the way in,
+    so a holder that never made its owed release cannot pin the entry.
+    """
     holder = getattr(session, "turn_owner", None)
     if holder is None or not getattr(session, "semaphore").locked():
-        return
-    self.state.orphaned_holders.setdefault(canonical_key(key), set()).add(holder)
+        return False
+    holders = self.state.orphaned_holders.setdefault(canonical_key(key), set())
+    holders.difference_update([task for task in holders if task.done()])
+    holders.add(holder)
+    return True
+
+
+def retire_turn_permit(self: SessionLifecycleService, key: str, session: Any) -> None:
+    """Settle the turn permit of a session every teardown verb has just popped.
+
+    Run in the same lock hold as the pop, before any await. When a turn still
+    holds the popped permit, the holder is recorded first, so its late
+    key-only release is absorbed rather than landing on a successor, and the
+    permit is then released once so the claimants parked on it wake, find the
+    session gone and re-enter the claim. A permit nobody holds, or one already
+    handed to a claimant that has not run yet, is left alone: releasing it
+    again would over-release the semaphore.
+    """
+    if self._orphan_turn_holder(key, session):
+        self._wake_turn_waiters(session)
 
 
 def _calling_task() -> asyncio.Task[Any] | None:
@@ -186,6 +222,7 @@ def _wake_turn_waiters(session: Any) -> None:
     release wakes the next. Called in the same tick as the pop, so the
     woken task's validation cannot observe the session still registered.
     A permit nobody holds has nobody waiting on it and is left alone.
+    Reached only through ``retire_turn_permit``, once a holder is recorded.
     """
     semaphore = getattr(session, "semaphore", None)
     if semaphore is not None and semaphore.locked():
@@ -375,7 +412,9 @@ async def stop_turn(
         if late:
             session.queue.clear()
             _park_queue(owner, key, late)
-    await owner.reset(key)
+    # The runs that share this parent's process die with it, so the reset
+    # stops them first, by name, after its pop (``stop_shared_children``).
+    await owner.reset(key, stop_shared_children=True)
     elapsed = self._deps.monotonic() - t0
     logger.info(
         "stop_turn outcome=hard-done session=%s elapsed=%.2fs",
@@ -393,6 +432,106 @@ async def stop_turn(
         except Exception:
             logger.warning("on_hard hook failed for %s", key, exc_info=True)
     return "hard"
+
+
+def _select_shared_children(self: SessionLifecycleService, key: str) -> tuple[Any, ...]:
+    """The run records of *key*'s sub-agents that share its process, for a hard Stop's reset.
+
+    The reset is a recycle and spares the parent's runs by design, but it shuts
+    down the process a session-sharing run lives on (the parent's own runtime, or
+    the companion runtime the reset releases). Left to that, each such run dies
+    as a runtime death nothing claimed: ``_run`` reads the death as an echo of a
+    teardown only under ``_reap_started``, so it records a failure with
+    "killed (provider shutdown)" for a run the user just stopped. The reset
+    therefore stops these runs itself (:func:`_stop_shared_children`) before the
+    provider shutdown. A run on a dedicated process survives the recycle and is
+    left alone. The compaction restart's wait for co-tenants
+    (``CompactionCoordinator._live_cotenants``) reads the same selection.
+
+    Synchronous, for the reason ``_snapshot_parent_children`` is: the reset calls
+    it in the lock hold that pops the session, before any await could let a
+    successor's runs register under the same key.
+    """
+    runs: Any = self._child_teardown
+    if runs is None or not key:
+        return ()
+    try:
+        return tuple(
+            info
+            for info in runs.running
+            if info.parent_session_key == key
+            and runs.has_live_shared_session(info.conversation_key or f"subagent:{info.id}")
+        )
+    except Exception:
+        self._deps.logger.exception(
+            "Listing the sub-agents that share the process of %s failed", key
+        )
+        return ()
+
+
+async def _stop_shared_children(
+    self: SessionLifecycleService,
+    key: str,
+    targets: "tuple[Any, ...]",
+    *,
+    origin: str = "stopped by a hard Stop of the parent",
+) -> None:
+    """Stop the runs :func:`_select_shared_children` named, ahead of the shutdown.
+
+    The one stop step for runs that share a parent's process, used by a hard
+    Stop's reset and by the compaction restart's wait for co-tenants. Each run is
+    named as a neutral user stop with *origin*, unless a reap already in flight
+    wrote its own cause. The stamps go on inside each run's cancel coroutine,
+    with no await before ``cancel``, so a deadline reap cannot start between the
+    stamp and the cancel.
+
+    ``cancel`` is the ordinary single-run Stop. The cancels run as a background
+    task, and this waits only until each run's reap has started
+    (``_reap_started``) or its ending is recorded (``done``). That is what makes
+    the death the shutdown then causes read as the echo of this stop, and a reap
+    sets it before its first await, so the wait is normally a few loop turns
+    even when the shared process has stopped responding. The rest of each reap, its
+    session teardown and the "stopped" report into the conversation that
+    resumes, continues in the background. ``_SHARED_CHILD_STOP_WAIT_SECS`` caps
+    the wait for a reap that never starts.
+    """
+    runs: Any = self._child_teardown
+    if runs is None or not targets:
+        return
+    logger = self._deps.logger
+
+    async def _cancel_one(info: Any) -> bool:
+        if not info._reap_started:
+            if not info._reap_reason:
+                info._reap_reason = "user_stop"
+            if not info._stop_origin:
+                info._stop_origin = origin
+        return await runs.cancel(info.id)
+
+    async def _cancel_targets() -> None:
+        await asyncio.gather(*(_cancel_one(info) for info in targets), return_exceptions=True)
+
+    ids = [info.id for info in targets]
+    logger.warning("%s: stopping sub-agents %s that share the process of %s", origin, ids, key)
+    task = asyncio.create_task(_cancel_targets())
+    self._owner._background_tasks.add(task)
+    task.add_done_callback(self._owner._background_tasks.discard)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _SHARED_CHILD_STOP_WAIT_SECS
+    while not task.done() and not all(info._reap_started or info.done for info in targets):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.warning(
+                "%s: the reaps of sub-agents %s of %s did not start within %.0fs; they "
+                "continue in the background",
+                origin,
+                ids,
+                key,
+                _SHARED_CHILD_STOP_WAIT_SECS,
+            )
+            return
+        # ``asyncio.wait`` never cancels the task it watches.
+        await asyncio.wait({task}, timeout=min(remaining, _SHARED_CHILD_POLL_SECS))
 
 
 async def _send_abort_for_session(self: SessionLifecycleService, key: str, session: Any) -> None:

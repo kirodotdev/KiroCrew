@@ -521,6 +521,8 @@ _PROFILE_GOLDEN = """\
 (deny file-link (subpath "<ROOT>/op/.kirocrew/crew-panels"))
 (deny file-read* (literal "<ROOT>/op/.kirocrew/crew-panels"))
 (deny file-link (literal "<ROOT>/op/.kirocrew/crew-panels"))
+(deny file-read* (require-all (subpath "<ROOT>/op/.aws") (require-not (literal "<ROOT>/op/.aws/config"))))
+(deny file-link (subpath "<ROOT>/op/.aws"))
 (deny file-read* (subpath "<ROOT>/op/.kube"))
 (deny file-link (subpath "<ROOT>/op/.kube"))
 (deny file-read* (subpath "<ROOT>/crew/policy_cache"))

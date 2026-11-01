@@ -8,12 +8,13 @@
 import { useQuery, useMutation, type QueryClient } from '@tanstack/react-query'
 import type { DashboardConfig } from '../chat/ChatSettings'
 import { api } from '../../api/client'
+import { apiErrorCode } from '../../api/apiError'
 import { setConfigPathValue, type useOptimisticConfigPaths } from './useOptimisticConfigPaths'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { normalizeModelKey } from '../../lib/model'
 import { fmtNumber } from '../../i18n/format'
-import { normalizeHiddenModels } from '../../hooks/useInteractiveModels'
+import { hiddenIdsFor, hiddenModelMatcher, normalizeHiddenModels } from '../../hooks/useInteractiveModels'
 import { i18nT } from '../../i18n/t'
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import type {
@@ -50,9 +51,21 @@ export function chatPanelConfigOpts(
       path: () => path,
       displayValue: v => v,
       applyToCache: (cached, v) => setConfigPathValue(cached as KirocrewConfigShape, path, v),
-      onFailure: err => setPathSaveError(path, errMsg(err)),
+      onFailure: err => setPathSaveError(path, withOverlayReason(errMsg(err), err)),
       onSupersede: clearOwnPathError,
     })
+}
+
+/**
+ * A save refused because `config.local.json` sets the key (`config_overlay_owned`)
+ * names that file, so the row does not read as a bare "failed to save": the fix is
+ * in the overlay, not a retry. Rows whose message already carries the server's
+ * reason keep it once.
+ */
+export function withOverlayReason(message: string, err: unknown): string {
+  if (apiErrorCode(err) !== 'config_overlay_owned') return message
+  const reason = err instanceof Error ? err.message : ''
+  return reason && !message.includes(reason) ? `${message}: ${reason}` : message
 }
 
 export type ChatPanelConfigOpts = ReturnType<typeof chatPanelConfigOpts>
@@ -150,10 +163,10 @@ export function useChatPanelModelDefaults({
     'dashboard.model_picker_hidden_models',
     normalizeHiddenModels(dashCfg.model_picker_hidden_models),
   )
-  const hiddenModelSet = new Set(hiddenModels)
+  const isHiddenModel = hiddenModelMatcher(hiddenModels)
   const selectedModelIds = new Set(
     availableModels
-      .filter(model => model.name === 'auto' || !hiddenModelSet.has(model.name))
+      .filter(model => model.name === 'auto' || !isHiddenModel(model.name))
       .map(model => model.name),
   )
   const selectedModelCount = selectedModelIds.size
@@ -203,20 +216,27 @@ export function useChatPanelModelDefaults({
   }
   const toggleVisibleModel = (model: string, selected: boolean) => {
     if (model === 'auto') return
+    // Showing a model removes every stored spelling of it, so an id saved under
+    // another harness does not keep it hidden.
+    const stored = hiddenIdsFor(hiddenModels, model)
     const next = selected
-      ? hiddenModels.filter(value => value !== model)
+      ? hiddenModels.filter(value => !stored.includes(value))
       : [...hiddenModels.filter(value => value !== model), model]
-    saveHiddenModels(selected ? { next, remove: [model] } : { next, add: [model] })
+    saveHiddenModels(selected ? { next, remove: [...new Set([model, ...stored])] } : { next, add: [model] })
   }
-  const advertisedModelIds = new Set(availableModels.map(model => model.name))
-  const hiddenUnadvertisedModels = hiddenModels.filter(model => !advertisedModelIds.has(model))
+  const isAdvertisedModel = hiddenModelMatcher(availableModels.map(model => model.name))
+  const hiddenUnadvertisedModels = hiddenModels.filter(model => !isAdvertisedModel(model))
   const advertisedOptionalModelIds = availableModels.filter(model => model.name !== 'auto').map(model => model.name)
+  // The server removes ids by exact string, so showing every model must name
+  // each stored spelling of an advertised model, not only the advertised id.
   const selectAllModels = () => saveHiddenModels({
     next: hiddenUnadvertisedModels,
-    remove: advertisedOptionalModelIds,
+    remove: [...new Set([...advertisedOptionalModelIds, ...hiddenModels.filter(isAdvertisedModel)])],
   })
+  // The server only appends, so every stored spelling stays in the saved list;
+  // the optimistic list keeps them too.
   const deselectAllModels = () => saveHiddenModels({
-    next: [...hiddenUnadvertisedModels, ...advertisedOptionalModelIds],
+    next: [...new Set([...hiddenModels, ...advertisedOptionalModelIds])],
     add: advertisedOptionalModelIds,
   })
   // '' in config means "unset" and resolves the same way 'auto' does, so both

@@ -20,4 +20,16 @@ describe('chat slot list', () => {
     expect('slotsHeldKeys' in slots).toBe(false)
     expect('slotsHoldChannels' in slots).toBe(false)
   })
+
+  it('asks for every row, a Crew Mode root\'s workers included', async () => {
+    // The person's list leaves a conductor's workers out on the server unless
+    // `crew=all`; the store keeps every row, so this read must ask for them.
+    const response = new Response('[]', { headers: { 'Content-Type': 'application/json' } })
+    const jfetch = vi.fn().mockResolvedValue(response)
+    const transport = { jfetch, j: (value: Response) => value.json() } as unknown as ClientTransport
+
+    await createChatEndpoints(transport).slotList.chatSlots()
+
+    expect(jfetch).toHaveBeenCalledWith('/api/chat/slots?crew=all')
+  })
 })

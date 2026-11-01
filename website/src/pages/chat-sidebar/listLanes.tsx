@@ -19,13 +19,14 @@ import { i18nT } from '../../i18n/t'
 import { sidebarCollision } from './dnd/collision'
 import { ChatPaneDropZone, RootDropHint, SortableFolderBlock, FolderDragGhost, SessionDragGhost } from './dnd/targets'
 import type { Slot } from './types'
-import { sessionRowIdentity } from './rowIdentity'
+import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import { citedCreatorOf } from './conductor'
 import { COLLAPSE_FLOOR_ATTR } from './collapseFloor'
 import { PinnedSessionDivider, dateSegment } from './chrome'
 import type { LaneRows } from './laneRows'
 import type { FolderBlocks } from './folderBlocks'
 import type { SidebarScope } from './scope'
+import { KindSectionHeader, sectionHeaders, sectionRankOf, sectionRows } from './kindSections'
 
 /** Move only the visual SESSION preview away from a pointer-owned destination
  * cue. Collision detection continues to use the real pointer coordinates; this
@@ -69,8 +70,8 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
     conductorMatching, conductorRows, dndSensors, flatSlots, folderCreateError, folderCreateMountAbsent,
     folderDragWithheld, folderNameMatchIds, folderReorderable, folderSubtrees, folders,
     handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragOver, handleSidebarDragStart,
-    heldDisplacedRef, heldLane, hiddenByContainer, hoverPinRef, isActiveRow, laneRowWindow, laneScrollMemory,
-    laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef, pinned,
+    heldDisplacedRef, heldLane, hiddenByContainer, hoverPinRef, isActiveRow, kindSections, laneRowWindow, laneScrollMemory,
+    laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef,
     renderCrewGroups, renderFolderBlock, renderFolderCreateError, renderHiddenReveal,
     renderOlderSessionsHint, renderSessionRow, renderStaleSection, reportDndActive, rootFolderIds,
     rootFolders, rowAnimEnabled, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
@@ -167,6 +168,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
               }
               const keptKids = (key: string) =>
                 (tree.children.get(key) ?? []).filter(k => kept.has(k))
+              const rootHeaderAt = new Map<number, ReturnType<typeof sectionHeaders>[number]>()
               const rows: Array<{ id: string; slot: Slot; depth: number; childCount: number; expanded: boolean; orphanOf: string | null; citesParent?: string | null; anchorOnly: boolean; aggregate: { needsYou: number; running: number } | null }> = []
 
               /** Does this row want the user? The same two signals the row itself
@@ -180,12 +182,15 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
               // way its own row is drawn, and a subagent awaiting approval is an ask
               // even though the slot itself carries no `pending_approval`.
               const isRunning = sidebarRows.isRunning
+              // The approval counts and the unread set are LOCAL state keyed by
+              // local slot key; a peer row's raw key can spell a local one, so
+              // only a local row reads them.
               const wantsUser = (s: Slot) =>
                 !!(
                   s.pending_approval
                   || s.needs_input
-                  || (subagentApprovalCounts[s.key] || 0) > 0
-                  || (unreadSet.has(s.key) && !isRunning(s))
+                  || (!isPeerRow(s) && (subagentApprovalCounts[s.key] || 0) > 0)
+                  || (!isPeerRow(s) && unreadSet.has(s.key) && !isRunning(s))
                 )
 
               const emit = (key: string, depth: number) => {
@@ -246,15 +251,28 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                   rows.push({ id: sessionRowIdentity(s), slot: s, depth: 0, childCount: 0, expanded: false, orphanOf: null, citesParent: s.parent?.slot ?? null, anchorOnly: false, aggregate: null })
                 }
               } else {
-                for (const key of tree.roots) if (kept.has(key)) emit(key, 0)
+                const roots = tree.roots.filter(key => kept.has(key))
+                // "Group by kind" splits the top-level rows; a nested row stays under
+                // the session that opened it. The lane order puts pinned roots first,
+                // and they stay first, unsplit, as in every other lane.
+                const rootSlots = roots.map(key => byKey.get(key)).filter((x): x is Slot => !!x)
+                const ordered = sectionRows(rootSlots, sidebarRows.isPinned, kindSections)
+                const headers = sectionHeaders(ordered, sidebarRows.isPinned, kindSections)
+                ordered.forEach((slot, i) => {
+                  const kind = headers[i]
+                  if (kind) rootHeaderAt.set(rows.length, kind)
+                  emit(sessionRowIdentity(slot), 0)
+                })
               }
 
               return rows.map((row, i) => {
                 const next = i < rows.length - 1 ? rows[i + 1] : null
                 const isActive = isActiveRow(row.slot)
-                const showDivider = next != null && !isActive && !isActiveRow(next.slot)
+                const showDivider = next != null && !isActive && !isActiveRow(next.slot) && !rootHeaderAt.get(i + 1)
+                const kindHeader = rootHeaderAt.get(i)
                 return (
                   <Fragment key={row.id}>
+                    {kindHeader && <KindSectionHeader kind={kindHeader} />}
                     {/* NO WRAPPER. The row is rendered exactly as the flat lane renders
                      *  it, and the lane's three additions are handed INTO it (see
                      *  `ConductorRowView`, and the chevron's `toggleConductor` action).
@@ -268,6 +286,9 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                       expanded: row.expanded,
                       aggregate: row.aggregate,
                       orphanOf: row.orphanOf,
+                      // The closed creator's last-known title, when the backend still
+                      // remembers it (`parent.title`); only an orphan row names one.
+                      orphanTitle: row.orphanOf != null ? (row.slot.parent?.title ?? null) : null,
                       citesParent: row.citesParent ?? null,
                       anchorOnly: row.anchorOnly,
                     })}
@@ -335,7 +356,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
               {folderCreateError && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
               {localGroupHeader}
               {/* Caption header before the pinned band when a property filter narrows the list. */}
-              {pinnedBandCaption && flatSlots.length > 0 && pinned.has(flatSlots[0].key) && (
+              {pinnedBandCaption && flatSlots.length > 0 && sidebarRows.isPinned(flatSlots[0]) && (
                 <PinnedSessionDivider caption={pinnedBandCaption} />
               )}
               {(() => {
@@ -347,7 +368,10 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 const isDateSort = sortKey === 'date-desc' || sortKey === 'date-asc'
                 // Hoisted above the hold so the pixel anchor can count header heights.
                 const baseSeg = (s: Slot) => (isDateSort && !sidebarRows.isPinned(s) ? dateSegment(slotActivityTs(s)) : '')
-                const { rows: flatRows, navScope: flatLaneScope, container: flatHoldContainer } = heldLane(flatSlots, 'flat', 'flat', baseSeg)
+                // "Group by kind": the unpinned rows by section, each in lane order.
+                const flatOrdered = sectionRows(flatSlots, sidebarRows.isPinned, kindSections)
+                const { rows: flatRows, navScope: flatLaneScope, container: flatHoldContainer } = heldLane(flatOrdered, 'flat', 'flat', baseSeg, sectionRankOf(sidebarRows.isPinned, kindSections))
+                const flatHeaders = sectionHeaders(flatRows, sidebarRows.isPinned, kindSections)
                 // Reads the flag holdHovered just set for THIS lane, so the header
                 // rule and the hold cannot disagree about the row being displaced.
                 const heldKey = heldDisplacedRef.current ? hoverPinRef.current?.key : undefined
@@ -359,6 +383,9 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 }
                 let prevSeg = ''
                 return flatRows.map((s, i) => {
+                  const kindHeader = flatHeaders[i]
+                  // A new section starts its own date segments.
+                  if (kindHeader) prevSeg = ''
                   const seg = segOf(s)
                   const showHeader = seg !== '' && seg !== prevSeg
                   if (seg) prevSeg = seg
@@ -368,10 +395,11 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                   // No divider before a segment header — the header separates.
                   const nextSeg = next ? segOf(next) : seg
                   const showDivider = next != null && !isActive && !nextIsActive && nextSeg === seg
-                    && !startsAutomaticSection(flatSlots, i + 1)
+                    && !startsAutomaticSection(flatOrdered, i + 1) && !flatHeaders[i + 1]
                   return (
                     <Fragment key={sessionRowIdentity(s)}>
-                      {startsAutomaticSection(flatSlots, i) && <PinnedSessionDivider />}
+                      {startsAutomaticSection(flatOrdered, i) && <PinnedSessionDivider />}
+                      {kindHeader && <KindSectionHeader kind={kindHeader} />}
                       {showHeader && (
                         <div data-date-header data-testid="date-segment-header" className="px-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
                       )}
@@ -484,28 +512,31 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                             {draggingNestedFolder && <RootDropHint />}
                             {(() => {
                               const { fresh: freshRootRaw, stale: staleRoot } = splitStale(ungroupedSlots)
-                              const { rows: freshRoot, navScope: treeRootScope, container: treeRootContainer } = heldLane(freshRootRaw, 'list', 'tree:root')
+                              const { rows: freshRoot, navScope: treeRootScope, container: treeRootContainer } = heldLane(sectionRows(freshRootRaw, sidebarRows.isPinned, kindSections), 'list', 'tree:root', undefined, sectionRankOf(sidebarRows.isPinned, kindSections))
+                              const rootHeaders = sectionHeaders(freshRoot, sidebarRows.isPinned, kindSections)
                               return (
                                 <>
                                   {/* Caption header before the pinned band when a property filter narrows the list. */}
-                                  {pinnedBandCaption && freshRoot.length > 0 && pinned.has(freshRoot[0].key) && (
+                                  {pinnedBandCaption && freshRoot.length > 0 && sidebarRows.isPinned(freshRoot[0]) && (
                                     <PinnedSessionDivider caption={pinnedBandCaption} />
                                   )}
                                   {freshRoot.map((s, i) => {
                                     const nextIsActive = isActiveRow(freshRoot[i + 1])
                                     const isActive = isActiveRow(s)
                                     const showDivider = i < freshRoot.length - 1 && !isActive && !nextIsActive
-                                      && !startsAutomaticSection(freshRoot, i + 1)
+                                      && !startsAutomaticSection(freshRoot, i + 1) && !rootHeaders[i + 1]
+                                    const kindHeader = rootHeaders[i]
                                     return (
                                       <Fragment key={sessionRowIdentity(s)}>
                                         {startsAutomaticSection(freshRoot, i) && <PinnedSessionDivider />}
+                                        {kindHeader && <KindSectionHeader kind={kindHeader} />}
                                         {renderSessionRow(s, 0, showDivider, treeRootScope, treeRootScope, treeRootContainer)}
                                       </Fragment>
                                     )
                                   })}
                                   {!searchRanked && staleExpanded.has('root')
                                     && staleRoot.length > 0 && freshRoot.length > 0
-                                    && pinned.has(freshRoot[freshRoot.length - 1].key) && <PinnedSessionDivider />}
+                                    && sidebarRows.isPinned(freshRoot[freshRoot.length - 1]) && <PinnedSessionDivider />}
                                   {renderStaleSection('root', staleRoot, 0)}
                                   {/* After the dormant expander, so it stays the
                                    *  lane's last line even when rows are folded. */}

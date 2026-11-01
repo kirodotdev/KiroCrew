@@ -27,12 +27,14 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
+from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
     is_relay_archive,
 )
+from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key, load_window_off_loop
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -134,14 +136,32 @@ def _redact(text: str) -> str:
     return text
 
 
+def _foreign_slot_response() -> web.Response:
+    """The one 403 for a slot the app may not drive.
+
+    Another app's slot and the app's own slot linked to a conversation it has no
+    claim on answer with this same body, so the reply does not tell an app which
+    of its slots carry a link.
+    """
+    return web.json_response(
+        {
+            "error": {
+                "message": "slot owned by another app",
+                "type": "forbidden",
+                "code": "slot_owned_by_another_app",
+            },
+            "code": "slot_owned_by_another_app",
+        },
+        status=403,
+    )
+
+
 async def api_completions(request: web.Request) -> web.StreamResponse:
     """POST /v1/chat/completions — OpenAI-compatible chat endpoint."""
-    # Unlike the dashboard, this endpoint has no transcript the caller reads: the
-    # collectors below pick up only `chunk`/`assistant` roles, so the `error` card
-    # an AcpAuthRequired turn appends is invisible and the request would return
-    # HTTP 200 with empty content — an SDK client cannot tell that apart from a
-    # model that legitimately said nothing. Fail closed until this endpoint
-    # translates AcpAuthRequired into an OpenAI-shaped error.
+    # Unlike the dashboard, this endpoint has no transcript the caller reads. A
+    # turn that ends on its `error` card answers the generic `turn_failed`
+    # (`_TurnOutcome`); a missing sign-in is refused here first, so the caller
+    # gets the code that names its fix instead of a failed turn.
     blocked = await reject_if_kiro_unverified(request)
     if blocked is not None:
         return web.json_response(
@@ -161,6 +181,24 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     except Exception:
         return web.json_response(
             {"error": {"message": "invalid JSON", "type": "invalid_request_error"}},
+            status=400,
+        )
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if body_not_object_error(body) is not None:
+        # This route speaks the OpenAI error shape its clients parse, so the
+        # refusal keeps that shape. The shared code rides inside it, where an
+        # OpenAI client reads it, and at the top level, where every dashboard
+        # error carries its machine-readable code.
+        return web.json_response(
+            {
+                "error": {
+                    "message": "body must be a JSON object",
+                    "type": "invalid_request_error",
+                    "code": "body_not_object",
+                },
+                "code": "body_not_object",
+            },
             status=400,
         )
 
@@ -550,10 +588,22 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             )
             if slot_id and freshly_created:
                 state._slots.pop(slot.key, None)
-            return web.json_response(
-                {"error": {"message": "slot owned by another app", "type": "forbidden"}},
-                status=403,
+            return _foreign_slot_response()
+        # Owning the slot is not owning the conversation it runs on: a slot linked
+        # to a channel thread, or an unbound channel-origin slot, would take this
+        # turn into a session and transcript the app has no claim on. Same test as
+        # the per-slot checkpoint, and the same body as another app's slot, so the
+        # answer does not tell the app which of its slots carry a link.
+        if not app_owns_slot_session(request_app, slot):
+            sel().log_api_access(
+                caller=request_app,
+                operation="openai_compat.chat",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={slot.key}",
+                error="app does not own the session or transcript this slot uses",
             )
+            return _foreign_slot_response()
 
     # Drain stale pending from prior turns whose reader disconnected
     slot.drain()
@@ -616,6 +666,9 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                     slot,
                     prompt,
                     _directive_user_origin=is_dashboard_caller,
+                    # The prompt is the flattened conversation, not one typed
+                    # message: it never starts a KAS MCP sign-in.
+                    _message_is_typed=False,
                     # Named for the same reason ``api_chat`` names it: the actor
                     # resolver's fallback is ``user``, so a dispatch that OBSERVED
                     # an app and stayed silent records a person who never typed
@@ -646,20 +699,57 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
 _SERVER_ERROR = {"error": {"message": "internal error", "type": "server_error"}}
 
 
-def _turn_failed(msg: dict[str, Any]) -> bool:
-    """Whether *msg* is the error row of a turn that failed before it started.
+#: The ``code`` of a completion whose turn ended on its own error row.
+_TURN_FAILED_CODE = "turn_failed"
 
-    That turn's cycle still ends with a ``done`` row, which on its own reads as
-    an empty successful reply."""
-    meta = msg.get("meta")
-    return isinstance(meta, dict) and bool(meta.get(TURN_FAILED_META))
+
+class _TurnOutcome:
+    """Whether the rows read so far end the turn on an error, and which one.
+
+    A turn that cannot run still ends its cycle with a ``done`` row, which on
+    its own reads as an empty successful reply. Its failure is the ``error``
+    row the turn appended (the card the dashboard shows), so the readers below
+    feed every row through :meth:`observe` and answer the failure at ``done``.
+
+    An error row ends the turn unless reply text follows it: a retry notice
+    (``meta.kind == TRANSIENT_RETRY_KIND``) is not a failure, and an error the
+    turn recovered from is followed by the reply it went on to give. A row
+    from a turn that failed before it started (``meta.turn_failed``) holds,
+    whatever the queue behind it answers.
+    """
+
+    __slots__ = ("reason", "_pinned")
+
+    def __init__(self) -> None:
+        self.reason: str | None = None
+        self._pinned = False
+
+    def observe(self, msg: dict[str, Any]) -> None:
+        role = msg.get("role")
+        meta = msg.get("meta")
+        meta = meta if isinstance(meta, dict) else {}
+        if role == "error":
+            if meta.get("kind") == TRANSIENT_RETRY_KIND:
+                return
+            self.reason = _redact(str(msg.get("content") or "")).strip() or "the turn failed"
+            self._pinned = self._pinned or bool(meta.get(TURN_FAILED_META))
+        elif role in ("assistant", "chunk") and msg.get("content") and not self._pinned:
+            self.reason = None
+
+
+def _turn_failed_body(reason: str) -> dict[str, Any]:
+    """The OpenAI-shaped error for a turn that ended on its error row *reason*."""
+    return {
+        "error": {"message": reason, "type": "server_error", "code": _TURN_FAILED_CODE},
+        "code": _TURN_FAILED_CODE,
+    }
 
 
 async def _stream_server_error(
-    request: web.Request, resp: web.StreamResponse
+    request: web.Request, resp: web.StreamResponse, body: dict[str, Any] = _SERVER_ERROR
 ) -> web.StreamResponse:
-    """End an SSE completion with the server-error frame and ``[DONE]``."""
-    await write_sse_or_abort(request, resp, f"data: {json.dumps(_SERVER_ERROR)}\n\n".encode())
+    """End an SSE completion with an error frame (*body*) and ``[DONE]``."""
+    await write_sse_or_abort(request, resp, f"data: {json.dumps(body)}\n\n".encode())
     await write_sse_or_abort(request, resp, b"data: [DONE]\n\n")
     return resp
 
@@ -683,13 +773,11 @@ async def _stream_response(
     try:
         _redact_buffer = ""
         _last_emitted_len = 0
-        failed = False
+        outcome = _TurnOutcome()
         while True:
             pending = slot.drain()
             for msg in pending:
-                failed = failed or _turn_failed(msg)
-                if msg.get("cls") == "done" and failed:
-                    return await _stream_server_error(request, resp)
+                outcome.observe(msg)
                 if msg.get("cls") == "done":
                     # Flush remaining buffer
                     if _redact_buffer:
@@ -712,6 +800,11 @@ async def _stream_response(
                             await write_sse_or_abort(
                                 request, resp, f"data: {json.dumps(chunk)}\n\n".encode()
                             )
+                    if outcome.reason is not None:
+                        # No ``finish_reason: stop``: the turn did not finish.
+                        return await _stream_server_error(
+                            request, resp, _turn_failed_body(outcome.reason)
+                        )
                     chunk = {
                         "id": completion_id,
                         "object": _OPENAI_OBJECT_CHUNK,
@@ -792,24 +885,24 @@ async def _blocking_response(
     counts at the slot layer.
     """
     collected: list[str] = []
-    failed = False
+    outcome = _TurnOutcome()
 
     try:
         while True:
             pending = slot.drain()
             for msg in pending:
-                failed = failed or _turn_failed(msg)
-                if msg.get("cls") == "done" and failed:
+                outcome.observe(msg)
+                if msg.get("cls") == "done" and outcome.reason is not None:
                     return web.json_response(
                         {
                             "error": {
-                                "message": "internal error",
+                                "message": outcome.reason,
                                 "type": "server_error",
-                                "code": "server_error",
+                                "code": _TURN_FAILED_CODE,
                             },
-                            "code": "server_error",
+                            "code": _TURN_FAILED_CODE,
                         },
-                        status=500,
+                        status=502,
                     )
                 if msg.get("cls") == "done":
                     content = _redact("".join(collected))

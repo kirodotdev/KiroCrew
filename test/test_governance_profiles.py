@@ -1802,7 +1802,6 @@ def test_fallback_profile_names_bind_preserved_unreadable(profiles_dir, monkeypa
     # First load succeeds.
     assert gp.fallback_profile_names() == frozenset()
 
-    # Make unreadable and bump mtime.
     _make_read_text_raise(monkeypatch, path, OSError("permission denied"))
     st = path.stat()
     os.utime(path, (st.st_atime, st.st_mtime + 5))

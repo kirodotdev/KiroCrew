@@ -327,6 +327,55 @@ def _windows_foreign_descendant_pids(
     return foreign
 
 
+def _windows_is_older_orphan(
+    child_pid: int,
+    parent_pid: int,
+    first_map: Mapping[int, int],
+    fresh_map: Mapping[int, int],
+    pinned: Mapping[int, int],
+    opened_here: set[int],
+    root_created: int,
+) -> bool:
+    """Return whether creation order proves *child_pid* is not the root's descendant.
+
+    A process created before the root cannot descend from it, and it already
+    held its PID when the first scan ran, so that scan listed it under the same
+    parent. Its children in that scan cannot descend from the root either: each
+    names its PID, or the PID of an earlier holder that died before it was
+    created. A grandchild proves nothing, because its parent's PID may have been
+    recycled from a process of this tree. So every child must be childless in
+    both scans and pinned by a handle opened in this call: an unpinned PID may
+    hold a new process by the fresh scan, and a retained one was proven to belong
+    to this tree by an earlier scan. The fresh scan runs after those handles
+    open, so it must still list each child under *child_pid*; otherwise the
+    child's PID was reused before its handle opened. The children come from
+    both scans, so a child that appears between them faces the same checks.
+    An unreadable instant proves nothing.
+    """
+
+    children = {
+        process_pid
+        for snapshot in (first_map, fresh_map)
+        for process_pid, parent in snapshot.items()
+        if parent == child_pid
+    }
+    if (
+        first_map.get(child_pid) != parent_pid
+        or not children <= opened_here
+        or not children.isdisjoint(first_map.values())
+        or not children.isdisjoint(fresh_map.values())
+        or any(fresh_map.get(process_pid) != child_pid for process_pid in children)
+    ):
+        return False
+    handle = pinned.get(child_pid)
+    if handle is None:
+        instant = _windows_process_query_creation(child_pid)
+    else:
+        identity = _windows_process_handle_identity(handle)
+        instant = identity[1] if identity is not None and identity[0] == child_pid else None
+    return instant is not None and instant < root_created
+
+
 def descendant_termination_handles(
     pid: int,
     retained_handles: Mapping[int, int] | None = None,
@@ -389,6 +438,7 @@ def descendant_termination_handles(
             # Enumeration errors propagate; pid_exists(False) is ambiguous.
             fresh_map = _windows_process_parent_map()
             remaining = unopened.intersection(fresh_map)
+            opened_here = set(opened)
             if remaining:
                 # A process that already existed before the root cannot descend
                 # from it, and that instant is readable through a query-only
@@ -427,8 +477,27 @@ def descendant_termination_handles(
                     f"Windows descendant handles unavailable: {sorted(remaining)[:3]}; {details}"
                 )
             vanished = unopened.difference(fresh_map)
+            # An orphan of an earlier holder of a vanished candidate's PID still names
+            # that PID. When _windows_is_older_orphan proves it predates the root, its
+            # pair does not refuse, and the handles for it and its children close below.
+            orphans = {
+                child
+                for child, parent in fresh_map.items()
+                if parent in vanished
+                and _windows_is_older_orphan(
+                    child,
+                    parent,
+                    first_map,
+                    fresh_map,
+                    {**retained, **opened},
+                    opened_here,
+                    root_identity[1],
+                )
+            }
             dangling = sorted(
-                (child, parent) for child, parent in fresh_map.items() if parent in vanished
+                (child, parent)
+                for child, parent in fresh_map.items()
+                if parent in vanished and child not in orphans
             )
             if dangling:
                 # These children may have appeared only after the first scan.
@@ -438,6 +507,13 @@ def descendant_termination_handles(
                     "Windows descendant ancestry incomplete: vanished unopened parents; "
                     f"diagnostic_only(total={len(dangling)}, child_parent_ids<=3): {dangling[:3]}"
                 )
+            for child_pid in sorted(opened):
+                if (
+                    child_pid in orphans
+                    or first_map.get(child_pid) in orphans
+                    or fresh_map.get(child_pid) in orphans
+                ):
+                    close_process_handle(opened.pop(child_pid))
         if not opened:
             return {}
 
@@ -535,18 +611,43 @@ async def descendant_termination_handles_async(
     retained_handles: Mapping[int, int] | None = None,
     root_handle: int | None = None,
 ) -> dict[int, int]:
-    """Async variant of :func:`descendant_termination_handles`."""
+    """Async variant of :func:`descendant_termination_handles`.
+
+    A started executor job cannot be cancelled: the worker keeps reading the
+    caller's root and retained handles and keeps opening new ones. So a
+    cancelled caller does not return until the worker has settled. Until then
+    the borrowed handles are still in use and must stay open, and the handles
+    the worker opened would otherwise reach nobody. A repeated cancellation
+    while settling is absorbed, since abandoning the worker then is the same
+    loss. Once settled, every handle a successful worker opened is closed here,
+    because the cancelled caller never receives them, and the cancellation
+    propagates. A failed worker has already closed what it opened.
+    """
 
     if not IS_WINDOWS:
         return {}
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
+    worker = loop.run_in_executor(
         subprocess_executor(),
         descendant_termination_handles,
         pid,
         dict(retained_handles or {}),
         root_handle,
     )
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not worker.cancelled() and worker.exception() is None:
+            for handle in worker.result().values():
+                close_process_handle(handle)
+        raise
 
 
 # ---------------------------------------------------------------------------

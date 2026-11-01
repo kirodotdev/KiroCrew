@@ -23,7 +23,9 @@ A LEAF symlink is listed and readable — read-only — when its resolved target
 passes the session loader's admission gate against the source's LINK trust
 base (:func:`kiro_crew.context.steering_target_admissible`: ``$HOME`` for
 ``user``, the steering root itself for ``workspace`` — ``_link_trust_base``);
-it never resolves for write.
+it never resolves for write. A leaf symlink whose target lies OUTSIDE that
+base is listed by name only (``readable: False``): kiro-cli still loads it, but
+the dashboard never reads or names its target.
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ from ._shared import (
     _read_session_key,
     active_project_dir,
     active_project_state,
+    body_not_object_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -329,9 +332,11 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
     Returns ``{"files": [...], "roots": [...], "project": "<display path>"}``.
     Each file entry: ``{key, name, rel, source, path, size, description,
     inclusion, inclusion_declared, file_match_pattern, linked, editable,
-    target}`` where ``key`` is ``"<source>/<rel>"``. ``linked`` marks a leaf
-    symlink admitted read-only; ``target`` carries its resolved display path
+    readable, target}`` where ``key`` is ``"<source>/<rel>"``. ``linked``
+    marks a leaf symlink; ``target`` carries its resolved display path
     (``""`` otherwise) and ``editable`` is False exactly for linked entries.
+    ``readable`` is False for a link whose target is outside the link trust
+    base: it is listed by name only, and its key does not resolve for read.
     """
     files: list[dict[str, Any]] = []
     roots: list[dict[str, Any]] = []
@@ -386,6 +391,20 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 # so the entry is not editable.
                 link_base = _link_trust_base(source, root, base_resolved)
                 if not steering_target_admissible(resolved, link_base):
+                    # kiro-cli follows a leaf link wherever it points, so a
+                    # target outside the link trust base still loads. List the
+                    # name so the tab does not under-report, but never open,
+                    # read or name the target: past the path resolution above,
+                    # the decision comes from the resolved path string alone,
+                    # and the entry carries no target, size or head metadata.
+                    # Listing does show that the target exists (a dangling
+                    # link stays hidden). A sensitive target stays
+                    # hidden, as does anything inside the base that failed the
+                    # gate (a directory, a sensitive file).
+                    if _target_outside(resolved, link_base) and not is_sensitive_path(
+                        str(resolved)
+                    ):
+                        files.append(_unshown_link_entry(source, root, entry))
                     continue
             elif not resolved.is_file() or is_sensitive_path(str(resolved)):
                 continue
@@ -417,6 +436,7 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 "file_match_pattern": _redact_meta(meta["file_match_pattern"]),
                 "linked": linked,
                 "editable": not linked,
+                "readable": True,
                 "target": _redact_meta(_display_path(resolved)) if linked else "",
             })
     return {
@@ -461,6 +481,47 @@ def _link_trust_base(source: str, root: Path, base_resolved: Path) -> Path:
     return base_resolved if source == "user" else root
 
 
+def _target_outside(resolved: Path, link_base: Path) -> bool:
+    """True iff *resolved* lies outside *link_base*, judged from the path alone.
+
+    No ``stat`` of *resolved*: the caller lists such a link without opening
+    its target. A link to the base directory itself is not outside it, and an
+    unresolvable base answers False, so both stay hidden.
+    """
+    try:
+        base_real = link_base.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return resolved != base_real and not str(resolved).startswith(str(base_real) + os.sep)
+
+
+def _unshown_link_entry(source: str, root: Path, entry: Path) -> dict[str, Any]:
+    """Listing entry for a leaf link whose target is outside its trust base.
+
+    The name is listed so the tab matches what kiro-cli loads, but nothing
+    about the target travels: no path, size or head metadata, and
+    ``readable`` is False because the read path refuses the key.
+    """
+    rel = entry.relative_to(root).as_posix()
+    meta = _empty_meta()
+    return {
+        "key": f"{source}/{rel}",
+        "name": entry.name,
+        "rel": rel,
+        "source": source,
+        "path": _redact_meta(_display_path(entry)),
+        "size": 0,
+        "description": meta["description"],
+        "inclusion": meta["inclusion"],
+        "inclusion_declared": meta["inclusion_declared"],
+        "file_match_pattern": meta["file_match_pattern"],
+        "linked": True,
+        "editable": False,
+        "readable": False,
+        "target": "",
+    }
+
+
 def _deepest_existing(path: Path) -> Path | None:
     """Walk up until an existing directory is found (bounded by the fs root)."""
     probe = path
@@ -487,6 +548,12 @@ def _contained(candidate: Path, base_resolved: Path) -> bool:
         probe_resolved = probe.resolve(strict=True)
     except OSError:
         return False
+    # Windows' ``\\?\`` prefix folded off both sides first, so one resolve
+    # keeping it is not read as an escape. Lexical only.
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
+    probe_resolved = strip_extended_length_prefix(probe_resolved)
+    base_resolved = strip_extended_length_prefix(base_resolved)
     return probe_resolved == base_resolved or base_resolved in probe_resolved.parents
 
 
@@ -582,9 +649,23 @@ def _blocked(request: web.Request, operation: str) -> web.Response | None:
             resources="restricted_session_block",
         )
         return web.json_response(
-            {"error": "restricted session cannot modify steering files"}, status=403
+            {
+                "error": "restricted session cannot modify steering files",
+                "code": "restricted_session",
+            },
+            status=403,
         )
     return None
+
+
+def _not_found() -> web.Response:
+    """The one 404 every steering verb answers.
+
+    A key that never resolved and a read the descriptor gate withheld share
+    this body on purpose, so the reply is no oracle for which files the gate
+    protects. One helper keeps the two from drifting apart.
+    """
+    return web.json_response({"error": "not found", "code": "steering_not_found"}, status=404)
 
 
 # ── Blocking filesystem transactions (run on the discovery pool) ──
@@ -1014,18 +1095,26 @@ async def api_steering_create(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
-        return web.json_response({"error": "content is required"}, status=400)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400
+        )
     if len(content.encode("utf-8")) > STEERING_FILE_MAX_BYTES:
         return web.json_response(
-            {"error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)"}, status=413
+            {
+                "error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)",
+                "code": "content_too_large",
+            },
+            status=413,
         )
     project_dir, project_state = active_project_state(state, _read_session_key(request))
     source = str(body.get("source") or ("workspace" if project_dir else "user"))
     if source not in STEERING_SOURCES:
-        return web.json_response({"error": "invalid source"}, status=400)
+        return web.json_response({"error": "invalid source", "code": "invalid_source"}, status=400)
     if source == "workspace" and project_dir is None:
         # Refuse rather than write to a guess. ``reason`` lets the dialog say
         # which fix applies — bind a project, or close the chat that disagrees —
@@ -1048,7 +1137,7 @@ async def api_steering_create(request: web.Request) -> web.Response:
         )
     rel = _safe_rel_name(str(body.get("name", "")))
     if not rel:
-        return web.json_response({"error": "name is required"}, status=400)
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     if len(rel.encode("utf-8")) > MAX_STEERING_NAME_BYTES:
         # Bound the name before the write: the host would otherwise refuse the
         # joined path for its length and the blanket OSError handling below would
@@ -1075,12 +1164,16 @@ async def api_steering_create(request: web.Request) -> web.Response:
     key = f"{source}/{rel}"
     target = await _offload(_resolve_blocking, key, project_dir, True)
     if target is None:
-        return web.json_response({"error": "invalid steering path"}, status=400)
+        return web.json_response(
+            {"error": "invalid steering path", "code": "invalid_steering_path"}, status=400
+        )
     err, display = await _offload(_create_file_blocking, target, content)
     if err == "exists":
-        return web.json_response({"error": f"'{rel}' already exists"}, status=409)
+        return web.json_response(
+            {"error": f"'{rel}' already exists", "code": "steering_exists"}, status=409
+        )
     if err is not None:
-        return web.json_response({"error": "write failed"}, status=500)
+        return web.json_response({"error": "write failed", "code": "write_failed"}, status=500)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="steering.create",
@@ -1185,7 +1278,10 @@ async def api_steering_detail(request: web.Request) -> web.Response:
             _audit("too_large")
             size = err.split(":", 1)[1]
             return web.json_response(
-                {"error": f"file too large ({size} bytes; cap {STEERING_FILE_MAX_BYTES})"},
+                {
+                    "error": f"file too large ({size} bytes; cap {STEERING_FILE_MAX_BYTES})",
+                    "code": "file_too_large",
+                },
                 status=413,
             )
         if err is not None:
@@ -1199,7 +1295,7 @@ async def api_steering_detail(request: web.Request) -> web.Response:
                 _audit_unread("api_steering_read", "steering", "error", {"key": key})
             else:
                 _audit("not_found")
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         _audit("ok")
         # Content is returned verbatim, NOT credential-redacted, and that is
         # deliberate: this response populates the editor and is written straight
@@ -1236,12 +1332,14 @@ async def api_steering_detail(request: web.Request) -> web.Response:
                 return stale
         target = await _offload(_resolve_blocking, key, project_dir, False)
         if target is None:
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         err = await _offload(_delete_file_blocking, target)
         if err == "notfound":
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         if err is not None:
-            return web.json_response({"error": "delete failed"}, status=500)
+            return web.json_response(
+                {"error": "delete failed", "code": "delete_failed"}, status=500
+            )
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="steering.delete",
@@ -1271,26 +1369,34 @@ async def api_steering_detail(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
-        return web.json_response({"error": "content is required"}, status=400)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400
+        )
     try:
         content = _apply_declaration(content, body)
     except _DeclarationError as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     if len(content.encode("utf-8")) > STEERING_FILE_MAX_BYTES:
         return web.json_response(
-            {"error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)"}, status=413
+            {
+                "error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)",
+                "code": "content_too_large",
+            },
+            status=413,
         )
     target = await _offload(_resolve_blocking, key, project_dir, False)
     if target is None:
-        return web.json_response({"error": "not found"}, status=404)
+        return _not_found()
     err = await _offload(_update_file_blocking, target, content)
     if err == "notfound":
-        return web.json_response({"error": "not found"}, status=404)
+        return _not_found()
     if err is not None:
-        return web.json_response({"error": "write failed"}, status=500)
+        return web.json_response({"error": "write failed", "code": "write_failed"}, status=500)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="steering.update",

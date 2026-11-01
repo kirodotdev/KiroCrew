@@ -116,7 +116,9 @@ def taskq_build_record(
     # durable pump off-loop before every re-check, the in-memory synchronous
     # drain through the gate's memo-pinned inline read -- so the row never
     # carries a snapshot that an edited spec would leave stale across a
-    # restart.
+    # restart. ``_parent_project_dirs`` does stay: it names WHERE the drain
+    # reads the declaration (the parent's project scope at accept time), not
+    # what the declaration said, and it can only add directories to read.
     #
     # ``WINDOW_ENTRY_RECOVERING`` is window bookkeeping read off the row's
     # state at hydration (``_window_entry``), never a fact a row carries.

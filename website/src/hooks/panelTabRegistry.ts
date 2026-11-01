@@ -184,15 +184,32 @@ export function useInstalledApps(): {
   apps: InstalledApp[]
   error: unknown
   isError: boolean
+  /** No answer yet: `apps` is empty because the list has not loaded, not because nothing is installed. */
+  isPending: boolean
+  /**
+   * The FIRST load failed, so there is no list at all. Distinct from `isError`,
+   * which a failed background refetch also raises while the cached list is
+   * still served: a reader that would replace its view on failure wants this one.
+   */
+  isLoadingError: boolean
+  /** Ask the gateway for the list again (a Retry control after a failed load). */
+  refetch: () => void
 } {
-  const { data, error, isError } = useQuery({
+  const { data, error, isError, isPending, isLoadingError, refetch } = useQuery({
     queryKey: ['apps'],
     queryFn: () => (typeof api?.listApps === 'function' ? api.listApps() : []),
   })
   // Array-checked, not just nullish-checked: `api.listApps` can answer with a
   // non-array (the normalizer passes a bad payload through), and every consumer here
   // goes on to `.find`/`.filter` it.
-  return { apps: Array.isArray(data) ? (data as InstalledApp[]) : [], error, isError }
+  return {
+    apps: Array.isArray(data) ? (data as InstalledApp[]) : [],
+    error,
+    isError,
+    isPending,
+    isLoadingError,
+    refetch,
+  }
 }
 
 export function usePanelTabDescriptors(): PanelTabDescriptor[] {

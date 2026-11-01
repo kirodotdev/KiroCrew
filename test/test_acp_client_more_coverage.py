@@ -790,13 +790,16 @@ class TestEnsureReady:
     @pytest.mark.asyncio
     async def test_shutdown_kills_and_resets(self, tmp_path):
         client = _client(tmp_path)
-        client._kill_process = AsyncMock()
-        client._reset_state = MagicMock()
+        order: list[str] = []
+        client._kill_process = AsyncMock(side_effect=lambda **kw: order.append(f"kill {kw}"))
+        client._reset_state = MagicMock(side_effect=lambda: order.append("reset"))
+        client._process_tree_confirmed_dead = True
 
         await client.shutdown()
 
-        client._kill_process.assert_awaited_once_with(force=True)
-        client._reset_state.assert_called_once()
+        assert order == ["kill {'force': True}", "reset"]
+        # A stale confirmation from an earlier kill does not survive into this one.
+        assert client._process_tree_confirmed_dead is False
 
 
 # ── JSON-RPC transport ──

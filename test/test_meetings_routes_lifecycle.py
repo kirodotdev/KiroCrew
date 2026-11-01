@@ -1060,15 +1060,12 @@ class TestTeardownLeavesNoMeetingFalselyActive:
         """Structural: dropping the live session and persisting the status must stay
         paired, so a NEW teardown path cannot reintroduce the divergence.
 
-        The first version of this test exempted any function that also called
-        `ACTIVE.set()`, reasoning that a replacement keeps the meeting live. That was
-        wrong, and a reviewer caught what it let through: `handle_start_meeting`
-        replaces the session of a DIFFERENT (expired) meeting, which is a teardown of
-        that meeting — and the exemption made the check blind to exactly the one
-        function where the pairing is easiest to miss.
+        Calling `ACTIVE.set()` is no exemption: `handle_start_meeting` replaces the
+        session of a DIFFERENT (expired) meeting, which is a teardown of that meeting,
+        and it is the function where the pairing is easiest to miss.
 
-        So there is no blanket exemption now. Every `drain_and_clear` caller must
-        persist a terminal status, `set()` or not.
+        So every `drain_and_clear` caller must persist a terminal status, `set()` or
+        not.
         """
         import ast
         import importlib

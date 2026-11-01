@@ -54,15 +54,17 @@ _BASE_MODULE_NAMES = frozenset("""
     Callable ClaimRefusal DISPLAY_ONLY_ROLES HistoryConsolidator
     LESSON_APPLIES_INSTRUCTION LESSON_APPLIES_ON_TOPIC NamedTuple SKILL_UPDATE
     TYPE_CHECKING ToolApprovalPolicy VERDICT_DUP VERDICT_NEW VERDICT_UPDATE
+    _BoundedTable _SEMANTIC_SNAPSHOT_PAGE _semantic_snapshot_in_pages
     _BoundedTable _CONSOLIDATION_BACKOFF_BASE_SECS _CONSOLIDATION_BACKOFF_MAX_SECS
     _CONSOLIDATION_MAX_ATTEMPTS _CONSOLIDATION_MAX_HEAD_SLICES _CONSOLIDATION_META_KEYS
     _CONSOLIDATION_PROMPT_BUDGET_CHARS _CONSOLIDATION_REFUSED
     _CONSOLIDATION_SUBOFFSET_META_KEYS _CONSOLIDATION_THRESHOLD
     _ConsolidationNotDispatched _ConsolidationRefusedSentinel _ConsolidationReplyUnusable
-    _CountClaim
+    _CountClaim _v1_consolidation_metadata
     _EMBED_BUDGET_SECS_PER_PASS _EmbedBudget _HISTORY_LOGGER _INHERIT_GLOBAL
     _InheritGlobal _LessonDeleteDecision _LESSON_PASSTHROUGH_FIELDS
-    _MAX_EPISODIC_PER_CONSOLIDATION
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS _MAX_EPISODIC_PER_CONSOLIDATION
+    _OversizedItem _audit_oversized_semantic _refuse_oversized_semantic _v1_consolidation_confidence
     _MAX_LESSONS_PER_CONSOLIDATION _MAX_SEMANTIC_PER_CONSOLIDATION _PLACEHOLDER_BODIES
     _PersistenceDisabledMidRun _RunCommitState _SEEDED_PER_SWEEP _SEED_MAX_AGE_SECS
     _SEMANTIC_OMISSION_NOTICE _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION
@@ -78,7 +80,7 @@ _BASE_MODULE_NAMES = frozenset("""
     extracted_lesson_applies frontmatter_value hashlib json live logging math re
     redact_credentials redact_exfiltration_urls run_in_embed_pool scope_is_admissible
     strip_image_refs timezone validate_skill_script
-    Iterator _CONSOLIDATION_BUSY _CONSOLIDATION_LEASE_CEILING_SECS
+    Iterator _CONSOLIDATION_BUSY _CONSOLIDATION_EMPTY _CONSOLIDATION_LEASE_CEILING_SECS
     _CONSOLIDATION_LEASE_RENEW_SECS _LEASE_INCARNATION _LEASE_MONOTONIC _LEASE_PID
     _LEASE_START _LEASE_TOKEN _LeaseLostMidRun _lease_holder_is_live _no_pass_ran os
     platform_compat uuid
@@ -285,7 +287,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "function",
         False,
         False,
-        "(self, *, key: 'str', target_key: 'str', description: 'str', triggers: 'str', procedure_md: 'str', scripts: \"'list[dict] | None'\" = None, guard_publication: 'bool' = False, commit_state: '_RunCommitState | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'None'",
+        "(self, *, key: 'str', target_key: 'str', description: 'str', triggers: 'str', procedure_md: 'str', scripts: \"'list[dict] | None'\" = None, rejected_scripts: \"'dict[str, list[str]] | None'\" = None, guard_publication: 'bool' = False, commit_state: '_RunCommitState | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'None'",
     ),
     "_start_counted": (
         "function",

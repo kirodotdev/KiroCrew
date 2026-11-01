@@ -102,7 +102,7 @@ async def plan(
     self._agent = agent
     if source == "file":
         p = Path(spec_path)
-        if not p.exists():
+        if not await asyncio.to_thread(p.exists):
             raise FileNotFoundError(f"Spec not found: {spec_path}")
         content = await asyncio.to_thread(_read_spec_text, str(p), None)
         if content is None:

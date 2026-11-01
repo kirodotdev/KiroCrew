@@ -19,6 +19,7 @@ import { MemoryRouter } from 'react-router-dom'
 
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../components/FeaturePreviewIntroDialog'
 import { FeaturePreviewsSection } from '../pages/settings/FeaturePreviewsSection'
+import { crewModeEnabled } from '../lib/crewMode'
 import { api } from '../api/client'
 
 const INTRO: FeaturePreviewIntro = {
@@ -89,6 +90,24 @@ describe('FeaturePreviewIntroButton', () => {
     expect(within(dialog).getByRole('img', { name: 'First capture' })).toBeInTheDocument()
   })
 
+  it('keeps the capture dots to one Tab stop and pages them with the arrows', () => {
+    render(<Harness intro={INTRO} />)
+    fireEvent.click(screen.getByRole('button', { name: 'See what Sample preview looks like' }))
+    const dialog = screen.getByRole('dialog')
+    const dots = within(dialog).getAllByRole('tab')
+    expect(dots.filter(d => d.getAttribute('tabindex') === '0')).toEqual([dots[0]])
+
+    fireEvent.keyDown(dots[0], { key: 'ArrowRight' })
+    expect(within(dialog).getByRole('img', { name: 'Second capture' })).toBeInTheDocument()
+    expect(dots[1]).toHaveFocus()
+    expect(dots[1]).toHaveAttribute('aria-selected', 'true')
+    expect(dots.filter(d => d.getAttribute('tabindex') === '0')).toEqual([dots[1]])
+
+    fireEvent.keyDown(dots[1], { key: 'Home' })
+    expect(within(dialog).getByRole('img', { name: 'First capture' })).toBeInTheDocument()
+    expect(dots[0]).toHaveFocus()
+  })
+
   it("the dialog's switch is the card's switch", () => {
     render(<Harness intro={INTRO} />)
     fireEvent.click(screen.getByRole('button', { name: 'See what Sample preview looks like' }))
@@ -106,7 +125,7 @@ describe('FeaturePreviewIntroButton', () => {
 
 describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
   beforeEach(() => {
-    for (const k of ['mc-preview-webhooks', 'mc-preview-crew', 'mc-preview-remote-crew-chat']) localStorage.removeItem(k)
+    for (const k of ['mc-preview-webhooks', 'mc-preview-remote-crew-chat', 'mc-preview-crew-mode']) localStorage.removeItem(k)
     // The Decisions card reads `config.json`; stubbed so these capture-button
     // cases do not wait on a fetch that cannot succeed under vitest.
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
@@ -126,7 +145,7 @@ describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
   it('offers the button for the previews that have real captures, and not for the one that does not', () => {
     renderSection()
     expect(screen.getByRole('button', { name: 'See what Webhooks looks like' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'See what Mates looks like' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'See what Mates looks like' })).not.toBeInTheDocument()
     // "Chat on a crew" only appears with a live tunnel to a second machine, which
     // has no honest single-instance capture — so no button rather than an empty dialog.
     expect(screen.queryByRole('button', { name: 'See what Chat on a crew looks like' })).not.toBeInTheDocument()
@@ -186,6 +205,17 @@ describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
     // Fail-open while the schema is in flight, then gone once it says no KAS.
     await waitFor(() => expect(screen.queryByTestId('kas-bundle-card')).toBeNull())
     expect(screen.queryByRole('switch', { name: /Run KAS on .*own engine/ })).toBeNull()
+  })
+
+  it('offers Ultra Mode as a plain switch, off by default, that writes the one Crew Mode flag', () => {
+    renderSection()
+    const toggle = screen.getByRole('switch', { name: 'Ultra Mode' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByText('Lets a chat hand tasks to a crew and track them on a Board.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /See what (Ultra|Crew) Mode looks like/ })).toBeNull()
+    fireEvent.click(toggle)
+    expect(localStorage.getItem('mc-preview-crew-mode')).toBe('1')
+    expect(crewModeEnabled()).toBe(true)
   })
 
   it('the button stays offered while the flag is on, beside the ingress link', () => {

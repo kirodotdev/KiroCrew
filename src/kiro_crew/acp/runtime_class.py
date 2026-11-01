@@ -1,7 +1,7 @@
 """``class AcpRuntime``: the runtime's constructor, state, properties and constants.
 
 The class body binds each member an owner module defines (``spawn = _rt_entry.spawn``) and
-keeps the constructor, the properties and the class constants. ``_own_methods`` names each
+keeps the constructor, the properties and the class constants. ``own_methods`` names each
 bound function after its class attribute. ``kiro_crew.acp.runtime`` re-exports the class,
 which keeps that module as its ``__module__``: the facade is the import path callers, pickles
 and reprs name.
@@ -14,6 +14,7 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp import runtime_frame_accounting as _rt_frames
 from kiro_crew.acp import runtime_host_requests as _rt_host
@@ -63,25 +64,6 @@ _MEMBER_OWNERS = frozenset(
 )
 
 
-def _own_methods(cls: type) -> type:
-    """Make each member *cls* binds from an owner module read as a method of *cls*.
-
-    A bound function annotates ``self`` so mypy checks its body as a method body;
-    this drops that annotation from the runtime object and names the function after
-    the class attribute (``AcpRuntime._spawn_admitted``), so its ``inspect.signature``
-    and ``__qualname__`` are what the one-module class had, and so are the reprs of
-    the coroutines and tasks it starts. Only ``__module__`` moves: it names the owner
-    module that holds the body.
-    """
-    for name, member in vars(cls).items():
-        function = getattr(member, "__func__", member)
-        if getattr(function, "__module__", None) in _MEMBER_OWNERS:
-            function.__annotations__.pop("self", None)
-            function.__qualname__ = f"{cls.__qualname__}.{name}"
-    return cls
-
-
-@_own_methods
 class AcpRuntime:
     """Owns one kiro-cli acp subprocess with single-reader demux.
 
@@ -137,6 +119,7 @@ class AcpRuntime:
     # What a session start is built from: ``kiro_crew.acp.runtime_session_setup``.
     _session_work_dir = _rt_setup._session_work_dir
     _refuse_if_loader_unreachable = _rt_setup._refuse_if_loader_unreachable
+    _refuse_over_ceiling_start = _rt_setup._refuse_over_ceiling_start
     _kas_custom_agents = _rt_setup._kas_custom_agents
     _mount_member_panel = _rt_setup._mount_member_panel
     _session_start_budget = _rt_setup._session_start_budget
@@ -165,6 +148,9 @@ class AcpRuntime:
     mark_turn_active = _rt_registry.mark_turn_active
     terminate_session = _rt_registry.terminate_session
     evict_session = _rt_registry.evict_session
+    can_release = _rt_registry.can_release
+    release_session = _rt_registry.release_session
+    delete_session_record = _rt_registry.delete_session_record
     keep_record_on_teardown = _rt_registry.keep_record_on_teardown
     _session_teardown_method = _rt_registry._session_teardown_method
     _mcp_init_progress = _rt_registry._mcp_init_progress
@@ -502,6 +488,11 @@ class AcpRuntime:
         # never outlives the init scope whose progress it describes (see
         # _stage_init_frame).
         self._session_inits_in_flight = 0
+        # Per session id whose ``session/load`` is in flight with
+        # ``require_replay``: how many replayed-turn frames the engine sent
+        # before answering. The reader loop counts them; load_session reads the
+        # count to tell a restored conversation from a freshly created record.
+        self._load_replay_frames: dict[str, int] = {}
         self._pending_init_notifications: deque[JsonRpcMessage] = deque(
             maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT
         )
@@ -523,6 +514,10 @@ class AcpRuntime:
         # that advertises nothing -- which the harness must read as "nothing is
         # known", never as "nothing is supported".
         self._agent_capabilities: dict = {}
+        # The whole ``initialize`` result. Top-level ``_meta`` (where the
+        # ``_session/steering`` advertisement lives) is outside
+        # ``agentCapabilities``, and the session card reads the same object.
+        self._initialize_result: dict = {}
         # agentInfo.version from the initialize response: the version of the
         # binary THIS process is executing, which can differ from the one on
         # disk after an in-place upgrade. Empty until the handshake completes.
@@ -846,6 +841,11 @@ class AcpRuntime:
         return self._agent_version
 
     @property
+    def initialize_result(self) -> dict:
+        """The agent's ``initialize`` result (``{}`` until the handshake)."""
+        return self._initialize_result
+
+    @property
     def stdin_stall_death(self) -> bool:
         """Whether this runtime died of a stdin stall, its child left alive."""
         return self._stdin_stall_death
@@ -944,3 +944,6 @@ class AcpRuntime:
     # exactly the report this labelling answers.
     _RC_NOT_REAPED = "<not reaped>"
     _RC_NO_PROCESS = "<no process>"
+
+
+own_methods(AcpRuntime, _MEMBER_OWNERS)

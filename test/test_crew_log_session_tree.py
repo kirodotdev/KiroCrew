@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1296,23 +1297,75 @@ def test_the_scanner_reports_a_gap_when_the_oldest_real_log_does_not_state_first
     assert reading.incomplete is False
 
 
-def test_a_predecessor_the_scan_could_not_admit_is_reported_as_incomplete(monkeypatch) -> None:
+def test_a_chain_reaches_its_predecessor_whatever_the_store_cap(monkeypatch) -> None:
+    """The walk reads the units its citations name, so the store's size and the
+    scanner's cap cannot hide a predecessor: a cap of one still reaches it."""
+    first = _log("acp-1", "chat-7")
+    _opened(first, "chat-7", previous_none=True)
+    second = _log("acp-2", "chat-7")
+    _opened(second, "chat-7", previous={"sid": "acp-1"})
+
+    monkeypatch.setattr(session_tree, "TREE_UNIT_CAP", 1)
+    reading = SessionTree().chain("acp-2")
+    assert reading.chain.sids == ("acp-2", "acp-1")
+    assert reading.chain.ended == CHAIN_END_FIRST
+    assert reading.incomplete is False
+
+
+def test_a_predecessor_whose_read_faulted_is_reported_as_incomplete(monkeypatch) -> None:
     """The one thing ``ChainReading`` exists for.
 
-    A predecessor past the scan's cap is absent from the records, so the WALK
-    reports ``missing`` for a log that is on disk and readable. Only the scan knows
-    the difference, so it must be the scan that says so -- otherwise a partial chain
-    is presented as a slot's whole life.
+    A predecessor whose bytes could not be read is absent from the records, so the
+    WALK reports ``missing`` for a log that is on disk. Only the read knows the
+    difference, so it must say so -- otherwise a partial chain is presented as a
+    slot's whole life.
     """
     first = _log("acp-1", "chat-7")
     _opened(first, "chat-7")
     second = _log("acp-2", "chat-7")
     _opened(second, "chat-7", previous={"sid": "acp-1"})
 
-    monkeypatch.setattr(session_tree, "TREE_UNIT_CAP", 1)
+    real_read = SessionTree._read
+
+    def faulting(self: SessionTree, directory: Any) -> Any:
+        if directory.name == crew_store.unit_dir_for(lg.KIND_SESSION, "acp-1").name:
+            return None, True
+        return real_read(self, directory)
+
+    monkeypatch.setattr(SessionTree, "_read", faulting)
     reading = SessionTree().chain("acp-2")
     assert reading.chain.sids == ("acp-2",)
     assert reading.chain.ended == CHAIN_END_MISSING
     assert reading.chain.cited == "acp-1"
     # The chain says "ends here"; only this bit says "and that may be my fault".
     assert reading.incomplete is True
+
+
+def test_a_chain_reads_only_its_own_units_however_many_the_store_holds(monkeypatch) -> None:
+    """A succession walk costs its chain, not the store. With many
+    unrelated units on disk, the walk reads exactly the two units of the chain and
+    never lists the store root."""
+    first = _log("acp-1", "chat-7")
+    _opened(first, "chat-7", previous_none=True)
+    second = _log("acp-2", "chat-7")
+    _opened(second, "chat-7", previous={"sid": "acp-1"})
+    for index in range(200):
+        other = _log(f"acp-other-{index}", f"chat-other-{index}")
+        _opened(other, f"chat-other-{index}", previous_none=True)
+
+    reads: list[str] = []
+    real_read = SessionTree._read
+
+    def counted(self: SessionTree, directory: Any) -> Any:
+        reads.append(directory.name)
+        return real_read(self, directory)
+
+    def no_listing(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("a chain walk listed the store root")
+
+    monkeypatch.setattr(SessionTree, "_read", counted)
+    monkeypatch.setattr(session_tree, "unit_dirs", no_listing)
+    reading = SessionTree().chain("acp-2")
+    assert reading.chain.sids == ("acp-2", "acp-1")
+    assert reading.chain.ended == CHAIN_END_FIRST
+    assert len(reads) == 2, reads

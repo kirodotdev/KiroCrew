@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from kiro_crew.apps.builtins.auto_research.subquestion_queue import (
     QUEUE_FILENAME,
     dequeue_top_k,
@@ -10,9 +12,18 @@ from kiro_crew.apps.builtins.auto_research.subquestion_queue import (
     load_queue,
     mark_analyzed,
     new_queue,
+    next_depth,
     pending_count,
     save_queue,
 )
+
+
+def _no_raise(fn, *args):
+    """Call a queue reader on a hand-edited queue; a raise fails the round."""
+    try:
+        return fn(*args)
+    except Exception as exc:  # noqa: BLE001 -- any raise is the defect under test
+        pytest.fail(f"{fn.__name__} raised {exc!r} on a malformed queue entry")
 
 
 class TestQueueShape:
@@ -101,6 +112,49 @@ class TestDequeue:
         assert dequeue_top_k(q, -1) == []
         assert pending_count(q) == 1
 
+    # The queue file lives in the agent-writable campaign dir, and load_queue
+    # only checks the top-level shape. A hand-rewritten item must be skipped,
+    # not raised out of the caller's open BEGIN IMMEDIATE transaction.
+    def test_null_priority_is_read_as_zero(self):
+        q = {"pending": [
+            {"text": "nulled", "priority": None},
+            {"text": "ranked", "priority": 0.9},
+        ], "analyzed": []}
+        out = _no_raise(dequeue_top_k, q, 2)
+        assert [i["text"] for i in out] == ["ranked", "nulled"]
+        assert q["pending"] == []
+
+    def test_non_numeric_priority_is_read_as_zero(self):
+        q = {"pending": [
+            {"text": "words", "priority": "high"},
+            {"text": "ranked", "priority": 0.1},
+        ], "analyzed": []}
+        out = _no_raise(dequeue_top_k, q, 1)
+        assert [i["text"] for i in out] == ["ranked"]
+        assert [i["text"] for i in q["pending"]] == ["words"]
+
+    def test_non_finite_priority_is_read_as_zero(self):
+        q = {"pending": [
+            {"text": "inf", "priority": "inf"},
+            {"text": "nan", "priority": "nan"},
+            {"text": "ranked", "priority": 0.1},
+        ], "analyzed": []}
+        out = _no_raise(dequeue_top_k, q, 1)
+        assert [i["text"] for i in out] == ["ranked"]
+        assert [i["text"] for i in q["pending"]] == ["inf", "nan"]
+
+    def test_malformed_items_are_skipped_and_dropped(self):
+        q = {"pending": [
+            "a bare string",
+            None,
+            {"priority": 0.99},
+            {"text": "", "priority": 0.98},
+            {"text": "good", "priority": 0.5},
+        ], "analyzed": []}
+        out = _no_raise(dequeue_top_k, q, 5)
+        assert [i["text"] for i in out] == ["good"]
+        assert q["pending"] == []
+
 
 class TestAnalyzedAndDedup:
     def test_mark_analyzed_then_blocks_reenqueue(self):
@@ -139,3 +193,20 @@ class TestPersistence:
     def test_load_non_dict_returns_empty(self, tmp_path: Path):
         (tmp_path / QUEUE_FILENAME).write_text("[1, 2, 3]")
         assert load_queue(tmp_path) == {"pending": [], "analyzed": []}
+
+    def test_load_non_list_buckets_read_as_empty(self, tmp_path: Path):
+        (tmp_path / QUEUE_FILENAME).write_text('{"pending": null, "analyzed": "x"}')
+        q = load_queue(tmp_path)
+        assert q["pending"] == [] and q["analyzed"] == []
+        # Every reader the exploration round calls must then work on it.
+        assert pending_count(q) == 0
+        assert next_depth(q) == 1
+        assert enqueue(q, [{"text": "fresh"}])[0]["text"] == "fresh"
+
+    def test_next_depth_skips_a_malformed_depth(self):
+        q = {"pending": [], "analyzed": [
+            {"text": "a", "depth": None},
+            {"text": "b", "depth": "deep"},
+            {"text": "c", "depth": 2},
+        ]}
+        assert _no_raise(next_depth, q) == 3

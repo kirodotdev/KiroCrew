@@ -93,7 +93,6 @@ async def test_dispatch_permission_request():
                 },
             },
         )
-        # Then complete the turn
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
         await await_until(driver, what="the driver finishing its turn")
         perm = [e for e in events if e.kind == EVENT_PERMISSION_REQUEST]

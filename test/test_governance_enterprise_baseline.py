@@ -30,10 +30,14 @@ _WORKSPACE_FILE = os.path.join("~", "workplace", "kirocrew-workspace", "notes.tx
 
 # scope -> (items the baseline permits, items it denies). One row per catalog scope.
 _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "tools": ((), ("fs_read", "glob", "grep", "fs_write", "execute_bash", "web_fetch")),
+    "tools": (
+        ("fs_read", "glob", "grep"),
+        ("fs_write", "execute_bash", "code", "web_fetch", "web_search"),
+    ),
     "approval_modes": (("normal", "trust", "trust_reads"), ("yolo",)),
     "mcp": (("@kirocrew-core/local_knowledge_search",), ("@other/tool", "@other")),
     "apps": ((), ("any-app",)),
+    "app_versions": ((), ("any-app@1.0.0",)),
     "commands": ((), ("ls", "git status")),
     "filesystem.read": ((_WORKSPACE_FILE,), ("/etc/passwd", os.path.join("~", "notes.txt"))),
     "filesystem.write": ((), (_WORKSPACE_FILE,)),
@@ -45,7 +49,13 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "sandbox.min_level": (("strict",), ()),
     "yolo_duration": ((), ("permanent", "until_shutdown", "1h")),
     "agent_backend": (("kiro",), ("claude", "kas")),
-    "capabilities.publish": (("", "destinations:default"), ("destinations:s3",)),
+    "webhooks": ((), ("agent", "ops-mission-control")),
+    "capabilities.publish": (
+        ("", "destinations:default"),
+        ("destinations:s3", "regions:us-east-1", "audience:private", "accounts:123456789012"),
+    ),
+    "bind_address": (("127.0.0.1",), ("0.0.0.0", "::", "10.0.0.5")),
+    "dashboard_origins": ((), ("https://crew.example.com", "http://localhost:3000")),
 }
 
 
@@ -237,7 +247,8 @@ def test_enterprise_local_tier_cannot_permit_what_the_baseline_denies(
     assert not resolve(composed, None, "capabilities.browse", "").permitted
     assert not resolve(composed, None, "network.egress", "example.com").permitted
     assert not resolve(composed, None, "tools", "fs_write").permitted
-    assert not resolve(composed, None, "tools", "fs_read").permitted
+    # In the baseline and in the local allow-set, so both levels permit it.
+    assert resolve(composed, None, "tools", "fs_read").permitted
     # Named by the authority, the scope answers from the remote policy.
     central = _tier(governance.TIER_CENTRAL, capabilities={"browse": {"enabled": True}})
     assert resolve(

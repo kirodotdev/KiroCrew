@@ -34,6 +34,9 @@ interface SettingsToggleProps {
   disabled?: boolean
   /** Backend config key this toggle writes (e.g. 'telemetry.beacon_enabled'). Used by the settings registry and SettingRef linking. */
   configKey?: string
+  /** Stable highlight anchor (`data-setting-id`) for a row with no gateway
+   *  `configKey`, as on `SettingsField`. Lets a deep link find a late row. */
+  settingId?: string
   /** id of an element describing a CONSEQUENCE of flipping this toggle, rendered
    *  outside the row (so it is not dimmed with a disabled row). Threaded to the
    *  switch's `aria-describedby` so assistive tech announces it before the user
@@ -59,7 +62,7 @@ interface SettingsToggleProps {
   anchor?: boolean
 }
 
-export function SettingsToggle({ label, description, hint, checked, onChange, disabled, configKey, describedBy, anchor = true }: SettingsToggleProps) {
+export function SettingsToggle({ label, description, hint, checked, onChange, disabled, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
   /**
    * Did this activation come from the "?" tip rather than the row?
    *
@@ -72,7 +75,7 @@ export function SettingsToggle({ label, description, hint, checked, onChange, di
   const fromHint = (e?: React.MouseEvent | React.KeyboardEvent) =>
     e?.target instanceof HTMLElement && e.target.closest('[data-settings-hint]') !== null
   return (
-    <Clickable {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}) } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!fromHint(e)) onChange(!checked) }} disabled={disabled}>
+    <Clickable {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}), ...(settingId ? { 'data-setting-id': settingId } : {}) } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!fromHint(e)) onChange(!checked) }} disabled={disabled}>
       <div className="flex-1 min-w-0 mr-4">
         <div className="flex items-center gap-1.5">
           <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
@@ -405,6 +408,13 @@ function subscribeDeepLinkTarget(cb: () => void): () => void {
 }
 const readDeepLinkTarget = () => deepLinkTarget
 const readDeepLinkOnServer = (): string | null => null
+
+/** The selector a settings deep link is still probing for, or null. For a
+ * panel that keeps rows mounted but hidden (a tab or disclosure of its own),
+ * so it can reveal the one holding the target before the probe rings it. */
+export function useSettingsDeepLinkTarget(): string | null {
+  return React.useSyncExternalStore(subscribeDeepLinkTarget, readDeepLinkTarget, readDeepLinkOnServer)
+}
 
 export function SettingsSection({ title, badge, collapsible, children }: SettingsSectionProps) {
   const [open, setOpen] = React.useState(false)

@@ -8,7 +8,7 @@ Token authentication for the Kiro Crew dashboard. The owner mints a time-limited
 
 The dashboard also issues a paired **refresh cookie** (`mc_refresh_{port}`, HttpOnly, path-restricted to `/api/auth`) alongside the access cookie on initial token-URL use. The SPA calls `POST /api/auth/refresh` before the access cookie expires to rotate both cookies, so an active browser can continue without another `!dashboard` / `kirocrew token` link. Refresh tokens are HMAC-signed with the persistent `token_signing.key`; `RefreshStateManager` permits only the chain-head replay under its source-IP grace conditions, and any other consumed-`jti` replay revokes the chain (`test_tr_u_22a_grace_accepts_only_chain_head`).
 
-An existing dashboard session can recover another browser with `POST /api/auth/mobile-link`. The endpoint requires the normal access-cookie session and an allowed same-origin request; it refuses unauthenticated and app-scoped callers. It returns a normal signed URL token plus `Cache-Control: no-store`; the browser uses that token through the ordinary link-to-cookie exchange, which establishes a separate access cookie and a refresh chain. The dashboard presents this as **Settings → Security → Sign in on mobile**, so a mobile browser whose storage was cleared can be restored without exposing a raw token prompt. The returned link has the normal five-minute click window, is built only from the configured external dashboard origin, and must be transferred only to the intended device.
+An existing dashboard session can recover another browser with `POST /api/auth/mobile-link`. The endpoint requires the normal access-cookie session and an allowed same-origin request; it refuses unauthenticated and app-scoped callers. It returns a normal signed URL token plus `Cache-Control: no-store`. The response may also carry `image`, a PNG data-URI QR code of that same URL that the Connect-your-phone dialog shows; the encode runs off the event loop, a failed encode drops the field and still returns the link, and the URL is never logged on either path; the browser uses that token through the ordinary link-to-cookie exchange, which establishes a separate access cookie and a refresh chain. The dashboard presents this as **Settings → Security → Sign in on mobile**, so a mobile browser whose storage was cleared can be restored without exposing a raw token prompt. The returned link has the normal five-minute click window, is built only from the configured external dashboard origin, and must be transferred only to the intended device.
 
 The refresh scheduler is mounted by `DashboardBootstrap` outside the first-run
 Kiro CLI prerequisite gate. A cold browser with a stale access cookie can
@@ -52,7 +52,7 @@ surfaces, and `X-Session-Key: dashboard:ui` stays correlation metadata.
 |---|---|
 | Proactive rotation before the access cookie expires, and the cold-start `GET /api/auth/me` → `POST /api/auth/refresh` recovery | `website/src/hooks/useRefreshScheduler.ts`, mounted by `DashboardBootstrap` outside the prerequisite gate |
 | The one in-flight `POST /api/auth/refresh` that every trigger shares | `website/src/api/refreshOnce.ts` |
-| The `X-Session-Key` default, the request helpers and the `j`/`jNullable`/`jInstancesDisabled` parsers (the last one reads `/api/instances` and does not journal the expected 403 a disabled instances control plane answers); the warm-path silent refresh on a 403 `X-Auth-Required`; the embedded-pane hand-off; the re-auth banner with its in-place `GET /api/auth/me?token=` exchange; the 401 `stale_session_reauth` prompt; and the sign-in instruction shown in place of the gateway's own refusal reason | `website/src/api/client.ts` |
+| The `X-Session-Key` default, the request helpers and the `j`/`jNullable`/`jInstancesDisabled`/`jCrewBoard`/`jSlotEnvironment`/`jSharedCrewPreview` parsers (the last four read one route each and do not journal its expected denial: `/api/instances`' 403 from a disabled control plane, `/api/crew-board`'s 404 `no_ledger`, and the 403 `owner_only` that the slot-environment read and the Shared Crew preview read answer a caller that is not the dashboard owner, which their readers do not retry); the warm-path silent refresh on a 403 `X-Auth-Required`; the embedded-pane hand-off; the re-auth banner with its in-place `GET /api/auth/me?token=` exchange; the 401 `stale_session_reauth` prompt; and the sign-in instruction shown in place of the gateway's own refusal reason | `website/src/api/client.ts` |
 | The `api` object's endpoint methods, grouped by domain under `website/src/api/client/`, each module built on the transport above rather than its own; the mobile sign-in mint `POST /api/auth/mobile-link` is `mobileLoginLink` in `website/src/api/client/remoteAccess.ts`. Four methods stay defined in `client.ts`: three that other docs or the i18n gate pin there, and `wakatimeExportDownload`, which reads a sibling through `api` at call time | the domain endpoint modules |
 | The words for an interposed proxy's sign-in page, and the generic error text other failures render with | `website/src/api/edgeAuthChallenge.ts` and `website/src/api/apiError.ts` |
 
@@ -108,16 +108,23 @@ the last two gates are appended by their lifecycle registrations):
 
 ```mermaid
 graph LR
-    L[route_latency] --> Z[deny_audit] --> A[host_canonical_redirect] --> B[host_validation] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> S[slot_ownership] --> G[spa_fallback] --> W[_workflow_ready] --> P[_crewmate_prune_gate]
+    L[route_latency] --> R[relay_ingress] --> H[relay_header_strip] --> Z[deny_audit] --> A[host_canonical_redirect] --> B[host_validation] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> S[slot_ownership] --> G[spa_fallback] --> W[_workflow_ready] --> P[_crewmate_prune_gate]
 ```
 
 1. Route latency is outermost, so it times the full in-gateway handling, and the
    deny-audit boundary sits inner to it only
-2. The host barriers and CSRF reject a wrong `Host` and a cross-origin mutating
+2. The relay-path header rule (`relay_ingress`, see
+   [Relay-delivered requests](#relay-delivered-requests)) verifies a request the
+   in-process relay client handed over and serves it with every `x-kiro-relay-*`
+   header removed, before any other layer reads one; every other request it hands
+   on unchanged. The client-sent strip (`relay_header_strip`,
+   `dashboard/relay_headers.py`) sits just inside it and is the one place a
+   client-sent relay header is dropped
+3. The host barriers and CSRF reject a wrong `Host` and a cross-origin mutating
    request before token auth runs
-3. Token auth validates identity
-4. SEL audit logs the authenticated operation
-5. The per-slot checkpoint (`slot_ownership_middleware`,
+4. Token auth validates identity
+5. SEL audit logs the authenticated operation
+6. The per-slot checkpoint (`slot_ownership_middleware`,
    `dashboard/slot_ownership.py`) decides an app caller's reach on every
    `/api/chat/slots/{slot}/*` route before its handler runs. It reads the `app`
    claim token auth published, and a refusal it answers is inside the SEL audit
@@ -145,6 +152,12 @@ generic reason. Three refusing layers sit inner to `sel_audit`, and each RETURNS
 rather than raises, so the boundary never sees them: the per-slot checkpoint (a
 404, plus its own `app_isolation` row for a slot that exists) and the two appended
 gates (`_workflow_ready`, `_crewmate_prune_gate`, each a 503).
+
+`relay_ingress` sits OUTER to `deny_audit`, on both entrypoints, so every layer
+inside it (the boundary's forwarded binding included) sees the request it hands
+on: stripped of relay headers, or rewritten as relayed. It RETURNS its own
+refusals and records each one itself (`relay_ingress` rows, source `kiro_relay`),
+so the boundary never needs to.
 
 An enterprise build adds one layer to both chains, right after `token_auth`: the
 enterprise gate middleware (`dashboard/enterprise_gate_middleware.py`), which
@@ -370,7 +383,51 @@ Request flow:
 5. Check IP binding
 6. On query-param use: mint a SEPARATE session token, bind it to the peer key, add the link token's own nonce to the persisted denylist so the link string can never be presented as a cookie, and set `mc_token_{port}` with `max_age` derived from `session_exp`
 7. Log to SEL
-8. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
+8. Publish the Shared Crew actor (`shared_crew.identity.publish_actor`) under `request[ACTOR_REQUEST_KEY]`, after every decision above and before the handler, on each path that admits a request: the internal-secret grant, both mixed-internal cookie branches and the main path. It is attribution only. It runs only for an admitted request, never raises (a failure publishes the Unknown principal), and its daemon lookup for a directly connected tailnet peer (`tailnet.resolve_direct_peer`) is not consulted by the pin or the allowlist, so it can neither admit nor refuse anything. Bypassed routes publish no actor and read as Unknown. Derivation rules are in [shared-crew.md](shared-crew.md) section 2.
+9. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
+
+#### Direct tailnet listener: daemon identity instead of a token
+
+A request whose LOCAL socket address is one of this machine's tailnet addresses
+arrived on the direct tailnet listener (`tailnet_direct.DirectGate.owns`; the
+listener exists only while `dashboard.shared_crew.tailnet_direct` is on (it is off by
+default) and Tailscale runs). `token_auth_middleware(tailnet_direct=...)` decides
+it before step 1, and no other request is affected: loopback, the unix socket and
+`tailscale serve` run the steps above unchanged.
+
+1. The TCP peer must be a tailnet address other than this machine's own (a local
+   process dialling its own tailnet address is refused `self_connection`), with no
+   forwarding header, and the
+   daemon's `whois` of that peer `ip:port` must name a node and a user with a
+   stable id. A `Tailscale-User-*` header is never read. Any failure is a 403
+   (`code: tailnet_direct_refused` with a `reason`); there is no fallback.
+2. Tailscale decides who reaches this machine, so every untagged person `whois`
+   names is admitted while Shared Crew's set is installed (`shared_crew.access_set`,
+   published through `tailnet_live_allowlist`); Crew approves nobody itself. A
+   tagged node needs a `tag:<name>` entry carried over from the one-time migration
+   seed of `dashboard.tailscale.allowed_logins`. With no set installed, an
+   unreadable config allowlist admits nobody.
+3. Strict internal paths and `X-Internal-Secret` are refused on this listener.
+4. An app token (`?token=` claiming an app) runs the token flow so its scope holds.
+   Any other token or cookie is ignored. The owner is the owner's dashboard subject
+   (`owner_id`, else `local-app`) with `auth_owner_whois`, so owner-gated routes
+   answer it (`dashboard.tailnet_owner`); `DELETE
+   /api/shared-crew/tailscale/credential` and `DELETE /api/sessions` from it also
+   need `X-Kirocrew-Confirm: irreversible`, else 428 `confirm_required`. Anyone
+   else is the dashboard user `tailnet:uid:<id>`, which never matches the owner
+   subject, so owner-gated routes refuse it. Either way `auth_tailnet_direct` is
+   set, `auth_token` is empty, no cookie is minted, the Shared Crew actor is the
+   verified person, and `_caller_bounds` lends this listener no lifetime, so
+   nobody on it can mint a bearer link.
+5. `whois` is cached per `ip:port` (30 s, failures 2 s, bounded), asked again on
+   every WebSocket upgrade, and repeated on an open WebSocket every 60 s; a
+   failure or a different node key closes it.
+
+The CSRF origin check still applies: the listener's own origins
+(`http://<magicdns-name>:<port>` and `http://<tailnet-ip>:<port>`) join
+`allowed_origins` after the listener binds, so the `Host` barrier and `Origin`
+check accept exactly those. Rules and platform status are in
+[shared-crew.md](shared-crew.md) section 2.
 
 #### Link re-exchange is deliberately allowed (the link is not single-use)
 
@@ -611,6 +668,7 @@ barriers from the shared factories, and installs the chain
 ```python
 app.middlewares[:] = [
     make_route_latency_middleware(),
+    relay_ingress_middleware(strict_internal_paths=_STRICT_INTERNAL_API_PATHS),
     deny_audit_middleware,
     host_canonical_redirect,
     host_validation_middleware,
@@ -653,7 +711,8 @@ The `--slack-only` gateway starts `start_api_server()` instead of
 `start_dashboard()`. It serves the **same** MCP tool route surface
 (`_register_mcp_routes`), so it mounts an auth chain at parity
 (`_install_api_middlewares`):
-`route_latency → deny_audit_middleware → host_validation_middleware →
+`route_latency → relay_ingress (strip only: this server builds no relay ingress) →
+relay_header_strip → deny_audit_middleware → host_validation_middleware →
 reject_compressed_body_middleware → csrf_middleware → token_auth_middleware(
 internal_paths=_STRICT_INTERNAL_API_PATHS,
 mixed_internal_paths=_mixed_internal_api_paths(), spa_shell_handler=None) →
@@ -705,6 +764,14 @@ either auth flavor can grant (see `_verify_unix_peer`):
    the MAC).
 4. Resolved key **differs** from the declared header → **403** + SEL
    `dashboard.peer-identity-mismatch` (outcome=denied, peer pid recorded).
+   One exception: a complete roster that omits the declared key while the
+   ownership tables (`_bound_session_keys_on_chain`) bind that key to the
+   peer's process chain. That is a `spawn_run` shared subagent, whose session
+   the manager never registers, so the roster names only its parent. Such a
+   declaration takes the step 5 token demand instead of the flat denial:
+   without a token naming the declared key it is still refused
+   `peer_session_unattested`, and a key the tables do not bind there is still
+   `peer_session_mismatch`.
    Resolved and equal → proceed with `request["peer_verified"] = True`.
    Unresolvable (warm-pool runtime before claim, cron scripts, pooled MCP
    backends — no pidfile in the ancestry; or a mapping published unsigned) →
@@ -840,6 +907,132 @@ await start_api_server(
 )
 ```
 
+## Relay-delivered requests
+
+The Kiro relay terminates a person's connection, verifies their Kiro access token,
+removes it, and names the verified person in its own protocol message on the
+Crew's host connection. The Crew's relay client, in process, turns each relayed
+request into an HTTP request to this gateway's loopback TCP listener and stamps the
+person as `x-kiro-relay-user`. `dashboard/kiro_relay/` is the Crew's half of that
+contract. The relay client itself is not built yet; this package is the seam it
+calls. All of it is **off**: the gateway builds its `RelayIngress` off, and the
+setting that turns it on arrives with the relay client.
+
+**The relay-path header rule.** Crew trusts `x-kiro-relay-user` only on a request
+its own relay client handed over, never on a local, tailnet, tunnel or any other
+request; on those, the client-sent strip drops every `x-kiro-relay-*` header.
+`relay_ingress_middleware` is the outer of the two relay-header layers in both
+chains (only route latency is outer to it), with the client-sent strip
+(`relay_headers.relay_header_strip_middleware`) just inside it. On a request that
+carries any relay header:
+
+| The request | What happens |
+|---|---|
+| no handover credential, or the relay is off, or the headless API server | handed on unchanged; the client-sent strip just inside drops every relay header (one warning, no values logged), refuses with 400 a request whose headers it can't rebuild without one, and the request is served as what it is |
+| a handover credential that does not match | `403 relay_handover_invalid` |
+| a matching credential, but not on loopback TCP (the Unix socket, a widened bind) | `403 relay_handover_transport` |
+| no host connection bound | `403 relay_not_connected` |
+| zero, two or a malformed `x-kiro-relay-user` | `403 relay_user_invalid` |
+| a personal Crew, and the named user is not its owner | `403 relay_not_owner` |
+| a remote limit applies (below) | `403` with that limit's code |
+| a verified handover whose headers can't be rebuilt without the relay header (a value that can't be re-encoded) | `400 relay_header_invalid`, never served with the header |
+| otherwise | served as relayed |
+
+**The strip inside the rule.** Both layers name relay headers by one definition,
+`relay_headers.RELAY_HEADER_PREFIX`, which `kiro_relay.caller` imports for the two
+headers the relay client stamps and `kiro_relay.ingress` reads through
+`relay_headers.without_relay_headers`. The rule drops nothing on a request it does
+not serve: the strip is the one place a client-sent relay header is dropped
+(`test_a_request_without_a_handover_goes_on_unchanged_to_the_strip`). A verified
+handover the rule serves carries no relay header, so the strip just inside it
+passes the same request object through and cannot remove or override the identity
+the rule set. A clone there would matter: aiohttp resets `request.remote` to the
+socket's peer on a clone, which would turn a relayed request back into a loopback
+one. So the order (`test_dashboard_server_composition_contract_reach.py`) and the
+empty hand-on (`test_the_strip_inside_the_ingress_keeps_a_verified_handovers_identity`)
+are both pinned.
+
+**The handover seam.** `RelayIngress` (one per dashboard app, at
+`app["kiro_relay_ingress"]`) is what the relay client calls: `bind_host` with a
+`HostBinding` once its host connection is up (the Crew's kind and, for a personal
+Crew, its owner's Kiro user ID), `stamp_headers` for every request it hands over,
+and `unbind_host` when the connection ends. `stamp_headers` drops every relay
+header the person's client sent, then adds `x-kiro-relay-user` from the relay's
+message and the handover credential. The credential is random, held only in this
+process's memory (never on disk, in the environment or a log) and rotated on every
+`unbind_host`, so no other process can mark a request as the relay's and a stamp
+from an earlier connection is refused. An ingress built off refuses `bind_host`
+and `stamp_headers`.
+
+**Who a relayed request is.** A relayed request is a clone with every relay header
+removed, `request.remote` set to `kiro-relay` (not an address, so no
+loopback-trusting check reads it as local: the internal-secret branch, the no-Origin
+CSRF branch, `is_direct_local_request`), and a `RelayCaller` at
+`request["kiro_relay_caller"]` carrying provenance `kiro_relay` and transport
+`remote`. `is_proxied_request` answers true for it. Each sign-in provider is a
+separate Kiro user, so a personal Crew honors only the same provider and the same
+user as its computer: the owner match is exact on the stable ID, never an email or
+display name. A team Crew takes the person as the relay names them.
+
+**Token auth.** The relay is the authentication, so `token_auth_middleware` admits
+the published caller before any other branch: the owner of a personal Crew as the
+owner's own subject (`owner_id`, or `local-app` when none is configured), so every
+owner gate decides for them as for the owner at the machine; a teammate as
+`relay:<Kiro user ID>`, which no owner gate matches. It publishes `user`, an empty
+`app`, `is_dashboard_user`, `auth_from_query_token=false` and an empty
+`auth_token`. Admission runs before every token branch and token auth returns
+right after it, so no Crew credential is read, honored or issued over the relay: a
+`?token=` or session cookie a relayed request carries is never validated, pinned,
+exchanged or turned into an app scope, and no Crew cookie is set on the response.
+
+**Remote limits** (`kiro_relay/limits.py`), applied by the ingress after the owner
+check:
+
+| Limit | Code | Routes |
+|---|---|---|
+| Local-only | `relay_local_only` | the strict internal API paths, and any request presenting `X-Internal-Secret`, `X-Local-Secret` or `X-App-Secret` |
+| Instances | `instances_disabled` | `/api/instances` and everything under it, for everyone remote. The code the instances gate already answers when the feature is off, which the dashboard reads as "no instances here" |
+| Local token and secret routes | `relay_local_credential` | `/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`, `/api/auth/refresh`, `/api/apps/<name>/token`, `/api/apps/register`, `/api/apps/dev-fleet/pod-token` and `/apps/dev-fleet/api/pod/token` (a Dev Fleet pod's dashboard token), `/api/webhooks/tokens` and under it (a webhook bearer and signing secret that invoke an agent on their own), `/api/logout`, `/api/update/revalidate`, `/api/secrets` and under it |
+| Shutdown | `relay_shutdown_refused` | `/api/shutdown` |
+| Apps for teammates | `relay_apps_teammate` | for a teammate only: `/apps/*` (each app's UI and backend proxy), `/api/apps` with everything under it (app management and every route an app registers in-process), `/api/publish-providers` and `/api/app-store/refresh` |
+| Non-canonical path | `relay_path_noncanonical` | a path with a `%` left after decoding, an empty segment or a dot segment, checked before any route: a later hop could read it as another path (the app proxy re-encodes what it captured, so `%2574` reaches an app's backend as `t`) |
+
+**App output on the shared feeds.** An app's output also reaches the dashboard
+outside its routes, and a relayed teammate is withheld it there too. The
+WebSocket a teammate opens is marked (`kiro_relay.caller.RELAY_TEAMMATE_WS_FLAG`),
+and the broadcast gate (`WebSocketHub._ws_client_allowed`) drops an app frame
+(`ws_event_scope.app_origin_frame`: an `app_event`, a `notification` whose source
+is `app:<name>`, a `notification_channel_settings` for an app's channel) before the
+dashboard-user grant. The SSE stream
+and `GET /api/notifications` drop app-sourced notifications for a teammate the
+same way, and `GET /api/notifications/channels` leaves out an app's channels while
+`PUT /api/notifications/channels/settings` refuses one (`relay_apps_teammate`,
+through `kiro_relay.ingress.refuse_relayed`). A teammate's changes to the feed reach
+only what they see: Clear all keeps the app notifications withheld from them (and
+broadcasts no whole-feed clear), Mark all read leaves those unread, and a delete,
+ack or unack that names one by its timestamp is refused (`relay_apps_teammate`).
+Every one of these decisions writes a
+denied SEL row, whichever transport made it: a withheld frame or entry is
+`ws_event_scope.audit_teammate_withheld` (reason `relay_teammate_app_frame`), and
+the refused write is the same `kiro_relay` row an ingress refusal writes, with the
+handler's operation. The Crew's own frames, notifications and channels still reach
+them. A chat session an app started is a Crew session, so it is listed like any
+other.
+
+**App proxy.** A relayed owner of a personal Crew reads as `owner-session`
+([App Kit §24](app-kit-platform.md#24-a-backends-principal-claim-is-opt-in-and-bound-to-one-request)).
+A teammate never reaches an app backend: the whole app surface is off for
+teammates. Their
+`relay:` subject never matches the owner predicate, so if an app opts in to
+teammates later, the proxy's existing `none` kind (an authenticated non-owner)
+already names no owner.
+
+**Audit.** Ingress refusals are `relay_ingress` rows (source `kiro_relay`, the code
+as the error). Token auth's rows and the request audit name the person,
+`relay:<Kiro user ID>`, with the `_via_proxy` suffix and `forwarded=true`.
+
+Tests: `test/test_kiro_relay_caller_identity.py`, `test/test_kiro_relay_teammate_app_frames.py`.
+
 ## Configuration
 
 Single `dashboard.url` field on `KiroCrewConfig` (default: `""`), loaded from `config.json → dashboard.url`.
@@ -931,7 +1124,7 @@ already names where to sign in.
 
 1. Persistent HMAC secret (`token_signing.key`, owner-restricted) — signed access and refresh cookies survive a process restart; `token_secret` supplies an ephemeral fallback only when the key cannot be persisted. A persisted key that exists but is shorter than 32 bytes is never accepted and is not repaired in place: the gateway boot preflight (`slack.gateway.signing_key_preflight`, backed by `token_secret.signing_key_health` and, for the bytes actually loaded, `token_secret.load_boot_secret`) refuses to start, logs CRITICAL and prints manual repair steps (stop the gateway and any restore, check the length, delete the file by hand, restart), and `kirocrew doctor` reports the same state, so a truncated key is a loud operator action instead of an ephemeral secret that logs every session out at each restart (#13221).
 2. Dual expiry: link click expiry plus configured cookie-session expiry, enforced by `validate_token()`
-3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity` and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Resolution failure is fail-closed on identity and fail-open on availability for new ordinary sessions: they degrade to the address pin. A `require_peer` QR link instead fails closed, enrolls one verified allowed peer on its main exchange path, and carries that HMAC-signed original `peer_key` through access cookies, refresh rotation/grace replay, and child mints. A session pinned to a tailnet identity is denied (`tailnet identity unverified`) while the daemon cannot answer and denied on signed-key mismatch after restart — never satisfiable by an unverified proxied request or whichever allowed node presents a stolen cookie first. Transient daemon failures are cached briefly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture).
+3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity`, the kernel proved the loopback client socket belongs to `tailscaled` (`tailnet_proxy_proof.loopback_client_is_daemon`: on Linux the `/proc/net/tcp{,6}` owner uid of the client end is root's and a `tailscaled` runs as root; every other platform proves nothing), and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Without the Shared Crew preview an unresolved peer falls through to the token+IP path (fail-closed on identity, fail-open on availability, `rfc-tailnet-dashboard-access`). Under the preview (`KIROCREW_SHARED_CREW_PREVIEW=1`) the allowlist fails closed when no peer resolves (`tailnet.forwarded_peer_refusal`): a forwarded tailnet request (loopback peer, a tailnet address in `X-Forwarded-For`) is admitted only when the daemon's `whois` of its single forwarded address names an allowlisted login and no `Tailscale-User-Login` header disagrees; a chain, an address the daemon cannot name, a disagreeing header or a login off the list is refused (`tailnet identity unverified` or `tailnet login not allowed`). A loopback client the kernel does not prove is the daemon (every platform but Linux, a same-user daemon, a proof that raised) is such a case: its forwarded address can only refuse the request or admit it as Unknown with the address pin, never name a person, so a local token holder cannot name a tailnet person (`test_shared_crew_identity_spoof.py`, `test_shared_crew_allowlist_fail_closed.py`). A request with no forwarding header is never refused here. A `require_peer` QR link instead fails closed, enrolls one verified allowed peer on its main exchange path, and carries that HMAC-signed original `peer_key` through access cookies, refresh rotation/grace replay, and child mints. A session pinned to a tailnet identity is denied (`tailnet identity unverified`) while the daemon cannot answer and denied on signed-key mismatch after restart — never satisfiable by an unverified proxied request or whichever allowed node presents a stolen cookie first. Transient daemon failures are cached briefly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture).
 4. Link re-exchange is allowed during the signed link window; each query-param use mints a distinct session cookie (`test_link_token_still_reusable_via_query_param_after_exchange`; `test_url_token_exchanged_for_distinct_session_cookie`)
 5. Dashboard link sent via DM only — never posted in channels
 6. Ordinary loopback routes require token authentication (`token_auth.token_auth_middleware()`; `test_loopback_requires_token`); internal routes have separate secret and mixed-cookie branches
@@ -940,4 +1133,4 @@ already names where to sign in.
 9. Bounded concurrent nonces (`TokenStateManager`) — prevents unbounded memory growth while allowing active link nonces to refresh their eviction position
 10. Explicit revocation via `kirocrew logout` — clears all nonces, IP bindings, and consumed tokens, and bumps the persisted revocation generation, ending every outstanding access cookie and refresh chain
 11. App-token scope confinement (CWE-269) — an `app`-claim token is confined deny-by-default to its own namespace (`/apps/<name>`, `/api/apps/<name>`) + its manifest `permissions.api` allowlist, enforced at every grant point; no-op for dashboard-user tokens
-12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `route_latency → deny_audit → host_validation → csrf → token_auth → sel_audit → slot_ownership` chain (then `_workflow_ready`) against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain
+12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `route_latency → relay_ingress → deny_audit → host_validation → csrf → token_auth → sel_audit → slot_ownership` chain (then `_workflow_ready`) against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain

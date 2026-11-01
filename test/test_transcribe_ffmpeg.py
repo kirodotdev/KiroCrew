@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import platform_compat as _pc
 from kiro_crew import transcribe
@@ -92,7 +93,14 @@ class TestBundledFfmpeg:
         )
         return binary
 
-    def test_resolves_the_exact_packaged_resource(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_resolves_the_exact_packaged_resource"),
+            *named_cases("test_packaged_cli_without_electron_parent_uses_release_decoder"),
+        ],
+    )
+    def test_the_packaged_resource_is_resolved(self, monkeypatch, tmp_path):
         binary = self._fake_package(monkeypatch, tmp_path)
         assert transcribe._bundled_ffmpeg() == str(binary)
 
@@ -189,11 +197,6 @@ class TestBundledFfmpeg:
         assert transcribe._open_ffmpeg_for_execution() is None
         assert transcribe._find_ffmpeg() is None
         assert transcribe.ffmpeg_source() is None
-
-    def test_packaged_cli_without_electron_parent_uses_release_decoder(self, monkeypatch, tmp_path):
-        binary = self._fake_package(monkeypatch, tmp_path)
-
-        assert transcribe._bundled_ffmpeg() == str(binary)
 
     def test_same_size_replacement_is_rejected_by_digest(self, monkeypatch, tmp_path):
         binary = self._fake_package(monkeypatch, tmp_path)

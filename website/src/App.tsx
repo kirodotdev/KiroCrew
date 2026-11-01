@@ -6,7 +6,7 @@ import { setUpdateProgress } from './store/dashboardSlice'
 // module below that reads it (`shell/nav/navItems.ts` computes `NAV_ITEMS`).
 import './surfaces/builtins'
 import { surfaceLabel } from './surfaces/registry'
-import { setAgentSwitchNotice } from './store/chatSlice'
+import AgentSwitchNoticeBanner from './components/AgentSwitchNoticeBanner'
 import { GuideProvider } from './guide/GuideContext'
 import { metricColor } from './utils/metricColor'
 import { railWidthFor } from './hooks/useRailWidth'
@@ -15,15 +15,16 @@ import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registe
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
-import { Rocket, Code, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, X, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
+import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
-import { MobileConnectDialog } from './shell/nav/mobileConnect'
+import { MobileConnectDialog } from './components/mobileConnect'
 import { isMacElectron, isWinElectron, isLinuxFramelessElectron } from './lib/electron'
 import ChatPage from './pages/ChatPage'
 import PopoutFrame from './pages/PopoutFrame'
 import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
 import TerminalPopoutFrame from './pages/TerminalPopoutFrame'
+import AppPopoutFrame, { AppPopoutHardExit } from './pages/AppPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
 import AskAgentButton from './components/AskAgentButton'
@@ -36,12 +37,15 @@ import LogsPage from './pages/LogsPage'
 const MembersPage = lazy(() => import('./pages/members/MembersPage'))
 // The guide pill renders only once a guide is offered; keep it off the entry chunk.
 const GuideLayer = lazy(() => import('./guide/GuideLayer'))
+// App-contributed link previews (`contributes.linkPreviews`): hover detection only;
+// an app's module loads on the first hover of one of its links.
+const LinkPreviewLayer = lazy(() => import('./linkPreview/LinkPreviewLayer'))
 // Lazy for the same reason: the crew work-item board is opened from a conductor
 // session or the Crew page, never at startup.
 const CrewBoardPage = lazy(() => import('./pages/CrewBoardPage'))
 const SessionDashboardsPage = lazy(() => import('./pages/chat/command-center/SessionDashboardsPage'))
 import ArtifactDetailPage from './pages/ArtifactDetailPage'
-import { ChangelogModal } from './shell/updates/updateFlow'
+import { ChangelogModal, UpdateErrorDialogFrame } from './shell/updates/updateFlow'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstancesViewport from './components/InstancesViewport'
 import { LocalOverlayRoot } from './components/overlayRoot'
@@ -51,6 +55,7 @@ import EmbedTabStrip from './components/EmbedTabStrip'
 // Dev-only layout-editor harness (RFC §7 PR 2). Lazy so it never weighs the main
 // bundle — it is a developer route, not a shipped surface.
 const LayoutEditorHarnessPage = lazy(() => import('./pages/LayoutEditorHarnessPage'))
+
 import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
@@ -66,13 +71,13 @@ import CrashReportNotice from './components/CrashReportNotice'
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
 import KiroSignInNoticeFallback from './components/KiroSignInNoticeFallback'
 import { ImportSessionOutcomeNotice } from './components/ImportSessionItem'
+import { FileMenuResultToastFrame } from './components/notifications/FileMenuResultToast'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { MobileNavRailContext, MobileRosterBarContext, type MobileNavRailOptions } from './components/MobileNavRailContext'
 import ShortcutsModal from './components/ShortcutsModal'
 import QuickSearchSurface from './components/QuickSearchSurface'
 import ReportProblemModal from './components/ReportProblemModal'
 import KiroAccountModal from './components/KiroAccountModal'
-import UnscannedDownloadConfirmHost from './components/UnscannedDownloadConfirmHost'
 
 import { StartupVideo } from './shell/boot/startupVideo'
 import { i18nT } from './i18n/t'
@@ -300,7 +305,7 @@ export { NavItem, NavBadge }
 export default function App() {
   const shell = useAppShell()
   const {
-    isEmbed, isPopout, initialPopoutPath, dispatch, updateAvailable, terminalEnabled, terminalPoppedOut,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
@@ -309,7 +314,7 @@ export default function App() {
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, kiroAccountEntry, metrics, devMode, subscribeLogs, subscribeSubagents, forceReconnect,
+    kiroUsageState, kiroAccountEntry, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
     setUpdateError, startupVideo, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
@@ -442,19 +447,6 @@ export default function App() {
           // scroller (behind a divider) on screens where pinning them would leave
           // the app tiles less than four rows (shell/nav/adaptiveMobileRail.tsx).
           secondary={<>
-            {devMode && (
-              <NavItem
-                navId="developer"
-                path="/developer"
-                label={i18nT('app.developer')}
-                icon={<Code size={16} />}
-                active={activePath === '/developer'}
-                collapsed
-                touch
-                replace
-                onClickOverride={activePath === '/developer' ? onActivate : undefined}
-              />
-            )}
             {terminalEnabled && (
               <NavItem
                 navId="terminal"
@@ -528,7 +520,30 @@ export default function App() {
         the dashboard inside the local pane (below), where it hides with the
         local Crew. */}
     {(isPopout || isEmbed) && <ImportSessionOutcomeNotice />}
-    {isPopout ? (
+    {/* Same rule for a file-menu action's result: the dashboard shows it in the
+        notification sheet's banner region, which these frames do not render. */}
+    {(isPopout || isEmbed) && <FileMenuResultToastFrame />}
+    {appPopoutRoute ? (
+      /* An app pop-out window. Its router is mounted at `/popout/app`
+         (main.tsx, via appPopoutRouterBasename), so the paths here are the
+         app's OWN — `/dev-fleet/…`, `/apps/<name>` — exactly as the dashboard
+         branch below spells them, and an app's absolute sub-path navigation
+         resolves unchanged. The two arms are the dashboard's two app arms; the
+         frame renders the pinned app for its own route and hands any other
+         destination (an app's "go to chat" exit, a link to Settings) to the
+         main window instead of mounting it here. The hard-exit sink is
+         installed above the route boundary, so a hard "Ask the agent" from a
+         crashed app (or a crashed frame) hands off to main instead of loading
+         the dashboard here. */
+      <>
+        <AppPopoutHardExit />
+        <Routes>
+          <Route path="/apps/:name" element={<ErrorBoundary><AppPopoutFrame route={appPopoutRoute} /></ErrorBoundary>} />
+          <Route path="/:builtinApp/*" element={<ErrorBoundary><AppPopoutFrame route={appPopoutRoute} /></ErrorBoundary>} />
+          <Route path="*" element={<ErrorBoundary><AppPopoutFrame route={appPopoutRoute} /></ErrorBoundary>} />
+        </Routes>
+      </>
+    ) : isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/artifact/:slug" element={<ErrorBoundary><ArtifactPopoutFrame /></ErrorBoundary>} />
@@ -701,19 +716,14 @@ export default function App() {
 
       <ShellHeader shell={shell} />
 
-      {agentSwitchNotice && (
-        <div role="status" className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-          <span className="text-sm text-text flex-1">{agentSwitchNotice.message}</span>
-          <button onClick={() => dispatch(setAgentSwitchNotice(null))} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="lucide-inline w-4 h-4" /></button>
-        </div>
-      )}
+      {agentSwitchNotice && <AgentSwitchNoticeBanner notice={agentSwitchNotice} />}
 
       {/* Report a Problem — mounted by the nav rail's "Report issue" link. */}
       <ReportProblemModal open={reportProblemOpen} onClose={() => setReportProblemOpen(false)} />
 
       {/* Update error modal */}
       {updateError && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')}>
+        <UpdateErrorDialogFrame setError={setUpdateError}>
           <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
             <div className="text-4xl mb-4"><AlertTriangle className="lucide-inline" /></div>
             <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.update_failed')}</div>
@@ -727,7 +737,7 @@ export default function App() {
               </button>
             </div>
           </div>
-        </div>
+        </UpdateErrorDialogFrame>
       )}
 
       {/* Every surface that opens ITSELF at launch, mounted from one place so
@@ -815,6 +825,7 @@ export default function App() {
               read their draft and request-header seams from this provider. */}
           <GuideProvider>
           <Suspense fallback={null}><GuideLayer /></Suspense>
+          <Suspense fallback={null}><LinkPreviewLayer /></Suspense>
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
@@ -923,8 +934,6 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-    {/* Answers the "Too large to scan" question a file download asks. */}
-    <UnscannedDownloadConfirmHost />
     <QuickSearchSurface
       owners={slotOwners}
       open={commandPalette.open}

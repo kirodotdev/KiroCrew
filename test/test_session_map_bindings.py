@@ -159,10 +159,21 @@ set_unbind_listener split_dm_session_key
 _ADDED = frozenset({"_links", "_store", "_OWNERS", "_own_methods"})
 
 #: Module-level names the one-module ``session_map.py`` bound that the facade does not bind:
-#: standard-library and typing imports only moved code reads. Every other name it bound
-#: still resolves on the facade.
+#: standard-library and typing imports that only moved code reads, plus ``_serialized`` --
+#: the privacy durable-write lock. Its locked sweep walk lives in
+#: ``privacy_mode.stamp_flagged_headers`` (beside the lock it holds), so ``session_map``
+#: imports only the two data probes that walk reads back. Every other name the one-module
+#: form bound still resolves on the facade.
 _DROPPED_IMPORTS = frozenset(
-    {"AbstractContextManager", "Iterator", "ParamSpec", "TypeVar", "contextmanager", "nullcontext"}
+    {
+        "AbstractContextManager",
+        "Iterator",
+        "ParamSpec",
+        "TypeVar",
+        "contextmanager",
+        "nullcontext",
+        "_serialized",
+    }
 )
 
 #: The module-level names that moved to an owner, and the owner whose object the facade binds.

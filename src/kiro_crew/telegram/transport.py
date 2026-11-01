@@ -71,6 +71,11 @@ class TelegramInboundMessage(InboundMessage):
     # "this message was synthesized and never had entities".
     mentions: tuple[str, ...] = ()
     has_entities: bool = False
+    # The replied-to message's quoted content as plain text (or ""), held SEPARATE
+    # from ``text`` so it never reaches the mention-activation gate. The turn path
+    # folds it into the agent-facing text — screened, audited and fenced — after
+    # activation and command parsing (client.frame_reply_context).
+    reply_context: str = ""
     # True when this message was SYNTHESIZED from a press on the bot's own inline
     # keyboard rather than typed. Tapping a widget the bot posted is addressing the
     # bot by construction, so the activation gate serves it unconditionally.
@@ -551,6 +556,7 @@ class TelegramTransport(MessagingTransport):
             attachments=list(inbound.attachments),
             mentions=inbound.mentions,
             has_entities=inbound.has_entities,
+            reply_context=inbound.reply_context,
         )
         if not self.authorize(msg):
             return

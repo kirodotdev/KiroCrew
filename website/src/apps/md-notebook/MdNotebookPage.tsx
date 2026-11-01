@@ -716,6 +716,7 @@ export default function MdNotebookPage() {
                 gap: '4px',
                 padding: '4px',
                 background: 'var(--card)',
+                border: '1px solid var(--border)',
                 borderRadius: '8px',
               }}
             >

@@ -9,6 +9,8 @@ import { specApi, type BrowseEntry } from '../api'
 import { ACCENT, Btn } from './shared'
 import { Input } from '../../../components/ui'
 import Clickable from '../../../components/Clickable'
+import ErrorNotice from '../../../components/ErrorNotice'
+import { errMessage } from '../../../utils/thunkError'
 
 import { i18nT } from '../../../i18n/t'
 import { PICKER_CSS } from '../inlineStyles'
@@ -51,6 +53,7 @@ export default function ProjectPicker({ value, onChange }: { value: string; onCh
     if (d.recents) setRecents(d.recents)
   }, [navQuery.data, navPath])
   const loading = navQuery.isFetching
+  const listFailed = navPath !== null && navQuery.isError && !loading
 
   const browse = (path: string, fromStart?: boolean) => {
     setNavPath(path || '')
@@ -133,7 +136,27 @@ export default function ProjectPicker({ value, onChange }: { value: string; onCh
             </>
           )}
 
-          {dirs.length === 0 && !loading && (
+          {/* A failed listing is not an empty folder: "No subfolders here" in
+              front of a refused read told the user to pick a folder they could
+              not see into. The header still names the last folder that loaded,
+              so "Use this folder" stays honest. */}
+          {listFailed && (
+            <div className="px-4 py-3 flex flex-col items-start gap-2">
+              {/* No hand-off: the hand-off leaves this page, and the spec description typed in NewSpecView is not saved yet. */}
+              <ErrorNotice
+                testId="spec-builder-picker-error"
+                title={i18nT('apps.specBuilder.components.projectPicker.load_failed')}
+                message={errMessage(navQuery.error) || i18nT('apps.specBuilder.components.projectPicker.load_failed_unknown')}
+                messagePlacement="below"
+                className="w-full"
+              />
+              <Btn
+                onClick={() => void navQuery.refetch()}
+                label={i18nT('apps.specBuilder.components.projectPicker.retry')}
+              />
+            </div>
+          )}
+          {dirs.length === 0 && !loading && !listFailed && (
             <div className="px-4 py-3.5 text-[12px] text-muted">{i18nT('apps.specBuilder.components.projectPicker.no_subfolders_here_use_use_this_folder_above_to')}</div>
           )}
           {dirs.map((d) => (

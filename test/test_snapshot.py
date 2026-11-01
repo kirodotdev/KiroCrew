@@ -234,7 +234,6 @@ class TestSnapshot:
         src, _, _, tmp_path = env
         out2 = tmp_path / "out2"
         out2.mkdir()
-        # Create 3 fake old snapshots
         for i in range(3):
             (out2 / f"kirocrew-snapshot-2026010{i}T000000Z.tar.gz").write_text("fake")
         monkeypatch.setenv("KIROCREW_HOME", str(src))

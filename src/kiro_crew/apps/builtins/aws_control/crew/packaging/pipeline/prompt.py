@@ -80,7 +80,7 @@ def _resolve_prompt_path(raw: str, agents_dir: Path, *, resolved_root: Path | No
     # touch hands over an NTLM exchange.
     #
     # The gate is IMPORTED rather than restated. This repo already owns the rule, and a
-    # second spelling of it is the mistake this branch has now paid for seven times. The
+    # second spelling of it drifts from the first. The
     # trusted-root allowance comes along with it, so a persona that legitimately lives on
     # a share the operator configured still resolves.
     #
@@ -124,10 +124,10 @@ def _resolve_prompt_path(raw: str, agents_dir: Path, *, resolved_root: Path | No
         # the same host was not covered by it and the probe happened before any fence ran.
         #
         # Second, resolve() COLLAPSES the links, so a check placed after it inspects the
-        # targets and cannot see that a link was ever there. An implementation of
-        # this branch walked the components of the resolved path looking for reparse points
-        # and could never have found one; it passed its own tests only because those called
-        # it directly with an unresolved path, which is not what this call site hands it.
+        # targets and cannot see that a link was ever there. Walking the components of the
+        # resolved path for reparse points can never find one; a test that calls such a walk
+        # directly with an unresolved path passes anyway, which is not what this call site
+        # hands it.
         _pinned._refuse_redirects_in_chain(agents_dir, target)
         try:
             path = (agents_dir / target).resolve()
@@ -225,13 +225,13 @@ def _resolve_prompt_path(raw: str, agents_dir: Path, *, resolved_root: Path | No
                     f"without following it, which is the thing this check exists to avoid. "
                     f"Copy the persona next to the agent spec."
                 )
-    # ONE resolution, and every check below runs on its result. An earlier version
-    # resolved the target for the credential fences but left this pseudo-filesystem
-    # loop testing the path as written, so a symlink to /proc/self/environ passed
-    # all three: the link is not under /proc, and /proc is not a credential
-    # location. The read then followed the link and inlined the deploy process's
-    # environment into the shipped prompt, where scan_text catches only
-    # credential-SHAPED text and a secret in another format survives.
+    # ONE resolution, and every check below runs on its result. Resolving the target
+    # for the credential fences while this pseudo-filesystem loop tests the path as
+    # written lets a symlink to /proc/self/environ pass all three: the link is not
+    # under /proc, and /proc is not a credential location. The read then follows the
+    # link and inlines the deploy process's environment into the shipped prompt,
+    # where scan_text catches only credential-SHAPED text and a secret in another
+    # format survives.
     #
     # Containment under agents_dir is deliberately NOT required: an absolute
     # persona path outside that directory is a supported case with its own test.

@@ -56,6 +56,7 @@ from kiro_crew.apps.builtins.spec_builder.tests.routes_facade import routes as r
 _no_autonudge = spec_builder_routes_coverage_helpers._no_autonudge
 _pin_state_dir = spec_builder_routes_coverage_helpers._pin_state_dir
 _quiet_sel = spec_builder_routes_coverage_helpers._quiet_sel
+_real_nudge = spec_builder_routes_coverage_helpers._real_nudge
 
 
 # -- pure predicates and coercions -------------------------------------------
@@ -552,6 +553,10 @@ class TestReadSpecText:
         assert text is not None and text.startswith("ok ")
 
     def test_the_read_is_capped_at_the_documented_size(self, tmp_path):
+        (tmp_path / "tasks.md").write_bytes(b"x" * r._MAX_SPEC_BYTES)
+        assert r._read_spec_text(tmp_path, "tasks.md") == "x" * r._MAX_SPEC_BYTES
+        (tmp_path / "tasks.md").write_bytes(b"x" * (r._MAX_SPEC_BYTES + 1))
+        assert r._read_spec_text(tmp_path, "tasks.md") is None
         reader = mock.Mock(return_value=b"x")
         with mock.patch.object(r, "safe_read_file_bytes_nolink", reader):
             r._read_spec_text(tmp_path, "tasks.md")
@@ -1267,18 +1272,20 @@ class TestExecLoopLookup:
 
 class TestRemoveNudgeLoop:
     @pytest.mark.asyncio
-    async def test_a_pinned_caller_that_captured_nothing_removes_nothing(self):
-        patcher = _autonudge(SimpleNamespace(id="loop-7"))
-        with patcher:
+    async def test_a_pinned_caller_that_captured_nothing_removes_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        async with _real_nudge(tmp_path / "nudge", monkeypatch) as (svc, loop):
             await r._remove_nudge_loop("demo", only_loop_id=None)
-        patcher.svc.remove.assert_not_awaited()  # type: ignore[attr-defined]
+            assert svc.get_by_slot(r._slot_key("demo")).id == loop.id
 
     @pytest.mark.asyncio
-    async def test_an_unpinned_removal_takes_whatever_loop_is_there(self):
-        patcher = _autonudge(SimpleNamespace(id="loop-7"))
-        with patcher:
-            await r._remove_nudge_loop("demo", stop_reason="spec_deleted")
-        patcher.svc.remove.assert_awaited_once_with("loop-7", stop_reason="spec_deleted")  # type: ignore[attr-defined]
+    async def test_an_unpinned_removal_takes_whatever_loop_is_there(self, tmp_path, monkeypatch):
+        async with _real_nudge(tmp_path / "nudge", monkeypatch) as (svc, loop):
+            with mock.patch.object(svc, "remove", wraps=svc.remove) as remove:
+                await r._remove_nudge_loop("demo", stop_reason="spec_deleted")
+            assert svc.get_by_slot(r._slot_key("demo")) is None
+            remove.assert_awaited_once_with(loop.id, stop_reason="spec_deleted")
 
     @pytest.mark.asyncio
     async def test_a_removal_failure_propagates_rather_than_reporting_success(self):

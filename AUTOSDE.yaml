@@ -579,7 +579,11 @@ custom-rules:
       - H1/H3 — Kiro is the floor. FLAG a change that makes the kiro harness
         conditional on an edition, a feature flag, an env var, or a registry
         lookup, or that makes an unusable persisted acp_backend raise instead of
-        degrading to kiro with a logged reason.
+        degrading to kiro with a logged reason. The one exception is H17 (see
+        Allowed); still FLAG the selection gate itself raising, or a refusal
+        that reaches agent.acp_backend, agent.member_acp_backend, an explicit
+        spawn_run(backend=) override, or any session that is not the pinned
+        crewmate's own DM or worker.
       - H6/H7 — capability grants. A new capability predicate must be membership
         in a named ACP_BACKENDS_* set (defined in agent_sdk/backends.py or a backends_* owner,
         re-exported by agent_sdk/backends.py and acp/types.py), and every existing
@@ -600,6 +604,15 @@ custom-rules:
       - Widening the acp_backend config enum to admit a preview harness: the
         enum is the value-SURVIVAL domain and selectability is gated separately
         (H4). Omitting it there is the bug, not including it.
+      - H17: a crewmate's own harness pin (agents.<name>.acp_backend) that
+        this gateway cannot start refuses that crewmate's DM chat and workers
+        with CrewmateHarnessUnavailable instead of degrading to kiro. The owner
+        chose fail-closed for this one value: running the crewmate on a harness
+        it was moved away from is what the pin exists to prevent. The refusal is
+        the pre-gate check crewmate_backend_pin, evaluated as the crew_backend
+        argument of select_provider_backend before the gate runs; for any other
+        session it returns None and changes nothing, so it is not an H13 change
+        to the kiro construction path.
 
   - id: memory-store-seam
     blocking: true
@@ -882,19 +895,65 @@ custom-rules:
     blocking: true
     file-patterns:
       - "src/kiro_crew/apps/builtins/**"
+      - "src/kiro_crew/apps/manager_builtins.py"
+      - "src/kiro_crew/mcp_tools/apps.py"
+      - "src/kiro_crew/dashboard/server_internal_paths.py"
+      - "website/src/apps/**"
+      - "website/public/apps/**"
+      - "website/public/app-assets/**"
+      - "**/app.json"
+      - "src/kiro_crew/**/*.py"
+      - "website/src/**"
+      - "website/electron/**"
+      - "scripts/**"
+      - ".github/workflows/**"
     rule: |
-      The set of built-in apps is CLOSED. A new app ships as an EXTERNAL app
-      published through the KiroCrewApps registry (what the App Store's
-      Discover page lists), never as a new built-in in this repo. A built-in
-      rides the wheel: it grows every user's install footprint, cannot be
-      uninstalled (only disabled), and couples the app's release and fix
-      cadence to Kiro Crew releases — the registry exists precisely so an app
-      can be listed, updated, and corrected with a catalog publish instead of
-      a client ship.
+      Kiro Crew accepts no new built-in app. The set that still ships is CLOSED
+      and is being EMPTIED: every app, first-party included, lives in a
+      dedicated GitHub repository listed in the official registry
+      (kirodotdev/KiroCrewApps, what the App Store's Discover page lists; the
+      catalog repo holds data only, never app code). The existing built-ins
+      move out under #26967
+      (docs/decisions/2026-11-01-kiro-crew-accepts-no-new-built-in-apps.md).
+      A built-in rides the wheel: it grows every user's install footprint,
+      cannot be uninstalled (only disabled), and couples the app's release and
+      fix cadence to Kiro Crew releases — the registry exists precisely so an
+      app can be listed, updated, and corrected with a catalog publish instead
+      of a client ship.
 
       - FLAG any PR that adds a new app directory under
-        src/kiro_crew/apps/builtins/ (a new app.json). The publishing path is
-        the KiroCrewApps registry; point the author there. An explicit
+        src/kiro_crew/apps/builtins/ (a new app.json), or re-adds an app that
+        has already moved out.
+      - FLAG a new app.json anywhere outside docs/app-kit/examples/ and test
+        fixtures (src/kiro_crew/tests_fixtures/, test/, website/src/test/).
+      - FLAG a new per-app page directory under website/src/apps/<app>/, or a
+        new per-app entry in the core frontend registries
+        (website/src/apps/builtinRegistry.ts, overlayRegistry.ts,
+        builtinIcons.tsx) or a new per-app asset directory under
+        website/public/app-assets/.
+      - FLAG a new per-app row in a core built-in table: BUILTIN_NAMES in
+        src/kiro_crew/apps/builtins/__init__.py, or the name sets in
+        src/kiro_crew/apps/manager_builtins.py.
+      - FLAG a new line of core code (backend, frontend, Electron shell,
+        scripts, CI workflows) that imports a specific app
+        (kiro_crew.apps.builtins.<app>, website/src/apps/<app>/) or hard-codes
+        a specific app id AS AN APP IDENTITY (an app-manager lookup, a manifest
+        or registry key, an app_id comparison), outside the built-in tables
+        listed in this rule that are being emptied and outside the app's own
+        directory. A word that also names a core subsystem (workflows,
+        channels, projects, meetings) is not an app id there. An app moves out
+        COMPLETELY: no part of it (backend, UI, scripts, CI, specs) stays in
+        core, and a capability it needs from core is a generic, app-agnostic
+        App Kit seam. Existing references are migration debt removed as each
+        app leaves; do not flag a line that only removes or narrows one.
+      - FLAG a new app-specific MCP tool in src/kiro_crew/mcp_tools/apps.py (a
+        tool named for, or serving, one app), or a new app-specific
+        internal-secret path row in
+        src/kiro_crew/dashboard/server_internal_paths.py.
+      - Point the author at a dedicated GitHub repository listed in the
+        official registry (kirodotdev/KiroCrewApps). A capability an app
+        cannot reach from outside core is an App Kit seam gap: the fix is a
+        generic seam every app can use, never the app in core. An explicit
         maintainer decision recorded on the PR (the /ai-review override flow)
         is the only exception — the default is closed.
       - FLAG restoring a withdrawn built-in (the Board app) or un-hiding the
@@ -903,10 +962,24 @@ custom-rules:
         fork divergences an upstream sync must not undo.
 
       Allowed (do NOT flag):
-      - Changes inside an EXISTING built-in app directory: fixes, features,
-        tests, i18n, refactors.
+      - Changes inside an EXISTING built-in app directory or its existing
+        page, registry entry or table row: fixes, features, tests, i18n,
+        refactors.
+      - Edits to an EXISTING core reference to a built-in (an import or app-id
+        use already on main) while that app still ships: only a NEW reference
+        is flagged.
       - Deleting an existing built-in, or moving one OUT of the repo to the
-        registry — that is the direction this rule pushes.
+        registry — that is the direction this rule pushes. So is the migration
+        work for former built-ins under #26967: adopting a user's built-in
+        record onto its external source, moving generic, app-agnostic
+        infrastructure that lives under an app directory into core, and removing a row from any table
+        above as its app leaves.
+      - App Kit platform work: a generic seam, SDK surface or registry
+        mechanism any registry app can use.
+      - An app.json under docs/app-kit/examples/ or in a test fixture, and
+        edits to an existing app.json.
+      - A downstream edition contributing its own apps additively through the
+        extension seams; this rule covers this repository's tree.
 
   - id: no-sync-store-call-from-a-coroutine
     blocking: true
@@ -1407,3 +1480,28 @@ custom-rules:
       baselined file that shrinks; a re-export of a name no test patches; owners
       that look a patched name up on the facade at call time; code a facade
       keeps because a gate pins it to that path.
+
+  - id: a-gateway-status-row-carries-a-notice-token
+    blocking: false
+    file-patterns:
+      - "src/kiro_crew/dashboard/**/*.py"
+    rule: |
+      A status row the chat gateway appends to a transcript keeps its English
+      sentence as `content`, which channel mirrors, SSE readers and the model
+      read verbatim. The dashboard localizes the row only through a structured
+      `meta["notice"]` token (`GATEWAY_NOTICE_*` in
+      `src/kiro_crew/dashboard/gateway_notice.py`, or `TRANSIENT_NOTICE_*` in
+      `chat_utils.py`) keyed in `website/src/pages/chat/gatewayNotice.ts`. A row
+      with literal English and no token renders in English on every locale, and
+      the only way left to translate it is a regex over the prose.
+
+      FLAG a new or edited `slot.append("error" | "notice", "<literal English>",
+      ...)` (or `_emit_error` / `_emit_stale` / `_emit_stall`) that states a
+      gateway status (a recovery, a retry, an empty or refused turn, a model
+      fallback) with no `meta["notice"]` token. Ask for a token from
+      `gateway_notice_meta(...)`, a `NOTICE_FAMILIES` and `COPY_KEY` row, and
+      catalog keys; `test/test_transient_notice_parity.py` then pins both sides.
+
+      Allowed (do NOT flag): rows whose text is the model's or a tool's own
+      output, rows a dedicated card draws from structured meta, and assistant
+      rows carrying the compaction card's own notice markers.

@@ -7,6 +7,7 @@ import { Provider } from 'react-redux'
 import { api } from '../../api/client'
 import { createTestStore } from '../../test/helpers'
 
+import { SidePanelDockContext } from '../../components/SidePanelLayout'
 import SettingsSearch from './SettingsSearch'
 
 /**
@@ -31,7 +32,10 @@ function ParamsProbe() {
   )
 }
 
-function setup(initialEntry = '/settings?tab=chat&channel=slack') {
+function setup(
+  initialEntry = '/settings?tab=chat&channel=slack',
+  dock: 'header' | 'bottom-float' | 'nav' = 'header',
+) {
   // A QueryClient because the search reads `['dashboardConfig']` to learn whether a
   // governance-gated entry may be offered at all. The cases below are about ranking
   // and activation and query nothing governed, so an unresolved read is fine here;
@@ -41,7 +45,9 @@ function setup(initialEntry = '/settings?tab=chat&channel=slack') {
     <Provider store={createTestStore()}>
       <QueryClientProvider client={client}>
         <MemoryRouter initialEntries={[initialEntry]}>
-          <SettingsSearch />
+          <SidePanelDockContext.Provider value={dock}>
+            <SettingsSearch />
+          </SidePanelDockContext.Provider>
           <ParamsProbe />
         </MemoryRouter>
       </QueryClientProvider>
@@ -106,6 +112,50 @@ describe('SettingsSearch', () => {
     expect(rows[0]).toHaveAttribute('aria-selected', 'true')
   })
 
+  it('in the nav rail, clamps each row (2-line label, 1-line subtitle) and keeps the full text', () => {
+    // The 200px rail wraps instead of truncating; unbounded wrapping let a long
+    // help text turn each hit into ~150px, so "tool" showed two rows.
+    setup('/settings?tab=chat', 'nav')
+    fireEvent.change(input(), { target: { value: 'tool' } })
+    const listbox = screen.getByRole('listbox')
+    expect(listbox.className).toContain('max-h-[min(60vh,28rem)]')
+    expect(listbox.className).not.toContain('max-h-80')
+    const rows = screen.getAllByRole('option')
+    expect(rows.length).toBeGreaterThan(1)
+    for (const row of rows) {
+      const [label, subtitle] = Array.from(row.children) as HTMLElement[]
+      expect(label.className).toContain('line-clamp-2')
+      expect(subtitle.className).toContain('line-clamp-1')
+      expect(label.className).not.toContain('truncate')
+      // The clamp is visual only: the full text is still the row's content
+      // (its accessible name) and is offered on hover.
+      expect(label.getAttribute('title')).toBe(label.textContent)
+      expect(subtitle.getAttribute('title')).toBe(subtitle.textContent)
+      expect(subtitle.textContent).not.toBe('')
+    }
+  })
+
+  it('in the header, rows still truncate to one line with the w-80 panel height', () => {
+    setup('/settings?tab=chat', 'header')
+    fireEvent.change(input(), { target: { value: 'tool' } })
+    expect(screen.getByRole('listbox').className).toContain('max-h-80')
+    const [label, subtitle] = Array.from(screen.getAllByRole('option')[0].children) as HTMLElement[]
+    expect(label.className).toContain('truncate')
+    expect(subtitle.className).toContain('truncate')
+    expect(label.className).not.toContain('line-clamp')
+    expect(label).not.toHaveAttribute('title')
+  })
+
+  it('in the floating capsule, rows truncate and the panel keeps its height', () => {
+    setup('/settings?tab=chat', 'bottom-float')
+    fireEvent.change(input(), { target: { value: 'tool' } })
+    const listbox = screen.getByRole('listbox')
+    expect(listbox.className).toContain('max-h-80')
+    expect(listbox.className).toContain('bottom-full')
+    const [label] = Array.from(screen.getAllByRole('option')[0].children) as HTMLElement[]
+    expect(label.className).toContain('truncate')
+  })
+
   it('Escape closes the dropdown and keeps the typed query', () => {
     setup()
     fireEvent.change(input(), { target: { value: 'zoom' } })
@@ -132,6 +182,27 @@ describe('SettingsSearch', () => {
     const after = screen.getAllByRole('option')
     expect(after[0]).toHaveAttribute('aria-selected', 'false')
     expect(after[1]).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('a new query keeps the top match selected under a resting pointer', () => {
+    setup()
+    fireEvent.change(input(), { target: { value: 'model' } })
+    // The reader points at the second row with real motion.
+    fireEvent.mouseMove(screen.getAllByRole('option')[1], { clientX: 40, clientY: 60 })
+    fireEvent.mouseMove(screen.getAllByRole('option')[1], { clientX: 41, clientY: 60 })
+    expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true')
+
+    // Typing re-ranks the rows and resets the selection to the top match. The
+    // browser then fires enter, over and move events at the unchanged position
+    // on the row that landed under the resting pointer. None of them is the
+    // reader pointing, so Enter must still take the top match.
+    fireEvent.change(input(), { target: { value: 'mode' } })
+    const rows = screen.getAllByRole('option')
+    expect(rows.length).toBeGreaterThan(1)
+    fireEvent.mouseEnter(rows[1], { clientX: 41, clientY: 60 })
+    fireEvent.mouseMove(rows[1], { clientX: 41, clientY: 60 })
+    expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'false')
   })
 
   it('still offers the governed entry when the ceiling read FAILED', async () => {

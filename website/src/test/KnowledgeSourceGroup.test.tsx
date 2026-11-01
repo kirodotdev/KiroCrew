@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { namedCeiling } from './namedCeiling'
+// The failed-read waits span the open row's items request: a named lost-run
+// ceiling (website/docs/testing.md).
+const GROUP_REQUEST_CHAIN = () => namedCeiling('GROUP_REQUEST_CHAIN', 5000)
 
 const mockKnowledgeApi = vi.fn()
 vi.mock('../pages/knowledge/api', () => ({
@@ -9,6 +13,7 @@ vi.mock('../pages/knowledge/api', () => ({
 }))
 
 const { SourceGroup, NO_SOURCE, GROUP_PAGE_SIZE } = await import('../pages/knowledge/SourceGroup')
+const { i18next } = await import('../i18n/all')
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 const Wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -99,6 +104,14 @@ describe('SourceGroup', () => {
     expect(calls.every(c => c.includes('source_id=s1'))).toBe(true)
   })
 
+  it('renders the page indicator as one catalog sentence', async () => {
+    // en-XA brackets every catalog value, so "Page" + n + "of" + m reads `[Page] 1 [of] 4`.
+    await i18next.changeLanguage('en-XA')
+    renderGroup()
+    await userEvent.click(screen.getByText('PersonalKnowledgeBase'))
+    expect(await screen.findByText(/^\[[^[\]]* 1 [^[\]]* 4[^[\]]*\]$/)).toBeInTheDocument()
+  })
+
   it('hides the pager when the source fits on one page', async () => {
     respond = () => ({ items: [item('a')], total: 3 })
     renderGroup({ count: 3 })
@@ -173,5 +186,24 @@ describe('SourceGroup', () => {
     renderGroup({ defaultOpen: true })
     await waitFor(() => expect(calls.length).toBe(1))
     expect(screen.getByRole('button', { expanded: true })).toBeInTheDocument()
+  })
+})
+
+describe('SourceGroup — failed read', () => {
+  it('an open row whose items read fails says why instead of showing nothing', async () => {
+    mockKnowledgeApi.mockImplementation((path: string) => {
+      calls.push(String(path))
+      return Promise.reject(new Error('source store offline'))
+    })
+    renderGroup({ defaultOpen: true })
+    const notice = await screen.findByTestId('knowledge-source-group-error', {}, GROUP_REQUEST_CHAIN())
+    expect(notice).toHaveTextContent("Couldn't load this source's items")
+    expect(notice).toHaveTextContent('source store offline')
+  })
+
+  it('a successful read shows no notice', async () => {
+    renderGroup({ defaultOpen: true })
+    expect(await screen.findByText('Item a', {}, GROUP_REQUEST_CHAIN())).toBeInTheDocument()
+    expect(screen.queryByTestId('knowledge-source-group-error')).not.toBeInTheDocument()
   })
 })

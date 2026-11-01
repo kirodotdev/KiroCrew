@@ -30,10 +30,8 @@ def _make_app_source(tmp_path, name="test-app", **extras):
         **extras,
     }
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
-    # Create agent file
     (src / "agents").mkdir()
     (src / "agents" / "my-agent.json").write_text(json.dumps({"name": "my-agent", "model": "auto"}))
-    # Create skill directory
     (src / "skills" / "my-skill").mkdir(parents=True)
     (src / "skills" / "my-skill" / "SKILL.md").write_text("# My Skill\nDoes things.")
     return src
@@ -67,8 +65,7 @@ def app_env_fixture(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_app_bridges*.py modules calls monkeypatch.undo()
-def _stub_venv_probe(monkeypatch):
+def _stub_venv_probe(_floor_monkeypatch):
     """Replace the interpreter usability probe with its runnability check.
 
     The real probe executes the candidate interpreter under the OS sandbox;
@@ -79,7 +76,7 @@ def _stub_venv_probe(monkeypatch):
     """
     from kiro_crew.apps import interpreter as _interp
 
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         _interp,
         "_venv_is_usable",
         lambda root: _interp._runnable(_interp.venv_python_path(root)),

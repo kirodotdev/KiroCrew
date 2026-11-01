@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockApi = vi.hoisted(() => ({
@@ -168,6 +169,68 @@ describe("WorkflowsRuns", () => {
         ),
       ),
     ).toBeInTheDocument();
+  });
+
+  it.each(["{Enter}", " "])(
+    "cancels a running workflow from the keyboard (%s) without opening its row",
+    async (key) => {
+      const running = { ...taskPlanRun, status: "running" as const };
+      const fetchMock = vi.mocked(fetch);
+      fetchMock.mockImplementation((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/workflows/runs") {
+          return jsonResponse({ runs: [running] });
+        }
+        if (url === "/api/workflows/runs/wf_task_plan/cancel") {
+          return jsonResponse({ run_id: "wf_task_plan", cancelled: true });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      const user = userEvent.setup();
+      renderRuns();
+
+      const cancel = await screen.findByRole("button", {
+        name: i18nT("apps.workflows.workflowsRuns.cancel"),
+      });
+      cancel.focus();
+      await user.keyboard(key);
+
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/workflows/runs/wf_task_plan/cancel",
+          { method: "POST", credentials: "same-origin" },
+        ),
+      );
+      // The row's open handler would fetch the run detail.
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        "/api/workflows/runs/wf_task_plan",
+        expect.anything(),
+      );
+      expect(
+        screen.getByText(
+          i18nT(
+            "apps.workflows.workflowsRuns.select_a_run_to_see_its_phases_agents_and_result",
+          ),
+        ),
+      ).toBeInTheDocument();
+      // Cancel must not sit inside another control: a button nested in a
+      // role="button" row is invalid and its keys bubble into the row.
+      expect(
+        cancel.parentElement?.closest('button, [role="button"]'),
+      ).toBeNull();
+    },
+  );
+
+  it("opens a run from the keyboard on its row button", async () => {
+    const user = userEvent.setup();
+    renderRuns();
+
+    await screen.findByText("Debug plan");
+    const row = screen.getByRole("button", { name: /Debug plan/ });
+    row.focus();
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByText("taskrunner")).toBeInTheDocument();
   });
 
   it("surfaces a failed run-detail fetch through the shared error notice", async () => {

@@ -16,8 +16,9 @@ above POLICY ∩ PROFILE. Stateless.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import crewmate_prompts
 from kiro_crew.agent_files import (
@@ -26,6 +27,9 @@ from kiro_crew.agent_files import (
     is_mate_service_agent,
 )
 from kiro_crew.user_json import copy_json_document
+
+if TYPE_CHECKING:
+    from kiro_crew.config.loader import KiroCrewConfig
 
 logger = logging.getLogger(__name__)
 
@@ -76,18 +80,51 @@ MATE_CONDUCTOR_EXCLUDED_TOOLS = tuple(
 )
 
 
-def is_conductor_execution(execution: Any) -> bool:
+def is_conductor_execution(execution: Any, config: Any = None) -> bool:
     """Whether *execution* (an attested ``ExecutionContext``) is a crewmate's conductor chat.
 
-    Positive identity: a ``member`` selection running the conductor template. A
-    worker the crewmate opened is a ``template`` selection on the worker, so it
-    answers False, as does a missing record.
+    Positive identity: a ``member`` selection that chats on the conductor. Given
+    *config*, that is :func:`member_record_template` with the member's current
+    binding, the rule its chat dispatches by, so a thread whose record kept an
+    older template is still its crewmate's conductor. Without *config* only the
+    record's own template is read. A worker the crewmate opened is a ``template``
+    selection on the worker, so it answers False, as does a missing record.
     """
-    return (
-        execution is not None
-        and getattr(execution, "selection_kind", "") == "member"
-        and member_chat_template(getattr(execution, "template_id", "")) == MATE_CONDUCTOR_AGENT
-    )
+    if execution is None or getattr(execution, "selection_kind", "") != "member":
+        return False
+    template_id = getattr(execution, "template_id", "")
+    if member_chat_template(template_id) == MATE_CONDUCTOR_AGENT:
+        return True
+    if config is None:
+        return False
+    bound = bound_kiro_agent_for(config, getattr(execution, "member_id", None))
+    return member_record_template(template_id, bound) == MATE_CONDUCTOR_AGENT
+
+
+def bound_kiro_agent_for(config: Any, member_id: Any) -> str:
+    """The ``kiro_agent`` *member_id*'s row in *config* binds, else ``""``. In memory."""
+    from kiro_crew.execution_context import member_config_for_id
+
+    if not member_id:
+        return ""
+    try:
+        _, binding = member_config_for_id(config, member_id)
+    except Exception:  # noqa: BLE001 - an unknown or ambiguous id binds nothing
+        return ""
+    return str(getattr(binding, "kiro_agent", "") or "")
+
+
+def member_record_template(template_id: str, bound_kiro_agent: str = "") -> str:
+    """The agent a ``member`` record chats on, given its member's current binding.
+
+    The conductor when *bound_kiro_agent* (the member's ``kiro_agent`` in config
+    now) owns a crewmate file, whatever older template the record kept; else
+    :func:`member_chat_template` on the record's own *template_id*. The one rule the
+    chat (``session_agent_selection``) and :func:`is_conductor_execution` share.
+    """
+    if bound_kiro_agent and is_mate_owned_agent(bound_kiro_agent):
+        return MATE_CONDUCTOR_AGENT
+    return member_chat_template(template_id)
 
 
 def member_chat_template(template_id: str) -> str:
@@ -148,7 +185,10 @@ def is_mate_owned_agent(kiro_agent: str) -> bool:
     """Whether *kiro_agent* names a crewmate-owned file and nothing at the user level.
 
     Read from the materialized-agents snapshot, which the crewmate writers update.
-    An unknown name is rescanned off the loop; on the loop the answer is False.
+    An unknown name is rescanned off the loop. On the loop a rescan is scheduled
+    and the answer comes from :func:`_mate_file_on_disk`, two file stats, so a
+    crewmate created a moment ago (its file written by another process) chats on
+    the conductor and never on its own file.
     """
     import asyncio
 
@@ -163,15 +203,39 @@ def is_mate_owned_agent(kiro_agent: str) -> bool:
         # Not in the snapshot at all: a file another process wrote (the command
         # line's create) or one written before any scan. Off the loop it is
         # rescanned here; on the loop a rescan is scheduled and this one call
-        # answers from the snapshot as it is.
+        # answers from the two files a full scan would weigh, not a rescan.
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             loader.refresh_materialized_agents(heal_default=False)
         else:
             loader.schedule_materialized_agents_refresh()
-            return False
+            return _mate_file_on_disk(kiro_agent)
     return kiro_agent in loader._MATERIALIZED_MATE_ONLY
+
+
+def _mate_file_on_disk(kiro_agent: str) -> bool:
+    """Whether ``<mates>/<kiro_agent>.json`` exists and ``<agents>/<kiro_agent>.json`` does not.
+
+    The on-loop answer for a name the snapshot does not know yet: two ``stat``
+    calls, no directory scan. A user-level file of that name wins, the rule the
+    full scan applies, so a real user agent is never read as a crewmate. The mate
+    conductor and worker share the crewmate folder and are never a crewmate's file.
+    A name that is not a plain file stem, or a stat that fails, answers False.
+    """
+    from kiro_crew.agent_files import is_mate_service_agent
+    from kiro_crew.config import paths as paths_mod
+
+    if is_mate_service_agent(kiro_agent) or Path(kiro_agent).name != kiro_agent:
+        return False
+    if kiro_agent in (".", ".."):
+        return False
+    try:
+        if (paths_mod.kiro_agents_dir() / f"{kiro_agent}.json").exists():
+            return False
+        return (paths_mod.mate_agents_dir() / f"{kiro_agent}.json").is_file()
+    except (OSError, ValueError):
+        return False
 
 
 def member_chat_agent(kiro_agent: str) -> str:
@@ -225,6 +289,23 @@ def _server_of(ref: str) -> str:
     if not ref.startswith("@"):
         return ""
     return ref[1:].split("/", 1)[0]
+
+
+def covered_by(ref: str, selectors: Iterable[str]) -> bool:
+    """Whether a strictly broader selector grants everything *ref* selects.
+
+    Grant/approval decisions use ``mcp_refs.entry_reaches``; this is deduplication.
+    """
+    refs = set(selectors)
+    return (ref != "*" and "*" in refs) or (
+        ref.startswith("@") and "/" in ref and f"@{_server_of(ref)}" in refs
+    )
+
+
+def collapse_selectors(refs: Iterable[str]) -> list[str]:
+    """Keep unique selectors in order, omitting those covered by a broader one."""
+    unique = dict.fromkeys(refs)
+    return [ref for ref in unique if not covered_by(ref, unique)]
 
 
 def _strings(value: Any) -> list[str]:
@@ -668,6 +749,28 @@ def cron_worker_execution(execution: Any, config: Any = None) -> Any:
     return execution.with_template(MATE_WORKER_AGENT, MATE_WORKER_AGENT)
 
 
+def spawn_worker_execution(execution: Any) -> Any:
+    """The worker execution a sub-agent selected as a crewmate runs, else ``None``.
+
+    A ``spawn_run(crew=...)`` (or ``target_member``) with no ``agent`` resolves
+    the crewmate to a ``member`` selection on the agent its chat runs on. For a
+    crewmate that owns its file that is the conductor, which hands work off
+    rather than doing it. The run is work, so it runs on that crewmate's worker
+    instead, member, store, mode and app kept: the record shape a hand-off and a
+    scheduled turn give the worker (:func:`cron_worker_execution`). Answered
+    from the record alone, so it reads no file and is safe on the event loop.
+    ``None`` for any other record.
+    """
+    if (
+        execution is None
+        or getattr(execution, "selection_kind", "") != "member"
+        or not getattr(execution, "member_id", None)
+        or getattr(execution, "template_id", "") != MATE_CONDUCTOR_AGENT
+    ):
+        return None
+    return execution.with_template(MATE_WORKER_AGENT, MATE_WORKER_AGENT)
+
+
 def note_worker_session(session_key: str, execution: Any) -> bool:
     """Publish *session_key* as a crewmate's worker when its record says so.
 
@@ -684,7 +787,7 @@ def note_worker_session(session_key: str, execution: Any) -> bool:
     if not is_own_worker_execution(execution):
         forget_crewmate_worker_session(session_key)
         return False
-    note_crewmate_worker_session(session_key)
+    note_crewmate_worker_session(session_key, str(execution.member_id))
     return True
 
 
@@ -726,16 +829,33 @@ def worker_session_spec(
     return resolve_worker_spec(literal_base, member_id)
 
 
-def crewmate_worker_backend(agent_cfg: Any) -> str:
+def crewmate_worker_backend(config: KiroCrewConfig, crewmate: str | None = None) -> str:
     """The backend a crewmate's worker runs on: its crewmate's, through the one gate.
 
-    ``agent.member_acp_backend`` as the loader reads it (a stored ``kiro`` already
-    reads as KAS) crossed through ``resolve_selected_backend``, the same gate
-    ``members.select_provider_backend`` applies to the member route.
+    *crewmate* is the crewmate's ``config.agents`` key. Its own harness pin
+    (``agents.<name>.acp_backend``) wins and fails closed through the pre-gate
+    check (H17), raising
+    :class:`~kiro_crew.crewmate_harness.CrewmateHarnessUnavailable` as
+    ``crewmate_harness.crewmate_backend_pin`` does for the worker's own session
+    before ``members.select_provider_backend`` runs.
+    Without a pin it is ``agent.member_acp_backend`` as the loader reads it (a
+    stored ``kiro`` already reads as KAS) crossed through
+    ``resolve_selected_backend``, the same gate the member route applies.
+
+    *config* is the whole loaded config, never its ``agent`` section: the pin
+    lives in ``config.agents``, so a section passed here raises instead of
+    silently reading as no pin and no member route.
     """
     from kiro_crew.acp_backends import resolve_selected_backend
+    from kiro_crew.crewmate_harness import pinned_backend
 
-    return resolve_selected_backend(getattr(agent_cfg, "member_acp_backend", ""))
+    if not hasattr(config, "agent"):
+        raise TypeError("crewmate_worker_backend takes the whole config, not its agent section")
+    return pinned_backend(
+        config,
+        crewmate,
+        resolve_selected_backend(getattr(config.agent, "member_acp_backend", "")),
+    )
 
 
 def worker_kit_backend_refusal(backend: str) -> str | None:

@@ -46,6 +46,7 @@ async def reset(
     refuse_only_on_active_turn: bool = False,
     clear_conversation: bool = False,
     ends_conversation: bool = False,
+    stop_shared_children: bool = False,
     scope: Any | None = None,
 ) -> bool:
     """Reset a live session while preserving its persistence entry.
@@ -69,6 +70,7 @@ async def reset(
             refuse_only_on_active_turn=refuse_only_on_active_turn,
             clear_conversation=clear_conversation,
             ends_conversation=ends_conversation,
+            stop_shared_children=stop_shared_children,
             scope=opened,
         )
 
@@ -235,6 +237,11 @@ def absorb_orphaned_release(self: SessionManager, key: str) -> bool:
 def adopt_turn(self: SessionManager, key: str) -> None:
     """The calling task now holds *key*'s live permit; forget any orphan record."""
     self._lifecycle_boundary().adopt_turn(key)
+
+
+def retire_turn_permit(self: SessionManager, key: str, session: _Session) -> None:
+    """Record a just-popped session's permit holder and wake its parked claimants."""
+    self._lifecycle_boundary().retire_turn_permit(key, session)
 
 
 # ── Cancel ──

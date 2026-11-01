@@ -173,7 +173,10 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     Clones the repo, runs the install script, and registers the app.
     This can take a while so the response includes a log of what happened.
     """
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "app_registry_install")
     if denied is not None:
@@ -182,6 +185,9 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     name = body.get("name", "")
     if not name:
@@ -255,7 +261,10 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     The original ``/api/apps/registry/install`` endpoint is unchanged —
     CLI and other callers are not affected.
     """
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "app_registry_install")
     if denied is not None:
@@ -264,6 +273,9 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     name = body.get("name", "")
     if not name:
@@ -511,7 +523,10 @@ async def handle_registries(request: web.Request) -> web.Response:
         )
         return web.json_response({"registries": registries, "pinned": pinned})
 
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "registries.update")
     if denied is not None:
@@ -531,6 +546,15 @@ async def handle_registries(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return _deny("invalid JSON", "invalid JSON body")
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        sel().log_api_access(
+            caller="dashboard",
+            operation="registries.update",
+            outcome="denied",
+            resources="body not a JSON object",
+        )
+        return not_object
 
     entries = body.get("registries")
     if not isinstance(entries, list):

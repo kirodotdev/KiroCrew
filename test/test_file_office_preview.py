@@ -342,7 +342,7 @@ async def test_extraction_reads_through_the_prefix_fd_and_closes_it(tmp_path, mo
 async def test_open_envelope_is_the_shared_prefix_and_runs_off_the_loop(tmp_path, mock_sel):
     """The validate→sensitive→isfile→open→fstat envelope is shared AND off-loop.
 
-    Two invariants in one, because they were one review finding: the endpoint
+    Two invariants in one, because they guard one boundary: the endpoint
     must route through :func:`_open_checked_file` instead of hand-rolling a
     second spelling of that security boundary, and the whole envelope must
     run on a worker thread — an NFS/FUSE-backed document makes realpath/stat/

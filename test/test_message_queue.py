@@ -187,28 +187,52 @@ class TestHandleMessageDeleted:
         orch._pending_queue = {}
         return orch
 
+    @staticmethod
+    def _real_sessions(*keys: str, ts: str) -> SessionManager:
+        """A real SessionManager holding *ts* queued under each of *keys*.
+
+        Queuing the same ts under the right key AND a wrong one makes the
+        remaining queues show which key the cancel actually used.
+        """
+        mgr = SessionManager.__new__(SessionManager)
+        mgr._sessions = {}
+        mgr._lock = asyncio.Lock()
+        for key in keys:
+            sess = _Session(provider=MagicMock())
+            sess.queue.append((ts, "queued", {}))
+            mgr._sessions[key] = sess
+        return mgr
+
+    @staticmethod
+    def _queued_ts(mgr: SessionManager) -> dict[str, list[str]]:
+        return {key: [entry[0] for entry in sess.queue] for key, sess in mgr._sessions.items()}
+
     @pytest.mark.asyncio
     async def test_unauthorized_user_ignored(self):
         from kiro_crew.slack.events import _handle_message_deleted
 
         orch = self._make_orch()
+        mgr = self._real_sessions("thread1", ts="ts_del")
+        orch.sessions = mgr
         event = self._make_event(user="U_BAD")
-        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False), \
+        with patch.object(mgr, "cancel_queued", wraps=mgr.cancel_queued) as cancel, \
+             patch("kiro_crew.slack.events.is_allowed_user", return_value=False), \
              patch("kiro_crew.slack.events.sel"):
             await _handle_message_deleted(orch, event)
-        orch.sessions.cancel_queued.assert_not_called()
+        cancel.assert_not_called()
+        assert self._queued_ts(mgr) == {"thread1": ["ts_del"]}
 
     @pytest.mark.asyncio
     async def test_cancels_from_session_queue(self):
         from kiro_crew.slack.events import _handle_message_deleted
 
         orch = self._make_orch()
-        orch.sessions.cancel_queued.return_value = True
+        orch.sessions = self._real_sessions("thread1", "ts_del", ts="ts_del")
         event = self._make_event()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
              patch("kiro_crew.slack.events.sel") as mock_sel:
             await _handle_message_deleted(orch, event)
-        orch.sessions.cancel_queued.assert_called_once_with("thread1", "ts_del")
+        assert self._queued_ts(orch.sessions) == {"thread1": [], "ts_del": ["ts_del"]}
         mock_sel().log_api_access.assert_called_once()
 
     @pytest.mark.asyncio
@@ -264,13 +288,13 @@ class TestHandleMessageDeleted:
         from kiro_crew.slack.events import _handle_message_deleted
 
         orch = self._make_orch()
-        orch.sessions.cancel_queued.return_value = True
+        orch.sessions = self._real_sessions("ts_dm", "slack:D1", ts="ts_dm")
         event = {"deleted_ts": "ts_dm", "channel": "D1", "previous_message": {"user": "U1"}}
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
              patch("kiro_crew.slack.events.sel"):
             await _handle_message_deleted(orch, event)
         # No thread_ts → session_key = deleted_ts
-        orch.sessions.cancel_queued.assert_called_once_with("ts_dm", "ts_dm")
+        assert self._queued_ts(orch.sessions) == {"ts_dm": [], "slack:D1": ["ts_dm"]}
 
     @staticmethod
     def _enable_flat_dm(orch):
@@ -285,12 +309,12 @@ class TestHandleMessageDeleted:
 
         orch = self._make_orch()
         self._enable_flat_dm(orch)
-        orch.sessions.cancel_queued.return_value = True
+        orch.sessions = self._real_sessions("slack:D1", "ts_dm", ts="ts_dm")
         event = {"deleted_ts": "ts_dm", "channel": "D1", "previous_message": {"user": "U1"}}
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
              patch("kiro_crew.slack.events.sel"):
             await _handle_message_deleted(orch, event)
-        orch.sessions.cancel_queued.assert_called_once_with("slack:D1", "ts_dm")
+        assert self._queued_ts(orch.sessions) == {"slack:D1": [], "ts_dm": ["ts_dm"]}
 
     @pytest.mark.asyncio
     async def test_single_session_cancels_a_threaded_reply_under_the_channel_key(self):
@@ -299,12 +323,12 @@ class TestHandleMessageDeleted:
 
         orch = self._make_orch()
         self._enable_flat_dm(orch)
-        orch.sessions.cancel_queued.return_value = True
+        orch.sessions = self._real_sessions("slack:D1", "thread1", ts="ts_del")
         event = self._make_event(channel="D1", thread_ts="thread1")
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
              patch("kiro_crew.slack.events.sel"):
             await _handle_message_deleted(orch, event)
-        orch.sessions.cancel_queued.assert_called_once_with("slack:D1", "ts_del")
+        assert self._queued_ts(orch.sessions) == {"slack:D1": [], "thread1": ["ts_del"]}
 
     @pytest.mark.asyncio
     async def test_native_path_dm_keys_the_way_native_does(self):
@@ -318,12 +342,12 @@ class TestHandleMessageDeleted:
         orch = self._make_orch()
         orch._cfg.slack.dm_single_session = True
         orch._cfg.messaging.use_transport = False
-        orch.sessions.cancel_queued.return_value = True
+        orch.sessions = self._real_sessions("ts_dm", "slack:D1", ts="ts_dm")
         event = {"deleted_ts": "ts_dm", "channel": "D1", "previous_message": {"user": "U1"}}
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
              patch("kiro_crew.slack.events.sel"):
             await _handle_message_deleted(orch, event)
-        orch.sessions.cancel_queued.assert_called_once_with("ts_dm", "ts_dm")
+        assert self._queued_ts(orch.sessions) == {"ts_dm": [], "slack:D1": ["ts_dm"]}
 
     @pytest.mark.asyncio
     async def test_review_mode_dm_keys_the_way_native_does(self):
@@ -334,12 +358,12 @@ class TestHandleMessageDeleted:
         orch = self._make_orch()
         self._enable_flat_dm(orch)
         orch._cfg.channel_config.return_value.activation = ACTIVATION_REVIEW
-        orch.sessions.cancel_queued.return_value = True
+        orch.sessions = self._real_sessions("ts_dm", "slack:D1", ts="ts_dm")
         event = {"deleted_ts": "ts_dm", "channel": "D1", "previous_message": {"user": "U1"}}
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
              patch("kiro_crew.slack.events.sel"):
             await _handle_message_deleted(orch, event)
-        orch.sessions.cancel_queued.assert_called_once_with("ts_dm", "ts_dm")
+        assert self._queued_ts(orch.sessions) == {"ts_dm": [], "slack:D1": ["ts_dm"]}
 
     @pytest.mark.asyncio
     async def test_pending_queue_cleaned_when_sessions_none(self):
@@ -504,7 +528,10 @@ class TestQueueRouting:
 
         orch = _make_route_orch()
         orch._session_tasks["ts_new"] = MagicMock()  # DM: session_key = msg_ts
-        orch.sessions.enqueue.return_value = True
+        # A real session whose semaphore is free: only force=True can queue here.
+        mgr = TestHandleMessageDeleted._real_sessions(ts="unused")
+        mgr._sessions["ts_new"] = _Session(provider=MagicMock())
+        orch.sessions.enqueue = mgr.enqueue
         event = {"user": "U1", "text": "queued", "ts": "ts_new", "channel": "D1", "channel_type": "im", "team": "T1"}
         with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock):
             for p in _ROUTE_PATCHES:
@@ -514,8 +541,9 @@ class TestQueueRouting:
             finally:
                 for p in _ROUTE_PATCHES:
                     p.stop()
-        orch.sessions.enqueue.assert_called_once()
-        assert orch.sessions.enqueue.call_args[1].get("force") is True
+        queued = list(mgr._sessions["ts_new"].queue)
+        assert [(ts, text) for ts, text, _ in queued] == [("ts_new", "queued")]
+        assert orch._pending_queue == {}
         orch.slack.add_reaction.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -544,9 +572,13 @@ class TestQueueRouting:
         from kiro_crew.slack.events import SeenCache, _route_message
 
         orch = _make_route_orch()
-        orch.sessions.enqueue.return_value = True  # semaphore locked
+        mgr = TestHandleMessageDeleted._real_sessions(ts="unused")
+        sess = _Session(provider=MagicMock())
+        mgr._sessions["ts_new"] = sess
+        orch.sessions.enqueue = mgr.enqueue
+        await sess.semaphore.acquire()  # semaphore locked
         event = {"user": "U1", "text": "queued", "ts": "ts_new", "channel": "D1", "channel_type": "im", "team": "T1"}
-        with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock):
+        with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_hm:
             for p in _ROUTE_PATCHES:
                 p.start()
             try:
@@ -554,6 +586,10 @@ class TestQueueRouting:
             finally:
                 for p in _ROUTE_PATCHES:
                     p.stop()
+                sess.semaphore.release()
+        assert [(ts, text) for ts, text, _ in sess.queue] == [("ts_new", "queued")]
+        assert orch._handler_tasks == set()
+        mock_hm.assert_not_called()
         orch.slack.add_reaction.assert_awaited_once()
 
 
@@ -564,11 +600,12 @@ class TestOnDoneDrain:
 
         orch = _make_route_orch()
         orch.sessions.enqueue.return_value = False
-        # After task completes, dequeue returns a queued message once then None
-        orch.sessions.dequeue.side_effect = [
-            ("ts_q", "queued text", {"channel": "C1", "thread_ts": "thread1"}),
-            None,
-        ]
+        # A real session queue holding one message the finished turn must drain.
+        mgr = TestHandleMessageDeleted._real_sessions(ts="unused")
+        sess = _Session(provider=MagicMock())
+        sess.queue.append(("ts_q", "queued text", {"channel": "C1", "thread_ts": "thread1"}))
+        mgr._sessions["ts1"] = sess
+        orch.sessions.dequeue = mgr.dequeue
         event = {"user": "U1", "text": "first", "ts": "ts1", "channel": "D1", "channel_type": "im", "team": "T1"}
         with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_hm, \
              patch("kiro_crew.slack.events.handle_message_transport", new_callable=AsyncMock) as mock_tr, \
@@ -582,8 +619,7 @@ class TestOnDoneDrain:
         # branch and stop testing what it is named for.
         mock_hm.assert_called()
         mock_tr.assert_not_called()
-        # dequeue was called in _on_done
-        orch.sessions.dequeue.assert_called()
+        assert list(sess.queue) == []
 
     @pytest.mark.asyncio
     async def test_drains_pending_queue_after_task(self):

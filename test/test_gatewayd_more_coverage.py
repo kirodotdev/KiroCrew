@@ -38,6 +38,7 @@ from kiro_crew.mcp_gateway.backend import (
     has_recyclable_in_flight,
 )
 from kiro_crew.mcp_gateway.pool import BackendUnavailable, PoolAtCapacity, PoolKey
+from kiro_crew.mcp_gateway.prewarm import HotKeyStore
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
@@ -515,23 +516,31 @@ class TestRegisterBookkeeping:
         assert seen[0].pid_start_ids == {}
 
     @pytest.mark.asyncio
-    async def test_hot_key_observation_records_the_pool_hit_outcome(self, peer_ok):
-        hot_keys = MagicMock()
+    async def test_hot_key_observation_records_the_pool_hit_outcome(self, peer_ok, tmp_path):
+        hot_keys = HotKeyStore(tmp_path / "hot-keys.json")
         pool = _fake_pool(get=AsyncMock(return_value=MagicMock()))
         register = _register_frame()
 
         await _handle(_ScriptedReader(register), _FakeWriter(), pool, hot_keys=hot_keys)
 
-        hot_keys.record.assert_called_once_with(register)
-        hot_keys.record_outcome.assert_called_once_with(hit=True)
+        assert hot_keys.top_register_payloads(5) == [register]
+        assert hot_keys.hit_stats() == {
+            "warm_pool_hits": 1,
+            "warm_pool_misses": 0,
+            "warm_pool_hit_rate_pct": 100,
+        }
 
     @pytest.mark.asyncio
-    async def test_hot_key_observation_records_a_miss_on_a_cold_key(self, peer_ok):
-        hot_keys = MagicMock()
+    async def test_hot_key_observation_records_a_miss_on_a_cold_key(self, peer_ok, tmp_path):
+        hot_keys = HotKeyStore(tmp_path / "hot-keys.json")
         await _handle(
             _ScriptedReader(_register_frame()), _FakeWriter(), _fake_pool(), hot_keys=hot_keys
         )
-        hot_keys.record_outcome.assert_called_once_with(hit=False)
+        assert hot_keys.hit_stats() == {
+            "warm_pool_hits": 0,
+            "warm_pool_misses": 1,
+            "warm_pool_hit_rate_pct": 0,
+        }
 
 
 # --- bridge-phase frame hygiene ---------------------------------------------

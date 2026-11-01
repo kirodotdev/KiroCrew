@@ -12,11 +12,13 @@ orphan reads them with its top-up and finds no slow start.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 import test_ci_fleet_routing_expression_parity as parity
+import yaml
 from ci_runner_watchdog_helpers import (
     REPO,
     ROOT,
@@ -51,10 +53,58 @@ def _fleet_routed_workflow_files() -> set[str]:
     return {workflow for workflow, _ in parity._EXPECTED_ROUTED_JOBS}
 
 
-def test_the_watched_set_is_exactly_the_fleet_routed_workflows() -> None:
+def _local_callers_of(callees: set[str]) -> set[str]:
+    """Workflow files with a job that calls one of ``callees`` with a local ``uses:``.
+
+    A called job belongs to the CALLER's run, so the run carries the caller's `path`,
+    which is what `_is_watched` reads. A caller therefore has to be watched for its
+    callee's fleet jobs to be seen at all, even when none of the caller's own jobs
+    declares a fleet `runs-on`.
+    """
+    callers: set[str] = set()
+    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for spec in (workflow.get("jobs") or {}).values():
+            match = re.match(r"^\./\.github/workflows/(.+?\.yml)", str(spec.get("uses") or ""))
+            if match and match.group(1) in callees:
+                callers.add(path.name)
+                break
+    return callers
+
+
+def _fleet_reaching_workflow_files() -> set[str]:
+    """Every workflow whose RUN can contain a fleet job: routed directly, or calling one.
+
+    Transitive, because a caller's caller carries the same run path.
+    """
+    reaching = _fleet_routed_workflow_files()
+    while True:
+        more = _local_callers_of(reaching) - reaching
+        if not more:
+            return reaching
+        reaching |= more
+
+
+# `nightly.yml` reaches the fleet only by calling `build-wheel.yml`, and it is not
+# watched. The gap is older than this derivation: a nightly run stuck on that callee's
+# CodeBuild job is reported by nothing. Listed rather than fixed here so the equality
+# below stays exact and the hole is on the record instead of hidden by a scan that
+# only ever read direct `runs-on` declarations.
+_UNWATCHED_INDIRECT_WORKFLOWS = {"nightly.yml"}
+
+
+def test_the_watched_set_is_exactly_the_fleet_reaching_workflows() -> None:
     """Drift guard: a workflow that gains (or loses) a fleet route must be added to
-    (or removed from) WATCHED_WORKFLOWS, or this fails."""
-    assert set(wd.WATCHED_WORKFLOWS) == _fleet_routed_workflow_files()
+    (or removed from) WATCHED_WORKFLOWS, or this fails.
+
+    Reachability, not a direct `runs-on` scan: `release.yml` declares no fleet route of
+    its own yet its runs carry the CodeBuild jobs of `dependency-vulnerability.yml` and
+    `build-wheel.yml`, so dropping it from the watched set would silently stop those
+    jobs being reported.
+    """
+    assert set(wd.WATCHED_WORKFLOWS) == (
+        _fleet_reaching_workflow_files() - _UNWATCHED_INDIRECT_WORKFLOWS
+    )
 
 
 def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
@@ -71,10 +121,10 @@ def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
     pull_request_only = frozenset(
         {
             "code-review.yml",
-            "cross-platform.yml",
             "dependency-review.yml",
-            "pr-scope.yml",
-            "screenshot-evidence.yml",
+            # The four read-only PR policies as one job: PR-keyed,
+            # pull_request-only, publishes nothing.
+            "pr-policy.yml",
         }
     )
     exempt = frozenset(
@@ -476,8 +526,8 @@ def test_the_drift_guard_flags_a_new_unregistered_fleet_route() -> None:
     directory, because the scan itself is the parity suite's job and is negative-controlled
     there; what this guards is the projection reaching WATCHED_WORKFLOWS.
     """
-    routed = _fleet_routed_workflow_files() | {"surprise.yml"}
-    assert set(wd.WATCHED_WORKFLOWS) != routed
+    routed = _fleet_reaching_workflow_files() | {"surprise.yml"}
+    assert set(wd.WATCHED_WORKFLOWS) != routed - _UNWATCHED_INDIRECT_WORKFLOWS
 
 
 # ── the watchdog heals orphans in every watched workflow, capped globally ───

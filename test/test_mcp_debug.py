@@ -208,15 +208,29 @@ class TestRefusalsAreTyped:
 class TestTheCallerKeyIsForwardedOnEveryLeg:
     def test_the_strictly_resolved_key_is_the_key_sent(self) -> None:
         """The identity that was checked must be the identity that is audited."""
-        with patch.object(server, "_get", return_value={"pid": 1}) as get:
-            _call("debug_gateway")
+
+        def fake_get(path: str, *a: Any, session_key: str = "", **k: Any) -> dict[str, Any]:
+            if session_key != CALLER:
+                return {"error": {"code": "forbidden", "message": session_key}}
+            return {"pid": 1}
+
+        with patch.object(server, "_get", side_effect=fake_get) as get:
+            result = _call("debug_gateway")
         assert get.call_args.kwargs["session_key"] == CALLER
+        assert result["pid"] == 1
 
     def test_refusals_defaults_to_self_rather_than_to_everything(self) -> None:
         """A default asking for the wide view would make every first call a refusal."""
-        with patch.object(server, "_get", return_value={"refusals": []}) as get:
-            _call("debug_refusals")
+
+        def fake_get(path: str, *a: Any, **k: Any) -> dict[str, Any]:
+            if f"session={server.SELF}" not in path:
+                return {"error": {"code": "forbidden", "message": "the wide view is the owner's"}}
+            return {"refusals": []}
+
+        with patch.object(server, "_get", side_effect=fake_get) as get:
+            result = _call("debug_refusals")
         assert f"session={server.SELF}" in get.call_args.args[0]
+        assert result["refusals"] == []
 
 
 class TestTheOutputCap:

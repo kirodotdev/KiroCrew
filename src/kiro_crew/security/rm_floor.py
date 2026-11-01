@@ -1,7 +1,7 @@
 """Recursive-force ``rm`` seatbelt behind the two ``local-destructive-rm-rf-*`` rows.
 
-Refuses the common respellings of ``rm -rf /`` and ``rm -rf ~`` the rows miss. A
-seatbelt, not a parser: other shell shapes stay with the rows and the OS sandbox.
+Refuses the common respellings of ``rm -rf /`` and ``rm -rf ~`` the rows miss, nested
+shells included. A seatbelt, not a parser: other shapes stay with the rows and the sandbox.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from ..trust_patterns import ENV_ASSIGNMENT_RE
+from . import shell_commands as _commands
 from . import shell_normalizer as _shell
 from .denied_rules import BUILTIN_DENIED_RULES
 
@@ -35,7 +36,10 @@ _RM_WORD_RE = re.compile(r"(?<![\w.-])r[^\w\s/]*m(?![\w.-])")  # rm as its own w
 #: reports ``(is_redirection, consumes_next_word)``; it reads a WHOLE token, so
 #: :func:`_segments` keeps a redirection and its fd prefix in one word (below).
 _HOME_WORDS = frozenset({"~", "$HOME", "${HOME}"})
-_CUT_CHARS = frozenset(";&|\n`()")
+_LITERAL_SHELLS = _shell._NESTED_SHELL_PROGRAMS - {"busybox"}  # busybox's next word is the applet
+_SUBST = _commands.SUBST  # a substitution: may expand to nothing, unlike a literal ``\0``
+#: an unquoted parameter (``$x``, ``${…}``, ``$1``): an unset one expands to nothing
+_PARAM_RE = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9@*#?$!-])")
 #: A STANDALONE fd prefix (a bare number or ``{name}``) directly before a redirection
 #: operator: ``2>`` and ``{fd}>`` redirect fd 2 / a named fd, but the ``2`` in
 #: ``/tmp/2>x`` is part of the path, so the prefix counts only at a word boundary.
@@ -75,74 +79,42 @@ def _target_kind(word: str) -> "str | None":
     return "home" if base in _HOME_WORDS else None
 
 
-def _segments(command: str) -> "list[str]":
-    """*command* cut at separators the shared quote machine marks live; stops at a heredoc."""
-    out: list[str] = []
-    seg: list[str] = []
-    in_redirect = False
-    pos, state = 0, 0
-    while pos < len(command):
-        text, resume, resume_state = command[pos:], len(command), 0
-        for step in _shell._iter_shell_chars(text, state):
-            if step.active and text.startswith("<<", step.offset):
-                break  # heredoc bodies are data; the rows and the sandbox own them
-            if step.active and step.char == "#" and _shell._opens_comment(text, step.offset):
-                newline = text.find("\n", step.offset)  # a comment's quotes open nothing
-                resume = len(command) if newline < 0 else pos + newline
-                break
-            if step.state == 2 and text.startswith("$(", step.offset):
-                # bash reads "$(…)" from an unquoted start, then the double quote resumes
-                body = text[step.offset + 2 :]
-                close, proven = _shell._matching_close_paren(body, 0)
-                out.extend(_segments(body[: close - 1 if proven else close]))
-                seg.append("\0")
-                in_redirect = False
-                resume, resume_state = pos + step.offset + 2 + close, 2
-                break
-            if step.state == 2 and step.char == "`" and len(step.text) == 1:
-                # a backtick body in double quotes is read on its own, then the quote resumes
-                closer = _shell._backtick_closer(text, step.offset + 1)
-                closed = closer != -1
-                end = closer + 1 if closed else len(text)
-                out.extend(_segments(text[step.offset + 1 : end - closed]))
-                seg.append("\0")
-                in_redirect = False
-                resume, resume_state = pos + end, 2
-                break
-            if step.active and in_redirect and step.char == "&":
-                seg.append(step.text)  # fd-dup operator (``2>&1``), not a command separator
-            elif step.active and step.char in _CUT_CHARS:
-                out.append("".join(seg))
-                seg = []
-                in_redirect = False
-            elif step.active and step.char in "<>":
-                if in_redirect:
-                    seg.append(step.text)  # a second operator char (``>>``, ``<>``)
-                else:
-                    # a live redirection starts its own word; keep its fd prefix and
-                    # operator together so the whole redirection is one token
+def _segments(command: str, track: bool = True) -> "list[str]":
+    """*command* as the shared reader's commands, each rendered as one segment string.
+
+    A live redirection starts its own word with its fd prefix and operator kept
+    together, and an escaped or single-quoted ``$`` or any quoted ``~`` is a literal
+    ``\\0`` so it can never read as ``$HOME`` or ``~``.
+    """
+    out = []
+    # ``&>`` is one redirect in bash but a background ``&`` then ``>`` in dash
+    for text in dict.fromkeys((command, command.replace("&>", "& >"))):
+        for cmd in _commands.read_commands(text, track):
+            seg: list[str] = []
+            for step in cmd.steps:
+                if step.redirect:
                     seg.append(" " + _pull_trailing_fd_prefix(seg) + step.text)
-                    in_redirect = True
-            elif step.char in "$~" and (
-                len(step.text) == 2 or step.state == 1 or (step.char == "~" and step.state)
-            ):
-                seg.append("\0")  # an escaped, single-quoted $ or any quoted ~ is literal
-                in_redirect = False
-            else:
-                seg.append(step.text)
-                in_redirect = False  # past the operator, into the (glued) target or argv
-        pos, state = resume, resume_state
-    return [*out, "".join(seg)]
+                elif step.char in "$~" and (
+                    len(step.text) == 2 or step.state == 1 or (step.char == "~" and step.state)
+                ):
+                    seg.append("\0")
+                else:
+                    seg.append(step.text)
+            out.append("".join(seg))
+    return out
 
 
 def _rm_wipe_targets(command: str) -> "set[str]":
     """The targets (``root`` / ``home``) a recursive-force ``rm`` in *command* wipes."""
     kinds: set[str] = set()
-    for segment in _segments(command):
+    # read with and without ``${…}`` tracking: the untracked reading is the
+    # base one, so tracking can only add refusals
+    for segment in [*_segments(command), *_segments(command, track=False)]:
         words = _shell._shell_tokens(segment)
         while words:
-            if ENV_ASSIGNMENT_RE.match(words[0]):
-                words = words[1:]
+            if ENV_ASSIGNMENT_RE.match(words[0]) or words[0] in _shell._KEEPS_COMMAND_POSITION:
+                # ``then`` / ``do`` / ``!`` / ``time`` … leave the next word the program
+                words = words[2:] if words[0] == "time" and words[1:2] == ["-p"] else words[1:]
                 continue
             is_redirection, consumes_next = _shell._push_token_redirection(words[0])
             if is_redirection:
@@ -151,6 +123,17 @@ def _rm_wipe_targets(command: str) -> "set[str]":
                 words = words[1:]
                 if consumes_next and words:
                     words = words[1:]
+                continue
+            if _SUBST in words[0]:
+                # a substitution in command position may expand to nothing
+                bare = words[0].replace(_SUBST, "")
+                words = [bare, *words[1:]] if bare else words[1:]
+                continue
+            bare = _PARAM_RE.sub("", words[0])
+            if bare != words[0] and _shell._program_basename(words[0]) != "rm":
+                # ``${x}rm`` runs ``rm`` when ``x`` is unset; a word already read
+                # as ``rm`` keeps that reading, so this only adds refusals
+                words = [bare, *words[1:]] if bare else words[1:]
                 continue
             break
         if not words or _shell._program_basename(words[0]) != "rm":
@@ -170,4 +153,123 @@ def _rm_wipe_targets(command: str) -> "set[str]":
                 force = force or "f" in arg
         if recursive and force:
             kinds |= {kind for arg in operands if (kind := _target_kind(arg))}
+    return kinds
+
+
+def _after_shell_verb(tokens: "list[str]", programs: "list[str]", index: int) -> bool:
+    """True when *tokens[index]* is the argument of ``eval`` / ``source`` / ``.``."""
+    before = index - 1
+    while before >= 0 and tokens[before] == "--":
+        before -= 1
+    if before < 0 or programs[before] != tokens[before]:
+        return False  # a redirect target named ``eval`` is a file, not the verb
+    verbs = _shell._NESTED_SHELL_VERBS
+    return tokens[before] in verbs or _shell._program_basename(tokens[before]) in verbs
+
+
+def _command_lines(text: str) -> "list[str]":
+    """*text* cut at each live newline, a comment cut off; it ends after a live ``<<``
+    heredoc line (not a ``<<<`` herestring), whose body is data."""
+    lines: list[str] = []
+    pos, heredoc = 0, False
+    while pos <= len(text) and not heredoc:
+        rest, cut, end = text[pos:], len(text), len(text)
+        for step in _shell._iter_shell_chars(rest):
+            at = step.offset
+            if step.active and rest.startswith("<<", at):
+                heredoc = heredoc or not (rest.startswith("<<<", at) or rest[at - 1 : at] == "<")
+            if step.active and step.char == "#" and _shell._opens_comment(rest, at):
+                newline = rest.find("\n", at)
+                cut, end = pos + at, len(text) if newline < 0 else pos + newline
+                break
+            if step.active and step.char == "\n":
+                cut = end = pos + at
+                break
+        lines.append(text[pos:cut])
+        pos = end + 1
+    return lines
+
+
+def _expands_nothing(command: str) -> bool:
+    """*command* is one command and bash hands it on verbatim: it holds a ``\\$``, every
+    ``$`` is single-quoted, and there is no ``"``, backtick or ``\\\\``. Read once per call."""
+    if "\\$" not in command or any(mark in command for mark in ('"', "`", "\\\\")):
+        return False
+    if len(_commands.read_commands(command)) != 1:
+        return False
+    return all(c.state == 1 for c in _shell._iter_shell_chars(command) if c.char == "$")
+
+
+def _literal_shell_script(tokens: "list[str]") -> "str | None":
+    """The script of exactly ``<shell> -c '<script>'`` or ``<shell> <<< '<script>'``
+    (``bash``, ``sh`` …, never ``busybox``). Only that script, in a command that
+    :func:`_expands_nothing`, keeps its ``\\$`` literal; any other payload (a forwarded
+    ``sed …/e``, ``env -S``, ``xargs``) may be unescaped, so it keeps the fail-closed view."""
+    if len(tokens) != 3 or _shell._program_basename(tokens[0]) not in _LITERAL_SHELLS:
+        return None
+    if tokens[1] != "<<<" and not _shell._is_shell_command_flag(tokens[1]):
+        return None
+    return tokens[2]
+
+
+def _command_tokens(text: str) -> "list[list[str]]":
+    """Dequoted argv of each command the shared reader finds in each line, read every
+    way so each reading only adds payloads; a command stopped at ``<<`` runs to the
+    line's end (a herestring is a payload)."""
+    out: list[list[str]] = []
+    for line in _command_lines(text):
+        for part in dict.fromkeys((line, _shell._fold_line_continuations(line))):
+            for plain in dict.fromkeys((part, _commands.without_substitutions(part))):
+                for track in (True, False) if "${" in plain or "$[" in plain else (True,):
+                    for cmd in _commands.read_commands(plain, track):
+                        words = " ".join(plain[word.start : word.end] for word in cmd.argv)
+                        if cmd.separator == "<<":  # the read stops there; the line runs on
+                            words = plain[cmd.steps[0].start if cmd.steps else 0 :]
+                        out.append(_shell._shell_tokens(words))
+                        if "<<<" in plain and (s := cmd.steps):  # its own words, herestring kept
+                            out.append(_shell._shell_tokens(plain[s[0].start : s[-1].end]))
+    return out
+
+
+def _rm_wipe_targets_nested(command: str) -> "set[str]":
+    """:func:`_rm_wipe_targets` over *command* and each nested-shell payload in it.
+
+    A payload inert in its own command (``echo bash -c '...'``) or an ``eval`` / ``source``
+    argument is skipped. A payload is shorter than its parent, so the walk ends.
+    """
+    kinds: set[str] = set()
+    pending, seen = [command], {command}
+    verbatim = _expands_nothing(command)
+    while pending:
+        source = pending.pop()
+        kinds |= _rm_wipe_targets(source)
+        folded = _shell._fold_line_continuations(source)
+        kinds |= _rm_wipe_targets(folded) if folded != source else set()  # bash folds them
+        for tokens in _command_tokens(source):
+            payloads = _shell._nested_shell_payloads(tokens, allow_join=False)
+            if not payloads:
+                continue
+            script = _literal_shell_script(tokens) if source == command and verbatim else None
+            programs = _shell._argv_programs(tokens)
+            disqualified = _shell._data_consumer_command_disqualified(tokens)
+            joined = "\0".join(tokens)
+            for payload in dict.fromkeys(payloads):
+                spots = [i for i, token in enumerate(tokens) if token == payload]
+                # a skip needs no glued copy elsewhere (``bash<<<'x'``)
+                spots = spots if joined.count(payload) == len(spots) else []
+                if spots and all(_after_shell_verb(tokens, programs, i) for i in spots):
+                    continue  # an ``eval`` / ``source`` argument
+                if spots and all(
+                    _shell._data_consumer_exempt(
+                        i, payload, programs, tokens, command_disqualified=disqualified
+                    )
+                    for i in spots
+                ):
+                    continue
+                literal = payload == script
+                views = (payload,) if literal else (payload, payload.replace("\\$", "$"))
+                for view in views:
+                    if len(view) < len(source) and view not in seen:
+                        seen.add(view)
+                        pending.append(view)
     return kinds

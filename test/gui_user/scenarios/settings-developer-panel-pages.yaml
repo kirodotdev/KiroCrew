@@ -1,0 +1,30 @@
+# Smoke: Settings > Developer is a list of pages. Feature Previews comes first,
+# then the internals pages (Logs, System, Telemetry, Storage, MCP Management,
+# Memory, Config, Debug tools, Archive). There is no Developer Mode switch and
+# no "Developer" item in the left rail. The flow opens the Logs page from the
+# list and reads it; nothing is turned on or off, so a retry starts from the
+# same state.
+name: settings-developer-panel-pages
+tier: smoke
+feature: settings
+user_story: >-
+  As a developer, I want the feature previews and the internals pages (logs,
+  metrics, memory graph) side by side in Settings > Developer, so that I can
+  reach them without unlocking anything.
+docs_url: docs/feature-map/README.md
+summary: Open Settings > Developer, read its page list, then open the Logs page
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings/developer
+steps:
+  - You are on the Settings page with its Developer tab selected. Beside the content there is a list of pages that starts with "Feature Previews". Read the list and the left rail without clicking anything.
+  - In that list, click "Logs".
+  - Wait a second.
+expectations:
+  - The Developer tab's page list shows "Feature Previews" first, followed by "Logs", "System" and the other internals pages.
+  - After clicking "Logs", the content area shows the log viewer and the address ends with /settings/developer/logs.
+  - No switch labelled "Developer Mode" is shown, and the left rail's bottom group has no item labelled "Developer".
+  - No red error banner is visible and nothing in the rail overlaps another row.
+max_steps: 8
+max_seconds: 240

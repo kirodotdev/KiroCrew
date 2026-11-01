@@ -854,6 +854,10 @@ async def execute_task(
                     context_provider=client,
                     resumed=_resumed,
                     needs_reinjection=_needs_reinjection,
+                    # Triggers read only what this step asks for, not the role
+                    # text, the plan's other steps, the spec or the instructions
+                    # build_task_prompt wraps it in.
+                    skill_trigger_text=task_trigger_text(task),
                 )
             else:
                 full_prompt = task_prompt
@@ -1020,6 +1024,7 @@ async def execute_task(
                     context_window=_window,
                     elapsed_ms=int((_time.monotonic() - _turn_t0) * 1000),
                     model_source=client,
+                    trigger="workflow",
                 )
             except Exception:
                 logger.debug("usage row (taskrunner) persist failed", exc_info=True)
@@ -1454,6 +1459,13 @@ async def execute_task(
     return False
 
 
+def task_trigger_text(task: Task) -> str:
+    """The text a step's skill triggers match: its own title and description."""
+    if task.description and task.description != task.title:
+        return f"{task.title}\n\n{task.description}"
+    return task.title
+
+
 async def build_task_prompt(run: Project, task: Task, attempt: int, work_dir: Path) -> str:
     """Build the prompt for executing a task."""
     parts: list[str] = []
@@ -1676,6 +1688,7 @@ async def self_review(
                 context_window=_window,
                 elapsed_ms=int((_time.monotonic() - _review_t0) * 1000),
                 model_source=client,
+                trigger="workflow",
             )
         except Exception:
             logger.debug("usage row (self_review) persist failed", exc_info=True)

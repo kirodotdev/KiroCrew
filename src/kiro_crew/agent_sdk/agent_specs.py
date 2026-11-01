@@ -79,3 +79,88 @@ def session_mcp_server_is_disabled(name: str, agent: str | None) -> bool:
     from kiro_crew.acp import session_mcp
 
     return session_mcp.session_mcp_server_is_disabled(name, agent)
+
+
+def authored_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
+    """Whether the spec *agent* resolves to in *work_dir* mounts nothing. Blocking.
+
+    ``acp.client_mcp_array.authored_agent_spec_is_toolless``: project level
+    first, then user level, judged by ``spec_is_toolless``. Fails closed.
+    """
+    from kiro_crew.acp import client_mcp_array
+
+    return client_mcp_array.authored_agent_spec_is_toolless(agent, work_dir)
+
+
+def authored_spec_toolless_verdict(agent: str, work_dir: Any = None) -> bool | None:
+    """Like :func:`authored_spec_is_toolless`, but ``None`` when no spec exists. Blocking.
+
+    ``False`` means a spec exists and it mounts something, or it exists and the
+    reader will not answer for it: two specs declaring the name (ambiguous), a
+    resolved spec the hardened reader refuses, or an ``<agent>.json`` /
+    ``<agent>.md`` that is hardlinked, symlinked, oversized or unparsable. Each is
+    still something the harness may load, so a caller refuses it before starting
+    a session. ``None`` is kept for no file claiming the name, by filename or by
+    declared name, in the user-level or project agents directory; that is left to
+    the caller's post-start confirmation.
+    """
+    import os
+
+    from kiro_crew.acp import client_mcp_array, session_mcp
+    from kiro_crew.agent import agent_spec_path, kiro_agents_dir_path
+    from kiro_crew.agent_spec_format import agent_spec_candidates
+    from kiro_crew.config.paths import project_agents_dir
+
+    spec = session_mcp.agent_spec_snapshot(agent, work_dir=work_dir)
+    if spec is not None:
+        return client_mcp_array.spec_is_toolless(spec)
+    try:
+        if agent_spec_path(agent) is not None:
+            return False
+    except ValueError:
+        return False
+    if session_mcp._project_spec_path_for(agent, work_dir) is not None:
+        return False
+    dirs = [kiro_agents_dir_path()]
+    if work_dir:
+        dirs.append(project_agents_dir(work_dir))
+    present = any(
+        os.path.lexists(candidate)
+        for directory in dirs
+        for candidate in agent_spec_candidates(directory, agent)
+    )
+    return False if present else None
+
+
+def sweep_kas_launch_snapshots(boot_time: float) -> bool:
+    """Remove the KAS MCP launch snapshots last written a week before *boot_time*.
+
+    ``acp.kas_env_launch.sweep_stale``: the gateway's boot path starts it once,
+    on a background task, with the time it took after the previous run's agent
+    processes were ended. Blocking file I/O.
+
+    Skipped, and ``False`` returned, while ``kiro_session_pids.txt`` still names
+    another owner process: every KAS runtime records itself there under the pid
+    of the process that started it (a gateway or a ``kirocrew chat`` CLI on the
+    same data home), and ``cleanup_orphaned_sessions`` has already removed every
+    entry it could confirm dead, so an owner left there may still run a session
+    whose launcher reads a snapshot this sweep would delete. This process's own
+    entries do not count. An unreadable ledger raises, so the caller skips too.
+    """
+    import os
+
+    from kiro_crew.acp import kas_env_launch
+    from kiro_crew.session_pid import retained_gateway_pids
+
+    others = retained_gateway_pids() - {os.getpid()}
+    if others:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "KAS launch snapshot sweep skipped: %d other owner process(es) still hold "
+            "agent runtimes on this data home",
+            len(others),
+        )
+        return False
+    kas_env_launch.sweep_stale(boot_time)
+    return True

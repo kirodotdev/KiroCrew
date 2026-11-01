@@ -31,6 +31,14 @@ export interface RunInTerminalBridgeOptions extends RunInTerminalRefs {
    *  `ok: false` at once rather than opening a shell in the wrong directory.
    *  Omitted means always ready (the chat page's behavior). */
   readyRef?: MutableRefObject<boolean>
+  /** Whether the owning chat runs on this machine (`useSlotRunsHere`): a fresh
+   *  dock shell is a shell HERE, so a chat on a Session Environment, or one whose
+   *  placement is still unread, gets a refusal instead of a command on the wrong
+   *  machine. Omitted means always here (a host whose chats cannot be bound). */
+  runsHereRef?: MutableRefObject<boolean | undefined>
+  /** The owning chat's slot, sent with the dock shell's socket so the gateway's
+   *  own placement check also refuses it (this host's read may be stale). */
+  slotRef?: MutableRefObject<string | null | undefined>
   /** Also answer requests that carry no scope (an emitter outside every
    *  RunInTerminalScope). Only the chat page does: it is where every request
    *  went before scopes existed. */
@@ -91,6 +99,8 @@ export function useRunInTerminalBridge({
   showActionError,
   cwdRef,
   readyRef,
+  runsHereRef,
+  slotRef,
   acceptUnscoped = false,
   unscopedFallback = false,
   deleteTerminalSessionRef,
@@ -174,6 +184,13 @@ export function useRunInTerminalBridge({
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok: false } }))
         return
       }
+      if (runsHereRef && runsHereRef.current !== true) {
+        showActionError(runsHereRef.current === false
+          ? i18nT('pages.chatPage.run_in_terminal_remote_chat_error')
+          : i18nT('pages.chatPage.run_in_terminal_placement_pending_error'))
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok: false } }))
+        return
+      }
       // When reuse is off — whether the user set it off, or its config query is
       // still loading so the saved value is not yet known — the command opens a
       // fresh terminal. That fresh tab IS the shipped default, so no notice
@@ -189,7 +206,7 @@ export function useRunInTerminalBridge({
       if (terminalCfgReadFailedRef.current) {
         showActionError(i18nT('pages.chatPage.run_in_terminal_config_read_failed_error'))
       }
-      const sessionId = addDockTerminal(cwdRef.current ?? undefined)
+      const sessionId = addDockTerminal(cwdRef.current ?? undefined, slotRef?.current ?? undefined)
       let settled = false
       const emit = (ok: boolean) => {
         if (settled) return
@@ -344,6 +361,6 @@ export function useRunInTerminalBridge({
     return () => window.removeEventListener('mc:run-in-terminal', handler)
     // All are stable for the host's lifetime (a context client, a []-dep
     // useCallback, refs and a useId), so the listener still installs once.
-  }, [scope, acceptUnscoped, unscopedFallback, queryClient, showActionError, cwdRef, readyRef, deleteTerminalSessionRef, terminalReuseRef, terminalCfgUnsettledRef, terminalCfgReadFailedRef])
+  }, [scope, acceptUnscoped, unscopedFallback, queryClient, showActionError, cwdRef, readyRef, runsHereRef, slotRef, deleteTerminalSessionRef, terminalReuseRef, terminalCfgUnsettledRef, terminalCfgReadFailedRef])
   return scope
 }

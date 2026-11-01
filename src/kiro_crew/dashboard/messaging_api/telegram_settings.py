@@ -82,7 +82,10 @@ async def api_telegram_config_get(request: web.Request) -> web.Response:
 
     cfg = KiroCrewConfig.load()
     # Off-loop: a secret:// reference is read and decrypted from the vault.
-    creds = await asyncio.to_thread(cfg.load_credentials)
+    # propagate=False: a post-boot dashboard read must not re-seed os.environ,
+    # or a worker-thread setdefault could restore a credential the live watcher
+    # just popped. Boot owns the one propagation.
+    creds = await asyncio.to_thread(cfg.load_credentials, propagate=False)
     token = creds.get(CRED_TELEGRAM_BOT_TOKEN, "") or cfg.telegram.bot_token
     tg = cfg.telegram
     state: DashboardState = request.app["state"]
@@ -248,7 +251,10 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             s = str(item).strip()
             if not s:
                 continue
-            if not s.isdigit():
+            # Refuse what int() would raise on: "²".isdigit() is True while
+            # int("²") raises, and so does int() past its digit limit. Telegram
+            # IDs fit an int64, so 20 digits is generous.
+            if not (s.isascii() and s.isdigit()) or len(s) > 20:
                 return _deny(f"invalid Telegram user ID: {s} (numeric IDs only)")
             uid = int(s)
             if uid not in new_ids:
@@ -331,7 +337,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             # so accept an optional leading minus — the digits-only check used
             # for allowed_user_ids would wrongly reject every group id here.
             digits = s[1:] if s.startswith("-") else s
-            if not digits.isdigit():
+            if not (digits.isascii() and digits.isdigit()) or len(digits) > 20:
                 return _deny(f"invalid Telegram chat ID: {s} (integer IDs only)")
             cid = int(s)
             if cid not in new_chat_ids:

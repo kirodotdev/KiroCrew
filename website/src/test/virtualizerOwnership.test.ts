@@ -71,7 +71,7 @@ describe('the virtualizer directory is fully classified', () => {
 describe('phase order (source guard)', () => {
   it('the facade composes its owners in phase order', () => {
     const owners = [
-      'useStreamingSettleGrace', 'useScrollerElement', 'useFollowState', 'useWindowState', 'useShiftCapture',
+      'useStreamingSettleGrace', 'useScrollerElement', 'useFollowState', 'useWindowState', 'useShiftCapture', 'useTailAppendMount',
       'useReadingPositionEntry', 'useHeightOwner', 'useWindowOperations', 'usePinning', 'useGeometrySync',
       'useRowMeasurement', 'useShiftCompensation', 'useFollowPlacementPins', 'useVisibilityReplacement',
       'useScrollListener', 'useCoverageWatchdog', 'useResizeObserver', 'useWindowEdgeTriggers',
@@ -89,6 +89,7 @@ describe('phase order (source guard)', () => {
       'useFollowState',
       'useWindowState',
       'useShiftCapture', // render-phase capture; the prepend baseline mirror
+      'useTailAppendMount', // render-phase tail-append mount; its committed-tail mirror
       'useLayoutEffect', // the committed-window mirror, right after it
       'useReadingPositionEntry', // render-phase latch and session transition
       'useHeightOwner', // render-phase reprice; its store subscription's effects
@@ -202,6 +203,9 @@ describe('phase order (source guard)', () => {
         [P, 'resizeObserverRef.current?.observe(el)'], // late scroller
       ],
       'windowRange.ts': [
+        [L, 'committedRef.current = next'], // tail-append mount's committed-tail mirror
+        [P, 'recomputeRef.current = recomputeWindow'], // landing stages read the live recompute
+        [P, 'leadingCapRef.current = null'], // landing stages cleanup
         [P, 'window.setInterval('], // coverage watchdog
         [P, 'prevWindowStartRef.current = windowRange.start'], // older-history crossing
         [P, 'new IntersectionObserver('], // sentinels

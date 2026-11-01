@@ -186,7 +186,9 @@ def rounds_view(repo, number, head_sha, pr_json):
     cannot place in a round is counted as skipped. Re-answering a rebuttal or a
     deferral never counts as a fix. The `recurring spans` line lists every span
     answered in RETRO_EVERY rounds or more, whatever the answers were; it informs
-    and does not trigger.
+    and does not trigger. When no span is a seam, the pushes that followed a blocked
+    head (BLOCKED_PUSH_REPEAT, BLOCKED_PUSH_LIMIT) print SEAM REPEAT / SEAM LIMIT
+    (pr-level) and exit 30 the same way; an unreadable timeline prints nothing.
     """
     got = _collect_rounds(repo, number)
     if got is None:
@@ -214,7 +216,14 @@ def rounds_view(repo, number, head_sha, pr_json):
         key=lambda x: -x[1],
     )
     next_round = len(order)
-    retro_due = bool(seams) or (next_round > 0 and (next_round + 1) % RETRO_EVERY == 0)
+    pushes = None
+    if not seams:
+        # No marker-counted seam: count the pushes that followed a blocked head, which
+        # needs no disposition. A recorded `resolution:` restarts it from that round's head.
+        since = next((by_head[h]["head"] for h in reversed(order) if by_head[h]["resolution"]), "")
+        pushes = pr_blocked_pushes(repo, number, since)
+    pr_level = pushes is not None and pushes >= BLOCKED_PUSH_REPEAT
+    retro_due = bool(seams) or pr_level or (next_round > 0 and (next_round + 1) % RETRO_EVERY == 0)
 
     print(
         "=== Rounds for PR #{} (from writer dispositions; head {}) ===".format(
@@ -283,6 +292,10 @@ def rounds_view(repo, number, head_sha, pr_json):
         print("(the current head's findings could not be read: every seam is treated as present)")
     for sp, rounds in seams:
         _print_seam(sp, rounds)
+    if pushes is not None:
+        print("blocked pushes (pr-level): {}".format(pushes))
+    if pr_level:
+        _print_pr_seam(pushes)
     for sp, rounds in history:
         print(
             "seam history: span={} fixed in rounds {} (gone from the current head, not just "
@@ -326,6 +339,29 @@ def _print_seam(span, rounds):
         "  Record it as `resolution:` in <git-dir>/{} and as a plain `resolution:` line in the "
         "disposition (read by --rounds).".format(SWEEP_FILE)
     )
+    print("  No one needs to approve; continue.")
+
+
+def _print_pr_seam(pushes):
+    """SEAM REPEAT / SEAM LIMIT (pr-level): the PR's blocked pushes, whatever the spans say."""
+    nxt = _nth(pushes + 1)
+    if pushes >= BLOCKED_PUSH_LIMIT:
+        print(
+            "SEAM LIMIT (pr-level) {} pushes followed a blocked head. The next push would "
+            "be its {}.".format(pushes, nxt)
+        )
+        print("  Only two options remain: narrow the scope, or defer with an issue and a pinning")
+        print("  test (never for a security, data-loss or corruption class: narrow it).")
+    else:
+        print(
+            "SEAM REPEAT (pr-level) {} pushes followed a blocked head. The next push would "
+            "be its {}: change the approach.".format(pushes, nxt)
+        )
+        print("  Take the first that holds: remove the second writer or hazard (this PR added")
+        print("  the mechanism); narrow the scope (redo it smaller); defer with an issue and a")
+        print("  pinning test (never security, data loss or corruption).")
+    print("  The count is of pushes, so it needs no disposition marker. Record the choice as a")
+    print("  plain `resolution:` line in the disposition (read by --rounds) to restart it.")
     print("  No one needs to approve; continue.")
 
 
@@ -374,6 +410,8 @@ CLEARS_WHEN_RE = _review_contract.CLEARS_WHEN_RE
 parse_disposition_record = _review_contract.parse_disposition_record
 declared_outcome = _review_contract.declared_outcome
 declared_resolution = _review_contract.declared_resolution
+BLOCKED_PUSH_REPEAT = _review_contract.BLOCKED_PUSH_REPEAT
+BLOCKED_PUSH_LIMIT = _review_contract.BLOCKED_PUSH_LIMIT
 
 
 FAIL_RE = re.compile(r"FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE|STALE|ERROR")
@@ -595,6 +633,11 @@ def fetch_bot_comments(repo, number, trusted_authors):
 
 def fetch_disposition_comments(repo, number):
     return _review_contract.fetch_disposition_comments(repo, number, run)
+
+
+def pr_blocked_pushes(repo, number, since=""):
+    """Pushes that followed a BLOCKED head (`_review_contract.blocked_push_count`), or None."""
+    return _review_contract.blocked_push_count(repo, number, run, since=since)
 
 
 def author_write_verdict(repo, login):

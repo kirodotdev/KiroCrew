@@ -683,7 +683,9 @@ describe('AppDetailPage — uncovered surfaces', () => {
       approvedGrants: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'] },
     }))
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
-    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, { api: ['/api/memory'], events: ['log'] }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, {
+      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [],
+    }))
     expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
   })
@@ -856,6 +858,43 @@ describe('AppDetailPage — uncovered surfaces', () => {
 
     fireEvent.click(within(box).getByRole('button', { name: 'Uninstall' }))
     await waitFor(() => expect(uninstallApp).toHaveBeenCalledWith(NAME, true))
+  })
+
+  it('focuses the uninstall dialog once, so ticking Keep data keeps focus on the checkbox', async () => {
+    const box = await openUninstall()
+    // Focus moves to the dialog's first control (the shared dialog contract).
+    expect(document.activeElement).toBe(within(box).getByRole('checkbox', { name: /keep app data/i }))
+
+    // A re-render (here the checkbox's own state change) must not pull focus
+    // back to the dialog box: the user's Tab position would reset each time.
+    const keep = within(box).getByRole('checkbox', { name: /keep app data/i })
+    keep.focus()
+    fireEvent.click(keep)
+    expect(keep).not.toBeChecked()
+    expect(document.activeElement).toBe(keep)
+  })
+
+  it('keeps Tab inside the uninstall dialog and returns focus on close', async () => {
+    getApp.mockResolvedValue(installedApp())
+    renderDetail()
+    await loaded()
+    const opener = screen.getByRole('button', { name: /uninstall/i })
+    // A real click focuses the button; fireEvent.click does not.
+    opener.focus()
+    fireEvent.click(opener)
+    const box = await screen.findByRole('dialog', { name: /confirm uninstall/i })
+    const keep = within(box).getByRole('checkbox', { name: /keep app data/i })
+    const confirm = within(box).getByRole('button', { name: /^uninstall$/i })
+
+    confirm.focus()
+    fireEvent.keyDown(confirm, { key: 'Tab' })
+    expect(document.activeElement).toBe(keep)
+    fireEvent.keyDown(keep, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(confirm)
+
+    fireEvent.keyDown(confirm, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /confirm uninstall/i })).not.toBeInTheDocument())
+    expect(document.activeElement).toBe(opener)
   })
 
   it('dismisses the uninstall dialog on Escape', async () => {

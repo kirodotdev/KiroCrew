@@ -111,6 +111,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         LlamaCppEmbedder,
         _caller_may_wait_for_load,
         _chars_bucket,
+        _construct_llama,
         _emit_embed_timing,
         _free_llama,
         _InferJob,
@@ -154,12 +155,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.embeddings_native import (  # noqa: F401
         _LIB_PATH_SEAM,
+        _LINUX_AARCH64_DOTPROD_DIRNAME,
         _LINUX_CPUINFO_PATH,
         _LINUX_X86_64_REQUIRED_CPU_FLAGS,
         _VENDOR_DIR,
         _WINDOWS_MSVC_RUNTIME_DLLS,
         _harden_llama_null_streams,
         _install_diskcache_stub,
+        _linux_aarch64_cpu_features,
+        _linux_aarch64_has_dotprod,
+        _linux_aarch64_libs_dir,
         _linux_x86_64_cpu_flags,
         _load_llama_class,
         _log_dropped_inherited_lib_path,
@@ -170,6 +175,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         verify_vendored_libs,
     )
     from kiro_crew.embeddings_settings import (  # noqa: F401
+        _CHILD_CALL_BASE_SECS,
+        _CHILD_CALL_SECS_PER_TEXT,
+        _CHILD_LOAD_TIMEOUT_SECS,
+        _CHILD_NICE,
+        _CHILD_RESPAWN_BASE_SECS,
+        _CHILD_RESPAWN_CAP_SECS,
+        _CHILD_STABLE_SECS,
         _COLD_LOAD_WAIT_SECS,
         _DEFAULT_BULK_DUTY,
         _DEFAULT_BULK_THREADS,
@@ -191,6 +203,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _HTTP_TIMEOUT_SECS,
         _INFER_STOP_TIMEOUT_SECS,
         _INTERACTIVE_QUEUE_RESERVE,
+        _LARGE_HOST_EMBED_THREADS,
+        _LARGE_HOST_MIN_CORES,
         _LLM_LOAD_RETRY_SECS,
         _MAX_BULK_PACE_SLEEP,
         _MAX_EMBED_BATCH_TEXTS,
@@ -220,7 +234,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         bulk_duty_cycle,
         bulk_embed_threads,
         bulk_pace_delay,
+        embedding_child_process_enabled,
         embedding_idle_evict_secs,
+        embedding_weight_repack,
         embedding_work,
     )
     from kiro_crew.embeddings_shared import (  # noqa: F401
@@ -285,6 +301,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.cpu_affinity import (  # noqa: F401
         affinity_cpu_count,
+    )
+    from kiro_crew.embeddings_child import (  # noqa: F401
+        ChildLlama,
+        is_vendored_llama_class,
     )
     from kiro_crew.metrics.provider import (  # noqa: F401
         get_recorder,

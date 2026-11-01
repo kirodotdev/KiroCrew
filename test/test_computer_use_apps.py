@@ -425,7 +425,7 @@ def _redirect_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
 def test_a_plist_on_the_sensitive_path_floor_is_never_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Reviewer finding: an OS-derived path is still a path the floor governs.
+    """An OS-derived path is still a path the floor governs.
 
     The agent does not compute this string — it is the target process's executable
     walked up to its ``.app`` ancestor — but the agent DOES choose which process to
@@ -644,7 +644,7 @@ class TestBrowserHostedDashboardIsRefused:
     A bundle/name rule cannot see the browser case: the dashboard served at
     ``localhost`` into Chrome presents Chrome's bundle id and Chrome's process name.
     The window TITLE is the only surviving signal, so the rule carries
-    ``title_substrings`` too (reviewer finding).
+    ``title_substrings`` too.
     """
 
     @staticmethod

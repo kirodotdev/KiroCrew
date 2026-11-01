@@ -69,6 +69,7 @@ from kiro_crew.mcp_cron_vet import (
     _vet_script_file,
     _vet_shell_command,
 )
+from kiro_crew.mcp_instructions import CRON as _INSTRUCTIONS
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -387,8 +388,8 @@ def _deny_channel_agent_cron(tool_name: str) -> str | None:
 #:
 #: The consequence is deliberate and worth stating: a cron created with
 #: ``kirocrew cron add`` does not appear in ``cron_list`` from chat. The CLI
-#: remains its management surface. The alternative -- showing it -- was tried in an
-#: earlier revision of this change and is what the paragraph above rules out.
+#: remains its management surface. The alternative -- showing it -- is what the
+#: paragraph above rules out.
 #:
 #: Note the set keeps GROWING for as long as the CLI and the importer create rows
 #: without a session, which is why this is a permanent scope rule rather than a
@@ -653,7 +654,7 @@ def _owner_unusable_caveat(svc: "CronService", session_key: str, job_id: str) ->
         return ""
     caller_job = svc.get_job(caller_job_id)
     # No record means no evidence, so say nothing: a warning we cannot substantiate
-    # is the exact failure this branch was rewritten to remove.
+    # is worse than no warning.
     if caller_job is None or cron_session_key_is_stable(caller_job):
         return ""
     return (
@@ -736,6 +737,40 @@ def _owned_by(jobs: list[CronJob], session_key: str) -> list[CronJob]:
     return [j for j in jobs if j.session_key == session_key]
 
 
+_AUTO_APPROVAL_OWNER_ONLY = (
+    "Error: approval_mode 'auto' can only be turned on by the owner. "
+    "Create or update the job without it, then ask the user to turn on "
+    "auto-approve for this job on the Schedule page."
+)
+
+
+#: ``cron_update`` fields (as ``update_job`` kwargs) that change what a job does or
+#: where it reports. Changing one through a tool turns the owner's auto-approve off.
+_AUTO_RESETTING_FIELDS = frozenset(
+    {"message", "agent_id", "model", "cron_expr", "every_secs", "channel", "thread_ts"}
+)
+
+_AUTO_APPROVAL_RESET_NOTE = (
+    " Auto-approve was turned off because the job changed; ask the user to turn it "
+    "back on for this job on the Schedule page."
+)
+
+
+def _refuse_tool_auto_approval(tool_name: str, args: dict[str, Any]) -> str:
+    """Refuse a tool call that would turn on ``approval_mode="auto"``.
+
+    An auto job approves every tool call of every later fire with nobody
+    watching, so it is the owner's switch: the Schedule page's owner-gated
+    routes set it. A tool caller cannot be told apart from other code running
+    in the same session (both reach this handler the same way), so no tool
+    call may set it. ``""`` (the default, hook-based approval) is unaffected.
+    """
+    if args.get("approval_mode") != "auto":
+        return ""
+    _log_cron_denial(tool_name, _AUTO_APPROVAL_OWNER_ONLY)
+    return _AUTO_APPROVAL_OWNER_ONLY
+
+
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     """Execute a cron tool (post-validation)."""
     svc = CronService(base_dir=config_dir())
@@ -791,6 +826,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if cap_err:
             _log_cron_denial("cron_add", cap_err)
             return cap_err
+        auto_err = _refuse_tool_auto_approval("cron_add", args)
+        if auto_err:
+            return auto_err
         n = args["name"]
         msg = args.get("message", "")
         script = args.get("script", "")
@@ -830,6 +868,16 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             if isinstance(parsed, str):
                 return parsed  # error message
             at_ts = parsed
+        # The resolved instant carries the schema's ceiling for a raw ``at``
+        # (year 2100), whatever produced it -- the same bound and wording the
+        # dashboard route and the CLI apply. ``at_time``'s relative form has no
+        # bound of its own: "in 999999999 hours" parses to a time ~116,000
+        # years out that the Schedule page cannot render.
+        if at_ts is not None:
+            at_spec = next(s for s in MCP_CRON_SCHEMAS["cron_add"].fields if s.name == "at")
+            lo, hi = at_spec.min_val, at_spec.max_val
+            if (lo is not None and at_ts < lo) or (hi is not None and at_ts > hi):
+                return f"Error: resolved time is outside the supported range ({lo} to {hi})"
         # Guard against past timestamps from any source (at, delay, at_time)
         if at_ts is not None and at_ts < time.time():
             # Rendered in the zone the job keeps its wall clocks in, so a refused
@@ -926,6 +974,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         timeout_val = args.get("timeout", 0)
         timeout_secs_val = args.get("timeout_secs", 0)
         auto_pause_val = args.get("auto_pause_after_failures")
+        alert_after_val = args.get("alert_after_failures")
         # Resolve the folder BEFORE add_job so an unresolvable reference never
         # leaves an orphaned job behind (same position as the model check
         # above). A folder auto-created here that a subsequent add_job failure
@@ -970,6 +1019,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 timeout=timeout_val or 0,
                 timeout_secs=timeout_secs_val or 0,
                 auto_pause_after_failures=auto_pause_val,
+                alert_after_failures=alert_after_val,
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
@@ -1020,6 +1070,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         own_err = _check_cron_job_ownership(svc, jid)
         if own_err:
             return own_err
+        auto_err = _refuse_tool_auto_approval("cron_update", args)
+        if auto_err:
+            return auto_err
         kwargs: dict[str, Any] = {}
         for key in ("name", "message"):
             if key in args and args[key]:
@@ -1098,8 +1151,19 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             kwargs["timeout_secs"] = args["timeout_secs"]
         if "auto_pause_after_failures" in args:
             kwargs["auto_pause_after_failures"] = args["auto_pause_after_failures"]
+        if "alert_after_failures" in args:
+            kwargs["alert_after_failures"] = args["alert_after_failures"]
         if not kwargs:
             return "Error: no fields to update"
+        # The owner's auto-approve covers the job the owner saw. A tool edit that
+        # changes what the job does turns it off in the same write, so the owner
+        # re-enables it on the Schedule page. Written unconditionally (a no-op on a
+        # job that is not auto) so no read-then-write window can keep it on.
+        was_auto = False
+        if _AUTO_RESETTING_FIELDS.intersection(kwargs):
+            prior = svc.get_job(jid)
+            was_auto = prior is not None and prior.approval_mode == "auto"
+            kwargs["approval_mode"] = ""
         kwargs["audit_actor"] = _authz_session_key()
         try:
             updated = svc.update_job(jid, **kwargs)
@@ -1130,6 +1194,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             updated.agent_sequence,
         )
         note = _sub_floor_timeout_note(args["timeout_secs"]) if "timeout_secs" in args else ""
+        if was_auto:
+            note += _AUTO_APPROVAL_RESET_NOTE
         return f"Updated job: {updated.id} ({updated.name}) [{sched_str}]{caveat}{note}"
 
     if name == "cron_remove":
@@ -1323,8 +1389,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             resources=f"job_id={jid}:{','.join(sorted(secrets))}",
         )
         # No in-chat approval surface, deliberately: an approval record
-        # reachable from generic chat resolution paths kept widening the
-        # owner-only boundary in review, so approval lives EXCLUSIVELY on the
+        # reachable from generic chat resolution paths keeps widening the
+        # owner-only boundary, so approval lives EXCLUSIVELY on the
         # owner-gated Schedule page. The durable pending record above is the
         # source of truth.
         return (
@@ -1347,7 +1413,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 #: backend advertised this capability -- so without the advertisement the block
 #: never arrives, and this server's resolver reads an empty identity no matter how
 #: correctly it is written. Nothing declines to POOL an unadvertised backend
-#: (``rewriter.UNPOOLABLE_SERVERS`` is empty and documents that the capability is
+#: (``rewriter.UNPOOLABLE_SERVERS`` lists only credential vendors and documents that the capability is
 #: read only to decide injection), so the unadvertised state was not "per-session
 #: spawn" -- it was pooled AND identity-blind.
 #:
@@ -1367,6 +1433,7 @@ def run_mcp_server() -> None:
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
         error_prefix_is_error=True,
+        instructions=_INSTRUCTIONS,
     )
 
 
@@ -1464,6 +1531,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _strip_shell_quotes,
     )
     from kiro_crew.mcp_cron_tool_list import (  # noqa: F401
+        _ALERT_AFTER_DESCRIPTION,
         _AUTO_PAUSE_AFTER_DESCRIPTION,
     )
     from kiro_crew.mcp_cron_vet import (  # noqa: F401
@@ -1485,6 +1553,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         lookup_cron_folder_id,
     )
     from kiro_crew.cron_service.model import (  # noqa: F401
+        _ALERT_AFTER_DEFAULT,
         _AUTO_PAUSE_MAX,
         _AUTO_PAUSE_THRESHOLD,
     )
@@ -1500,6 +1569,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform import (  # noqa: F401
         current_context,
         redact_log_via_context,
+    )
+    from kiro_crew.platform_compat import (  # noqa: F401
+        strip_extended_length_prefix,
     )
     from kiro_crew.sandbox import (  # noqa: F401
         _AGENT_DENIED_ENV_KEYS,

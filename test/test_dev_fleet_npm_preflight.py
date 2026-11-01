@@ -680,20 +680,42 @@ class TestScratchLivesOnTheRepoFilesystem:
         ],
     )
     def test_an_unusable_repo_falls_back_to_the_temp_dir(self, tmp_path, make_repo, why):
-        """A checkout that cannot hold a scratch directory still gets a probe."""
+        """A checkout that cannot hold a scratch directory still gets a probe, and the
+        reason it could not is named for the operator-facing line."""
         (tmp_path / "file").write_text("x", encoding="utf-8")
-        assert np._scratch_parent(str(make_repo(tmp_path))) is None, why
+        parent, fallback = np._scratch_parent(str(make_repo(tmp_path)))
+        assert parent is None, why
+        assert fallback and "checkout" in fallback
 
     def test_a_read_only_checkout_falls_back_to_the_temp_dir(self, tmp_path, monkeypatch):
         repo = tmp_path / "checkout"
         repo.mkdir()
         monkeypatch.setattr(np.os, "access", lambda p, mode: False)
-        assert np._scratch_parent(str(repo)) is None
+        parent, fallback = np._scratch_parent(str(repo))
+        assert parent is None
+        assert fallback == "the checkout is not writable"
+
+    def test_an_oserror_resolving_the_checkout_falls_back_with_its_own_reason(
+        self, tmp_path, monkeypatch
+    ):
+        """Resolving the path can itself raise (a permission error on a parent, a
+        platform refusal). That is a fifth, distinct fallback reason -- not the same
+        as a path that simply does not exist -- so it is named apart."""
+        repo = tmp_path / "checkout"
+        repo.mkdir()
+
+        def boom(self):
+            raise OSError("cannot stat")
+
+        monkeypatch.setattr(np.Path, "is_dir", boom)
+        parent, fallback = np._scratch_parent(str(repo))
+        assert parent is None
+        assert fallback == "the checkout path could not be read"
 
     def test_a_writable_repo_is_used(self, tmp_path):
         repo = tmp_path / "checkout"
         repo.mkdir()
-        assert np._scratch_parent(str(repo)) == str(repo)
+        assert np._scratch_parent(str(repo)) == (str(repo), None)
 
     @pytest.mark.parametrize(
         "code, name",
@@ -844,10 +866,12 @@ class TestAbandonedScratchIsSwept:
     def test_a_created_scratch_carries_the_marker(self, tmp_path, monkeypatch):
         """The marker has to be written where the directory is made, or the sweep
         can never reclaim anything and the leak this class exists for returns."""
-        monkeypatch.setattr(np, "_scratch_parent", lambda repo: None)
+        monkeypatch.setattr(
+            np, "_scratch_parent", lambda repo: (None, "the checkout path does not exist")
+        )
         monkeypatch.setattr(np.tempfile, "mkdtemp", lambda *a, **kw: str(tmp_path / "s"))
         (tmp_path / "s").mkdir()
-        path, failure = np._make_scratch("git", str(tmp_path / "checkout"))
+        path, failure, _ = np._make_scratch("git", str(tmp_path / "checkout"))
         assert failure is None and path is not None
         assert (path / np._SCRATCH_MARKER).is_file(), "a new scratch dir has no ownership marker"
 
@@ -951,7 +975,7 @@ class TestAbandonedScratchIsSwept:
         monkeypatch.setattr(np.tempfile, "mkdtemp", spy)
         monkeypatch.setattr(np.shutil, "rmtree", watched)
         monkeypatch.setattr(np, "_scratch_name_is_ignored", lambda git, repo: True)
-        path, failure = np._make_scratch("/usr/bin/git", str(repo))
+        path, failure, _ = np._make_scratch("/usr/bin/git", str(repo))
         assert failure is None and path is not None
         assert order[:2] == ["sweep", "create"], f"wrong order: {order}"
 
@@ -960,7 +984,9 @@ class TestAbandonedScratchIsSwept:
         directory this module did not choose is not one it deletes in."""
         swept: list[str] = []
         (tmp_path / "x").mkdir()
-        monkeypatch.setattr(np, "_scratch_parent", lambda repo: None)
+        monkeypatch.setattr(
+            np, "_scratch_parent", lambda repo: (None, "the checkout path does not exist")
+        )
         monkeypatch.setattr(np, "_sweep_stale_scratch", lambda parent, **kw: swept.append(parent))
         monkeypatch.setattr(np.tempfile, "mkdtemp", lambda *a, **kw: str(tmp_path / "x"))
         np._make_scratch("/usr/bin/git", str(tmp_path / "checkout"))
@@ -995,7 +1021,7 @@ class TestTheRepoRootIsUsedOnlyWhenGitHidesIt:
     def test_a_checkout_carrying_the_rule_hosts_the_scratch(self, tmp_path):
         repo = self._repo(tmp_path, ignored=True)
         assert np._scratch_name_is_ignored(self.git, str(repo)) is True
-        path, failure = np._make_scratch(self.git, str(repo))
+        path, failure, _ = np._make_scratch(self.git, str(repo))
         assert failure is None and path is not None
         assert path.parent == repo, "a checkout that hides the name should host the scratch"
 
@@ -1008,7 +1034,7 @@ class TestTheRepoRootIsUsedOnlyWhenGitHidesIt:
         monkeypatch.setenv("TMPDIR", str(elsewhere))
         monkeypatch.setattr(np.tempfile, "tempdir", None)
         assert np._scratch_name_is_ignored(self.git, str(repo)) is False
-        path, failure = np._make_scratch(self.git, str(repo))
+        path, failure, _ = np._make_scratch(self.git, str(repo))
         assert failure is None and path is not None
         assert path.parent == elsewhere, f"scratch landed in {path.parent}, not TMPDIR"
 
@@ -1038,7 +1064,7 @@ class TestTheRepoRootIsUsedOnlyWhenGitHidesIt:
         elsewhere.mkdir()
         monkeypatch.setenv("TMPDIR", str(elsewhere))
         monkeypatch.setattr(np.tempfile, "tempdir", None)
-        path, failure = np._make_scratch(self.git, str(repo))
+        path, failure, _ = np._make_scratch(self.git, str(repo))
         assert failure is None and path is not None and path.parent == elsewhere
         assert not gone.exists(), "litter from the un-ignored window was left behind"
 
@@ -1048,6 +1074,176 @@ class TestTheRepoRootIsUsedOnlyWhenGitHidesIt:
         repo = self._repo(tmp_path, ignored=False)
         (repo / ".gitignore").write_text(f"/{np._SCRATCH_PREFIX}\n", encoding="utf-8")
         assert np._scratch_name_is_ignored(self.git, str(repo)) is False
+
+
+class TestAFallbackPassSaysItRehearsedTheWrongFilesystem:
+    """A pass earned in TMPDIR measured a room budget the real ``npm ci`` is not
+    charged against, so a bare pass would certify the wrong filesystem -- the
+    silent twin of the loud out-of-room refusal this probe exists to remove. When
+    the scratch falls back, the pass detail names TMPDIR and the reason; a
+    repo-hosted pass stays the generic line and the VERDICT never changes.
+    """
+
+    @staticmethod
+    def _pass_in_tmpdir(monkeypatch, fallback):
+        """Drive ``probe`` to a real-install pass whose scratch fell back to TMPDIR.
+
+        ``_make_scratch`` is stubbed so the reason under test is the only variable;
+        ``_install_already_proven`` returns ``None`` so the install actually runs,
+        which is the path the disclosure is about; every subprocess returns 0, so
+        ``git show`` extracts and ``npm ci`` passes.
+        """
+        scratch: list[str] = []
+
+        def fake_make_scratch(git, repo):
+            made = Path(np.tempfile.mkdtemp(prefix=np._SCRATCH_PREFIX))
+            scratch.append(str(made))
+            return made, None, fallback
+
+        monkeypatch.setattr(np, "_make_scratch", fake_make_scratch)
+        monkeypatch.setattr(np, "_install_already_proven", lambda *a: None)
+        monkeypatch.setattr(
+            np.subprocess,
+            "run",
+            lambda argv, **kw: subprocess.CompletedProcess(argv, 0, b"{}", b""),
+        )
+        code, detail = np.probe(
+            git="/usr/bin/git", npm="/usr/bin/npm", repo="/repo", ref="origin/main"
+        )
+        for made in scratch:
+            shutil.rmtree(made, ignore_errors=True)
+        return code, detail
+
+    @pytest.mark.parametrize(
+        "fallback",
+        [
+            "the checkout path does not exist",
+            "the checkout is not writable",
+            "the checkout's git does not yet hide the scratch name",
+            "the checkout refused the scratch directory",
+        ],
+    )
+    def test_every_reason_reaches_the_detail_line_without_changing_the_verdict(
+        self, monkeypatch, fallback
+    ):
+        code, detail = self._pass_in_tmpdir(monkeypatch, fallback)
+        assert code == np.EXIT_OK, "the fallback must not change the pass verdict"
+        assert "incoming lockfile is installable" in detail, "a fallback pass still reads as a pass"
+        assert "TMPDIR" in detail, detail
+        assert fallback in detail, detail
+
+    def test_a_repo_hosted_pass_stays_the_generic_line(self, monkeypatch):
+        """No fallback means no disclosure: ``probe`` returns the empty detail that
+        ``main`` renders as the generic pass line, exactly as before."""
+        code, detail = self._pass_in_tmpdir(monkeypatch, None)
+        assert code == np.EXIT_OK
+        assert detail == "", "a faithful rehearsal must not claim it fell back"
+
+    def test_the_disclosure_helper_is_empty_on_the_faithful_path(self):
+        assert np._fallback_detail(None) == ""
+
+    def test_the_cli_prints_the_fallback_disclosure_on_its_detail_line(self, monkeypatch, capsys):
+        """The disclosure has to reach the operator's run log, which is the CLI's
+        ``preflight:`` line -- not only ``probe``'s return value. It LEADS with the
+        pass affirmation so the line still reads as a pass, then discloses the
+        fallback."""
+        monkeypatch.setattr(
+            np,
+            "probe",
+            lambda **kw: (
+                np.EXIT_OK,
+                "incoming lockfile is installable; rehearsed in TMPDIR rather than "
+                "the checkout's filesystem (the checkout is not writable)",
+            ),
+        )
+        rc = np.main(
+            ["--git", "/usr/bin/git", "--npm", "/usr/bin/npm", "--repo", "/repo", "--ref", "r"]
+        )
+        assert rc == np.EXIT_OK
+        out = capsys.readouterr().out
+        assert out.startswith(np.DETAIL_PREFIX), out
+        assert (
+            "incoming lockfile is installable" in out
+        ), "a fallback pass must still read as a pass"
+        assert "rehearsed in TMPDIR" in out
+        assert "the checkout is not writable" in out
+
+    def test_make_scratch_reports_no_fallback_when_the_repo_hosts_the_scratch(
+        self, tmp_path, monkeypatch
+    ):
+        repo = tmp_path / "checkout"
+        repo.mkdir()
+        monkeypatch.setattr(np, "_scratch_name_is_ignored", lambda git, repo: True)
+        path, failure, fallback = np._make_scratch("/usr/bin/git", str(repo))
+        try:
+            assert failure is None and path is not None
+            assert path.parent == repo
+            assert fallback is None, "a repo-hosted scratch has nothing to disclose"
+        finally:
+            if path is not None:
+                shutil.rmtree(path, ignore_errors=True)
+
+    @pytest.mark.parametrize(
+        "make_repo, expected",
+        [
+            (lambda base: base / "missing", "the checkout path does not exist"),
+            (lambda base: base / "file", "the checkout path does not exist"),
+        ],
+    )
+    def test_make_scratch_names_a_missing_checkout(self, tmp_path, make_repo, expected):
+        (tmp_path / "file").write_text("x", encoding="utf-8")
+        path, failure, fallback = np._make_scratch("/usr/bin/git", str(make_repo(tmp_path)))
+        try:
+            assert failure is None and path is not None
+            assert fallback == expected
+        finally:
+            if path is not None:
+                shutil.rmtree(path, ignore_errors=True)
+
+    def test_make_scratch_names_the_absent_ignore_rule(self, tmp_path, monkeypatch):
+        """The one reason that self-heals: the ignore rule ships separately, so a
+        checkout on an older ref has none until it advances. The disclosure names
+        that distinctly from a checkout that can never host a scratch."""
+        repo = tmp_path / "checkout"
+        repo.mkdir()
+        monkeypatch.setattr(np, "_scratch_name_is_ignored", lambda git, repo: False)
+        path, failure, fallback = np._make_scratch("/usr/bin/git", str(repo))
+        try:
+            assert failure is None and path is not None
+            assert path.parent != repo, "an un-ignored checkout must not host the scratch"
+            assert fallback == "the checkout's git does not yet hide the scratch name"
+        finally:
+            if path is not None:
+                shutil.rmtree(path, ignore_errors=True)
+
+    def test_make_scratch_names_a_repo_that_refused_the_directory(self, tmp_path, monkeypatch):
+        """``_scratch_parent`` said the repo could host it and the ignore rule is
+        present, but ``mkdtemp`` in the repo raised a non-out-of-room error -- a
+        permission or platform refusal, not an answer about the lockfile. The probe
+        still runs, in TMPDIR, and says the repo refused the directory -- which is
+        NOT the same as a repo that was never a candidate (out of room is tested in
+        ``test_no_room_on_the_repo_filesystem_is_the_verdict_not_a_fallback``)."""
+        repo = tmp_path / "checkout"
+        repo.mkdir()
+        fallback_dir = tmp_path / "tmpdir"
+        fallback_dir.mkdir()
+        monkeypatch.setattr(np, "_scratch_name_is_ignored", lambda git, repo: True)
+        real = np.tempfile.mkdtemp
+
+        def refuse_in_repo(*a, **kw):
+            if kw.get("dir") == str(repo):
+                raise OSError(errno.EACCES, "Permission denied")
+            return real(*a, **{**kw, "dir": str(fallback_dir)})
+
+        monkeypatch.setattr(np.tempfile, "mkdtemp", refuse_in_repo)
+        path, failure, fallback = np._make_scratch("/usr/bin/git", str(repo))
+        try:
+            assert failure is None and path is not None
+            assert path.parent == fallback_dir, "the probe did not fall back to TMPDIR"
+            assert fallback == "the checkout refused the scratch directory"
+        finally:
+            if path is not None:
+                shutil.rmtree(path, ignore_errors=True)
 
 
 class TestTheOutOfRoomMessageNamesBothBudgets:

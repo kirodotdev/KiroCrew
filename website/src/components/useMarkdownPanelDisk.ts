@@ -3,8 +3,8 @@ import { useQuery, type QueryClient } from '@tanstack/react-query'
 import { useVisibleTabCatchUp, settleCatchUp, type CatchUpLatch } from '../hooks/useVisibleTabCatchUp'
 import type { FileWatchFrame } from '../hooks/useFileWatch'
 import { api } from '../api/client'
-import { downloadFileName } from '../utils/fileReadUrl'
-import { downloadBlob } from '../utils/download'
+import { downloadFileName, partialDownloadName } from '../utils/fileReadUrl'
+import { saveBlob } from '../utils/download'
 import { fetchFileRead, fileReadQueryKey, isPartialRead } from '../utils/fileReadQuery'
 import { documentBodyEpochNow } from '../hooks/usePanelTabs'
 import { copyToClipboard } from '../utils/clipboard'
@@ -144,10 +144,11 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveW
    *  the panel's own -- and never guessed from the body: a whole file may quote
    *  the redaction tag, and a guess about it could only be wrong. Such a buffer
    *  is not the whole file: the banner and the close prompt say so instead of
-   *  calling it the file's remaining contents, and a download of it is named
-   *  `.partial`. That is ALL the verdict changes -- words and a file name. The
-   *  guard, the banner and the exits stand for a partial buffer exactly as for
-   *  a whole one: it is the most of the file that survives. */
+   *  calling it the file's remaining contents, and a download of it carries a
+   *  `.partial` tag before the extension (`notes.partial.md`). That is ALL the
+   *  verdict changes -- words and a file name. The guard, the banner and the
+   *  exits stand for a partial buffer exactly as for a whole one: it is the
+   *  most of the file that survives. */
   const partialCopy = !!partial
   const partialCopyRef = useRef(partialCopy)
   partialCopyRef.current = partialCopy
@@ -176,8 +177,12 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveW
   const downloadLastCopy = useCallback(() => {
     // A partial copy goes out under a name that says so, never under the
     // file's own: with the original gone, that would pass a prefix off as it.
-    downloadBlob(new Blob([content], { type: 'text/plain;charset=utf-8' }), downloadFileName(filePath) + (partialCopy ? '.partial' : ''))
-  }, [content, filePath, partialCopy])
+    // The suffix sits before the extension (`notes.partial.md`) so the OS still
+    // reads the file by its real type.
+    // saveBlob rejects only when an in-app browser's hand-off fails.
+    saveBlob(new Blob([content], { type: 'text/plain;charset=utf-8' }), partialCopy ? partialDownloadName(filePath) : downloadFileName(filePath))
+      .catch(() => reportActionError(i18nT('components.markdownPanel.download_failed')))
+  }, [content, filePath, partialCopy, reportActionError])
   const [lastCopyCopied, setLastCopyCopied] = useState(false)
   const lastCopyCopiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(lastCopyCopiedTimer.current), [])

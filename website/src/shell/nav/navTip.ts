@@ -9,7 +9,7 @@ import { useTouchReplay } from '../../hooks/useTouchReplay'
  *  flyout at the 58px rail edge. Repositions while shown so it follows the row
  *  when the rail is scrolled/resized. */
 export function useNavTip<T extends HTMLElement>(enabled: boolean) {
-  const [tip, setTip] = useState<{ top: number; left: number; height: number } | null>(null)
+  const [tip, setTip] = useState<{ top: number; left: number; height: number; width: number } | null>(null)
   const [tipOn, setTipOn] = useState(false) // drives the opacity fade
   const rowRef = useRef<T | null>(null)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -22,9 +22,9 @@ export function useNavTip<T extends HTMLElement>(enabled: boolean) {
     // nothing moved — the scroll listener fires on any document scroll, so this
     // avoids needless re-renders when the rail itself didn't move.
     setTip(prev =>
-      prev && prev.top === r.top && prev.left === r.left && prev.height === r.height
+      prev && prev.top === r.top && prev.left === r.left && prev.height === r.height && prev.width === r.width
         ? prev
-        : { top: r.top, left: r.left, height: r.height }
+        : { top: r.top, left: r.left, height: r.height, width: r.width }
     )
   }, [])
   // A touch tap's replayed mouseenter (or the focus its mousedown gives the

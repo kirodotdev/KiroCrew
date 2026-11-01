@@ -154,8 +154,7 @@ async def _steer_policy_notice(
             # always-visible summary has to name the right cause. Rendering one
             # "safety policy blocked the call" line for every cause would tell the
             # person to go audit a security rule that does not exist — the same
-            # cause-blind wording this change removes for the model, left in place
-            # for the human.
+            # cause-blind wording the model is spared, left in place for the human.
             slot.append(
                 "inject",
                 f"{REFUSAL_INBAND_RECOVERY_PREFIX} {cause}\n{notice}",

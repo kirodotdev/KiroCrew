@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -692,7 +693,11 @@ class FolderWatcher:
                 # here would leave that commit unrecorded.
                 stats["skipped"] += 1
             else:
-                await self._persist_state(source_id, file_path, content_hash, mtime, json.dumps(item_ids), now, "done", commit=False, included=included)
+                # Only lands when the commit callback's own write did not: see
+                # _settle_done. Drained like _persist_state.
+                await run_to_completion(functools.partial(
+                    self._settle_done, source_id, file_path, content_hash, mtime,
+                    list(item_ids), now, included))
                 ingested_paths.append(file_path)
                 if chunk_budget:
                     chunks_ingested += len(item_ids)
@@ -950,6 +955,67 @@ class FolderWatcher:
         self._write_state_row(
             source_id, file_path, content_hash, mtime, json.dumps(adopted), now,
             "done" if adopted else "deduped", known_text_hash=text_hash)
+
+    def _mark_committed(self, source_id: str, file_path: str, item_ids: list[str],
+                        included: set[str] | None) -> None:
+        """Turn the 'scanning' marker into the 'done' row naming *item_ids*.
+
+        A targeted UPDATE: the marker already carries the file's content hash and
+        mtime. No transaction control, so the caller decides how it commits.
+        """
+        text_hash: str | None = None
+        if item_ids:
+            row = self.store.db.execute(
+                "SELECT content_hash FROM items WHERE id = ?",
+                (item_ids[0],)).fetchone()
+            if row:
+                text_hash = row["content_hash"]
+        # The targets first: a group whose record is missing could keep a removed
+        # target's text unnoticed, while a record ahead of its row only costs a
+        # re-read.
+        if included is not None:
+            self._write_include_record(source_id, file_path, included)
+        self.store.db.execute(
+            "UPDATE folder_file_state SET item_ids = ?, text_hash = ?, "
+            "status = 'done', error_message = NULL, attempts = 0, "
+            "last_seen = ? WHERE source_id = ? AND file_path = ?",
+            (json.dumps(item_ids), text_hash,
+             datetime.now().isoformat(), source_id, file_path))
+
+    def _settle_done(self, source_id: str, file_path: str, content_hash: str,
+                     mtime: float, item_ids: list[str], now: str,
+                     included: set[str] | None) -> bool:
+        """The caller's terminal 'done' write, only over this attempt's own marker.
+
+        The commit callback normally wrote the row already. From that moment the
+        row is a 'done' row the dedup sweep enumerates, and a collapse can delete
+        the group and mark the row 'deduped' before this runs. Writing the
+        captured ids over that verdict would name deleted items, so the write
+        lands only while the row is still the 'scanning' marker, which no other
+        writer settles. Any other status means the row is already settled: by
+        the callback, by the sweep, or by a cascade adopting an item into it.
+
+        Runs inside the scan, under the per-source ``self._locks[source_id]``,
+        so no other scan of this source can rewrite the marker meanwhile.
+        ``BEGIN IMMEDIATE`` holds the writer lock across the read and the write.
+        Returns ``True`` when written.
+        """
+        self.store.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.store.db.execute(
+                "SELECT status FROM folder_file_state "
+                "WHERE source_id = ? AND file_path = ?",
+                (source_id, file_path)).fetchone()
+            pending = row is not None and row["status"] == "scanning"
+            if pending:
+                self._update_state(source_id, file_path, content_hash, mtime,
+                                   json.dumps(item_ids), now, "done",
+                                   commit=False, included=included)
+            self.store.db.execute("COMMIT")
+        except BaseException:
+            self.store.db.execute("ROLLBACK")
+            raise
+        return pending
 
     def _write_state_row(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0, known_text_hash: str | None = None):
         # Record the EXTRACTED-TEXT hash alongside the file-bytes one. Ownership
@@ -1253,10 +1319,10 @@ class FolderWatcher:
             # content hash and mtime, which this frame does not have. Every call
             # site writes that marker first, so the row is always there to hit.
             # `status='done'` also clears the retry budget, matching every other
-            # terminal write. The caller's own 'done' write (same values) still
-            # lands afterwards on the uncancelled path, which keeps this order-
-            # independent. `store.db` is per-thread and, on this worker,
-            # autocommit -- no separate commit hop, no transaction to interleave.
+            # terminal write. Once this write lands the caller writes nothing
+            # over it (see `_settle_done`): the row is then visible to the dedup
+            # sweep, and its verdict must stand. `store.db` is per-thread and,
+            # on this worker, autocommit -- no separate commit hop.
             nonlocal committed
             committed = list(item_ids)
             # Fail-safe, never fail-closed: the write below is a durability
@@ -1271,27 +1337,27 @@ class FolderWatcher:
             # own 'done' write persists the group on the uncancelled path; the
             # exposure shrinks back to the cancellation window, never past the
             # pre-write behavior. Writer-lock contention past busy_timeout
-            # (e.g. a large concurrent import_bundle) is the realistic raiser.
+            # (e.g. a large concurrent import_bundle) is the realistic raiser,
+            # so a failed first write is retried once under ``BEGIN
+            # IMMEDIATE``, which waits for the writer lock instead of failing
+            # on it.
             try:
-                text_hash: str | None = None
-                if committed:
-                    row = self.store.db.execute(
-                        "SELECT content_hash FROM items WHERE id = ?",
-                        (committed[0],)).fetchone()
-                    if row:
-                        text_hash = row["content_hash"]
-                # The targets first: a group whose record is missing could keep
-                # a removed target's text unnoticed, while a record ahead of its
-                # row only costs a re-read.
-                if included is not None:
-                    self._write_include_record(source_id, file_path, included)
-                self.store.db.execute(
-                    "UPDATE folder_file_state SET item_ids = ?, text_hash = ?, "
-                    "status = 'done', error_message = NULL, attempts = 0, "
-                    "last_seen = ? WHERE source_id = ? AND file_path = ?",
-                    (json.dumps(committed), text_hash,
-                     datetime.now().isoformat(), source_id, file_path))
+                self._mark_committed(source_id, file_path, committed, included)
                 self.store.db.commit()
+                return
+            except Exception:
+                logger.warning(
+                    "could not persist committed group for %s inside the "
+                    "commit callback; retrying under the writer lock",
+                    file_path, exc_info=True)
+            try:
+                self.store.db.execute("BEGIN IMMEDIATE")
+                try:
+                    self._mark_committed(source_id, file_path, committed, included)
+                    self.store.db.execute("COMMIT")
+                except BaseException:
+                    self.store.db.execute("ROLLBACK")
+                    raise
             except Exception:
                 logger.warning(
                     "could not persist committed group for %s inside the "

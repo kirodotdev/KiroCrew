@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         sel,
         session_grant,
         slot_not_found,
+        trust_reaches_subagents,
         yolo_policy_permits,
     )
 
@@ -522,6 +523,7 @@ async def apply_approval_mode(
             for _sharing in state._slots.values():
                 if effective_session_key(_sharing) == _granted_key:
                     _sharing._trust = True
+                    _sharing._trust_card_scoped = False
             state.sessions.set_approval_policy(_granted_key, "auto")
             linked_ch = getattr(slot, "_slack_channel", None)
             if (
@@ -536,6 +538,7 @@ async def apply_approval_mode(
         else:
             for s in state._slots.values():
                 s._trust = True
+                s._trust_card_scoped = False
                 state.sessions.set_approval_policy(effective_session_key(s), "auto")
             if mgr:
                 for ch in mgr._channels.values():
@@ -610,6 +613,22 @@ async def apply_approval_mode(
         except Exception:
             logger.warning("SEL audit failed for normal mode activation", exc_info=True)
 
+    # The sessions this slot created follow its new mode, capped at it.
+    inherited_slots: set[str] = set()
+    # Only from the slot the branch above wrote: one closed or replaced during its
+    # awaits holds a posture this request never set.
+    if (
+        slot is not None
+        and state._slots.get(slot.key) is slot
+        and mode in ("trust", "trust_reads", "normal")
+    ):
+        inherited_slots = _apply_inherited_postures(
+            state,
+            slot,
+            may_raise=not request_app and not cron_creator,
+            audit_caller=audit_caller,
+        )
+
     # If any slot has a pending approval and mode is trust/yolo, auto-approve it
     if mode in ("trust", "yolo"):
         # A slot-scoped ``trust`` grants auto-approval to ONE session only (the
@@ -623,37 +642,16 @@ async def apply_approval_mode(
         # narrows.
         scoped = mode == "trust" and slot is not None
         _target_key = effective_session_key(slot) if slot is not None and scoped else None
+        # The workers just raised to Trust (``inherited_slots``, by slot key) are in
+        # scope too: the person trusted the conductor that dispatched them.
         for _slot in state._slots.values():
-            if scoped and effective_session_key(_slot) != _target_key:
+            if (
+                scoped
+                and effective_session_key(_slot) != _target_key
+                and _slot.key not in inherited_slots
+            ):
                 continue
-            _elicitations = _pending_elicitation_ids(_slot)
-            for aid, fut in list(_slot._approval_futures.items()):
-                if aid in _elicitations:
-                    # A server's own question to the person: a trust tier is
-                    # not an answer to it, and the card stays open.
-                    continue
-                if not fut.done():
-                    fut.set_result("approved")
-                    # Persist resolved state into the permission message. The
-                    # periodic flush skips non-dirty slots, so the mark must
-                    # flag the slot or the write can be lost on restart.
-                    if _mark_permission_resolved(_slot.messages, aid, mode):
-                        _slot._dirty = True
-                    # ``slot`` keys the frame for the slot-scoped WS gate — an
-                    # app token cannot receive its own resolution without it.
-                    state.broadcast_ws(
-                        "approval_resolved",
-                        {"id": aid, "approved": True, "slot": _slot.key},
-                    )
-                    try:
-                        sel().log_api_access(
-                            caller=audit_caller(f"dashboard:{_slot.key}"),
-                            operation=f"tool_approval:bulk_{mode}",
-                            outcome="approved",
-                            resources=aid,
-                        )
-                    except Exception:
-                        logger.warning("SEL audit failed for bulk approval %s", aid, exc_info=True)
+            _sweep_pending_approvals(state, _slot, mode, audit_caller)
         # Background (cron/subagent/taskrunner) and channel approvals are NOT
         # slot-scoped, so a slot-scoped ``trust`` must leave them pending — it
         # asked for auto-approval on one session and cannot answer for unrelated
@@ -706,11 +704,97 @@ async def apply_approval_mode(
     # to every slot sharing a session, so two slots addressing one key always agree
     # by the time this runs and iteration order cannot pick a winner.
     for slot in state._slots.values():
-        policy = "auto" if slot._trust or safety_override().is_active() else ""
+        policy = "auto" if trust_reaches_subagents(slot) or safety_override().is_active() else ""
         state.sessions.set_approval_policy(effective_session_key(slot), policy)
 
     state.push_slots_update()
     return web.json_response({"ok": True, "mode": mode})
+
+
+def _sweep_pending_approvals(
+    state: DashboardState, slot: _ChatSlot, mode: str, audit_caller: Callable[[str], str]
+) -> None:
+    """Approve *slot*'s pending tool prompts after a ``trust`` / ``yolo`` grant."""
+    _elicitations = _pending_elicitation_ids(slot)
+    for aid, fut in list(slot._approval_futures.items()):
+        if aid in _elicitations:
+            # A server's own question to the person: a trust tier is
+            # not an answer to it, and the card stays open.
+            continue
+        if not fut.done():
+            fut.set_result("approved")
+            # Persist resolved state into the permission message. The
+            # periodic flush skips non-dirty slots, so the mark must
+            # flag the slot or the write can be lost on restart.
+            if _mark_permission_resolved(slot.messages, aid, mode):
+                slot._dirty = True
+            # ``slot`` keys the frame for the slot-scoped WS gate.
+            state.broadcast_ws(
+                "approval_resolved",
+                {"id": aid, "approved": True, "slot": slot.key},
+            )
+            try:
+                sel().log_api_access(
+                    caller=audit_caller(f"dashboard:{slot.key}"),
+                    operation=f"tool_approval:bulk_{mode}",
+                    outcome="approved",
+                    resources=aid,
+                )
+            except Exception:
+                logger.warning("SEL audit failed for bulk approval %s", aid, exc_info=True)
+
+
+def _apply_inherited_postures(
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    may_raise: bool,
+    audit_caller: Callable[[str], str],
+) -> set[str]:
+    """Hand *slot*'s new mode to the sessions it created.
+
+    *slot* just had its own mode set, which is an explicit choice, so it stops
+    following its own creator. Its inheriting descendants then take its carried
+    posture (``approval_inheritance``): never more than it carries, never across a
+    worker whose own mode a person set, and a raise only along a gateway-authored
+    creation edge, only to a descendant alone on its session, and only for a caller
+    allowed to raise (*may_raise*). Written to every slot sharing a descendant's
+    session, as the branches above write the target, so the per-slot policy sync
+    below cannot pick a winner. Returns the slot keys raised to Trust.
+
+    Only a person's own change (*may_raise*) marks *slot* explicit: a mode an app
+    or cron set on it must still give way to its creator's next lowering.
+    """
+    from kiro_crew.dashboard.approval_inheritance import plan_descendant_postures
+
+    target_key = effective_session_key(slot)
+    if may_raise:
+        for _sharing in state._slots.values():
+            if effective_session_key(_sharing) == target_key:
+                _sharing._posture_inherited = False
+    plan = plan_descendant_postures(list(state._slots.values()), slot, may_raise=may_raise)
+    trusted: set[str] = set()
+    for change in plan:
+        key = effective_session_key(change.slot)
+        targets = [s for s in state._slots.values() if effective_session_key(s) == key]
+        for _target in targets:
+            _target._trust = change.posture == "trust"
+            _target._trust_card_scoped = False
+            _target._trust_reads = change.posture == "trust_reads"
+            _target._posture_inherited = True
+        if change.posture == "trust":
+            trusted.add(change.slot.key)
+    if plan:
+        try:
+            sel().log_api_access(
+                caller=audit_caller("dashboard:mode"),
+                operation="mode_change:inherited",
+                outcome="changed",
+                resources=",".join(f"{c.slot.key}={c.posture}" for c in plan) + f"|from:{slot.key}",
+            )
+        except Exception:
+            logger.warning("SEL audit failed for inherited mode change", exc_info=True)
+    return trusted
 
 
 def _get_pattern_from_pending(slot: _ChatSlot, request_id: str, field: str) -> str:
@@ -816,7 +900,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     request_app = str(request.get("app") or "")
-    name = request.match_info["slot"]
+    # A Crew Mode conductor's approval card decides a WORKER's request through this
+    # same route (``crew_workers.api_crew_worker_approve``): that route gates the
+    # owner, refuses app tokens and other roots' workers, reads and narrows the
+    # body, and hands over ``(worker slot key, body)``. Nothing else sets it.
+    delegated = request.get("kirocrew_crew_worker_approve")
+    name = delegated[0] if delegated else request.match_info["slot"]
 
     def audit_caller() -> str:
         return f"app:{request_app}" if request_app else f"dashboard:{name}"
@@ -824,13 +913,28 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return slot_not_found()
-    body, body_err = await read_bounded_json(request)
+    body: dict[str, Any] | None
+    body_err: web.Response | None
+    if delegated:
+        body, body_err = dict(delegated[1]), None
+    else:
+        body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     action = body.get("action", "rejected")
     original_action = action
     request_id = body.get("request_id", "")
+    # ``response_id`` names this one click, so a retry of it replays the same
+    # outcome and a different collaborator's late click gets the winner back.
+    # Imported here: owner functions run on the handlers module's globals.
+    from kiro_crew.shared_crew import decisions as shared_decisions
+
+    response_id, response_id_ok = shared_decisions.read_response_id(body)
+    if not response_id_ok:
+        return web.json_response(
+            {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
+        )
     if request_app and original_action == "yolo":
         return _deny_app_yolo(request_app, "tool_approval:yolo")
     # A FRESH grant read: the body upload above can take long enough for the
@@ -869,6 +973,15 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             or native_future.done()
             or slot.approval_instance(request_id) != request_mid
         ):
+            settled = shared_decisions.settled_reply(
+                state,
+                slot.key,
+                request_id,
+                response_id,
+                shared_decisions.request_principal(request),
+            )
+            if settled is not None:
+                return shared_decisions.respond(settled)
             return web.json_response(
                 {"error": "no pending approval", "code": "approval_not_pending"}, status=404
             )
@@ -979,7 +1092,15 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
         else:
             owner._trust = True
-            state.sessions.set_approval_policy(effective_session_key(owner), "auto")
+            # A person chose this slot's mode: its creator's changes stop reaching it.
+            owner._posture_inherited = False
+            # A conductor card's "Trust this worker" trusts that worker and the
+            # subagents it spawns, not the sessions it creates; a trust pressed in
+            # the slot's own pane keeps the usual inheritance to those too.
+            owner._trust_card_scoped = bool(delegated)
+            state.sessions.set_approval_policy(
+                effective_session_key(owner), "auto" if trust_reaches_subagents(owner) else ""
+            )
             action = "approved"
     # Trust-reads: auto-approve read-only bash commands for this slot
     # Defer setting _trust_reads until after the approval future is consumed
@@ -1072,7 +1193,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         # longer-lived decision that no yolo deny expires.
         if not yolo_policy_permits():
             for s in state._slots.values():
-                if not (s._trust or s._trust_reads):
+                if not (trust_reaches_subagents(s) or s._trust_reads):
                     state.sessions.set_approval_policy(effective_session_key(s), "")
             state.push_slots_update()
         action = "approved"
@@ -1100,10 +1221,36 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         # the cross-slot approval the session-identity owner scan above prevents.
         # State-level futures have no per-slot trust semantics, so the bool
         # coercion loses nothing.
-        if not strict_native and request_id and state.resolve_state_approval(request_id, approved):
-            return web.json_response({"ok": True})
+        if not strict_native and request_id:
+            state_reply = shared_decisions.resolve_state_approval(
+                state, request, request_id, approved, resolved, response_id
+            )
+            if state_reply is not None:
+                return shared_decisions.respond(state_reply)
+        settled = shared_decisions.settled_reply(
+            state,
+            slot.key,
+            request_id,
+            response_id,
+            shared_decisions.request_principal(request),
+        )
+        if settled is not None:
+            return shared_decisions.respond(settled)
         return web.json_response({"error": "no pending approval"}, status=404)
-    fut.set_result(resolved)
+    if request_id:
+        resolution = shared_decisions.resolve_slot_approval(
+            state, request, owner, request_id, fut, resolved, response_id
+        )
+        if not resolution.applied:
+            lost = shared_decisions.lost_race_reply(resolution, response_id)
+            if lost is not None:
+                return shared_decisions.respond(lost)
+            return web.json_response(
+                {"error": "no pending approval", "code": "approval_not_pending"}, status=404
+            )
+    else:
+        fut.set_result(resolved)
+        resolution = None
     # Persist resolved state into the permission message so it survives tab
     # switches — on the owner slot, whose messages hold the permission card.
     # Flagging the slot dirty is required for it to survive a RESTART too: the
@@ -1131,6 +1278,8 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 "slot": owner.key,
             },
         )
+    if resolution is not None and resolution.decision is not None:
+        shared_decisions.broadcast_decision(state, resolution.decision)
     state.push_slots_update()
     # SEL audit (best-effort — must not block the UI-unblocking path above)
     try:
@@ -1142,4 +1291,6 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         )
     except Exception:
         logger.warning("SEL audit failed for approval %s", request_id, exc_info=True)
+    if resolution is not None and resolution.decision is not None:
+        return web.json_response({"ok": True, "decision": resolution.decision.to_public_dict()})
     return web.json_response({"ok": True})

@@ -552,7 +552,6 @@ class TestHandlerTrustBase:
             if p.endswith(" *"):
                 slot._trusted_patterns.add(p[:-2])
         assert slot._trusted_patterns == {"cat *", "cat", "wc *", "wc"}
-        # Verify matching
         assert (
             _matches_trusted_pattern("Running: cat /etc/passwd", slot._trusted_patterns) is not None
         )

@@ -36,6 +36,7 @@ import { api } from '../../api/client'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { isApprovedDecision, isRejectedDecision } from '../../utils/approvalDecision'
 import { selectToolRowIndex, lookupLogEntry, denySiblingContent, isNewestOccurrence } from './toolRowIndex'
+import { slotRowByKey } from '../../store/slotIndex'
 import type { ToolActivity } from '../../types'
 import { pathBasename, decodePathForDisplay } from '../../utils/pathBasename'
 import { selectEditRuns } from './editRuns'
@@ -43,6 +44,8 @@ import { useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { PILL_TIP_OPEN_CLASS, ToolCommandTip } from './ToolCommandTip'
 import { useReportRowActive } from './rowActivity'
+import { toolRailColor } from '../../utils/toolRailColor'
+import { useSecondClock } from '../../hooks/useSecondClock'
 
 // Lazy so the rarely-shown answers card stays out of the App chunk.
 const AskAnswersResult = lazy(() => import('./AskAnswersCard').then(m => ({ default: m.AskAnswersResult })))
@@ -168,6 +171,30 @@ function StatusRow({ show, snap = false, children }: { show: boolean; snap?: boo
   )
 }
 
+/** The live shell line's "Ns" figure. Its own component so the 1 Hz clock
+ *  repaints this text, not the whole tool row. */
+function ShellElapsedLabel({ anchor }: { anchor: number }) {
+  const secs = useSecondClock(now => Math.max(0, Math.floor((now - anchor) / 1000)))
+  return <>{fmtDurationParts([[Math.floor(secs / 60), 'minute'], [secs % 60, 'second']], { dropZero: true })}</>
+}
+
+/** Remaining time on a sleeping `wait`, ticking in its own leaf.
+ *
+ *  Ceil so the label reads "1s" for the final fractional second instead of
+ *  flashing "0s" while the tool is still asleep, and clamp at zero: the sleep
+ *  can outlast its own deadline by up to one poll interval, and a negative
+ *  countdown is worse than a parked "0s". Minutes are dropped below 60s but
+ *  the seconds place is NEVER dropped above it, so the label steps 2m 1s →
+ *  2m 0s → 59s instead of collapsing to a bare "2m" for one tick. Same
+ *  reasoning as fmtTurnElapsed's "2m 0s" comment. */
+function WaitRemainingLabel({ deadlineTs }: { deadlineTs: number }) {
+  const secs = useSecondClock(now => Math.max(0, Math.ceil((deadlineTs * 1000 - now) / 1000)))
+  const label = secs < 60
+    ? fmtUnit(secs, 'second', { maximumFractionDigits: 0 })
+    : fmtDurationParts([[Math.floor(secs / 60), 'minute'], [secs % 60, 'second']])
+  return <>{i18nT('pages.chat.toolCallLine.wait_remaining', { time: label })}</>
+}
+
 type ToolCallLineProps = { message: ChatMessage; running: boolean; slot?: string; onFileOpen?: (path: string) => void; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void; appInPanel?: boolean; onOpenApp?: (toolCallId: string) => void;
   /** True while the transcript is streaming at high frequency (host-derived
    *  from useStreamIdle). Gates the entrance/status height eases: a hot-stream
@@ -199,6 +226,239 @@ const sameRows = (a: readonly ChatMessage[], b: readonly ChatMessage[]): boolean
 const NO_RUN: readonly ChatMessage[] = []
 const NO_OUTPUTS: readonly string[] = []
 
+/** The call's tool-log entry, or the row's persisted meta when the log has
+ *  none (a historical row). Returns purpose/input/output for the inline
+ *  expansion as well as completion status for the icon. All transcript scans
+ *  go through the shared per-slot index (see toolRowIndex.ts): built once per
+ *  (messages, toolLog) identity change, O(1) per row per dispatch. */
+function readToolEntry(s: RootState, slot: string | undefined, message: ChatMessage, toolCallId: string | undefined, label: string) {
+  // Slot-aware: for a non-active slot (split-view pane) read that slot's
+  // per-slot tool log / messages / running state; `slot` undefined or equal to
+  // the active slot → active-slot globals.
+  const bg = slot && slot !== s.chat.activeSlot ? slot : null
+  const log = bg ? (s.chat.slotActivity[bg]?.toolLog ?? EMPTY_TOOL_LOG) : s.chat.toolLog
+  const slotRunning = bg ? ((s.chat.slotRun[bg]?.state ?? 'idle') !== 'idle') : s.chat.slotRunning
+  const msgs = bg ? (s.chat.slotMessages[bg] ?? EMPTY_MESSAGES) : s.chat.messages
+  const index = selectToolRowIndex(msgs, log)
+
+  // Was this tool's permission resolved as rejected? Only the NEWEST
+  // permission message for the id carries the decision.
+  const wasRejectedByPerm = () => {
+    if (!toolCallId) return false
+    const perm = index.lastPermById.get(toolCallId)
+    return perm ? isRejectedDecision(perm.meta?.resolved) : false
+  }
+
+  // Auto-denied detection. When a security-policy deny rule or hook blocks a
+  // tool, the gateway appends a SECOND tool message — "🚫 <title> …" —
+  // sharing this pill's tool_call_id. That message never renders (TurnBlock
+  // hides every tool message not starting with 🔧), so the visible 🔧 pill
+  // must find its hidden sibling to know the call was blocked. Its CONTENT is
+  // used too: the row carries "— Blocked by security policy: <reason>", and the
+  // Output panel leads with its own LOCALIZED sentence and follows with the
+  // rule, so the user learns which rule fired without a translated sentence
+  // being replaced by untranslated English (extractDenyDetail yields "" for a
+  // row without that marker). A row without the marker but with the host's
+  // own "Blocked: …" sentence — the gate-crash refusal, which says no policy
+  // rule fired — yields that sentence as the NOTICE, and the panel shows it
+  // in place of the localized line rather than contradicting it. A row with
+  // neither (hook blocked) shows the localized line alone. The interactive
+  // user-reject path also appends a 🚫 message, but that flow ALSO resolves
+  // a permission message as rejected — wasRejectedByPerm() takes precedence
+  // below, so a user rejection still shows red, not amber.
+  const denySibling = denySiblingContent(index, toolCallId, message)
+  const autoDenied = !!denySibling
+  const autoDenyReason = extractDenyDetail(denySibling)
+  const autoDenyNotice = extractDenyNotice(denySibling)
+
+  const e = lookupLogEntry(index, toolCallId, label)
+  if (e) {
+    const rejected = !!e.rejected || wasRejectedByPerm()
+    const isDone = e.output != null || rejected || autoDenied || !slotRunning
+    return {
+      effectiveId: e.tool_call_id || null,
+      isDone, isRejected: rejected,
+      isAutoDenied: !rejected && autoDenied,
+      autoDenyReason,
+      autoDenyNotice,
+      purpose: e.purpose || '',
+      input: e.input || '',
+      output: e.output || '',
+      // Clamp seams for the two payloads (null when nothing was cut). The
+      // panel renders the localized marker there at view time; the store
+      // holds only the offset, so a language switch re-renders it.
+      inputCut: e.input_cut ?? null,
+      outputCut: e.output_cut ?? null,
+      auto: !!e.auto,
+      ts: e.ts || 0,
+      executionStartedAt: e.execution_started_at || 0,
+      hasEntry: true,
+      // Older ACP update frames may omit is_shell; execute is the stable
+      // tool-kind value used by the transport and keeps those frames live.
+      isShell: e.is_shell === true || e.kind === 'execute' || e.text.startsWith('Running:'),
+      // Raw ACP tool kind — gates the inline diff-card promotion below
+      // (only kind === 'edit' rows promote).
+      toolKind: e.kind || '',
+      // Raw transport tool name, kept separate from the display `label`:
+      // the label is simplified/localized for humans, so gating behaviour on
+      // it would break under `useSimplifiedToolNames` or a translated UI.
+      toolName: e.text || '',
+      // Trusted identity from the transport's `_meta.kiro`, when it sent one;
+      // '' otherwise, and the title derivation falls back to parsing the title.
+      trustedToolName: e.tool_name || '',
+      mcpServer: e.mcp_server || '',
+      fromLog: true,
+    }
+  }
+  // No toolLog entry — historical message. Check permission state for rejection.
+  const rejected = wasRejectedByPerm()
+  // Backend persists `input` (when the call was issued) and `output` (when
+  // the result arrived) directly on the tool message's meta — see
+  // _tool_meta() and the EVENT_TOOL_RESULT handler in chat_runner.py.
+  // Pre-persistence messages won't have these fields and fall through to
+  // the empty-state hint inside ToolDetails.
+  const metaInput = (message.meta?.input as string | undefined) || ''
+  const metaOutput = (message.meta?.output as string | undefined) || ''
+  return {
+    effectiveId: toolCallId || null,
+    isDone: true, isRejected: rejected,
+    isAutoDenied: !rejected && autoDenied,
+    autoDenyReason,
+    autoDenyNotice,
+    purpose: (message.meta?.purpose as string) || '',
+    // Persisted meta is served whole by the server (_tool_meta caps at 1 MB,
+    // never clamps), so a historical row has no seam to mark.
+    input: metaInput, output: metaOutput, inputCut: null, outputCut: null, auto: false,
+    // ChatMessage.ts is a string (ISO timestamp) when restored from history;
+    // parse it for the meta-row time renderer. Falls to 0 if unparseable —
+    // fmtTime hides the row when ts is 0.
+    ts: typeof message.ts === 'number' ? message.ts : (message.ts ? Date.parse(String(message.ts)) || 0 : 0),
+    executionStartedAt: 0,
+    // Treat the message as having an entry when persisted I/O is available,
+    // so the empty-state copy only shows for truly bare historical messages.
+    hasEntry: !!(metaInput || metaOutput),
+    isShell: false,
+    // Persisted ACP tool kind (see _tool_meta in chat_runner.py). Rows
+    // written before the field existed read '' and never promote a card.
+    toolKind: (message.meta?.kind as string | undefined) || '',
+    // Historical rows have no log entry; the message content is the only
+    // carrier. Harmless either way — a replayed wait is never in flight.
+    toolName: message.content.replace(/^🔧\s*/, ''),
+    // Persisted by _tool_meta (chat_runner.py) since the title-derivation
+    // change; rows written before it read '' and derive from the title.
+    trustedToolName: (message.meta?.tool_name as string | undefined) || '',
+    mcpServer: (message.meta?.mcp_server as string | undefined) || '',
+    // No live tool-log entry backs this row. `isDone` above is a REPLAY
+    // default, not an observation, so anything that needs real liveness must
+    // consult server state instead of trusting it (see the wait countdown).
+    fromLog: false,
+  }
+}
+
+/** The `wait` countdown this row owns, or null. See the comment above the
+ *  countdown in ToolCallLineBody for why each guard is here. */
+function readWaitState(s: RootState, slot: string | undefined, waitSlotKey: string | null, toolCallId: string | undefined,
+  isWaitTool: boolean, hasPendingPerm: boolean, fromLog: boolean, isDone: boolean) {
+  if (!isWaitTool || hasPendingPerm) return null
+  if (fromLog && isDone) return null
+  const found = waitSlotKey ? slotRowByKey(s.dashboard.slots, waitSlotKey) : undefined
+  const ws = found?.wait_state
+  if (!ws) return null
+  // The turn must actually be running. Cheap on its own, but load-bearing for
+  // a replayed row: the historical branch cannot observe liveness, so without
+  // this an idle slot's old wait pill would count down against a deadline
+  // belonging to some other sleep the backend is tracking.
+  if (!found?.running) return null
+  const bg = slot && slot !== s.chat.activeSlot ? slot : null
+  const msgs = bg ? (s.chat.slotMessages[bg] ?? EMPTY_MESSAGES) : s.chat.messages
+  const log = bg ? (s.chat.slotActivity[bg]?.toolLog ?? EMPTY_TOOL_LOG) : s.chat.toolLog
+  // Exactly one pill owns the countdown, and it must be the transcript's
+  // newest TOOL call of any kind -- not merely its newest wait. Scanning only
+  // for waits would let a completed wait from earlier in the turn light up
+  // while the agent is busy in some later tool, which is the shape a sleep
+  // belonging to a different ACP session on this same slot would take.
+  const last = selectToolRowIndex(msgs, log).lastToolMsg
+  if (!last || last.meta?.tool_call_id !== toolCallId) return null
+  return isWaitToolTitle(last.content.replace(/^🔧\s*/, '')) ? ws : null
+}
+
+/** Every store fact a tool row draws, read in ONE subscription. Each mounted
+ *  row's selectors run on every store notification, and this used to be
+ *  thirteen subscriptions per row, which made the transcript's tool rows the
+ *  largest share of the selector calls per dispatch. Compare with
+ *  `sameToolRowView`, which keeps each fact's old equality rule. */
+function selectToolRowView(s: RootState, slot: string | undefined, message: ChatMessage, toolCallId: string | undefined, label: string) {
+  const entry = readToolEntry(s, slot, message, toolCallId, label)
+  const waitSlotKey = slot ?? s.chat.activeSlot
+  const bg = slot && slot !== s.chat.activeSlot ? slot : null
+  const msgs = slotMessagesOf(s, slot)
+  const log = slotToolLogOf(s, slot)
+  const index = selectToolRowIndex(msgs, log)
+  // MCP App (SEP-1865) render payload attached to this tool call, if any.
+  // Rendered as an inline sandboxed iframe below the tool-call row. Selected
+  // by (slot, tool_call_id) — this row's own slot — so another session's app
+  // (and its callback capability) can never mount here.
+  const mcpApp = toolCallId && waitSlotKey ? s.chat.mcpApps?.[mcpAppKey(waitSlotKey, toolCallId)] : undefined
+  // The answers card belongs to one ask occurrence; on a reused id only the newest row owns the log entry's output.
+  const isNewestRow = isNewestOccurrence(index, toolCallId, message)
+  // Every call of the edit run this row leads (see editRuns.ts), lead first;
+  // empty unless this row leads a run of two or more.
+  const runMembers = selectEditRuns(msgs, log).membersByLead.get(message) ?? NO_RUN
+  const isRun = runMembers.length > 1
+  // A person approved this call at a prompt, on the dashboard or a channel (its
+  // newest permission record says so). editRuns never merges such a call, so an approved edit can sit as its
+  // own row right after a merged run of the same file; the tag next to its
+  // chip says why it is separate. Auto-approved calls have no record and no tag.
+  const perm = toolCallId ? index.lastPermById.get(toolCallId) : undefined
+  const approvedByUser = perm ? isApprovedDecision(perm.meta?.resolved) : false
+  // A merged row is one row for several calls, so it reads as running until
+  // the last of them has returned. Followers draw nothing of their own.
+  const slotRunning = bg ? ((s.chat.slotRun[bg]?.state ?? 'idle') !== 'idle') : s.chat.slotRunning
+  const runMemberRunning = isRun && slotRunning && runMembers.slice(1).some(m => {
+    const e = index.logById.get(m.meta?.tool_call_id as string)
+    return !!e && e.output == null && !e.rejected
+  })
+  // Every member's output, lead first: its newest tool-log entry's output when
+  // the log has one, else the output persisted on the row (history). The
+  // details panel lists them all, so a later member's result stays reachable.
+  const runOutputs = isRun
+    ? runMembers.map(m => index.logById.get(m.meta?.tool_call_id as string)?.output || (m.meta?.output as string | undefined) || '')
+    : NO_OUTPUTS
+  // The tool log is authoritative here: its output/rejection/turn-running
+  // state survives the ACP initial-call → update handoff.
+  const isDone = entry.isDone && !runMemberRunning
+  // Check if this specific tool has a pending (unresolved) permission matching its tool_call_id.
+  // Only match when tool_call_id is present on both sides — prevents batched approvals from
+  // incorrectly lighting up all pills as pending approval.
+  const hasPendingPerm = !isDone && !!toolCallId && index.pendingPermIds.has(toolCallId)
+  const waitState = readWaitState(s, slot, waitSlotKey, toolCallId, isWaitToolTitle(entry.toolName), hasPendingPerm, entry.fromLog, isDone)
+  // External focus signal (e.g. ChatInput's "Jump to tool" link) aimed at this pill.
+  const focusId = s.chat.focusToolCallId
+  const focused = !!focusId && !!entry.effectiveId && focusId === entry.effectiveId
+  // The slot's project directory, so native-tool titles show paths relative
+  // to it (`Read src/a.ts`, not the absolute path). Reads THIS row's slot —
+  // a split-view pane must not borrow the active session's tree.
+  const projectDir = waitSlotKey ? (slotRowByKey(s.dashboard.slots, waitSlotKey)?.project || undefined) : undefined
+  return { ...entry, isDone, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, runOutputs, waitSlotKey, waitState, focused, projectDir }
+}
+
+type ToolRowView = ReturnType<typeof selectToolRowView>
+
+/** Field-wise equality for `selectToolRowView`: identity for every fact, except
+ *  the three the separate subscriptions compared by value. The run index
+ *  rebuilds on every transcript flush, so a fresh array of the same members or
+ *  outputs must not repaint the row, and neither must a re-sent wait state. */
+function sameToolRowView(a: ToolRowView, b: ToolRowView): boolean {
+  for (const k of Object.keys(a) as (keyof ToolRowView)[]) {
+    if (k === 'runMembers') {
+      if (!sameRows(a.runMembers, b.runMembers)) return false
+    } else if (k === 'runOutputs' || k === 'waitState') {
+      if (!shallowEqual(a[k], b[k])) return false
+    } else if (!Object.is(a[k], b[k])) return false
+  }
+  return true
+}
+
 /** Inline tool call pill. Click toggles an expanded panel below the pill that
  *  shows purpose / input / output. A row folded into an earlier edit run of
  *  the same file (see editRuns.ts) draws nothing: the run's lead row shows it. */
@@ -224,15 +484,6 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   const riskRecord = useMemo(() => readToolRiskRecord(toolRiskFieldOf(message)), [message])
   const simplified = useSimplifiedToolNames()
   const uiLang = useLanguage().resolved
-
-  // MCP App (SEP-1865) render payload attached to this tool call, if any.
-  // Rendered as an inline sandboxed iframe below the tool-call row. Selected
-  // by (slot, tool_call_id) — this row's own slot — so another session's app
-  // (and its callback capability) can never mount here.
-  const mcpApp = useAppSelector(s => {
-    const sk = slot ?? s.chat.activeSlot
-    return toolCallId && sk ? s.chat.mcpApps?.[mcpAppKey(sk, toolCallId)] : undefined
-  })
 
   // An auto-approved call writes TWO tool rows under one `tool_call_id` (the
   // pre-approval pill and the post-approval one), and the durable app flag is
@@ -276,195 +527,22 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // notice about this row's app. A row's meta is written with the row and no later
   // call can reassign it, which is the property the notice needs.
   const noticeServer = (message.meta?.mcp_server as string | undefined) || ''
-  // The answers card belongs to one ask occurrence; on a reused id only the newest row owns the log entry's output.
-  const isNewestRow = useAppSelector(s => {
-    const bg = slot && slot !== s.chat.activeSlot ? slot : null
-    const log = bg ? (s.chat.slotActivity[bg]?.toolLog ?? EMPTY_TOOL_LOG) : s.chat.toolLog
-    const msgs = bg ? (s.chat.slotMessages[bg] ?? EMPTY_MESSAGES) : s.chat.messages
-    return isNewestOccurrence(selectToolRowIndex(msgs, log), toolCallId, message)
-  })
 
-  // Pull the matching toolLog entry. Returns purpose/input/output for the inline
-  // expansion as well as completion status for the icon. All transcript scans go
-  // through the shared per-slot index (see toolRowIndex.ts): built once per
-  // (messages, toolLog) identity change, O(1) per row per dispatch.
-  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, fromLog } = useAppSelector(s => {
-    // Slot-aware: for a non-active slot (split-view pane) read that slot's
-    // per-slot tool log / messages / running state; `slot` undefined or equal to
-    // the active slot → active-slot globals.
-    const bg = slot && slot !== s.chat.activeSlot ? slot : null
-    const log = bg ? (s.chat.slotActivity[bg]?.toolLog ?? EMPTY_TOOL_LOG) : s.chat.toolLog
-    const slotRunning = bg ? ((s.chat.slotRun[bg]?.state ?? 'idle') !== 'idle') : s.chat.slotRunning
-    const msgs = bg ? (s.chat.slotMessages[bg] ?? EMPTY_MESSAGES) : s.chat.messages
-    const index = selectToolRowIndex(msgs, log)
+  // Every store fact this row draws, in ONE subscription (selectToolRowView).
+  const { effectiveId, isDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, runOutputs, waitSlotKey, waitState, focused, projectDir } =
+    useAppSelector(s => selectToolRowView(s, slot, message, toolCallId, label), sameToolRowView)
 
-    // Was this tool's permission resolved as rejected? Only the NEWEST
-    // permission message for the id carries the decision.
-    const wasRejectedByPerm = () => {
-      if (!toolCallId) return false
-      const perm = index.lastPermById.get(toolCallId)
-      return perm ? isRejectedDecision(perm.meta?.resolved) : false
-    }
-
-    // Auto-denied detection. When a security-policy deny rule or hook blocks a
-    // tool, the gateway appends a SECOND tool message — "🚫 <title> …" —
-    // sharing this pill's tool_call_id. That message never renders (TurnBlock
-    // hides every tool message not starting with 🔧), so the visible 🔧 pill
-    // must find its hidden sibling to know the call was blocked. Its CONTENT is
-    // used too: the row carries "— Blocked by security policy: <reason>", and the
-    // Output panel leads with its own LOCALIZED sentence and follows with the
-    // rule, so the user learns which rule fired without a translated sentence
-    // being replaced by untranslated English (extractDenyDetail yields "" for a
-    // row without that marker). A row without the marker but with the host's
-    // own "Blocked: …" sentence — the gate-crash refusal, which says no policy
-    // rule fired — yields that sentence as the NOTICE, and the panel shows it
-    // in place of the localized line rather than contradicting it. A row with
-    // neither (hook blocked) shows the localized line alone. The interactive
-    // user-reject path also appends a 🚫 message, but that flow ALSO resolves
-    // a permission message as rejected — wasRejectedByPerm() takes precedence
-    // below, so a user rejection still shows red, not amber.
-    const denySibling = denySiblingContent(index, toolCallId, message)
-    const autoDenied = !!denySibling
-    const autoDenyReason = extractDenyDetail(denySibling)
-    const autoDenyNotice = extractDenyNotice(denySibling)
-
-    const e = lookupLogEntry(index, toolCallId, label)
-    if (e) {
-      const rejected = !!e.rejected || wasRejectedByPerm()
-      const isDone = e.output != null || rejected || autoDenied || !slotRunning
-      return {
-        effectiveId: e.tool_call_id || null,
-        isDone, isRejected: rejected,
-        isAutoDenied: !rejected && autoDenied,
-        autoDenyReason,
-        autoDenyNotice,
-        purpose: e.purpose || '',
-        input: e.input || '',
-        output: e.output || '',
-        // Clamp seams for the two payloads (null when nothing was cut). The
-        // panel renders the localized marker there at view time; the store
-        // holds only the offset, so a language switch re-renders it.
-        inputCut: e.input_cut ?? null,
-        outputCut: e.output_cut ?? null,
-        auto: !!e.auto,
-        ts: e.ts || 0,
-        executionStartedAt: e.execution_started_at || 0,
-        hasEntry: true,
-        // Older ACP update frames may omit is_shell; execute is the stable
-        // tool-kind value used by the transport and keeps those frames live.
-        isShell: e.is_shell === true || e.kind === 'execute' || e.text.startsWith('Running:'),
-        // Raw ACP tool kind — gates the inline diff-card promotion below
-        // (only kind === 'edit' rows promote).
-        toolKind: e.kind || '',
-        // Raw transport tool name, kept separate from the display `label`:
-        // the label is simplified/localized for humans, so gating behaviour on
-        // it would break under `useSimplifiedToolNames` or a translated UI.
-        toolName: e.text || '',
-        // Trusted identity from the transport's `_meta.kiro`, when it sent one;
-        // '' otherwise, and the title derivation falls back to parsing the title.
-        trustedToolName: e.tool_name || '',
-        mcpServer: e.mcp_server || '',
-        fromLog: true,
-      }
-    }
-    // No toolLog entry — historical message. Check permission state for rejection.
-    const rejected = wasRejectedByPerm()
-    // Backend persists `input` (when the call was issued) and `output` (when
-    // the result arrived) directly on the tool message's meta — see
-    // _tool_meta() and the EVENT_TOOL_RESULT handler in chat_runner.py.
-    // Pre-persistence messages won't have these fields and fall through to
-    // the empty-state hint inside ToolDetails.
-    const metaInput = (message.meta?.input as string | undefined) || ''
-    const metaOutput = (message.meta?.output as string | undefined) || ''
-    return {
-      effectiveId: toolCallId || null,
-      isDone: true, isRejected: rejected,
-      isAutoDenied: !rejected && autoDenied,
-      autoDenyReason,
-      autoDenyNotice,
-      purpose: (message.meta?.purpose as string) || '',
-      // Persisted meta is served whole by the server (_tool_meta caps at 1 MB,
-      // never clamps), so a historical row has no seam to mark.
-      input: metaInput, output: metaOutput, inputCut: null, outputCut: null, auto: false,
-      // ChatMessage.ts is a string (ISO timestamp) when restored from history;
-      // parse it for the meta-row time renderer. Falls to 0 if unparseable —
-      // fmtTime hides the row when ts is 0.
-      ts: typeof message.ts === 'number' ? message.ts : (message.ts ? Date.parse(String(message.ts)) || 0 : 0),
-      executionStartedAt: 0,
-      // Treat the message as having an entry when persisted I/O is available,
-      // so the empty-state copy only shows for truly bare historical messages.
-      hasEntry: !!(metaInput || metaOutput),
-      isShell: false,
-      // Persisted ACP tool kind (see _tool_meta in chat_runner.py). Rows
-      // written before the field existed read '' and never promote a card.
-      toolKind: (message.meta?.kind as string | undefined) || '',
-      // Historical rows have no log entry; the message content is the only
-      // carrier. Harmless either way — a replayed wait is never in flight.
-      toolName: message.content.replace(/^🔧\s*/, ''),
-      // Persisted by _tool_meta (chat_runner.py) since the title-derivation
-      // change; rows written before it read '' and derive from the title.
-      trustedToolName: (message.meta?.tool_name as string | undefined) || '',
-      mcpServer: (message.meta?.mcp_server as string | undefined) || '',
-      // No live tool-log entry backs this row. `isDone` above is a REPLAY
-      // default, not an observation, so anything that needs real liveness must
-      // consult server state instead of trusting it (see the wait countdown).
-      fromLog: false,
-    }
-  }, shallowEqual)
-
-  // Every call of the edit run this row leads (see editRuns.ts), lead first;
-  // empty unless this row leads a run of two or more.
-  const runMembers = useAppSelector(s => slotEditRuns(s, slot).membersByLead.get(message) ?? NO_RUN, sameRows)
   const isRun = runMembers.length > 1
-  // A person approved this call at a prompt, on the dashboard or a channel (its
-  // newest permission record says so). editRuns never merges such a call, so an approved edit can sit as its
-  // own row right after a merged run of the same file; the tag next to its
-  // chip says why it is separate. Auto-approved calls have no record and no tag.
-  const approvedByUser = useAppSelector(s => {
-    if (!toolCallId) return false
-    const perm = selectToolRowIndex(slotMessagesOf(s, slot), slotToolLogOf(s, slot)).lastPermById.get(toolCallId)
-    return perm ? isApprovedDecision(perm.meta?.resolved) : false
-  })
-  // A merged row is one row for several calls, so it reads as running until
-  // the last of them has returned. Followers draw nothing of their own.
-  const runMemberRunning = useAppSelector(s => {
-    if (!isRun) return false
-    const bg = slot && slot !== s.chat.activeSlot ? slot : null
-    const slotRunning = bg ? ((s.chat.slotRun[bg]?.state ?? 'idle') !== 'idle') : s.chat.slotRunning
-    if (!slotRunning) return false
-    const log = bg ? (s.chat.slotActivity[bg]?.toolLog ?? EMPTY_TOOL_LOG) : s.chat.toolLog
-    const index = selectToolRowIndex(slotMessagesOf(s, slot), log)
-    return runMembers.slice(1).some(m => {
-      const e = index.logById.get(m.meta?.tool_call_id as string)
-      return !!e && e.output == null && !e.rejected
-    })
-  })
-  // Every member's output, lead first: its newest tool-log entry's output when
-  // the log has one, else the output persisted on the row (history). The
-  // details panel lists them all, so a later member's result stays reachable.
-  const runOutputs = useAppSelector(s => {
-    if (!isRun) return NO_OUTPUTS
-    const index = selectToolRowIndex(slotMessagesOf(s, slot), slotToolLogOf(s, slot))
-    return runMembers.map(m =>
-      index.logById.get(m.meta?.tool_call_id as string)?.output || (m.meta?.output as string | undefined) || '')
-  }, shallowEqual)
 
   // The tool log is authoritative here: its output/rejection/turn-running
   // state survives the ACP initial-call → update handoff, while the parent
   // `running` prop is not present on every historical/live rendering path.
-  const isDone = logIsDone && !runMemberRunning
+  // `isDone` already folds in a merged run's still-running members.
   const turnRunning = !isDone
 
   // Check if this specific tool has a pending (unresolved) permission matching its tool_call_id.
   // Only match when tool_call_id is present on both sides — prevents batched approvals from
   // incorrectly lighting up all pills as pending approval.
-  const hasPendingPerm = useAppSelector(s => {
-    if (isDone || !toolCallId) return false
-    const bg = slot && slot !== s.chat.activeSlot ? slot : null
-    const msgs = bg ? (s.chat.slotMessages[bg] ?? EMPTY_MESSAGES) : s.chat.messages
-    const log = bg ? (s.chat.slotActivity[bg]?.toolLog ?? EMPTY_TOOL_LOG) : s.chat.toolLog
-    return selectToolRowIndex(msgs, log).pendingPermIds.has(toolCallId)
-  })
 
   // Shell commands do not expose a reliable total, so their live indicator is
   // deliberately indeterminate. The existing tool output remains the source
@@ -507,42 +585,28 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // The `running` and newest-tool-row guards below are containment for a session
   // identity that resolves per RUNTIME rather than per ACP session; the cure is
   // tracked in https://github.com/kirodotdev/KiroCrew/issues/2347.
-  const isWaitTool = isWaitToolTitle(toolName)
-  const waitSlotKey = useAppSelector(s => slot ?? s.chat.activeSlot)
-  const waitState = useAppSelector(s => {
-    if (!isWaitTool || hasPendingPerm) return null
-    if (fromLog && isDone) return null
-    const found = waitSlotKey ? s.dashboard.slots.find(x => x.key === waitSlotKey) : undefined
-    const ws = found?.wait_state
-    if (!ws) return null
-    // The turn must actually be running. Cheap on its own, but load-bearing for
-    // a replayed row: the historical branch cannot observe liveness, so without
-    // this an idle slot's old wait pill would count down against a deadline
-    // belonging to some other sleep the backend is tracking.
-    if (!found?.running) return null
-    const bg = slot && slot !== s.chat.activeSlot ? slot : null
-    const msgs = bg ? (s.chat.slotMessages[bg] ?? EMPTY_MESSAGES) : s.chat.messages
-    const log = bg ? (s.chat.slotActivity[bg]?.toolLog ?? EMPTY_TOOL_LOG) : s.chat.toolLog
-    // Exactly one pill owns the countdown, and it must be the transcript's
-    // newest TOOL call of any kind -- not merely its newest wait. Scanning only
-    // for waits would let a completed wait from earlier in the turn light up
-    // while the agent is busy in some later tool, which is the shape a sleep
-    // belonging to a different ACP session on this same slot would take.
-    const last = selectToolRowIndex(msgs, log).lastToolMsg
-    if (!last || last.meta?.tool_call_id !== toolCallId) return null
-    return isWaitToolTitle(last.content.replace(/^🔧\s*/, '')) ? ws : null
-  }, shallowEqual)
   const showWaitCountdown = !!waitState && waitState.deadline_ts > 0
-  const [activityNow, setActivityNow] = useState(() => Date.now())
-  // Seed from execution_started_at (persisted in Redux, survives remount) when
-  // available — it records when execution actually began after approval. Falls
-  // back to ts (tool issuance time) then Date.now() for brand-new calls.
-  const activityStartRef = useRef(executionStartedAt || ts || Date.now())
-  const wasPendingRef = useRef(hasPendingPerm)
-  // Tracks whether approval resolved during this mount — once set, the ts
-  // re-anchor effect is suppressed so the post-approval Date.now() anchor
-  // is not overwritten by the pre-approval ts.
-  const approvalResolvedRef = useRef(false)
+  // When this mount first saw the row, the anchor of last resort.
+  const [mountedAt] = useState(() => Date.now())
+  // When an approval resolved during this mount. Once set it outranks the
+  // pre-approval `ts`, which would inflate the clock by the whole approval wait.
+  // Stamped during render on the pending -> resolved transition, not in an
+  // effect: an effect runs after the first resolved frame commits, and that
+  // frame would measure from `ts` and flash the activity line for an approval
+  // that waited past the threshold. The durable anchor arrives separately:
+  // the approval_resolved frame sets execution_started_at on the tool entry
+  // in Redux (see sseActivityEvent), which survives remount.
+  const [approvalResolvedAt, setApprovalResolvedAt] = useState<number | null>(null)
+  const [prevPending, setPrevPending] = useState(hasPendingPerm)
+  if (prevPending !== hasPendingPerm) {
+    setPrevPending(hasPendingPerm)
+    if (prevPending && !hasPendingPerm) setApprovalResolvedAt(Date.now())
+  }
+  // The elapsed clock's start. execution_started_at is persisted in Redux,
+  // survives remount, and records when execution actually began after
+  // approval, so it wins. Then the in-mount approval instant, then the tool
+  // log ts (tool issuance time), then the mount for brand-new calls.
+  const activityStart = executionStartedAt || approvalResolvedAt || ts || mountedAt
   const [endingWait, setEndingWait] = useState(false)
   // The refused End-wait press. Previously the button only rolled back to its
   // idle label, so a transport failure looked like a press that did nothing.
@@ -574,76 +638,21 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
     })
   }, [waitSlotKey, waitState, endingWait])
 
-  useEffect(() => {
-    if (hasPendingPerm) {
-      wasPendingRef.current = true
-      return
-    }
-    if (wasPendingRef.current) {
-      const now = Date.now()
-      activityStartRef.current = now
-      wasPendingRef.current = false
-      approvalResolvedRef.current = true
-      setActivityNow(now)
-      // The durable anchor is stamped server-side: the approval_resolved
-      // frame sets execution_started_at on the tool entry in Redux (see
-      // sseActivityEvent), which the re-anchor effect below reads on remount.
-    }
-  }, [hasPendingPerm])
-
-  // When the tool log timestamp arrives (or on remount with a persisted ts),
-  // re-anchor the elapsed clock so it reflects real wall time since the tool
-  // started — not time since the component mounted. Skip if approval just
-  // resolved in this mount — the post-approval Date.now() is the correct anchor
-  // for approved commands (the pre-approval ts would inflate the timer by the
-  // entire approval wait). Also skip if executionStartedAt is set — it persists
-  // in Redux and is the authoritative anchor that survives remount.
-  useEffect(() => {
-    if (executionStartedAt) {
-      activityStartRef.current = executionStartedAt
-    } else if (ts && !hasPendingPerm && !approvalResolvedRef.current) {
-      activityStartRef.current = ts
-    }
-  }, [ts, hasPendingPerm, executionStartedAt])
-
-  useEffect(() => {
-    if (!liveShellActivity && !showWaitCountdown) return
-    const timer = window.setInterval(() => setActivityNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [liveShellActivity, showWaitCountdown])
-
-  const elapsedSeconds = Math.max(0, Math.floor((activityNow - activityStartRef.current) / 1000))
-  const elapsedLabel = fmtDurationParts(
-    [[Math.floor(elapsedSeconds / 60), 'minute'], [elapsedSeconds % 60, 'second']],
-    { dropZero: true },
-  )
   // Live only, and only once the command has run long enough to be worth a
   // line. The clock is anchored to the tool's own start (execution_started_at,
   // then the log ts), so a row that mounts mid-command — the virtualizer
   // re-mounting a scrolled-back row, a reload — shows the line at once when
   // the command is already past the threshold rather than waiting another
   // ten ticks.
-  const showShellActivity = liveShellActivity && elapsedSeconds >= SHELL_ACTIVITY_MIN_SECS
+  // The row subscribes to a BOOLEAN of the shared clock, so it re-renders once,
+  // when the threshold passes; the figure itself ticks in ShellElapsedLabel.
+  const showShellActivity = useSecondClock(
+    now => now - activityStart >= SHELL_ACTIVITY_MIN_SECS * 1000,
+    liveShellActivity,
+  ) && liveShellActivity
   const activityLabel = isAskTool
     ? i18nT('pages.chat.toolCallLine.ask_wait_status')
     : i18nT('pages.chat.activityViewer.running')
-
-  // Remaining time on the sleeping wait. Ceil so the label reads "1s" for the
-  // final fractional second instead of flashing "0s" while the tool is still
-  // asleep, and clamp at zero: the sleep can outlast its own deadline by up to
-  // one poll interval, and a negative countdown is worse than a parked "0s".
-  const remainingSeconds = waitState
-    ? Math.max(0, Math.ceil((waitState.deadline_ts * 1000 - activityNow) / 1000))
-    : 0
-  // Minutes are dropped below 60s but the seconds place is NEVER dropped above
-  // it, so the label steps 2m 1s → 2m 0s → 59s instead of collapsing to a bare
-  // "2m" for one tick. Same reasoning as fmtTurnElapsed's "2m 0s" comment.
-  const remainingLabel = remainingSeconds < 60
-    ? fmtUnit(remainingSeconds, 'second', { maximumFractionDigits: 0 })
-    : fmtDurationParts([
-      [Math.floor(remainingSeconds / 60), 'minute'],
-      [remainingSeconds % 60, 'second'],
-    ])
 
   // Inline expansion state.
   //
@@ -721,16 +730,15 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // then clear the focus so subsequent re-renders don't keep firing. Treat the
   // jump as user intent — clear pendingAutoExpand so the panel stays open
   // through approval resolution.
-  const focusToolCallId = useAppSelector(s => s.chat.focusToolCallId)
   useEffect(() => {
-    if (focusToolCallId && effectiveId && focusToolCallId === effectiveId) {
+    if (focused) {
       applyExpanded(true)
       setPendingAutoExpand(false)
       setUserChoseOpen(true)
       requestAnimationFrame(() => containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
       dispatch(clearFocusToolCallId())
     }
-  }, [focusToolCallId, effectiveId, dispatch, applyExpanded])
+  }, [focused, dispatch, applyExpanded])
 
   // File-op tool pills (read/edit/write) get a side-panel open affordance.
   // Extract the fs path from the tool's JSON args; the chip is gated on a
@@ -853,13 +861,15 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // Match the panel's left rail to the pill's status — keeps the visual chain
   // (icon → bar → content) coherent across auto-denied (amber), user-rejected
   // (red), done (green), pending-approval (yellow), and running (accent) states.
-  // Inline style with color-mix() rather than Tailwind opacity classes — the
-  // project's Tailwind config doesn't compile `border-{color}/N` opacity
-  // variants for theme colors.
-  const barColor = isDone
-    ? (isRejected ? 'var(--danger)' : isAutoDenied ? 'var(--warn)' : 'var(--ok)')
-    : hasPendingPerm ? 'var(--warn)' : 'var(--accent)'
-  const barStyle = `color-mix(in srgb, ${barColor} 70%, transparent)`
+  // The mapping is shared with the SDK's ToolCallPill (utils/toolRailColor.ts). This
+  // row only counts rejected / auto-denied once the whole run is done, like the
+  // icon above, so it passes those flags gated on `isDone`.
+  const barStyle = toolRailColor({
+    isRejected: isDone && !!isRejected,
+    isAutoDenied: isDone && !!isAutoDenied,
+    isDone: !!isDone,
+    hasPendingPerm: !!hasPendingPerm,
+  })
   // A blocked call's Output leads with the LOCALIZED sentence and follows with
   // the rule that fired. Leading with the rule would hand every non-English
   // reader untranslated English (and a bare regex is not an explanation in any
@@ -902,10 +912,6 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // The slot's project directory, so native-tool titles show paths relative
   // to it (`Read src/a.ts`, not the absolute path). Reads THIS row's slot —
   // a split-view pane must not borrow the active session's tree.
-  const projectDir = useAppSelector(s => {
-    const key = slot ?? s.chat.activeSlot
-    return key ? (s.dashboard.slots.find(sl => sl.key === key)?.project || undefined) : undefined
-  })
 
   const derived = useMemo(() => {
     void langGen // the localized title is a function of the catalog generation too
@@ -1360,7 +1366,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
         <div className="ml-5 mt-1 text-[12px] leading-5 text-muted" data-testid="shell-activity">
           <span className="sr-only" aria-live="polite">{activityLabel}</span>
           <span aria-hidden="true" className="tabular-nums font-mono">
-            {activityLabel} · {elapsedLabel}
+            {activityLabel} · <ShellElapsedLabel anchor={activityStart} />
           </span>
         </div>
       </StatusRow>
@@ -1376,7 +1382,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
               stops the label jittering as it ticks, but a mono FACE next to the
               pill's body-font label reads as a different kind of text. */}
           <span aria-hidden="true" className="tabular-nums">
-            {i18nT('pages.chat.toolCallLine.wait_status')} · {i18nT('pages.chat.toolCallLine.wait_remaining', { time: remainingLabel })}
+            {i18nT('pages.chat.toolCallLine.wait_status')} · {waitState && <WaitRemainingLabel deadlineTs={waitState.deadline_ts} />}
           </span>
           {/* stopPropagation is defensive, not load-bearing for the pill: this
               row is a SIBLING of the pill button, not inside its click target.

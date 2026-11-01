@@ -20,6 +20,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+from kiro_crew.git_tmp_packs import reap_stale_tmp_packs
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import redact
 
@@ -130,7 +131,13 @@ def materialize_queued_diff(
 
     base_ref_local = _BASE_REF
     if remote_url:
-        fetch = _git(clone, "fetch", "--quiet", remote_url, f"+refs/heads/{branch}:{_BASE_REF}")
+        # A fetch killed by `_git`'s timeout leaves its in-progress
+        # ``tmp_pack_*`` behind in this clone. Reap it in a ``finally`` so both
+        # the failure return and the raised ``TimeoutExpired`` are covered.
+        try:
+            fetch = _git(clone, "fetch", "--quiet", remote_url, f"+refs/heads/{branch}:{_BASE_REF}")
+        finally:
+            reap_stale_tmp_packs(clone)
         if fetch.returncode != 0:
             return {
                 "ok": False,
@@ -166,8 +173,22 @@ def materialize_queued_diff(
             ),
         }
 
+    # Host-side, in the clone the agent edits: `apply` reads the index (spawning
+    # `core.fsmonitor`) and converts files through `filter.<name>.clean`/`smudge`
+    # (measured on git 2.47), so it carries the same pins and attributes pin as
+    # every other call here rather than a bare argv.
+    require_pinned(clone)
     apply_proc = subprocess.run(
-        ["git", "-C", str(clone), "apply", "--index", "-"],
+        [
+            "git",
+            "-C",
+            str(clone),
+            *_GIT_SAFE_CONFIG,
+            *hook_off_args(clone),
+            "apply",
+            "--index",
+            "-",
+        ],
         # Binary stdin preserves patch newlines on Windows; surrogateescape
         # restores any non-UTF-8 bytes exactly as captured.
         input=diff_text.encode("utf-8", errors="surrogateescape"),
@@ -299,6 +320,7 @@ def _commit_finding_locked(fp: str) -> dict[str, object]:
         "diff.external=",
         "diff",
         "--no-ext-diff",
+        "--no-textconv",
         f"{base_ref_local}..HEAD",
         timeout=_GIT_TIMEOUT_S,
     )

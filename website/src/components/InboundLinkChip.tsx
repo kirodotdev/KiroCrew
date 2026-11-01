@@ -1,9 +1,11 @@
+import { useRef } from 'react'
 import { ArrowLeftRight, ChevronDown } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import { useAppSelector } from '../store'
 import { ChannelBrandIcon } from './ChannelBrandIcon'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from './ui/dropdown-menu'
+import { slotRowByKey } from '../store/slotIndex'
 
 /**
  * Header chip for a session that is being DRIVEN from another channel.
@@ -57,8 +59,18 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from './ui/dro
  * state and inert in the other is the dead click again, on the other state.
  */
 export default function InboundLinkChip({ slotKey }: { slotKey?: string }) {
-  const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
+  const slot = useAppSelector(s => slotRowByKey(s.dashboard.slots, slotKey))
   const inbound = slot?.links?.find(link => link.direction === 'both')
+
+  // When the chip's menu closes, Radix's FocusScope restores focus to the
+  // trigger. But an Unlink from this menu removes the last `both` link, so the
+  // chip renders `null` and its trigger leaves the tree in the same commit;
+  // Radix then restores focus to a detached trigger and it lands on
+  // `document.body`, stranding a keyboard or assistive-technology user. The
+  // restore runs in Radix's own deferred FocusScope teardown (wired to
+  // `onCloseAutoFocus`), so owning it HERE — rather than in a React effect that
+  // races that teardown — is what makes the fix hold in a real browser.
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
 
   if (!slotKey || !inbound) return null
 
@@ -92,6 +104,7 @@ export default function InboundLinkChip({ slotKey }: { slotKey?: string }) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
+          ref={triggerRef}
           type="button"
           className={`${chipClass} cursor-pointer hover:text-text hover:border-accent transition-colors`}
           title={hint}
@@ -108,7 +121,25 @@ export default function InboundLinkChip({ slotKey }: { slotKey?: string }) {
         * The rows keep the menu open on select (the row IS the state display);
         * a pause or a resume redraws the chip's label in place, and an unlink
         * removes the chip and its menu together. */}
-      <DropdownMenuContent align="start" className="min-w-[220px]">
+      <DropdownMenuContent
+        align="start"
+        className="min-w-[220px]"
+        onCloseAutoFocus={event => {
+          // Radix is about to restore focus to the trigger. If the trigger is
+          // gone — an Unlink emptied the chip, so it rendered `null` and the
+          // trigger left the tree — that restore lands on `document.body`.
+          // Take it over: stop the default and move focus to the chat header's
+          // own stable control (the session-title menu trigger, always present
+          // while a session is active). When the trigger is still here (an
+          // ordinary close with the link intact) we do nothing and let Radix
+          // return focus to it as usual.
+          if (triggerRef.current?.isConnected) return
+          const target = document.querySelector<HTMLElement>('[data-chat-header-focus]')
+          if (!target?.isConnected) return
+          event.preventDefault()
+          target.focus()
+        }}
+      >
         <LinkedSurfacesSection slotKey={slotKey} variant="dropdown" channel={inbound.channel} />
       </DropdownMenuContent>
     </DropdownMenu>

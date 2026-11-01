@@ -88,9 +88,14 @@ class TestBuildCronSessionContext:
         key, _prompt = build_cron_session_context(job)
         assert key == "cron:abc123"
 
-    def test_persistent_prompt_prepends_last_result(self):
-        """persistent_session=True → prompt contains the previous run's result."""
+    def test_persistent_job_carries_last_result_beside_the_prompt(self):
+        """persistent_session=True → the previous result is carried, not in the request.
+
+        The prompt is the owner's message alone; the previous run's result travels
+        as ``cron_prior_result_context``, framed as data, for the context region.
+        """
         from kiro_crew.cron import build_cron_session_context
+        from kiro_crew.cron_service.identity import cron_prior_result_context
 
         job = CronJob(
             id="abc123",
@@ -100,8 +105,8 @@ class TestBuildCronSessionContext:
             last_result="PREVIOUS OUTPUT HERE",
         )
         _key, prompt = build_cron_session_context(job)
-        assert "PREVIOUS OUTPUT HERE" in prompt
-        assert "do work" in prompt
+        assert prompt == "do work"
+        assert "PREVIOUS OUTPUT HERE" in cron_prior_result_context(job)
 
     def test_stateless_uses_fresh_key_per_call(self):
         """persistent_session=False → two calls return two different keys."""
@@ -138,9 +143,12 @@ class TestBuildCronSessionContext:
             persistent_session=False,
             last_result="STALE OUTPUT MUST NOT APPEAR",
         )
+        from kiro_crew.cron_service.identity import cron_prior_result_context
+
         _key, prompt = build_cron_session_context(job)
         assert "STALE OUTPUT MUST NOT APPEAR" not in prompt
         assert "do work" in prompt
+        assert cron_prior_result_context(job) == ""
 
     def test_stateless_prompt_equals_bare_message(self):
         """When persistent_session=False and no acks, prompt is exactly job.message."""
@@ -155,3 +163,61 @@ class TestBuildCronSessionContext:
         )
         _key, prompt = build_cron_session_context(job)
         assert prompt == "do work"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [False, True])
+@pytest.mark.parametrize("sequence", [[], ["deadbeef"], ["deadbeef", "cafebabe"]])
+async def test_fire_capture_tags_only_fresh_single_agent_keys(monkeypatch, persistent, sequence):
+    from cron_gateway_integration_helpers import _make_gw_for_llm
+
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    job = CronJob(
+        id="abcd1234",
+        name="poll",
+        message="check",
+        persistent_session=persistent,
+        agent_sequence=sequence,
+        execution_context=ExecutionContext(
+            None, MemoryStoreRef(DEFAULT_MEMORY_STORE), "template", "kirocrew"
+        ).to_record(),
+    )
+    gw = _make_gw_for_llm()
+    monkeypatch.setattr("kiro_crew.mate_worker.cron_worker_execution", lambda *args: None)
+    cap = await gw._cron_capture(job)
+    metadata = ConversationLog().get_metadata(cap.session_key)
+    if not persistent and len(sequence) < 2:
+        assert cap.session_key.startswith(f"cron:{job.id}:")
+        assert metadata["cron_run"] == "ephemeral"
+    else:
+        assert "cron_run" not in metadata
+    for agent in sequence:
+        assert "cron_run" not in ConversationLog().get_metadata(f"cron:{job.id}:{agent}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [{"command": "echo hi"}, {"script": "/tmp/x.py:run"}])
+async def test_fire_capture_creates_no_transcript_for_a_code_job(monkeypatch, code):
+    from cron_gateway_integration_helpers import _make_gw_for_llm
+
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    job = CronJob(
+        id="abcd1234",
+        name="poll",
+        message="check",
+        persistent_session=False,
+        execution_context=ExecutionContext(
+            None, MemoryStoreRef(DEFAULT_MEMORY_STORE), "template", "kirocrew"
+        ).to_record(),
+        **code,
+    )
+    gw = _make_gw_for_llm()
+    monkeypatch.setattr("kiro_crew.mate_worker.cron_worker_execution", lambda *args: None)
+    cap = await gw._cron_capture(job)
+    assert not ConversationLog().has_log(cap.session_key)

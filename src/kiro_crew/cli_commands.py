@@ -293,9 +293,9 @@ def _tailnet(args: argparse.Namespace) -> None:
     # therefore silently rewritten — by the mere act of reading it. That makes even
     # ``status`` a write, which is indefensible for a command that reports state.
     #
-    # An earlier revision guarded only ``up``, reasoning that refusing to *report* or
-    # to *withdraw* over a malformed config would be the worse failure. That reasoning
-    # had a hole: both paths need the dashboard port, which resolves through
+    # Guarding only ``up``, on the theory that refusing to *report* or to *withdraw*
+    # over a malformed config would be the worse failure, does not work: both paths
+    # need the dashboard port, which resolves through
     # ``resolve_client_port`` → ``KiroCrewConfig.load()``, so there is no version of
     # them that reads the file without rewriting it. Given the choice between
     # rewriting the operator's config and declining, declining wins — and withdrawal
@@ -363,6 +363,19 @@ def _tailnet(args: argparse.Namespace) -> None:
         port = resolve_client_port(None)
     enabled = bool(cfg.dashboard.tailscale.enabled)
 
+    if action == "up":
+        # Asked first, so an enterprise build whose policy does not turn tailnet on
+        # says so before any port or config advice. A pure read here; the refusal is
+        # audited once, and a permit is audited by ``publish`` itself.
+        refused = (
+            tailnet_serve.policy_refusal(audit_tool="tailnet_cli_up")
+            if tailnet.policy_off()
+            else None
+        )
+        if refused is not None:
+            print(f"❌ {refused.detail}", file=sys.stderr)
+            sys.exit(1)
+
     if action == "up" and not port_source:
         # Publishing needs EVIDENCE about the port, not a default. Every source above
         # is evidence -- an explicit flag/env is the operator naming the target, and
@@ -379,14 +392,24 @@ def _tailnet(args: argparse.Namespace) -> None:
         print(
             f"❌ Cannot tell which port the dashboard is on, so refusing to publish "
             f"{port} — nothing is verified to be listening there, and `tailscale "
-            f"serve` would expose whatever is. Start the dashboard "
-            f"(`kirocrew dashboard`) and re-run, or name the port yourself with "
+            f"serve` would expose whatever is. Start the gateway that serves the "
+            f"dashboard (`kirocrew gateway`, or `kirocrew service install` to keep "
+            f"it running) and re-run, or name the port yourself with "
             f"`kirocrew tailnet up --port <port>`.",
             file=sys.stderr,
         )
         sys.exit(1)
 
     if action == "status":
+        if tailnet.policy_off():
+            # The enterprise policy does not turn tailnet on; no daemon is read.
+            print("👻 Tailnet dashboard access")
+            print(f"   Policy:     {tailnet.POLICY_OFF_DETAIL}")
+            print(
+                f"   Trust:      {'enabled' if enabled else 'disabled'} "
+                f"(dashboard.tailscale.enabled)"
+            )
+            return
         pinned = tailnet.is_governance_pinned_off()
         # A LIVE read is correct here and would be wrong in the dashboard's status
         # endpoint. This command reports what the machine can do next; the
@@ -467,7 +490,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    result = tailnet_serve.publish(port)
+    result = tailnet_serve.publish(port, audit_tool="tailnet_cli_up")
     if not result.ok:
         print(f"❌ {result.detail}", file=sys.stderr)
         sys.exit(1)
@@ -679,8 +702,15 @@ def _handle_secrets(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         print(format_report(report))
+    elif action == "authorize":
+        # Served by its owner (see ``_OWNERS``); this module's own code never
+        # binds an owner's name, so it is reached through the owner module.
+        importlib.import_module("kiro_crew.cli_commands_secrets")._handle_secrets_authorize(args)
     else:
-        print("Usage: kirocrew secrets import [--apply]", file=sys.stderr)
+        print(
+            "Usage: kirocrew secrets [import [--apply] | authorize <name> <origin>]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -701,6 +731,7 @@ _OWNERS = (
     "kiro_crew.cli_commands_security",
     "kiro_crew.cli_commands_eval",
     "kiro_crew.cli_commands_learn",
+    "kiro_crew.cli_commands_secrets",
 )
 for _owner in _OWNERS:
     importlib.import_module(_owner)
@@ -731,12 +762,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _app_declares_backend,
         _apply_through_gateway,
         _cleanup_app_crons_from_scheduler,
+        _deregister_or_report,
         _handle_app,
         _handle_app_import,
         _install_app_through_gateway,
         _print_file_only_app_result,
         _print_pointer_cleanup,
         _refuse_session_approval_from_cli,
+        _refuse_unsafe_app_name,
         _register_app_crons_to_scheduler,
         _run_app_action_through_gateway,
         _run_app_mcp_server,
@@ -759,6 +792,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.cli_commands_gateway_api import (  # noqa: F401
         _artifact,
+        _client_port,
         _gateway_send,
         _internal_secret,
         _peer_refusal,
@@ -799,6 +833,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_forget_outside_owner_terminal,
         _settle_created_database,
     )
+    from kiro_crew.cli_commands_secrets import (  # noqa: F401
+        _authorize_txn,
+        _handle_secrets_authorize,
+        _publish_secret_request_policy,
+        _spawn_precreates_policy_directory,
+    )
     from kiro_crew.cli_commands_security import (  # noqa: F401
         _TIME_SELECTOR_RE,
         _TIME_SELECTOR_UNITS,
@@ -813,9 +853,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _WS_DIR_OUTSIDE_HOME,
         _cli_validated_workspace_dst,
         _CliConflict,
+        _dir_identity,
         _handle_workspace,
         _locked_config_write,
         _ws_dir_composed,
         _ws_dir_error,
+        _ws_dir_in_use,
         _ws_dir_resolves_inside_home,
     )

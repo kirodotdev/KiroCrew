@@ -22,8 +22,10 @@ from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import coerce_dict_section, update_config_locked
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers.updates_verdict import _display_local_version
+from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
+from kiro_crew.dashboard.ws_event_scope import app_origin_frame, audit_teammate_withheld
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.updates")
 
@@ -85,7 +87,16 @@ async def api_log_level(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    level_name = body.get("level", "").upper()
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
+    level_name = body.get("level", "")
+    if not isinstance(level_name, str):
+        return web.json_response(
+            {"error": "level must be a string", "code": "invalid_field_type"}, status=400
+        )
+    level_name = level_name.upper()
     if not apply_log_level(level_name, source="dashboard"):
         return web.json_response({"error": f"invalid level: {level_name}"}, status=400)
 
@@ -337,6 +348,9 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     # publishing it to an unscoped client. Mirrors `api_ws`'s
     # `ws["_is_dashboard_user"]`. Consumed by the chat_message arm below.
     is_dashboard_user: bool = bool(request.get("is_dashboard_user", False))
+    # A relayed teammate has no app surface: an app's push notification is withheld
+    # here as the WebSocket gate withholds it (``ws_event_scope.app_origin_frame``).
+    relay_teammate = is_relay_teammate(request)
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -386,6 +400,9 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                         )
                         await resp.write(f"event: chat_message\ndata: {payload}\n\n".encode())
                     else:
+                        if relay_teammate and app_origin_frame(msg_type or "notification", note):
+                            audit_teammate_withheld(msg_type or "notification")
+                            continue
                         payload = json.dumps(note)
                         await resp.write(f"event: notification\ndata: {payload}\n\n".encode())
                 except asyncio.QueueEmpty:

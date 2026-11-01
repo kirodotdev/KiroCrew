@@ -132,7 +132,7 @@ _MAX_DIR_SLUG = 60
 # Repo-local config keys that would hand git a program to run during checkout.
 # `-c` cannot generically disable these (the driver name is arbitrary), so a repo
 # declaring one is refused outright — see `_checkout_filter`.
-_FILTER_KEY_RE = re.compile(r"^filter\.(?P<name>.+)\.(process|smudge|clean)$", re.IGNORECASE)
+_FILTER_KEY_RE = re.compile(r"^filter\.(?P<name>.*)\.(process|smudge|clean)$", re.IGNORECASE)
 
 # Returned instead of a key name when a config scope could not be read at all.
 # Treated as "refuse": an unreadable scope cannot be proven filter-free.
@@ -829,9 +829,15 @@ def _match_allowed_root(candidate: str, roots: list[str]) -> str | None:
     differently-cased but identical path would be refused. The prefix test is
     ``os.sep``-terminated, so ``/repo-evil`` does not pass as inside ``/repo``.
     """
-    probe = os.path.normcase(candidate)
+    # ``normcase`` neither adds nor strips Windows' ``\\?\`` prefix, and a
+    # ``realpath``-ed root can carry it while the caller's candidate does not; the
+    # prefix is folded off both sides first so the lone prefix is not read as an
+    # escape. Lexical only.
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
+    probe = os.path.normcase(strip_extended_length_prefix(candidate))
     for root in roots:
-        normalized = os.path.normcase(root)
+        normalized = os.path.normcase(strip_extended_length_prefix(root))
         if probe == normalized or probe.startswith(normalized.rstrip(os.sep) + os.sep):
             return root
     return None

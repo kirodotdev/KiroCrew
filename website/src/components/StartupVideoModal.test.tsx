@@ -15,7 +15,6 @@ import { deliverFeatureNewTag } from '../utils/featureNewTag'
 import { POSE_IDS, poseDataUri } from '../lib/avatarPoses'
 import { BRAND_PURPLE } from '../lib/kiroGhostAvatar'
 import '../surfaces/builtins'
-import { PREVIEW_CREW, setPreviewFlag } from '../utils/previewFlags'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from './NavigationLeaveGuard'
 
 // The tag store and the flight are covered in featureNewTag.test.ts and
@@ -851,19 +850,6 @@ describe('StartupVideoModal — the Meet your Mates intro, a rendered component 
   beforeEach(() => {
     mockedApi.featureVideoNext.mockResolvedValue({ video: matesIntro, enabled: true, download_enabled: true } as never)
     vi.mocked(deliverFeatureNewTag).mockReset()
-    setPreviewFlag(PREVIEW_CREW, true)
-  })
-
-  afterEach(() => {
-    setPreviewFlag(PREVIEW_CREW, false)
-  })
-
-  it('is not offered while the page it opens is behind a preview that is off', async () => {
-    setPreviewFlag(PREVIEW_CREW, false)
-    await mount()
-    expect(dialog()).not.toBeInTheDocument()
-    // No verdict: the intro comes back once the preview is on.
-    expect(mockedApi.featureVideoFeedback).not.toHaveBeenCalled()
   })
 
   it('is not offered when the component is one this bundle cannot draw', async () => {
@@ -1010,11 +996,6 @@ describe('StartupVideoModal — a clip is a clip, whatever its route', () => {
   beforeEach(() => {
     mockedApi.featureVideoNext.mockResolvedValue({ video: ctaClip, enabled: true, download_enabled: true } as never)
     vi.mocked(deliverFeatureNewTag).mockReset()
-    setPreviewFlag(PREVIEW_CREW, true)
-  })
-
-  afterEach(() => {
-    setPreviewFlag(PREVIEW_CREW, false)
   })
 
   it('draws the ordinary clip card: no autoplay, Got it, and no Not now / Try now', async () => {

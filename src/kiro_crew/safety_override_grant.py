@@ -31,7 +31,7 @@ from kiro_crew.safety_override_breadcrumb import (
     _enqueue_breadcrumb,
     _write_breadcrumb,
 )
-from kiro_crew.safety_override_permits import _YOLO_MODE, approval_mode_permitted
+from kiro_crew.safety_override_permits import _YOLO_MODE, approval_mode_permitted, yolo_ttl_cap
 from kiro_crew.safety_override_records import (
     POLICY_REVOKED_SOURCE,
     ActivationResult,
@@ -45,6 +45,18 @@ logger = logging.getLogger("kiro_crew.safety_override")
 
 
 # ─── Core class ──────────────────────────────────────────────────────────────
+
+
+def _capped(ttl: int) -> int:
+    """*ttl* held to the policy's ``yolo_max_seconds`` (no change with no cap)."""
+    cap = yolo_ttl_cap()
+    return min(ttl, cap) if cap else ttl
+
+
+def _past_life_cap(activated_at: float, now: float) -> bool:
+    """Whether a grant armed at *activated_at* has reached ``yolo_max_seconds``."""
+    cap = yolo_ttl_cap()
+    return bool(cap) and now >= activated_at + cap
 
 
 class SafetyOverride:
@@ -388,6 +400,12 @@ class SafetyOverride:
         if not yolo_policy_permits():
             self._log_policy_refusal(source, scope="")
             return ActivationResult(active=False, ttl=0, source=source, activated_at_iso="")
+        # The policy's ``yolo_max_seconds`` bounds every grant, so a permanent or
+        # longer one is installed as a timed grant of the cap.
+        cap = self._bounded_cap()
+        if cap and (permanent or ttl <= 0 or ttl > cap):
+            permanent = False
+            ttl = cap
         now_mono = time.monotonic()
         now_wall = datetime.now(tz=timezone.utc)
         activated_at_iso = now_wall.isoformat()
@@ -444,6 +462,12 @@ class SafetyOverride:
         committed = False
         with self._lock:
             if _yolo_policy_permitted_now():
+                # Re-read under the lock ``clamp_to_cap`` takes: a smaller cap
+                # installed during the audit above must bound this grant too.
+                cap = self._bounded_cap()
+                if cap and (permanent or ttl <= 0 or ttl > cap):
+                    permanent = False
+                    ttl = cap
                 committed = True
                 self._active = True
                 self._source = source
@@ -524,7 +548,7 @@ class SafetyOverride:
         # Resolved BEFORE taking the lock: the resolver reads config from disk,
         # and holding the state lock across that I/O would stall every concurrent
         # is_active() check.
-        renew_ttl = min(self.current_adhoc_duration()[0], self._MAX_TTL)
+        renew_ttl = _capped(min(self.current_adhoc_duration()[0], self._MAX_TTL))
 
         def _arms(at: float) -> tuple[bool, bool]:
             # (currently_active, in_grace). Caller must hold ``_lock``. A
@@ -599,7 +623,16 @@ class SafetyOverride:
             if self._activation_count != count_snapshot:
                 commit_refused = True
                 refusal_reason = "superseded_by_activation"
+            elif arm_holds and _past_life_cap(self._activated_at, commit_mono + 1):
+                # ``yolo_max_seconds`` bounds the grant's whole life, as in
+                # ``renew_scoped``: renewal does not carry it past the cap.
+                commit_refused = True
+                refusal_reason = "ceiling_reached"
             elif arm_holds:
+                ttl = _capped(ttl)  # re-read under the lock, as in _commit_activation
+                cap = yolo_ttl_cap()
+                if cap:
+                    ttl = max(0, min(ttl, int(self._activated_at + cap - commit_mono)))
                 self._active = True
                 self._expires_at = commit_mono + ttl
                 self._last_renewed_at = commit_mono
@@ -620,7 +653,8 @@ class SafetyOverride:
                 outcome="denied",
                 resources=f"reason:{refusal_reason}",
             )
-            return RenewResult(renewed=False, ttl=0, source=source, reason="not_active")
+            reason = "ceiling_reached" if refusal_reason == "ceiling_reached" else "not_active"
+            return RenewResult(renewed=False, ttl=0, source=source, reason=reason)
 
         # The deadline moved, so the record of it has to move too -- otherwise a
         # restart after a renewal would report the OLD remaining time, or none.
@@ -703,7 +737,7 @@ class SafetyOverride:
         """
         if ttl is None:
             ttl = self._adhoc_ttl
-        ttl = min(ttl, self._MAX_TTL)
+        ttl = _capped(min(ttl, self._MAX_TTL))
         now_mono = time.monotonic()
         activated_at_iso = datetime.now(tz=timezone.utc).isoformat()
 
@@ -737,6 +771,7 @@ class SafetyOverride:
         with self._lock:
             committed = _yolo_policy_permitted_now()
             if committed:
+                ttl = _capped(ttl)  # re-read under the lock, as in _commit_activation
                 self._scoped[scope] = (now_mono, now_mono + ttl)
 
         if not committed:
@@ -788,7 +823,10 @@ class SafetyOverride:
             if entry is None:
                 return RenewResult(renewed=False, ttl=0, source=source, reason="not_active")
             activated_at, _ = entry
-            ceiling = activated_at + self._MAX_TTL
+            # ``yolo_max_seconds`` bounds the grant's whole life, not each slide:
+            # activity renewal must not carry it past the cap from first activation.
+            cap = yolo_ttl_cap()
+            ceiling = activated_at + (min(cap, self._MAX_TTL) if cap else self._MAX_TTL)
             if now_mono >= ceiling:
                 return RenewResult(renewed=False, ttl=0, source=source, reason="ceiling_reached")
             new_expiry = min(now_mono + ttl, ceiling)
@@ -974,6 +1012,51 @@ class SafetyOverride:
         with self._lock:
             return (scope in self._scoped) if scope else self._active
 
+    def _bounded_cap(self) -> int:
+        """``yolo_max_seconds`` as a timed grant may use it: never past ``_MAX_TTL``.
+
+        A cap converts an untimed grant into a timed one, and a timed grant keeps
+        the 24h ceiling every timed grant has, however long the policy's cap.
+        """
+        cap = yolo_ttl_cap()
+        return min(cap, self._MAX_TTL) if cap else 0
+
+    def clamp_to_cap(self, cap: int) -> bool:
+        """Make every live grant end within *cap* seconds of when it was armed.
+
+        Called from the ceiling-install push when the new ceiling permits ``yolo``
+        but sets ``yolo_max_seconds``, so a grant armed before the cap (a permanent
+        one included) cannot outlast it. Only deadlines move: a grant already past
+        the cap gets a deadline in the past, and the next ``is_active`` /
+        ``is_scope_active`` read expires it through the ordinary TTL-lapse path,
+        expiry notice included. A grant armed after this call is untouched, since
+        nothing here is torn down by identity. Returns True when the SESSION-WIDE
+        grant is already past the cap, so the caller does not restore the
+        inherited trust it suspended for that grant. A *cap* of 0 does nothing.
+        """
+        if cap <= 0:
+            return False
+        cap = min(cap, self._MAX_TTL)
+        now = time.monotonic()
+        moved = False
+        past = False
+        with self._lock:
+            if self._active:
+                limit = self._activated_at + cap
+                if self._permanent or self._expires_at > limit:
+                    self._permanent = False
+                    self._expires_at = limit
+                    self._breadcrumb_gen += 1
+                    moved = True
+                past = limit <= now
+            for scope, (started, ends) in list(self._scoped.items()):
+                if ends > started + cap:
+                    self._scoped[scope] = (started, started + cap)
+        if moved:
+            # The restart notice reads the breadcrumb; keep it on the new deadline.
+            self._sync_breadcrumb()
+        return past
+
     def revoke_for_policy(self) -> bool:
         """Destroy every grant because policy now forbids YOLO. Returns had-grant.
 
@@ -1143,7 +1226,7 @@ class SafetyOverride:
         # Wrapped for the same reason the write itself is: the grant is ALREADY
         # committed by the time this runs, so an exception escaping here would
         # report a failed activation while tools are in fact auto-approved
-        # (found in review). Starting the worker can fail on its own -- a thread
+        # Starting the worker can fail on its own -- a thread
         # quota is a real limit -- so the enqueue is inside the guard, not just
         # the file I/O.
         try:
@@ -1349,11 +1432,21 @@ def _push_yolo_policy() -> None:
             exc_info=True,
         )
         permitted = False
+    # A cap in the new ceiling bounds the grants already live, too, and it is
+    # applied BEFORE the permit is published: until the line below, the
+    # invalidation mask still denies, so no reader ever sees a permitting verdict
+    # beside a deadline the new cap has not reached yet.
+    past_cap = permitted and safety_override().clamp_to_cap(yolo_ttl_cap())
     _yolo_policy_permitted = permitted
     _yolo_policy_resolved = True
     suspended = _suspended_trust_restore
     _suspended_trust_restore = None
     if permitted:
+        # The trust suspended for a session grant already past the cap is not put
+        # back: that grant expires on its next read, and its expiry handler clears
+        # the rest.
+        if past_cap:
+            suspended = None
         # The ceiling still permits, so the inherited trust suspended before
         # publication goes back exactly as it was -- PROVIDED the grant it belonged to
         # is still the one in force. The governance read between suspend and here is

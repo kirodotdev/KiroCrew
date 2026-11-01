@@ -306,7 +306,9 @@ def test_an_app_authored_send_is_not_dispatched_as_a_person():
 
     from kiro_crew.dashboard import chat_handlers
 
-    tree = ast.parse(inspect.getsource(chat_handlers.api_chat))
+    # ``api_chat`` wraps the send itself (``_api_chat_send``) to record a Crew Mode
+    # worker steer after it; the actor is stamped where the request is read.
+    tree = ast.parse(inspect.getsource(chat_handlers._api_chat_send))
     kwargs_writes = [
         node
         for node in ast.walk(tree)

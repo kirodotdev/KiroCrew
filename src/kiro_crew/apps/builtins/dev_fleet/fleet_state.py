@@ -1605,6 +1605,10 @@ _PROVISION_LOCK = LoopBoundLock()
 # while every concurrent poll keeps reading the previous numbers
 # (stale-while-revalidate), so an open dashboard never sustains back-to-back
 # scans.
+#: Disk aggregations started and not awaited. The loop holds only a weak
+#: reference to a running task, so one nothing else holds can be collected
+#: mid-run and leave `_DISK_COMPUTING` set for good.
+_DISK_TASKS: set[asyncio.Task[None]] = set()
 _DISK_TTL = 300.0  # seconds a completed aggregation stays fresh
 _DISK: dict = {"status": "idle", "total_mb": None, "per": {}}
 _DISK_COMPUTING = False
@@ -1694,7 +1698,9 @@ async def _disk() -> dict:
             _DISK_COMPUTED_AT = time.monotonic() if fresh and _DISK_EPOCH == started_epoch else 0.0
             _DISK_COMPUTING = False
 
-    asyncio.create_task(work())
+    task = asyncio.create_task(work())
+    _DISK_TASKS.add(task)
+    task.add_done_callback(_DISK_TASKS.discard)
     return dict(_DISK)
 
 

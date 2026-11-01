@@ -413,6 +413,8 @@ async def _turn_close_crew_log(turn: _ChatTurn) -> None:
     # session with no routed turn in flight, which is every session while
     # ``decisions.model_route_derive`` is off.
     _settle_jev_route(session_key, _jev_route_turn_ok(turn._crew_log_terminal))
+    if turn._crew_log_terminal is not None:
+        turn.turn_exit.stop_reason = str(turn._crew_log_terminal.get("stop_reason") or "")
     if turn._crew_log_terminal is not None or _crew_log_turn_open:
         # Ahead of the turn's closers, so the ``usage`` fold finds this turn's
         # composition row still at the tail and not yet sealed.
@@ -471,8 +473,8 @@ async def _turn_close_crew_log(turn: _ChatTurn) -> None:
         )
         _crew_log_turn_open = False
         turn._crew_log_turn_open = _crew_log_turn_open
-    # Poisoned-conversation streak break — run from _run_chat's FINALLY on purpose (fork
-    # GPT review): several recovery paths (stale-turn, tool-stall,
+    # Poisoned-conversation streak break — run from _run_chat's FINALLY on purpose:
+    # several recovery paths (stale-turn, tool-stall,
     # pipe-death) `return` before the main completion block in _turn_persist_and_settle, and a turn
     # with model activity that exits through them must STILL break the
     # exhaustion streak — the backend demonstrably served this

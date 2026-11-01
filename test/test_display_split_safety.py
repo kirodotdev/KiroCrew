@@ -13,6 +13,7 @@ import pytest
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES
 from kiro_crew.messaging.display_safety import (
+    _INTERIOR_RUN_PIECES,
     _balanced_link_reading,
     _first_close_reading,
     _link_free_reading,
@@ -503,3 +504,150 @@ class TestLinkReadingsAgreeWithoutAnOpener:
             _link_free_reading(window),
         }
         assert len(readings) == 3
+
+
+class TestInteriorRunBoundMutation:
+    """A credential split across more interior pieces than the old cap of four is
+    missed at cap=4 but caught at the current cap of 43.
+
+    The fixture splits the two-segment link token into five consecutive interior
+    messages with a spoiling frame on each side. Every prefix, suffix and whole-
+    sequence reading carries at least one frame character that makes the pattern's
+    negative lookahead or lookbehind fail; only a reading bounded on both sides --
+    an interior window of at least five pieces -- catches it.
+
+    The mutation: temporarily patch ``_INTERIOR_RUN_PIECES`` back to 4 and show
+    the five-piece interior is missed. Restore it and show it is caught.
+    """
+
+    #: Two-segment link token body (eyJ + 100 base64url chars) and fixed-length tail.
+    _FIRST = "eyJ" + "abcdefghij" * 10
+    _LAST = "Z" * 43
+    _TOKEN = _FIRST + "." + _LAST
+
+    #: Five consecutive interior pieces whose join is the link token.
+    _INTERIOR = [_TOKEN[:30], _TOKEN[30:60], _TOKEN[60:100], _TOKEN[100:135], _TOKEN[135:]]
+
+    #: Frame that spoils every prefix, suffix and whole-sequence reading.
+    _FRAME = "zzz"
+
+    def _link_token_redactor(self, text: str) -> str:
+        """Redact only the two-segment link token, for isolation from other patterns."""
+        import re
+
+        return re.sub(
+            r"(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])",
+            "[REDACTED: credential]",
+            text,
+        )
+
+    def test_each_interior_piece_is_clean_alone(self) -> None:
+        redact = self._link_token_redactor
+        for piece in self._INTERIOR:
+            assert redact(piece) == piece, f"piece must look clean alone: {piece[:40]!r}"
+
+    def test_the_whole_join_is_spoiled_by_the_frame(self) -> None:
+        """Whole-sequence join has the frame directly adjacent to the token."""
+        redact = self._link_token_redactor
+        whole = "".join([self._FRAME, *self._INTERIOR, self._FRAME])
+        assert redact(whole) == whole, "frames must spoil the whole-join reading"
+
+    def test_the_inner_join_without_frames_is_caught(self) -> None:
+        """Control: without frames the interior pieces form a catchable token."""
+        redact = self._link_token_redactor
+        inner = "".join(self._INTERIOR)
+        assert redact(inner) != inner, "interior join without frames must be caught"
+
+    def test_a_bound_of_four_misses_the_five_piece_interior(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Patching the bound back to 4 shows the pre-fix miss."""
+        import kiro_crew.messaging.display_safety as ds
+
+        monkeypatch.setattr(ds, "_INTERIOR_RUN_PIECES", 4)
+        redact = self._link_token_redactor
+        pieces = [self._FRAME, *self._INTERIOR, self._FRAME]
+        assert not severs_a_credential(pieces, redact), "bound=4 must miss a five-piece interior"
+
+    def test_the_current_bound_catches_the_five_piece_interior(self) -> None:
+        """At the current cap (43) the five-piece interior is caught."""
+        assert _INTERIOR_RUN_PIECES == 43
+        redact = self._link_token_redactor
+        pieces = [self._FRAME, *self._INTERIOR, self._FRAME]
+        assert severs_a_credential(pieces, redact)
+
+    def test_a_43_piece_split_is_caught_at_the_cap(self) -> None:
+        """A token split into exactly 43 interior pieces (the cap) is still caught.
+
+        The cap applies to the whole token's message span, so 43 consecutive
+        interior messages holding the full token (payload through fixed tail)
+        fit exactly inside the window.  This is the boundary where the guarantee
+        holds; 44 pieces falls outside it (see
+        ``test_a_44_piece_split_is_the_residual``).
+        """
+        redact = self._link_token_redactor
+        n = _INTERIOR_RUN_PIECES  # 43
+
+        # Distribute 147 chars into 43 consecutive pieces.
+        k, r = divmod(len(self._TOKEN), n)
+        pieces, pos = [], 0
+        for i in range(n):
+            end = pos + k + (1 if i < r else 0)
+            pieces.append(self._TOKEN[pos:end])
+            pos = end
+
+        assert len(pieces) == 43
+        assert "".join(pieces) == self._TOKEN
+
+        safe = [self._FRAME, *pieces, self._FRAME]
+        assert severs_a_credential(safe, redact), "a 43-piece token at the cap must be caught"
+
+    def test_a_44_piece_split_is_the_residual(self) -> None:
+        """A token split into 44 interior pieces (one past the cap) is missed.
+
+        This is the first case the window does not reach: 43 consecutive
+        interior messages cannot hold 44 pieces, so no window spans the full
+        token.  The residual is intentional and noted in ``_sequence_readings``.
+        """
+        redact = self._link_token_redactor
+        n = _INTERIOR_RUN_PIECES + 1  # 44
+
+        # Distribute 147 chars into 44 consecutive pieces.
+        k, r = divmod(len(self._TOKEN), n)
+        pieces, pos = [], 0
+        for i in range(n):
+            end = pos + k + (1 if i < r else 0)
+            pieces.append(self._TOKEN[pos:end])
+            pos = end
+
+        assert len(pieces) == 44
+        assert "".join(pieces) == self._TOKEN
+
+        safe = [self._FRAME, *pieces, self._FRAME]
+        assert not severs_a_credential(
+            safe, redact
+        ), "a 44-piece token (one past the cap) is the residual and must be missed"
+
+    @pytest.mark.timeout(120)
+    def test_severs_a_credential_on_2451_pieces_finishes_within_budget(
+        self,
+    ) -> None:
+        """Cost measurement for the 2451-piece (5000-backtick) path at cap=43.
+
+        A 5000-backtick run at budget 100 produces about 2451 pieces.  At cap=4
+        each start yielded at most 3 interior windows; at cap=43 it yields up to
+        42, a roughly 14x increase in window count.  Backtick pieces contain no
+        credential pattern, so the redactor pre-filter returns quickly for every
+        window.  The test pins that this call still finishes; the CI output shows
+        the actual elapsed seconds for the PR cost record.
+        """
+        import time
+
+        pieces = ["``"] * 2451  # two backticks per piece approximates the actual chunks
+        start = time.perf_counter()
+        result = severs_a_credential(pieces, _default_redactor)
+        elapsed = time.perf_counter() - start
+        assert not result, "bare backtick pieces must not look like a credential"
+        # Report timing so it appears in the CI log for PR review.
+        print(f"\nsevers_a_credential(2451 pieces, cap={_INTERIOR_RUN_PIECES}): {elapsed:.3f}s")
+        assert elapsed < 120.0  # flake-ok: ceiling is for CI safety, log holds real elapsed

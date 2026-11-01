@@ -18,7 +18,7 @@ import re
 
 from kiro_crew.cloud.login_target import parse_whoami_output
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.kiro_cli import kiro_cli_version_at, pin_kiro_cli
+from kiro_crew.kiro_cli import chat_agent_engines_at, pin_kiro_cli
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
 from kiro_crew.platform_compat import _SUBPROCESS_NO_WINDOW, kill_and_reap
 from kiro_crew.sandbox import (
@@ -202,7 +202,13 @@ def _normalize_text_usage(parsed: dict[str, object]) -> dict[str, object]:
     return out
 
 
-def _same_identity(cached: dict[str, object], identity: dict[str, object]) -> bool:
+def _same_identity(
+    cached: dict[str, object],
+    identity: dict[str, object],
+    *,
+    cached_user_id: str | None = None,
+    user_id: str | None = None,
+) -> bool:
     """True only when ``cached`` provably belongs to the current ``identity``.
 
     Matches on BOTH the account email AND the SSO ``start_url`` (the IAM
@@ -218,6 +224,13 @@ def _same_identity(cached: dict[str, object], identity: dict[str, object]) -> bo
     B's refresh) from keeping A's usage AND A's email on screen — including the
     same-email-different-org case — without it, preserving the prior cache would
     leak the previous account's data.
+
+    Two users of ONE Identity Center org can still match on both fields, so the
+    IdC userId decides as well: ``cached_user_id`` is the one the cached reading
+    was published for, ``user_id`` the one kiro-cli's own store holds now (both
+    from :attr:`kiro_usage_api.UsageResult.user_id`). When both are non-empty
+    they must be equal. When either side has none, email and ``start_url``
+    decide alone, as before: kiro-cli's store does not always carry a userId.
     """
 
     def _red(v: object) -> object:
@@ -228,6 +241,8 @@ def _same_identity(cached: dict[str, object], identity: dict[str, object]) -> bo
         b = _red(identity.get(key))
         if not (isinstance(a, str) and isinstance(b, str) and a and a == b):
             return False
+    if cached_user_id and user_id and cached_user_id != user_id:
+        return False
     return True
 
 
@@ -312,7 +327,12 @@ def _account_type_only(identity: dict[str, object]) -> bool:
 
 
 def _text_scrape_regresses_api_value(
-    prev: object, new: dict[str, object], identity: dict[str, object]
+    prev: object,
+    new: dict[str, object],
+    identity: dict[str, object],
+    *,
+    prev_user_id: str | None = None,
+    user_id: str | None = None,
 ) -> bool:
     """True when a fresh text-scrape would clobber a richer API-sourced value.
 
@@ -338,7 +358,7 @@ def _text_scrape_regresses_api_value(
     """
     if not isinstance(prev, dict) or prev.get("source") != "api":
         return False
-    if not _same_identity(prev, identity):
+    if not _same_identity(prev, identity, cached_user_id=prev_user_id, user_id=user_id):
         return False
     # Preserve ONLY within the same, provable billing cycle: both reset dates
     # must be present, non-empty, and equal. A missing date on either side
@@ -405,41 +425,56 @@ def _wrap_argv_at_configured_tier(argv: list[str]) -> tuple[list[str], str | Non
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
 
-#: Lowest kiro-cli release verified to accept ``chat --agent-engine v2``. Below
-#: it the scrape keeps the plain argv: an unknown flag fails the whole command,
-#: while an unpinned scrape fails only for a user whose global engine is V3.
-#: Lowering it once an older release is verified is a one-line change.
-USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION: tuple[int, int, int] = (2, 28, 0)
+#: The one kiro-cli engine that answers ``/usage`` as a local slash command. V3
+#: sends it to the model as a prompt (verified on kiro-cli 2.35.1: the reply is
+#: the model saying the command "came through to me as a chat message").
+USAGE_SCRAPE_ENGINE = "v2"
 
 
-def _usage_scrape_argv(kiro_bin: str) -> list[str]:
-    """The ``/usage`` scrape argv, with the V2 engine pinned where it is accepted.
+def _usage_scrape_argv(kiro_bin: str) -> list[str] | None:
+    """The ``/usage`` scrape argv, or ``None`` when no engine here answers it.
 
-    Without a pin kiro-cli uses the user's global ``chat.agentEngine``. On V3,
-    ``/usage`` is not a slash command: it goes to the model as a prompt, spends
-    a model turn and prints no usage table.
+    The engine is chosen from what this kiro-cli's ``chat --help`` lists for
+    ``--agent-engine`` (:func:`chat_agent_engines_at`), never assumed:
 
-    The version read runs ``--version`` outside the sandbox, so it runs only on
-    the :func:`pin_kiro_cli` binary, and only when that is the binary being
-    spawned. *kiro_bin* may come off the inherited ``PATH``, which can lead with
-    an agent-writable directory; a binary from there gets the plain argv and is
+    - V2 listed: pin it. Without a pin kiro-cli uses the user's global
+      ``chat.agentEngine``, and on V3 ``/usage`` spends a model turn and prints
+      no usage table.
+    - A selector that lists engines but not V2 (V2 retired): ``None``. No engine
+      left answers ``/usage`` locally, so the scrape must not run at all; the
+      ``GetUsageLimits`` API read is the only source.
+    - No selector, or the probe could not run: the plain argv, as before the
+      selector existed. An unknown flag would fail the whole command.
+
+    The probe runs outside the sandbox, so it runs only on the
+    :func:`pin_kiro_cli` binary, and only when that is the binary being spawned.
+    *kiro_bin* may come off the inherited ``PATH``, which can lead with an
+    agent-writable directory; a binary from there gets the plain argv and is
     never run unsandboxed. Blocking: the pin stats install directories, and the
-    version read is a bounded spawn on its first call per binary identity.
+    probe is a bounded spawn on its first call per binary identity.
     """
     argv = [kiro_bin, "chat", "--no-interactive"]
-    version = None
+    engines: tuple[str, ...] | None = None
     pinned, _unpinned = pin_kiro_cli()
     if pinned is not None and os.path.realpath(pinned) == os.path.realpath(kiro_bin):
-        version = kiro_cli_version_at(pinned)
-    if version is not None and version >= USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION:
-        argv += ["--agent-engine", "v2"]
+        engines = chat_agent_engines_at(pinned)
+    if engines:
+        if USAGE_SCRAPE_ENGINE not in engines:
+            return None
+        argv += ["--agent-engine", USAGE_SCRAPE_ENGINE]
     return argv + ["--agent", "kirocrew-lite", "/usage"]
 
 
-def _wrap_argv_usage_scrape(kiro_bin: str) -> tuple[list[str], str | None]:
+def _wrap_argv_usage_scrape(kiro_bin: str) -> tuple[list[str] | None, str | None]:
     """Executor entrypoint for the ``/usage`` scrape's wrap (see
-    :func:`_wrap_argv_at_configured_tier` for why this runs off the loop)."""
-    return _wrap_argv_at_configured_tier(_usage_scrape_argv(kiro_bin))
+    :func:`_wrap_argv_at_configured_tier` for why this runs off the loop).
+
+    ``(None, None)`` when :func:`_usage_scrape_argv` finds no engine that answers
+    ``/usage``: nothing is wrapped and nothing will be spawned."""
+    argv = _usage_scrape_argv(kiro_bin)
+    if argv is None:
+        return None, None
+    return _wrap_argv_at_configured_tier(argv)
 
 
 def _wrap_argv_whoami(kiro_bin: str) -> tuple[list[str], str | None]:

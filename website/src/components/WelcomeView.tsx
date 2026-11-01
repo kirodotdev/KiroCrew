@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  Activity, Clock, Code2, Eye, FileText, ListChecks, Search, Sparkles, type LucideIcon,
+  Activity, Clock, Code2, Compass, Eye, FileText, ListChecks, Search, Sparkles, type LucideIcon,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import ErrorNotice from './ErrorNotice'
@@ -9,6 +9,7 @@ import { useTheme } from '../hooks/useTheme'
 import { getThemeBranding } from '../themeBranding'
 import { api, type SuggestionItem, type SuggestionKind } from '../api/client'
 import { reportForError } from '../utils/errorReport'
+import { openMilestonesPanel, useTryTodayCount } from './milestones/useMilestones'
 
 import { i18nT } from '../i18n/t'
 interface WelcomeViewProps {
@@ -72,7 +73,7 @@ export function welcomeGreetings(): string[] {
   return [...new Set(keys)].map(k => i18nT(k))
 }
 
-function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
+function SuggestedCards({ setInput, tryTodayCount = 0 }: { setInput: (v: string) => void; tryTodayCount?: number }) {
   const { data, isError, error } = useQuery({
     queryKey: ['suggestions'],
     queryFn: () => api.suggestions(),
@@ -94,7 +95,12 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
   // Filter first, then fall back: a payload whose every item is malformed would
   // otherwise leave the grid blank while a curated set exists for exactly that.
   const served = (data?.suggestions ?? []).map(normalizeSuggestion).filter(s => s.text !== '')
-  const cards = served.length ? served : fallbackSuggestions
+  const all = served.length ? served : fallbackSuggestions
+  // Only the LAST card gives way to the Try today entry; the personal
+  // suggestions before it stay exactly as they are.
+  const cards: Array<Suggestion & { entry?: true }> = tryTodayCount > 0
+    ? [...all.slice(0, -1), { text: i18nT('milestones.try_today_entry', { count: tryTodayCount }), kind: 'general', entry: true }]
+    : all
 
   return (
     // Short wide windows (under 600px tall, 640px+ wide) show the compact one-line
@@ -118,8 +124,9 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
       {/* Phones: a tight list of bare rows (2px apart). sm+: 12px gaps between
           cards, compact or tall. */}
       <div className="grid grid-cols-1 gap-0.5 sm:grid-cols-3 sm:gap-3">
-        {cards.map(({ text, kind }, i) => {
-          const { Icon, tile } = SUGGESTION_KIND_STYLE[kind]
+        {cards.map(({ text, kind, entry }, i) => {
+          // The Try today entry opens Explore; it wears the Explore glyph.
+          const { Icon, tile } = entry ? { Icon: Compass, tile: 'bg-accent-subtle text-accent' } : SUGGESTION_KIND_STYLE[kind]
           return (
             // Phones: a compact one-line row with no box around it, so six of them stack
             // tightly. Short wide windows (under 600px tall): the same compact row, boxed,
@@ -133,9 +140,10 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
                   textarea, so the prompt appears to clear instead of send. */}
               <button
                 type="button"
-                data-kind={kind}
+                data-kind={entry ? undefined : kind}
+                {...(entry ? { 'data-milestones-trigger': '', 'data-testid': 'try-today-entry' } : {})}
                 onMouseDown={e => e.preventDefault()}
-                onClick={() => setInput(text)}
+                onClick={() => (entry ? openMilestonesPanel() : setInput(text))}
                 // Native tooltip for the compact row's truncated label (the hover /
                 // focus wrap below is the reveal; the tooltip names the full text
                 // for a pointer that only pauses).
@@ -177,6 +185,10 @@ export default function WelcomeView({ setInput }: WelcomeViewProps) {
     ? <img src={heroImage} alt="" aria-hidden="true" className="w-12 h-12 drop-shadow-lg shrink-0 animate-float rounded-md object-contain" />
     : <KiroGhost size={48} className="drop-shadow-lg shrink-0 animate-float" />
 
+  // Explore's "Try today" (RFC 4.5): while any feature is untried, the last
+  // suggestion card becomes one entry card that opens Explore.
+  const tryTodayCount = useTryTodayCount()
+
   // The memory chip sits above the composer (ComposerDockView renders it).
   return (
     // Unprefixed = phones: a safe-centred column (falls back to top-aligned when it
@@ -205,7 +217,7 @@ export default function WelcomeView({ setInput }: WelcomeViewProps) {
         </div>
         <div aria-hidden="true" className="hidden grow min-h-8 [@media(min-width:640px)_and_(min-height:600px)]:block" />
       </div>
-      <SuggestedCards setInput={setInput} />
+      <SuggestedCards setInput={setInput} tryTodayCount={tryTodayCount} />
       <div aria-hidden="true" className="hidden [@media(min-width:640px)_and_(min-height:600px)]:block" />
     </div>
   )

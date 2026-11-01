@@ -29,8 +29,9 @@
 #     direct-local sessions (docker exec).
 #   - kiro-cli binaries install to /usr/local/bin (outside the volume) so a
 #     user-mounted home can never shadow them with stale or tampered copies.
-#     The download is resolved through the release manifest and
-#     sha256-verified fail-closed; the resolved version is recorded at
+#     The release is the one pinned in packaging/kiro-cli-version and
+#     sha256-verified fail-closed against packaging/kiro-cli-sha256, the same
+#     two files the desktop build reads; the version is recorded at
 #     /usr/local/share/kirocrew/kiro-cli-version and (when the lane passes
 #     KIRO_CLI_VERSION) in the dev.kirocrew.kiro-cli.version OCI label.
 
@@ -44,11 +45,11 @@ ARG TARGETARCH
 ARG KIROCREW_VERSION=dev
 ARG VCS_REF=unknown
 
-# kiro-cli version the build MUST resolve to. The lanes resolve this from
-# the release manifest before the build (so it lands in an OCI label and a
-# moved manifest fails the build); "latest" accepts whatever the manifest
-# names at build time — bytes are checksum-verified either way.
-ARG KIRO_CLI_VERSION=latest
+# kiro-cli version the lane expects, for the OCI label. The build installs
+# the version pinned in packaging/kiro-cli-version; a lane that passes a
+# different one fails the build, so the label can never lie. Empty (the
+# default) skips that cross-check.
+ARG KIRO_CLI_VERSION=
 
 # Source repository for the OCI label. The publish lane passes the actual
 # repository (forks label their own images correctly instead of
@@ -83,35 +84,42 @@ RUN apt-get update \
 # dotfile/shell integrations that are meaningless in a container.
 #
 # Supply-chain discipline (image inputs must be verifiable):
-#   1. Resolve the version + per-arch sha256 from the release manifest
-#      (latest/manifest.json) — the manifest names VERSIONED download paths.
-#   2. If the lane pinned KIRO_CLI_VERSION, a manifest that moved between
-#      resolution and build FAILS the build (label can never lie).
-#   3. Download the VERSIONED zip and verify its sha256 fail-closed before
-#      executing anything from it.
-#   4. Record the resolved version at a fixed path for runtime audit
+#   1. Read the version from packaging/kiro-cli-version and the per-arch
+#      sha256 from packaging/kiro-cli-sha256 (keyed `<version>/<file>`), the
+#      pin the desktop build shares. Both are bind-mounted from the build
+#      context, so neither enters a layer; a rebuild of a tag reproduces it.
+#   2. If the lane passed KIRO_CLI_VERSION, a pin that disagrees FAILS the
+#      build (label can never lie).
+#   3. Download that version's zip and verify its sha256 fail-closed before
+#      executing anything from it. A pin with no sha line fails the build.
+#   4. Record the version at a fixed path for runtime audit
 #      (docker run --rm <image> cat /usr/local/share/kirocrew/kiro-cli-version).
-RUN set -eux; \
+RUN --mount=type=bind,source=packaging,target=/tmp/kiro-cli-pin \
+    set -eux; \
     case "${TARGETARCH}" in \
         amd64) KIRO_ARCH="x86_64" ;; \
         arm64) KIRO_ARCH="aarch64" ;; \
         *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl --proto '=https' --tlsv1.2 -fsSL \
-        "https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json" \
-        -o /tmp/kirocli-manifest.json; \
-    RESOLVED="$(python3 -c 'import json;print(json.load(open("/tmp/kirocli-manifest.json"))["version"])')"; \
-    if [ "${KIRO_CLI_VERSION}" != "latest" ] && [ "${KIRO_CLI_VERSION}" != "${RESOLVED}" ]; then \
-        echo "kiro-cli manifest moved: pinned ${KIRO_CLI_VERSION}, manifest now ${RESOLVED}" >&2; exit 1; \
+    RESOLVED="$(tr -d '[:space:]' < /tmp/kiro-cli-pin/kiro-cli-version)"; \
+    case "${RESOLVED}" in \
+        ''|*[!0-9A-Za-z.+-]*) echo "bad kiro-cli pin: '${RESOLVED}'" >&2; exit 1 ;; \
+    esac; \
+    if [ -n "${KIRO_CLI_VERSION}" ] && [ "${KIRO_CLI_VERSION}" != "${RESOLVED}" ]; then \
+        echo "kiro-cli pin mismatch: lane expects ${KIRO_CLI_VERSION}, pin is ${RESOLVED}" >&2; exit 1; \
     fi; \
-    SHA256="$(KIRO_ARCH="${KIRO_ARCH}" python3 -c 'import json,os; m=json.load(open("/tmp/kirocli-manifest.json")); a=os.environ["KIRO_ARCH"]; print(next(p["sha256"] for p in m["packages"] if p["fileType"]=="zip" and p["architecture"]==a and "musl" not in p["download"]))')"; \
+    ARTIFACT="${RESOLVED}/kirocli-${KIRO_ARCH}-linux.zip"; \
+    SHA256="$(awk -v want="${ARTIFACT}" '$2 == want { print $1 }' /tmp/kiro-cli-pin/kiro-cli-sha256)"; \
+    if [ "$(printf '%s' "${SHA256}" | wc -w)" -ne 1 ]; then \
+        echo "packaging/kiro-cli-sha256 has no single line for ${ARTIFACT}" >&2; exit 1; \
+    fi; \
     curl --proto '=https' --tlsv1.2 -fsSL \
-        "https://desktop-release.q.us-east-1.amazonaws.com/${RESOLVED}/kirocli-${KIRO_ARCH}-linux.zip" \
+        "https://desktop-release.q.us-east-1.amazonaws.com/${ARTIFACT}" \
         -o /tmp/kirocli.zip; \
     echo "${SHA256}  /tmp/kirocli.zip" | sha256sum -c -; \
     unzip -q /tmp/kirocli.zip -d /tmp; \
     Q_INSTALL_GLOBAL=1 Q_SKIP_SETUP=1 /tmp/kirocli/install.sh; \
-    rm -rf /tmp/kirocli /tmp/kirocli.zip /tmp/kirocli-manifest.json; \
+    rm -rf /tmp/kirocli /tmp/kirocli.zip; \
     mkdir -p /usr/local/share/kirocrew; \
     printf '%s\n' "${RESOLVED}" > /usr/local/share/kirocrew/kiro-cli-version; \
     kiro-cli --version
@@ -163,6 +171,68 @@ RUN set -eux; \
 # volumes inherit the image's ownership on first use).
 RUN useradd --create-home --uid 1000 --shell /bin/bash kirocrew
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/kirocrew-entrypoint
+
+# Bundled KAS engine: the `agent.kas_bundle` route with no download.
+#
+# BUNDLE_KAS=1 stages the KAS engine bundle this release PINS
+# (kiro_crew/acp/kas_pin.py: KAS_PIN_VERSION + KAS_PIN_MANIFEST_SHA256) at
+# /usr/local/share/kirocrew/kas, outside the home volume and root-owned, so a
+# mounted home can never shadow or rewrite it. The staging IS the backend's own
+# installer (acp.kas_bundle.install_bundle) run from the wheel installed above,
+# exactly as packaging/build-desktop.sh stages the desktop app's copy: manifest
+# bytes checked against the pin before parsing, every artifact sha256+size-
+# pinned by that manifest, tar filter="data", a `node --version` probe, one
+# atomic publish. The tree is read back through the reader the gateway uses,
+# first as root and then as the kirocrew user, so a tree the gateway would
+# ignore fails the build rather than the first prompt. The root holds
+# <version>/{bundle,node,install.json}, the layout `kirocrew kas install`
+# writes under the data home.
+#
+# KIROCREW_BUNDLED_KAS_DIR names the root as an image ENV, so every process in
+# the container sees it: the gateway, and `docker exec <ctr> kirocrew kas
+# status` / `doctor`, which bypass the entrypoint. It is the variable the
+# desktop shell exports in gateway-env.js, and installed_bundle() reads it as
+# the second root after the data home's own `kirocrew kas install`. The
+# directory is created on every build, so on a BUNDLE_KAS=0 image it is an
+# empty root-owned directory: the reader finds no version in it, and the
+# read-only seal the sandbox puts on this root covers a path that exists.
+#
+# Off by default: the route itself is still in shadow testing
+# (agent.kas_bundle defaults to false, install.sh fetches the engine only with
+# --with-kas), and the staged engine adds about 370 MB to every pull of an
+# image whose users have not switched the route on.
+ARG BUNDLE_KAS=0
+ENV KIROCREW_BUNDLED_KAS_DIR=/usr/local/share/kirocrew/kas
+RUN set -eux; \
+    case "${BUNDLE_KAS}" in \
+        0|1) ;; \
+        *) echo "BUNDLE_KAS must be 0 or 1, got '${BUNDLE_KAS}'" >&2; exit 1 ;; \
+    esac; \
+    rm -rf "${KIROCREW_BUNDLED_KAS_DIR}"; \
+    mkdir -p "${KIROCREW_BUNDLED_KAS_DIR}"; \
+    if [ "${BUNDLE_KAS}" = "0" ]; then \
+        echo "BUNDLE_KAS=0: image ships without a bundled KAS engine"; exit 0; \
+    fi; \
+    python -I -c 'import sys; from pathlib import Path; \
+from kiro_crew.acp import kas_bundle; \
+from kiro_crew.acp.kas_pin import KAS_PIN_MANIFEST_SHA256, KAS_PIN_VERSION; \
+from kiro_crew.config.sections import KAS_BUNDLE_DEFAULT_URL; \
+dest = Path(sys.argv[1]); \
+manifest, url = kas_bundle.fetch_manifest(KAS_BUNDLE_DEFAULT_URL, version=KAS_PIN_VERSION, sha256=KAS_PIN_MANIFEST_SHA256); \
+installed = kas_bundle.install_bundle(manifest, source=url, root=dest); \
+again = kas_bundle.installed_bundle(root=dest, version=KAS_PIN_VERSION); \
+assert again is not None and again.acp_server == installed.acp_server and again.node_bin == installed.node_bin, "staged tree does not read back"; \
+print(f"KAS {KAS_PIN_VERSION} staged, Node v{installed.node_version}")' \
+        "${KIROCREW_BUNDLED_KAS_DIR}"; \
+    chmod -R u=rwX,go=rX "${KIROCREW_BUNDLED_KAS_DIR}"; \
+    runuser -u kirocrew -- python -I -c 'import sys; from pathlib import Path; \
+from kiro_crew.acp import kas_bundle; \
+from kiro_crew.acp.kas_pin import KAS_PIN_VERSION; \
+found = kas_bundle.installed_bundle(root=Path(sys.argv[1]), version=KAS_PIN_VERSION); \
+assert found is not None, "the kirocrew user cannot read the staged KAS engine"; \
+print(f"kirocrew reads KAS {KAS_PIN_VERSION}: {found.acp_server}")' \
+        "${KIROCREW_BUNDLED_KAS_DIR}"
+
 USER kirocrew
 WORKDIR /home/kirocrew
 

@@ -44,7 +44,13 @@ jobs:
     # same-repository PR from a listed actor uses the fleet on every event.
     # The job checks out only the default branch's scripts and never runs PR
     # code, so the opened/synchronize limit other routes carry buys nothing.
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event.pull_request.head.repo.full_name == github.repository && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    #
+    # A run the fleet does not admit -- a fork pull request, or an actor outside
+    # CODEBUILD_ACTOR_IDS, which on a review event is the reviewer rather than
+    # the author -- takes the larger-runner group when it executes HERE, and
+    # `ubuntu-latest` when it executes in a fork's own repository, where an
+    # organization runner group is unreachable.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event.pull_request.head.repo.full_name == github.repository && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

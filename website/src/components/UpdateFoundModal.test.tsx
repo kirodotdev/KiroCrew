@@ -643,6 +643,21 @@ describe('UpdateFoundModal — gateway source', () => {
     expect(mockedApi.armUpdate).not.toHaveBeenCalled()
   })
 
+  it('the desktop candidate is skipped when a policy provider governs a bundled install', async () => {
+    // When the provider can apply (non-Windows), the Electron auto-updater
+    // stands down; no desktop candidate is offered.
+    const store = gatewayStore({
+      update_bundled_by_app: true,
+      update_managed_by: 'command',
+      update_can_apply: true,
+    } as Partial<StatusData>)
+    withNudgeConfig({})
+    const { container } = await mount(found, store)
+    // With the desktop candidate suppressed, the modal must not open.
+    expect(container.firstChild).toBeNull()
+    expect(mockedApi.kirocrewConfig).not.toHaveBeenCalled()
+  })
+
   it('an install with no affordance is never interrupted', async () => {
     const { container } = await mount(undefined, gatewayStore({
       update_available: true, update_latest_version: '8.8.8',

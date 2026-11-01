@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.crew_log.store import CrewLog, segment_paths, unit_header_created_at
 
@@ -56,12 +58,28 @@ def _log_identity(handle: CrewLog) -> tuple[str | None, int | None, int | None]:
     file set in motion, and reads as "unknown": the fold then walks, which is
     the safe answer to a moving target.
     """
-    created_at = unit_header_created_at(handle.kind, handle.id)
+    return _unit_log_identity(handle.kind, handle.id, handle.path)
+
+
+def _unit_log_identity(
+    kind: str, unit_id: str, path: Path | None = None
+) -> tuple[str | None, int | None, int | None]:
+    """:func:`_log_identity` for a unit named by kind and id, without opening it.
+
+    *path* is the segment whose device and inode name the file; it defaults to
+    the newest segment. Opening a handle settles a torn tail, which is a write, so
+    a reader that only asks "is this still the same log" uses this instead.
+    """
+    created_at = unit_header_created_at(kind, unit_id)
     try:
-        stat = handle.path.stat()
+        segments = segment_paths(kind, unit_id)
+        if path is None:
+            if not segments:
+                return None, None, None
+            path = segments[-1]
+        stat = path.stat()
         total_size = 0
         newest_mtime = 0
-        segments = segment_paths(handle.kind, handle.id)
         for segment in segments:
             seg_stat = segment.stat()
             total_size += seg_stat.st_size

@@ -239,7 +239,7 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
         # `mochi--mochi.json` with `"name": "mochi"` is listed as `mochi`, and
         # `mochi--mochi` is not listed at all. Treating the stem as dispatchable
         # would hand kiro-cli a name it does not know, which falls back to its own
-        # default silently: the exact invisible mismatch this change removes. The
+        # default silently, an invisible mismatch. The
         # stem is used ONLY when the config declares no name, where it is the only
         # identifier available.
         declared = data.get("name")

@@ -164,6 +164,48 @@ class TestInboundWebhook:
         assert seen == []
 
     @pytest.mark.asyncio
+    async def test_a_closed_client_refuses_with_503_before_any_processing(self) -> None:
+        """The webhook route is pre-registered and outlives the client, so a
+        client closed by a credential removal must not keep running turns. It
+        refuses with 503 BEFORE validating or dispatching -- even a valid,
+        would-be-authorized activity. (Fixes the GPT Teams-after-removal finding;
+        the host also clears state.teams_on_activity on close.)"""
+        c = _client_with_validator(accept=True)
+        seen: list[TeamsInbound] = []
+        c.set_message_handler(lambda inb: seen.append(inb) or asyncio.sleep(0))
+        c._closed = True
+        resp = await c.on_activity(_FakeRequest({"Authorization": "Bearer ok"}, _msg_activity()))
+        assert resp.status == 503
+        await asyncio.sleep(0)
+        assert seen == [], "a closed client dispatches no turn"
+
+    @pytest.mark.asyncio
+    async def test_a_close_during_token_verification_still_refuses_with_503(self) -> None:
+        """A request that passed the entry guard can be mid-flight (awaiting JWT
+        verification) when the client closes on a credential removal; it is not
+        yet in _handler_tasks, so close()'s cancel sweep cannot reach it. The
+        recheck after the awaits must 503 and dispatch no turn. (Fixes the GPT
+        in-flight-webhook TOCTOU finding.)"""
+        c = _client_with_validator(accept=True)
+        seen: list[TeamsInbound] = []
+        c.set_message_handler(lambda inb: seen.append(inb) or asyncio.sleep(0))
+
+        # The close lands while the token is being verified: model it by closing
+        # the client from inside the validator (verify runs in a to_thread).
+        orig_verify = c._validator.verify
+
+        def verify_then_close(token: str):
+            claims = orig_verify(token)
+            c._closed = True
+            return claims
+
+        c._validator.verify = verify_then_close  # type: ignore[attr-defined]
+        resp = await c.on_activity(_FakeRequest({"Authorization": "Bearer ok"}, _msg_activity()))
+        assert resp.status == 503
+        await asyncio.sleep(0)
+        assert seen == [], "no turn runs for a request that raced the close"
+
+    @pytest.mark.asyncio
     async def test_invalid_token_401_is_audited(self) -> None:
         # Regression (CWE-778 / SEC-E9FBAC19): a failed inbound-token attempt on
         # this external, cookie-auth-exempt surface MUST emit a structured SEL

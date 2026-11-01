@@ -68,12 +68,15 @@ class TestMaybeStartTeams:
         assert await maybe_start_teams(orch) is None
 
     @pytest.mark.asyncio
-    async def test_registers_webhook_when_enabled(self) -> None:
+    async def test_registers_transport_but_leaves_the_webhook_unbound(self) -> None:
+        """The factory builds and connects the client but does NOT bind the
+        late-bound webhook handler: it runs before the host knows this client
+        will be accepted (a restart can be superseded mid-connect), so the host
+        binds it once the client is the stored handle. Until then the route 503s."""
         orch = _orch()
         client = await maybe_start_teams(orch)
         assert client is not None
-        # Late-bound webhook handler wired to the client.
-        assert orch.dashboard_state.teams_on_activity == client.on_activity
+        assert orch.dashboard_state.teams_on_activity is None
         assert orch.dashboard_state.registered  # transport registered
         assert orch.dashboard_state.teams_connected is True
 

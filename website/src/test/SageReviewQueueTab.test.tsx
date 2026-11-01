@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -94,5 +94,26 @@ describe('MiddleColumn review queue tab', () => {
     renderColumn()
     await userEvent.click(screen.getByRole('tab', { name: 'Requests', exact: true }))
     expect(sage.setListTab).toHaveBeenCalledWith('queue')
+  })
+})
+
+// The rail's lists follow the shared Tablist keyboard model: one Tab stop (the
+// selected list), and Left/Right/Home/End move between the lists.
+describe('MiddleColumn list tabs keyboard', () => {
+  it('keeps the tabs to one Tab stop and moves with the arrows', () => {
+    queue.mockResolvedValue({ prs: [] })
+    sage.listTab = 'reviews'
+    renderColumn()
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs).toHaveLength(3)
+    expect(tabs.filter(t => t.getAttribute('tabindex') === '0')).toEqual([tabs[1]])
+
+    fireEvent.keyDown(tabs[1], { key: 'ArrowRight' })
+    expect(sage.setListTab).toHaveBeenLastCalledWith('queue')
+    expect(tabs[2]).toHaveFocus()
+    fireEvent.keyDown(tabs[1], { key: 'ArrowLeft' })
+    expect(sage.setListTab).toHaveBeenLastCalledWith('pulls')
+    fireEvent.keyDown(tabs[1], { key: 'End' })
+    expect(sage.setListTab).toHaveBeenLastCalledWith('queue')
   })
 })

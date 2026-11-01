@@ -24,6 +24,8 @@ import { FolderPickerItems } from '../components/FolderMoveSubmenu'
 import { folderBreadcrumb } from '../utils/artifactFolderTree'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { artifactAssetUrl } from '../components/ArtifactBody'
+import { api } from '../api/client'
+import { downloadUrl, isAndroidWebView } from '../utils/download'
 import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
 import { USER_SELECTABLE_KINDS } from '../lib/artifactKinds'
 import type { Artifact } from '../types'
@@ -235,15 +237,30 @@ export function useArtifactDetailPageMenu({
       : artifact.kind === 'svg' ? 'svg'
       : artifact.kind === 'text' ? 'txt'
       : 'html'
-    const blob = new Blob([blobBody], { type: mime })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
     const safeName = artifact.name.replace(/[^a-zA-Z0-9-_ ]/g, '')
-    a.download = `${safeName || artifact.slug}-v${effectiveVersion}.${ext}`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
+    const filename = `${safeName || artifact.slug}-v${effectiveVersion}.${ext}`
+    const saveBlob = () => {
+      const blob = new Blob([blobBody], { type: mime })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
+    }
+    // An Android in-app browser drops a blob: download (see isAndroidWebView),
+    // so there the same bytes go up to the gateway and come back down from a
+    // real URL. A blob is no fallback there, so a failed hand-off is reported
+    // on the page's notice stack (the slot a failed copy uses).
+    if (isAndroidWebView()) {
+      setCopyError(null)
+      api.artifactDownloadUrl(filename, mime, blobBody)
+        .then(({ url }) => downloadUrl(url, filename))
+        .catch(() => setCopyError(i18nT('components.markdownPanel.download_failed')))
+      return
+    }
+    saveBlob()
   }
 
   return {
@@ -273,14 +290,14 @@ export function ArtifactDetailPageHeader({
   popout: boolean
 }) {
   const {
-    slug, navigate, confirm, renaming, setRenaming, nameDraft, setNameDraft, selectedVersion,
+    slug, navigate, confirm, renaming, nameDraft, setNameDraft, selectedVersion,
     setSelectedVersion, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
     saving, saveConflict, showPublish, setShowPublish, addingTag, setAddingTag, newTag, setNewTag, ime,
   } = stateRead
   const { versionsQuery, versions, isCurrent, editable, dirty, usesIframe } = documentRead
   const {
     addTag, removeTag, pinning, togglePin, changingKind, changeKind, titleButtonRef, startRenaming,
-    commitRename, startEditing, endEditing, cancelEditing, handleSave, handleSnapshotLive,
+    commitRename, cancelRename, startEditing, endEditing, cancelEditing, handleSave, handleSnapshotLive,
   } = editorRead
   const { guardCommentDraft } = composerRead
   const {
@@ -307,9 +324,9 @@ export function ArtifactDetailPageHeader({
             aria-label={i18nT('pages.artifactDetailPage.artifact_name')}
             onChange={(e) => setNameDraft(e.target.value)}
             {...ime.bindEnter({
-              onEnter: () => void commitRename(),
-              onEscape: () => setRenaming(false),
-              onBlur: () => void commitRename(),
+              onEnter: () => void commitRename(true),
+              onEscape: cancelRename,
+              onBlur: () => void commitRename(false),
             })}
             className="px-2 py-0.5 text-2xl font-bold tracking-tight text-text-strong w-full max-w-[36rem]"
           />

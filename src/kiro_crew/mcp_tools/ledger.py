@@ -68,7 +68,9 @@ def schemas() -> list[dict[str, Any]]:
                 f"{terminal} mark the workstream finished and stop the "
                 "ledger's snapshot injection. Use it for genuinely "
                 "long-horizon work (babysit loops, goal loops, multi-wake "
-                "tasks), not for single-turn requests."
+                "tasks), not for single-turn requests. Record from the parent "
+                "session: a subagent has no session identity of its own and is "
+                "refused."
             ),
             "inputSchema": {
                 "type": "object",

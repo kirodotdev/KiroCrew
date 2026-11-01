@@ -506,8 +506,11 @@ class TestInteractiveApproval:
 
         assert result is False
         resolver.assert_not_called()
+        # The registered id names this call: the backend's id plus a fresh suffix.
+        registered = ds.request_approval.await_args.args[0]
+        assert registered.startswith("opaque-tool-request-id-")
         ds.request_approval.assert_awaited_once_with(
-            "opaque-tool-request-id",
+            registered,
             "subagent",
             "git diff",
             tool_input="",
@@ -540,12 +543,17 @@ class TestInteractiveApproval:
         event.title = "cmd"
         event.tool_input = ""
         event.tool_purpose = ""
+        # The prompt answers "deny", so a True result could only come from implicit trust.
+        ds.request_approval = AsyncMock(return_value=False)
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
             with patch("kiro_crew.sel.sel") as mock_sel:
                 mock_sel.return_value.log_api_access = MagicMock()
-                await callback(event, "")
+                result = await callback(event, "")
+        assert result is False
         ds.request_approval.assert_awaited_once()
-        assert ds.request_approval.await_args.args[:3] == ("req-6", "cron", "cmd")
+        registered, source, tool = ds.request_approval.await_args.args[:3]
+        assert registered.startswith("req-6-")
+        assert (source, tool) == ("cron", "cmd")
 
     @pytest.mark.asyncio
     async def test_auto_approve_sources_config(self):
@@ -1000,6 +1008,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
 
         shutdown = asyncio.create_task(orch._shutdown())
         await _within_lost_run(started.wait(), "the cancellable AutoNudge drain start")
@@ -1013,6 +1022,7 @@ class TestShutdown:
         assert drained.is_set()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_wedged_autonudge_drain_is_cut_so_the_teardown_still_runs(self, monkeypatch):
@@ -1041,6 +1051,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
         orch.sessions = _mock_sessions()
 
         # Under the graceful bound ``_shutdown_and_exit`` applies. It returns
@@ -1053,6 +1064,7 @@ class TestShutdown:
         assert drain_cut.is_set()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
         orch.sessions.close_all.assert_awaited_once()
 
     @staticmethod
@@ -1257,6 +1269,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
         orch.secretary_svc = None
         orch.subagent_mgr = MagicMock()
         orch.subagent_mgr.cancel_all = AsyncMock()
@@ -1267,6 +1280,7 @@ class TestShutdown:
         await orch._shutdown()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_releases_the_subagent_task_store(self):

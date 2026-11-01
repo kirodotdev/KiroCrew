@@ -111,8 +111,8 @@ def test_kas_keeps_the_per_session_wire_spec(pixel_worker):
 def test_a_stored_kiro_member_backend_runs_the_worker_on_kas():
     """The loader reads a stored ``kiro`` member backend as KAS (test_acp_backend_kas),
     and the worker takes that backend."""
-    agent = SimpleNamespace(member_acp_backend=ACP_BACKEND_KAS)
-    assert mate_worker.crewmate_worker_backend(agent) == ACP_BACKEND_KAS
+    config = SimpleNamespace(agent=SimpleNamespace(member_acp_backend=ACP_BACKEND_KAS))
+    assert mate_worker.crewmate_worker_backend(config) == ACP_BACKEND_KAS
 
 
 def test_kiro_cli_cannot_carry_the_worker_and_refuses_it():
@@ -416,7 +416,7 @@ def test_the_prompt_channel_follows_the_live_provider_not_the_config(
         key, AcpSessionProvider.mate_worker_prompt_in_context.fget(provider)
     )
     at_start = _crewmate_worker_prompt(MATE_WORKER_AGENT, BASE["prompt"], key)
-    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda _a: flipped_to)
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda *_a: flipped_to)
     after_compaction = _crewmate_worker_prompt(MATE_WORKER_AGENT, BASE["prompt"], key)
     assert after_compaction == at_start
     if started_on == ACP_BACKEND_CLAUDE:

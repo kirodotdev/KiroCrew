@@ -305,7 +305,8 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
     })
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Open folder Ops' })).toBeInTheDocument())
-    const card = screen.getByRole('button', { name: 'Open folder Ops' })
+    // The card container holds the previews; its open button is a child laid over it.
+    const card = screen.getByRole('button', { name: 'Open folder Ops' }).parentElement as HTMLElement
     // Direct children plus one descendant fill the three preview tiles.
     expect(within(card).getByTitle('first one')).toBeInTheDocument()
     expect(within(card).getByTitle('second one')).toBeInTheDocument()
@@ -324,7 +325,7 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
       full: { content: '# Huge report heading\n\n| A | B |\n|---|---|\n| one | two |' },
     })
     renderWithProviders(<ArtifactsPage />)
-    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+    const folder = (await screen.findByRole('button', { name: 'Open folder Ops' })).parentElement as HTMLElement
     const thumb = await within(folder).findByTestId('artifact-mini-text')
 
     expect(thumb).toHaveTextContent('Huge report heading')
@@ -356,7 +357,7 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
     })
     const started = Date.now()
     renderWithProviders(<ArtifactsPage />)
-    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+    const folder = (await screen.findByRole('button', { name: 'Open folder Ops' })).parentElement as HTMLElement
     const thumb = await within(folder).findByTestId('artifact-mini-text')
     const elapsed = Date.now() - started
 
@@ -383,7 +384,7 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
     })
     const started = Date.now()
     renderWithProviders(<ArtifactsPage />)
-    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+    const folder = (await screen.findByRole('button', { name: 'Open folder Ops' })).parentElement as HTMLElement
     const thumb = await within(folder).findByTestId('artifact-mini-text')
     const elapsed = Date.now() - started
 
@@ -402,7 +403,7 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
       full: { content: '| Check | Result |\n|---|---|\n| Build | Passed |\n' },
     })
     renderWithProviders(<ArtifactsPage />)
-    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+    const folder = (await screen.findByRole('button', { name: 'Open folder Ops' })).parentElement as HTMLElement
     const thumb = await within(folder).findByTestId('artifact-mini-text')
 
     expect(thumb).toHaveTextContent('Check · Result · Build · Passed')
@@ -420,7 +421,7 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
       full: { content: '<' + 'svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /><script>window.x=1</script></svg>' },
     })
     renderWithProviders(<ArtifactsPage />)
-    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+    const folder = (await screen.findByRole('button', { name: 'Open folder Ops' })).parentElement as HTMLElement
 
     await waitFor(() => expect(folder.querySelector('svg circle')).toBeTruthy())
     expect(folder.querySelector('svg script')).toBeNull()
@@ -467,6 +468,37 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
     card.focus()
     await user.keyboard('{Enter}')
     await waitFor(() => expect(screen.getByText('inside one')).toBeInTheDocument())
+  })
+
+  it.each(['{Enter}', ' '])('opens the folder menu from the keyboard (%s) without entering the folder', async (key) => {
+    const user = userEvent.setup()
+    seed({
+      artifacts: [mkArtifact('inside-one', { folder_id: 'ops' }), mkArtifact('outside-one')],
+      folders: [mkFolder('ops', 'Ops', { item_count: 1 })],
+    })
+    renderWithProviders(<ArtifactsPage />, { route: '/artifacts', store: connectedStore() })
+    await waitFor(() => expect(screen.getByText('outside one')).toBeInTheDocument())
+
+    // The card used to be a role="button" whose key handler took this keystroke
+    // and entered the folder, so the menu never stayed open.
+    const trigger = screen.getByRole('button', { name: 'Actions for folder Ops' })
+    expect(trigger.parentElement?.closest('button, [role="button"]')).toBeNull()
+    trigger.focus()
+    await user.keyboard(key)
+
+    const rename = await screen.findByRole('menuitem', { name: /Rename/ })
+    expect(screen.getByText('outside one')).toBeInTheDocument()
+    expect(screen.queryByText('inside one')).not.toBeInTheDocument()
+
+    // The menu renders in a portal, but React still bubbles its key presses up
+    // the component tree to the card. Enter on an item must reach only the item.
+    rename.focus()
+    await user.keyboard('{Enter}')
+    // The item ran: the menu closed on it and the rename field took focus.
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: /Rename/ })).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Rename folder')))
+    expect(screen.getByText('outside one')).toBeInTheDocument()
+    expect(screen.queryByText('inside one')).not.toBeInTheDocument()
   })
 
   it('treats a bookmarked URL pointing at an unknown folder as the library root', async () => {
@@ -737,24 +769,67 @@ describe('ArtifactsPage — folder menu', () => {
     await waitFor(() => expect(m.deleteArtifactFolder).toHaveBeenCalledWith('deep', false))
   })
 
-  // DEFECT (characterized, not endorsed): picking Rename opens the inline field,
-  // but Radix returns focus to the "…" trigger when the menu closes. That blurs
-  // the autofocused field, whose blur handler commits the unchanged initial
-  // name — so rename mode exits in the same tick and a folder can never be
-  // renamed from this menu. Verified by observing the field being added and
-  // immediately removed from the DOM, with focus landing back on the trigger.
-  it('drops out of rename mode as soon as the menu closes, writing nothing', async () => {
+  /** Picks Rename from the ⋯ menu by mouse or keyboard, then waits for the
+   *  inline field and checks it holds focus with the whole name selected.
+   *  The menu used to hand focus back to its trigger on close, which blurred
+   *  the field and ended rename mode before a key was typed. */
+  const startRename = async (user: ReturnType<typeof userEvent.setup>, via: 'mouse' | 'keyboard') => {
+    if (via === 'mouse') {
+      await user.click(folderMenuFor('Ops'))
+      await user.click(await screen.findByRole('menuitem', { name: /Rename/ }))
+    } else {
+      folderMenuFor('Ops').focus()
+      await user.keyboard('{Enter}')
+      ;(await screen.findByRole('menuitem', { name: /Rename/ })).focus()
+      await user.keyboard('{Enter}')
+    }
+    const field = (await screen.findByLabelText('Rename folder')) as HTMLInputElement
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(field))
+    expect(field.value).toBe('Ops')
+    expect([field.selectionStart, field.selectionEnd]).toEqual([0, 3])
+    return field
+  }
+
+  it.each(['mouse', 'keyboard'] as const)('renames a folder from the menu (%s): type, then Enter saves', async (via) => {
     const user = userEvent.setup()
     const m = seed({ artifacts: [], folders: [mkFolder('ops', 'Ops')] })
     renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Open folder Ops' })).toBeInTheDocument())
 
-    await user.click(folderMenuFor('Ops'))
-    await user.click(await screen.findByText('Rename'))
+    await startRename(user, via)
+    // The name is selected, so typing replaces it.
+    await user.keyboard('Runbooks{Enter}')
 
+    await waitFor(() => expect(m.updateArtifactFolder).toHaveBeenCalledWith('ops', { name: 'Runbooks' }))
     expect(screen.queryByLabelText('Rename folder')).not.toBeInTheDocument()
+  })
+
+  it.each(['mouse', 'keyboard'] as const)('cancels a menu rename on Escape (%s), writing nothing', async (via) => {
+    const user = userEvent.setup()
+    const m = seed({ artifacts: [], folders: [mkFolder('ops', 'Ops')] })
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open folder Ops' })).toBeInTheDocument())
+
+    await startRename(user, via)
+    await user.keyboard('Runbooks{Escape}')
+
+    await waitFor(() => expect(screen.queryByLabelText('Rename folder')).not.toBeInTheDocument())
     expect(m.updateArtifactFolder).not.toHaveBeenCalled()
-    expect(document.activeElement).toBe(folderMenuFor('Ops'))
+    expect(screen.getByRole('button', { name: 'Open folder Ops' })).toBeInTheDocument()
+  })
+
+  it('saves a menu rename when the field loses focus', async () => {
+    const user = userEvent.setup()
+    const m = seed({ artifacts: [], folders: [mkFolder('ops', 'Ops')] })
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open folder Ops' })).toBeInTheDocument())
+
+    await startRename(user, 'mouse')
+    await user.keyboard('Runbooks')
+    await user.click(screen.getByText('Your Artifacts'))
+
+    await waitFor(() => expect(m.updateArtifactFolder).toHaveBeenCalledWith('ops', { name: 'Runbooks' }))
   })
 })
 
@@ -795,6 +870,22 @@ describe('ArtifactsPage — folder tree table', () => {
     await user.click(screen.getByText('Ops'))
     await waitFor(() => expect(screen.queryByText('filed one')).not.toBeInTheDocument())
     expect(JSON.parse(localStorage.getItem('mc-artifact-folders-expanded') || '[]')).not.toContain('ops')
+  })
+
+  it('renames a folder row from its menu: the field keeps focus until Enter', async () => {
+    const user = userEvent.setup()
+    const m = seed({ artifacts: [mkArtifact('loose-one')], folders: [mkFolder('ops', 'Ops')] })
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
+    await waitFor(() => expect(screen.getByText('loose one')).toBeInTheDocument())
+
+    await user.click(folderMenuFor('Ops'))
+    await user.click(await screen.findByRole('menuitem', { name: /Rename/ }))
+    const field = (await screen.findByLabelText('Rename folder')) as HTMLInputElement
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(field))
+    await user.keyboard('Runbooks{Enter}')
+
+    await waitFor(() => expect(m.updateArtifactFolder).toHaveBeenCalledWith('ops', { name: 'Runbooks' }))
   })
 
   it('ignores a corrupt expansion record instead of failing to render', async () => {
@@ -1120,7 +1211,8 @@ describe('ArtifactsPage — dragging a card', () => {
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
 
-    const card = screen.getByText('cr queue').closest('[role="button"]') as HTMLElement
+    // The card container carries the drag listeners; its open button is a child.
+    const card = screen.getByRole('button', { name: 'cr queue' }).parentElement as HTMLElement
     fireEvent.mouseDown(card, { clientX: 0, clientY: 0, button: 0 })
     fireEvent.mouseMove(document, { clientX: 40, clientY: 40 })
 
@@ -1135,7 +1227,8 @@ describe('ArtifactsPage — dragging a card', () => {
   it('raises a folder ghost carrying the folder glyph', async () => {
     seed({ artifacts: [], folders: [mkFolder('ops', 'Ops', { icon: '🛠' })] })
     renderWithProviders(<ArtifactsPage />)
-    const card = await screen.findByRole('button', { name: 'Open folder Ops' })
+    // The card container carries the drag listeners; its open button is a child.
+    const card = (await screen.findByRole('button', { name: 'Open folder Ops' })).parentElement as HTMLElement
 
     fireEvent.mouseDown(card, { clientX: 0, clientY: 0, button: 0 })
     fireEvent.mouseMove(document, { clientX: 40, clientY: 40 })
@@ -1158,7 +1251,8 @@ describe('ArtifactsPage — dragging a card', () => {
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
 
-    const card = screen.getByText('cr queue').closest('[role="button"]') as HTMLElement
+    // The card container carries the drag listeners; its open button is a child.
+    const card = screen.getByRole('button', { name: 'cr queue' }).parentElement as HTMLElement
     fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 0, clientY: 0 }] })
     // Well past the 5px tolerance, well under the 250ms hold — a scroll gesture.
     fireEvent.touchMove(document, { touches: [{ identifier: 1, clientX: 0, clientY: 60 }] })

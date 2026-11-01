@@ -306,6 +306,13 @@ _DARWIN_CPU_KEY = "darwin_cpu"
 # Evidence label naming what the darwin movement probe can and cannot see: CPU
 # time across the subtree, no IO — libproc has no per-process byte counter.
 _DARWIN_CPU_LABEL = "darwin cpu-only"
+# Smallest subtree CPU delta, in nanoseconds per sample, the darwin probes count
+# as movement: one Linux clock tick (10 ms at the usual 100 Hz). libproc reports
+# CPU time at nanosecond resolution, so the idle timers of the runtime's MCP
+# servers move the sum on every sample; ``/proc`` reads whole ticks, so that
+# housekeeping reads as zero there. Below this floor a darwin sample reads flat,
+# which is the same answer the Linux walk gives for the same quiet tree.
+_DARWIN_CPU_FLOOR_NANOS = 10_000_000
 
 
 @dataclass(frozen=True)

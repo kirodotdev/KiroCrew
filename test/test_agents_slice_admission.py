@@ -64,9 +64,10 @@ def _fabricate_slice(
     (slice_dir / "memory.high").write_text(f"{high}\n", encoding="utf-8")
     (slice_dir / "memory.max").write_text(f"{maximum}\n", encoding="utf-8")
     (slice_dir / "memory.current").write_text(f"{current}\n", encoding="utf-8")
-    (slice_dir / "memory.events").write_text(
-        f"low 0\nhigh {high_events}\nmax 0\noom 0\noom_kill 0\n", encoding="utf-8"
-    )
+    for events in ("memory.events", "memory.events.local"):
+        (slice_dir / events).write_text(
+            f"low 0\nhigh {high_events}\nmax 0\noom 0\noom_kill 0\n", encoding="utf-8"
+        )
     return slice_dir
 
 
@@ -288,7 +289,7 @@ class TestAgentsSliceThrottling:
         monkeypatch.setattr(sb, "time", SimpleNamespace(monotonic=_clock))
         # First read only baselines.
         assert sb.agents_slice_throttling() is False
-        (slice_dir / "memory.events").write_text(
+        (slice_dir / "memory.events.local").write_text(
             "low 0\nhigh 4200\nmax 0\noom 0\noom_kill 0\n", encoding="utf-8"
         )
         assert sb.agents_slice_throttling() is True
@@ -310,7 +311,7 @@ class TestAgentsSliceThrottling:
         monkeypatch.setattr(sb, "_SLICE_THROTTLE_PROBE_SEEN", 7)
         monkeypatch.setattr(sb, "_SLICE_THROTTLE_EDGE_AT", None)
         monkeypatch.setattr(sb, "time", SimpleNamespace(monotonic=lambda: 5000.0))
-        (slice_dir / "memory.events").write_text(
+        (slice_dir / "memory.events.local").write_text(
             "low 0\nhigh 8\nmax 0\noom 0\noom_kill 0\n", encoding="utf-8"
         )
         first = sb.agents_slice_throttling()

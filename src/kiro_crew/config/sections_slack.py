@@ -93,8 +93,10 @@ class SlackConfig:
         default_factory=dict,
         metadata=_meta(
             "Reactions",
-            "Override phase reaction emojis. Valid keys: queued, thinking, coding, browsing, tool, done, error. "
-            "Set a value to null to suppress that phase entirely.",
+            "Override the status reaction emojis. Valid keys: queued (the ack shown while a turn "
+            "runs where Slack shows no native thread status; removed when the reply lands) and "
+            "error (a failed turn). Set a value to null to suppress it. Keys of the retired "
+            "per-phase trail (thinking, coding, browsing, tool, done) are accepted and ignored.",
             tags=["slack"],
         ),
     )
@@ -102,7 +104,8 @@ class SlackConfig:
         default=True,
         metadata=_meta(
             "Reactions Enabled",
-            "Show phase-aware emoji reactions on Slack messages during processing.",
+            "Ack a Slack message with a reaction while it is being answered (where Slack shows "
+            "no native thread status) and mark a failed turn with the error reaction.",
             tags=["slack"],
         ),
     )
@@ -187,6 +190,20 @@ class SlackConfig:
             "this way. The thread always opens in the owner's DM with the bot, "
             "which only the owner can read. Off by default. Takes effect on the "
             "next new session; no restart.",
+            tags=["slack"],
+        ),
+    )
+    agent_sessions: bool = field(
+        default=False,
+        metadata=_meta(
+            "Agent Sessions",
+            "Run Slack threads as Slack agent sessions: threads show a live status "
+            "and title, and Slack's native Stop button cancels the turn. Adds the "
+            "agent view (features.agent_view), the assistant:write scope and the "
+            "agent-session events to the generated app manifest; an installed app "
+            "needs that manifest update and a reinstall before it takes effect, and "
+            "until then Slack behaves as before. Slack cannot switch an app back "
+            "from agent_view to assistant_view. Off by default; no restart.",
             tags=["slack"],
         ),
     )

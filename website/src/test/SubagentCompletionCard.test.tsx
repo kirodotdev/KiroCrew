@@ -244,6 +244,22 @@ describe('SubagentCompletionCard rendering', () => {
     expect(screen.getByText(`${'x'.repeat(120)}…`)).toBeTruthy()
   })
 
+  it('keeps an emoji whole when the headline cut lands mid-surrogate-pair', () => {
+    // 119 ASCII + 😀 (two UTF-16 units) straddles the 120-unit cap: a plain
+    // .slice(0, 120) keeps the emoji's lone high surrogate, which renders as
+    // U+FFFD. sliceCodePoints moves the end edge back off the pair, so the cut
+    // lands at 119 and the label ends cleanly in '…'.
+    const task = 'x'.repeat(119) + '😀' + 'y'.repeat(20)
+    const emojiTask = SINGLE.replace('Add TWO short UI labels to the GERMAN (de) catalog', task)
+    renderWithProviders(<SubagentCompletionCard message={msg(emojiTask)} />, { store: store() })
+    const shown = screen.getByText(`${'x'.repeat(119)}…`)
+    expect(shown).toBeTruthy()
+    // No lone surrogate reached the DOM.
+    const hasLoneSurrogate = (s: string) =>
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s)
+    expect(hasLoneSurrogate(shown.textContent || '')).toBe(false)
+  })
+
   it('leaves a task that fits unmarked', () => {
     renderWithProviders(<SubagentCompletionCard message={msg()} />, { store: store() })
     expect(screen.getByText('Add TWO short UI labels to the GERMAN (de) catalog')).toBeTruthy()
@@ -770,5 +786,42 @@ describe('downgrade is visible, not hover-only (UX review on #3582)', () => {
     expect(container.querySelector('[data-testid="subagent-completion-downgrade"]')).toBeNull()
     // The chip still shows the served model, without the warn styling.
     expect(screen.getByTestId('subagent-completion-model').className).not.toContain('text-warn')
+  })
+})
+
+/**
+ * The tally chips' icons are aria-hidden, so a screen reader heard "8 1" with
+ * no meaning. Each chip now carries sr-only words and hides the bare digit, and
+ * a batch card's state glyph says its state (a single run's chip already does).
+ */
+describe('SubagentCompletionCard — tally chips and glyph speak in words', () => {
+  const store = () => createTestStore({ chat: {} as unknown as ChatState })
+
+  it('labels each tally chip and hides the bare digit', () => {
+    renderWithProviders(<SubagentCompletionCard message={msg(WAVE)} />, { store: store() })
+    const ok = screen.getByTestId('chip-ok')
+    const failed = screen.getByTestId('chip-failed')
+    expect(ok.querySelector('.sr-only')?.textContent).toBe('8 agents succeeded')
+    expect(failed.querySelector('.sr-only')?.textContent).toBe('1 agent failed')
+    expect(ok.querySelector('span[aria-hidden="true"]')?.textContent).toBe('8')
+    expect(failed.querySelector('span[aria-hidden="true"]')?.textContent).toBe('1')
+    expect(screen.getByTestId('glyph-state').textContent).toBe('Some failed')
+  })
+
+  it('labels the stopped chip', () => {
+    const withStop = WAVE.replace('8 ✅ · 1 ❌ · 0 ⏹ of 9 agents', '7 ✅ · 0 ❌ · 2 ⏹ of 9 agents')
+    renderWithProviders(<SubagentCompletionCard message={msg(withStop)} />, { store: store() })
+    expect(screen.getByTestId('chip-stopped').querySelector('.sr-only')?.textContent).toBe('2 agents stopped')
+  })
+
+  it('says a mid-wave chunk is partly delivered', () => {
+    renderWithProviders(<SubagentCompletionCard message={msg(CHUNK)} />, { store: store() })
+    expect(screen.getByTestId('glyph-state').textContent).toBe('Partly delivered')
+  })
+
+  it('adds no glyph words to a single run, whose chip already names the outcome', () => {
+    renderWithProviders(<SubagentCompletionCard message={msg()} />, { store: store() })
+    expect(screen.queryByTestId('glyph-state')).toBeNull()
+    expect(screen.getByText('Completed')).toBeTruthy()
   })
 })

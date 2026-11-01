@@ -31,12 +31,26 @@ permissions:
 
 concurrency:
   group: client-py-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A pull request's superseded revision is cancelled; a push to main is not.
+  # Pushes to main carry no pull_request number, so they all share one key
+  # through `github.ref`, and a bare `true` let a second push kill the first
+  # one's in-flight run. Merge-group entries are unaffected either way: their
+  # `github.ref` is the unique gh-readonly-queue ref, so each queue entry
+  # already has a key of its own and never collided with another.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     name: kirocrew-client (py${{ matrix.python }})
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
+    # than by GROUP. A fork PR arrives on `pull_request`, which executes here,
+    # so it takes the group too; the fallback is for a fork running its own copy
+    # of this file on `push` or `workflow_dispatch`, where an organization
+    # runner group is unreachable and a job asking for a label no runner there
+    # carries would wait out GitHub's pending limit instead of running. See
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     strategy:
       max-parallel: 4

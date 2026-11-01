@@ -12,7 +12,9 @@ the corpus does and does not prove.
 | `mcp-stdio-mount-live.jsonl` | live | the initialize and `session/new` responses, a `tool_call` for `mcp__probe_server__echo`, the `session/request_permission` the adapter forwarded from Kiro Crew's gate extension, the updates through `completed` carrying the server's own result, and the result |
 | `member-panel-mount-live.jsonl` | live | the initialize and `session/new` responses for a crew member session, a `tool_call` for `mcp__kirocrew_panel__panel_publish`, the `session/request_permission` forwarded from the gate extension, the update through `completed` carrying the panel server's own answer, and the result |
 | `zero-tools-refused-live.jsonl` | live | four turns on an agent spec declaring `"tools": []`: a `write`, a `bash` and an `mcp__probe_server__echo` call, each with the `session/request_permission` the gate extension raised and the `tool_call_update` that ended it `failed`, and a `frobnicate` call pi failed itself with no permission frame |
+| `effort-live.jsonl` | live | the initialize and `session/new` responses on pi's own catalog model `claude-opus-4-8` (a `thought_level` select offering `max`), a `thought_level=max` write reading back `max`, a model write to `claude-sonnet-4-5` (select now off through `high`, current `high`), a `max` write there answered with success and read back `high`, and the `current_mode_update` / `config_option_update` after each write |
 | `steering-live.jsonl` | live | the initialize, `session/new` and set-model responses, a `tool_call` for a `bash` sleep, the `session/request_permission` forwarded from Kiro Crew's gate extension, the updates through `completed`, the extension's consumed-steer notification (an `agent_message_chunk` carrying `_meta.piAcp.notify`), the model's answer to the steer, `usage_update`, and the `end_turn` result |
+| `saved-spec-projection-live.jsonl` | live | the initialize and `session/new` responses of a crew member session on a saved spec the client confirmed, then one turn: a `tool_call` for the spec's own `mcp__probe_server__echo`, the `session/request_permission` forwarded from the gate extension, the update through `completed` carrying the server's answer, and the result |
 
 Every file is captured off `pi-acp` 0.0.34 spawning `pi` 1.3.0, the pair the Real
 Adapter lane pins in `test/real_adapters/package.json` (installed with `npm ci`
@@ -101,6 +103,33 @@ client with `sandbox_mode="off"`, replaced that preflight with "no mask", and st
 for the sandbox wrap the pi Node probe runs in, as the Real Adapter lane does; the gate
 extension seal, its read-back, the envelope nonce and the permission path ran as
 shipped. The refusal is after the spawn and does not read the sandbox.
+
+## What the saved-spec capture establishes
+
+`saved-spec-projection-live.jsonl` is the evidence `ACP_BACKENDS_MEMBER_CAPABILITIES`
+holds pi to. It was recorded by the in-product recorder while an
+`AcpClient(acp_backend="pi")` session ran as a crew member on a saved spec, off
+`pi-acp` 0.0.34 spawning `pi` 1.3.0 from a scratch npm prefix, through the gate
+launcher, against a scripted model on the loopback interface. The saved intent was
+stamped with the digest a save stamps over the spec. After `session/new` the client
+confirmed the spec it consumed, which is the parse `_mirrorless_member_mounts`
+recorded: the confirmation passed, the session reported the template loaded with no
+projection gaps, and a turn then called the spec's own server, gated through
+`session/request_permission` first, and got the server's answer. That server reached
+pi the way a pooled server does, as a same-named element of the per-session handoff;
+a server the gateway does not pool never reaches pi, and the Capabilities pane then
+reads unverified rather than applied. The same drive with the spec edited after its
+save was refused before its first prompt with `capability_runtime_unverified`, and the
+server was never called. A third drive, whose saved `tools` list did not reference
+the server, was confirmed with the `native_tools` gap (so the pane reads unverified),
+and the pooled stub never reached pi: on a member session the stubs pass the spec's
+`tools` allowlist, as a mirror's do, so the server was not spawned. The fixture holds
+the first drive's frames; the other two are recorded in its header note.
+
+The recording host refuses user namespaces, so as for the zero-tool capture the
+routing's sandbox preflight was replaced with "no mask"; the gatewayd pooling was
+replaced by the spec's own entry, so the call is observable at the server. The seal,
+read-back, envelope nonce, permission path and member confirmation ran as shipped.
 
 ## What the permission capture establishes
 

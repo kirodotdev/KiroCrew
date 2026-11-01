@@ -364,10 +364,9 @@ def _backup_and_copy(
         for f in CORE_FILES.get(component, ()):
             # Validated before the live file is touched, and a symlink at the live name is
             # MOVED aside rather than skipped -- the same two properties the pinned branch
-            # got earlier in this change. Review found this branch still carrying the old
-            # behaviour: it skipped both the backup AND the replacement, so the archive's
-            # file was never applied and the command reported success anyway. Moving a
-            # symlink moves the link, never its target.
+            # has. Skipping would skip both the backup AND the replacement, so the archive's
+            # file would never be applied and the command would report success anyway.
+            # Moving a symlink moves the link, never its target.
             if not (snap / f).is_file() or pinned_fs.is_reparse_point(snap / f):
                 if (snap / f).exists():
                     print(f"⚠️  Skipping symlinked file from snapshot: {snap / f}")
@@ -426,10 +425,10 @@ def _backup_and_copy(
                     # Checked BEFORE the live file is touched. The archive is untrusted
                     # input, so a member that is not a regular file -- a FIFO, a device
                     # node, a directory at a core filename -- is a real possibility, and
-                    # the old order moved the live file aside first and only then found
-                    # the source unusable: the original ended up in the backup and
-                    # nothing was restored, reported as success. Raised in review; the
-                    # same validate-before-mutate ordering the platform gate follows.
+                    # moving the live file aside first and only then finding the source
+                    # unusable leaves the original in the backup and nothing restored,
+                    # reported as success. The same validate-before-mutate ordering the
+                    # platform gate follows.
                     # Asked through src_fd, not by composing a path. The by-name form
                     # re-resolves the snapshot root, so a root swapped after pinning
                     # leaves this guard inspecting the replacement while the copy below
@@ -444,12 +443,12 @@ def _backup_and_copy(
                     if installed is not None:
                         installed.add(f)
                     # A symlink at a core file's name is MOVED aside like any other
-                    # occupant, not skipped. The old code skipped the move and then let
-                    # the copy write through the very link it had just declined to
-                    # move; skipping the whole entry instead would be no better,
-                    # because the archive's version of that file would then silently
-                    # never be restored. Moving a symlink moves the LINK, never its
-                    # target, so nothing outside the data home is touched.
+                    # occupant, not skipped. Skipping the move would let the copy write
+                    # through the very link it had just declined to move; skipping the
+                    # whole entry instead would be no better, because the archive's version
+                    # of that file would then silently never be restored. Moving a symlink
+                    # moves the LINK, never its target, so nothing outside the data home is
+                    # touched.
                     #
                     # The move goes through both pinned descriptors rather than
                     # shutil.move on two composed paths: review pointed out that a
@@ -471,16 +470,15 @@ def _backup_and_copy(
                             dst_dir_fd=dst_fd,
                             dst_name=f,
                             # Owner-only applied through the destination DESCRIPTOR, in
-                            # the same call that wrote the bytes. Two things wrong with
-                            # the previous _lock_down_restored(mc / f) here, both raised
-                            # in review: it reopened the freshly written file BY NAME, so
-                            # a link swapped in at that instant had restrict_to_owner
-                            # change the permissions of whatever it pointed at; and the
-                            # mode cannot be inherited from the archive, which is
-                            # untrusted input -- a hand-built tarball can record 0o777 on
-                            # telemetry_salt. The reviewer's suggested fix was to drop
-                            # the lockdown because "the copy already applies mode", which
-                            # would have done exactly that: applied the ARCHIVE's mode.
+                            # the same call that wrote the bytes. A by-name lockdown
+                            # (_lock_down_restored(mc / f)) reopens the freshly written
+                            # file BY NAME, so a link swapped in at that instant has
+                            # restrict_to_owner change the permissions of whatever it
+                            # points at; and the mode cannot be inherited from the
+                            # archive, which is untrusted input -- a hand-built tarball
+                            # can record 0o777 on telemetry_salt. Dropping the lockdown
+                            # because "the copy already applies mode" would do exactly
+                            # that: apply the ARCHIVE's mode.
                             force_mode=(
                                 0o600
                                 if component == "security" or f in _OWNER_ONLY_SETTINGS_FILES

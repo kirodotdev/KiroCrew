@@ -155,8 +155,16 @@ class _SharedSubagent:
     def __init__(self, key: str, gate: asyncio.Event) -> None:
         self.gate = gate
         self.child = SimpleNamespace(
-            id="a1", parent_session_key=key, conversation_key="", _stop_origin=""
+            id="a1",
+            parent_session_key=key,
+            conversation_key="",
+            _stop_origin="",
+            _reap_reason="",
+            _reap_started=False,
+            done=False,
         )
+        # The stop origin the run carried when it was cancelled: which caller ended it.
+        self.stopped_by: str | None = None
 
     @property
     def running(self):
@@ -169,6 +177,8 @@ class _SharedSubagent:
         return ()
 
     async def cancel(self, _i):
+        self.stopped_by = self.child._stop_origin
+        self.child.done = True
         self.gate.set()
         return True
 
@@ -204,9 +214,10 @@ async def _parked_on(session) -> None:
 async def test_a_hard_stop_during_the_uncompactable_restart_wait_settles_cancelled():
     """The restart for a backend with no ``/compact`` holds the permit while it
     waits for sub-agents. A force Stop there resets the session and hands the
-    permit to a parked claimant; the restart must settle cancelled, spare the
-    live sub-agent, and not release the claimant's permit a second time."""
+    permit to a parked claimant; the restart must settle cancelled, leave the
+    sub-agent to the Stop, and not release the claimant's permit a second time."""
     mgr, key, session, gate, task, order, notices = await _uncompactable_restart(30.0)
+    runs = mgr._lifecycle_boundary()._child_teardown
     assert not task.done()
     holds = asyncio.Event()
     let_go = asyncio.Event()
@@ -234,7 +245,9 @@ async def test_a_hard_stop_during_the_uncompactable_restart_wait_settles_cancell
     let_go.set()
 
     assert task.result() == "cancelled"
-    assert not gate.is_set(), "the live sub-agent was cancelled"
+    # The hard Stop stopped the sub-agent sharing the process it reset; the
+    # stale restart did not stop it a second time under its own name.
+    assert runs.stopped_by == "stopped by a hard Stop of the parent"
     assert (
         await await_until(claimant, what="the claimant releasing the permit") == "released-cleanly"
     )

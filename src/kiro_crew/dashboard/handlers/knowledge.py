@@ -156,11 +156,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_sources import skip_file  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import (  # noqa: F401
         _folder_picker_available,
+        _url_allowed_hosts_or_none,
     )
+    from kiro_crew.dashboard.handlers.knowledge_sync import DocIngestHostsUnavailable  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _add_source_unique  # noqa: F401
-    from kiro_crew.dashboard.handlers.knowledge_sync import _background_agent_sync  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sync import _background_url_sync  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _claim_sync  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _claim_sync_for_task  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sync import _doc_ingest_hosts  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _finalize_sync_status  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _hand_off_under_gate  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _ingest_local_file_task  # noqa: F401
@@ -170,10 +173,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_sync import _source_row  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _sync_artifact_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _sync_source_body  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sync import _url_refusal_response  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _write_status_cancel_safe  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import sync_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import (  # noqa: F401
         _finalize_sync_status_write,
+        _hosts_unavailable_response,
         _reconcile_artifact_source_task,
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
@@ -203,7 +208,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure  # noqa: F401
     from kiro_crew.dashboard.upload_limits import knowledge_upload_max_bytes  # noqa: F401
     from kiro_crew.executors import run_in_embed_pool  # noqa: F401
-    from kiro_crew.knowledge.agent_fetch import fetch_url_content  # noqa: F401
     from kiro_crew.knowledge.agent_source import AGENT_SOURCE_URI  # noqa: F401
     from kiro_crew.knowledge.agent_source import add_agent_document  # noqa: F401
     from kiro_crew.knowledge.artifact_ingest import ARTIFACT_SOURCE_URI  # noqa: F401
@@ -235,8 +239,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.knowledge.store import BUNDLE_STATE_KEY_COL  # noqa: F401
     from kiro_crew.knowledge.store import KnowledgeBundleError  # noqa: F401
     from kiro_crew.knowledge.sync import SyncScheduler  # noqa: F401
+    from kiro_crew.knowledge.url_fetch import UrlFetchRefused  # noqa: F401
+    from kiro_crew.knowledge.url_fetch import fetch_page  # noqa: F401
+    from kiro_crew.knowledge.url_fetch import url_fetch_refusal  # noqa: F401
     from kiro_crew.knowledge.watcher import KnowledgeWatcher  # noqa: F401
     from kiro_crew.security import is_sensitive_path  # noqa: F401
+    from kiro_crew.security import redact  # noqa: F401
     from kiro_crew.sel import sel  # noqa: F401
     from kiro_crew.validation import clamp_query_offset  # noqa: F401
     from kiro_crew.zip_vet import ZipInventoryRejected  # noqa: F401

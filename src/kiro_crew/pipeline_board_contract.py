@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Final, Literal, TypedDict, cast
+from typing import Any, Final, TypedDict, cast
 
 # The host's byte cap, IMPORTED rather than restated. A local copy would need a reason to
 # exist, and the obvious one -- keeping the dashboard package out of this module's import
@@ -46,23 +46,25 @@ from typing import Any, Final, Literal, TypedDict, cast
 # copy could only drift from the number the host actually enforces, and a producer bounding
 # a card against a stale limit builds cards the host drops whole.
 from kiro_crew.dashboard.dynamic_cards import MAX_DATA_BYTES as _HOST_MAX_DATA_BYTES
+
+# The publisher sentinel and the action gate, IMPORTED rather than copied. A publisher
+# gate is the one piece of a template that must be identical across all of them -- it is
+# what an incident hardens -- so a copy per surface is the failure mode this package
+# exists for: a hardening reaches only the surfaces written afterwards. The board was the
+# surface AHEAD on the gate (it carried an action-length floor the shared copy does not)
+# and BEHIND on the sentinel (a forgeable ``Literal["__unsaid__"]`` against the shared
+# ``Unsaid`` enum). Pointing here closes both: the enum cannot be forged by a publisher's
+# text, and the shared gate drops the floor that suppressed short real actions like
+# ``fix it`` while keeping the phrase-shape check that stopped a bare name reaching the
+# action line. ``dashboard_templates`` imports only the stdlib at module scope, so this
+# does not couple the contract to the dashboard package.
+from kiro_crew.dashboard_templates import UNSAID, Unsaid, gate_action
 from kiro_crew.work_vocab import (
     WORK_ITEM_STATES,
     WORK_VERDICTS,
     WorkBoardItem,
     WorkBoardView,
 )
-
-# --------------------------------------------------------------------------
-# the sentinel
-# --------------------------------------------------------------------------
-
-Unsaid = Literal["__unsaid__"]
-"""The type of "nobody can supply this". A required field, never an absent key."""
-
-UNSAID: Final[Unsaid] = "__unsaid__"
-"""Write this, explicitly. It cannot arrive from a lookup that returned nothing."""
-
 
 # --------------------------------------------------------------------------
 # INPUT -- the shape the ``work`` fold renders
@@ -239,7 +241,7 @@ class PipelineBoardJudgment(TypedDict):
     #: The sentence.
     lede: str | Unsaid
     #: What a person must do about ONE item, keyed by item id. Gated by
-    #: :func:`_gate_action`.
+    #: :func:`~kiro_crew.dashboard_templates.gate_action`.
     #:
     #: By item, not by column: the template's field is per card, so a column key
     #: stamps one item's sentence onto every card beside it -- two open items both
@@ -389,20 +391,6 @@ def validate_judgment(data: Any) -> PipelineBoardJudgment:
 #: than rendered -- ``ready`` in a column headed CHECKS is how this started.
 BOARD_COLUMN_NAMES: Final[tuple[str, ...]] = WORK_ITEM_STATES
 BOARD_VERDICT_NAMES: Final[tuple[str, ...]] = WORK_VERDICTS
-
-
-def _gate_action(text: str) -> str | Unsaid:
-    """An action sentence, or :data:`UNSAID`.
-
-    A bare token is refused because the live board rendered ``Raymond`` and
-    ``chat-2176`` on the line that must say what to DO. A name is not an action, and
-    the cheapest thing that separates them is whether the value reads as a phrase at
-    all: an action has a space in it and a verb's worth of length.
-    """
-    value = text.strip()
-    if len(value) < 8 or " " not in value:
-        return UNSAID
-    return value
 
 
 def _gate_fraction(text: str) -> str | Unsaid:
@@ -569,7 +557,7 @@ def _card(item: WorkBoardItem, judgment: PipelineBoardJudgment) -> PipelineBoard
         # Never derived. The fold holds no check tally, so the only honest provider
         # answer with no publisher value is UNSAID.
         "of": _gate_fraction(judgment["checks"].get(item["item_id"], "")),
-        "you": _gate_action(judgment["you"].get(item["item_id"], "")),
+        "you": gate_action(judgment["you"].get(item["item_id"], "")),
     }
 
 
@@ -1080,12 +1068,12 @@ def _legend(progress: Any, round_value: Any = UNSAID) -> str:
     # progress line wants.
     #
     # SETTLED is every terminal state, not just `accepted`: an item that was rejected or
-    # abandoned has finished too. An earlier version read "N still to settle" as
-    # `total - accepted`, which both miscounted (rejected and abandoned were counted as still
-    # moving) and, once corrected to `total - terminal`, became the OPEN band exactly -- and
-    # "still to settle" is open by definition, so a corrected count there just restated the open
-    # head. Counting the settled side instead is the aggregate no head carries and is correct
-    # the moment it is phrased: an item is settled iff it is in a terminal band.
+    # abandoned has finished too. "N still to settle" as `total - accepted` would miscount
+    # (rejected and abandoned counted as still moving), and as `total - terminal` it is the
+    # OPEN band exactly -- "still to settle" is open by definition, so that count would just
+    # restate the open head. Counting the settled side instead is the aggregate no head
+    # carries and is correct the moment it is phrased: an item is settled iff it is in a
+    # terminal band.
     settled = terminal
     # WITH ITS DENOMINATOR, like every other count here: a bare "3" on a card of counts says
     # nothing about whether that is most of the board or a corner of it. The repetition a reader

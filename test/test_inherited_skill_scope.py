@@ -13,10 +13,15 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import native_skill_projection_helpers
 import pytest
 
 from kiro_crew import agent_discovery, context, skill_trust
 from kiro_crew.acp import skill_projection as projection
+
+_end_projections_before_tmp_path_goes = (
+    native_skill_projection_helpers._end_projections_before_tmp_path_goes
+)
 
 
 @pytest.fixture
@@ -246,6 +251,31 @@ def test_injection_plan_gives_the_inherited_trees_to_an_unmapped_custom_agent(
     assert context._skills_injection_plan(
         "custom", is_cc=False, project_dir=project, provider_type=context.PROVIDER_ACP
     ) == (False, [])
+
+
+@pytest.mark.parametrize(
+    "pinned, plan, looked_up",
+    [
+        ([], (False, []), []),
+        (["app-skills/**/SKILL.md"], (True, ["app-skills/**/SKILL.md"]), []),
+        (None, (True, ["own/**/SKILL.md"]), ["custom"]),
+    ],
+    ids=["empty-pin", "pin", "no-pin"],
+)
+def test_a_pinned_scope_decides_even_when_it_maps_nothing(monkeypatch, pinned, plan, looked_up):
+    """A session pinned to a spec that maps no skills is scoped to none: the agent's
+    own mapping is consulted only when there is no pin at all."""
+    asked: list[str] = []
+
+    def _own_mapping(agent, **kwargs):
+        asked.append(agent)
+        return ["own/**/SKILL.md"]
+
+    monkeypatch.setattr(context, "pinned_skill_globs", lambda *args, **kwargs: pinned)
+    monkeypatch.setattr(context, "agent_skill_globs", _own_mapping)
+
+    assert context._skills_injection_plan("custom", is_cc=False, session_key="s") == plan
+    assert asked == looked_up
 
 
 @pytest.fixture

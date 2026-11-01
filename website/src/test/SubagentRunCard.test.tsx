@@ -612,3 +612,75 @@ describe('SubagentRunCard — a run parked on a spawn approval is not running', 
     expect(screen.queryByTestId('subagent-card-awaiting')).toBeNull()
   })
 })
+
+/**
+ * The chip icons and the state glyph are aria-hidden, so before this the card's
+ * accessible name read "2 agents launched 1 1 1": bare numbers with no meaning.
+ * Each chip and the glyph now carry sr-only words, and the bare digit is hidden.
+ */
+describe('SubagentRunCard — stat chips and state glyph speak in words', () => {
+  const storeWith = (subagents: Record<string, SubagentActivity>) => createTestStore({
+    chat: { activeSlot: SLOT, subagents, subagentQueued: {} } as unknown as ChatState,
+  })
+
+  it('names every chip in the button accessible name', () => {
+    const store = storeWith({
+      a1: agent('a1', 'done'),
+      a2: agent('a2', 'done'),
+      a3: agent('a3', 'error'),
+      a4: agent('a4', 'stopped'),
+    })
+    renderWithProviders(
+      <SubagentRunCard launch={{ ids: ['a1', 'a2', 'a3', 'a4'], announced: 4 }} slot={SLOT} />,
+      { store },
+    )
+    const button = screen.getByRole('button', { name: /2 agents done/ })
+    expect(button.textContent).toContain('1 agent failed')
+    expect(button.textContent).toContain('1 agent stopped')
+    // The visible digit is hidden from assistive tech; the sr-only words replace it.
+    for (const id of ['subagent-card-done', 'subagent-card-failed', 'subagent-card-stopped']) {
+      const chip = screen.getByTestId(id)
+      const digit = chip.querySelector('span[aria-hidden="true"]')
+      expect(digit?.textContent).toMatch(/^\d+$/)
+      expect(chip.querySelector('.sr-only')?.textContent).toMatch(/agents? (done|failed|stopped)$/)
+    }
+    // A failure outranks the finished state, as the glyph does.
+    expect(screen.getByTestId('subagent-card-state').textContent).toBe('Failed')
+  })
+
+  it('names the awaiting chip and the glyph for a parked wave', () => {
+    const parked = { ...agent('a1', 'pending'), approval_id: 'spawn:a1' } as SubagentActivity
+    renderWithProviders(
+      <SubagentRunCard launch={{ ids: ['a1'], announced: 1 }} slot={SLOT} />,
+      { store: storeWith({ a1: parked }) },
+    )
+    expect(screen.getByTestId('subagent-card-awaiting').querySelector('.sr-only')?.textContent)
+      .toBe('1 agent waiting for approval')
+    expect(screen.getByTestId('subagent-card-state').textContent).toBe('Waiting for approval')
+  })
+
+  it('labels the running and finished glyphs', () => {
+    const { unmount } = renderWithProviders(
+      <SubagentRunCard launch={{ ids: ['a1'], announced: 1 }} slot={SLOT} />,
+      { store: storeWith({ a1: agent('a1', 'running') }) },
+    )
+    expect(screen.getByTestId('subagent-card-state').textContent).toBe('Running')
+    unmount()
+    renderWithProviders(
+      <SubagentRunCard launch={{ ids: ['a1'], announced: 1 }} slot={SLOT} />,
+      { store: storeWith({ a1: agent('a1', 'done') }) },
+    )
+    expect(screen.getByTestId('subagent-card-state').textContent).toBe('Finished')
+  })
+
+  it('does not say "Finished" for a wave it cannot fully see', () => {
+    // a2 fell out of the slice ("Dismiss done"), so the headline says only
+    // "launched"; the glyph words must not claim more than the headline.
+    renderWithProviders(
+      <SubagentRunCard launch={{ ids: ['a1', 'a2'], announced: 2 }} slot={SLOT} />,
+      { store: storeWith({ a1: agent('a1', 'done') }) },
+    )
+    expect(screen.getByText('2 agents launched')).toBeTruthy()
+    expect(screen.queryByTestId('subagent-card-state')).toBeNull()
+  })
+})

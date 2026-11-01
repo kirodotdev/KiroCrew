@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import guide_catalog, mcp_guide, ui_index
 from kiro_crew.validation import ValidationError
@@ -157,11 +158,11 @@ def test_a_credential_setting_never_carries_a_guide() -> None:
     assert "guide_ref" not in hit
 
 
-def test_crewmates_page_names_its_preview_switch() -> None:
+def test_mates_page_has_no_preview_prerequisite() -> None:
     d = ui_index.find_ui("mates", "en")
     page = next(r for r in d["results"] if r["id"] == "page.members")
     requires = page["placements"][0]["requires"]
-    assert any(r["kind"] == "preview_flag" for r in requires)
+    assert not any(r["kind"] == "preview_flag" for r in requires)
 
 
 def test_channel_settings_hang_under_their_channel_without_a_label_suffix() -> None:
@@ -245,18 +246,38 @@ def test_a_zh_answer_found_by_a_term_is_labelled_in_chinese() -> None:
 @pytest.mark.parametrize(
     ("query", "lang", "target"),
     [
-        ("how do i turn on dark mode", "en", "setting:display.mode"),
-        # "does" is stemmed to "doe"; the question-word list must catch both forms.
-        ("where does dark mode live", "en", "setting:display.mode"),
-        ("深色模式", "zh-CN", "setting:display.mode"),
-        ("where are my reminders", "en", "page.schedule"),
-        ("提醒在哪里", "zh-CN", "page.schedule"),
-        ("where do i put my api key", "en", "settings.tab.secrets"),
-        ("messaging", "en", "settings.tab.channels"),
-        ("connect slack", "en", "settings.sub.channels.slack"),
+        *named_cases(
+            "test_seeded_newcomer_words_on_pages_and_settings",
+            ("query", "lang", "target"),
+            [
+                ("how do i turn on dark mode", "en", "setting:display.mode"),
+                # "does" is stemmed to "doe"; the question-word list must catch both forms.
+                ("where does dark mode live", "en", "setting:display.mode"),
+                ("深色模式", "zh-CN", "setting:display.mode"),
+                ("where are my reminders", "en", "page.schedule"),
+                ("提醒在哪里", "zh-CN", "page.schedule"),
+                ("where do i put my api key", "en", "settings.tab.secrets"),
+                ("messaging", "en", "settings.tab.channels"),
+                ("connect slack", "en", "settings.sub.channels.slack"),
+            ],
+        ),
+        *named_cases(
+            "test_runtime_labelled_chips_are_found_by_newcomer_words",
+            ("query", "lang", "target"),
+            [
+                ("change the model for this chat", "en", "chat.model-picker"),
+                ("how do I switch model", "en", "chat.model-picker"),
+                ("换模型", "zh-CN", "chat.model-picker"),
+                ("怎么换模型", "zh-CN", "chat.model-picker"),
+                ("memory mode", "en", "chat.memory-mode"),
+                ("where is incognito mode", "en", "chat.memory-mode"),
+                ("记忆", "zh-CN", "chat.memory-mode"),
+                ("无痕模式在哪里", "zh-CN", "chat.memory-mode"),
+            ],
+        ),
     ],
 )
-def test_seeded_newcomer_words_on_pages_and_settings(query: str, lang: str, target: str) -> None:
+def test_newcomer_words_find_their_target(query: str, lang: str, target: str) -> None:
     assert _top(ui_index.find_ui(query, lang))["id"] == target
 
 
@@ -382,25 +403,6 @@ def test_the_phone_menu_search_row_hangs_under_the_menu_button_on_every_page() -
     ]
     zh = _by_id(ui_index.find_ui("搜索", "zh-CN"))["shell.menu-search"]
     assert _path(zh["placements"][0]) == ["打开菜单", "搜索会话、文件和命令"]
-
-
-@pytest.mark.parametrize(
-    ("query", "lang", "target"),
-    [
-        ("change the model for this chat", "en", "chat.model-picker"),
-        ("how do I switch model", "en", "chat.model-picker"),
-        ("换模型", "zh-CN", "chat.model-picker"),
-        ("怎么换模型", "zh-CN", "chat.model-picker"),
-        ("memory mode", "en", "chat.memory-mode"),
-        ("where is incognito mode", "en", "chat.memory-mode"),
-        ("记忆", "zh-CN", "chat.memory-mode"),
-        ("无痕模式在哪里", "zh-CN", "chat.memory-mode"),
-    ],
-)
-def test_runtime_labelled_chips_are_found_by_newcomer_words(
-    query: str, lang: str, target: str
-) -> None:
-    assert _top(ui_index.find_ui(query, lang))["id"] == target
 
 
 def test_a_runtime_label_is_returned_as_a_description_never_as_a_label() -> None:
@@ -1116,16 +1118,16 @@ def test_find_setting_rows_carry_the_dashboard_label() -> None:
     from kiro_crew.dashboard.change_cards import localize_setting_rows
 
     rows = [
-        {"setting_id": "developer.developer-mode", "label": "Developer Mode"},
+        {"setting_id": "developer.webhooks", "label": "Webhooks"},
         {"setting_id": "not.a-setting", "label": "Kept"},
     ]
-    shown = ui_index.setting_labels(["developer.developer-mode"], "zh-CN")
+    shown = ui_index.setting_labels(["developer.webhooks"], "zh-CN")
     out = localize_setting_rows(rows, "zh-CN")
-    assert out[0]["label"] == shown["developer.developer-mode"]["label"] != "Developer Mode"
-    assert out[0]["path"] == shown["developer.developer-mode"]["path"]
+    assert out[0]["label"] == shown["developer.webhooks"]["label"] != "Webhooks"
+    assert out[0]["path"] == shown["developer.webhooks"]["path"]
     assert out[0]["label_locale"] == "zh-CN"
     assert out[1] == rows[1]
-    assert localize_setting_rows(rows, "")[0]["label"] == "Developer Mode"
+    assert localize_setting_rows(rows, "")[0]["label"] == "Webhooks"
 
 
 # ── where-is questions whose first answer must carry a guide ──

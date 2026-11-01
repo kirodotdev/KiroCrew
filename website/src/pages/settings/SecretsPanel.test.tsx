@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { SecretsPanel } from './SecretsPanel'
+import { SECRETS_AUTHORIZE_COMMAND, SECRETS_SERVER_GRANT } from './secretsAuthorizeCommand'
 import { isAuthBannerShown, __resetAuthRecoveryStateForTests } from '../../api/client'
 import en from '../../i18n/locales/en.json'
 // The transport's own recovery copy is hand-authored, so it lives in the manual
@@ -220,7 +221,7 @@ describe('SecretsPanel', () => {
     expect(await screen.findByText('MY_API_KEY')).toBeInTheDocument()
     expect(screen.getByText('DB_PASSWORD')).toBeInTheDocument()
     expect(screen.getByText('Custom secrets')).toBeInTheDocument()
-    expect(screen.getByText(/Reference one as secret:\/\/YOUR_KEY from an MCP server's environment or a \.env credential setting/)).toBeInTheDocument()
+    expect(screen.getByText(/Reference one as secret:\/\/YOUR_KEY; the value is never shown in chat/)).toBeInTheDocument()
     // The plaintext is never rendered — only the mask is.
     expect(screen.getAllByText('••••••••')).toHaveLength(2)
     expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
@@ -785,12 +786,23 @@ describe('SecretsPanel custom secrets card', () => {
     expect(await screen.findByText('Custom secrets')).toBeInTheDocument()
     // The disclaimer names BOTH supported consumers — MCP server env AND .env
     // credential settings — so an owner whose entry came from `secrets import`
-    // is not told it is MCP-only.
-    expect(screen.getByText(/stored encrypted for use by MCP servers and \.env credential settings/)).toBeInTheDocument()
-    expect(screen.getByText(/from an MCP server's environment or a \.env credential setting/)).toBeInTheDocument()
+    // is not told it is MCP-only — AND the mediated chat route (#8628).
+    expect(screen.getByText(/Encrypted keys for MCP servers and \.env settings/)).toBeInTheDocument()
+    // The authorize step names its prerequisites: a member chat, the opt-in
+    // @kirocrew-secrets grant, and where to run the command.
+    const authorize = screen.getByText(
+      /To let an agent in a member chat call one approved API with a secret, grant the agent @kirocrew-secrets, then run the command below in a shell or on the Terminal page\./,
+    )
+    expect(SECRETS_SERVER_GRANT).toBe('@kirocrew-secrets')
+    // The command is a literal the owner types, so it renders verbatim from
+    // the code constant inside a <code> element, never from a catalog value.
+    const command = screen.getByText(SECRETS_AUTHORIZE_COMMAND)
+    expect(command.tagName).toBe('CODE')
+    expect(command.textContent).toBe('kirocrew secrets authorize NAME https://api.example.com')
+    expect(authorize).toContainElement(command)
     // The token appears in both the disclaimer and the empty-state line.
     expect(screen.getAllByText(/secret:\/\/YOUR_KEY/).length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText(/it is never exposed in chat/)).toBeInTheDocument()
+    expect(screen.getByText(/never shown in chat/)).toBeInTheDocument()
     // Empty state, not a row.
     expect(screen.getByText(/No custom secrets stored yet/)).toBeInTheDocument()
     expect(screen.queryByText('••••••••')).not.toBeInTheDocument()
@@ -801,7 +813,7 @@ describe('SecretsPanel custom secrets card', () => {
     mount()
     expect(await screen.findByText('WEATHER_API_KEY')).toBeInTheDocument()
     // Disclaimer persists alongside populated rows, and the empty line is gone.
-    expect(screen.getByText(/stored encrypted for use by MCP servers/)).toBeInTheDocument()
+    expect(screen.getByText(/Encrypted keys for MCP servers and \.env settings/)).toBeInTheDocument()
     expect(screen.queryByText(/No custom secrets stored yet/)).not.toBeInTheDocument()
     // Value is masked, never rendered in plaintext.
     expect(screen.getByText('••••••••')).toBeInTheDocument()

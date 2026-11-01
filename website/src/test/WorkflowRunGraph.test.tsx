@@ -6,7 +6,7 @@
  * fact, that an unpredictable region says so on the picture, that the strings are
  * localized, and that the drawing is NOT a control surface.
  */
-import { screen, within } from '@testing-library/react'
+import { act, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import WorkflowRunGraph from '../apps/workflows/WorkflowRunGraph'
 import type { RunPlan } from '../apps/workflows/planModel'
@@ -14,7 +14,10 @@ import { i18next, initI18n } from '../i18n/all'
 import { renderWithProviders } from './helpers'
 
 afterEach(async () => {
-  await i18next.changeLanguage('en')
+  // The switch re-renders any still-mounted graph, so it is an action the test causes.
+  await act(async () => {
+    await i18next.changeLanguage('en')
+  })
 })
 
 function ev(type: string, data: Record<string, unknown>, seq: number, ts = '2026-09-18T10:00:00.000Z') {

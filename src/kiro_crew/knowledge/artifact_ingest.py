@@ -922,6 +922,9 @@ class ArtifactKnowledgeSync:
         self._loop = loop
         self._lock = asyncio.Lock()
         self._reconcile_task: asyncio.Task | None = None
+        # Ingest/remove tasks ``_schedule`` starts, held until each finishes: the
+        # loop keeps only a weak reference to a task.
+        self._tasks: set[asyncio.Task] = set()
 
     @property
     def kstore(self) -> KnowledgeStore:
@@ -941,6 +944,8 @@ class ArtifactKnowledgeSync:
 
     def _schedule(self, action: str, slug: str) -> None:
         task = asyncio.ensure_future(self._handle(action, slug))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         task.add_done_callback(self._on_task_done)
 
     @staticmethod

@@ -209,7 +209,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // Shared Arrow/Enter/Tab/Escape + scroll-into-view (see useListKeyboardNav).
   // When the release gate is armed, Enter/Tab pass through and the menu closes
   // so the composer can still send the message (the #5029 prompt-mention trap).
-  const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
+  const { selected, setSelected, selectedRef, itemRefs, hoverSelect } = useListKeyboardNav({
     open,
     count: results.length,
     onChoose: choose,
@@ -317,7 +317,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
           ref={el => { itemRefs.current[i] = el }}
           className={`w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle text-text' : 'text-muted hover:bg-bg-hover hover:text-text'}`}
           title={f.path}
-          onMouseEnter={() => setSelected(i)}
+          onMouseMove={e => hoverSelect(i, e)}
           onMouseDown={e => { e.preventDefault(); onSelect(selectionFor(f, rootRef.current, dirPrefixRef.current || undefined)) }}
         >
           {isDir

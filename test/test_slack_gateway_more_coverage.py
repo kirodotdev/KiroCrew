@@ -513,6 +513,18 @@ class TestConnectSlack:
         assert orch._slack_connect_error == "_Boom"
 
     @pytest.mark.asyncio
+    async def test_socks_proxy_error_keeps_its_actionable_reason(self):
+        from kiro_crew.slack.socket_mode_proxy import SocksProxyUnavailable
+
+        exc = SocksProxyUnavailable("SOCKS proxy set but python-socks is not installed")
+        orch = _make_orchestrator()
+        orch._socket_client = MagicMock()
+        orch._socket_client.connect = AsyncMock(side_effect=exc)
+        with patch.object(gw, "_channel_transport_permitted", return_value=True):
+            assert await orch._connect_slack() is False
+        assert orch._slack_connect_error == "SOCKS proxy set but python-socks is not installed"
+
+    @pytest.mark.asyncio
     async def test_governance_denial_drops_socket_client(self):
         orch = _make_orchestrator()
         orch._socket_client = MagicMock()
@@ -1557,7 +1569,7 @@ class TestNotifyNudgeExpired:
             cycle_count=4,
             stopped_reason=APPROVAL_STALL_REASON,
         )
-        orch._notify_nudge_expired(loop)
+        assert orch._notify_nudge_expired(loop) is True
         assert ds.notify.call_args.args[1] == "Monitoring loop hit its cycle cap"
 
     def test_no_dashboard_state_is_a_no_op(self):

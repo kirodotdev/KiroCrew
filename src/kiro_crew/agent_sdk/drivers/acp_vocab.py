@@ -1,8 +1,8 @@
 """The ACP driver's vocabulary: names application code reads by VALUE.
 
-Stop classes and the stop-reason classifier, the stop reasons of a turn the
-backend did not finish, the structured-status frame and its wait reasons, the
-terminal tool-call statuses, the session-start and prompt timeouts and the
+Stop classes and the stop-reason classifier, the tool-call and tool-result
+event kinds, the stop reasons of a turn the backend did not finish, the
+structured-status frame and its wait reasons, the terminal tool-call statuses, the session-start and prompt timeouts and the
 native-child marker are backend vocabulary a consumer compares against or
 raises on. The in-flight tool-call tracker is here too: a sub-agent's run
 record builds one as a dataclass field default, so the class has to be bound
@@ -32,6 +32,8 @@ from kiro_crew.acp.types import (
     STOP_CLASS_RECOVERING,
     STOP_CLASS_STALLED,
     STOP_CLASS_SUCCEEDED,
+    STOP_REASON_CANCEL_UNACKED,
+    STOP_REASON_CANCELLED,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TIMEOUT,
     STOP_RECOVERY_MAX_RETRIES,
@@ -40,11 +42,14 @@ from kiro_crew.acp.types import (
     StructuredStatus,
     classify_stop_reason,
 )
+from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_RESULT
 
 __all__ = [
     "is_runtime_death",
     "is_user_worded_failure",
     "EVENT_STRUCTURED_STATUS",
+    "EVENT_TOOL_CALL",
+    "EVENT_TOOL_RESULT",
     "NATIVE_CHILD_NOT_RESUMABLE",
     "STATUS_EXTENSION_VERSION",
     "STATUS_PHASE_WAITING",
@@ -53,6 +58,8 @@ __all__ = [
     "STOP_CLASS_RECOVERING",
     "STOP_CLASS_STALLED",
     "STOP_CLASS_SUCCEEDED",
+    "STOP_REASON_CANCEL_UNACKED",
+    "STOP_REASON_CANCELLED",
     "STOP_REASON_STALE_RECOVER",
     "STOP_REASON_TIMEOUT",
     "STOP_RECOVERY_MAX_RETRIES",

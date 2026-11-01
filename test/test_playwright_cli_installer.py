@@ -195,6 +195,7 @@ def test_redaction_does_not_touch_an_at_sign_in_a_path(tmp_path: Path) -> None:
         input="https://npm.example/@scope/pkg\nhttps://u:p@ss@npm.example/@scope/pkg\n",
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
         cwd=str(tmp_path),
     )
@@ -391,7 +392,9 @@ def test_the_posix_installer_stages_node_for_gateway_execution() -> None:
     assert 'mktemp "$PREFIX/.gateway-node.XXXXXX"' in body
     assert 'mv "$_gateway_node_incoming" "$GATEWAY_NODE"' in body
     wrapper = body[body.index("# ── gateway Node + wrapper") : body.index("# ── verify")]
-    assert 'exec $(_shell_quote "$GATEWAY_NODE") $(_shell_quote "$TARGET")' in wrapper
+    assert 'KIROCREW_NODE="$(_shell_quote "$GATEWAY_NODE")"' in wrapper
+    assert 'KIROCREW_ENTRY="$(_shell_quote "$TARGET")"' in wrapper
+    assert 'exec @KIROCREW_NODE@ @KIROCREW_ENTRY@ "$@"' in wrapper
     assert 'PATH=$(_shell_quote "$NODE_BIN_DIR")' not in wrapper
 
 
@@ -779,6 +782,7 @@ def test_a_node_that_does_not_run_here_leaves_the_previous_one_in_place(
             ["sh", "-c", f'"{node_dir}/bin/node" >/dev/null 2>&1; echo $?'],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
             cwd=str(tmp_path),
         ).stdout.strip()
@@ -855,6 +859,7 @@ def test_an_interrupted_rebootstrap_restores_the_previous_node(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
         start_new_session=True,
         cwd=str(tmp_path),
     )
@@ -981,9 +986,8 @@ def test_both_installers_probe_the_staged_node_before_promoting_it() -> None:
     tree is in place while the old one waits in staging. An interrupt inside that
     interval runs the cleanup, which sees the target present, correctly declines to
     restore -- and then deletes the rollback, leaving an unvalidated Node with no way
-    back. Four review rounds were spent guarding that interval before it became
-    clear the interval should not exist: nothing under the prefix is touched until
-    the downloaded bits are known to run.
+    back. Guarding that interval is not enough; it must not exist: nothing under the
+    prefix is touched until the downloaded bits are known to run.
     """
     sh = INSTALLER_SH.read_text(encoding="utf-8")
     probe = sh.index('_try_node "$_stage/tree/bin/node"')

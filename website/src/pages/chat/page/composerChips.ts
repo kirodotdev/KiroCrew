@@ -9,7 +9,7 @@ import { i18nT } from '../../../i18n/t'
 import { modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
 import { displayModel, modelChipMarker } from '../../../lib/model'
 import type { useProvider } from '../../../providers'
-import { useModelsDegraded } from '../../../providers/modelListHealth'
+import { modelHealthKey, useModelsDegraded } from '../../../providers/modelListHealth'
 import type { ModelInfo } from '../../../providers/types'
 import type { AppDispatch } from '../../../store'
 import { triggerRefresh } from '../../../store/dashboardSlice'
@@ -29,7 +29,11 @@ interface ComposerChipsOptions {
   codexPairModels: boolean
   /** The slot's ACP capability answer, once known. */
   selectionCapabilities: Awaited<ReturnType<typeof api.chatSlotSelectionCapabilities>> | undefined
-  selectionCapabilitiesQ: { isError: boolean; error?: unknown }
+  selectionCapabilitiesQ: {
+    isError: boolean
+    error?: unknown
+    data?: { models_backend?: string; effort_supported?: boolean | null; effort_levels?: string[] }
+  }
   dispatch: AppDispatch
   queryClient: QueryClient
   showActionError: (message: string, title?: string) => void
@@ -66,8 +70,19 @@ export function useComposerChips({
   })
   // The agent the composer's "set as default" row acts on: the active slot's
   // agent, else whichever agent a new session would open on.
-  const _modelPinAgent = currentSlot?.agent || pendingAgent || defaultAgent || 'default'
-  const _modelPinCfg = installedAgents.find(a => a.name === _modelPinAgent)
+  //
+  // The write goes to `agents.<name>` in config.json, which only a crew agent
+  // has. A template-bound session (a plain new chat runs the `kirocrew`
+  // template) has no such entry, and the server answers 404 (#25099). So the
+  // pin target is '' -- the dropdown then offers no pin row -- unless the name
+  // resolves to a non-template row. The roster folds a same-name pair member
+  // first, so a template row here means no crew agent of that name exists.
+  const _modelPinName = currentSlot?.agent || pendingAgent || defaultAgent || 'default'
+  const _modelPinRow = installedAgents.find(a => a.name === _modelPinName)
+  const _modelPinCfg = currentSlot?.agent_kind !== 'template' && _modelPinRow && _modelPinRow.selection_kind !== 'template'
+    ? _modelPinRow
+    : undefined
+  const _modelPinAgent = _modelPinCfg ? _modelPinName : ''
   // Writes agents.<name>.model in config.json. Invalidates the resolved-model
   // queries so a slot showing an inherited value picks the new pin up without a
   // reload; open sessions keep the model they already resolved.
@@ -112,7 +127,8 @@ export function useComposerChips({
   // verdict — a cached list served while /api/models fails is stale, not
   // authoritative — and is subscribed to rather than read, because it can flip
   // without the list changing.
-  const _modelsDegraded = useModelsDegraded(provider.id)
+  // The flag of the list the chip reads: a session on another harness reads that harness's own list.
+  const _modelsDegraded = useModelsDegraded(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
   const displayModels = codexPairModels
     ? filterInteractiveModels(availableModels, [], [], true)
     : availableModels
@@ -127,12 +143,14 @@ export function useComposerChips({
     // a bare `auto` for a session running one specific model.
     codexPairModels ? modelWithoutEffort(currentSlot?.served_model || '') : currentSlot?.served_model,
   )
+  // An unknown effort verdict leaves the currently shown model to answer.
+  const effortCaps = selectionCapabilities ?? selectionCapabilitiesQ.data
   const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesFailed(selectionCapabilitiesQ) && (
-    selectionCapabilities
-      ? selectionCapabilities.effort_supported === true
+    effortCaps?.effort_supported != null
+      ? effortCaps.effort_supported
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
   )
-  const effortLevelsOverride = selectionCapabilities?.effort_levels
+  const effortLevelsOverride = effortCaps?.effort_levels?.length ? effortCaps.effort_levels : undefined
   // The same answer WITHOUT that substitution, for the pin-to-agent row: that
   // row asks about the PIN, and it must stay disabled for a withheld one even
   // now that the chip names the model the session inherited instead.

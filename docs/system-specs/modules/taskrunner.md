@@ -757,7 +757,7 @@ workspace is never removed.
 | POST | `/api/taskrunner/plan/cancel` | Cancel planning |
 | POST | `/api/taskrunner/from-chat` | Create or update a plan from chat-provided steps |
 | DELETE | `/api/taskrunner/{task_id}` | Delete finished run from memory + disk |
-| PATCH | `/api/taskrunner/{task_id}/name` | Rename a project |
+| PATCH | `/api/taskrunner/{task_id}/name` | Rename a project (`name` must be a string, else 400; trimmed; blank is 400 here and no change on the `PUT /api/projects/{id}` alias) |
 | PATCH | `/api/taskrunner/{task_id}/tasks/{index}` | Edit a pending task |
 | PUT | `/api/taskrunner/{task_id}/plan` | Replace the planned task list |
 | POST | `/api/taskrunner/{task_id}/retry` | Retry from step N (`{from_step}` in body) |
@@ -1220,7 +1220,7 @@ cannot pass for a finished spec.
 The page uses a left run rail plus a detail/compose area. The rail defaults to
 260px, is resizable from 220–460px, and can collapse to a 48px strip.
 
-- **Run rail**: always present; compact run cards show status, name, progress, live auto-approve state, and cancel/delete controls. The top action starts a new task.
+- **Run rail**: always present; compact run cards show status, name, progress, live auto-approve state, and cancel/delete controls. The top action starts a new task. Runs are listed newest first by `started_at`, sorted on the client (`listedRuns` in `website/src/pages/ProjectsPage.tsx`); the API keeps the registry's insertion order. Equal stamps put the later-inserted run first. A run is stamped when it starts, when a plan is executed, and on Restart (`retry_from_task`), so a restarted run moves to the top. A plan that has not run yet has `started_at` 0 and sits at the bottom.
 - **Compose area** (no run selected): **Compose**, **From Spec**, and **From YAML** modes share `AgentSelector` and an optional workspace override.
 - **Compose mode**: task text, **Refine into Spec**, **Plan**, per-run auto-approve, and **Run** controls; planning has a cancellable `PlanningBanner`.
 - **From Spec / From YAML**: editable text plus file upload, **Run**, and **Plan**. YAML mode states that a workflow-shaped document bypasses the LLM decomposer.

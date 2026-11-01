@@ -500,7 +500,6 @@ def test_build_pending_true_when_dist_newer():
         # Touch to ensure mtime is fresh
         os.utime(str(dist_path), (time.time(), time.time()))
 
-        # Patch the dist resolution
         original_start = mod._START_EPOCH
         fleet_state_mod._START_EPOCH = time.time() - 100  # pretend started 100s ago
         with patch.object(Path, "__new__", wraps=Path.__new__):

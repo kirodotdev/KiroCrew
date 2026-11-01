@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -28,8 +28,10 @@ import {
 } from './OnboardingChapterShell'
 import GithubLogo from './icons/GithubLogo'
 import { Btn } from './ui'
+import { readCompanySignIn, rememberCompanySignIn } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
+import { clearCachedModels } from '../providers/adapters/acp'
 import { providerLabel, type KasLoginProvider } from './kasProviderLabel'
 
 import { i18nT } from '../i18n/t'
@@ -97,6 +99,9 @@ export type KasLoginExtra = { start_url?: string; region?: string }
  */
 type Chrome = 'gate' | 'card'
 const ChromeContext = createContext<Chrome>('gate')
+// True when only an organisation sign-in can work (an enterprise gateway with
+// nobody signed in): the chooser offers Company SSO alone, already open.
+const OrganisationOnlyContext = createContext(false)
 
 /** Per-chrome class choices for the recurring text roles. Gate values are the
  *  strings the full-screen views always rendered; card values scale them down
@@ -249,9 +254,12 @@ function Chooser({
   // The company-SSO choice expands an inline form (start URL + region) instead of
   // beginning immediately: the portal URL is per-company, so there is nothing to
   // start until the user supplies it.
-  const [ssoOpen, setSsoOpen] = useState(false)
-  const [startUrl, setStartUrl] = useState('')
-  const [region, setRegion] = useState('')
+  const organisationOnly = useContext(OrganisationOnlyContext)
+  const [ssoOpen, setSsoOpen] = useState(organisationOnly)
+  // Seeded from the last company sign-in submitted on this browser, so a reload
+  // or gateway restart does not hand back an empty field.
+  const [startUrl, setStartUrl] = useState(() => readCompanySignIn().startUrl)
+  const [region, setRegion] = useState(() => readCompanySignIn().region)
   const startUrlReady = startUrl.trim().length > 0
   const chrome = useChrome()
   return (
@@ -284,25 +292,29 @@ function Chooser({
             : 'mt-7 flex w-full max-w-md flex-col gap-3'
         }
       >
-        <ProviderButton
-          icon={<Globe className="lucide-inline" />}
-          label={i18nT('components.kasLogin.continue_with_google')}
-          primary
-          disabled={busy}
-          onClick={() => onPick('google')}
-        />
-        <ProviderButton
-          icon={<GithubLogo size={15} />}
-          label={i18nT('components.kasLogin.continue_with_github')}
-          disabled={busy}
-          onClick={() => onPick('github')}
-        />
-        <ProviderButton
-          icon={<IdCard className="lucide-inline" />}
-          label={i18nT('components.kasLogin.continue_with_builder_id')}
-          disabled={busy}
-          onClick={() => onPick('builder_id')}
-        />
+        {!organisationOnly && (
+          <>
+            <ProviderButton
+              icon={<Globe className="lucide-inline" />}
+              label={i18nT('components.kasLogin.continue_with_google')}
+              primary
+              disabled={busy}
+              onClick={() => onPick('google')}
+            />
+            <ProviderButton
+              icon={<GithubLogo size={15} />}
+              label={i18nT('components.kasLogin.continue_with_github')}
+              disabled={busy}
+              onClick={() => onPick('github')}
+            />
+            <ProviderButton
+              icon={<IdCard className="lucide-inline" />}
+              label={i18nT('components.kasLogin.continue_with_builder_id')}
+              disabled={busy}
+              onClick={() => onPick('builder_id')}
+            />
+          </>
+        )}
         {ssoOpen ? (
           <form
             className="rounded-lg border border-border bg-bg-elevated p-3 sm:col-span-full"
@@ -310,6 +322,7 @@ function Chooser({
             onSubmit={(e) => {
               e.preventDefault()
               if (!startUrlReady || busy) return
+              rememberCompanySignIn(startUrl, region)
               onPick('idc', {
                 start_url: startUrl.trim(),
                 ...(region.trim() ? { region: region.trim() } : {}),
@@ -354,9 +367,11 @@ function Chooser({
               <Btn type="submit" primary disabled={!startUrlReady || busy}>
                 {i18nT('components.kasLogin.sso_continue')}
               </Btn>
-              <Btn type="button" disabled={busy} onClick={() => setSsoOpen(false)}>
-                {i18nT('components.kasLogin.sso_cancel')}
-              </Btn>
+              {!organisationOnly && (
+                <Btn type="button" disabled={busy} onClick={() => setSsoOpen(false)}>
+                  {i18nT('components.kasLogin.sso_cancel')}
+                </Btn>
+              )}
             </div>
           </form>
         ) : (
@@ -385,15 +400,18 @@ function Chooser({
         message={beginError || null}
         testId="kas-login-begin-error"
       />
-      <p
-        className={
-          chrome.card
-            ? 'mt-3 max-w-lg text-[12px] leading-relaxed text-muted'
-            : 'mt-5 max-w-md text-[13px] leading-relaxed text-muted'
-        }
-      >
-        {i18nT('components.kasLogin.browser_note')}
-      </p>
+      {/* "Each option starts…" reads wrong over a single option. */}
+      {!organisationOnly && (
+        <p
+          className={
+            chrome.card
+              ? 'mt-3 max-w-lg text-[12px] leading-relaxed text-muted'
+              : 'mt-5 max-w-md text-[13px] leading-relaxed text-muted'
+          }
+        >
+          {i18nT('components.kasLogin.browser_note')}
+        </p>
+      )}
     </ViewShell>
   )
 }
@@ -688,10 +706,19 @@ export interface KasLoginFlowSlots {
  * rendered by `KiroSignInCard` under the harness switch); this full-screen form stays
  * available for a future app-root mount as a sibling of KiroPrerequisiteGate.
  */
-export default function KasLoginGate({ children }: { children?: ReactNode }) {
+export default function KasLoginGate({
+  children,
+  organisationOnly = false,
+}: {
+  children?: ReactNode
+  /** Offer only Company SSO: an enterprise gateway accepts no other sign-in. */
+  organisationOnly?: boolean
+}) {
   return (
     <ChromeContext.Provider value="gate">
-      <KasLoginFlow>{children}</KasLoginFlow>
+      <OrganisationOnlyContext.Provider value={organisationOnly}>
+        <KasLoginFlow>{children}</KasLoginFlow>
+      </OrganisationOnlyContext.Provider>
     </ChromeContext.Provider>
   )
 }
@@ -810,11 +837,26 @@ function KasLoginFlow({
   // Success is observed, not returned: the poll answering 'authorized' means
   // the gateway now holds a token, so re-read status (the single authority on
   // `authenticated`) and drop the session.
+  // The model list belongs to the account: on the KAS bundle route the gateway
+  // forgets the previous account's catalog the moment a sign-in lands, and
+  // `['available-models']` is refetched only on a session spawn (global
+  // `staleTime: Infinity`), so without this the picker keeps showing the
+  // previous account's models and prices. Drop localStorage first, then reset,
+  // the same pair the Agent Harness switch uses. Called from BOTH places a
+  // sign-in is confirmed: the poll answering 'authorized', and a cancel whose
+  // fresh status read finds the credential already stored (the poll is detached
+  // by then and never reports 'authorized' for it).
+  const forgetModelList = useCallback(() => {
+    clearCachedModels()
+    void queryClient.resetQueries({ queryKey: ['available-models'] })
+  }, [queryClient])
+
   const authorized = pollQuery.data?.status === 'authorized'
   const authorizedCode = pollQuery.data?.code
   useEffect(() => {
     if (!authorized) return
     void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
+    forgetModelList()
     // A switch whose old slot could not be removed is a sign-in that landed AND
     // a failure the user has to act on: the previous account still wins by slot
     // priority, so the re-read status will keep showing it. Kept as a notice
@@ -824,7 +866,7 @@ function KasLoginFlow({
     setSession(null)
     setFellBack(false)
     setReauth(false)
-  }, [authorized, authorizedCode, queryClient])
+  }, [authorized, authorizedCode, forgetModelList, queryClient])
 
   // Loopback degradation: a listener nobody reached (timeout — the browser is
   // not on this machine) or that failed before persisting a token restarts the
@@ -867,6 +909,10 @@ function KasLoginFlow({
     try {
       const fresh = await api.kasLoginStatus()
       queryClient.setQueryData(QUERY_KEY, fresh)
+      // A sign-in that landed under the cancel is still a sign-in: the model
+      // list is the new account's now, and the poll that would have dropped the
+      // old one is already detached.
+      if (fresh.authenticated) forgetModelList()
       return fresh.authenticated ? 'signed_in' : 'signed_out'
     } catch {
       return 'unknown'

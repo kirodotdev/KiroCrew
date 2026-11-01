@@ -353,6 +353,31 @@ describe('TaggingView', () => {
       expect(screen.getByRole('button', { name: 'Suggest labels (next 1)' })).toBeTruthy())
   })
 
+  it('words the batch button tooltip through the catalog plural', async () => {
+    // One un-analysed issue left: the tooltip says "issue", not "issue(s)".
+    api.tagging.mockResolvedValue({
+      owner: 'o', repo: 'r', issues: [ISSUES[1], ISSUES[0]], untagged: [8, 7], open_count: 4, batch_size: 50, label_counts: { bug: 3, docs: 0 }, bulk_max: 25, titles: TITLES,
+      generated_at: '2026-07-26T00:00:00Z',
+      suggestions: { '7': [{ name: 'bug', reason: 'crash' }] },
+    })
+    const { unmount } = renderView()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Suggest labels (next 1)' }).getAttribute('title'))
+        .toBe('Analyse the next 1 issue'))
+    unmount()
+
+    // Every issue analysed: the re-run tooltip counts two issues.
+    api.tagging.mockResolvedValue({
+      owner: 'o', repo: 'r', issues: [ISSUES[1], ISSUES[0]], untagged: [8, 7], open_count: 4, batch_size: 50, label_counts: { bug: 3, docs: 0 }, bulk_max: 25, titles: TITLES,
+      generated_at: '2026-07-26T00:00:00Z',
+      suggestions: { '7': [{ name: 'bug', reason: 'crash' }], '8': [] },
+    })
+    renderView()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Suggest again (2)' }).getAttribute('title'))
+        .toBe('Re-analyse 2 issues that already have a proposal'))
+  })
+
   it('re-fetches the repo labels on demand', async () => {
     // Labels are created and renamed on GitHub itself, so the panel needs a way
     // to bypass the local cache — otherwise it shows whatever was cached at

@@ -1108,11 +1108,10 @@ def test_every_death_handler_that_charges_a_budget_asks_whose_fault_it_was():
     boolean named as though it had, which is why the guard name is traced back to
     its binding.
 
-    Written over the whole handler population rather than one file on purpose. The
-    first version of this change guarded three of the four sites and an external
-    reviewer found the fourth (`task_executor.py`, the taskrunner's
-    ``recoveries``); a per-file test would have passed on that PR. This one fails
-    on a fifth site the moment somebody adds it.
+    Written over the whole handler population rather than one file on purpose: a
+    per-file test passes while one site (such as `task_executor.py`, the
+    taskrunner's ``recoveries``) is left unguarded. This one fails on a new site
+    the moment somebody adds it.
 
     A reset to zero is not a charge and is excluded: zeroing a budget is the
     conservative direction and needs no ownership question.

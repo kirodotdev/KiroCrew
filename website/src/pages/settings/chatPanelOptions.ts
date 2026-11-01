@@ -29,9 +29,29 @@ export function restoreLabels(): string[] {
 /** How often the feature-video cache readout re-reads while the panel is open. */
 export const FEATURE_VIDEO_POLL_MS = 15_000
 
-export const COMPACT_OPTIONS = ['20', '40', '60', '70', '80', '90']
+/** Presets for `session.autocompact_pct`, then the `custom` row that opens a typed
+ *  field. The write path refuses anything outside 5-90 (AUTOCOMPACT_PCT_MIN/MAX in
+ *  the config schema), so the typed field clamps to the same range before saving. */
+export const COMPACT_PRESETS = ['20', '40', '60', '70', '80', '90']
+export const COMPACT_CUSTOM = 'custom'
+export const COMPACT_OPTIONS = [...COMPACT_PRESETS, COMPACT_CUSTOM]
+export const AUTOCOMPACT_PCT_MIN = 5
+export const AUTOCOMPACT_PCT_MAX = 90
+export const AUTOCOMPACT_PCT_DEFAULT = 70
 export function compactLabels(): string[] {
-  return ['20%', '40%', '60%', `70% (${i18nT('components.jobForm.default')})`, '80%', '90%']
+  return [
+    '20%', '40%', '60%', `70% (${i18nT('components.jobForm.default')})`, '80%', '90%',
+    i18nT('pages.settings.chatPanel.auto_compact_custom'),
+  ]
+}
+/** The select row for a stored threshold: its preset, or `custom` for any other value. */
+export function compactSelectValue(pct: number): string {
+  const s = String(pct)
+  return COMPACT_PRESETS.includes(s) ? s : COMPACT_CUSTOM
+}
+/** Clamp a typed threshold into the range the server accepts. */
+export function clampAutocompactPct(n: number): number {
+  return Math.min(AUTOCOMPACT_PCT_MAX, Math.max(AUTOCOMPACT_PCT_MIN, n))
 }
 
 // About You — slugs shared with onboarding step 2 and context.py's prompt maps.

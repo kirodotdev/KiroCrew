@@ -32,6 +32,7 @@ from kiro_crew import platform_compat, process_identity
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import SessionManager
+from kiro_crew.slack.gateway import _compose_subagent_completion
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.testing.wait import async_wait_until, await_until
 
@@ -120,16 +121,16 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
     wrote the tombstone that excludes the run from orphan reconciliation, and a
     process the teardown's kill then failed to end was named nowhere the next
     start would look. The report now waits for the teardown (bounded; the event
-    is set by the run's ``finally`` however the teardown ends) and the teardown
-    folds the kill's failure into the record with the shared suffix, so the
-    completion names the survivor, ``outcome`` says ``failed``, and no
-    clean ``delivered`` tombstone is written -- the acknowledged delivery's
-    tombstone carries ``leaked_process``, which the next start ends without a
-    second notice.
+    is set by the run's ``finally`` however the teardown ends). A run that
+    COMPLETED keeps its clean record and its result -- the kill's failure is on
+    the audit row -- and is flagged ``_leaked_process``, so no clean
+    ``delivered`` tombstone is written: the acknowledged delivery's tombstone
+    carries ``leaked_process``, which the next start ends without a second
+    notice.
     """
 
     @pytest.mark.asyncio
-    async def test_a_completed_run_whose_kill_failed_names_the_survivor_and_flags_it(
+    async def test_a_completed_run_whose_kill_failed_stays_completed_and_flags_the_survivor(
         self,
     ) -> None:
         seen: list[Any] = []
@@ -162,20 +163,20 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
             )
 
         assert len(seen) == 1, f"the parent received {len(seen)} completions"
-        assert "kill failed: ValueError: kill_process_group: refusing" in (seen[0] or ""), (
-            "the completion the parent received named no survivor -- it was published "
-            f"before the teardown decided: {seen!r}"
-        )
-        assert info.outcome == "failed"
+        assert not seen[0], f"a completed run reached the parent as a failure: {seen!r}"
+        assert info.outcome == "completed"
+        assert info._leaked_process is True
         events = _done_events(manager)
-        assert len(events) == 1 and events[0]["outcome"] == "failed"
-        assert "kill failed:" in events[0]["error"]
+        assert len(events) == 1 and events[0]["outcome"] == "completed"
+        assert events[0]["error"] is None
         # The parent acknowledged it: delivered, with the survivor handed to the next start.
         delivered.assert_called_once()
         assert delivered.call_args.kwargs["leaked_process"] is True
-        assert delivered.call_args.kwargs["outcome"] == "failed"
-        assert "kill failed:" in delivered.call_args.kwargs["detail"]
-        assert _audit(mock_sel, "run_finally_force_kill")["outcome"] == "failed"
+        assert delivered.call_args.kwargs["outcome"] == "completed"
+        # The failure is kept where it is still true: the audit row.
+        row = _audit(mock_sel, "run_finally_force_kill")
+        assert row["outcome"] == "failed"
+        assert "ValueError: kill_process_group: refusing" in row["error"]
 
     @pytest.mark.asyncio
     async def test_a_completed_run_whose_reset_ended_the_process_is_delivered_clean(
@@ -248,10 +249,12 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
     async def test_a_completed_run_whose_kill_failed_is_flagged_for_its_report(
         self,
     ) -> None:
-        """A completed run's failed kill is flagged for its report, not written to disk yet.
+        """A completed run's failed kill is flagged for its report, not folded into its record.
 
-        The ``delivered`` tombstone its acknowledged report writes carries the
-        flag; until then the folder stays in orphan reconciliation.
+        The run stays ``completed`` with its result: the failure is on the
+        ``run_finally_force_kill`` audit row. The ``delivered`` tombstone its
+        acknowledged report writes carries the flag; until then the folder
+        stays in orphan reconciliation.
         """
         manager, info, key = _overdue_run("fin6", pid=7575)
         info.result = "the answer"
@@ -259,7 +262,7 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
         children, alive, start_id, sweep = _kill_path_stubs()
 
         with (
-            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.subagent.sel") as mock_sel,
             patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05),
             patch("kiro_crew.subagent.read_tombstone", return_value=None),
             patch("kiro_crew.subagent.write_tombstone") as tombstones,
@@ -274,10 +277,48 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
         ):
             await manager._teardown_run_session(info, key)
 
-        assert info.error.startswith("kill failed: ValueError: kill_process_group: refusing")
+        assert not info.error, f"a completed run's record took the kill failure: {info.error!r}"
+        assert info.outcome == "completed"
+        assert info.result == "the answer"
+        row = _audit(mock_sel, "run_finally_force_kill")
+        assert row["outcome"] == "failed"
+        assert row["error"].startswith("ValueError: kill_process_group: refusing")
         # Not tombstoned until the parent acknowledges the completion: a restart
         # before that must still find the folder and re-deliver it.
         tombstones.assert_not_called()
+        assert info._leaked_process is True
+
+        # What the parent is told: a completion carrying the result, not ``Error: …``.
+        report = _compose_subagent_completion(info, _flush_only=False)
+        assert report.status == "completed"
+        assert "the answer" in report.detail
+        assert "kill failed" not in report.announce
+
+    @pytest.mark.asyncio
+    async def test_a_stopped_run_whose_kill_failed_still_names_the_failure(self) -> None:
+        """Control: only a COMPLETED run keeps a clean record; a stop still gains the suffix."""
+        manager, info, key = _overdue_run("fin7", pid=7676, user_stopped=True)
+        _hanging_reset(manager)
+        children, alive, start_id, sweep = _kill_path_stubs()
+
+        with (
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05),
+            patch("kiro_crew.subagent.read_tombstone", return_value=None),
+            patch("kiro_crew.subagent.write_tombstone"),
+            children,
+            alive,
+            start_id,
+            sweep,
+            patch(
+                "kiro_crew.platform_compat.kill_process_group",
+                MagicMock(side_effect=_REFUSAL),
+            ),
+        ):
+            await manager._teardown_run_session(info, key)
+
+        assert info.error.startswith("kill failed: ValueError: kill_process_group: refusing")
+        assert info.outcome == "stopped"
         assert info._leaked_process is True
 
     @pytest.mark.asyncio

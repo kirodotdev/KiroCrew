@@ -11,6 +11,7 @@ import { isSpawnRunTool } from './SubagentRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isReasoningBurst } from './groupDisplayItems'
+import { isTurnEnd, isRecoveryInjection, isTurnStatusRow, isEnvelopeRow, isSynthesisInjection } from './groupDisplayItems'
 import { isSystemNoticeRow } from './CompactionCard'
 import { parseRecoveryMessage } from './RecoveryCard'
 import { isDiffToolMessage } from './toolDiff'
@@ -76,9 +77,13 @@ const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 
  * into the steps pane hides the record of what they did behind a toggle.
  * card: a change card or guide offer — only the user can confirm it, so
  * it is never folded away with the tool steps that proposed it.
+ * crew_dispatch_notice: the Crew Mode dispatch notice and its "Open Board"
+ * button exist to make a mid-turn dispatch visible — folding it into the steps
+ * pane on the default collapseAll path would hide the one row it adds.
  */
 const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
   it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
+  it.msg.meta?.kind === 'crew_dispatch_notice' ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )
 
@@ -157,7 +162,7 @@ const isCrewReply = (it: TurnItem) =>
  *  workflow_run / spawn_run / workflow-completion / sub-agent-completion card,
  *  an MCP App-bearing tool call (interactive iframe anchored to the row), a
  *  diff card, an answered ask_question row, or a row the caller pins
- *  (`pinnedRows`, see findAnsweredRefusalRows).
+ *  (`pinnedRows`, see findPinnedRows).
  *  All bypass the collapse pane. */
 const NO_PINNED_ROWS: ReadonlySet<TurnItem> = new Set()
 const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>, pinnedRows = NO_PINNED_ROWS) =>
@@ -192,7 +197,7 @@ type FoldMode = 'interim' | 'collapseAll' | 'default'
  * The settled set contains the running set, so completion only ever folds
  * more rows. It never opens a row the window had folded.
  */
-function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, answeredRefusalRows: ReadonlySet<TurnItem>): number[] {
+function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, pinnedRows: ReadonlySet<TurnItem>): number[] {
   const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it) ? [i] : [])
   const out = new Set(tools.slice(0, Math.max(0, tools.length - LIVE_ACTIVITY_WINDOW)))
   if (complete && mode === 'default') tools.forEach(i => out.add(i))
@@ -200,7 +205,7 @@ function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, 
     const { end, wholeTurn } = mode === 'interim'
       ? { end: items.length, wholeTurn: false }
       : collapseAllFoldRange(items)
-    const pinned = mode === 'interim' ? NO_PINNED_ROWS : answeredRefusalRows
+    const pinned = mode === 'interim' ? NO_PINNED_ROWS : pinnedRows
     for (let i = 0; i < end; i++) {
       const it = items[i]
       if (wholeTurn && !isWorkingStepRow(it)) continue
@@ -301,6 +306,55 @@ function findAnsweredRefusalRows(items: TurnItem[]): ReadonlySet<TurnItem> {
       rows.add(it)
     }
   })
+  return rows
+}
+
+/**
+ * A reply the runner ended a turn on and then resumed, plus the `recovery` row
+ * that resumed it. An error, a capacity retry or a cancel stamps the reply it
+ * cut short (`turn_stats`, see `isTurnEnd`), and the recovery inject continues
+ * the SAME turn, so the recovered remainder lands in this block as its
+ * conclusion and the first half of the answer would fold as a step: the reader
+ * gets a sentence that starts mid-thought. Between the stamped reply and the
+ * recovery only the rows that report on the turn (an error card, a system
+ * notice) or another writer's envelope may sit, the rows `answerEndIndex`
+ * passes over; text a tool call followed is working narration and still
+ * folds, as above. A cut reply without the stamp (a transcript older than the
+ * stamp) has no such signal and folds as before. The synthesis row directly
+ * above the cut reply, when there is one, is pinned with it: the grouper opens
+ * the answer's turn on that row (`isSynthesisInjection`), so with the two
+ * halves pinned it would be the one row left for a toggle to hide, and `main`
+ * shows it, its two-row turn being too short to wrap. A synthesis row a tool
+ * call separates from the reply folds with that step, as it does on `main`.
+ */
+function findResumedReplyRows(items: TurnItem[]): ReadonlySet<TurnItem> {
+  const rows = new Set<TurnItem>()
+  items.forEach((it, i) => {
+    if (it.kind !== 'single' || !isRecoveryInjection(it.msg)) return
+    let k = i - 1
+    while (k >= 0) {
+      const between = items[k]
+      if (between.kind !== 'single' || !(isTurnStatusRow(between.msg) || isEnvelopeRow(between.msg))) break
+      k--
+    }
+    const cut = k >= 0 ? items[k] : undefined
+    if (cut?.kind === 'single' && isTurnEnd(cut.msg)) {
+      rows.add(cut)
+      rows.add(it)
+      const lead = items[k - 1]
+      if (lead?.kind === 'single' && isSynthesisInjection(lead.msg)) rows.add(lead)
+    }
+  })
+  return rows
+}
+
+/** The rows a turn pins out of the collapse-all fold on top of `isVisibleInline`:
+ *  an answer and the tool-refusal card that followed it, and a reply cut short
+ *  and resumed with the recovery row that resumed it and the synthesis row
+ *  that led it. */
+function findPinnedRows(items: TurnItem[]): ReadonlySet<TurnItem> {
+  const rows = new Set<TurnItem>(findAnsweredRefusalRows(items))
+  for (const it of findResumedReplyRows(items)) rows.add(it)
   return rows
 }
 
@@ -435,7 +489,7 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // turn.items, so a running turn shows one live reasoning line and a settled
   // turn shows one collapsed "Thought process" instead of a per-burst wall.
   const items = useMemo(() => mergeTurnThinking(turn.items), [turn.items])
-  const answeredRefusalRows = useMemo(() => findAnsweredRefusalRows(items), [items])
+  const pinnedRows = useMemo(() => findPinnedRows(items), [items])
   // One React key per row of `items`, by message identity (see the block
   // comment above); `rowKey(i)` indexes THIS list.
   const msgKey = useStableMessageKey()
@@ -494,8 +548,8 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // opened by the user or focused never folds, whatever the disclosure says.
   const mode: FoldMode = turn.interim ? 'interim' : collapseAll ? 'collapseAll' : 'default'
   const candidates = useMemo(
-    () => foldCandidates(items, appToolCallIds, mode, turn.complete, answeredRefusalRows),
-    [items, appToolCallIds, mode, turn.complete, answeredRefusalRows],
+    () => foldCandidates(items, appToolCallIds, mode, turn.complete, pinnedRows),
+    [items, appToolCallIds, mode, turn.complete, pinnedRows],
   )
   const fold = useMemo(() => {
     const rows = new Set<number>()
@@ -603,7 +657,7 @@ function CollapseToggle({ expanded, onToggle, label }: { expanded: boolean; onTo
       {/* The visible label IS the accessible name ("Worked through 2 steps" folded,
           "Hide reasoning" open), so no aria-label; aria-expanded carries the state,
           which a rotated chevron alone never announces. */}
-      <button aria-expanded={expanded} className="flex items-center gap-2 text-[12px] leading-5 text-muted/60 hover:text-muted cursor-pointer bg-transparent border-none py-1 transition-colors" onClick={onToggle}>
+      <button aria-expanded={expanded} className="flex items-center gap-2 text-[12px] leading-5 text-muted hover:text-text cursor-pointer bg-transparent border-none py-1 transition-colors" onClick={onToggle}>
         <ChevronRight size={12} aria-hidden="true" className={`transition-transform duration-150 motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} />
         {label}
       </button>

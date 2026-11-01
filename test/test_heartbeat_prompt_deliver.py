@@ -235,17 +235,19 @@ class TestDashboardSlotInjectDeliver:
 
     @pytest.mark.asyncio()
     async def test_inject_resolves_via_prefix(self, orchestrator, dashboard_state):
-        state, slot = dashboard_state
-        slot.key = "chat-1-1776476208"
-        state._slots = {"chat-1-1776476208": slot}
-        from kiro_crew.dashboard.state import DashboardState
+        from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
+        state, _ = dashboard_state
+        slot = _ChatSlot(key="chat-1-1776476208")
+        state._slots = {"chat-1-1776476208": slot}
         state.resolve_slot = lambda name: DashboardState.resolve_slot(state, name)
 
         await orchestrator._deliver_result(
             "💓 Heartbeat", "test", "result", "dashboard:chat-1"
         )
-        slot.append.assert_called_once_with("assistant", "💓 Heartbeat\n\nresult", "msg msg-a")
+        assert [(m["role"], m["content"], m["cls"]) for m in slot.messages] == [
+            ("assistant", "💓 Heartbeat\n\nresult", "msg msg-a")
+        ]
         state.notify.assert_called_once_with(
             "heartbeat", "💓 Heartbeat", "test\n\nresult", meta={"slot": "chat-1-1776476208"}
         )

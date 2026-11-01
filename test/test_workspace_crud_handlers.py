@@ -688,7 +688,7 @@ class TestInLockRecheck:
         """The copy is STAGED after all validation and only installed inside
         the locked mutate once its checks pass: a create that loses the race
         must not have mutated the destination directory, and must clean its
-        staged tree off the loop (review rounds 2-3)."""
+        staged tree off the loop."""
         (tmp_path / "workspace").mkdir()
         (tmp_path / "workspace" / "notes.md").write_text("source content", encoding="utf-8")
         stale = _cfg()  # "staging" absent -> handler checks pass, copy runs
@@ -948,3 +948,114 @@ class TestDeltaMutatorHardening:
         assert leftovers == [], f"partial staging residue survived: {leftovers}"
         assert not (tmp_path / "workspace-copied").exists()
         assert "copied" not in _read_doc(tmp_path)["workspaces"]
+
+
+# ── Another spelling of a folder in use ──
+
+
+class TestCaseVariantOfAFolderInUse:
+    """``WORKSPACE-SRC`` and ``workspace-src`` are one folder on macOS/Windows.
+
+    Linux test hosts are case-sensitive, so ``Path.stat`` is made to fold case
+    for names directly under the data home: on a case-insensitive disk the two
+    spellings share one ``(st_dev, st_ino)``, the one thing such a disk does
+    differently here. ``resolve()`` keeps whatever spelling it was given.
+    """
+
+    @staticmethod
+    def _fold_case(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+        real_stat = Path.stat
+
+        def _stat(self: Path, *args: object, **kwargs: object) -> object:
+            if self.parent == home:
+                self = self.with_name(self.name.lower())
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", _stat)
+
+    @staticmethod
+    def _with_src() -> KiroCrewConfig:
+        return _cfg(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="workspace-src"),
+            }
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("copy_from", [None, "default"])
+    @pytest.mark.parametrize("stale_snapshot", [False, True])
+    async def test_create_refuses_a_case_variant(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        copy_from: str | None,
+        stale_snapshot: bool,
+    ) -> None:
+        # stale_snapshot: the "src" entry landed after the handler's snapshot,
+        # so only the in-lock re-check can catch it.
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        _seed_file(home, self._with_src())
+        snapshot = _cfg() if stale_snapshot else self._with_src()
+        self._fold_case(monkeypatch, home)
+        body: dict = {"name": "clash", "dir": "WORKSPACE-SRC"}
+        if copy_from:
+            body["copy_from"] = copy_from
+        with (
+            patch(_LOAD, return_value=snapshot),
+            patch(_CFGDIR, return_value=home),
+            patch(_DATAHOME, return_value=home),
+            patch(_SEL),
+        ):
+            resp = await api_workspaces_create(_req(body))
+        assert resp.status == 409
+        assert b"already used" in resp.body
+        assert "clash" not in _read_doc(home)["workspaces"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stale_snapshot", [False, True])
+    async def test_update_refuses_a_case_variant(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale_snapshot: bool
+    ) -> None:
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        _seed_file(home, self._with_src())
+        snapshot = _cfg() if stale_snapshot else self._with_src()
+        self._fold_case(monkeypatch, home)
+        with (
+            patch(_LOAD, return_value=snapshot),
+            patch(_CFGDIR, return_value=home),
+            patch(_DATAHOME, return_value=home),
+            patch(_SEL),
+        ):
+            resp = await api_workspaces_update(
+                _req({"dir": "WORKSPACE-SRC"}, match_info={"name": "default"})
+            )
+        assert resp.status == 409
+        assert b"already used" in resp.body
+        assert _read_doc(home)["workspaces"]["default"]["dir"] == "workspace"
+
+    @pytest.mark.asyncio
+    async def test_a_case_variant_with_no_folder_yet_follows_path_compare(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without folder identities, the platform's lexical Path comparison decides."""
+        home = tmp_path.resolve()
+        cfg = self._with_src()
+        _seed_file(home, cfg)
+        self._fold_case(monkeypatch, home)
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=home),
+            patch(_DATAHOME, return_value=home),
+            patch(_SEL),
+        ):
+            resp = await api_workspaces_create(_req({"name": "upper", "dir": "WORKSPACE-SRC"}))
+        path_type = type(home)
+        folds = path_type("WORKSPACE-SRC") == path_type("workspace-src")
+        assert resp.status == (409 if folds else 200)
+        if folds:
+            assert "upper" not in _read_doc(home)["workspaces"]
+        else:
+            assert _read_doc(home)["workspaces"]["upper"]["dir"] == "WORKSPACE-SRC"

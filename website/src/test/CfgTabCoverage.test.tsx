@@ -7,11 +7,13 @@
  * (CfgNumber / CfgSelect / CfgToggle) whose validation, dirty-tick and patch
  * plumbing had no coverage at all.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import KiroCrewCfgTab, { AgentRunSettings } from '../pages/overview/KiroCrewCfgTab'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
+import { AGENT_SANDBOX_HIGHLIGHT_ANCHOR } from '../hooks/useSettingHighlight'
+import { AGENT_SANDBOX_PATH } from '../pages/overview/agentSandboxLink'
 
 vi.mock('../api/client')
 
@@ -361,6 +363,15 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     })
   })
 
+  it('anchors the Sandbox row for the deep link Session Environments sends under strict', async () => {
+    seed()
+    await renderTab()
+    const anchor = document.querySelector(`[data-setting-key="${AGENT_SANDBOX_HIGHLIGHT_ANCHOR}"]`)
+    expect(anchor).not.toBeNull()
+    expect(within(anchor as HTMLElement).getByRole('group', { name: 'Sandbox' })).toBeInTheDocument()
+    expect(AGENT_SANDBOX_PATH).toBe(`/developer?tab=config&highlight=${encodeURIComponent(`key:${AGENT_SANDBOX_HIGHLIGHT_ANCHOR}`)}`)
+  })
+
   it('keeps same-valued options on different rows apart', async () => {
     const updated = clone()
     updated.agent.approval_mode = 'interactive'
@@ -421,9 +432,14 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     await renderTab()
     fireEvent.click(optionIn('Default mate', 'crew-beta'))
     await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledWith('crew-beta'))
+    // The clock is faked only now, after the last real-timer wait, so the 20ms window
+    // below runs inside act(); it goes back to real before the next waitFor.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
     fireEvent.click(optionIn('Default mate', 'crew-alpha'))
     // Still one request: the second waits behind the open first.
-    await new Promise(r => setTimeout(r, 20))
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
+    vi.useRealTimers()
     expect(m.setDefaultAgent).toHaveBeenCalledTimes(1)
 
     releaseFirst({ ok: true })

@@ -86,6 +86,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _store_name,
         _store_tier_lock,
         _store_unavailable,
+        lesson_store_owner_only,
         markdown_memory_for_store,
         memory_startup_refusal,
         release_markdown_memory_store,
@@ -98,10 +99,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _RESPONSE_READ_CHUNK_BYTES,
         _declares_json,
         _json_content_type_error,
+        body_not_object_error,
         bounded_json_error_as_exception,
         bounded_json_error_code,
         read_bounded_json,
         read_capped_response,
+        string_field_error,
     )
     from kiro_crew.dashboard.handlers._shared_route_guards import (  # noqa: F401
         _CRON_SESSION_CONTROL_PATHS,
@@ -205,6 +208,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         annotate_skills_with_agents,
         collect_skills_blocking,
         list_kiro_skills,
+        skill_rows_for_globs,
     )
     from kiro_crew.dashboard.handlers._shared_skill_roots import (  # noqa: F401
         LEAF_SYMLINK_PREFIX,
@@ -230,6 +234,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         active_project_dir,
         active_project_state,
         requesting_slot_project,
+        session_folder_steering_dirs,
         session_project_for_spawn_gate,
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes

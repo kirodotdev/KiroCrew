@@ -65,10 +65,11 @@ describe('useComposerTreeDrop', () => {
     return { result, onTreeEntryDrop, onDragOver, onDrop }
   }
 
-  it('accepts a tree row as a copy, so the browser does not cancel the drop', () => {
+  it('accepts a tree row as a copy, so the browser does not cancel the drop', async () => {
     const t = mount()
     const event = treeRow('/repo/a.ts', 'file')
-    t.result.current.onDragOver(event)
+    act(() => { t.result.current.onDragOver(event) })
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
     expect(event.preventDefault).toHaveBeenCalled()
     expect(event.dataTransfer.dropEffect).toBe('copy')
     expect(t.onDragOver).not.toHaveBeenCalled()
@@ -77,9 +78,9 @@ describe('useComposerTreeDrop', () => {
   it('shows the no-drop cursor for a folder the composer cannot mention', () => {
     const t = mount()
     const event = treeRow('/repo/My Folder', 'dir', true)
-    t.result.current.onDragOver(event)
+    act(() => { t.result.current.onDragOver(event) })
     expect(event.dataTransfer.dropEffect).toBe('none')
-    t.result.current.onDrop(treeRow('/repo/My Folder', 'dir', true))
+    act(() => { t.result.current.onDrop(treeRow('/repo/My Folder', 'dir', true)) })
     expect(t.onTreeEntryDrop).not.toHaveBeenCalled()
     expect(t.onDrop).not.toHaveBeenCalled()
   })
@@ -107,7 +108,7 @@ describe('useComposerTreeDrop', () => {
     const t = mount({ control, clampDropOffset: clamp })
     act(() => { t.result.current.onDragOver(treeRow('/repo/a.ts', 'file')) })
     await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
-    t.result.current.onDrop(treeRow('/repo/a.ts', 'file'))
+    act(() => { t.result.current.onDrop(treeRow('/repo/a.ts', 'file')) })
     expect(dropTargetAtPoint.mock.calls.map(c => (c as unknown[])[2])).toEqual([clamp, clamp])
   })
 

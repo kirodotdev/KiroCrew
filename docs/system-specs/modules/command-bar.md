@@ -30,14 +30,9 @@ locally-known rows — sessions awaiting a user decision, commands, app destinat
 settings — and every corpus search is a view the reader ENTERS, so the expensive work is explicit
 and chosen.
 
-Four such views exist: session search, artifact search, folder search, and mate search —
-the last of them behind the `PREVIEW_CREW` flag, because it is an INGRESS to `/members` and
-that page is registered with the same flag. Every other door to it applies the gate, and this
-app ships `defaultEnabled: true`, so a launcher row that skipped it would advertise a page the
-operator has not opted into, on a default install. All three rows the feature adds are gated —
-the view row, the query-carrying fallback row, and the empty-state row — because each is
-independently reachable, and both memos that build them take the flag as a dependency so
-turning the preview on reaches the bar without a reload. The artifacts view
+Four such views exist: session search, artifact search, folder search, and mate search. The
+mate feature adds three rows — the view row, the query-carrying fallback row, and the
+empty-state row. The artifacts view
 asks `GET /api/artifacts?q=<query>` and nothing else — no `content=1`, no `snippet=1` — so the
 server matches NAMES only (`name_contains` in `api_artifacts_list`) and never opens a stored
 body. Searching what is INSIDE an artifact is a later change, and it is a change to that one
@@ -301,6 +296,27 @@ merge (counts add, the later use wins), and the next save writes the merged map.
 The root ranks from the LIVE query, not a debounced copy, so a fast typist never sees rows
 that answer an older prefix.
 
+### Sessions search: open sessions first
+
+With a query, the sessions view sorts its hits in three keys, in order
+(`createSessionsProvider` in `components/commandPalette/providers/sessionsProvider.ts`):
+
+1. sessions open in this dashboard right now, above history;
+2. then the match score;
+3. then the backend's own order.
+
+An empty query is not re-sorted, so the backend's recency order stands. "Open" means the hit's
+key, with its `dashboard_` prefix removed (`normalizeKey`), is the key of a live dashboard slot
+(`openSessionKeys` in `useCommandBarOverlayEngines.ts`). A remote instance's row never counts as
+open. A history key that does not name a live slot, such as a cron session's, stays in the
+history tier; #25460 tracks marking open rows on the server instead.
+
+The open set is part of the search's cache key (`openSessionsKey` in
+`useCommandBarOverlaySlots.ts`), so opening or closing a session re-runs the search and re-ranks
+the rows. While only the open set changes, `placeholderData` keeps the old rows on screen; a new
+query drops them. The highlight stays on the same row index, so a re-rank can move it to a
+different session.
+
 ### A stale Enter is latched, not acted on and not dropped
 
 Every SCOPED view ranks from the debounced query, because each one reaches the network, so for
@@ -415,7 +431,6 @@ debounced query already matches the new ones.
 | the mates view is entered, never fetched from the root | the catalog `useAgents` calls on mount becomes a request on every open of the bar |
 | the mates view lists MEMBERS only | a template row navigates to a page with no thread to open |
 | the mates view excludes the built-in `default` | a fresh install's first row is one the Mates page opens for nobody, in place of the empty state |
-| all three mate rows sit behind `PREVIEW_CREW` | a default install advertises `/members`, which every other door keeps behind that flag |
 | the mates read shares `['agents-catalog', 'global']` | two caches of one sessionless response, so the dialog fetches and the bar refetches the same bytes |
 | a mate route is encoded | a crew called `Review & QA` truncates the parameter and opens the page on nothing |
 | a mate row is keyed on the immutable `name`, not the display label | a renamed crew routes to a member that does not exist, and reads as idle while it is working |

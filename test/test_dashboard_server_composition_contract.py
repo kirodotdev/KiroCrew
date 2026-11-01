@@ -390,16 +390,18 @@ _LAZY_IMPORTS = {
     "kiro_crew.config": "live",
     "kiro_crew.config.live": "ConfigChange",
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
+    "kiro_crew.connections.endpoint_migration": "migrate_retired_endpoints",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
     "kiro_crew.crew_log": "crew_log_emit",
     "kiro_crew.edition_locks": "local_enable_locked",
-    "kiro_crew.dashboard": "display_verdicts",
+    "kiro_crew.dashboard": "crew_mode_migration display_verdicts handlers_instances tailnet_direct_listener",
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.enterprise_gate_middleware": (
-        "enterprise_gate_middleware_for install_enterprise_gate"
+        "enterprise_gate_middleware_for enterprise_login_source install_enterprise_gate"
     ),
     "kiro_crew.enterprise_boot": "require_kiro_login",
     "kiro_crew.dashboard.handlers": "wf_handlers work_ledger",
+    "kiro_crew.dashboard.handlers.artifact_download": "register_artifact_download_routes",
     "kiro_crew.dashboard.handlers.ask_question": (
         "api_agent_ask_open api_agent_ask_wait api_agent_ask_withdraw "
         "api_ask_question api_ask_question_answer api_ask_question_dismiss "
@@ -412,6 +414,7 @@ _LAZY_IMPORTS = {
         "api_monitors_list api_session_monitor_get"
     ),
     "kiro_crew.dashboard.handlers.change_cards": "change_card_middleware",
+    "kiro_crew.dashboard.handlers.cron_board": "wire_app_cron_folder_creator",
     "kiro_crew.dashboard.handlers.decisions": "resume_local_decision_model",
     "kiro_crew.dashboard.handlers.sandbox_doc": "register_sandbox_doc_routes",
     "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
@@ -424,9 +427,14 @@ _LAZY_IMPORTS = {
         "api_workflow_run_rerun api_workflow_runs"
     ),
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
+    "kiro_crew.dashboard.member_slot_retry": "schedule_member_slot_retry",
+    "kiro_crew.dashboard.slot_queue_repository": "drain_restored_parked_sends",
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
+    "kiro_crew.dashboard.workflow_session_port": "WorkflowSessionPort",
     "kiro_crew.decisions": "impl_jev local_runtime",
     "kiro_crew.diag.recorder": "_DiagRecorder get_recorder",
+    "kiro_crew.memory_startup": "memory_prepared memory_startup_preparing",
+    "kiro_crew.memory_startup_prebuild": "prebuild_startup_reads",
     "kiro_crew.history_index_worker": "SessionIndexWorkerSupervisor",
     "kiro_crew.kiro_prerequisite": "KiroPrerequisiteService register_turn_auth_service",
     "kiro_crew.hooks": "set_builtin_app_agents set_builtin_app_mcp_servers set_builtin_app_names",
@@ -439,6 +447,11 @@ _LAZY_IMPORTS = {
     "kiro_crew.sel": "sel",
     "kiro_crew.slack.handler": "load_voice_reply_config",
     "kiro_crew.stt": "engine stt_models",
+    "kiro_crew.shared_crew": "lifecycle",
+    "kiro_crew.shared_crew.preview": "no_maintenance preview_enabled",
+    "kiro_crew.shared_crew.wiring": "install prepare_gateway",
+    "kiro_crew.shared_crew.host_hooks": "mark_sessions_restored",
+    "kiro_crew.shared_crew.host_power": "shared_use_wants_awake",
     "kiro_crew.subagent": "_available_memory_gb",
     "kiro_crew.transcribe": "_whisper_language",
     "kiro_crew.workflows.service": "WorkflowService",
@@ -461,7 +474,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 96
+    assert len(expected) == 116
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

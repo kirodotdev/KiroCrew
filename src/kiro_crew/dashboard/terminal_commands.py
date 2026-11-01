@@ -93,7 +93,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
-from kiro_crew import name_grant, platform_compat
+from kiro_crew import name_grant, platform_compat, sandbox_plan
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.sandbox import (
@@ -458,10 +458,12 @@ def _agent_writable_roots() -> tuple[str, ...] | None:
 def _within(path: str, roots: tuple[str, ...] | None) -> bool:
     """Whether *path* resolves inside one of *roots*, refusing when *roots* is None.
 
-    Compared against ``root + os.sep`` rather than by bare prefix, so a sibling that
-    merely starts with the same characters (``…/workspace-other`` next to
-    ``…/workspace``) is outside. An unresolvable path is treated as inside, for the
-    same fail-closed reason ``_agent_writable_roots`` returns None.
+    Compared through ``sandbox_plan.path_within``, so a sibling that merely starts
+    with the same characters (``…/workspace-other`` next to ``…/workspace``) is
+    outside, and a root that already ends in a separator (a drive root such as
+    ``H:\\``, or ``/``) still contains every path below it. An unresolvable
+    path is treated as inside, for the same fail-closed reason
+    ``_agent_writable_roots`` returns None.
     """
     if roots is None:
         return True
@@ -469,7 +471,7 @@ def _within(path: str, roots: tuple[str, ...] | None) -> bool:
         real = os.path.realpath(path)
     except OSError:
         return True
-    return any(real == root or real.startswith(root + os.sep) for root in roots)
+    return any(sandbox_plan.path_within(real, root) for root in roots)
 
 
 def _under_agent_writable_root(path: str) -> bool:

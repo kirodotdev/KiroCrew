@@ -234,7 +234,31 @@ export default CompactionCard
  * kind to the scans' skip list and forgetting the transcript cannot leave it
  * painting as a reply.
  */
+/**
+ * The localized line for a Shared Crew memory-change notice
+ * (`shared_crew.memory_changes`): who changed a Crew preference or lesson, and
+ * to what. Read from the row's `meta.memory_change`; a row whose payload does
+ * not validate falls back to the English text the gateway wrote.
+ */
+export function memoryChangeNoticeText(message: Pick<ChatMessage, 'content' | 'meta'>): string {
+  const raw = message.meta?.memory_change as { actor?: { name?: unknown }; category?: unknown; new?: unknown } | undefined
+  const summary = typeof raw?.new === 'string' ? raw.new : ''
+  if (!raw || !summary) return message.content
+  const name = typeof raw.actor?.name === 'string' && raw.actor.name ? raw.actor.name : i18nT('sharedCrew.memory_change_someone')
+  const key = raw.category === 'preference' ? 'sharedCrew.memory_change_preference' : 'sharedCrew.memory_change_lesson'
+  return i18nT(key, { name, summary })
+}
+
+function MemoryChangeNotice({ message }: { message: ChatMessage }) {
+  // Subscribe so a language switch repaints the localized line.
+  useLanguageGeneration()
+  return <NoticeCard content={memoryChangeNoticeText(message)} tone="info" />
+}
+
 export function SystemNoticeRow({ message, disclosureKey }: { message: ChatMessage; disclosureKey?: string }) {
+  if (noticeKindOf(message) === 'memory_change') {
+    return <MemoryChangeNotice message={message} />
+  }
   if (noticeKindOf(message) === 'compaction') {
     return (
       <CompactionCard

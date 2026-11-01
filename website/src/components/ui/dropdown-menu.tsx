@@ -10,6 +10,7 @@ import type { GuideRevealScopeId } from '../../uiLocations/guidePlans.gen'
 import { createTriggerContext, heldGuard, ProbeHoldContext, useProbeHold, useProbeTarget, useTriggerRef } from '../../guide/probeRegistry'
 import { useGuideTrustRootAttrs } from '../../guide/trustRoot'
 import { MountAfterCommit, useCloseWhenCrewHidden, useOverlayRoot } from '../overlayRoot'
+import { quietNextFocus } from '../../lib/quietFocusReturn'
 
 type DropdownMenuProps = React.ComponentProps<typeof DropdownMenuPrimitive.Root> & {
   /**
@@ -30,6 +31,15 @@ type DropdownMenuProps = React.ComponentProps<typeof DropdownMenuPrimitive.Root>
 }
 
 const DropdownTriggerSink = createTriggerContext()
+/** The menu's trigger element, read by the content when it hands focus back. */
+const DropdownTriggerElement = React.createContext<(() => HTMLElement | null) | null>(null)
+/** The menu's open state and setter, for the trigger's touch handling (see `DropdownMenuTrigger`). */
+const DropdownOpenState = React.createContext<{ isOpen: () => boolean; setOpen: (open: boolean) => void } | null>(null)
+
+/** A pointer that scrolls: its press is not a tap until the `click` says so. */
+function isScrollingPointer(e: React.PointerEvent): boolean {
+  return e.pointerType === 'touch' || e.pointerType === 'pen'
+}
 
 /**
  * Radix `DropdownMenu.Root`, plus two rules.
@@ -79,6 +89,8 @@ function DropdownMenu({ open: openProp, defaultOpen, onOpenChange, modal: modalP
   const openRef = React.useRef(open)
   openRef.current = open
   const setTrigger = React.useCallback((el: HTMLElement | null) => { trigger.current = el }, [])
+  const getTrigger = React.useCallback(() => trigger.current, [])
+  const openState = React.useMemo(() => ({ isOpen: () => openRef.current, setOpen: handleOpenChange }), [handleOpenChange])
   useProbeTarget(guideProbe ?? (!isControlled && !onOpenChange), {
     kind: 'popup',
     trigger: () => trigger.current,
@@ -95,21 +107,83 @@ function DropdownMenu({ open: openProp, defaultOpen, onOpenChange, modal: modalP
   return (
     <MaybeGuideRevealScope id={guideScope} open={open}>
       <DropdownTriggerSink.Provider value={setTrigger}>
-        <ProbeHoldContext.Provider value={probeHold.held}>
-          <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange} modal={modal} {...rest} />
-        </ProbeHoldContext.Provider>
+        <DropdownTriggerElement.Provider value={getTrigger}>
+          <DropdownOpenState.Provider value={openState}>
+            <ProbeHoldContext.Provider value={probeHold.held}>
+              <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange} modal={modal} {...rest} />
+            </ProbeHoldContext.Provider>
+          </DropdownOpenState.Provider>
+        </DropdownTriggerElement.Provider>
       </DropdownTriggerSink.Provider>
     </MaybeGuideRevealScope>
   )
 }
 
-/** Radix `DropdownMenu.Trigger`; it also tells its menu which element it is (for a guide's probe). */
+/**
+ * Radix `DropdownMenu.Trigger`; it also tells its menu which element it is (for a
+ * guide's probe).
+ *
+ * A touch or pen press OPENS the menu on the tap's `click`, not on `pointerdown`.
+ * Radix toggles on `pointerdown` for every pointer type, so on a phone the menu
+ * opened the moment a finger landed on the trigger, before the browser could tell
+ * a tap from a scroll, and a scroll that started on a row's ⋮ button opened its
+ * menu. Cancelling the `pointerdown` here makes Radix skip its handler (it
+ * composes ours first and checks `defaultPrevented`); it does not stop the scroll,
+ * which only a `touchstart` cancel could. A scroll never produces a `click`, so
+ * the menu stays closed; a tap does, and the click opens the menu through the
+ * owning `DropdownMenu`'s state.
+ *
+ * A touch or pen press on the trigger of an OPEN menu closes it at once, as
+ * Radix does. Closing on a scroll-start is harmless, and deferring the close to
+ * the click would double-toggle: the menu's own outside-dismiss already closes
+ * it when the press moves focus off the menu, and a click after that would
+ * reopen it.
+ *
+ * Mouse presses keep toggling on `pointerdown`, the rule `usePressActivation`
+ * applies to the composer chips. Keyboard opening is Radix's own `keydown`
+ * handling and is unchanged.
+ */
 const DropdownMenuTrigger = React.forwardRef<
   React.ComponentRef<typeof DropdownMenuPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Trigger>
->(function DropdownMenuTrigger(props, ref) {
+>(function DropdownMenuTrigger({ onPointerDown, onPointerCancel, onClick, ...props }, ref) {
   const setRef = useTriggerRef(DropdownTriggerSink, ref)
-  return <DropdownMenuPrimitive.Trigger ref={setRef} {...props} />
+  const menu = React.useContext(DropdownOpenState)
+  // True between a deferred press on a closed menu and its click. The browser
+  // fires `pointercancel` when it takes the touch as a scroll, which clears it,
+  // so only the click of a later press can spend it. A tap's synthesized click
+  // may carry `detail` 0, so `detail` cannot tell it apart from a keyboard or
+  // programmatic click.
+  const tapPending = React.useRef(false)
+  const handlePointerDown = React.useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    onPointerDown?.(e)
+    tapPending.current = false
+    if (e.defaultPrevented || !menu || !isScrollingPointer(e)) return
+    e.preventDefault()
+    if (props.disabled) return
+    if (menu.isOpen()) menu.setOpen(false)
+    else tapPending.current = true
+  }, [menu, onPointerDown, props.disabled])
+  const handlePointerCancel = React.useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    onPointerCancel?.(e)
+    tapPending.current = false
+  }, [onPointerCancel])
+  const handleClick = React.useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    onClick?.(e)
+    const pending = tapPending.current
+    tapPending.current = false
+    if (!pending || e.defaultPrevented || props.disabled) return
+    menu?.setOpen(true)
+  }, [menu, onClick, props.disabled])
+  return (
+    <DropdownMenuPrimitive.Trigger
+      ref={setRef}
+      onPointerDown={handlePointerDown}
+      onPointerCancel={handlePointerCancel}
+      onClick={handleClick}
+      {...props}
+    />
+  )
 })
 DropdownMenuTrigger.displayName = DropdownMenuPrimitive.Trigger.displayName
 const DropdownMenuGroup = DropdownMenuPrimitive.Group
@@ -152,16 +226,26 @@ const DropdownMenuContent = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
 >(({ className, sideOffset = 4, onCloseAutoFocus, onFocusOutside, onInteractOutside, ...props }, ref) => {
   const held = React.useContext(ProbeHoldContext)
+  const getTrigger = React.useContext(DropdownTriggerElement)
   const trustRoot = useGuideTrustRootAttrs()
   // `onOpenAutoFocus` is not in Content's public props, but Radix reads it from them.
   const probeFocus = { onOpenAutoFocus: heldGuard<Event>(held, undefined) }
+  // Radix returns focus to the trigger right after this handler. After a
+  // pointer pick that return must not paint the keyboard ring (lib/quietFocusReturn).
+  // Armed before the caller's handler, so a caller that prevents the default
+  // and focuses the trigger itself gets the same quiet return; one that sends
+  // focus elsewhere never calls the trigger's focus() and is unaffected.
+  const closeAutoFocus = (e: Event) => {
+    quietNextFocus(getTrigger?.())
+    onCloseAutoFocus?.(e)
+  }
   return (
   <DropdownMenuPortal>
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
       {...probeFocus}
-      onCloseAutoFocus={heldGuard(held, onCloseAutoFocus)}
+      onCloseAutoFocus={heldGuard(held, closeAutoFocus)}
       onFocusOutside={heldGuard(held, onFocusOutside)}
       onInteractOutside={heldGuard(held, onInteractOutside)}
       {...trustRoot}

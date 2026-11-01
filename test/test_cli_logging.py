@@ -248,6 +248,57 @@ class TestAppendOnlyLogFileHandler:
         assert reported == [record]
         handler.close()
 
+    def test_recursion_error_propagates_and_releases_the_handle(self, tmp_path, monkeypatch):
+        # Like the stdlib handlers, a RecursionError is not swallowed into
+        # handleError: it reaches the code that logged.
+        log = tmp_path / "gateway.log"
+        handler = cli_mod._AppendOnlyLogFileHandler(log, encoding="utf-8")
+        reported: list[logging.LogRecord] = []
+        monkeypatch.setattr(handler, "handleError", reported.append)
+
+        def _recurse(_record):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr(handler, "format", _recurse)
+        record = logging.LogRecord("kiro_crew.t", logging.WARNING, "", 0, "deep", None, None)
+        with pytest.raises(RecursionError):
+            handler.emit(record)
+        assert reported == []
+        assert handler.stream is None
+        handler.close()
+
+    def test_failed_close_after_emit_still_releases_the_handle(self, tmp_path, monkeypatch):
+        # The record is already written when the close fails, so the error is
+        # swallowed, and the handler must still drop the stream: holding it is
+        # what blocks the gateway's rollover on Windows.
+        log = tmp_path / "gateway.log"
+        handler = cli_mod._AppendOnlyLogFileHandler(log, encoding="utf-8")
+        reported: list[logging.LogRecord] = []
+        monkeypatch.setattr(handler, "handleError", reported.append)
+        real_open = handler._open
+        closes: list[bool] = []
+
+        def _open_with_failing_close():
+            stream = real_open()
+            real_close = stream.close
+
+            def _close():
+                closes.append(True)
+                real_close()
+                raise OSError(errno.EIO, "close failed")
+
+            stream.close = _close
+            return stream
+
+        monkeypatch.setattr(handler, "_open", _open_with_failing_close)
+        record = logging.LogRecord("kiro_crew.t", logging.WARNING, "", 0, "kept", None, None)
+        handler.handle(record)  # must not raise into the caller
+        assert closes == [True]
+        assert handler.stream is None
+        assert reported == []
+        assert log.read_text(encoding="utf-8") == "kept\n"
+        handler.close()
+
     @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
     @pytest.mark.parametrize("command", ["mcp-core", "mcp-cron", "chat", "status"])
     def test_non_gateway_command_holds_no_handle_on_gateway_log(self, command, monkeypatch):
@@ -390,6 +441,10 @@ class TestRolloverFailureStopsFileLogging:
             tmp_path / "gateway.log", maxBytes=64, backupCount=2, encoding="utf-8"
         )
         handler.emit(_big_record())  # fills past maxBytes: the next emit rolls
+        # Some CPython 3.12 patch releases (3.12.4 here) also roll an EMPTY file
+        # over on that first emit, re-pointing the fds once. Only the re-points
+        # after the denied reopen are under test.
+        redirects.clear()
         self._deny_reopen(handler, monkeypatch, errno.EACCES)
         for _ in range(20):
             handler.emit(_big_record())
@@ -406,6 +461,7 @@ class TestRolloverFailureStopsFileLogging:
             tmp_path / "gateway.log", maxBytes=64, backupCount=2, encoding="utf-8"
         )
         handler.emit(_big_record())
+        redirects.clear()  # see test_eacces_on_reopen_stops_file_logging
         self._deny_reopen(handler, monkeypatch, errno.ENOSPC)
         for _ in range(20):
             handler.emit(_big_record())

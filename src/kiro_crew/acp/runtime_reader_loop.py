@@ -7,8 +7,8 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_pending_requests``,
-``_routed_requests``.
+Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_load_replay_frames``,
+``_pending_requests``, ``_routed_requests``.
 
 Instance fields read: ``_acp_backend``, ``_kas_host_auth``, ``_launch_cwd_roots``,
 ``_map_launch_cwd_paths``, ``_max_answer_tasks``,
@@ -66,6 +66,18 @@ _DROP_IDS_IN_LOG = 8
 # numeric id only: this runtime numbers its own requests, and a string id or a
 # nested mode ``"id": "<name>"`` is never one of them.
 _OVERSIZE_FRAME_ID_RE = re.compile(rb'"id"\s*:\s*(\d{1,18})\s*[,}]')
+
+
+def _is_replayed_turn_frame(params: object) -> bool:
+    """Whether a ``session/update`` is a turn the engine replays on ``session/load``.
+
+    KAS marks each one ``update._meta.kiro.replay: true``
+    (``test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl``).
+    """
+    update = params.get("update") if isinstance(params, dict) else None
+    meta = update.get("_meta") if isinstance(update, dict) else None
+    kiro = meta.get("kiro") if isinstance(meta, dict) else None
+    return isinstance(kiro, dict) and kiro.get("replay") is True
 
 
 def _oversize_frame_request_id(head: bytes) -> int | None:
@@ -148,9 +160,11 @@ def _format_runtime_rpc_error(error: object) -> str:
                     f"kiro-cli could not switch to the skill view '{name}' that Kiro "
                     f"Crew generated for {who}. It may be on disk in "
                     f"{kiro_agents_dir()} but not loaded by this kiro-cli process. "
-                    f"Start a new session to retry. If it keeps failing, set "
-                    f"KIROCREW_NATIVE_SKILL_PROJECTION=0 in the gateway's environment "
-                    f"and restart the gateway."
+                    f"Start a new session to retry. If it keeps failing, turn "
+                    f"projection off with kirocrew config set "
+                    f"agent.native_skill_projection false (or "
+                    f"KIROCREW_NATIVE_SKILL_PROJECTION=0 in the gateway's "
+                    f"environment) and restart the gateway."
                 )
             # ``--clean`` is not the repair: it skips merging the existing
             # config, so it drops the operator's own MCP servers and tools.
@@ -586,6 +600,12 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 ):
                     self._stage_init_frame(msg)
                 else:
+                    if (
+                        session_id in self._load_replay_frames
+                        and msg.method in _session_update
+                        and _is_replayed_turn_frame(msg.params)
+                    ):
+                        self._load_replay_frames[session_id] += 1
                     # Counted, not logged per frame: this is the measured
                     # flood (transcript replay during session/load, plus any
                     # backend still streaming after teardown).

@@ -672,6 +672,22 @@ async def close_target(
         allow_self=True,
     )
     slot_key = slot.key
+    from kiro_crew.members import DM_SLOT_MODE
+
+    if slot_key == caller_key and getattr(slot, "mode", "") == DM_SLOT_MODE:
+        # A crewmate may close the workers it dispatched without an approval
+        # (``_MEMBER_DASHBOARD_GRANTS``), never its own thread: that thread is the
+        # person's conversation with the crewmate, so only the person dismisses it.
+        _audit(
+            caller_session_key=caller_session_key,
+            operation="close",
+            slot_key=slot_key,
+            outcome="denied",
+            detail={"code": "member_thread_self_close"},
+        )
+        raise SessionControlError(
+            "a crewmate cannot close its own thread", status=403, code="member_thread_self_close"
+        )
     # Deferred for the same import cycle `stop_target` documents.
     from kiro_crew.dashboard.chat_handlers import SlotCloseError, close_slot
 

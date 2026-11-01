@@ -5,6 +5,7 @@ import ChatInput from '../components/ChatInput'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
 import { renderWithProviders } from './helpers'
+import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
 
 const paste: PasteBlock = {
   id: 'lexical-seam-paste',
@@ -37,7 +38,7 @@ describe('ChatInput Lexical migration seam', () => {
         lexicalComposer
       />,
     )
-    const chip = await screen.findByTestId('paste-token-1')
+    const chip = await screen.findByTestId('paste-token-1', undefined, LAZY_COMPOSER_MOUNT)
     expect(chip).toHaveTextContent('Paste #1 · 3 lines')
     expect(chip).not.toHaveTextContent('[ Paste')
     const input = screen.getByRole('textbox')
@@ -49,7 +50,7 @@ describe('ChatInput Lexical migration seam', () => {
     const { rerender } = renderWithProviders(
       <ChatInput {...defaultProps} lexicalComposer autoFocusKey="A" />,
     )
-    const input = await screen.findByRole('textbox')
+    const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
     await waitFor(() => expect(input).toHaveFocus())
     input.blur()
     rerender(<ChatInput {...defaultProps} lexicalComposer autoFocusKey="B" />)
@@ -81,7 +82,7 @@ describe('ChatInput Lexical migration seam', () => {
     const { rerender } = renderWithProviders(
       <ChatInput {...defaultProps} value="kept draft" lexicalComposer />,
     )
-    expect(await screen.findByRole('textbox')).toHaveAttribute('data-lexical-composer')
+    expect(await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)).toHaveAttribute('data-lexical-composer')
     rerender(<ChatInput {...defaultProps} value="kept draft" lexicalComposer={false} />)
     const textarea = screen.getByRole('textbox')
     expect(textarea.tagName).toBe('TEXTAREA')

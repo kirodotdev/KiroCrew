@@ -266,6 +266,8 @@ class TestCapabilityResponses:
             "error": False,
         }
         assert "acme" in body["streaming_providers"]
+        # Acme does not declare `identifies_languages`, so the picker stays off for it.
+        assert body["language_identification_providers"] == ["transcribe"]
 
     @pytest.mark.asyncio
     async def test_voice_rows_list_builtins_first_then_acme(self, tmp_path, monkeypatch) -> None:
@@ -560,6 +562,21 @@ class TestStreaming:
         assert stt_stream.streaming_providers() == stt_stream._STREAMING_PROVIDERS
         _install(stt=(_AcmeStt(streaming=True),))
         assert stt_stream.streaming_providers() == (*stt_stream._STREAMING_PROVIDERS, "acme")
+
+    def test_only_a_provider_that_declares_it_joins_language_identification(self) -> None:
+        from kiro_crew.dashboard.handlers import core_stt_settings
+
+        builtins = core_stt_settings._LANGUAGE_IDENTIFYING_PROVIDERS
+        # The attribute is optional: a provider without it stays out.
+        _install(stt=(_AcmeStt(),))
+        assert core_stt_settings._language_identifying_providers() == builtins
+        # Exactly True only: a truthy non-bool does not opt in.
+        acme = _AcmeStt()
+        acme.identifies_languages = "yes"  # type: ignore[attr-defined]
+        _install(stt=(acme,))
+        assert core_stt_settings._language_identifying_providers() == builtins
+        acme.identifies_languages = True  # type: ignore[attr-defined]
+        assert core_stt_settings._language_identifying_providers() == (*builtins, "acme")
 
     @pytest.mark.asyncio
     async def test_a_streaming_provider_runs_the_session(self, monkeypatch) -> None:

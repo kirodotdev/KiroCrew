@@ -101,7 +101,9 @@ def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> No
         require_member_memory_store,
     )
 
-    # A V2 store with no owner_member_id predates member identities. The start-of-
+    # A V2 store with no owner_member_id predates member identities, and a member
+    # store whose declaration an older build's save stripped back to V1 has lost
+    # them. The start-of-
     # process upgrade repairs the ones it can attribute to exactly one member;
     # doctor itself repairs nothing (it is exempt from that prologue so it can
     # report the stores), so a repairable store is reported as pending through
@@ -396,12 +398,13 @@ def _doctor_agent_auth() -> None:
     """
     from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND, selectable_backend_values
     from kiro_crew.agent_sdk import (
-        declaration_for,
         entitlement_label,
         kas_bundle,
         signs_in_separately,
     )
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_HOST_AUTH_CALLBACK
+    from kiro_crew.agent_sdk.host_auth import sign_in_remedy, signed_out_message
+    from kiro_crew.kiro_cli_bundle import spawn_login_command
 
     # Read through the facade, as every family does: a second binding here would
     # be one a patch of ``cli_doctor.ACP_BACKEND_KAS`` does not reach.
@@ -432,7 +435,8 @@ def _doctor_agent_auth() -> None:
 
     for backend in backends:
         try:
-            declaration = declaration_for(backend)
+            remedy = sign_in_remedy(backend)
+            signed_out = signed_out_message(backend)
             separate = signs_in_separately(backend)
         except Exception:
             continue
@@ -450,7 +454,7 @@ def _doctor_agent_auth() -> None:
             # The ACTION, not the state: nothing was measured on this row, and a
             # line reading "is not signed in" under a "not checked here" would
             # contradict the line above it and train the reader to skip both.
-            render._print_wrapped(declaration.sign_in_remedy)
+            render._print_wrapped(remedy)
             continue
 
         if backend in ACP_BACKENDS_HOST_AUTH_CALLBACK:
@@ -533,6 +537,7 @@ def _doctor_agent_auth() -> None:
             # the host identity store is the one store this core may read.
             # Wrapped, not reflowed: ``textwrap.wrap`` only inserts line breaks, so
             # the operator reads the declared wording, which is what the panel shows.
-            render._print_wrapped(declaration.signed_out_message)
+            # The sign-in command stays on one line: a bundled copy's path has spaces.
+            render._print_wrapped(signed_out, keep=(spawn_login_command(),))
         if backend in ACP_BACKENDS_HOST_AUTH_CALLBACK and vault_detail:
             render._print_wrapped(f"crew vault: {vault_detail}")

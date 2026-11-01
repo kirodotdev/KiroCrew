@@ -10,7 +10,7 @@
  * legacy ?tab=slack style deep links remap to ?tab=channels&channel=slack.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { act, render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -23,6 +23,7 @@ vi.mock('../pages/settings/BrowserPanel', () => ({ BrowserPanel: () => <div data
 // set, so an unmocked ComputerUsePanel calling api.getComputerUseConfig() would
 // throw during render.
 vi.mock('../pages/settings/ComputerUsePanel', () => ({ ComputerUsePanel: () => <div data-testid="computer-use-panel" /> }))
+vi.mock('../pages/settings/SessionEnvironmentsCard', () => ({ SessionEnvironmentsCard: () => <div data-testid="session-environments-panel" /> }))
 vi.mock('../pages/settings/WebhooksPanel', () => ({ WebhooksPanel: () => <div data-testid="webhooks-panel" /> }))
 vi.mock('../pages/settings/InstancesPanel', () => ({ InstancesPanel: () => <div data-testid="instances-panel" /> }))
 vi.mock('../pages/settings/SecurityPanel', () => ({ SecurityPanel: () => <div data-testid="security-panel" /> }))
@@ -75,12 +76,13 @@ if (!window.matchMedia) {
 }
 
 import SettingsPage from '../pages/SettingsPage'
-import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag } from '../utils/previewFlags'
 
 // The Webhooks tab is preview-gated and the gate reads real localStorage, so a
 // flag left set by one test would decide another test's roster.
 beforeEach(() => {
   localStorage.removeItem(PREVIEW_WEBHOOKS)
+  localStorage.removeItem(PREVIEW_SESSION_ENVIRONMENTS)
 })
 
 function renderAt(route: string) {
@@ -95,6 +97,42 @@ function renderAt(route: string) {
 }
 
 describe('SettingsPage tabs', () => {
+  it('hides Session Environments and its deep link until enabled', () => {
+    renderAt('/settings/session-environments')
+    expect(screen.queryByRole('button', { name: 'Session Environments' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('session-environments-panel')).not.toBeInTheDocument()
+  })
+
+  it('reacts to opt-in without reload and opens the dedicated settings panel', () => {
+    renderAt('/settings/developer')
+    act(() => setPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS, true))
+    fireEvent.click(screen.getByRole('button', { name: 'Session Environments' }))
+    expect(screen.getByTestId('session-environments-panel')).toBeInTheDocument()
+    expect(screen.queryByTestId('developer-panel')).not.toBeInTheDocument()
+    act(() => setPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS, false))
+    expect(screen.queryByRole('button', { name: 'Session Environments' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('session-environments-panel')).not.toBeInTheDocument()
+  })
+
+  it('opens a bookmarked Session Environments tab when enabled', () => {
+    localStorage.setItem(PREVIEW_SESSION_ENVIRONMENTS, '1')
+    renderAt('/settings/session-environments')
+    expect(screen.getByTestId('session-environments-panel')).toBeInTheDocument()
+  })
+
+  it('updates Session Environments visibility when another browser tab toggles it', () => {
+    renderAt('/settings/developer')
+    act(() => {
+      localStorage.setItem(PREVIEW_SESSION_ENVIRONMENTS, '1')
+      window.dispatchEvent(new StorageEvent('storage', { key: PREVIEW_SESSION_ENVIRONMENTS, newValue: '1' }))
+    })
+    expect(screen.getByRole('button', { name: 'Session Environments' })).toBeInTheDocument()
+    act(() => {
+      localStorage.removeItem(PREVIEW_SESSION_ENVIRONMENTS)
+      window.dispatchEvent(new StorageEvent('storage', { key: PREVIEW_SESSION_ENVIRONMENTS, newValue: null }))
+    })
+    expect(screen.queryByRole('button', { name: 'Session Environments' })).not.toBeInTheDocument()
+  })
   it('lists the Browser tab (restored after the aaf7cfe revert)', () => {
     renderAt('/settings')
     expect(screen.getByText('Browser')).toBeInTheDocument()

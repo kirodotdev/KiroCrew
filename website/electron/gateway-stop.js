@@ -122,6 +122,9 @@ function executableSelector(tokens) {
  * `current` junction while Windows reports the running process by the
  * directory the junction resolved to. A path the resolver did not select stays
  * foreign, so a matching basename elsewhere can still never authorize a kill.
+ * The one other Windows executable accepted is a venv's base interpreter, and
+ * only in the exact launch shape `trustedVenvLaunches` pins
+ * (`venvBaseInterpreterShape`).
  */
 function isKirocrewCommand(commandLine, options) {
   return kirocrewCommandShape(commandLine, options) !== null;
@@ -142,14 +145,113 @@ function isKirocrewGatewayCommand(commandLine, options) {
 }
 
 /**
+ * The first `count` arguments of a Windows process identity, or null unless
+ * each is unambiguous under the C runtime's argv rules: a plain run of
+ * non-separator, non-quote characters, or one quoted span with no backslash
+ * before its closing quote, every argument followed by a space, a tab or the
+ * end, and no other control or Unicode space anywhere in them.
+ * `commandLineTokens` splits `"a"b` into two tokens where the runtime reads
+ * one argument, so a shape that turns on argument boundaries reads them here.
+ */
+function strictWindowsArguments(commandLine, count) {
+  const input = String(commandLine || "");
+  // The runtime separates arguments on space and tab only. Any other control
+  // or Unicode space is ordinary argument text to it but a separator to a
+  // regex `\s`, so neither reading is trusted.
+  const separator = (char) => char === " " || char === "\t";
+  const unsafe = /[\u0000-\u0008\u000A-\u001F\u007F-\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/;
+  const args = [];
+  let index = 0;
+  while (args.length < count) {
+    const runStart = index;
+    while (index < input.length && separator(input[index])) index += 1;
+    // `"<ExecutablePath>" <CommandLine>` is joined by exactly one space; more
+    // means CommandLine itself starts with whitespace, which shifts its argv0.
+    if (args.length === 0 && index !== 0) return null;
+    if (args.length === 1 && input.slice(runStart, index) !== " ") return null;
+    if (index >= input.length) return null;
+    let value;
+    if (input[index] === "\"") {
+      const close = input.indexOf("\"", index + 1);
+      if (close < 0) return null;
+      value = input.slice(index + 1, close);
+      if (value.endsWith("\\")) return null;
+      index = close + 1;
+    } else {
+      const start = index;
+      while (index < input.length && !separator(input[index])) {
+        if (input[index] === "\"") return null;
+        index += 1;
+      }
+      value = input.slice(start, index);
+    }
+    if (index < input.length && !separator(input[index])) return null;
+    if (unsafe.test(value)) return null;
+    args.push(value);
+  }
+  return args;
+}
+
+/**
+ * A Windows command line run by a venv's BASE interpreter, which is ours only
+ * as a launch of that venv's own console launcher (`windows-port.js`
+ * `windowsVenvBaseInterpreterLaunches`). The process identity reads
+ * `"<ExecutablePath>" <CommandLine>`, and the shape is exact, nothing between:
+ * the executable is the interpreter the venv's `pyvenv.cfg` names; argv0 names
+ * that interpreter or the venv's own `Scripts\python.exe` redirector; the
+ * script is exactly the venv's `Scripts\kirocrew.exe`; then a server
+ * subcommand. argv0 is required because the process creator picks it freely:
+ * a launcher spelled as argv0 would leave Python running whatever the next
+ * argument names. An interpreter option, another script, another venv's
+ * launcher, a non-server subcommand or an ambiguous argument boundary stays
+ * foreign: the shared interpreter alone never names a Kiro Crew gateway.
+ *
+ * This is command-line attribution, like every other Windows rule here: a
+ * process of this account that starts the interpreter with this exact command
+ * line and its own environment is not told apart.
+ */
+function venvBaseInterpreterShape(commandLine, observed, launches, canonical) {
+  const spellings = (paths) => {
+    const set = new Set();
+    for (const candidate of paths || []) {
+      const normalized = normalizedWindowsAbsolutePath(candidate);
+      if (!normalized) continue;
+      set.add(normalized);
+      const resolved = canonical(normalized);
+      if (resolved) set.add(resolved);
+    }
+    return set;
+  };
+  const names = (token, set) => {
+    const normalized = normalizedWindowsAbsolutePath(token);
+    if (!normalized) return false;
+    if (set.has(normalized)) return true;
+    const resolved = canonical(normalized);
+    return Boolean(resolved) && set.has(resolved);
+  };
+  const args = strictWindowsArguments(commandLine, 4);
+  if (!args) return null;
+  const [, argv0, script, subcommand] = args;
+  for (const launch of launches) {
+    const interpreters = spellings(launch.interpreters);
+    if (!observed.some((candidate) => candidate && interpreters.has(candidate))) continue;
+    if (!names(argv0, interpreters) && !names(argv0, spellings(launch.venvInterpreters))) continue;
+    if (!names(script, spellings(launch.launchers))) continue;
+    if (KIROCREW_SERVER_SUBCOMMANDS.has(subcommand)) return { serverSubcommand: true };
+  }
+  return null;
+}
+
+/**
  * Classify a command line: `null` when it is not a Kiro Crew command, else
  * `{ serverSubcommand }` -- whether argparse's first positional selects a
  * server subcommand. The `-m <module>` shape only ever matches WITH that
  * subcommand, so it is always `true` there.
  */
+
 function kirocrewCommandShape(
   commandLine,
-  { trustedExecutablePaths = [], canonicalizePath = () => "" } = {}
+  { trustedExecutablePaths = [], trustedVenvLaunches = [], canonicalizePath = () => "" } = {}
 ) {
   const tokens = commandLineTokens(commandLine);
   if (!tokens.length) return null;
@@ -172,7 +274,9 @@ function kirocrewCommandShape(
       if (resolved) trusted.add(resolved);
     }
     const observed = [windowsExecutablePath, canonical(windowsExecutablePath)];
-    if (!observed.some((candidate) => candidate && trusted.has(candidate))) return null;
+    if (!observed.some((candidate) => candidate && trusted.has(candidate))) {
+      return venvBaseInterpreterShape(commandLine, observed, trustedVenvLaunches, canonical);
+    }
   }
 
   const selector = windowsExecutablePath

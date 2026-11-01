@@ -290,6 +290,34 @@ def test_a_cancelled_save_rolls_back_only_when_the_write_failed(
     assert calls == (["rollback"] if write_fails else [])
 
 
+def test_a_landed_write_honours_the_docker_creds_scrub(monkeypatch) -> None:
+    """The env sync routes through the shared ``apply_env_credential_changes``, so
+    under ``_KIROCREW_CREDS_SCRUBBED`` a credential key is NOT re-injected into
+    os.environ (the duplicate-loop bug that ignored the scrub). A non-credential
+    operator key still applies."""
+
+    async def _ok(_updates):
+        return None
+
+    monkeypatch.setattr(mod, "_write_env_off_loop", _ok)
+    _calls, rollback = _rollback_probe()
+    with monkeypatch.context() as env:
+        env.setenv("_KIROCREW_CREDS_SCRUBBED", "1")
+        env.delenv("SLACK_BOT_TOKEN", raising=False)
+        env.setenv("KC_PROBE_PROXY", "unset-before")
+        env.delenv("KC_PROBE_PROXY")
+        asyncio.run(
+            mod._write_env_or_roll_back(
+                {"SLACK_BOT_TOKEN": "xoxb-rotated", "KC_PROBE_PROXY": "http://p"}, rollback
+            )
+        )
+        # The credential key is NOT re-injected under the scrub...
+        assert "SLACK_BOT_TOKEN" not in os.environ
+        # ...but a non-credential operator setting still applies.
+        assert os.environ.get("KC_PROBE_PROXY") == "http://p"
+    assert "KC_PROBE_PROXY" not in os.environ
+
+
 def test_a_landed_write_syncs_the_process_environment(monkeypatch) -> None:
     async def _ok(_updates):
         return None

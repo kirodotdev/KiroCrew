@@ -155,6 +155,11 @@ UNGUARDED_OTHER: dict[tuple[str, str], tuple[int, str]] = {
         404,
         "authenticated by the token in the URL, not the cookie; an unknown token is 404",
     ),
+    ("GET", "/app-frame/{name}/{point}/{point_id}/{frame_id}/{token}"): (
+        404,
+        "an app frame (link preview, message action), authenticated by the token in the URL, not the "
+        "cookie; an unknown token is 404",
+    ),
     ("GET", "/sandbox-doc/{doc_id}/{token}"): (
         404,
         "authenticated by the token in the URL, not the cookie; an unknown token is 404",

@@ -77,7 +77,6 @@ class TestFileSearch:
             assert "hello.py" in names
             assert "hello_world.py" in names
             assert "hello_util.py" in names
-            # Check fields present
             r0 = data["results"][0]
             assert "path" in r0 and "size" in r0 and "mtime" in r0
 

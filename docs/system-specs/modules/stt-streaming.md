@@ -225,7 +225,7 @@ Either one releases the microphone and ends the start.
 | Worklet | `website/public/pcm-worklet.js` | Float32-to-16 kHz mono Int16 PCM downsampler |
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
 | Voice hook | `website/src/hooks/useVoiceInput.ts` | Owns mic and device selection, and picks streaming or batch for the NEXT utterance. `stop`, `cancel` and `recording` route on the transport of the utterance in flight (`ownTransportRef ?? startupTransport`), never on the preference, so flipping the mode mid-utterance cannot send a commit or discard down the other transport. While a streaming session drains after the mode was switched off, `drainCancellable` exposes the "Discard dictation" control, which cancels the session and rolls the dictated region out of the composer (`cancelVoiceRollback.test.tsx`) |
-| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, owns the one-mic mutex and the frozen-prefix snapshot; `ComposerDockView.tsx` and `ChatPane.tsx` mount the root and supply only host options |
+| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, owns the one-mic mutex and the frozen-prefix snapshot; `ComposerDockView.tsx`, `ChatPane.tsx` and `CrewChatWindow.tsx` mount the root and supply only host options. A crew window's transcript that settles after the window closed goes to that session's crew draft (`deliverCrewWindowTranscript`, `composerHost.crewWindowTranscript.test.tsx`), and its send ends live dictation first (`CrewChatWindow.test.tsx`) |
 | Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, and the thin bar it falls back to |
 | Composer dictation | `website/src/components/chat-input/voice.ts` | The composer's side of the Voice atom: the caret a transcript splices in at, the dictation-panel gate, Escape to discard, and on touch the hold-to-talk mode and the labels its controls carry |
 | Composer voice controls | `website/src/components/chat-input/VoiceControls.tsx` | Renders that state: the hold gesture's cancel cue, the dictation panel or status bar, the hold target, and the mic |
@@ -339,7 +339,13 @@ After the three gates, each provider has its own precondition and failure frame:
   `stt_native_probe_crashed` ([Native preflight and the load fuse](#native-preflight-and-the-load-fuse)).
 - **apple**: `apple_speech.availability()` decides, and separates "this macOS
   cannot run it" from "the Swift toolchain is missing", because only the second
-  has a fix.
+  has a fix. Past that, `StreamTranscribe.swift` checks the locale against the
+  installed models of the module it builds: `DictationTranscriber` (the default)
+  and `SpeechTranscriber` keep separate inventories, and a host often has a
+  dictation model for en-US only. With no dictation model but a speech model, the
+  helper streams with `SpeechTranscriber`; with neither, it fails before `ready`
+  with an error naming the missing model. A start failure is logged at WARNING as
+  well as sent to the client.
 - **transcribe**: `amazon_transcribe` must be importable, and
   `aws_consent.authorize(SERVICE_TRANSCRIBE, profile, region)` must grant. AWS
   authorizes the stream only when it opens, and the consent gate's
@@ -349,7 +355,7 @@ After the three gates, each provider has its own precondition and failure frame:
   refused custom vocabulary has its own code too
   ([Custom vocabulary](#custom-vocabulary-transcribe-only)), and so does
   mixed-language detection on an SDK too old for it
-  ([Mixed-language detection](#mixed-language-detection-transcribe-only)); any
+  ([Mixed-language detection](#mixed-language-detection)); any
   other start failure is `_CODE_SESSION_FAILED`. A stream on a named
   `stt.transcribe_profile` keeps the credentials it opened with:
   `_ProfileCredentialResolver` resolves once, because the SDK asks again for every
@@ -418,7 +424,7 @@ vocabulary.
   is loading while the list is still being read with the stored value still shown,
   and warns when the stored name is not ready in the configured region.
 
-### Mixed-language detection (`transcribe` only)
+### Mixed-language detection
 
 `stt.transcribe_languages` lists the languages speakers switch between in one
 recording (empty: off). With `TRANSCRIBE_LANGUAGES_MIN` (two) or more,
@@ -427,6 +433,15 @@ opens the stream with `IdentifyMultipleLanguages` and `LanguageOptions`, so
 Amazon Transcribe transcribes each part in the language it identifies. With
 fewer, the stream is opened exactly like the single-language one, on
 `effective_language_code`.
+
+Of the built-ins only `transcribe` identifies languages. An edition STT provider
+that sets the optional `identifies_languages = True` (exactly `True`) gets the
+same picker; it reads the candidates from
+`SttConfig.transcribe_language_identification` itself, and the bullets below on
+the stream, the SDK and the voice memo describe the `transcribe` provider only.
+`GET /api/config/stt` serves `language_identification_providers`, the built-in
+`transcribe` followed by each such edition provider
+(`speech_providers.language_identifying_stt_names`).
 
 - **No `LanguageCode` beside identification.** Amazon Transcribe fails a stream
   that names both, so `stt_stream._transcribe_language_kwargs` passes
@@ -451,7 +466,9 @@ fewer, the stream is opened exactly like the single-language one, on
   client method's signature first (`_client_identifies_languages`) and, when it
   lacks them, refuses before any audio is read with
   `stt_transcribe_sdk_outdated` and logs the install command.
-- **The panel offers the picker beside Language.** Its candidates are the
+- **The panel offers the picker beside Language** for every provider in
+  `language_identification_providers`, or for `transcribe` alone when an older
+  gateway serves no list. Its help text names no provider. Its candidates are the
   served `language_codes` (which include `vi-VN`, and any stored code the
   common list lacks, so a value set in config.json stays selectable), each named
   in the app language beside its code, as the Language picker's options are; the
@@ -742,7 +759,7 @@ therefore by every surface that asks whether local recognition can run
 
 | Mechanism | What it checks | Refusal code |
 |---|---|---|
-| Subprocess probe | A child interpreter (`sys.executable -I -S -c <constant> <extension path>` -- `-S` because `-I` alone still imports `site`, which executes every `.pth` in the venv's site-packages inside a child that is unsandboxed on purpose, and the child loads by explicit path so it never needed `site`; cwd pinned to the interpreter prefix, environment reduced to a fixed allow-list, and the child zeroes its own `RLIMIT_CORE` before the load so its expected death writes no core file) loads the exact `_pywhispercpp` file the parent's `binary_identity()` resolved -- by path, because `-I` hides a user-site install from the child and the two processes must judge the same binary -- and runs its `whisper_print_system_info()`, the one call that both runs `ggml_cpu_init` (the first native code an incompatible build faults in) and reports the instruction sets the build was compiled for. A child killed by `SIGILL` (or Windows `STATUS_ILLEGAL_INSTRUCTION`) is a refusal; a surviving child's feature list is compared with the host's `/proc/cpuinfo` flags (Linux only; x86-64 through `embeddings._linux_x86_64_cpu_flags`, the one cpuinfo parser this repository keeps, AArch64 through the same intersect-across-cores read of the `Features` line; unknown elsewhere -- including 32-bit ARM, whose kernel spells `neon` where AArch64 spells `asimd` -- and an unknown host is never refused on) so a build that declares `AVX512` is refused on a host without `avx512f` even if the probe executed no such instruction. Cached per installed binary (path, size, mtime), so a reinstall is probed afresh and nothing is probed twice | `stt_unsupported_cpu`; any other fatal signal `stt_native_probe_crashed` |
+| Subprocess probe | A child interpreter (`sys.executable -I -S -c <constant> <extension path>` -- `-S` because `-I` alone still imports `site`, which executes every `.pth` in the venv's site-packages inside a child that is unsandboxed on purpose, and the child loads by explicit path so it never needed `site`; cwd pinned to the interpreter prefix, environment reduced to a fixed allow-list, and the child zeroes its own `RLIMIT_CORE` before the load so its expected death writes no core file) loads the exact `_pywhispercpp` file the parent's `binary_identity()` resolved -- by path, because `-I` hides a user-site install from the child and the two processes must judge the same binary -- and runs its `whisper_print_system_info()`, the one call that both runs `ggml_cpu_init` (the first native code an incompatible build faults in) and reports the instruction sets the build was compiled for. A child killed by `SIGILL` (or Windows `STATUS_ILLEGAL_INSTRUCTION`) is a refusal; a surviving child's feature list is compared with the host's `/proc/cpuinfo` flags (Linux only; x86-64 through `embeddings._linux_x86_64_cpu_flags` and AArch64 through `embeddings._linux_aarch64_cpu_features` (the `Features` reader the Linux arm64 dotprod lib choice also uses), one cpuinfo parser per architecture; unknown elsewhere -- including 32-bit ARM, whose kernel spells `neon` where AArch64 spells `asimd` -- and an unknown host is never refused on) so a build that declares `AVX512` is refused on a host without `avx512f` even if the probe executed no such instruction. Cached per installed binary (path, size, mtime), so a reinstall is probed afresh and nothing is probed twice | `stt_unsupported_cpu`; any other fatal signal `stt_native_probe_crashed` |
 | Load marker | `_build_model_fused`, on the WORKER THREAD, writes `<models dir>/.load-in-progress.json` (via `atomic_write`, so no predictable temp name a sandboxed agent could pre-plant as a symlink; a per-process random token, the pid for a human, model path, binary identity) immediately before `_build_model` and clears it in a `finally` around it -- the marker is filesystem I/O and the loop neither writes nor clears it -- so every outcome in which the call RETURNED -- success, a Python exception, a load that outlived its timeout -- clears it, including a shutdown that has already closed the event loop (a loop done-callback would not run then, and a routine restart mid-prewarm would trip the fuse). Identity is the token, not the pid: the marker outlives the process on the models directory and a replacement container in a fresh PID namespace lands on the same low pid. A marker from another process naming the binary installed now means the last load never returned, and `probe` refuses. A marker naming a binary that is gone, or one that cannot be read, is ignored and LEFT IN PLACE: the inspector only reads, because the path is shared and an unlink here could erase another process's live fuse mid-load; the next arm's `atomic_write` replaces it whole. The read itself is bounded (`_read_marker_bounded`: `O_NOFOLLOW|O_NONBLOCK`, `fstat` must show a regular file of at most `_MARKER_MAX_BYTES` = 4 KiB, judged before a byte is read), because the name is fixed in a directory a sandboxed agent can write and the read runs on every availability check -- a planted symlink, FIFO or multi-GB file is ignored like garbage | `stt_load_crashed` |
 
 The subprocess probe answers a deterministic property of the (binary, CPU) pair and
@@ -1360,7 +1377,7 @@ frame and the close, which is what lets a long-running client rotate to a fresh
 socket without loss. `ready` advertises the cap as `max_duration_ms` so that
 client can plan the rotation.
 
-The model fetch gets its own ceiling rather than borrowing the session's because it transfers a catalog entry rather than a dictation. `stt.models` uses a request timeout, while `_prepare_local_with_progress` also bounds how long a WebSocket waits. On the WebSocket timeout the transfer is shielded and left running:
+The model fetch gets its own ceiling rather than borrowing the session's because it transfers a catalog entry rather than a dictation. `stt.models` bounds each socket read with `_NETWORK_STALL_TIMEOUT_SECS`, while `_run_local_session` bounds the whole wait with `_MAX_MODEL_PREPARE_SECS` around `_relay_download_progress`. On the WebSocket timeout the transfer is shielded and left running:
 cancelling it would release the model store's transfer lock while its worker thread
 is still writing the staging file, and the next session would start a second write
 to the same path. Only the socket gives up; the bytes land for the next attempt.

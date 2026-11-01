@@ -252,7 +252,11 @@ full interval when that nudge turn ends. This prevents active conversation
 from postponing monitoring forever while avoiding a nudge racing a user turn;
 `test_autonudge_deadline.py::test_user_turn_resumes_remaining_time_not_full_interval`
 and `test_delivered_fire_clears_deadline_then_turn_end_starts_fresh` pin both
-sides of the contract. Channel-bound loops re-arm after their unattended turn
+sides of the contract. The `fired` state event carries the cleared deadline, so
+the turn-end re-arm that sets the next one (`_arm_and_announce_deadline`, also
+used when a re-arm was deferred past the fire window) emits `updated`, and the
+dashboard countdown never reads "not yet scheduled" between cycles;
+`test_turn_end_after_fire_announces_the_new_deadline` pins it. Channel-bound loops re-arm after their unattended turn
 in `AutoNudgeService._run_fire_cycle` (`autonudge_service/firing.py`) because they do not
 use the dashboard
 turn-lifecycle hooks.
@@ -359,7 +363,11 @@ The reading itself:
 * `_collapse` folds duplicate rows to one per identity, newest by start time, and
   reports how many raw rows it folded. Rows land in the buckets `failing`, `pending`,
   `passing`, `noise` and `unknown`: an unknown conclusion is `unknown`, and a cancelled
-  or stale row is `noise`.
+  or stale row is `noise`. The fold only arbitrates correctly if BOTH attempts of a
+  re-run are in the payload, so the check-runs read passes `filter=all`: the endpoint
+  defaults to `filter=latest` (one row per name), which would drop the stale attempt
+  server-side before `_collapse` ever sees it, and a verdict that flipped on re-run
+  would then be read as whichever row the server happened to keep.
 * The identity a row folds under is its WORKFLOW, not the app that posted it. Every
   GitHub Actions row carries one app slug, so the slug cannot separate two workflow
   files that each define a job of the same name, and folding those lets one

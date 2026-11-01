@@ -634,7 +634,7 @@ class TestConductorInstaller:
         ``action=close`` so ending the item and ending its session are one step.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
-        assert "`session_close` (close a child once its item is terminal)" in prompt
+        assert "`session_close` (close a child once its item is terminal;" in prompt
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         assert "Closing the item and closing its session happen together" in body
         assert "`session_close` archives (reopenable); it never deletes" in body
@@ -1107,11 +1107,10 @@ def _load_evaluator():
 class TestAcceptEvaluatorInvariant:
     """No model-authored argv may reach subprocess.
 
-    This is the property three review rounds converged on: constraining a
-    spec-supplied argv (allowlist, basename check) never closes the class,
-    because the script runs as an approved wrapper and Kiro Crew's
-    denied-command floor cannot see the argv it receives on stdin. The fix was
-    to stop accepting one at all.
+    Constraining a spec-supplied argv (allowlist, basename check) never closes
+    the class, because the script runs as an approved wrapper and Kiro Crew's
+    denied-command floor cannot see the argv it receives on stdin. So the
+    evaluator accepts no argv at all.
     """
 
     def test_pr_checks_builds_its_own_argv(self):
@@ -1165,7 +1164,7 @@ class TestAcceptEvaluatorInvariant:
         verdict, evidence = mod._run(["git", "--version"])
         assert verdict == "refused"
         assert "not a command this script builds" in evidence
-        assert mod._SELF_BUILT_COMMANDS == {"gh"}
+        assert mod._SELF_BUILT_COMMANDS == {"gh", "kirocrew"}
 
     def test_the_draft_probe_refuses_a_command_it_did_not_build(self):
         """Same guard, reached through the probe's own seam."""

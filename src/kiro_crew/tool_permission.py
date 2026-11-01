@@ -299,7 +299,10 @@ class Narrator:
     refused program name is audited, and :meth:`allowed` after the wire answered
     an approval (*sent* is False when the transport floor turned it into a
     rejection) and before it is audited. A narrator may move run state (a
-    counter the run's replay gates read, a watchdog stamp), not only log.
+    counter the run's replay gates read, a watchdog stamp), not only log,
+    except in :meth:`declined`: that one is the human-facing decline line, so a
+    repeated platform-scope refusal skips it after the first call of a session
+    while the audit row is still written for every call.
     """
 
     def refusing(self, ask: Ask, refusal: Refusal) -> None:
@@ -481,7 +484,12 @@ async def _admitted(ask: Ask, policy: Policy, hit: Hit, low: bool) -> bool:
     refused = await name_grant.refusal_for_event(ask.event)
     if refused is None:
         return True
-    policy.narrator.declined(ask, refused)
+    # The narration is the human-facing log line, so a platform-scope refusal
+    # (one constant text per session) is narrated once per session, as every
+    # other surface does. The audit row below is a security decision and is
+    # written for every call.
+    if name_grant.should_log_decline(ask.session_key, refused):
+        policy.narrator.declined(ask, refused)
     policy.audit.declined(ask, refused, hit.reason)
     return False
 

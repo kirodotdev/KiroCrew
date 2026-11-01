@@ -64,7 +64,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
-from kiro_crew import platform_compat, shutdown_event
+from kiro_crew import platform_compat, released_sessions, shutdown_event
 from kiro_crew.config.paths import config_dir
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.member_memory_auth import prune_legacy_member_pid_bindings
@@ -89,6 +89,7 @@ from kiro_crew.session_pid import (
     _kill_confirmed_and_writeback,
     _periodic_pid_sweep,
     _prune_stale_session_pid_files,
+    _prune_stale_session_token_files,
     _rss_mb_from_tree,
     cleanup_orphaned_session_roots,
     find_orphan_mcp_candidates,
@@ -96,6 +97,7 @@ from kiro_crew.session_pid import (
     kill_orphan_mcps,
 )
 from kiro_crew.session_scope_reap import reap_abandoned_agent_scopes
+from kiro_crew.session_staging_sweep import sweep_session_staging_temps
 from kiro_crew.shell_audit_log import rotate_shell_audit_log
 from kiro_crew.stats import Stats
 from kiro_crew.watchdog import CleanupHook, SessionWatchdog
@@ -130,7 +132,9 @@ def _cleanup_deps(self: SessionManager) -> CleanupDeps:
         cleanup_orphaned_session_roots=lambda: cleanup_orphaned_session_roots(),
         cleanup_stale_sandbox_profiles=lambda: cleanup_stale_sandbox_profiles(data_home=data_home),
         prune_session_pid_mappings=lambda: _prune_stale_session_pid_files(),
+        prune_session_token_mappings=lambda: _prune_stale_session_token_files(),
         prune_member_pid_bindings=lambda: prune_legacy_member_pid_bindings(),
+        sweep_session_staging_temps=lambda: sweep_session_staging_temps(),
         # Same resolved home as the sandbox sweep, for the same reason: the
         # step runs on the maintenance pool, and the hook's own expansion of
         # ``${KIROCREW_HOME:-$HOME/.kiro/crew}`` is this path.
@@ -186,6 +190,7 @@ def _cleanup_boundary(self: SessionManager) -> SessionCleanup:
                     CleanupHook("rss_threshold", self._rss_threshold_check),
                     CleanupHook("stuck_turn", self._stuck_turn_check),
                     CleanupHook("bg_drain_reap", self._bg_drain_reap_hook),
+                    CleanupHook("released_sessions", self._released_sessions_hook),
                 ]
             )
         service = SessionCleanup(
@@ -279,6 +284,15 @@ async def _expire_idle_hook(self: SessionManager) -> None:
 async def _bg_drain_reap_hook(self: SessionManager) -> None:
     """Reap drained background runtimes during a cleanup tick."""
     await self._cleanup_boundary()._bg_drain_reap_hook()
+
+
+async def _released_sessions_hook(self: SessionManager) -> None:
+    """Delete the released sessions' records that are due.
+
+    The body is ``released_sessions.sweep_on_tick``, in the module that owns the
+    entries, not in ``SessionCleanup``.
+    """
+    await released_sessions.sweep_on_tick(self)
 
 
 async def _orphan_mcp_hook(self: SessionManager) -> None:

@@ -1007,8 +1007,9 @@ function recordingEmitter(label, log) {
   };
 }
 
-function dashboardWindowHarness({ platform, frameless = false } = {}) {
+function dashboardWindowHarness({ platform, frameless = false, downloadExpectations = null } = {}) {
   const log = [];
+  const sessionListeners = new Map();
   const firstLine = (text) => String(text).split("\n").map((line) => line.trim()).find(Boolean);
   const viewEvents = recordingEmitter("view", log);
   const viewContents = {
@@ -1018,7 +1019,11 @@ function dashboardWindowHarness({ platform, frameless = false } = {}) {
       webRequest: {
         onBeforeSendHeaders() { log.push("view.session.onBeforeSendHeaders"); },
       },
-      on(event) { log.push(`view.session.on:${event}`); return this; },
+      on(event, listener) {
+        log.push(`view.session.on:${event}`);
+        sessionListeners.set(event, listener);
+        return this;
+      },
     },
     setWindowOpenHandler(handler) {
       log.push("view.setWindowOpenHandler");
@@ -1090,8 +1095,9 @@ function dashboardWindowHarness({ platform, frameless = false } = {}) {
     store: { get: (key) => (key === "linuxFrameless" ? frameless : null) },
     platform,
     env: {},
+    downloadExpectations,
   }));
-  return { lifecycle, win, viewContents, log, panelViews, openedExternally };
+  return { lifecycle, win, viewContents, log, panelViews, openedExternally, sessionListeners };
 }
 
 async function wireDashboardWindow(t, options) {
@@ -1120,6 +1126,7 @@ describe("dashboard window wiring order", () => {
     assert.deepEqual(events, [
       "view.on:did-finish-load",
       "win.on:swipe",
+      "view.on:input-event",
       "win.on:closed",
       "win.on:resize",
       "win.on:closed",
@@ -1284,6 +1291,37 @@ describe("dashboard window wiring order", () => {
     assert.equal(win._mcGetCustomName(), null);
     win._mcSetCustomName("Work");
     assert.equal(win._mcGetCustomName(), "Work");
+  });
+});
+
+describe("dashboard download handler platform", () => {
+  // Two in-flight downloads whose names differ only in case collide on a
+  // case-insensitive volume (darwin, win32) and not on Linux. Running both
+  // platforms means one of them differs from whatever host runs the suite.
+  async function savePathsFor(t, platform) {
+    const harness = await wireDashboardWindow(t, {
+      platform,
+      downloadExpectations: { claim: () => true },
+    });
+    const onWillDownload = harness.sessionListeners.get("will-download");
+    return ["Report.zip", "report.zip"].map((name) => {
+      let savePath = null;
+      onWillDownload({}, {
+        getURLChain: () => ["http://localhost:5476/export"],
+        getFilename: () => name,
+        setSavePath(p) { savePath = p; },
+        once() {},
+      }, harness.viewContents);
+      return path.basename(savePath);
+    });
+  }
+
+  it("folds case on the injected darwin platform", async (t) => {
+    assert.deepEqual(await savePathsFor(t, "darwin"), ["Report.zip", "report (1).zip"]);
+  });
+
+  it("keeps case on the injected linux platform", async (t) => {
+    assert.deepEqual(await savePathsFor(t, "linux"), ["Report.zip", "report.zip"]);
   });
 });
 
@@ -1719,5 +1757,82 @@ describe("gateway port prompt", () => {
       await settle();
       assert.deepEqual(ports, expected, `answer ${JSON.stringify(answer)}`);
     }
+  });
+});
+
+// ── Close button: background vs quit (#12204) ───────────────────────────────
+
+describe("main window close action", () => {
+  function closeHandlerBody() {
+    const start = SOURCE.indexOf('mainWindow.on("close", createCloseHandler({');
+    assert.notEqual(start, -1, "main window close handler must be built by createCloseHandler");
+    return SOURCE.slice(start, SOURCE.indexOf("\n    }));\n", start));
+  }
+
+  it("wires the close listener to the store, the tray hide, requestQuit and persist", () => {
+    // The sequence itself is exercised behaviourally in close-action.test.js;
+    // this pins that the main window feeds it the real effects.
+    const body = closeHandlerBody();
+    assert.match(body, /getAction: \(\) => getCloseAction\(store\)/);
+    assert.match(body, /cancelPendingTrayHide\(mainWindow\)/);
+    assert.match(body, /^\s*requestQuit,$/m);
+    assert.match(body, /hideToTray\(mainWindow, \{/);
+    assert.match(body, /persist\(\);/);
+  });
+
+  function facadeHarness(stored = {}) {
+    const data = { ...stored };
+    const writes = [];
+    const store = {
+      get: (key) => data[key],
+      set: (key, value) => { writes.push([key, value]); data[key] = value; },
+    };
+    const lifecycle = createWindowLifecycle(validOptions({ store }));
+    return { lifecycle, data, writes };
+  }
+
+  it("the facade reads and writes the stored choice, canonicalized", () => {
+    const h = facadeHarness();
+    assert.equal(h.lifecycle.closeAction.get(), "background", "an untouched install keeps running");
+    assert.equal(h.lifecycle.closeAction.set("quit"), "quit");
+    assert.equal(h.data.closeAction, "quit");
+    assert.equal(h.lifecycle.closeAction.get(), "quit");
+    assert.equal(h.lifecycle.closeAction.set("nonsense"), "background");
+    assert.equal(h.data.closeAction, "background");
+  });
+
+  it("the facade skips a write that changes nothing", () => {
+    const h = facadeHarness({ closeAction: "quit" });
+    h.lifecycle.closeAction.set("quit");
+    assert.deepEqual(h.writes, []);
+    h.lifecycle.closeAction.set("background");
+    assert.deepEqual(h.writes, [["closeAction", "background"]]);
+  });
+
+  it("the tray menu is unchanged: the setting lives only in Settings", () => {
+    const menus = [];
+    const lifecycle = createWindowLifecycle(validOptions({
+      electron: {
+        app: { name: "Kiro Crew", getVersion: () => "0.8.0", getPath: () => "/virtual/logs" },
+        Tray: class {
+          setToolTip() {}
+          setContextMenu() {}
+          on() {}
+        },
+        Menu: { buildFromTemplate: (template) => { menus.push(template); return { template }; } },
+        nativeImage: {
+          createFromPath: () => ({ resize: () => ({ fake: "icon" }), setTemplateImage() {} }),
+        },
+        shell: {},
+      },
+      store: { path: "/virtual/config.json", get: () => undefined, set() {} },
+      platform: "linux",
+      env: {},
+    }));
+    lifecycle.createTray();
+    assert.deepEqual(
+      menus[0].map((item) => item.label || item.type),
+      ["Show Kiro Crew", "separator", "New Connection Window…", "separator", "Open Config File", "separator", "Quit"],
+    );
   });
 });

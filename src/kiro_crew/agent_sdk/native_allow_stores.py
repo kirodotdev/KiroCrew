@@ -22,12 +22,14 @@ from pathlib import PurePosixPath
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 __all__ = [
@@ -81,6 +83,15 @@ NATIVE_ALLOW_STORES: Mapping[str, tuple[NativeAllowStore, ...]] = {
     ACP_BACKEND_CODEX: (NativeAllowStore(".codex/config.toml", (("CODEX_HOME", "config.toml"),)),),
     # extensions: code pi loads into its own process.
     ACP_BACKEND_PI: (_pi("settings.json"), _pi("extensions")),
+    # Its permission settings (allowed tools and URLs, trusted folders, its own hooks)
+    # live in config.json, which is already refused to the file tools for reading and
+    # writing as its credential leaf (``host_auth``), so it is not listed again here.
+    # mcp-config.json: its MCP servers, started at the next spawn without a prompt.
+    # installed-plugins: plugins it loads, whose hooks and MCP servers run unasked.
+    ACP_BACKEND_COPILOT: tuple(
+        NativeAllowStore(f".copilot/{name}", (("COPILOT_HOME", name),))
+        for name in ("mcp-config.json", "installed-plugins")
+    ),
 }
 
 #: Harnesses with no row above, and why.
@@ -90,10 +101,29 @@ NATIVE_ALLOW_STORES_NONE: Mapping[str, str] = {
     ACP_BACKEND_KAS: "it runs kiro-cli's engine and reads the same stores as kiro",
     ACP_BACKEND_DEEPSEEK: "no on-disk allow list is known; every call goes through "
     "Crew's gate extension",
+    ACP_BACKEND_STRANDS: "in the Python-project ACP mode Crew runs, the CLI consults "
+    "no allow list of its own (its ~/.strands/cli/config.json permissions apply to its "
+    "terminal UI only); every call raises Crew's gate module interrupt",
 }
 
-#: A project's own claude settings, refused for the file-edit tools in any directory.
-PROJECT_ALLOW_STORES: tuple[str, ...] = (".claude/settings.json", ".claude/settings.local.json")
+#: A project's own harness config, refused for the file-edit tools in any directory:
+#: each harness reads it from the session's work dir or a parent at launch. A file
+#: entry matches as a path's last segments; a trailing ``/`` marks a directory,
+#: matched with everything under it.
+PROJECT_ALLOW_STORES: tuple[str, ...] = (
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    # opencode: config found walking up from the work dir, and its .opencode dirs
+    # (config, agents, plugins, custom tools).
+    "opencode.json",
+    "opencode.jsonc",
+    ".opencode/",
+    # pi, once the user trusts the folder: settings (packages, extension paths),
+    # MCP servers, and extensions loaded into its process.
+    ".pi/settings.json",
+    ".pi/mcp.json",
+    ".pi/extensions/",
+)
 
 
 def _stores() -> tuple[NativeAllowStore, ...]:
@@ -118,20 +148,31 @@ def override_env_vars() -> tuple[str, ...]:
 
 
 def matches_store(path_str: str, base_dir: str | None = None) -> bool:
-    """Whether any form of *path_str* is a project's own claude settings file.
+    """Whether any form of *path_str* is a project's own harness config.
 
-    These sit in whatever directory a session works in, so they are matched by their
-    last two segments. The ``$HOME`` stores, their home-variable spellings and a
-    symlinked config dir are anchored by ``security.paths_targets`` like the kiro-cli
-    leaves. Called from ``security.paths.sensitive_write_path_refusal``.
+    These sit in whatever directory a session works in, so a file entry is matched
+    by its last segments and a directory entry by its segments anywhere in the path.
+    The ``$HOME`` stores, their home-variable spellings and a symlinked config dir are
+    anchored by ``security.paths_targets`` like the kiro-cli leaves. Called from
+    ``security.paths.sensitive_write_path_refusal``.
     """
     # Circular import: security.paths_lists imports this module.
     from kiro_crew.security.paths_targets import _candidate_forms
 
     if not path_str:
         return False
-    tails = {tuple(PurePosixPath(rel.casefold()).parts) for rel in PROJECT_ALLOW_STORES}
-    return any(
-        tuple(re.split(r"[\\/]+", cand.casefold().rstrip("/\\"))[-2:]) in tails
-        for cand in _candidate_forms(path_str, base_dir)
-    )
+    files = [_parts(rel) for rel in PROJECT_ALLOW_STORES if not rel.endswith("/")]
+    dirs = [_parts(rel) for rel in PROJECT_ALLOW_STORES if rel.endswith("/")]
+    for cand in _candidate_forms(path_str, base_dir):
+        segs = tuple(re.split(r"[\\/]+", cand.casefold().rstrip("/\\")))
+        if any(segs[-len(tail) :] == tail for tail in files):
+            return True
+        if any(
+            segs[i : i + len(run)] == run for run in dirs for i in range(len(segs) - len(run) + 1)
+        ):
+            return True
+    return False
+
+
+def _parts(rel: str) -> tuple[str, ...]:
+    return tuple(PurePosixPath(rel.casefold()).parts)

@@ -284,12 +284,12 @@ describe('AssistantMessage', () => {
   it('renders fork action when onFork is provided and calls it on click', async () => {
     const onFork = vi.fn()
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} forkIndex={0} />)
-    fireEvent.click(screen.getByTitle('Fork conversation from here'))
+    await act(async () => { fireEvent.click(screen.getByTitle('Fork conversation from here')) })
     expect(onFork).toHaveBeenCalledTimes(1)
     expect(onFork).toHaveBeenCalledWith(0)
   })
 
-  it('forwards stable message ids from active overflow items', () => {
+  it('forwards stable message ids from active overflow items', async () => {
     const onFork = vi.fn()
     render(
       <AssistantMessage
@@ -319,7 +319,7 @@ describe('AssistantMessage', () => {
     const forkItem = screen.getByTestId('fork-from-here')
     expect(forkItem).not.toHaveAttribute('aria-disabled')
     expect(screen.queryByTestId('fork-unavailable-reason')).not.toBeInTheDocument()
-    fireEvent.click(forkItem)
+    await act(async () => { fireEvent.click(forkItem) })
     expect(onFork).toHaveBeenCalledWith(7, 'row-42')
   })
 
@@ -511,13 +511,13 @@ describe('AssistantMessage', () => {
     expect(onLoadEarlier).toHaveBeenCalledTimes(2)
   })
 
-  it('does NOT route to the remedy once fork is available', () => {
+  it('does NOT route to the remedy once fork is available', async () => {
     // Negative control for the branch above: with an index the item must fork, and
     // must not divert to paging.
     const onFork = vi.fn()
     const onLoadEarlier = vi.fn()
     render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} forkIndex={3} onLoadEarlier={onLoadEarlier} />)
-    fireEvent.click(screen.getByTestId('fork-from-here'))
+    await act(async () => { fireEvent.click(screen.getByTestId('fork-from-here')) })
     expect(onFork).toHaveBeenCalledWith(3)
     expect(onLoadEarlier).not.toHaveBeenCalled()
     // With no reason to state, neither the visible line nor its reference exists.
@@ -525,7 +525,7 @@ describe('AssistantMessage', () => {
     expect(screen.getByTestId('fork-from-here')).not.toHaveAttribute('aria-describedby')
   })
 
-  it('restores fork as a ROW button once the window is loaded, so the everyday case stays one click', () => {
+  it('restores fork as a ROW button once the window is loaded, so the everyday case stays one click', async () => {
     // The menu exists for the UNAVAILABLE state's visible reason; routing the available
     // controls through it taxed every fully-loaded chat with an extra open.
     const onFork = vi.fn()
@@ -536,7 +536,7 @@ describe('AssistantMessage', () => {
     expect(fork).not.toHaveAttribute('role', 'menuitem')
     // The trigger survives as Share's home, but fork is not inside it.
     expect(screen.queryAllByTitle('More actions')).toHaveLength(1)
-    fireEvent.click(fork)
+    await act(async () => { fireEvent.click(fork) })
     expect(onFork).toHaveBeenCalledWith(4)
   })
 
@@ -704,20 +704,20 @@ describe('AssistantMessage', () => {
     const menuProps = { content: 'x'.repeat(80), isStreaming: false, slotRunning: false }
     const stable = { forkIndex: 7, forkMessageId: 'row-42' }
 
-    it('forks with history, naming the direction itself', () => {
+    it('forks with history, naming the direction itself', async () => {
       const onFork = vi.fn()
       render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice />)
       openOverflow()
-      fireEvent.click(screen.getByTestId('fork-with-history'))
+      await act(async () => { fireEvent.click(screen.getByTestId('fork-with-history')) })
       expect(onFork).toHaveBeenCalledTimes(1)
       expect(onFork).toHaveBeenCalledWith(7, 'row-42', 'head')
     })
 
-    it('leaves the plain entry on its two-argument call when the choice is offered', () => {
+    it('leaves the plain entry on its two-argument call when the choice is offered', async () => {
       const onFork = vi.fn()
       render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice />)
       openOverflow()
-      fireEvent.click(screen.getByTestId('fork-from-here'))
+      await act(async () => { fireEvent.click(screen.getByTestId('fork-from-here')) })
       expect(onFork).toHaveBeenCalledTimes(1)
       expect(onFork).toHaveBeenCalledWith(7, 'row-42')
     })
@@ -739,7 +739,7 @@ describe('AssistantMessage', () => {
       }
     })
 
-    it('holds the later-messages entry on the newest message, where the server would refuse an empty tail', () => {
+    it('holds the later-messages entry on the newest message, where the server would refuse an empty tail', async () => {
       const onFork = vi.fn()
       render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkDirectionChoice forkHasLaterMessages={() => false} />)
       openOverflow()
@@ -752,11 +752,11 @@ describe('AssistantMessage', () => {
       expect(onFork).not.toHaveBeenCalled()
       // A fork with history of the newest message still has something to copy.
       expect(screen.getByTestId('fork-with-history')).not.toHaveAttribute('aria-disabled')
-      fireEvent.click(screen.getByTestId('fork-with-history'))
+      await act(async () => { fireEvent.click(screen.getByTestId('fork-with-history')) })
       expect(onFork).toHaveBeenCalledWith(7, 'row-42', 'head')
     })
 
-    it('reads whether a later message exists each time the menu opens, so an older reply re-enables after a new message', () => {
+    it('reads whether a later message exists each time the menu opens, so an older reply re-enables after a new message', async () => {
       const onFork = vi.fn()
       let later = false
       const forkHasLaterMessages = vi.fn(() => later)
@@ -769,7 +769,7 @@ describe('AssistantMessage', () => {
       openOverflow()
       expect(screen.getByTestId('fork-from-here')).not.toHaveAttribute('aria-disabled')
       expect(screen.getByTestId('fork-hint')).toHaveTextContent('Leaves out this message. Only the ones after it go to a new chat.')
-      fireEvent.click(screen.getByTestId('fork-from-here'))
+      await act(async () => { fireEvent.click(screen.getByTestId('fork-from-here')) })
       expect(onFork).toHaveBeenCalledWith(7, 'row-42')
     })
 
@@ -795,12 +795,12 @@ describe('AssistantMessage', () => {
       expect(onFork).not.toHaveBeenCalled()
     })
 
-    it('keeps the lone plain entry on the newest message, where it forks with history', () => {
+    it('keeps the lone plain entry on the newest message, where it forks with history', async () => {
       const onFork = vi.fn()
       render(<AssistantMessage {...menuProps} {...stable} onFork={onFork} forkHasLaterMessages={() => false} />)
       openOverflow()
       expect(screen.getByTestId('fork-from-here')).not.toHaveAttribute('aria-disabled')
-      fireEvent.click(screen.getByTestId('fork-from-here'))
+      await act(async () => { fireEvent.click(screen.getByTestId('fork-from-here')) })
       expect(onFork).toHaveBeenCalledWith(7, 'row-42')
     })
 
@@ -1164,20 +1164,20 @@ describe('parseOptions', () => {
     expect(screen.queryByTitle('Copy link to message')).not.toBeInTheDocument()
   })
 
-  it('calls copySessionLink with correct args on link button click', () => {
+  it('calls copySessionLink with correct args on link button click', async () => {
     render(<AssistantMessage content="Hello" isStreaming={false} slotRunning={false} messageTs="2025-05-13T14:00:00.000Z" slotKey="chat-1" slotTitle="My Chat" mode="chat" />)
-    fireEvent.click(screen.getByTitle('Copy link to message'))
+    await act(async () => { fireEvent.click(screen.getByTitle('Copy link to message')) })
     expect(copySessionLink).toHaveBeenCalledWith('chat-1', 'My Chat', '2025-05-13T14:00:00.000Z', 'chat')
   })
 
-  it('copy strips the keep-visible marker so pastes carry no literal control tag (#7948)', () => {
+  it('copy strips the keep-visible marker so pastes carry no literal control tag (#7948)', async () => {
     // The marker renders as nothing (HTML comment), so the copied text must
     // not resurface it — copy is the primary action on the substantive
     // deliverables this marker targets. Marker-specific strip (not a
     // whole-comment strip): copy preserves message fidelity and has no
     // fence-protection pass, so comments inside fenced code must survive.
     render(<AssistantMessage content={'Substantive report body\n\n<!-- keep-visible -->'} isStreaming={false} slotRunning={false} />)
-    fireEvent.click(screen.getByTitle(/^Copy as Markdown/))
+    await act(async () => { fireEvent.click(screen.getByTitle(/^Copy as Markdown/)) })
     expect(copyToClipboard).toHaveBeenCalledWith('Substantive report body')
   })
 

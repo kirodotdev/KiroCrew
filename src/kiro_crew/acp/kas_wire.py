@@ -823,7 +823,8 @@ async def hooks_execute(
        an unowned session has no surface to resolve;
     2. the id was listed for that session and still resolves to an enabled hook;
     3. the command clears the tool gate (:func:`_gate_hook_command`);
-    4. ``capabilities.script_hooks`` permits it on that session's key.
+    4. ``capabilities.script_hooks`` permits it on that session's key, for the
+       stored hook's event (``hook_event_governance.event_refusal``).
 
     The spawn itself is ``run_script_hook`` on the same snapshot the gates judged:
     the same sandbox, environment allowlist, output cap, redaction and timeout a
@@ -843,6 +844,11 @@ async def hooks_execute(
         refusal = await asyncio.to_thread(
             _gate_hook_command, hook.command, session_key=session_key, agent=agent
         )
+        if refusal is None:
+            from kiro_crew.hook_event_governance import event_refusal
+
+            # The policy's ``events`` list, asked for the stored hook's event.
+            refusal = await asyncio.to_thread(event_refusal, session_key, hook.event)
         if refusal is not None:
             raise HookExecuteRefused(refusal)
         prompt = sanitize_string(_str_param(params, "userPrompt"))

@@ -6,6 +6,14 @@
 
 import { withDeadline } from '../../lib/withDeadline'
 import type { ClientTransport } from './transport'
+import type {
+  RemoteDirListing,
+  RemoteEnvironmentHealth,
+  RemoteFileContent,
+  SessionEnvironmentsCheck,
+  SessionEnvironmentWorkspace,
+  SlotEnvironment,
+} from '../client'
 
 /** Deadline for `api.slashCommands`. Same value as the `$`-menu's
  *  `SKILLS_TIMEOUT_MS` (`./skills`), for the same reason and against the same
@@ -31,16 +39,27 @@ export interface FollowDefaultCount {
   titles: string[]
 }
 
-export function createChatSlotSettingsEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
+export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fetch, jSlotEnvironment }: ClientTransport) {
   const selection = {
-    models: () => fetch('/api/models').then(j),
+    /** The configured backend's model list, or `backend`'s own (config spelling: `kiro`, `claude`, ...). */
+    models: (backend?: string) =>
+      fetch(backend === undefined ? '/api/models' : '/api/models?backend=' + encodeURIComponent(backend)).then(j),
+    /** One harness's own model list (`?backend=` in the config spelling: `kiro`,
+     *  `kas`, `claude`, ...), for a picker that pins a crewmate to that harness. */
+    harnessModels: (backend: string) =>
+      fetch('/api/models?backend=' + encodeURIComponent(backend)).then(j) as Promise<
+        { model_name: string; display_name?: string; description?: string }[]
+      >,
     chatSlotSelectionCapabilities: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/selection-capabilities').then(j) as Promise<{
         known: boolean
         backend?: string
-        effort_supported?: boolean
+        /** `null` before a session reports, where only a live session on its harness can say. */
+        effort_supported?: boolean | null
         effort_levels?: string[]
         model_effort_pair_ids?: boolean
+        /** Present when this session's harness lists other models than the configured backend. */
+        models_backend?: string
       }>,
     effortLevels: (slot?: string) =>
       fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
@@ -66,9 +85,11 @@ export function createChatSlotSettingsEndpoints({ post, j, jfetch: fetch }: Clie
     chatSlotModel: (slot: string, model: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string; deferred?: boolean }>,
     /** This slot's auto-compact threshold override (null = follows a default:
-     *  `agent_pct` when the session's agent declares one, else `global_pct`). */
+     *  `agent_pct` when the session's agent declares one, else `global_pct`).
+     *  `harness_managed` names the backend when the session compacts on its
+     *  own (KAS), where this threshold does not apply. */
     chatSlotAutocompact: (slot: string) =>
-      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; min: number; max: number }>,
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; harness_managed?: string | null; min: number; max: number }>,
     /** Set (number) or clear (null) this slot's auto-compact threshold override. */
     setChatSlotAutocompact: (slot: string, pct: number | null) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact', { pct }).then(j) as Promise<{ ok?: boolean; pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null }>,
@@ -95,6 +116,37 @@ export function createChatSlotSettingsEndpoints({ post, j, jfetch: fetch }: Clie
       post('/api/chat/slots/follow-default', { digest }).then(j) as Promise<{ ok: boolean; changed: number }>,
     chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j) as Promise<{ ok?: boolean; reasoning_effort?: string; model?: string; deferred?: boolean }>,
+    /** Which Session Environment this slot's session runs on (`profile: null` =
+     *  this machine) plus the configured profiles to choose from. Owner-only. */
+    chatSlotEnvironment: (slot: string) =>
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment').then(jSlotEnvironment) as Promise<SlotEnvironment>,
+    /** Read-only view of a REMOTE session's workspace: list a directory or read a
+     *  file, relative to the profile's working directory. Owner-only. */
+    chatSlotEnvironmentList: (slot: string, path: string) =>
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=list&path=' + encodeURIComponent(path)).then(j) as Promise<RemoteDirListing>,
+    chatSlotEnvironmentRead: (slot: string, path: string) =>
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=read&path=' + encodeURIComponent(path)).then(j) as Promise<RemoteFileContent>,
+    /** State and machine metrics of a remote session's workspace (never starts it). */
+    chatSlotEnvironmentHealth: (slot: string) =>
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/health').then(j) as Promise<RemoteEnvironmentHealth>,
+    /** Read-only readiness check: Coder sign-in, each profile's template, git logins. */
+    sessionEnvironmentsCheck: () =>
+      post('/api/session-environments/check').then(j) as Promise<SessionEnvironmentsCheck>,
+    sessionEnvironmentsWorkspaces: () =>
+      get('/api/session-environments/workspaces').then(j) as Promise<{ workspaces: SessionEnvironmentWorkspace[] }>,
+    /** Templates the saved Coder deployment offers; `error` when unreadable. Owner-only. */
+    sessionEnvironmentsTemplates: () =>
+      get('/api/session-environments/templates').then(j) as Promise<{ templates: string[]; error?: string }>,
+    /** Save a remote file. `expected` is the text the editor opened; a file that
+     *  changed since answers 409 `file_changed` instead of being overwritten.
+     *  `workdir` is the profile's working folder the edit was made under; once the
+     *  profile points elsewhere the save answers 409 `root_changed`. */
+    chatSlotEnvironmentWrite: (slot: string, path: string, content: string, expected?: string, workdir?: string) =>
+      put('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/file', { path, content, ...(expected !== undefined ? { expected } : {}), ...(workdir !== undefined ? { workdir } : {}) }).then(j) as Promise<{ ok: boolean; path: string }>,
+    /** Bind (or, with `null`, unbind) the slot's session to a profile. Applies at
+     *  the session's next start; an idle runtime is reset so it cannot linger. */
+    setChatSlotEnvironment: (slot: string, profile: string | null) =>
+      put('/api/chat/slots/' + encodeURIComponent(slot) + '/environment', { profile }).then(j) as Promise<{ profile: string | null; applies: string }>,
     chatSlotWorkspace: (slot: string, workspace: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/workspace', { workspace }).then(j),
     // Relaunch the slot's agent process in place (fresh agent spec, env, and MCP

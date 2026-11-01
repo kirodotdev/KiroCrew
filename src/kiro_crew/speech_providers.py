@@ -271,6 +271,23 @@ def streams(provider: Any) -> bool:
     return getattr(provider, "streaming", False) is True
 
 
+def language_identifying_stt_names(builtins: "Tuple[str, ...]") -> "Tuple[str, ...]":
+    """The built-in *builtins* that identify languages, then each edition provider that does.
+
+    An edition provider joins only when it declared ``identifies_languages`` as
+    exactly True; the attribute is optional, so a provider that never mentions it
+    stays out. Such a provider reads ``stt.transcribe_language_identification``
+    itself: core only decides whether the Settings page offers the picker.
+    """
+    extra = tuple(p.name for p in registered_stt_providers() if identifies_languages(p))
+    return (*builtins, *extra) if extra else builtins
+
+
+def identifies_languages(provider: Any) -> bool:
+    """Whether *provider* declared ``identifies_languages`` as exactly ``True``."""
+    return getattr(provider, "identifies_languages", False) is True
+
+
 def _text(value: object, limit: int = 200) -> Optional[str]:
     """*value* as a short one-line string, or ``None`` when it is not a usable one."""
     if not isinstance(value, str):

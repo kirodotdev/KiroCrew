@@ -799,63 +799,78 @@ class TestRecordLostSubmission:
 
 
 class TestSweepStuckWaves:
+    """A reconciled wave counts one more member as submitted; a skipped one is left
+    exactly as it was."""
+
     def test_complete_wave_skipped(self) -> None:
         mgr = _manager()
         mgr._batch_submitted["w1"] = [2, 2]
-        with patch.object(mgr, "record_lost_submission") as rec:
+        with patch.object(sa, "sel"):
             mgr._sweep_stuck_waves(now=1e9)
-            rec.assert_not_called()
+            assert mgr._batch_submitted["w1"] == [2, 2]
+            assert "w1" not in mgr._batch_progress_ts
             # Control: the same wave one submission short is reconciled.
             mgr._batch_submitted["w1"] = [1, 2]
             mgr._sweep_stuck_waves(now=1e9)
-        assert rec.call_count == 1
+        assert mgr._batch_submitted["w1"] == [2, 2]
+        assert "w1" in mgr._batch_progress_ts
 
     def test_within_grace_window_skipped(self) -> None:
         mgr = _manager()
         mgr._batch_submitted["w1"] = [1, 2]
         mgr._batch_progress_ts["w1"] = 1000.0
-        with patch.object(mgr, "record_lost_submission") as rec:
+        with patch.object(sa, "sel"):
             mgr._sweep_stuck_waves(now=1001.0)
-            rec.assert_not_called()
+            assert mgr._batch_submitted["w1"] == [1, 2]
             # Control: once the grace window has passed, the wave is reconciled.
             mgr._sweep_stuck_waves(now=1000.0 + sa._WAVE_STUCK_SECS)
-        assert rec.call_count == 1
+        assert mgr._batch_submitted["w1"] == [2, 2]
 
     def test_live_member_defers_reconciliation(self) -> None:
         mgr = _manager()
         mgr._batch_submitted["w1"] = [1, 2]
         mgr._batch_progress_ts["w1"] = 0.0
         mgr._agents["a"] = _info("a", batch_id="w1")
-        with patch.object(mgr, "record_lost_submission") as rec:
+        with patch.object(sa, "sel"):
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-            rec.assert_not_called()
+            assert mgr._batch_submitted["w1"] == [1, 2]
             # Control: once the member ends, the wave is reconciled.
             mgr._agents["a"].done = True
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-        assert rec.call_count == 1
+        assert mgr._batch_submitted["w1"] == [2, 2]
 
     def test_queued_member_defers_reconciliation(self) -> None:
         mgr = _manager()
         mgr._batch_submitted["w1"] = [1, 2]
         mgr._batch_progress_ts["w1"] = 0.0
         mgr._queue = [{"batch_id": "w1"}]
-        with patch.object(mgr, "record_lost_submission") as rec:
+        with patch.object(sa, "sel"):
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-            rec.assert_not_called()
+            assert mgr._batch_submitted["w1"] == [1, 2]
             # Control: with the queue drained, the wave is reconciled.
             mgr._queue = []
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-        assert rec.call_count == 1
+        assert mgr._batch_submitted["w1"] == [2, 2]
 
-    def test_wedged_wave_reconciled_once(self) -> None:
-        mgr = _manager()
-        mgr._batch_submitted["w1"] = [1, 2]
+    @pytest.mark.asyncio
+    async def test_wedged_wave_reconciled_once(self) -> None:
+        announced: list[SubagentInfo] = []
+
+        async def _on_done(info: SubagentInfo) -> None:
+            announced.append(info)
+
+        mgr = _manager(on_done=_on_done)
+        mgr._batch_submitted["w1"] = [1, 3]
         mgr._batch_progress_ts["w1"] = 0.0
         mgr._agents["a"] = _info("a", batch_id="w1", done=True, parent_session_key="dash:1")
-        with patch.object(mgr, "record_lost_submission") as rec:
+        with patch.object(sa, "sel"):
             mgr._sweep_stuck_waves(now=float(sa._WAVE_STUCK_SECS * 3))
-        assert rec.call_count == 1
-        assert rec.call_args.kwargs["parent_session_key"] == "dash:1"
+        await asyncio.wait_for(asyncio.gather(*mgr._tasks.values()), _ANNOUNCE_WAIT_SECS)
+        # One sweep reconciles one lost member, even with two still missing.
+        assert mgr._batch_submitted["w1"] == [2, 3]
+        assert [i.parent_session_key for i in announced] == ["dash:1"]
+        assert announced[0].batch_id == "w1"
+        assert "submission never arrived" in announced[0].error
 
 
 def _sweep_digest_holds(mgr: SubagentManager, form: str, *, now: float) -> None:
@@ -867,6 +882,34 @@ def _sweep_digest_holds(mgr: SubagentManager, form: str, *, now: float) -> None:
         asyncio.run(mgr._sweep_digest_holds_async(now))
 
 
+def _flushes_announced(
+    mgr: SubagentManager, form: str = "sync", *, now: float
+) -> list[SubagentInfo]:
+    """Run the digest-hold sweep in *form* on a loop and return the flush-only
+    records it announced.
+
+    A manager that has a completion consumer gets a recording one in its place; a
+    manager without one keeps none, so the sweep sees the same gate it would."""
+    announced: list[SubagentInfo] = []
+
+    async def _on_done(info: SubagentInfo) -> None:
+        announced.append(info)
+
+    if mgr._on_done is not None:
+        mgr._on_done = _on_done
+
+    async def _drive() -> None:
+        if form == "sync":
+            mgr._sweep_digest_holds(now=now)
+        else:
+            await mgr._sweep_digest_holds_async(now)
+        await asyncio.wait_for(asyncio.gather(*mgr._tasks.values()), _ANNOUNCE_WAIT_SECS)
+
+    with patch.object(sa, "sel"):
+        asyncio.run(_drive())
+    return [i for i in announced if i._digest_flush_only]
+
+
 class TestSweepDigestHolds:
     def test_no_completion_consumer_is_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
@@ -875,13 +918,11 @@ class TestSweepDigestHolds:
         held._digest_held_at = 1.0
         mgr._agents["a"] = held
         mgr._batch_submitted["w1"] = [1, 2]
-        with patch.object(mgr, "force_digest_flush") as flush:
-            mgr._sweep_digest_holds(now=1e9)
-            flush.assert_not_called()
-            # Control: the same expired hold is flushed once a consumer exists.
-            mgr._on_done = AsyncMock()
-            mgr._sweep_digest_holds(now=1e9)
-        assert flush.call_count == 1
+        assert _flushes_announced(mgr, now=1e9) == []
+        # Control: the same expired hold is flushed once a consumer exists.
+        mgr._on_done = AsyncMock()
+        flushes = _flushes_announced(mgr, now=1e9)
+        assert [(f.batch_id, f.parent_session_key) for f in flushes] == [("w1", "dash:1")]
 
     @pytest.mark.parametrize("form", ["sync", "async"])
     def test_closing_wave_not_forced(self, monkeypatch: pytest.MonkeyPatch, form: str) -> None:
@@ -920,11 +961,8 @@ class TestSweepDigestHolds:
         mgr._agents["a"] = held
         mgr._batch_submitted["w1"] = [1, 1]  # no pending members
         # No arm: the member's report ended without reaching the consumer.
-        with patch.object(mgr, "force_digest_flush") as flush:
-            _sweep_digest_holds(mgr, form, now=1e6)
-        assert flush.call_count == 1
-        assert flush.call_args[0][0] == "w1"
-        assert flush.call_args[0][1] == "dash:1"
+        flushes = _flushes_announced(mgr, form, now=1e6)
+        assert [(f.batch_id, f.parent_session_key) for f in flushes] == [("w1", "dash:1")]
 
     def test_expired_hold_forces_partial_flush(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
@@ -935,26 +973,23 @@ class TestSweepDigestHolds:
         newer._digest_held_at = 500.0
         mgr._agents.update({"a": held, "b": newer})
         mgr._batch_submitted["w1"] = [1, 2]  # still pending
-        with patch.object(mgr, "force_digest_flush") as flush:
-            mgr._sweep_digest_holds(now=1000.0)
-        assert flush.call_count == 1
-        assert flush.call_args[0][0] == "w1"
-        assert flush.call_args[0][1] == "dash:1"
-        assert flush.call_args[0][3] == pytest.approx(900.0)  # oldest hold wins
+        flushes = _flushes_announced(mgr, now=1000.0)
+        assert [(f.batch_id, f.parent_session_key, f.batch_total) for f in flushes] == [
+            ("w1", "dash:1", 2)
+        ]
+        # The oldest hold's age (1000 - 100) names the flush, not the newer one's.
+        assert "results held 900s" in flushes[0].task
 
     def test_unheld_members_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
         mgr = _manager(on_done=AsyncMock())
         mgr._agents["a"] = _info("a", batch_id="w1")
         mgr._agents["b"] = _info("b")
-        with patch.object(mgr, "force_digest_flush") as flush:
-            mgr._sweep_digest_holds(now=1e9)
-            flush.assert_not_called()
-            # Control: once the wave member holds a result, the sweep flushes it.
-            mgr._agents["a"]._digest_held_at = 1.0
-            mgr._sweep_digest_holds(now=1e9)
-        assert flush.call_count == 1
-        assert flush.call_args[0][0] == "w1"
+        assert _flushes_announced(mgr, now=1e9) == []
+        # Control: once the wave member holds a result, the sweep flushes it.
+        mgr._agents["a"]._digest_held_at = 1.0
+        flushes = _flushes_announced(mgr, now=1e9)
+        assert [f.batch_id for f in flushes] == ["w1"]
 
 
 class TestForceDigestFlush:

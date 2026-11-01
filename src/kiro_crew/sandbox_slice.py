@@ -8,6 +8,7 @@ Windows resource ceiling, and :func:`cgroup_scope_argv`. One of the owners
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
@@ -22,8 +23,11 @@ from kiro_crew.sandbox_cgroup import (
     _CGROUP_AGENTS_SLICE,
     _agents_slice_name,
     _cgroup_limits_from_config,
+    _cgroup_scope_epoch,
     _cpu_controller_delegated,
     _probe_cgroup_scope,
+    _read_resource_limits,
+    _scope_memory_high_mb,
     _warn_cgroup_unavailable,
 )
 
@@ -60,13 +64,36 @@ _SLICE_FALLBACK_MEMORY_HIGH_MB = 12288
 # Last MemoryHigh value applied to the slice by THIS process ("24576M" /
 # "infinity"), or None before the first reconcile. The desired value is
 # host-derived and constant for the process's life (no config input), so
-# after the first successful apply every later reconcile reduces to a
-# string compare and no-ops. Kept as a reconcile (rather than a one-shot)
-# so an apply that failed transiently is retried on the next spawn.
+# after the first successful apply every later reconcile in the same login
+# session reduces to a string compare and no-ops.
 _SLICE_MEMHIGH_APPLIED: str | None = None
-# Process-level kill switch: set after a failed apply so a broken systemctl is
-# warned about ONCE and never hammered on every subsequent spawn.
+# Kill switch: set after a failed apply so a broken systemctl is warned about
+# ONCE per login session and never hammered on every subsequent spawn.
 _SLICE_MEMHIGH_DISABLED = False
+# The enforcement epoch (``_cgroup_scope_epoch``) the two values above were
+# recorded in, or None when nothing was recorded by a reconcile. The applied
+# value is a ``--runtime`` property that vanishes with the login session, and a
+# failure seen while the user manager was going away says nothing about the
+# next one, so state from an older epoch is discarded before the next
+# reconcile. A kill switch set from outside a reconcile carries no stamp and
+# stays set.
+_SLICE_MEMHIGH_EPOCH: int | None = None
+
+
+def _slice_memory_high_is_stale() -> bool:
+    """Whether the recorded MemoryHigh state belongs to an earlier login session."""
+    stamp = _SLICE_MEMHIGH_EPOCH
+    return stamp is not None and stamp != _cgroup_scope_epoch()
+
+
+def _forget_stale_slice_memory_high() -> None:
+    """Drop MemoryHigh state recorded under an earlier epoch, re-arming the reconcile."""
+    global _SLICE_MEMHIGH_APPLIED, _SLICE_MEMHIGH_DISABLED, _SLICE_MEMHIGH_EPOCH
+    if not _slice_memory_high_is_stale():
+        return
+    _SLICE_MEMHIGH_APPLIED = None
+    _SLICE_MEMHIGH_DISABLED = False
+    _SLICE_MEMHIGH_EPOCH = None
 
 
 def _default_slice_memory_high_mb() -> int:
@@ -102,12 +129,14 @@ def _ensure_agent_slice_memory_high() -> None:
     outlive the login session that set it.
 
     Never raises: agent spawns must not fail because the ceiling could not be
-    applied. On failure it logs one loud warning and disarms for the rest of
-    the process.
+    applied. On failure it logs one loud warning and disarms until the user
+    manager's next login session (see :data:`_SLICE_MEMHIGH_EPOCH`).
     """
-    global _SLICE_MEMHIGH_APPLIED, _SLICE_MEMHIGH_DISABLED
+    global _SLICE_MEMHIGH_APPLIED, _SLICE_MEMHIGH_DISABLED, _SLICE_MEMHIGH_EPOCH
+    _forget_stale_slice_memory_high()
     if _SLICE_MEMHIGH_DISABLED:
         return
+    epoch = _cgroup_scope_epoch()
     desired = f"{_default_slice_memory_high_mb()}M"
     if desired == _SLICE_MEMHIGH_APPLIED:
         return
@@ -134,6 +163,7 @@ def _ensure_agent_slice_memory_high() -> None:
             raise RuntimeError((proc.stderr or proc.stdout or "").strip() or "non-zero exit")
     except Exception as exc:
         _SLICE_MEMHIGH_DISABLED = True
+        _SLICE_MEMHIGH_EPOCH = epoch
         logger.warning(
             "SECURITY: could not apply MemoryHigh=%s to %s (%s); the AGGREGATE "
             "agent memory ceiling is NOT enforced on this host — per-scope "
@@ -145,6 +175,7 @@ def _ensure_agent_slice_memory_high() -> None:
         )
         return
     _SLICE_MEMHIGH_APPLIED = desired
+    _SLICE_MEMHIGH_EPOCH = epoch
     logger.info("agent slice %s: MemoryHigh=%s applied", _CGROUP_AGENTS_SLICE, desired)
 
 
@@ -160,8 +191,23 @@ _SLICE_MEMHIGH_EVENTS_SEEN: int | None = None
 _SLICE_MEMHIGH_CLIMB_WARNED = False
 
 
+def _slice_own_high_events(slice_dir: Path) -> int | None:
+    """The slice's OWN ``high`` event count, excluding its descendants.
+
+    ``memory.events`` is hierarchical: it also counts ``high`` events of every
+    cgroup below the slice. Each agent scope carries its own finite
+    ``MemoryHigh`` (:func:`cgroup_scope_argv`), so one runtime over ITS ceiling
+    would read as the whole slice being throttled. ``memory.events.local``
+    counts only breaches of the slice's own ``memory.high``. When that file is
+    missing, empty or unreadable (a kernel older than 5.2) this returns ``None``:
+    no counter signal, so a scope's own events never read as slice throttling,
+    and ``memory.current >= memory.high`` is the only throttling signal there.
+    """
+    return _read_cgroup_counters(slice_dir / "memory.events.local").get("high")
+
+
 def _slice_memory_events_high() -> int | None:
-    """Return the ``high`` counter from the slice cgroup's ``memory.events``.
+    """Return the slice cgroup's own ``high`` counter (:func:`_slice_own_high_events`).
 
     The slice directory comes from :func:`_agents_slice_cgroup_dir`, which
     understands systemd's dash-hierarchy (``kirocrew-agents.slice`` nests
@@ -172,11 +218,11 @@ def _slice_memory_events_high() -> int | None:
     slice_dir = _agents_slice_cgroup_dir()
     if slice_dir is None:
         return None
-    return _read_cgroup_counters(slice_dir / "memory.events").get("high")
+    return _slice_own_high_events(slice_dir)
 
 
 def _check_slice_memory_pressure() -> None:
-    """Warn when the slice's ``memory.events`` ``high`` counter climbs.
+    """Warn when the slice's own ``high`` event counter climbs.
 
     Past ``memory.high`` the kernel throttles-and-reclaims the subtree
     SILENTLY — agents just slow down; nothing kills and nothing alerts, since
@@ -206,7 +252,7 @@ def _check_slice_memory_pressure() -> None:
         return
     _SLICE_MEMHIGH_CLIMB_WARNED = True
     logger.warning(
-        "agent slice %s: memory.events high counter climbed %d -> %d — "
+        "agent slice %s: memory.events.local high counter climbed %d -> %d — "
         "aggregate agent memory crossed the slice MemoryHigh ceiling and the "
         "kernel is throttling the whole agent subtree; agents run slowly "
         "(not hung) until aggregate memory drops. See "
@@ -239,13 +285,19 @@ def _reconcile_slice_memory_high_off_thread() -> None:
     spawn still bounds it, and every later spawn re-reconciles. The worker
     also runs :func:`_check_slice_memory_pressure`, so throttle visibility
     shares the reconcile cadence (per spawn) and its kill switch.
+
+    The worker first applies the slice's hard aggregate ceiling
+    (:func:`_reapply_slice_limits_for_new_session`) when the current login
+    session never got it, as for a gateway that started while the user was
+    logged out: no other caller would apply it there.
     """
-    global _SLICE_MEMHIGH_DISABLED
-    if _SLICE_MEMHIGH_DISABLED:
+    global _SLICE_MEMHIGH_DISABLED, _SLICE_MEMHIGH_EPOCH
+    if _SLICE_MEMHIGH_DISABLED and not _slice_memory_high_is_stale():
         return
 
     def _worker() -> None:
         with _SLICE_MEMHIGH_MUTEX:
+            _reapply_slice_limits_for_new_session()
             _ensure_agent_slice_memory_high()
             _check_slice_memory_pressure()
 
@@ -256,6 +308,7 @@ def _reconcile_slice_memory_high_off_thread() -> None:
         # never abort the spawn. Disarm like any other reconciliation
         # failure: per-scope MemoryMax still applies.
         _SLICE_MEMHIGH_DISABLED = True
+        _SLICE_MEMHIGH_EPOCH = _cgroup_scope_epoch()
         logger.warning(
             "SECURITY: could not start the MemoryHigh reconciliation thread "
             "(%s); the AGGREGATE agent memory ceiling is NOT enforced on this "
@@ -274,6 +327,8 @@ _WINDOWS_INERT_RESOURCE_LIMIT_KEYS = (
     "max_open_files",
     "max_total_memory_mb",
     "max_total_processes",
+    "scope_memory_high_pct",
+    "slice_reclaim_trigger_pct",
 )
 _WINDOWS_INERT_LIMITS_WARNED = False
 
@@ -393,7 +448,11 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
 
     Prepends ``systemd-run --user --scope`` with ``TasksMax`` (pids.max, the
     fork-bomb ceiling), ``MemoryMax`` + ``MemorySwapMax=0`` (memory.max, the
-    RSS balloon ceiling), and — when the cpu controller is delegated —
+    RSS balloon ceiling), ``MemoryHigh`` (memory.high, a soft ceiling at
+    ``resource_limits.scope_memory_high_pct`` of MemoryMax, default 90%, so a
+    runtime that fills page cache reclaims and is throttled on its own before
+    the shared slice ceiling slows every runtime; see
+    :func:`_scope_memory_high_mb`), and — when the cpu controller is delegated —
     ``CPUWeight`` (proportional fair-share: agents run full speed on an idle
     host but yield to interactive work under contention; never a hard
     throttle) plus an OPT-IN ``CPUQuota`` hard cap
@@ -471,12 +530,30 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     # does config reads + a systemctl subprocess. MemoryHigh on a slice
     # applies to already-running members, so the spawn need not wait for it.
     _reconcile_slice_memory_high_off_thread()
-    max_procs, max_mem_mb, cpu_weight, max_cpu_percent = _cgroup_limits_from_config()
+    # One config read per scope start, shared by every limit below.
+    limits_config = _read_resource_limits()
+    max_procs, max_mem_mb, cpu_weight, max_cpu_percent = _cgroup_limits_from_config(limits_config)
+    # Per-scope soft ceiling: without it the scope sits at
+    # memory.high=max, so one runtime's page-cache growth is reclaimed only at
+    # the SHARED slice MemoryHigh, which throttles every runtime together.
+    memory_high_mb = _scope_memory_high_mb(max_mem_mb, limits_config)
+    memory_high = [] if memory_high_mb is None else ["-p", f"MemoryHigh={memory_high_mb}M"]
+    # Under Shared Crew the scope joins its principal's slice, a child of the
+    # instance slice, so every ceiling above it keeps applying. The lookup is in
+    # memory; any failure takes the instance slice rather than costing the
+    # spawn its ceiling.
+    try:
+        from kiro_crew.shared_crew.containment import scope_parent_slice
+
+        parent_slice = scope_parent_slice() or _agents_slice_name()
+    except Exception:
+        parent_slice = _agents_slice_name()
     props = [
         "-p",
         f"TasksMax={max_procs}",
         "-p",
         f"MemoryMax={max_mem_mb}M",
+        *memory_high,
         "-p",
         "MemorySwapMax=0",
     ]
@@ -491,7 +568,7 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
         "--user",
         "--scope",
         "-q",
-        f"--slice={_agents_slice_name()}",
+        f"--slice={parent_slice}",
         *props,
         "--",
         *argv,
@@ -544,11 +621,28 @@ _CGROUP_TOTAL_MEMORY_FRACTION = 0.80
 # the per-scope fallback (8192) for the same "never clamp a single scope
 # tighter than its own ceiling" reason as the fraction.
 _CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB = 12288
-# Aggregate pids.max across all concurrent scopes: four fully-loaded scopes'
-# worth (4 x 8192). Bounds the composition blow-up (32 scopes x 8192 tasks =
-# 262144 otherwise) while still allowing several concurrent JVM-scale builds,
-# each of which legitimately needs thousands of threads.
+# Fallback aggregate pids.max across all concurrent scopes, used only when the
+# host reading fails. The normal default is host-sized
+# (:func:`_default_max_total_tasks`), and this value is also its floor.
 _CGROUP_DEFAULT_MAX_TOTAL_TASKS = 32768
+
+
+def _default_max_total_tasks(total_memory_mb: int | None = None) -> int:
+    """Default aggregate ``pids.max`` for the agents slice, sized from the host.
+
+    *total_memory_mb* is the slice ``MemoryMax`` being applied alongside it, so
+    the task ceiling follows a configured memory ceiling. See
+    :func:`kiro_crew.host_task_sizing.size_slice_tasks` for the formula.
+    Falls back to :data:`_CGROUP_DEFAULT_MAX_TOTAL_TASKS` when the host cannot
+    be read.
+    """
+    try:
+        from kiro_crew.host_task_sizing import host_task_facts, size_slice_tasks
+
+        return size_slice_tasks(host_task_facts(), total_memory_mb)
+    except Exception:
+        logger.debug("slice tasks: host reading failed, using the fixed default")
+        return _CGROUP_DEFAULT_MAX_TOTAL_TASKS
 
 
 def _default_max_total_memory_mb() -> int:
@@ -571,13 +665,14 @@ def _slice_limits_from_config() -> tuple[int, int]:
 
     Reads ``resource_limits.max_total_memory_mb`` / ``max_total_processes``
     from the same config block as the per-scope knobs. ``0`` or junk means
-    "use default" — the aggregate ceiling is never left unset, matching the
+    "use default", where the task default is host-sized
+    (:func:`_default_max_total_tasks`) — the aggregate ceiling is never left unset, matching the
     per-scope rule in :func:`_cgroup_limits_from_config`. The two memory knobs
     are deliberately independent of one another: per-scope answers "how big may
     one tree get", aggregate answers "how much may all trees claim together".
     """
     total_mem_mb = _default_max_total_memory_mb()
-    total_tasks = _CGROUP_DEFAULT_MAX_TOTAL_TASKS
+    total_tasks: int | None = None
     try:
         # circular import: same constraint as _cgroup_limits_from_config —
         # config.loader consumers import sandbox, so the import stays local.
@@ -595,10 +690,32 @@ def _slice_limits_from_config() -> tuple[int, int]:
             total_tasks = rl.max_total_processes
     except Exception:
         logger.debug("slice limits: config unavailable, using defaults")
+    if total_tasks is None:
+        # Sized against the memory ceiling actually applied, configured or not.
+        total_tasks = _default_max_total_tasks(total_mem_mb)
     return total_mem_mb, total_tasks
 
 
 _SLICE_LIMITS_APPLIED = False
+# The enforcement epoch (``_cgroup_scope_epoch``) of the last apply attempt that
+# passed the capability probe, successful or not; None before any. One attempt
+# per epoch keeps a broken systemctl from being retried on every spawn.
+_SLICE_LIMITS_EPOCH: int | None = None
+
+
+def _reapply_slice_limits_for_new_session() -> None:
+    """Apply the slice's hard aggregate ceiling when this login session never got it.
+
+    Covers a gateway that started while the user was logged out: the startup
+    apply found no user manager, and the pressure sampler's self-heal only
+    re-applies a ceiling that was applied before. A ceiling that is applied
+    is left to that self-heal, so the two never act on the same state.
+
+    Blocking (may shell out): runs only on the reconcile worker thread.
+    """
+    if _SLICE_LIMITS_APPLIED or _SLICE_LIMITS_EPOCH == _cgroup_scope_epoch():
+        return
+    ensure_agents_slice_limits()
 
 
 def ensure_agents_slice_limits() -> bool:
@@ -608,14 +725,17 @@ def ensure_agents_slice_limits() -> bool:
     :data:`_CGROUP_AGENTS_SLICE`, setting ``MemoryMax`` (aggregate across ALL
     concurrent agent scopes), ``MemorySwapMax=0`` (consistent with the
     per-scope property: a true RSS ceiling, no swap escape), and ``TasksMax``
-    (aggregate fork-bomb ceiling). Called once at gateway startup.
+    (aggregate fork-bomb ceiling). Called at gateway startup, and from the
+    spawn path's reconcile worker when it was not applied in the current
+    login session (:func:`_reapply_slice_limits_for_new_session`). A ceiling
+    that was applied and then vanished at a logout is re-applied by the
+    pressure sampler's self-heal (:func:`check_agents_slice_pressure`).
 
     ``--runtime`` over a shipped unit drop-in, deliberately: the property is
     re-derived from config and re-applied on every gateway start, so a config
     change can never leave a stale on-disk artifact behind, and uninstalling
     leaves nothing to clean up. The property persists on the user manager
-    until logout/reboot — long enough, since the gateway is the long-lived
-    process that re-applies it.
+    until logout/reboot.
 
     Gated on the same :func:`_probe_cgroup_scope` capability check as the
     per-scope wrapper: where delegation is unavailable this is skipped and the
@@ -626,13 +746,14 @@ def ensure_agents_slice_limits() -> bool:
 
     Returns True when the ceiling is in place (now or from an earlier call).
     """
-    global _SLICE_LIMITS_APPLIED
+    global _SLICE_LIMITS_APPLIED, _SLICE_LIMITS_EPOCH
     if _SLICE_LIMITS_APPLIED:
         return True
     available, reason = _probe_cgroup_scope()
     if not available:
         _warn_cgroup_unavailable(reason)
         return False
+    _SLICE_LIMITS_EPOCH = _cgroup_scope_epoch()
     total_mem_mb, total_tasks = _slice_limits_from_config()
     # PATH can legitimately lead with agent-writable directories (a worktree
     # venv's bin, ~/.local/bin), so a bare "systemctl" would let a planted
@@ -778,8 +899,8 @@ def agents_slice_throttling() -> bool:
     Two signals, either suffices. ``memory.current >= memory.high`` is the
     kernel's own definition of "over the soft ceiling"; under sustained
     pressure reclaim holds usage AT the ceiling rather than above it, so the
-    equality is the steady state, not an edge. The ``memory.events`` ``high``
-    counter climbing since this function's previous read is the second signal:
+    equality is the steady state, not an edge. The slice's own ``high`` event
+    counter (:func:`_slice_own_high_events`) climbing since this function's previous read is the second signal:
     the kernel increments it every time it throttles, so during an episode it
     advances between any two probes even when reclaim has momentarily pushed
     usage under the line. The first read only baselines the counter. An
@@ -794,7 +915,7 @@ def agents_slice_throttling() -> bool:
     slice_dir = _agents_slice_cgroup_dir()
     if slice_dir is None:
         return False
-    counter = _read_cgroup_counters(slice_dir / "memory.events").get("high")
+    counter = _slice_own_high_events(slice_dir)
     previous = _SLICE_THROTTLE_PROBE_SEEN
     now = time.monotonic()
     if counter is not None:
@@ -853,12 +974,22 @@ def check_agents_slice_pressure() -> str | None:
             pass
     events = _read_cgroup_counters(slice_dir / "memory.events")
     local = _read_cgroup_counters(slice_dir / "memory.events.local")
-    current = {"oom_kill": events.get("oom_kill", 0), "max": local.get("max", 0)}
+    # ``oom_kill`` counts processes killed by ANY OOM killer, the host-wide
+    # one included, while ``oom`` is raised only when a cgroup's own limit was
+    # reached. Both are hierarchical in ``memory.events``, so a kill with no
+    # ``oom`` event anywhere under the slice was the machine running out of
+    # memory, not a per-scope or slice ceiling.
+    current = {
+        "oom_kill": events.get("oom_kill", 0),
+        "oom": events.get("oom", 0),
+        "max": local.get("max", 0),
+    }
     if _SLICE_OOM_SEEN is None:
         _SLICE_OOM_SEEN = current
         return None
-    new_kills = current["oom_kill"] - _SLICE_OOM_SEEN["oom_kill"]
-    slice_max_hits = current["max"] - _SLICE_OOM_SEEN["max"]
+    new_kills = current["oom_kill"] - _SLICE_OOM_SEEN.get("oom_kill", 0)
+    limit_ooms = current["oom"] - _SLICE_OOM_SEEN.get("oom", 0)
+    slice_max_hits = current["max"] - _SLICE_OOM_SEEN.get("max", 0)
     _SLICE_OOM_SEEN = current
     if new_kills <= 0:
         return None
@@ -897,12 +1028,346 @@ def check_agents_slice_pressure() -> str | None:
         mem_max = (slice_dir / "memory.max").read_text().strip()
     except OSError:
         mem_max = "?"
+    if slice_max_hits > 0:
+        cause = "yes"
+    elif limit_ooms > 0:
+        # The value the next scope from THIS gateway would get. A scope keeps
+        # the ceiling it was started with, and a co-resident gateway may use
+        # another config, so it is labelled as configuration, not as the
+        # victim's enforced limit.
+        per_scope_mb = _cgroup_limits_from_config()[1]
+        cause = (
+            "no (at least one scope hit its own per-tree limit; this gateway's "
+            f"configured per-scope MemoryMax={per_scope_mb}M)"
+        )
+    else:
+        # An ``oom`` event raised on a cgroup ABOVE the slice does not
+        # propagate down into it, so this case cannot tell the host-wide OOM
+        # killer from a limit on an enclosing slice; both name the victim in
+        # the kernel log.
+        cause = (
+            "no (no cgroup limit inside this slice was reached: the host-wide "
+            "kernel OOM killer or a limit above this slice fired; the kernel "
+            "log says which)"
+        )
+    reaped = "(already reaped; the kernel log names the killed process)"
     message = (
         f"cgroup OOM kill inside {_CGROUP_AGENTS_SLICE}: {new_kills} new kill(s); "
         f"slice memory.current={mem_current} memory.max={mem_max}; "
-        f"slice-level aggregate ceiling engaged: "
-        f"{'yes' if slice_max_hits > 0 else 'no (a scope hit its own per-tree limit)'}; "
-        f"scopes with recorded kills: {victims or '(already reaped)'}"
+        f"slice-level aggregate ceiling engaged: {cause}; "
+        f"scopes with recorded kills: {victims or reaped}"
     )
     logger.warning("%s", message)
     return message
+
+
+# ── proactive page-cache reclaim on the agents slice ──
+# The kernel charges page cache to the cgroup that read the file, so ordinary
+# file-heavy agent work (build trees, checkouts, logs) fills the slice's
+# memory.high with CLEAN cache. memory.current then sits at memory.high and the
+# kernel throttles the whole agent subtree while it reclaims, even though almost
+# none of that memory is process memory. Writing the slice's memory.reclaim
+# drops the cache up front, so the throttle never engages for cache alone. The
+# resource-pressure sampler calls reclaim_agents_slice_page_cache() from its
+# worker thread every tick; the writes themselves run in their own thread so a
+# slow reclaim cannot eat the sampler's probe budget.
+
+# Default trigger: reclaim once memory.current reaches this percent of
+# memory.high. Overridden by resource_limits.slice_reclaim_trigger_pct (0 turns
+# the feature off; 50..99 is accepted, anything else uses this default).
+_SLICE_RECLAIM_DEFAULT_TRIGGER_PCT = 95
+_SLICE_RECLAIM_MIN_TRIGGER_PCT = 50
+_SLICE_RECLAIM_MAX_TRIGGER_PCT = 99
+# Reclaim brings memory.current down to about this fraction of memory.high --
+# or ten points under a lower configured trigger, so a reclaim always ends
+# below the line that started it.
+_SLICE_RECLAIM_TARGET_FRACTION = 0.85
+_SLICE_RECLAIM_TARGET_GAP_PCT = 10
+# Only reclaim when reclaimable file cache is at least this share of
+# memory.current. Below it the pressure is process memory, which reclaim
+# cannot free without swap, so writing would only stall the slice.
+_SLICE_RECLAIM_FILE_SHARE_MIN = 0.5
+# One memory.reclaim write asks for at most this much; the kernel holds the
+# writer until it has reclaimed the amount or given up, so a bounded chunk
+# bounds one write.
+_SLICE_RECLAIM_CHUNK_BYTES = 1024 * 1024 * 1024
+# An episode stops issuing chunks after this long; whatever is left waits for
+# the next episode.
+_SLICE_RECLAIM_EPISODE_BUDGET_SECS = 10.0
+# At most one episode per this many seconds.
+_SLICE_RECLAIM_MIN_INTERVAL_SECS = 60.0
+# A planned reclaim smaller than this is skipped. Arbitrary: a few MiB is too
+# little cache to be what holds a slice at its ceiling.
+_SLICE_RECLAIM_MIN_BYTES = 4 * 1024 * 1024
+# Host swap is read here. Module-level so tests can point it at a file.
+_PROC_MEMINFO = "/proc/meminfo"
+
+# Set after memory.reclaim proved unusable (missing on a pre-5.19 kernel,
+# refused, or rejected); the feature then stays off for the process.
+_SLICE_RECLAIM_DISARMED = False
+# time.monotonic() when the last episode started, for the rate limit.
+_SLICE_RECLAIM_LAST_AT: float | None = None
+# Held by the running episode's thread, so episodes never overlap.
+_SLICE_RECLAIM_LOCK = threading.Lock()
+# Each "skipped" reason is logged once per process at INFO.
+_SLICE_RECLAIM_SKIP_LOGGED: set[str] = set()
+
+
+def _slice_reclaim_trigger_pct() -> int:
+    """The configured trigger percent, ``0`` when the feature is off.
+
+    ``resource_limits.slice_reclaim_trigger_pct``: unset uses
+    :data:`_SLICE_RECLAIM_DEFAULT_TRIGGER_PCT`, ``0`` is off, 50..99 is used as
+    written, and a value the parse refuses or one under 50 uses the default.
+    """
+    try:
+        # circular import: same function-level pattern as _cgroup_limits_from_config.
+        # The full load, so a value (the off switch included) set only in the
+        # config.local.json overlay counts.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        pct = KiroCrewConfig.load().resource_limits.slice_reclaim_trigger_pct
+    except Exception:
+        logger.debug("slice reclaim: config unavailable, using the default trigger")
+        return _SLICE_RECLAIM_DEFAULT_TRIGGER_PCT
+    if pct == 0:
+        return 0
+    if pct is None or not (_SLICE_RECLAIM_MIN_TRIGGER_PCT <= pct <= _SLICE_RECLAIM_MAX_TRIGGER_PCT):
+        return _SLICE_RECLAIM_DEFAULT_TRIGGER_PCT
+    return pct
+
+
+def _slice_reclaimable_file(stat: dict[str, int]) -> int:
+    """Clean file cache reclaim can drop without writeback or swap.
+
+    In cgroup v2 ``file`` includes ``shmem`` (tmpfs, shared anonymous memory),
+    which reclaim can only swap, and dirty or in-flight pages need writeback
+    first; none of those count.
+    """
+    reclaimable = (
+        stat.get("file", 0)
+        - stat.get("shmem", 0)
+        - stat.get("file_dirty", 0)
+        - stat.get("file_writeback", 0)
+    )
+    return max(reclaimable, 0)
+
+
+def _plan_slice_reclaim(
+    slice_dir: Path, trigger_pct: int
+) -> tuple[int, int, dict[str, int]] | None:
+    """``(bytes_to_reclaim, target_current, memory.stat)``, or None for no reclaim.
+
+    All three must hold: ``memory.high`` is finite, ``memory.current`` is at
+    least *trigger_pct* percent of it, and reclaimable file cache is at least
+    :data:`_SLICE_RECLAIM_FILE_SHARE_MIN` of ``memory.current``. The amount
+    brings ``memory.current`` to the target, capped at the reclaimable cache.
+    """
+    high = read_cgroup_int(slice_dir / "memory.high")
+    current = read_cgroup_int(slice_dir / "memory.current")
+    if not high or current is None or current * 100 < high * trigger_pct:
+        return None
+    stat = _read_cgroup_counters(slice_dir / "memory.stat")
+    reclaimable = _slice_reclaimable_file(stat)
+    if reclaimable < current * _SLICE_RECLAIM_FILE_SHARE_MIN:
+        return None
+    target_fraction = min(
+        _SLICE_RECLAIM_TARGET_FRACTION, (trigger_pct - _SLICE_RECLAIM_TARGET_GAP_PCT) / 100
+    )
+    target = int(high * target_fraction)
+    amount = min(current - target, reclaimable)
+    if amount < _SLICE_RECLAIM_MIN_BYTES:
+        return None
+    return amount, target, stat
+
+
+def _host_swap_total_kb() -> int | None:
+    """``SwapTotal`` from ``/proc/meminfo`` in kB, or None when unreadable."""
+    try:
+        for line in Path(_PROC_MEMINFO).read_text(encoding="utf-8").splitlines():
+            key, _, rest = line.partition(":")
+            if key == "SwapTotal":
+                value = rest.split()
+                return int(value[0]) if value and value[0].isdigit() else None
+    except OSError:
+        return None
+    return None
+
+
+def _slice_reclaim_cannot_swap(slice_dir: Path) -> bool:
+    """Whether a reclaim on the slice can only drop cache, never swap anon out.
+
+    True when the slice's ``memory.swap.max`` reads ``0`` (what
+    ``ensure_agents_slice_limits`` sets with ``MemorySwapMax=0``) or the host
+    has no swap at all. Anything unreadable counts as "might swap".
+    """
+    if read_cgroup_int(slice_dir / "memory.swap.max") == 0:
+        return True
+    return _host_swap_total_kb() == 0
+
+
+def _write_memory_reclaim(path: Path, nbytes: int) -> None:
+    """Ask the kernel to reclaim *nbytes* from the cgroup owning *path*.
+
+    Raises ``OSError`` as the kernel reports it: ``EAGAIN`` means it reclaimed
+    less than asked.
+    """
+    fd = os.open(path, os.O_WRONLY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        os.write(fd, str(nbytes).encode("ascii"))
+    finally:
+        os.close(fd)
+
+
+def _disarm_slice_reclaim(reason: object, *, level: int = logging.WARNING) -> None:
+    """Turn the reclaim off for this process, with one log line at *level*."""
+    global _SLICE_RECLAIM_DISARMED
+    if _SLICE_RECLAIM_DISARMED:
+        return
+    _SLICE_RECLAIM_DISARMED = True
+    logger.log(
+        level,
+        "agent slice %s: proactive page-cache reclaim is off for this process (%s); "
+        "the slice MemoryHigh ceiling still applies. See "
+        "docs/architecture/resource-protection.md.",
+        _CGROUP_AGENTS_SLICE,
+        reason,
+    )
+
+
+def _log_slice_reclaim_skip_once(reason: str) -> None:
+    if reason in _SLICE_RECLAIM_SKIP_LOGGED:
+        return
+    _SLICE_RECLAIM_SKIP_LOGGED.add(reason)
+    logger.info("agent slice %s: page-cache reclaim skipped: %s", _CGROUP_AGENTS_SLICE, reason)
+
+
+def _run_slice_reclaim_episode(slice_dir: Path, amount: int, target: int) -> None:
+    """Write *amount* bytes to the slice's ``memory.reclaim`` in bounded chunks.
+
+    Stops early once ``memory.current`` reaches *target*, when the kernel
+    answers ``EAGAIN`` (it reclaimed less than asked, which is normal), or when
+    the episode's time budget runs out. Any other error disarms the feature.
+    Logs one INFO line with the before and after figures. Never raises; always
+    releases :data:`_SLICE_RECLAIM_LOCK`.
+    """
+    try:
+        before_current = read_cgroup_int(slice_dir / "memory.current")
+        before = _read_cgroup_counters(slice_dir / "memory.stat")
+        reclaim_path = slice_dir / "memory.reclaim"
+        deadline = time.monotonic() + _SLICE_RECLAIM_EPISODE_BUDGET_SECS
+        remaining = amount
+        requested = 0
+        while remaining > 0:
+            chunk = min(_SLICE_RECLAIM_CHUNK_BYTES, remaining)
+            try:
+                _write_memory_reclaim(reclaim_path, chunk)
+            except OSError as exc:
+                if exc.errno == errno.EAGAIN:
+                    logger.debug("agent slice reclaim: kernel reclaimed less than %d bytes", chunk)
+                    requested += chunk
+                    break
+                _disarm_slice_reclaim(f"memory.reclaim write failed: {exc}")
+                return
+            requested += chunk
+            remaining -= chunk
+            current = read_cgroup_int(slice_dir / "memory.current")
+            if current is not None and current <= target:
+                break
+            if time.monotonic() >= deadline:
+                break
+        after_current = read_cgroup_int(slice_dir / "memory.current")
+        after = _read_cgroup_counters(slice_dir / "memory.stat")
+        logger.info(
+            "agent slice %s: reclaimed page cache (asked %d bytes): memory.current "
+            "%s -> %s, file %d -> %d, anon %d -> %d",
+            _CGROUP_AGENTS_SLICE,
+            requested,
+            before_current,
+            after_current,
+            before.get("file", 0),
+            after.get("file", 0),
+            before.get("anon", 0),
+            after.get("anon", 0),
+        )
+    except Exception:
+        logger.debug("agent slice reclaim episode failed", exc_info=True)
+    finally:
+        _SLICE_RECLAIM_LOCK.release()
+
+
+def reclaim_agents_slice_page_cache() -> threading.Thread | None:
+    """Start a page-cache reclaim on the agents slice when clean cache holds it at its ceiling.
+
+    Called each tick of the resource-pressure sampler, from its worker thread.
+    The decision costs a handful of cgroup file reads and, once the slice is
+    near its ceiling, one config load; when it says reclaim, the
+    writes run in a new daemon thread, which is returned so a caller can wait
+    for it. Returns None when nothing was started.
+
+    Nothing happens when the slice cannot be read (not Linux, no cgroup v2, the
+    slice not materialized), inside a pod (``KIROCREW_POD`` set: the slice is
+    the user's live one), when the feature is off
+    (``resource_limits.slice_reclaim_trigger_pct`` = 0) or disarmed, within
+    :data:`_SLICE_RECLAIM_MIN_INTERVAL_SECS` of the last episode, or when a
+    reclaim could push process memory to swap. Never raises.
+    """
+    global _SLICE_RECLAIM_LAST_AT
+    if _SLICE_RECLAIM_DISARMED:
+        return None
+    # A pod gateway shares the user's slice with the live one; only a gateway
+    # outside a pod reclaims it.
+    if os.environ.get("KIROCREW_POD"):
+        return None
+    try:
+        slice_dir = _agents_slice_cgroup_dir()
+        if slice_dir is None:
+            return None
+        now = time.monotonic()
+        last = _SLICE_RECLAIM_LAST_AT
+        if last is not None and now - last < _SLICE_RECLAIM_MIN_INTERVAL_SECS:
+            return None
+        # Cheap pre-check before the config read: no accepted trigger is under
+        # the minimum percent, so a slice below it never needs the config.
+        high = read_cgroup_int(slice_dir / "memory.high")
+        current = read_cgroup_int(slice_dir / "memory.current")
+        if not high or current is None or current * 100 < high * _SLICE_RECLAIM_MIN_TRIGGER_PCT:
+            return None
+        trigger_pct = _slice_reclaim_trigger_pct()
+        if trigger_pct == 0:
+            return None
+        plan = _plan_slice_reclaim(slice_dir, trigger_pct)
+        if plan is None:
+            return None
+        amount, target, _stat = plan
+        if not _slice_reclaim_cannot_swap(slice_dir):
+            _log_slice_reclaim_skip_once(
+                "the slice may swap (memory.swap.max is not 0 and the host has swap), "
+                "so a reclaim could push agent memory to swap"
+            )
+            return None
+        if not (slice_dir / "memory.reclaim").exists():
+            # The normal state on an older kernel, not a fault.
+            _disarm_slice_reclaim(
+                "this kernel has no memory.reclaim (needs Linux 5.19+)", level=logging.INFO
+            )
+            return None
+        if not _SLICE_RECLAIM_LOCK.acquire(blocking=False):
+            return None
+        _SLICE_RECLAIM_LAST_AT = now
+        worker = threading.Thread(
+            target=_run_slice_reclaim_episode,
+            args=(slice_dir, amount, target),
+            name="agent-slice-reclaim",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except RuntimeError:
+            _SLICE_RECLAIM_LOCK.release()
+            logger.debug("agent slice reclaim: could not start the worker thread")
+            return None
+        return worker
+    except Exception:
+        logger.debug("agent slice reclaim check failed", exc_info=True)
+        return None

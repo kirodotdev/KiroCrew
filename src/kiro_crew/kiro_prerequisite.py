@@ -25,6 +25,9 @@ change.
 
 What remains is detection, and detection alone: every subprocess this module
 spawns is one of the two read-only probes above, sandboxed, with a fixed argv.
+An enterprise build's sign-in check may re-run those two probes through the
+sandbox's first-party carve-out on a host with no sandbox backend, for the
+sign-in verdict only.
 No command, argument, URL, or filesystem target is accepted from an HTTP
 request, and the dashboard exposes only a ``status`` read plus the agent-spec
 repair write (which touches Kiro Crew's own files, never the CLI).
@@ -217,12 +220,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.kiro_prerequisite_service import (  # noqa: F401
         _FORCED_PROBE_FLOOR_SECS,
-        _OWNER_PREFIX,
+        _MEMBER_OWNERS,
         _SETUP_COMPLETE_FILENAME,
         _WARM_UP_DELAY_SECS,
         KiroPrerequisiteService,
         _established_installation,
-        _own_methods,
         _resolve_config_set_hints,
         _turn_auth_service,
         kiro_signed_out_confirmed,
@@ -246,19 +248,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.kiro_prerequisite_status import (  # noqa: F401
         _LEGACY_IDLE_OPERATION,
-        _LOGIN_TAIL,
         _MAX_VISIBLE_DETAIL,
         _POWERSHELL_SINGLE_QUOTES,
-        _SSO_LOGIN_TAIL,
         BUNDLED_CLI_UPDATE_REFUSAL,
         FAKE_ACP_TEST_MODE_ENV,
-        KIRO_CLI_LOGIN_COMMAND,
-        KIRO_CLI_SSO_LOGIN_COMMAND,
         KIRO_CLI_UPDATE_COMMAND,
         OFFICIAL_INSTALL_DOCS_URL,
         PrerequisiteStatus,
         _cmd_launcher_prefix,
-        _is_off_path_override,
         _platform_label,
         _powershell_single_quoted,
         _sanitize_detail,
@@ -311,6 +308,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         platform_compat,
         sandbox,
     )
+    from kiro_crew._facade_bindings import (  # noqa: F401
+        own_methods,
+    )
     from kiro_crew._sqlite_compat import (  # noqa: F401
         sqlite3,
     )
@@ -335,6 +335,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         find_kiro_cli_candidates,
         is_bundled_kiro_cli,
         known_kiro_cli_dirs,
+    )
+    from kiro_crew.kiro_cli_bundle import (  # noqa: F401
+        _LOGIN_TAIL,
+        _SSO_LOGIN_TAIL,
+        KIRO_CLI_LOGIN_COMMAND,
+        KIRO_CLI_SSO_LOGIN_COMMAND,
+        _is_off_path_override,
+        login_commands,
     )
     from kiro_crew.mcp_cleanup import (  # noqa: F401
         mcp_entry_is_registry_governed,

@@ -14,6 +14,7 @@ import time as time_module
 from types import SimpleNamespace
 
 import pytest
+from local_asyncio_helpers import asyncio_with_sleep
 
 from kiro_crew import autonudge as _an
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
@@ -48,10 +49,12 @@ def svc(tmp_path_factory):
 
 @pytest.fixture
 def _nosleep(monkeypatch):
+    """Every loop timer fires at once; the stdlib ``asyncio.sleep`` is untouched."""
+
     async def _noop(_secs):
         return None
 
-    monkeypatch.setattr(_an.asyncio, "sleep", _noop)
+    monkeypatch.setattr(firing, "asyncio", asyncio_with_sleep(_noop))
 
 
 @pytest.fixture

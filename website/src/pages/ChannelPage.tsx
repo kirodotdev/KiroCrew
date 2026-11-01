@@ -1,12 +1,14 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import Modal from '../components/Modal'
-import { Hourglass, Ear, Check, X, Wrench, Radio, VolumeX, User, MessageSquare, Users, Zap, RotateCcw } from 'lucide-react'
+import { Hourglass, Ear, Check, X, Wrench, Radio, VolumeX, User, MessageSquare, Users, Zap, RotateCcw, Loader2 } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../store'
 import { triggerRefresh } from '../store/dashboardSlice'
 import type { RootState } from '../store'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import ApprovalCard from '../components/ApprovalCard'
 import ErrorNotice from '../components/ErrorNotice'
+import { useConfirm } from '../components/ConfirmDialog'
 import { Btn, Input, Badge, EmptyState, PageHeader } from '../components/ui'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
@@ -21,7 +23,7 @@ import { i18nT } from '../i18n/t'
 import { useListDetailView } from '../hooks/useListDetailView'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import ListDetailBack from '../components/ListDetailBack'
-import { fmtDateFields } from '../i18n/format'
+import { fmtDateFields, fmtList } from '../i18n/format'
 // ── Types ──
 
 interface ChannelAgent {
@@ -71,6 +73,9 @@ interface ChannelPageError {
   title: string
   message: string
 }
+
+/** Which clear a request addressed: the whole channel, or one agent. */
+type ClearScope = 'all' | 'agent'
 
 /* Map snake_case backend → camelCase frontend */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -268,10 +273,11 @@ export function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }:
 
 const LISTEN_MODES: Array<ChannelAgent['listenMode']> = ['all', 'mention', 'silent']
 
-function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext }: {
-  agent: ChannelAgent; onDismiss: () => void; onListenChange: (m: ChannelAgent['listenMode']) => void; onClearContext: () => void
+function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext, justCleared = false }: {
+  agent: ChannelAgent; onDismiss: () => void; onListenChange: (m: ChannelAgent['listenMode']) => void; onClearContext: (begin: () => void) => void | Promise<void>; justCleared?: boolean
 }) {
   const [menu, setMenu] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   // The trigger, so an explicit dismissal can hand focus back to it: the menu
   // keyboard contract moves focus INTO the menu on open, and the row holding
@@ -345,7 +351,29 @@ function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext }: {
           </div>}
         </div>
       </div>
-      {alive && <Btn onClick={onClearContext} aria-label={i18nT('pages.channelPage.clear_context')} title={i18nT('pages.channelPage.clear_context')}><RotateCcw className="lucide-inline" /></Btn>}
+      {/* One button across both states, never unmounted: it holds the focus of the user who
+          pressed it, and reusing its slot keeps the role name from truncating to a glyph. */}
+      {alive && (
+        <Btn
+          onClick={async () => {
+            if (clearing || justCleared) return
+            // Busy only once the request starts: a spinner behind the open confirm reads as running.
+            try { await onClearContext(() => setClearing(true)) } finally { setClearing(false) }
+          }}
+          aria-disabled={clearing || justCleared}
+          aria-busy={clearing}
+          className={`aria-disabled:cursor-not-allowed aria-disabled:hover:border-border aria-disabled:hover:bg-transparent ${justCleared ? '' : 'aria-disabled:opacity-30'}`}
+          aria-label={justCleared ? i18nT('pages.channelPage.clear_context_done') : i18nT('pages.channelPage.clear_context')}
+          title={justCleared ? undefined : i18nT('pages.channelPage.clear_context')}
+          data-testid={justCleared ? 'agent-clear-done' : undefined}
+        >
+          {justCleared
+            ? <Check className="lucide-inline text-ok" aria-hidden="true" />
+            : clearing
+              ? <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
+              : <RotateCcw className="lucide-inline" />}
+        </Btn>
+      )}
       <Btn onClick={onDismiss} aria-label={i18nT('pages.channelPage.dismiss')} danger title={i18nT('pages.channelPage.dismiss')}><X className="lucide-inline" /></Btn>
     </div>
   )
@@ -406,10 +434,62 @@ function presetLabel(p: Preset): string {
 
 // ── New Channel Dialog (Step 2) ──
 
-function NewChannelDialog({ onClose, onCreate, presets }: { onClose: () => void; onCreate: (topic: string, presetId: string) => void; presets: Preset[] }) {
+/**
+ * A form's save that keeps the form open until the request succeeds. `save`
+ * resolves to the error text when the request failed and to `null` once it
+ * landed (then `onSaved` closes the form). A failure keeps every typed value
+ * and shows beside the form, where pressing the same button again retries. A
+ * failure that lands after the form was closed goes to `onClosedError`, so it
+ * is still reported. While `saving`, the form locks its fields: a success
+ * closes it, so an edit made mid-save would be lost unsaved.
+ */
+function useKeptFormSave(onSaved: () => void, onClosedError: (message: string) => void) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const mounted = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  // A ref, not `saving`: two clicks inside one render would both read `false`.
+  const inFlight = useRef(false)
+  const run = async (save: () => Promise<string | null>) => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setSaving(true)
+    setError(null)
+    const failed = await save()
+    inFlight.current = false
+    if (!mounted.current) {
+      if (failed) onClosedError(failed)
+      return
+    }
+    setSaving(false)
+    setError(failed)
+    // Only the form that started the save closes: a form closed and reopened
+    // while this save was in flight is a new draft and is left alone.
+    if (!failed) onSaved()
+  }
+  return { saving, error, clearError: () => setError(null), run }
+}
+
+/** The notice's bold lead, dropped when the backend sent no text and the message already is it. */
+const keptErrorTitle = (titleKey: string, message: string | null) => {
+  const title = i18nT(titleKey)
+  return message && message !== title ? title : undefined
+}
+
+function NewChannelDialog({ onClose, onCreate, onClosedError, presets }: {
+  onClose: () => void
+  /** Resolves to the error text on failure, `null` on success. */
+  onCreate: (topic: string, presetId: string) => Promise<string | null>
+  onClosedError: (message: string) => void
+  presets: Preset[]
+}) {
   const [topic, setTopic] = useState('')
   const [preset, setPreset] = useState(presets[0]?.id || 'custom')
   const topicRef = useRef<HTMLInputElement>(null)
+  const save = useKeptFormSave(onClose, onClosedError)
 
   // Initial focus belongs on the Topic field — the one input this dialog
   // exists to collect. Modal's shared focus trap focuses the dialog's FIRST
@@ -421,7 +501,7 @@ function NewChannelDialog({ onClose, onCreate, presets }: { onClose: () => void;
 
   const handleCreate = () => {
     if (!topic.trim()) return
-    onCreate(topic.trim(), preset)
+    void save.run(() => onCreate(topic.trim(), preset))
   }
 
   return (
@@ -445,22 +525,33 @@ function NewChannelDialog({ onClose, onCreate, presets }: { onClose: () => void;
       footer={
         <>
           <Btn onClick={onClose}>{i18nT('pages.channelPage.cancel')}</Btn>
-          <Btn onClick={handleCreate} disabled={!topic.trim()} primary>{i18nT('pages.channelPage.create')}</Btn>
+          {/* `aria-disabled` while saving, not `disabled`: the click that started the
+              save holds focus here, and a disabled button would drop it to <body>. */}
+          <Btn onClick={handleCreate} disabled={!topic.trim()} aria-disabled={save.saving} aria-busy={save.saving}
+            className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed" primary>{i18nT('pages.channelPage.create')}</Btn>
         </>
       }
     >
+      {/* No hand-off: the unsaved topic and preset in this dialog */}
+      <ErrorNotice
+        title={keptErrorTitle('pages.channelPage.failed_to_create_channel', save.error)}
+        message={save.error}
+        onDismiss={save.clearError}
+        className="mb-3"
+        testId="new-channel-error"
+      />
       <label htmlFor="new-channel-topic" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.topic')}</label>
       {/* No composition tracking here: the IME-owned-Escape claim moved into
         * Modal with the keyboard boundary, and Modal's document-tracked latch
         * hears this input's composition events natively — a local latch would
         * have no reader. */}
-      <Input ref={topicRef} id="new-channel-topic" aria-label={i18nT('pages.channelPage.topic')} value={topic} onChange={e => setTopic(e.target.value)}
+      <Input ref={topicRef} id="new-channel-topic" aria-label={i18nT('pages.channelPage.topic')} value={topic} readOnly={save.saving} onChange={e => { if (!save.saving) setTopic(e.target.value) }}
         className="w-full mb-4"
         placeholder={i18nT('pages.channelPage.e_g_investigate_gamma_deployment_failure')} />
       <span id="new-channel-preset-label" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.team_preset')}</span>
       <div role="radiogroup" aria-labelledby="new-channel-preset-label" className="space-y-1.5">
         {presets.map(p => (
-          <Btn key={p.id} onClick={() => setPreset(p.id)}
+          <Btn key={p.id} onClick={() => { if (!save.saving) setPreset(p.id) }} aria-disabled={save.saving}
             className={`w-full text-left px-3 py-2 !rounded-lg text-sm ${preset === p.id ? '!border-accent bg-accent/10 text-text-strong' : '!border-border text-muted hover:bg-bg-hover'}`}>
             <span className="font-medium">{presetLabel(p)}</span>
             {p.agents.length > 0 && <span className="text-[13px] text-muted ml-2">({p.agents.map(a => a.role).join(', ')})</span>}
@@ -533,8 +624,14 @@ function MentionInput({ agents, value, onChange, onSend }: {
 
 // ── Add Agent Form ──
 
-function AddAgentForm({ onAdd, onCancel }: { onAdd: (role: string, task: string, agent: string) => void; onCancel: () => void }) {
+function AddAgentForm({ onAdd, onCancel, onClosedError }: {
+  /** Resolves to the error text on failure, `null` on success. */
+  onAdd: (role: string, task: string, agent: string) => Promise<string | null>
+  onCancel: () => void
+  onClosedError: (message: string) => void
+}) {
   const ime = useImeGuard()
+  const save = useKeptFormSave(onCancel, onClosedError)
   const [role, setRole] = useState('')
   const [task, setTask] = useState('')
   const { agents, defaultAgent, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
@@ -546,15 +643,24 @@ function AddAgentForm({ onAdd, onCancel }: { onAdd: (role: string, task: string,
   }, [reloadRoster, dispatch])
   const rosterFailure = rosterError ? { reloading: rosterReloading, onReload: recoverRoster } : undefined
   const [agent, setAgent] = useState('')
+  const submit = () => {
+    if (role.trim()) void save.run(() => onAdd(role.trim(), task.trim(), agent || defaultAgent))
+  }
   return (
     <div className="p-2 space-y-2 border-t border-border">
+      {/* No hand-off: the unsaved role, task and agent in this form */}
+      <ErrorNotice
+        title={keptErrorTitle('pages.channelPage.failed_to_add_agent', save.error)}
+        message={save.error}
+        onDismiss={save.clearError}
+        testId="add-agent-error"
+      />
       <div>
-        <span className="text-[11px] text-muted font-medium mb-1 block">{i18nT('pages.channelPage.agent')}</span>
-        <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent || defaultAgent} onChange={setAgent} rosterFailure={rosterFailure} />
+        <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent || defaultAgent} onChange={v => { if (!save.saving) setAgent(v) }} rosterFailure={rosterFailure} />
       </div>
-      <Input value={role} onChange={e => setRole(e.target.value)} placeholder={i18nT('pages.channelPage.role_e_g_logs_agent')} aria-label={i18nT('pages.channelPage.role')} autoFocus
+      <Input value={role} readOnly={save.saving} onChange={e => { if (!save.saving) setRole(e.target.value) }} placeholder={i18nT('pages.channelPage.role_e_g_logs_agent')} aria-label={i18nT('pages.channelPage.role')} autoFocus
         className="w-full text-[13px]" />
-      <Input value={task} onChange={e => setTask(e.target.value)} placeholder={i18nT('pages.channelPage.task_e_g_search_cloudwatch_logs')} aria-label={i18nT('pages.channelPage.task')}
+      <Input value={task} readOnly={save.saving} onChange={e => { if (!save.saving) setTask(e.target.value) }} placeholder={i18nT('pages.channelPage.task_e_g_search_cloudwatch_logs')} aria-label={i18nT('pages.channelPage.task')}
         className="w-full text-[13px]"
         {...ime.bindComposition()}
         onKeyDown={e => {
@@ -562,10 +668,12 @@ function AddAgentForm({ onAdd, onCancel }: { onAdd: (role: string, task: string,
           // Rule 1: single-line input — the guard alone is enough; claiming would
           // suppress an implicit form submit where one is wanted.
           if (ime.isComposing(e)) return
-          if (role.trim()) onAdd(role.trim(), task.trim(), agent || defaultAgent)
+          submit()
         }} />
       <div className="flex gap-1">
-        <Btn onClick={() => { if (role.trim()) onAdd(role.trim(), task.trim(), agent || defaultAgent) }} disabled={!role.trim()} primary className="flex-1">{i18nT('pages.channelPage.add')}</Btn>
+        {/* `aria-disabled` while saving, not `disabled`, so focus stays on the button. */}
+        <Btn onClick={submit} disabled={!role.trim()} aria-disabled={save.saving} aria-busy={save.saving}
+          primary className="flex-1 aria-disabled:opacity-30 aria-disabled:cursor-not-allowed">{i18nT('pages.channelPage.add')}</Btn>
         <Btn onClick={onCancel}>{i18nT('pages.channelPage.cancel')}</Btn>
       </div>
     </div>
@@ -598,6 +706,14 @@ export default function ChannelPage() {
   const [channels, setChannels] = useState<Channel[]>([])
   const [presets, setPresets] = useState<Preset[]>(FALLBACK_PRESETS)
   const [activeId, setActiveId] = useState<string | null>(null)
+  // The channel actually ON SCREEN, which is not always `activeId`: when `activeId` names a
+  // channel that is gone, the render falls back to `channels[0]`. Compared against the
+  // RENDERED id because that is what decides whether a notice would be visible.
+  const renderedIdRef = useRef<string | null>(null)
+  const isOffscreenClearResult = useCallback(
+    (channelId: string) => channelId !== renderedIdRef.current,
+    [],
+  )
   const [input, setInput] = useState('')
   const [showNew, setShowNew] = useState(false)
   const [showAgents, setShowAgents] = useState(false)
@@ -610,6 +726,12 @@ export default function ChannelPage() {
   /** The last channel-list read was refused, so an empty list is unknown, not empty. */
   const [listFailed, setListFailed] = useState(false)
   const [error, setError] = useState<ChannelPageError | null>(null)
+  const errorNoticeRef = useRef<HTMLDivElement>(null)
+  const clearDoneRef = useRef<HTMLParagraphElement>(null)
+  const [clearDone, setClearDone] = useState<{ channelId: string; roles?: string; agentId?: string; messagesDeleted?: boolean } | null>(null)
+  const [clearError, setClearError] = useState<
+    (ChannelPageError & { channelId?: string; agentId?: string }) | null
+  >(null)
   // A rejected channelPost, kept apart from `error`: its notice sits next to
   // the composer that still holds the unsent text (keyed by thread so it shows
   // beside the right one), so it must not offer the agent hand-off `error` does.
@@ -623,6 +745,57 @@ export default function ChannelPage() {
     // the primary one (the channel list) when both fail on the same load.
     setError(prev => (opts?.keepExisting && prev ? prev : next))
   }, [])
+  // A form save that failed after its form was closed: the text is already parsed.
+  const failWithMessage = useCallback((titleKey: string, message: string) => {
+    setError({ title: i18nT(titleKey), message })
+  }, [])
+  const noteClearResult = useCallback((channelId: string, res: { cleared?: unknown } | null | undefined, scope: ClearScope = 'all', agentId?: string) => {
+    // An agent-scope clear resolves only THAT agent's failed attempt; another agent's
+    // failure, and a channel-wide one, are still unresolved and keep their notice.
+    setClearError(prev => {
+      if (!prev) return null
+      if (prev.channelId && prev.channelId !== channelId) return prev
+      if (scope === 'agent' && prev.agentId !== agentId) return prev
+      return null
+    })
+    // Silence reads the same as a click that did nothing, so a clean clear must say so --
+    // and an agent-scope clear must name what it cleared, or it reads as channel-wide.
+    // Guarded like the `setClearError` writer above: without it, a clear still in flight on
+    // channel A lands after the user has moved to B and cleared there, and A's late success
+    // overwrites B's just-rendered acknowledgment with one addressed to a channel that is
+    // not on screen -- so B's line and row mark silently vanish.
+    const done = res?.cleared
+    setClearDone(prev => isOffscreenClearResult(channelId) ? prev : (
+      scope === 'agent' && Array.isArray(done) && done.length > 0
+        // The agent's own id travels with the result so the row the user clicked can confirm
+        // in place. The page-top line alone put the outcome where the eye was not.
+        ? { channelId, roles: fmtList(done as string[]), agentId }
+        // All-scope is the ONLY case that also wipes the shared log (`ch.messages.clear()` in
+        // the server's scope=all branch), so it is the only one that may say so.
+        : { channelId, messagesDeleted: scope !== 'agent' }
+    ))
+  }, [isOffscreenClearResult])
+  const failClearContext = useCallback((channelId: string, err: unknown, agentId?: string) => {
+    const failed = i18nT('pages.channelPage.failed_to_clear_context')
+    // A request that FAILED stays true after the user navigates away, so it takes the page
+    // notice rather than being dropped unreported.
+    if (isOffscreenClearResult(channelId)) {
+      fail('pages.channelPage.failed_to_clear_context', err)
+      return
+    }
+    // The server's 404 body is a bare "not found", which tells the user neither what is gone
+    // nor that retrying cannot help.
+    const gone = err instanceof ApiError && err.status === 404
+      ? i18nT(agentId ? 'pages.channelPage.clear_context_agent_gone' : 'pages.channelPage.clear_context_channel_gone')
+      : undefined
+    setClearError({
+      title: failed,
+      message: gone ?? apiError(err, failed),
+      channelId,
+      agentId,
+    })
+  }, [fail, isOffscreenClearResult])
+
   const [threadId, setThreadId] = useState<string | null>(null)
   // Which thread the unsent reply belongs to, so it is neither discarded on
   // navigation nor inherited by a different thread.
@@ -632,6 +805,9 @@ export default function ChannelPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const channel = channels.find(c => c.id === activeId) || channels[0] || null
+  // Mirrored into a ref because the clear-result callbacks are `[]`-dep and would otherwise
+  // close over the channel rendered on first paint.
+  useEffect(() => { renderedIdRef.current = channel?.id ?? null }, [channel?.id])
   const topLevelMessages = useMemo(() => channel?.messages.filter(m => !m.threadId) ?? [], [channel?.messages])
 
   // Load channels on mount
@@ -657,10 +833,45 @@ export default function ChannelPage() {
   // message in it, and the panel lists its members. Leaving either set across a change
   // of channel is not cosmetic -- the thread panel's composer sends against the ACTIVE
   // channel, so a stale id parents a reply to a message that channel does not contain.
+  //
+  // The shared `error` is deliberately NOT reset here. It carries no channel, so the reset
+  // could not be scoped without adding a third scoping mechanism to this page beside
+  // `postError` and `clearError`; and it fires on the FIRST selection too, where `reload`
+  // assigns `activeId` from null, which erased the presets-load failure raised moments
+  // earlier with `keepExisting: true` and left FALLBACK_PRESETS on screen unreported.
   useEffect(() => {
     setThreadId(null)
     setShowAgents(false)
   }, [activeId])
+
+  useEffect(() => {
+    if (!clearDone || clearDone.messagesDeleted) return
+    const t = setTimeout(() => setClearDone(null), 4000)
+    return () => clearTimeout(t)
+  }, [clearDone])
+
+  // Keyed on the RENDERED channel, not `activeId`: the two diverge whenever `activeId` names
+  // a channel that is gone (a local close, or another client's `channel_closed`), and `channel`
+  // falls back to `channels[0]`. Keyed on `activeId`, a failure against the channel actually on
+  // screen matched nothing and a destructive action failed with no notice anywhere -- the
+  // pre-diff `fail()` path always rendered one. Matches `clearDone` and `clearBusyHere`.
+  const shownClearError =
+    clearError && (!clearError.channelId || clearError.channelId === channel?.id) ? clearError : null
+
+  useEffect(() => {
+    setClearError(prev => (prev?.channelId && prev.channelId !== channel?.id ? null : prev))
+  }, [channel?.id])
+
+  useEffect(() => {
+    if (!shownClearError) return
+    errorNoticeRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [shownClearError])
+
+  // A result whose channel is no longer active is not shown, and so must not scroll either.
+  useEffect(() => {
+    if (!clearDone) return
+    clearDoneRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [clearDone])
 
   // Load full channel (with messages) when switching
   useEffect(() => {
@@ -754,8 +965,88 @@ export default function ChannelPage() {
     try {
       const res = await api.channelGet(channelId)
       setChannels(prev => prev.map(c => c.id === channelId ? mapChannel(res) : c))
-    } catch { /* the failure notice is already showing; nothing better to say */ }
+    } catch (e) {
+      fail('pages.channelPage.failed_to_load_channel', e, { keepExisting: true })
+    }
+  }, [fail])
+
+  // One entry per outstanding clear, so a per-agent clear settling while the channel-wide one
+  // is still open does not re-enable the destructive button.
+  const [clearBusyTargets, setClearBusyTargets] = useState<string[]>([])
+  const runClear = useCallback(
+    async (target: string, scope: ClearScope, agentId?: string) => {
+      setClearBusyTargets(prev => [...prev, target])
+      try {
+        const r = scope === 'agent'
+          ? await api.channelClearContext(target, 'agent', agentId)
+          : await api.channelClearContext(target, 'all')
+        noteClearResult(target, r, scope, agentId)
+        await reconcileChannel(target)
+        return r
+      } catch (e) {
+        failClearContext(target, e, agentId)
+        return undefined
+      } finally {
+        // Removes ONE occurrence, not every match: two concurrent clears on the same channel
+        // must each be counted, or the first to settle would clear the other's busy state.
+        setClearBusyTargets(prev => {
+          const at = prev.indexOf(target)
+          return at === -1 ? prev : [...prev.slice(0, at), ...prev.slice(at + 1)]
+        })
+      }
+    },
+    [noteClearResult, reconcileChannel, failClearContext],
+  )
+
+  // Scoped to THIS channel: a clear still running on the channel the user left must not
+  // disable the button on the one they moved to, which is a different operation.
+  const clearBusyHere = channel?.id !== undefined && clearBusyTargets.includes(channel.id)
+
+  // NOT destructured as `confirm`: that shadows the global in this scope, and the close
+  // button's remaining `window.confirm` guard would then test a Promise, which is always truthy.
+  const { confirm: askConfirm, cancel: cancelConfirm, confirmDialog } = useConfirm()
+  // The channel the open confirm was raised for. `channel` is recomputed every render, so
+  // without pinning it a close mid-dialog redirects the confirm onto one nobody chose.
+  // A per-agent confirm also pins its agent: a row that leaves mid-dialog withdraws it.
+  const pendingClearRef = useRef<{ channelId: string; agentId?: string } | null>(null)
+  const clearTargetLive = useCallback((cs: Channel[], channelId: string, agentId?: string) => {
+    const ch = cs.find(c => c.id === channelId)
+    return !!ch && (!agentId || ch.agents.some(a => a.id === agentId && a.state !== 'done'))
   }, [])
+  useEffect(() => {
+    const target = pendingClearRef.current
+    if (target && !clearTargetLive(channels, target.channelId, target.agentId)) {
+      pendingClearRef.current = null
+      cancelConfirm()
+    }
+  }, [channels, cancelConfirm, clearTargetLive])
+
+  const askClearAll = useCallback(async (target: string) => {
+    pendingClearRef.current = { channelId: target }
+    const ok = await askConfirm({
+      title: i18nT('pages.channelPage.clear_all_context'),
+      body: i18nT('pages.channelPage.this_will_reset_conversation_history_for_all_age'),
+      confirmLabel: i18nT('pages.channelPage.clear_context_and_delete_messages'),
+    })
+    pendingClearRef.current = null
+    // The answer arrives an arbitrary time later, so the target is re-checked rather than
+    // trusted: the channel can be gone by now, and clearing its successor was never asked for.
+    if (!ok || !channels.some(c => c.id === target)) return
+    await runClear(target, 'all')
+  }, [channels, askConfirm, runClear])
+
+  const askClearAgent = useCallback(async (channelId: string, agent: ChannelAgent, begin: () => void) => {
+    pendingClearRef.current = { channelId, agentId: agent.id }
+    const ok = await askConfirm({
+      title: i18nT('pages.channelPage.clear_context'),
+      body: i18nT('pages.channelPage.reset_role_s_llm_session_the_channel_s_shared_me', { role: agent.role }),
+      confirmLabel: i18nT('pages.channelPage.clear_context'),
+    })
+    pendingClearRef.current = null
+    if (!ok || !clearTargetLive(channels, channelId, agent.id)) return
+    begin()
+    await runClear(channelId, 'agent', agent.id)
+  }, [channels, askConfirm, runClear, clearTargetLive])
 
   // Optimistic, but a refusal reconciles the row from the server: a notice that
   // says "Failed to dismiss agent" beside a row that shows it dismissed would
@@ -780,8 +1071,10 @@ export default function ChannelPage() {
 
   if (loading) return <div className="flex items-center justify-center h-full text-muted">{i18nT('pages.channelPage.loading_channels')}</div>
 
-  const handleCreateChannel = async (topic: string, presetId: string) => {
-    setShowNew(false)
+  // The dialog stays open until the create lands (it then closes itself):
+  // closing it first unmounted the typed topic and preset, so a refused create
+  // threw them away.
+  const handleCreateChannel = async (topic: string, presetId: string): Promise<string | null> => {
     const tmpl = presets.find(p => p.id === presetId) || presets[0]
     try {
       const res = await api.channelCreate(topic, (tmpl?.agents || []).map(a => ({
@@ -794,8 +1087,9 @@ export default function ChannelPage() {
         setActiveId(res.channel.id)
         openDetail()
       }
+      return null
     } catch (err) {
-      fail('pages.channelPage.failed_to_create_channel', err)
+      return apiError(err, i18nT('pages.channelPage.failed_to_create_channel'))
     }
   }
 
@@ -808,16 +1102,29 @@ export default function ChannelPage() {
         risks nothing; the composer's own failure renders beside it instead.
         `apiError` falls back to the title when the backend sent no text, so
         the title is dropped rather than shown twice. */}
-    <ErrorNotice
-      title={error && error.message !== error.title ? error.title : undefined}
-      message={error?.message}
-      onDismiss={() => setError(null)}
-      askAgent
-      className="mb-2"
-      testId="channel-error"
-    />
+    <div>
+      <ErrorNotice
+        title={error && error.message !== error.title ? error.title : undefined}
+        message={error?.message}
+        onDismiss={() => setError(null)}
+        askAgent
+        className="mb-2"
+        testId="channel-error"
+      />
+      {/* No hand-off: the unsent message text (`input`) and thread replies (`threadDrafts`) */}
+      <div ref={errorNoticeRef}>
+        <ErrorNotice
+          title={shownClearError && shownClearError.message !== shownClearError.title ? shownClearError.title : undefined}
+          message={shownClearError?.message}
+          onDismiss={() => setClearError(null)}
+          className="mb-2"
+          testId="clear-context-error"
+        />
+      </div>
+    </div>
     <div className={`flex h-full relative ${isMobile ? '-mx-4 -mb-8' : ''}`}>
-      {showNew && <NewChannelDialog onClose={() => setShowNew(false)} presets={presets} onCreate={handleCreateChannel} />}
+      {showNew && <NewChannelDialog onClose={() => setShowNew(false)} presets={presets} onCreate={handleCreateChannel}
+        onClosedError={message => failWithMessage('pages.channelPage.failed_to_create_channel', message)} />}
 
 
       {/* Channel list sidebar */}
@@ -829,7 +1136,7 @@ export default function ChannelPage() {
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {/* An empty list is only "no channels yet" when the read succeeded:
               under a load failure the onboarding copy would claim zero channels. */}
-          {channels.length === 0 && !listFailed && <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.channelPage.no_channels_yet')} subtitle={i18nT('pages.channelPage.click_new_to_create_one')} />}
+          {channels.length === 0 && !listFailed && <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.channelPage.no_channels_yet')} />}
           {channels.map(ch => (
             <ChannelListItem key={ch.id} ch={ch} active={ch.id === activeId} onClick={() => { setActiveId(ch.id); openDetail() }} />
           ))}
@@ -851,15 +1158,18 @@ export default function ChannelPage() {
                 <Users className="lucide-inline" /> {i18nT('pages.channelPage.agent_2', { count: channel.agents.length })}
                 {channel.agents.some(a => a.state === 'working' || a.state === 'tool_running') && <Badge variant="ok">●</Badge>}
               </Btn>
-              <Btn onClick={async () => {
-                if (!confirm(i18nT('pages.channelPage.this_will_reset_conversation_history_for_all_age'))) return
-                try {
-                  await api.channelClearContext(channel.id, 'all')
-                  const res = await api.channelGet(channel.id)
-                  setChannels(prev => prev.map(c => c.id === channel.id ? mapChannel(res) : c))
-                } catch (e) { fail('pages.channelPage.failed_to_clear_context', e) }
-              }} title={i18nT('pages.channelPage.clear_all_context')}>
-                <RotateCcw className="lucide-inline" /> {i18nT('pages.channelPage.clear_context_2')}
+              {/* `aria-disabled` plus an early return, NOT `disabled`: the dialog's focus trap
+                  restores focus to this button on unmount, and its FOCUSABLE selector excludes
+                  `button:not([disabled])`. Closing the modal commits the close and the busy flip
+                  together, so a truly disabled button made that restore a silent no-op and left a
+                  keyboard user on `<body>`. `aria-disabled` announces the same state while
+                  keeping the element focusable. */}
+              <Btn onClick={() => { if (clearBusyHere) return; void askClearAll(channel.id) }}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:hover:border-border aria-disabled:hover:bg-transparent"
+                aria-disabled={clearBusyHere} aria-busy={clearBusyHere} title={i18nT('pages.channelPage.clear_all_context')}>
+                {clearBusyHere
+                  ? <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
+                  : <RotateCcw className="lucide-inline" />} {i18nT('pages.channelPage.clear_context_2')}
               </Btn>
               <Btn onClick={async () => {
                 if (!confirm(i18nT('pages.channelPage.close_this_channel_all_agents_will_be_dismissed'))) return
@@ -876,6 +1186,36 @@ export default function ChannelPage() {
                 <X className="lucide-inline" /> {i18nT('pages.channelPage.close')}
               </Btn>
             </div>
+            {/* Above the channel layout this line displaced the header itself,
+                so every success dropped the controls by its own height. */}
+            {clearDone && channel.id === clearDone.channelId && (
+              <p
+                ref={clearDoneRef}
+                role="status"
+                className={
+                  clearDone.messagesDeleted
+                    ? 'basis-full flex items-center gap-1.5 text-[13px] text-text-strong font-medium'
+                    : 'basis-full text-[12px] text-muted'
+                }
+                data-testid="clear-context-done"
+              >
+                {clearDone.roles
+                  ? i18nT('pages.channelPage.clear_context_cleared_roles', { roles: clearDone.roles })
+                  : clearDone.messagesDeleted
+                    ? `${i18nT('pages.channelPage.clear_context_done')} ${i18nT('pages.channelPage.clear_context_messages_deleted')}`
+                    : i18nT('pages.channelPage.clear_context_done')}
+                {clearDone.messagesDeleted && (
+                  <Btn
+                    onClick={() => setClearDone(null)}
+                    aria-label={i18nT('pages.channelPage.dismiss')}
+                    title={i18nT('pages.channelPage.dismiss')}
+                    data-testid="clear-context-done-dismiss"
+                  >
+                    <X className="lucide-inline" />
+                  </Btn>
+                )}
+              </p>
+            )}
           </div>
 
           <div className="flex flex-1 min-h-0">
@@ -946,27 +1286,25 @@ export default function ChannelPage() {
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                   {channel.agents.map((agent) => (
                     <AgentControlRow key={agent.id} agent={agent}
+                      justCleared={clearDone?.channelId === channel.id && clearDone.agentId === agent.id}
                       onDismiss={() => handleDismiss(agent.id)}
                       onListenChange={m => handleListenChange(agent.id, m)}
-                      onClearContext={async () => {
-                        if (!confirm(i18nT('pages.channelPage.reset_role_s_llm_session_the_channel_s_shared_me', { role: agent.role }))) return
-                        try {
-                          await api.channelClearContext(channel.id, 'agent', agent.id)
-                          const res = await api.channelGet(channel.id)
-                          setChannels(prev => prev.map(c => c.id === channel.id ? mapChannel(res) : c))
-                        } catch (e) { fail('pages.channelPage.failed_to_clear_context', e) }
-                      }} />
+                      onClearContext={begin => askClearAgent(channel.id, agent, begin)} />
                   ))}
                 </div>
                 <div className="p-2 border-t border-border">
                   {showAddAgent ? (
-                    <AddAgentForm onCancel={() => setShowAddAgent(false)} onAdd={async (role, task, agent) => {
-                      if (!channel) return
-                      setShowAddAgent(false)
-                      try { await api.channelAddAgent(channel.id, { role, task: task || channel.topic, agent }) } catch (err) {
-                        fail('pages.channelPage.failed_to_add_agent', err)
-                      }
-                    }} />
+                    <AddAgentForm onCancel={() => setShowAddAgent(false)}
+                      onClosedError={message => failWithMessage('pages.channelPage.failed_to_add_agent', message)}
+                      onAdd={async (role, task, agent) => {
+                        // The form closes itself once the add lands, so a refused add keeps what was typed.
+                        try {
+                          await api.channelAddAgent(channel.id, { role, task: task || channel.topic, agent })
+                        } catch (err) {
+                          return apiError(err, i18nT('pages.channelPage.failed_to_add_agent'))
+                        }
+                        return null
+                      }} />
                   ) : (
                     <Btn onClick={() => setShowAddAgent(true)} primary className="w-full">{i18nT('pages.channelPage.add_agent')}</Btn>
                   )}
@@ -996,6 +1334,7 @@ export default function ChannelPage() {
       )}
     </div>
       </div>
+      {confirmDialog}
     </>
   )
 }

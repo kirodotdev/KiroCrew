@@ -174,12 +174,11 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
         INSTALLED,
         MISSING,
         card_payload,
-        declaration_for,
         signs_in_separately,
     )
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_INDEPENDENT_SETUP
+    from kiro_crew.agent_sdk.host_auth import sign_in_remedy
 
-    auth = declaration_for(state.backend)
     return {
         # The config-file spelling, so a row id is exactly what the panel PATCHes
         # into ``agent.acp_backend`` (Kiro CLI is ``"kiro"``, never ``""``).
@@ -195,6 +194,10 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
             list(state.missing_components) if state.installed == MISSING else []
         ),
         "install_command": state.install_command,
+        # The release a resolving binary runs when it is not the verified one
+        # (``BackendInstallState.found_version``); MISSING-only, like the
+        # components it explains, so the panel shows "Wrong version" for it.
+        "found_version": state.found_version if state.installed == MISSING else "",
         # Clamped to a MISSING-free verdict for the same reason as
         # ``missing_components`` above: "installed but the running gateway
         # cannot use it yet" is only meaningful once the components are
@@ -214,7 +217,7 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
         # identifier has no frontend reader and is not sent -- a field can
         # return with its first consumer.
         "auth": {
-            "sign_in_remedy": auth.sign_in_remedy,
+            "sign_in_remedy": sign_in_remedy(state.backend),
             "signs_in_separately": signs_in_separately(state.backend),
         },
         # The card. Every line is keyed by a machine id whose LABEL is the
@@ -263,7 +266,22 @@ async def api_acp_backend_status(request: web.Request) -> web.Response:
     if denial is not None:
         return denial
     backends = await asyncio.to_thread(_snapshot)
-    return web.json_response({"backends": backends})
+    runs_on_kas = await asyncio.to_thread(_kiro_selection_runs_on_kas)
+    # ``kiro_selection_runs_on_kas``: the stored pick is Kiro CLI and sessions run it
+    # on KAS (``agent_sdk.backends.KIRO_SELECTION_BACKEND``). The panel offers the
+    # one-click save of KAS on it, so the setting says what runs.
+    return web.json_response({"backends": backends, "kiro_selection_runs_on_kas": runs_on_kas})
+
+
+def _kiro_selection_runs_on_kas() -> bool:
+    """BLOCKING. ``False`` on any failure: the offer is optional, the panel is not."""
+    try:
+        from kiro_crew.kiro_on_kas_notice import kiro_selection_runs_on_kas
+
+        return kiro_selection_runs_on_kas()
+    except Exception:
+        logger.debug("could not read whether Kiro CLI runs on KAS", exc_info=True)
+        return False
 
 
 async def api_acp_backend_recheck(request: web.Request) -> web.Response:

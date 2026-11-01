@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { OverlayPortal } from './overlayRoot'
 import { animate, motion, useMotionValue } from 'framer-motion'
 import { Glass } from './Glass'
+import { sliceCodePoints } from './CommentOverlay'
 
 interface FlyingQuoteProps {
   /** Bounding rect of the selected text (source) */
@@ -167,7 +168,7 @@ export default function FlyingQuote({ from, targetRef, text, onComplete }: Flyin
     }
   }, [targetRef, startY, x, y, scale, opacity])
 
-  const truncated = text.length > 60 ? text.slice(0, 57) + '…' : text
+  const truncated = text.length > 60 ? sliceCodePoints(text, 0, 57) + '…' : text
 
   return <OverlayPortal>
     <motion.div

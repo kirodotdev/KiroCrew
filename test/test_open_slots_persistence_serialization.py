@@ -187,6 +187,7 @@ def test_ws_frame_healthy_roundtrip_unchanged():
             folders=[{"id": "f1"}],
             folders_gen=7,
             governance_gen=9,
+            tags_gen=11,
         )
     )
 
@@ -199,6 +200,7 @@ def test_ws_frame_healthy_roundtrip_unchanged():
         "folders": [{"id": "f1"}],
         "foldersGeneration": 7,
         "governanceGeneration": 9,
+        "tagsGeneration": 11,
     }
 
 
@@ -266,6 +268,7 @@ async def test_ws_connect_snapshot_failure_is_logged_with_the_offender(
     state._yolo = False
     state._folders = [{"id": "f1", "name": "Work", "order": 0}]
     state.folders_generation = MagicMock(return_value=7)
+    state.tags_generation = MagicMock(return_value=7)
 
     class Request(dict):
         def __init__(self) -> None:

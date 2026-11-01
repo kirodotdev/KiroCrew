@@ -450,8 +450,8 @@ def merge_empty_window(
             # Staged mute value: persist the endpoint's NEW value here while the
             # live ``slot.mutes_opened`` still holds the committed value, so a
             # newborn's empty-window save reaches disk with the new value even
-            # though the live flag has not flipped yet (the round-1 F1 gap, where
-            # this branch ignored the staged value and wrote the stale live flag).
+            # though the live flag has not flipped yet; ignoring the staged value
+            # here would write the stale live flag.
             mutes_opened=mutes_opened_override,
             muted=muted_override,
             # The turn-time-limit endpoint's staged value, the same way.

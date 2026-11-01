@@ -17,14 +17,13 @@ import reducer, {
   remoteSlotRead,
   fetchSlots,
   selectUnreadByMode,
-  sseSubagentStatus,
-  sseSubagentText,
   patchSlotLink,
   dropSlotLinks,
 } from '../store/dashboardSlice'
 import type { StatusData, ChatSlot } from '../types'
 import { sharedItem } from './unreadStorageTestUtils'
-import { SHARED_UNREAD_FLUSH_MS, flushSharedUnread } from '../store/dashboard/unread'
+import { SHARED_UNREAD_FLUSH_MS, flushSharedUnread, relayedUnreadKeys } from '../store/dashboard/unread'
+import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client', () => ({
   api: { chatSlots: vi.fn(), chatMode: vi.fn() },
@@ -754,6 +753,24 @@ describe('dashboardSlice', () => {
       expect(selectUnreadByMode('')(state)).toBe(2)
     })
 
+    it('leaves a Crew Mode crew member out of the badge and the relayed count, keeping its unread entry', () => {
+      // A crew member is no row of the person's lists (its root's Crew panel
+      // lists it), so its finished turn must not count an unread session the
+      // Sessions list never shows. The entry stays for the Crew panel.
+      const root: ChatSlot = { key: 'root', title: 'R', messages: 1, running: false, mode: '', crew_mode_root: true }
+      const member: ChatSlot = { key: 'w1', title: 'W', messages: 1, running: false, mode: '', crew_root: 'root' }
+      const plain: ChatSlot = { key: 'chat-1', title: 'C', messages: 1, running: false, mode: '' }
+      const state = buildState([root, member, plain], ['w1', 'chat-1'])
+      expect(selectUnreadByMode('')(state)).toBe(1)
+      expect(relayedUnreadKeys(state.dashboard)).toEqual(['chat-1'])
+      expect(state.dashboard.unreadSlots).toEqual(['w1', 'chat-1'])
+      // Its root closed, the crew member is a row of the list again, so it counts.
+      const orphan: ChatSlot = { key: 'w2', title: 'W2', messages: 1, running: false, mode: '', crew_root: 'gone-root' }
+      const closed = buildState([plain, orphan], ['w2', 'chat-1'])
+      expect(selectUnreadByMode('')(closed)).toBe(2)
+      expect(relayedUnreadKeys(closed.dashboard)).toEqual(['w2', 'chat-1'])
+    })
+
     it('keeps an unheld orphan in the chat badge but leaves a held orphan out', () => {
       // An unheld orphan is about to be drained by the next reconcile, so it
       // keeps counting. A held one (a tab the restore could not reopen) is never
@@ -837,47 +854,6 @@ describe('dashboardSlice', () => {
       // Existing unread preserved, no new ones spuriously added
       expect(state.unreadSlots).toEqual(['chat-1'])
       expect(state.slotsLoaded).toBe(true)
-    })
-  })
-
-  describe('subagent SSE prototype-pollution guards', () => {
-    // Both `slot` and `id` are untrusted keys from the SSE payload. A value of
-    // __proto__/constructor/prototype must never reach an assignment that would
-    // write through Object.prototype. Note the subagentRunning[slot] check does
-    // NOT stop slot="__proto__" on its own — it resolves truthily through the
-    // prototype chain — so isUnsafeKey(slot) is the real guard.
-    const polluted = () => ({} as Record<string, unknown>).polluted
-
-    it('sseSubagentStatus ignores a __proto__ slot without polluting the prototype', () => {
-      const state = reducer(
-        initial,
-        sseSubagentStatus({ slot: '__proto__', running: 1, agents: [] }),
-      )
-      // `['__proto__']` always returns the prototype object; the real check is
-      // that no OWN property was created and the prototype was not polluted.
-      expect(Object.prototype.hasOwnProperty.call(state.subagentRunning, '__proto__')).toBe(false)
-      expect(polluted()).toBeUndefined()
-    })
-
-    it('sseSubagentText ignores a __proto__ slot and does not pollute', () => {
-      // Prime a legit slot so the reducer would otherwise proceed.
-      const primed = reducer(initial, sseSubagentStatus({ slot: 'chat-1', running: 1 }))
-      reducer(primed, sseSubagentText({ slot: '__proto__', id: 'a', text: 'x' }))
-      expect(({} as Record<string, unknown>)['a']).toBeUndefined()
-      expect(polluted()).toBeUndefined()
-    })
-
-    it('sseSubagentText ignores a __proto__ id and does not pollute', () => {
-      let state = reducer(initial, sseSubagentStatus({ slot: 'chat-1', running: 1 }))
-      state = reducer(state, sseSubagentText({ slot: 'chat-1', id: '__proto__', text: 'x' }))
-      expect(state.subagentText['chat-1']?.['__proto__']).toBeUndefined()
-      expect(({} as Record<string, unknown>).polluted).toBeUndefined()
-    })
-
-    it('sseSubagentText still stores text for a normal slot+id', () => {
-      let state = reducer(initial, sseSubagentStatus({ slot: 'chat-1', running: 1 }))
-      state = reducer(state, sseSubagentText({ slot: 'chat-1', id: 'sub-1', text: 'hello' }))
-      expect(state.subagentText['chat-1']['sub-1']).toBe('hello')
     })
   })
 
@@ -1016,15 +992,12 @@ describe('dashboardSlice', () => {
   })
 })
 
-describe('dashboardSlice per-slot sub-agent teardown', () => {
+describe('dashboardSlice per-slot unread teardown', () => {
   const seeded = () => {
     const base = reducer(undefined, { type: '@@INIT' })
     return {
       ...base,
       slots: [{ key: 'chat-1', messages: 0, running: false }, { key: 'chat-2', messages: 0, running: false }] as ChatSlot[],
-      subagentRunning: { 'chat-1': 1, 'chat-2': 2 },
-      subagentDetails: { 'chat-1': [], 'chat-2': [] },
-      subagentText: { 'chat-1': {}, 'chat-2': {} },
       // Steady state: a complete slots frame has released the boot-time hold.
       unreadDrainHeld: false,
     }
@@ -1057,59 +1030,25 @@ describe('dashboardSlice per-slot sub-agent teardown', () => {
     expect(sharedItem('mc-unread-slots')).toBeNull()
   })
 
-  /** Optimistic removal runs before the delete is confirmed, and a slot whose
-   *  delete fails comes back via the next authoritative frame. Evicting here
-   *  would leave it alive but mute, because sseSubagentText drops frames for a
-   *  slot with no subagentRunning entry. */
-  it('keeps sub-agent state on optimistic removal, before the delete is confirmed', () => {
-    const next = reducer(seeded(), removeSlotOptimistic('chat-2'))
-    expect(next.subagentRunning['chat-2']).toBe(2)
-    expect(next.subagentDetails['chat-2']).toBeDefined()
-    expect(next.subagentText['chat-2']).toBeDefined()
-  })
-
-  it('drops a slot the live slots frame no longer carries', () => {
-    const next = reducer(seeded(), sseSlots([{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]))
-    expect(next.subagentRunning['chat-2']).toBeUndefined()
-    expect(next.subagentDetails['chat-2']).toBeUndefined()
-    expect(next.subagentText['chat-2']).toBeUndefined()
-    expect(next.subagentRunning['chat-1']).toBe(1)
-  })
-
-  it('treats an empty slots frame as a no-op before the list has loaded, since a reconnect delivers one first', () => {
-    const next = reducer(seeded(), sseSlots([]))
-    expect(next.subagentRunning['chat-1']).toBe(1)
-    expect(next.subagentRunning['chat-2']).toBe(2)
-  })
-
   it('reconciles an empty frame once loaded, which is the last slot being deleted', () => {
     const loaded = { ...seeded(), slotsLoaded: true, unreadSlots: ['chat-1', 'chat-2'] }
 
     const next = reducer(loaded, sseSlots([]))
 
-    expect(next.subagentRunning['chat-1']).toBeUndefined()
-    expect(next.subagentRunning['chat-2']).toBeUndefined()
     expect(next.unreadSlots).toEqual([])
   })
 
-  it('withholds eviction from a fetch reply once the stream is live, but still drains unread', () => {
-    // The reply can be older than the live frames it raced, so eviction (not
-    // recoverable) is withheld while the unread drain (self-healing) still runs.
+  it('drains unread from a fetch reply once the stream is live', () => {
+    // The reply can be older than the live frames it raced; the unread drain
+    // still runs because it self-heals on the next unread event.
     const loaded = { ...seeded(), slotsLoaded: true, unreadSlots: ['chat-1', 'chat-2'] }
     const payload = [{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]
 
     const next = reducer(loaded, { type: fetchSlots.fulfilled.type, payload })
 
-    expect(next.subagentRunning['chat-2']).toBe(2)
     expect(next.unreadSlots).toEqual(['chat-1'])
   })
-
-  it('drops a slot the authoritative refetch no longer carries', () => {
-    const payload = [{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]
-    const next = reducer(seeded(), { type: fetchSlots.fulfilled.type, payload })
-    expect(next.subagentRunning['chat-2']).toBeUndefined()
-    expect(next.subagentDetails['chat-2']).toBeUndefined()
-    expect(next.subagentText['chat-2']).toBeUndefined()
-    expect(next.subagentRunning['chat-1']).toBe(1)
-  })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

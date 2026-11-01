@@ -109,15 +109,15 @@ describe('editing a reminder in place', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     await screen.findByRole('alert')
     fireEvent.change(input, { target: { value: 'drink watr' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
     expect(onEdit).toHaveBeenLastCalledWith('r1', 'drink watr')
     expect(onEdit).toHaveBeenCalledTimes(2)
   })
 
-  it('saves on blur', () => {
+  it('saves on blur', async () => {
     const { onEdit, input } = openEditor()
     fireEvent.change(input, { target: { value: 'drink water' } })
-    fireEvent.blur(input)
+    await act(async () => { fireEvent.blur(input) })
     expect(onEdit).toHaveBeenCalledWith('r1', 'drink water')
   })
 
@@ -150,12 +150,13 @@ describe('editing a reminder in place', () => {
     const recurring = { ...rem, reminders: [{ ...rem.reminders[0], recurrence: { everyMinutes: 60 } }] }
     render(<RemindersSection rem={recurring} remError={null} onAdd={vi.fn()} onSkip={vi.fn()} onRemove={vi.fn()} onEdit={onEdit} />)
     expect(screen.queryByRole('button', { name: 'Edit “drink watr”' })).toBeNull()
-    fireEvent.keyDown(screen.getByRole('button', { name: 'More actions' }), { key: 'Enter' })
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit' }))
+    await act(async () => { fireEvent.keyDown(screen.getByRole('button', { name: 'More actions' }), { key: 'Enter' }) })
+    const editItem = await screen.findByRole('menuitem', { name: 'Edit' })
+    await act(async () => { fireEvent.click(editItem) })
     const input = await screen.findByRole('textbox', { name: 'Edit “drink watr”' })
     await waitFor(() => expect(input).toHaveFocus())
     fireEvent.change(input, { target: { value: 'drink water' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
     expect(onEdit).toHaveBeenCalledWith('r1', 'drink water')
   })
 

@@ -27,8 +27,9 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import _llama_lib_path, cli_doctor
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.doctor_checks import access, install
+from kiro_crew.doctor_checks import access, install, services
 from kiro_crew.platform import PlatformCompositionError
 
 pytestmark = pytest.mark.skipif(
@@ -70,6 +71,7 @@ _SECTIONS = (
     "_doctor_masked_credential_aliases",
     "_doctor_memory_pressure",
     "_doctor_runtime_tmpfs",
+    "_doctor_temp_directories",
     "_doctor_cli_installer_residue",
     "_doctor_cron_health",
     "_doctor_task_store",
@@ -82,6 +84,7 @@ _SECTIONS = (
     "_doctor_model_url_reachable",
     "_doctor_discord",
     "_doctor_whatsapp",
+    "_doctor_kiro_chat_delegate",
 )
 
 #: The sections that take the shared ``issues`` list, so a marker can add to it.
@@ -104,6 +107,7 @@ _TAKES_ISSUES = frozenset(_SECTIONS) - {
 #: it held before, so these are stubbed on their family module.
 _FAMILY_ONLY = {
     "_doctor_signing_key": access,
+    "_doctor_kiro_chat_delegate": services,
 }
 
 _GATED_OFF = frozenset({"kirocrew-computer"})
@@ -122,6 +126,7 @@ _ISSUES_POSITION = {
     "_doctor_mcp_governance": 1,
     "_doctor_discord": 3,
     "_doctor_whatsapp": 1,
+    "_doctor_kiro_chat_delegate": 1,
 }
 
 
@@ -172,7 +177,7 @@ class _Host:
         mp.setattr(cli_doctor, "_mc_version", "9.9.9")
         mp.setattr(cli_doctor, "MIN_NODE_VERSION", (20, 0, 0))
         mp.setattr(KiroCrewConfig, "load", classmethod(lambda cls: self.cfg))
-        mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg: dict(self.creds))
+        mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg, **kw: dict(self.creds))
         mp.setattr(cli_doctor, "resolve_kiro_cli", lambda: self.kiro)
         mp.setattr(cli_doctor.shutil, "which", lambda name, **_kw: self.which.get(name))
         mp.setattr(cli_doctor.gateway_lock, "lock_holder", self._lock_holder)
@@ -248,6 +253,8 @@ class _Host:
         # marker goes on the family that defines it. The real section reads the
         # host's process table, which no frozen report can pin.
         mp.setattr(resources, "_doctor_acp_runtimes", self._marker("_doctor_acp_runtimes"))
+        # Same reason: the real section reads the host's kernel limits and cgroup tree.
+        mp.setattr(resources, "_doctor_task_ceilings", self._marker("_doctor_task_ceilings"))
         import kiro_crew.doctor_checks.workload as workload
 
         # Same reason: added after the move. The real section walks the host's
@@ -434,7 +441,9 @@ Configuration
   <<_doctor_masked_credential_aliases>>
   <<_doctor_memory_pressure>>
   <<_doctor_acp_runtimes>>
+  <<_doctor_task_ceilings>>
   <<_doctor_runtime_tmpfs>>
+  <<_doctor_temp_directories>>
   <<_doctor_cli_installer_residue>>
   <<_doctor_cron_health>>
   <<_doctor_task_store>>
@@ -462,7 +471,7 @@ Vector Memory (in-process embeddings)
   embeddings:  ✅ always-on
 
 Speech-to-Text
-  status:      ⏹ disabled (enable from dashboard → Settings → Speech-to-Text)
+  status:      ⏹ disabled (enable from dashboard → Settings → Voice → Speech-to-Text)
   ffmpeg:      ✅ available
 
 Slack Integration
@@ -482,6 +491,7 @@ Loop-stall Crash Dumps
 
 Connectivity
   kiro-cli:    ✅ kiro-cli 1.2.3
+  <<_doctor_kiro_chat_delegate>>
   gateway:     ⏹  not running
 
 ✅ Kiro Crew is ready!
@@ -616,7 +626,9 @@ Configuration
   <<_doctor_masked_credential_aliases>>
   <<_doctor_memory_pressure>>
   <<_doctor_acp_runtimes>>
+  <<_doctor_task_ceilings>>
   <<_doctor_runtime_tmpfs>>
+  <<_doctor_temp_directories>>
   <<_doctor_cli_installer_residue>>
   <<_doctor_cron_health>>
   <<_doctor_task_store>>
@@ -628,6 +640,7 @@ MCP Tools
 
 Runtime
   python:      ✅ <TMP>/pkg/.venv/bin/python3 (Python 3.12.1)
+  kiro_crew:   ✅ 9.9.9
   deps:        ❌ missing modules (websockets/slack_sdk/aiohttp)
   <<_doctor_import_path>>
   sqlite fts5: ❌ missing (memory/knowledge search will fail)
@@ -654,7 +667,7 @@ Speech-to-Text
   engine:      ❌ install the voice extra
   model:       ⏹ base.en not downloaded yet (148 MB, fetched on first use)
   ffmpeg:      ❌ not found
-               Fix: download the audio decoder from the dashboard (Settings → Speech-to-Text), or install ffmpeg into /usr/local/bin
+               Fix: download the audio decoder from the dashboard (Settings → Voice → Speech-to-Text), or install ffmpeg into /usr/local/bin
 
 Slack Integration
   status:      ⏭  not configured (optional)
@@ -679,14 +692,17 @@ Loop-stall Crash Dumps
 
 Connectivity
   kiro-cli:    ⏭  skipped (not installed)
+  <<_doctor_kiro_chat_delegate>>
   gateway:     ✅ running (token auth enabled)
+  running:     ⚠️  8.8.8, on disk 9.9.9 (restart needed)
+               Fix: `kirocrew restart` (the gateway still runs the old code)
 
   💡 Remote access: Run on your LOCAL machine:
      ssh -NL 9999:localhost:9999 devbox
      Then run: kirocrew token
   auth check:  ❌ external access allowed without token!
 
-❌ Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, timezone data out of date, embedding runtime, custom embedding model unusable, speech recogniser (extra_missing), ffmpeg, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), dashboard auth: no token required on external interface
+❌ Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, timezone data out of date, embedding runtime, custom embedding model unusable, speech recogniser (extra_missing), ffmpeg, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), gateway restart needed (running version differs from on-disk), dashboard auth: no token required on external interface
 """
 
 
@@ -748,6 +764,8 @@ def test_a_broken_host_reports_every_issue_in_order_and_exits_one(host, capsys) 
         "http://127.0.0.1:9999/api/status", 401, "unauthorized", None, None
     )
     host.urls["http://0.0.0.0:9999/api/status"] = _Response(200, b"{}")
+    # The gateway still serves the version from before an update.
+    host.urls["http://127.0.0.1:9999/api/health"] = _Response(200, b'{"version": "8.8.8"}')
     host.mp.setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 22")
     host.mp.setitem(sys.modules, "slack_sdk", None)
     host.issue_from = {
@@ -842,6 +860,83 @@ def test_slack_and_cloud_transcription_rows(host, capsys) -> None:
     assert code == 1
     args, _ = host.called("_doctor_discord")
     assert args[1] == host.creds
+
+
+@pytest.mark.parametrize(
+    ("backend", "member_backend", "kas_bundle", "required"),
+    [
+        (ACP_BACKEND_KIRO, "claude", False, True),
+        (ACP_BACKEND_KAS, "claude", False, True),
+        (ACP_BACKEND_KAS, ACP_BACKEND_KAS, True, False),
+        ("claude", "claude", False, False),
+        # Crewmate DM sessions run on member_acp_backend, so a relay-served KAS
+        # there needs kiro-cli-chat even when the main backend does not.
+        ("claude", ACP_BACKEND_KAS, False, True),
+        ("claude", ACP_BACKEND_KAS, True, False),
+        # The loader resolves member_acp_backend through the selection gate, so
+        # an unservable crewmate pick arrives here as the Kiro CLI floor.
+        ("claude", ACP_BACKEND_KIRO, False, True),
+        ("claude", ACP_BACKEND_KIRO, True, True),
+        # Mixed selection: both the launcher's delegate and the relay entry run.
+        (ACP_BACKEND_KIRO, ACP_BACKEND_KAS, False, True),
+    ],
+)
+def test_chat_delegate_row_is_fatal_only_for_a_harness_that_spawns_kiro_cli(
+    host, capsys, monkeypatch, backend, member_backend, kas_bundle, required
+) -> None:
+    _ready(host)
+    host.cfg.agent.acp_backend = backend
+    host.cfg.agent.member_acp_backend = member_backend
+    host.cfg.agent.kas_bundle = kas_bundle
+    entry = "/opt/kiro/bin/kiro-cli-chat"
+    monkeypatch.setattr(services, "kas_relay_entry", lambda kiro: entry)
+
+    host.run(capsys)
+
+    args, kwargs = host.called("_doctor_kiro_chat_delegate")
+    assert args[0] == _KIRO
+    # The vault-signed relay entry is passed whenever relay KAS is selected for
+    # either role, including next to the Kiro CLI backend, so both binaries a
+    # mixed selection runs are probed.
+    relay_role = not kas_bundle and ACP_BACKEND_KAS in (backend, member_backend)
+    assert kwargs == {
+        "required": required,
+        "relay_entry": entry if relay_role else None,
+        "kiro_role": ACP_BACKEND_KIRO in (backend, member_backend),
+    }
+
+
+@pytest.mark.parametrize(
+    ("backend", "member_backend", "kas_bundle", "required"),
+    [
+        (ACP_BACKEND_KIRO, "claude", False, True),
+        (ACP_BACKEND_KAS, "claude", False, True),
+        (ACP_BACKEND_KAS, ACP_BACKEND_KAS, True, False),
+        ("claude", "claude", False, False),
+        ("claude", ACP_BACKEND_KAS, False, True),
+        ("claude", ACP_BACKEND_KIRO, True, True),
+    ],
+)
+def test_kiro_sandbox_row_is_fatal_only_for_a_harness_that_spawns_kiro_cli(
+    host, capsys, monkeypatch, backend, member_backend, kas_bundle, required
+) -> None:
+    """kiro-cli's own sandbox blocks Crew's MCP servers only in a kiro-cli spawn."""
+    from kiro_crew.doctor_checks import confinement
+
+    _ready(host)
+    host.cfg.agent.acp_backend = backend
+    host.cfg.agent.member_acp_backend = member_backend
+    host.cfg.agent.kas_bundle = kas_bundle
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        confinement,
+        "_doctor_kiro_sandbox_blocks_crew_mcp",
+        lambda issues, **kwargs: seen.append(kwargs),
+    )
+
+    host.run(capsys)
+
+    assert seen == [{"required": required}]
 
 
 _BUNDLE = """\

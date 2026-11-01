@@ -67,6 +67,7 @@ __all__ = [
     "is_auth_failure_output",
     "kas_engine_gap",
     "kas_engine_unsupported_reason",
+    "kas_engine_verdict",
     "kiro_cli_resolves",
     "narrowed_agent_permissions",
     "provider_error_client",
@@ -273,6 +274,24 @@ def provider_label(provider: object) -> str:
     return _impl(provider)
 
 
+def _provider_backend(provider: object) -> object:
+    """The backend id *provider* talks to, or ``None`` for a shape that carries none.
+
+    Private, and kept out of ``__all__``: ``llm_helpers.provider_backend`` is the
+    public reader (``""`` on a miss); this one exists only for the ``harness``
+    metric attribute, which must tell a miss from kiro-cli's ``""``.
+
+    Thin delegation to :func:`kiro_crew.providers.acp._provider_backend`, the
+    shape check :func:`provider_label` resolves through, so the ``harness``
+    metric attribute (``metrics/harness.py``) reads the same answer the session
+    map persists without importing the providers layer. Function-local import
+    for the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.providers.acp import _provider_backend as _impl
+
+    return _impl(provider)
+
+
 def catalog_row_would_drop(model_id: str, advertised: object) -> bool:
     """Whether the entitlement filter drops catalog row *model_id* against
     *advertised*.
@@ -451,6 +470,20 @@ def narrowed_agent_permissions(
     return {"rules": carried}
 
 
+def backend_delivers_spec_servers(backend: str) -> bool:
+    """Whether *backend* runs the servers an agent spec declares.
+
+    kiro-cli and KAS read the spec itself (``ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE``); a
+    backend with a mirror (``providers.mirrors.has_mirror``) is handed them in its
+    ``session/new`` array. A broker-only backend runs only the pooled stubs. Asked here
+    so a caller above the boundary need not import the mirror registry.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE
+    from kiro_crew.providers.mirrors import has_mirror
+
+    return backend in ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE or has_mirror(backend)
+
+
 def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bool]]]:
     """Per selectable backend: which of *agent*'s ``@server`` refs resolve to nothing.
 
@@ -553,18 +586,33 @@ def kas_engine_unsupported_reason() -> str | None:
 
     Blocking: one bounded spawn. Never raises.
     """
+    return kas_engine_verdict()[1]
+
+
+def kas_engine_verdict() -> tuple[bool | None, str | None]:
+    """``(offers_kas, reason)`` from the pinned kiro-cli's ``acp --help``.
+
+    ``offers_kas`` is ``True`` only for help text that RAN and names the engine,
+    ``False`` with the gap as *reason* for help text that ran without it, and
+    ``None`` for every unknown (no pinned binary, a failed spawn). The one probe
+    behind :func:`kas_engine_unsupported_reason`, read by the gateway's KAS floor,
+    which acts on a Kiro CLI pick only on ``True``.
+
+    Blocking: one bounded spawn. Never raises.
+    """
     from kiro_crew import kiro_cli
 
     try:
         binary, _unpinned = kiro_cli.pin_kiro_cli()
     except Exception:  # noqa: BLE001 - an unanswerable probe is unknown, not an error
-        return None
+        return None, None
     if binary is None:
-        return None
+        return None, None
     help_text = kiro_cli.kas_relay_help(binary)
     if help_text is None:
-        return None
-    return kas_engine_gap(help_text)
+        return None, None
+    gap = kas_engine_gap(help_text)
+    return gap is None, gap
 
 
 def claude_components_resolve() -> tuple[bool, bool]:
@@ -755,6 +803,64 @@ def self_served_install_command(backend: str) -> str:
     from kiro_crew.agent_sdk.backends import launch_for
 
     return launch_for(backend).install_command
+
+
+def self_served_wrong_version(backend: str) -> str:
+    """The release *backend*'s binary would run, when it is not the one Crew verified.
+
+    ``""`` when the binary does not resolve, when its release cannot be read, when it
+    is the verified one, and for every harness with no single verified release. Only
+    Copilot CLI has one (``COPILOT_VERIFIED_VERSION``): a session on any other release
+    is refused at the handshake, so an install row that only looked for the binary
+    would call a harness ready that refuses every chat. Read from the install's own
+    manifest, never by running it.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_COPILOT, COPILOT_VERIFIED_VERSION
+
+    if backend == ACP_BACKEND_COPILOT:
+        from kiro_crew.acp.client import _resolve_self_served_bin
+        from kiro_crew.acp.harness.copilot import copilot_installed_version
+
+        binary, _searched_path = _resolve_self_served_bin(backend)
+        version = copilot_installed_version(binary) if binary else ""
+        if version and version != COPILOT_VERIFIED_VERSION:
+            return version
+    return ""
+
+
+def strands_wrong_version() -> str:
+    """The Strands CLI release installed when it is not the verified one, else ``""``.
+
+    Read from the install's own manifest, never by running it. Blocking.
+    """
+    from kiro_crew.acp.client import _resolve_self_served_bin
+    from kiro_crew.acp.harness.strands import strands_installed_version
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_STRANDS, STRANDS_VERIFIED_VERSION
+
+    binary, _searched_path = _resolve_self_served_bin(ACP_BACKEND_STRANDS)
+    version = strands_installed_version(binary) if binary else ""
+    return version if version and version != STRANDS_VERIFIED_VERSION else ""
+
+
+def strands_python_env_missing() -> tuple[str, str]:
+    """``(component, command)`` when the Strands project's Python environment is absent.
+
+    ``("", "")`` when it is ready. File reads only. The project directory is created
+    on the way, owner-only, which is also what the first spawn would do. Blocking.
+    """
+    from kiro_crew.acp.harness.strands import (
+        strands_project_dir,
+        strands_python_env_issue,
+        strands_python_setup_command,
+    )
+
+    try:
+        project_dir = strands_project_dir()
+    except Exception as exc:  # noqa: BLE001 -- the probe reports, it never raises
+        return f"Strands project directory ({exc})", ""
+    if not strands_python_env_issue(project_dir):
+        return "", ""
+    return "Strands Python environment", strands_python_setup_command(project_dir)
 
 
 def pi_components_resolve() -> tuple[bool, bool]:

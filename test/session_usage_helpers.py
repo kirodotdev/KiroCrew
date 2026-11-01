@@ -36,6 +36,7 @@ def _reset_usage_globals():
     sessions_mod._usage_scrape_failures = 0
     sessions_mod._usage_scrape_backoff_until = 0.0
     sessions_mod._usage_cache_vault_fp = ""
+    sessions_mod._usage_cache_user_id = None
 
 
 def _api_result(usage, auth_state=None):

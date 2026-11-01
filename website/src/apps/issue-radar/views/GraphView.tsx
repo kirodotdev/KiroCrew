@@ -23,7 +23,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useReducedMotion } from 'framer-motion'
 import { RefreshCw, Waypoints } from 'lucide-react'
 import { useIssueRadar } from '../context'
-import { issueRadarApi, type DepsResponse } from '../api'
+import { GitLabGroupError, issueRadarApi, type DepsResponse } from '../api'
 import { repoScopeKey } from '../lib/links'
 import {
   buildNodes, layoutGraph, readySet, reduceInferred,
@@ -32,7 +32,10 @@ import {
   type GraphNode, type NodeState, type FrontierItem,
 } from '../lib/deps'
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { splitOnPlaceholder } from '../../../lib/splitOnPlaceholder'
+import { sliceCodePoints } from '../../../components/CommentOverlay'
+import { CopyCommandButton } from '../../../components/settingRef/CopyCommandButton'
 
 /** The theme token a node state paints with. `open`/`done` are drawn muted. */
 function stateColor(state: NodeState): string {
@@ -83,13 +86,31 @@ export default function GraphView() {
     prevReadyRef.current = null
   }
 
+  // Set by the user's Refresh / Retry on GitLab, read once by the next queryFn.
+  // Those actions must ask the server for a synchronous rebuild (`refresh=1`):
+  // the default cache-first read answers a stale, non-empty cache with 200 and
+  // only logs the background rebuild's failure, so an expired glab session or
+  // a GitLab outage would never reach `isError` and the stale-graph banner
+  // (GPT review, errors-use-error-notice). It is GitLab-only on purpose:
+  // GitHub's Refresh keeps the cache-first read it had before this change
+  // (Not-a-goal: GitHub success-path behaviour is unchanged), and mounts and
+  // scope changes stay cache-first on every forge, so the tab opens instantly.
+  const forceRefreshRef = useRef(false)
   const depsQuery = useQuery({
     queryKey: ['issue-radar', 'deps', scopeKey],
-    queryFn: () => issueRadarApi.deps(active),
+    queryFn: () => {
+      const refresh = forceRefreshRef.current
+      forceRefreshRef.current = false
+      return issueRadarApi.deps(active, refresh ? { refresh: true } : undefined)
+    },
     retry: false,
     staleTime: 60_000,
     refetchInterval: false,
   })
+  const refreshNow = () => {
+    forceRefreshRef.current = active.provider === 'gitlab'
+    void depsQuery.refetch()
+  }
 
   const deps: DepsResponse | null = depsQuery.data ?? null
 
@@ -105,8 +126,8 @@ export default function GraphView() {
 
   // Build the full-graph nodes once per payload; every view derives from this.
   const built = useMemo(
-    () => (deps ? buildNodes(deps, issues, pulls, prevReadyRef.current) : null),
-    [deps, issues, pulls],
+    () => (deps ? buildNodes(deps, issues, pulls, prevReadyRef.current, active.provider) : null),
+    [deps, issues, pulls, active.provider],
   )
 
   // Snapshot the ready set after paint so the NEXT fetch compares against it.
@@ -159,7 +180,14 @@ export default function GraphView() {
   // ── empty / unavailable (404, error, or no edges) ──
   const hasGraph = !!built && !!deps && deps.edges.length > 0
   if (!hasGraph) {
-    return <EmptyBoard error={depsQuery.isError} onRetry={() => depsQuery.refetch()} refreshing={depsQuery.isFetching} />
+    return (
+      <EmptyBoard
+        error={depsQuery.isError ? depsQuery.error : null}
+        provider={active.provider ?? 'github'}
+        onRetry={refreshNow}
+        refreshing={depsQuery.isFetching}
+      />
+    )
   }
 
   const nodes = built!
@@ -244,11 +272,11 @@ export default function GraphView() {
           </label>
           <datalist id="ir-graph-open-items">
             {opens.map((n) => (
-              <option key={n.id} value={n.id}>{(n.title || '').slice(0, 50)}</option>
+              <option key={n.id} value={n.id}>{sliceCodePoints(n.title || '', 0, 50)}</option>
             ))}
           </datalist>
           <button
-            onClick={() => depsQuery.refetch()}
+            onClick={refreshNow}
             disabled={depsQuery.isFetching}
             aria-label={i18nT('apps.issueRadar.views.graphView.refresh')}
             title={i18nT('apps.issueRadar.views.graphView.refresh')}
@@ -258,6 +286,58 @@ export default function GraphView() {
           </button>
         </div>
       </div>
+
+      {/* A refresh can fail while a previously-cached graph is still shown.
+          `hasGraph` keeps that graph (and skips EmptyBoard), so without this the
+          failure and its ErrorNotice would be invisible — the retained graph
+          would look current. The banner's bold lead says plainly that this is the
+          last good copy and the refresh failed (never the empty-board "could not
+          be loaded / route may not be enabled" line, which contradicts a graph
+          that is on screen). The accurate per-cause blurb is shown only for a
+          coded GitLab error; the server's own detail renders underneath, as the
+          empty board does. Every provider gets the banner: a failed refresh that
+          leaves the old graph on screen with no notice is the hidden-error case
+          errors-use-error-notice exists for (Opus review), so GitHub shows the
+          lead, its raw server detail and the retry, with no cause blurb because
+          its one GraphQL call tracks none. */}
+      {depsQuery.isError
+        ? (() => {
+            const err = depsQuery.error
+            const u = unavailableBlurb(err, active.provider ?? 'github')
+            // Only GitLab's blurbs name a cause; the generic fallback is the
+            // empty board's "could not be loaded" line, which must not render
+            // over a graph that is on screen.
+            const coded = active.provider === 'gitlab' && err instanceof GitLabGroupError && !!err.code
+            const lead = i18nT('apps.issueRadar.views.graphView.refresh_failed_stale_graph')
+            // The lead and the backend-derived cause blurb both carry failure text
+            // whose value comes from the /deps error, so they render THROUGH the
+            // shared ErrorNotice (errors-use-error-notice), never a bare <p>. The
+            // raw server detail stacks below. When there is no detail the blurb is
+            // the message itself, since ErrorNotice renders nothing without one.
+            const explain = coded ? `${lead} ${u.blurb}` : lead
+            return (
+              <div className="flex-none px-2 md:px-4 pt-2">
+                <ErrorNotice
+                  title={u.detail ? explain : undefined}
+                  message={u.detail || explain}
+                  messagePlacement="below"
+                  askAgent
+                  className="max-w-full text-left"
+                  messageClassName={DETAIL_CLASS}
+                  // The blurb says "then retry": the retry lives in the banner
+                  // itself, not only behind the small header icon.
+                  footer={
+                    <FailureActions
+                      command={u.command}
+                      onRetry={refreshNow}
+                      refreshing={depsQuery.isFetching}
+                    />
+                  }
+                />
+              </div>
+            )
+          })()
+        : null}
 
       {view === 'frontier' ? (
         <Frontier
@@ -615,7 +695,7 @@ function FocusTree({ root, nodes, liveEdges, reduceMotion, onReRoot, onOpen }: {
           const sel = n.id === root
           const c = stateColor(n.state)
           const title = n.title || ''
-          const shown = title.length > 26 ? `${title.slice(0, 26)}…` : title
+          const shown = title.length > 26 ? `${sliceCodePoints(title, 0, 26)}…` : title
           const ledLabel = n.state === 'ready'
             ? i18nT('apps.issueRadar.views.graphView.led_ready')
             : model.edges.some((e) => e.blocked === n.id)
@@ -674,10 +754,158 @@ function FocusTree({ root, nodes, liveEdges, reduceMotion, onReRoot, onOpen }: {
 
 /* ── EMPTY / UNAVAILABLE ──────────────────────────────────────────────── */
 
+/** The explanation line for a failed deps fetch, keyed on the route's own
+ * `code` so it reads in the user's language and names the RIGHT next step; the
+ * server's raw sentence rides underneath as detail. `command` is the one
+ * copy-pasteable step the detail carries (the `… auth login` line), lifted out
+ * of the sentence so it can render as its own code block with a copy control
+ * instead of a backticked clause wrapped across the notice (UX review). The
+ * detail itself stays as the notice `message`: it is the journal lookup key the
+ * agent hand-off recovers endpoint and status from. The auth and outage blurbs
+ * are per-provider so each one names the real CLI ("GitLab CLI (glab)") and
+ * forge ("GitHub didn't answer") instead of the jargon "forge"; the brand name
+ * lives INSIDE the translated sentence (never a standalone token), so a
+ * localized catalog value stays mostly in its own script. An error with no code
+ * (a 404 from a build without the route, a network failure) keeps the generic
+ * line. */
+function unavailableBlurb(
+  error: unknown,
+  provider: string,
+): { blurb: string; detail: string; command: string } {
+  const code = error instanceof GitLabGroupError ? error.code : ''
+  const detail = error instanceof Error ? error.message : ''
+  // Only GitLab carries provider-specific copy here. It is the forge this change
+  // adds, and its "most issues" wording is backed by a real majority-failure rule
+  // in gitlab_queries.fetch_dependency_edges. Every other provider (GitHub
+  // included) keeps the single generic blurb it showed before this change: a
+  // GitHub edge fetch is one GraphQL call that raises on any single failure, so a
+  // "most issues" line would promise a cause the code never tracks.
+  if (provider === 'gitlab') {
+    if (code === 'deps_auth_required') {
+      // The route builds `loginCommand` from the connected repo's own host (the
+      // same contract as utils/pullRequestErrors.ts: nothing is parsed out of
+      // provider-controlled message text). The bare `glab auth login` is the
+      // fallback for a body without it (a not-installed CLI, an older gateway),
+      // so the step is never lost. The server sentence repeats the command in a
+      // "run `…`" clause; that clause is dropped from the detail so the command
+      // appears once, in the code block (UX review).
+      const command = error instanceof GitLabGroupError && error.loginCommand ? error.loginCommand : 'glab auth login'
+      const stripped = detail.replace(/\s*(?:—|-)?\s*run\s+`(?:gh|glab) auth login[^`]*`/, '').trim()
+      return {
+        blurb: i18nT('apps.issueRadar.views.graphView.empty_unavailable_auth_gitlab'),
+        detail: stripped || detail,
+        command,
+      }
+    }
+    if (code === 'deps_cli_missing') {
+      // The binary is absent, so signing in cannot help: name the install step
+      // and offer no command (the server detail carries the install hint).
+      return {
+        blurb: i18nT('apps.issueRadar.views.graphView.empty_unavailable_cli_missing_gitlab'),
+        detail,
+        command: '',
+      }
+    }
+    if (code === 'deps_fetch_failed') {
+      return {
+        blurb: i18nT('apps.issueRadar.views.graphView.empty_unavailable_fetch_failed_gitlab'),
+        detail,
+        command: '',
+      }
+    }
+    if (code === 'deps_issue_scope_unavailable') {
+      return {
+        blurb: i18nT('apps.issueRadar.views.graphView.empty_unavailable_issue_scope'),
+        detail,
+        command: '',
+      }
+    }
+  }
+  return {
+    blurb: i18nT('apps.issueRadar.views.graphView.empty_unavailable_blurb'),
+    detail,
+    command: '',
+  }
+}
+
+/** Classes for the raw server detail under a failure notice. The detail is
+ * verbatim server output (a glab URL with its query string, "8 of 10 /links
+ * calls failed"), so it renders as a small left-aligned monospace block that
+ * wraps only at spaces and scrolls sideways for an unbreakable token, instead
+ * of breaking mid-word ("iss / ues?", "orde / r_by") the way the notice's
+ * default `overflow-wrap: anywhere` does (UX review). It is a step smaller and
+ * lighter than the advice line above it (`text-muted`, not the notice's
+ * danger text): the advice is what the user acts on, the detail is the journal
+ * lookup key the agent hand-off recovers endpoint and status from. The two
+ * `!` utilities are needed: ErrorNotice's `messagePlacement="below"` span sets
+ * `text-[12px] text-danger-text` itself, and whichever of two same-property
+ * utilities wins is decided by stylesheet order, not class order. */
+const DETAIL_CLASS =
+  'block text-left font-mono !text-[10px] leading-snug !text-muted whitespace-pre-wrap break-normal overflow-x-auto'
+
+/** The row of actions under a failure notice: the extracted command as a code
+ * block with the shared copy control (`CopyCommandButton`, the one clipboard
+ * path with its copied / failed states), and (when given) a retry action. Both
+ * are `footer` content of the shared ErrorNotice, so they sit INSIDE the notice
+ * whose text tells the user to run / retry, right where that text is read. */
+function FailureActions({
+  command,
+  onRetry,
+  refreshing,
+}: {
+  command: string
+  onRetry?: () => void
+  refreshing?: boolean
+}) {
+  if (!command && !onRetry) return null
+  return (
+    <div className="flex flex-col gap-1.5 text-left">
+      {command ? (
+        <div className="flex items-center gap-1.5 min-w-0">
+          <code className="block min-w-0 flex-1 whitespace-pre-wrap break-normal rounded border border-border bg-bg px-2 py-1 font-mono text-[12px] text-text">
+            {command}
+          </code>
+          <CopyCommandButton text={command} />
+        </div>
+      ) : null}
+      {onRetry ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          disabled={refreshing}
+          className="self-start inline-flex items-center gap-1.5 text-[11px] tracking-[.06em] px-3 py-1.5 border border-border-strong rounded-md text-text hover:border-accent hover:text-accent disabled:opacity-40 cursor-pointer"
+        >
+          <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+          {i18nT('apps.issueRadar.views.graphView.retry')}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 /** Designed empty state — the deps route is not enabled yet (404/500), errored,
  * or the repo has no dependency edges. Not a bare "no data": a small unpopulated
- * board so the tab still stands alone. */
-function EmptyBoard({ error, onRetry, refreshing }: { error: boolean; onRetry: () => void; refreshing: boolean }) {
+ * board so the tab still stands alone. `error` is null when the fetch succeeded;
+ * otherwise it is what the deps query rejected with (see `unavailableBlurb`).
+ * The empty blurb is per forge: GitLab has no `gh` command and no inferred
+ * edges, only native links (a Premium/Ultimate feature). */
+function EmptyBoard({
+  error,
+  provider,
+  onRetry,
+  refreshing,
+}: {
+  error: unknown | null
+  provider: string
+  onRetry: () => void
+  refreshing: boolean
+}) {
+  const unavailable = error !== null ? unavailableBlurb(error, provider) : null
+  const blurb = unavailable
+    ? unavailable.blurb
+    : provider === 'gitlab'
+      ? i18nT('apps.issueRadar.views.graphView.empty_blurb_gitlab')
+      : i18nT('apps.issueRadar.views.graphView.empty_blurb')
   return (
     <div className="h-full flex flex-col items-center justify-center gap-4 bg-bg text-text font-mono px-2 md:px-6">
       {/* Decorative mini-board drawn with borders, not an inline SVG (the icon
@@ -696,15 +924,34 @@ function EmptyBoard({ error, onRetry, refreshing }: { error: boolean; onRetry: (
       </div>
       <div className="flex items-center gap-1.5 text-[14px] font-medium text-text">
         <Waypoints size={16} className="text-accent opacity-70" />
-        {error
+        {error !== null
           ? i18nT('apps.issueRadar.views.graphView.empty_unavailable_title')
           : i18nT('apps.issueRadar.views.graphView.empty_title')}
       </div>
-      <p className="text-[12px] text-muted max-w-sm text-center leading-relaxed">
-        {error
-          ? i18nT('apps.issueRadar.views.graphView.empty_unavailable_blurb')
-          : i18nT('apps.issueRadar.views.graphView.empty_blurb')}
-      </p>
+      {unavailable ? (
+        // Failure text: the blurb's value comes from the /deps error, so on every
+        // provider it renders THROUGH the shared ErrorNotice
+        // (errors-use-error-notice, a blocking rule), with the raw server detail
+        // stacked below. GitHub keeps its generic wording (see unavailableBlurb);
+        // only the surface changed. The <p> below is kept for the SUCCESS empty
+        // state alone, whose copy is static UI text, not an error value.
+        <ErrorNotice
+          title={unavailable.detail ? unavailable.blurb : undefined}
+          message={unavailable.detail || unavailable.blurb}
+          messagePlacement="below"
+          askAgent
+          // The hand-off sits under the text, not beside it: a side column
+          // would take a third of the width and wrap the command block.
+          actionPlacement="below"
+          className="w-full max-w-md text-left"
+          messageClassName={DETAIL_CLASS}
+          footer={<FailureActions command={unavailable.command} />}
+        />
+      ) : (
+        <p className="text-[12px] text-muted max-w-sm text-center leading-relaxed">
+          {blurb}
+        </p>
+      )}
       <button
         onClick={onRetry}
         disabled={refreshing}

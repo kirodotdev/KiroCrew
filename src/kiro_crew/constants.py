@@ -476,6 +476,9 @@ _MARKER_CLOSE_CLASS = "[" + re.escape(MARKER_CLOSERS) + "]"
 #: by construction rather than by which opener happens to carry the guard.
 MARKER_OPENERS = "[\u3010\uff3b\u3014"
 _MARKER_OPEN_CLASS = "[" + re.escape(MARKER_OPENERS) + "]"
+#: Its negation, derived from the same string: what a pattern that must apply a
+#: per-opener rule may consume WITHOUT applying it. Closers are not excluded.
+_MARKER_NON_OPEN_CLASS = "[^" + re.escape(MARKER_OPENERS) + "]"
 #: Every bracket the grammar knows -- all openers and all closers -- as the
 #: characters the body's NEGATED classes exclude. This is the disjointness
 #: invariant in one place: a character that can START a bracket form (an opener)
@@ -646,6 +649,8 @@ _MARKER_WRAP_RUN = rf"{_MARKER_WRAP_CLASS}{{0,3}}"
 
 #: Label body, spelled once per regex so LINE and TRAILER cannot drift. LINE
 #: stops at a newline; TRAILER spans them (``DOTALL``, as the old ``.*`` did).
+#: No part of the LINE pattern may match ``\n``: :func:`_line_marker_candidates`
+#: scans only the lines holding the head, which is equivalent only while that holds.
 #: The one body-shaped pattern NOT derived from these is
 #: :data:`_OPTIONS_TAIL_PREFIX_RE`, which is a prefix closure and has to stay
 #: looser -- see the reason there before "fixing" it to match.
@@ -770,6 +775,29 @@ def _marker_labels_have_unmatched_opener(labels: str) -> bool:
     return bool(open_stack)
 
 
+def _line_marker_candidates(pattern: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:
+    """``pattern.finditer(text)`` for the LINE pattern, run only on lines holding the head.
+
+    Every LINE match contains the literal ``[OPTIONS:`` and stays on its line: the
+    body, closer, tic, wrapper run and trailing ``[ \\t]*`` all exclude ``\\n``, and
+    each lookahead is bounded by them. So a line without the head cannot match, and
+    skipping it returns the same matches. It matters because the optional
+    ``^``-anchored wrapper prefix is attempted at every position, which makes a
+    whole-text scan cost the whole message for every call. Under ``re.MULTILINE``
+    ``^`` holds at ``pos`` (offset 0 or just after a newline) and ``$`` at
+    ``endpos`` (a newline or the end of the text), the anchors the whole-text scan
+    sees there. TRAILER spans newlines, so it never comes through here.
+    """
+    head = text.find("[OPTIONS:")
+    while head != -1:
+        start = text.rfind("\n", 0, head) + 1
+        end = text.find("\n", head)
+        if end == -1:
+            end = len(text)
+        yield from pattern.finditer(text, start, end)
+        head = text.find("[OPTIONS:", end)
+
+
 class _MarkerMatcher:
     """A candidate pattern plus the balance decision the pattern cannot make.
 
@@ -792,7 +820,11 @@ class _MarkerMatcher:
 
     def finditer(self, text: str) -> Iterator[re.Match[str]]:
         """Every candidate whose terminator is its own, in order."""
-        for match in self._pattern.finditer(text):
+        if self._pattern is _RAW_OPTIONS_RE_LINE:
+            candidates = _line_marker_candidates(self._pattern, text)
+        else:
+            candidates = self._pattern.finditer(text)
+        for match in candidates:
             if not _marker_labels_have_unmatched_opener(match.group("labels")):
                 yield match
 
@@ -1274,8 +1306,8 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: :func:`split_trailing_protocol_suffix`'s unfinished-marker probe: a tail is
 #: a STILL-STREAMING marker only when every byte it holds so far could extend
 #: into a complete marker. ``[OPTIONS`` must be followed by ``:`` and then a
-#: PREFIX CLOSURE of :data:`OPTIONS_RE_TRAILER`'s body (DOTALL; ``[`` admitted
-#: only when not opening a nested ``[OPTIONS:``) -- deliberately LOOSER than
+#: PREFIX CLOSURE of :data:`OPTIONS_RE_TRAILER`'s body (DOTALL; EVERY opener
+#: admitted only when not opening a nested ``[OPTIONS:``) -- deliberately LOOSER than
 #: that body, and the one place the "spelled once" rule in
 #: :data:`_MARKER_BODY_LINE` does not apply. It has to be: a prefix of a legal
 #: body need not itself be a legal body. ``[OPTIONS: A ]`` mid-stream holds a
@@ -1284,6 +1316,8 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: that tail dead and publish the marker as raw text. Widening this to the
 #: grammar is what ``test_options_marker_closers.py``'s
 #: ``test_closer_inside_an_unfinished_label_is_still_unfinished`` forbids.
+#: The nested-head guard is the one part that must AGREE: the body refuses a head
+#: after every opener, so a tail holding one can never become legal.
 #: ``[STEERING`` follows the steer-ack
 #: grammar (``messaging/driver.py``): whitespace gap, literal ``steer-``, a
 #: nonempty hex/dash id, then an optional ``:`` summary -- spelled as nested
@@ -1292,7 +1326,7 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: acknowledgment``, ``steer-:``) is prose and stays visible. Case-sensitive
 #: on purpose: these probe the exact sentinels the detach walk locates.
 _OPTIONS_TAIL_PREFIX_RE = re.compile(
-    r"\[OPTIONS(?::(?:[^[]|\[(?!OPTIONS:))*)?\Z",
+    rf"\[OPTIONS(?::(?:{_MARKER_NON_OPEN_CLASS}|{_MARKER_OPEN_CLASS}(?!OPTIONS:))*)?\Z",
     re.DOTALL,
 )
 _STEERING_TAIL_PREFIX_RE = re.compile(
@@ -1507,6 +1541,20 @@ NO_TOOL_CALLS_NOTE = (
     "it on disk before relying on it."
 )
 
+#: What a parent is told beside the result of a sub-agent run that ended
+#: normally but whose final text carries a tool call written as prose instead
+#: of executed (``SubagentInfo.leaked_tool_call``). That call never ran, so the
+#: output it was meant to produce may be missing even though the run reads as
+#: completed. Notice-only, like the dashboard's mixed-turn leak notice: calls
+#: earlier in the run may already have taken effect, so the run is not marked
+#: failed and nothing is re-issued. Prefixed with the agent's label by each caller.
+LEAKED_TOOL_CALL_NOTE = (
+    "ended with a tool call written as text instead of run, so that last call "
+    "did not execute and the output it was meant to produce may be missing. "
+    "Earlier calls in the run may have taken effect. Check the result before "
+    "treating this step as done."
+)
+
 # Key under a completion message's ``meta`` where the gateway stamps the
 # structured header facts (outcome, tallies, chunk index, agent id) the
 # dashboard card reads. Mirrors ``META_KEY`` in
@@ -1607,6 +1655,50 @@ CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
     "feishu",
     "unified",
 )
+
+
+def is_owner_minted_session_key(key: str) -> bool:
+    """True when *key*'s namespace alone proves the owner's gateway minted it.
+
+    Only ``dashboard`` clears the bar, in both separator spellings: a live session
+    key uses ``:`` and a persisted filename stem uses ``_`` (``history._safe_key``
+    folds one to the other), so a classifier reading only one spelling answers
+    False for the same session depending on where the key came from. A POSITIVE
+    test on purpose: a cross-crew read (``handlers_instances_crew_reads``) admits a
+    caller whose key passes this AND whose tab is, right now, running a turn the
+    owner sent; every other namespace is refused by name, with nothing resolved
+    on its behalf, so an unrecognised shape -- a legacy one, or one minted by a
+    transport added after this line -- is REFUSED. A denylist cannot secure this:
+    a channel-born session carries NO app claim, and the app-platform
+    ``channel:{id}:{agent}`` prefix is absent from
+    :data:`CHANNEL_SESSION_NAMESPACES`, so each denylist addition closes one
+    reported class and leaves the next unreported one open. Deliberately NOT
+    derived from ``messaging.link``'s telemetry roster, which exists to keep metric
+    series apart, contains ``channel``, and would silently widen authorization
+    when a label is added for telemetry.
+
+    Every DELEGATED namespace fails, and that is the design rather than a gap.
+    ``spawn_run`` mints ``subagent:<id>`` identically whether the parent is the
+    person's tab or a Slack participant's thread, so the name says nothing about
+    FOR WHOM, and the records that could say so are each unfit to decide it: a
+    subagent's run folder is agent-writable; a slot's ``created_by`` is restored
+    from the agent-writable metadata line after a restart; ``CronJob.session_key``
+    lives in ``crons.json``, which the crew sandbox lets the agent rewrite; and a
+    parent slot's turn provenance is reset when the parent's turn ends while a
+    background child still runs. ``side:<slot>:<gen>`` is a shape
+    ``derive_caller_app`` mishandles; ``secretary`` has no construction site in
+    ``src/`` and the session-address RFC asks whether an external app can mint it;
+    the workflow family and ``taskrunner`` derive their originating key from a
+    request header the workflow endpoints document as spoofable.
+    ``mcp_dashboard._DELEGATED_CALLER_PREFIXES`` refuses delegated callers for the
+    same reason. A child that needs a peer's history asks its parent.
+
+    A True answer is NOT authorization on its own: the gate then asks the slot the
+    key names whether the owner is speaking in it. An EMPTY key answers False; the
+    gate leaves an absent key to the shared caller resolver, which names that case.
+    """
+    return bool(key) and key.startswith(("dashboard:", "dashboard_"))
+
 
 #: The channels a PROACTIVE send may name -- ``send_message``'s ``channel_type``
 #: and its channel ``session`` values. Derived ONCE here rather than subtracted at

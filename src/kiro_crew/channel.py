@@ -95,7 +95,8 @@ _INBOX_POLL_SECS = 1.0
 # ``task_run`` starts the autonomous task runner; ``register_hook`` opens a
 # dedicated agent session an external POST drives later; ``pod_up`` boots a
 # whole preview gateway as its own host process on its own port, which keeps
-# serving after the turn that started it has ended.
+# serving after the turn that started it has ended, and ``pod_restart`` starts
+# that gateway again.
 #
 # The observe-and-tear-down verbs are deliberately ABSENT, and their absence is
 # the qualifier this invariant needs rather than an omission: ``spawn_list``,
@@ -116,6 +117,7 @@ CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS: tuple[str, ...] = (
     "task_run",
     "register_hook",
     "pod_up",
+    "pod_restart",
 )
 
 # One tool on the same boundary cannot be held by NAME.  ``ops_mission_control_api``
@@ -174,6 +176,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Changing a session's model decides what the user's next turn there runs
     # on and spends; same containment reason as stop.
     "session_set_model",
+    # Recoloring a session acts on a session the channel agent would name from
+    # thread text other people wrote; same containment reason as stop.
+    "session_set_color",
     # Reload relaunches another session's agent process; same containment
     # reason as stop.
     "session_reload",
@@ -189,7 +194,7 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # blocked for the same exfiltration reason.
     "session_summary",
     # The fan-out verb, blocked for the reason `session_send` is and then some: one
-    # call reaches every session the caller created, so a channel agent acting on
+    # call with `all: true` reaches every session the caller created, so a channel agent acting on
     # words from a thread other people are in would relay them into the user's
     # whole worker fleet at once.
     "session_broadcast",
@@ -199,6 +204,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # blocked for, one step shallower.
     "session_status",
     "session_create",
+    # Creates, opens, binds and seeds a worker in one call: session_create's and
+    # session_send's containment reasons together.
+    "work_dispatch",
     "session_fork",
     "session_close",
     # The tree verbs, blocked on the containment reason the rest share: a channel
@@ -1088,9 +1096,29 @@ async def run_channel_agent(
                     agent.state = "failed"
                     break
                 client = replacement
-            fault = await _stream_task(
-                agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo
+            # Shared Crew fair admission for each turn: a person's message is
+            # charged to the bounded Unknown bucket (a channel message names no
+            # principal), agent-to-agent routing to Crew automation.
+            from kiro_crew.shared_crew.admission import OperationKind
+            from kiro_crew.shared_crew.turn_gate import capacity_note, run_admitted
+
+            refusal: list[object] = []
+            fault = await run_admitted(
+                _stream_task(agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo),
+                session_key=agent.session_key,
+                text=prompt,
+                automation=msg.from_id != "human",
+                operation=OperationKind.CHANNEL_TURN,
+                refused=refusal.append,
             )
+            if refusal:
+                await channel.post(
+                    agent.id,
+                    capacity_note(refusal[0]),
+                    from_role=agent.role,
+                    msg_type="system",
+                    thread_id=tid,
+                )
             if fault:
                 # This loop owns the SessionManager, so it is the only place that
                 # can clear a wedge or a lost session: replace the session and

@@ -7,11 +7,19 @@ _subagent_done routes cron-spawned subagent results via session injection.
 from __future__ import annotations
 
 import asyncio
+import itertools
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+    open_idle_tab,
+)
 
 from kiro_crew.cron import CronJob, CronSchedule
+from kiro_crew.session_map import SessionMap
+from kiro_crew.session_parts import links as session_links
+from kiro_crew.session_surface import set_dashboard_surfaced
 from kiro_crew.subagent import SubagentInfo
 from kiro_crew.testing.wait import async_wait_until
 
@@ -63,6 +71,81 @@ def _make_job(**overrides):
     )
     defaults.update(overrides)
     return CronJob(**defaults)
+
+
+class _LinkStore:
+    """The real SessionManager link members over a real SessionMap."""
+
+    set_slack_link = session_links.set_slack_link
+    get_slack_link = session_links.get_slack_link
+    set_thread = session_links.set_thread
+    get_thread = session_links.get_thread
+    set_channel = session_links.set_channel
+    get_channel = session_links.get_channel
+
+    def __init__(self) -> None:
+        self._session_map = SessionMap()
+
+
+def _use_real_links(gateway) -> _LinkStore:
+    """Back the gateway's thread/channel anchors with a real store, so a test reads
+    the anchor the callback left behind rather than the setter's call record."""
+    store = _LinkStore()
+    for name in ("set_thread", "get_thread", "set_channel", "get_channel"):
+        setattr(gateway.sessions, name, getattr(store, name))
+    return store
+
+
+def _use_real_slots(gateway) -> dict:
+    """Give the gateway's dashboard state a real slot table.
+
+    The real ``inject_cron_result_to_dashboard`` then writes the rows a test reads
+    back from the ``cron-<id>`` tab. ``get_slot``/``has_slot`` must be real
+    functions: on a bare MagicMock both return truthy mocks.
+    """
+    state = gateway.dashboard_state
+    slots: dict = {}
+
+    def get_or_create_slot(name=None, agent="", origin=""):
+        if name not in slots:
+            slot = MagicMock()
+            open_idle_tab(slot)
+            slot.key = name
+            slot.linked_session_key = ""
+            slot.messages = []
+            slot.title = ""
+
+            def append(role, content, cls, broadcast=True, meta=None, mint_mid=True):
+                stored = dict(meta) if isinstance(meta, dict) else {}
+                stored.setdefault("mid", f"m-test-{len(slot.messages)}")
+                msg = {"role": role, "content": content, "cls": cls, "meta": stored}
+                slot.messages.append(msg)
+                return msg
+
+            slot.append = append
+            slots[name] = slot
+        return slots[name]
+
+    state.get_or_create_slot = get_or_create_slot
+    state.get_slot = slots.get
+    state.has_slot = lambda name: name in slots
+    state.conversation_log.read_messages.return_value = []
+    state.conversation_log.get_metadata_status.return_value = ({"_type": "metadata"}, True)
+    return slots
+
+
+def _results_in_tab(slots: dict, text: str) -> list[dict]:
+    """The rows of the ``cron-j1`` tab whose content carries *text*."""
+    slot = slots.get("cron-j1")
+    return [m for m in (slot.messages if slot else []) if text in m["content"]]
+
+
+@pytest.fixture()
+def _reset_surface_registry():
+    """The slot bind publishes to the process-global dashboard-surface registry."""
+    set_dashboard_surfaced(())
+    yield
+    set_dashboard_surfaced(())
 
 
 def _run_callback(gateway, job, stream_result="done"):
@@ -132,24 +215,26 @@ class TestCronCallbackStoresThread:
     )
     def test_stores_thread_ts_after_post(self, job_kwargs) -> None:
         gateway = _make_gateway()
+        store = _use_real_links(gateway)
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         _run_callback(gateway, _make_job(**job_kwargs))
-        gateway.sessions.set_thread.assert_awaited_once_with("cron:j1", "1711957800.001234")
+        assert store.get_slack_link("cron:j1") == ("1711957800.001234", "C123")
 
     def test_stores_channel_after_post(self) -> None:
         gateway = _make_gateway()
+        store = _use_real_links(gateway)
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         _run_callback(gateway, _make_job(channel="C999"))
-        gateway.sessions.set_channel.assert_awaited_once_with("cron:j1", "C999")
+        assert store.get_channel("cron:j1") == "C999"
 
     def test_skips_storage_when_post_returns_none(self) -> None:
         gateway = _make_gateway()
+        store = _use_real_links(gateway)
         gateway.slack.post_blocks = AsyncMock(return_value=None)
         _run_callback(gateway, _make_job())
         # The post itself still went out; only the anchor writes are skipped.
         assert gateway.slack.post_blocks.await_args.args[0] == "C123"
-        gateway.sessions.set_thread.assert_not_awaited()
-        gateway.sessions.set_channel.assert_not_awaited()
+        assert store.get_slack_link("cron:j1") == (None, None)
 
     # ── Regression: a cron must NOT claim a thread it did not create ──
     #
@@ -180,18 +265,24 @@ class TestCronCallbackStoresThread:
         # callback writes an empty anchor so the readers resolve the job's own
         # thread_ts via _cron_outbound_thread, never the stale ts.
         gateway = _make_gateway()
+        store = _use_real_links(gateway)
+        store.set_slack_link("cron:j1", "1600000000.000001", "C123")
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         _run_callback(gateway, _make_job(thread_ts="1699999999.000111"))
-        gateway.sessions.set_thread.assert_awaited_once_with("cron:j1", "")
+        assert store.get_thread("cron:j1") == ""
+        # Neither the stale anchor nor the human's thread routes to the cron.
+        assert store._session_map.get_session_for_thread("1600000000.000001") is None
+        assert store._session_map.get_session_for_thread("1699999999.000111") is None
 
     def test_still_binds_channel_for_inherited_thread(self) -> None:
         # The channel bind is harmless (set_channel writes an empty ts for an
         # unclaimed cron, which evicts no one) and still happens, so subagent
         # replies can resolve the cron's channel.
         gateway = _make_gateway()
+        store = _use_real_links(gateway)
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         _run_callback(gateway, _make_job(channel="C999", thread_ts="1699999999.000111"))
-        gateway.sessions.set_channel.assert_awaited_once_with("cron:j1", "C999")
+        assert store.get_slack_link("cron:j1") == ("", "C999")
 
     def test_overflow_still_threads_under_inherited_thread(self) -> None:
         # Not claiming the thread must not stop overflow parts from threading:
@@ -411,7 +502,9 @@ class TestSubagentDoneCancelsBeforeRelease:
         gateway.sessions.cancel_current = AsyncMock(
             side_effect=lambda k, **_kw: call_order.append("cancel")
         )
-        gateway.sessions.release = MagicMock(side_effect=lambda k: call_order.append("release"))
+        gateway.sessions.release = MagicMock(
+            side_effect=lambda k, **_kw: call_order.append("release")
+        )
         subagent_done = _capture_subagent_done(gateway)
         info = SubagentInfo(id="s3", task="work", parent_session_key="slack:U000")
         info.result = "done"
@@ -463,6 +556,7 @@ class TestDashboardInjectionRoutesRunChat:
         """Idle slot triggers _run_chat with the announce message."""
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.running = False
         slot.key = "chat-1-123"
         slot.task = None
@@ -474,7 +568,7 @@ class TestDashboardInjectionRoutesRunChat:
         info.done = True
         p1, p2 = self._patches()
         with (
-            patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock),
             p1, p2,
         ):
             await subagent_done(info)
@@ -506,10 +600,13 @@ class TestDashboardInjectionRoutesRunChat:
 
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         _done_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         _done_future.set_result(None)
-        # First access: True (enters busy branch), second access: False (re-check passes)
-        type(slot).running = PropertyMock(side_effect=[True, False])
+        # First access: True (enters busy branch), then False (the re-checks pass)
+        type(slot).running = PropertyMock(
+            side_effect=itertools.chain([True], itertools.repeat(False))
+        )
         slot.task = _done_future
         slot.key = "chat-1-busy"
         gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -521,7 +618,7 @@ class TestDashboardInjectionRoutesRunChat:
         p1, p2 = self._patches()
         _mock_run_chat = AsyncMock(return_value=None)
         with (
-            patch("kiro_crew.slack.gateway._run_chat", _mock_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", _mock_run_chat),
             p1, p2,
         ):
             await subagent_done(info)
@@ -534,6 +631,7 @@ class TestDashboardInjectionRoutesRunChat:
         """If busy slot doesn't finish within timeout, result is queued."""
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.running = True  # stays busy even after timeout
         _stuck = asyncio.get_running_loop().create_future()
         slot.task = _stuck
@@ -563,6 +661,7 @@ class TestDashboardInjectionRoutesRunChat:
         """_on_inject_done calls notify_injection_failed with redacted reason."""
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.running = False
         slot.key = "chat-1-err"
         slot.task = None
@@ -576,7 +675,7 @@ class TestDashboardInjectionRoutesRunChat:
         _mock_run_chat = AsyncMock(side_effect=RuntimeError("provider crashed"))
         p1, p2 = self._patches()
         with (
-            patch("kiro_crew.slack.gateway._run_chat", _mock_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", _mock_run_chat),
             p1, p2,
         ):
             await subagent_done(info)
@@ -601,68 +700,59 @@ class TestCronCallbackDashboardChat:
             pytest.param(False, id="test_persistent_session_without_slot_still_injects"),
         ],
     )
+    @pytest.mark.usefixtures("_reset_surface_registry")
     def test_persistent_session_injects(self, has_slot) -> None:
         gateway = _make_gateway()
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
-        gateway.dashboard_state.has_slot = MagicMock(return_value=has_slot)
+        slots = _use_real_slots(gateway)
+        if has_slot:
+            gateway.dashboard_state.get_or_create_slot("cron-j1")
         job = _make_job(persistent_session=True)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
-            _run_callback(gateway, job, stream_result="cron output")
-            mock_inject.assert_called_once_with(
-                gateway.dashboard_state, job, "cron output", history=ANY,
-                context_reading=ANY, turn_stats=ANY,
-            )
+        _run_callback(gateway, job, stream_result="cron output")
+        assert [m["role"] for m in _results_in_tab(slots, "cron output")] == ["assistant"]
 
+    @pytest.mark.usefixtures("_reset_surface_registry")
     def test_non_persistent_session_does_not_inject(self) -> None:
         gateway = _make_gateway()
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
-        gateway.dashboard_state.has_slot = MagicMock(return_value=True)
+        slots = _use_real_slots(gateway)
+        gateway.dashboard_state.get_or_create_slot("cron-j1")
         job = _make_job(persistent_session=False)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
-            _run_callback(gateway, job, stream_result="cron output")
-            mock_inject.assert_not_called()
+        _run_callback(gateway, job, stream_result="cron output")
+        assert _results_in_tab(slots, "cron output") == []
         # The bell still carries the result, with no slot to continue in.
         gateway.dashboard_state.notify.assert_any_call(
             "cron", "Cron: test-job", "cron output", meta={"job_id": "j1"}
         )
 
+    @pytest.mark.usefixtures("_reset_surface_registry")
     def test_inject_fires_on_dedup_suppression(self) -> None:
         """Even when Slack dedup suppresses delivery, dashboard slot still gets updated."""
         gateway = _make_gateway()
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
-        gateway.dashboard_state.has_slot = MagicMock(return_value=True)
+        slots = _use_real_slots(gateway)
         job = _make_job(persistent_session=True)
         job.last_posted_hash = ""  # first run posts normally
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
-            _run_callback(gateway, job, stream_result="same result")
-            first_call_count = mock_inject.call_count
-            from kiro_crew.slack.gateway import _result_hash
+        _run_callback(gateway, job, stream_result="same result")
+        assert len(_results_in_tab(slots, "same result")) == 1
+        from kiro_crew.slack.gateway import _result_hash
 
-            job.last_posted_hash = _result_hash("same result")
-            job.last_posted_at = 9999999999.0  # far future so reminder doesn't trigger
-            # Second run — dedup suppresses Slack but inject should still fire
-            _run_callback(gateway, job, stream_result="same result")
-            assert mock_inject.call_count == first_call_count + 1
+        job.last_posted_hash = _result_hash("same result")
+        job.last_posted_at = 9999999999.0  # far future so reminder doesn't trigger
+        job.last_result_stamp = "run 2"  # a new run, so its row is not a duplicate
+        # Second run — dedup suppresses Slack but the tab still gets the result.
+        _run_callback(gateway, job, stream_result="same result")
+        assert len(_results_in_tab(slots, "same result")) == 2
 
+    @pytest.mark.usefixtures("_reset_surface_registry")
     def test_silent_cron_injects_to_existing_slot(self) -> None:
         """Silent cron with existing slot still injects result to dashboard."""
         gateway = _make_gateway()
-        gateway.dashboard_state.has_slot = MagicMock(return_value=True)
+        slots = _use_real_slots(gateway)
+        gateway.dashboard_state.get_or_create_slot("cron-j1")
         job = _make_job(persistent_session=True, silent=True)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
-            _run_callback(gateway, job, stream_result="silent output")
-            mock_inject.assert_called_once_with(
-                gateway.dashboard_state, job, "silent output", history=ANY,
-                context_reading=ANY, turn_stats=ANY,
-            )
+        _run_callback(gateway, job, stream_result="silent output")
+        assert [m["role"] for m in _results_in_tab(slots, "silent output")] == ["assistant"]
 
     def test_silent_cron_no_slot_does_not_inject(self) -> None:
         """Silent cron without existing slot does not inject."""
@@ -692,36 +782,32 @@ class TestCronCallbackDashboardChat:
             ),
         ],
     )
+    @pytest.mark.usefixtures("_reset_surface_registry")
     def test_hide_in_chat_suppresses_inject(self, has_slot) -> None:
         """hide_in_chat=True must NOT create or inject a slot for a
         persistent_session job, whether or not a slot already exists."""
         gateway = _make_gateway()
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
-        gateway.dashboard_state.has_slot = MagicMock(return_value=has_slot)
+        slots = _use_real_slots(gateway)
+        if has_slot:
+            gateway.dashboard_state.get_or_create_slot("cron-j1")
         job = _make_job(persistent_session=True, hide_in_chat=True)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
-            _run_callback(gateway, job, stream_result="hidden output")
-            mock_inject.assert_not_called()
+        _run_callback(gateway, job, stream_result="hidden output")
+        assert _results_in_tab(slots, "hidden output") == []
+        assert ("cron-j1" in slots) is has_slot
         # Hiding the tab does not hide the result: Slack still gets it.
         assert "hidden output" in gateway.slack.post_blocks.await_args.args[2]
 
+    @pytest.mark.usefixtures("_reset_surface_registry")
     def test_hide_in_chat_false_still_injects(self) -> None:
         """Inverse: hide_in_chat=False (default) still injects on the normal path —
         locks both directions of the gate."""
         gateway = _make_gateway()
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
-        gateway.dashboard_state.has_slot = MagicMock(return_value=False)
+        slots = _use_real_slots(gateway)
         job = _make_job(persistent_session=True, hide_in_chat=False)
-        with patch(
-            "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
-        ) as mock_inject:
-            _run_callback(gateway, job, stream_result="shown output")
-            mock_inject.assert_called_once_with(
-                gateway.dashboard_state, job, "shown output", history=ANY,
-                context_reading=ANY, turn_stats=ANY,
-            )
+        _run_callback(gateway, job, stream_result="shown output")
+        assert [m["role"] for m in _results_in_tab(slots, "shown output")] == ["assistant"]
 
     def test_hide_in_chat_silent_cron_does_not_inject(self) -> None:
         """A silent + hidden cron with an existing slot must not re-inject

@@ -13,6 +13,8 @@ import { handOverComposerUploads, landComposerAttachments, takeComposerArrivals 
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
 import type { MemoryMode } from '../../components/MemoryModeChip'
+import { memoryModeAllowsCrewMode, runsCrewMode } from '../../lib/crewMode'
+import { forgetSlotSuccession, recordSlotSuccession } from '../../utils/slotSuccession'
 
 type Ref<T> = { current: T }
 
@@ -23,6 +25,8 @@ export interface MemorySwitchContext {
   slot: {
     agent?: string | null
     agent_kind?: 'member' | 'template' | ''
+    /** The agent Crew Mode turned on with, when it did. */
+    crew_mode_agent?: string
     model?: string | null
     folder_id?: string | null
     color_index?: number | null
@@ -63,9 +67,14 @@ export async function runMemorySwitch(
   // sibling navigation. Carry agent/project/folder/color so
   // the recreated slot keeps its identity and placement.
   const old = c.slot
+  // Crew Mode needs a Persistent chat (an Incognito or Temporary session may
+  // not open sessions), so leaving Persistent also leaves the conductor: the
+  // replacement is created agent-less, on the default template.
+  const leavesCrewMode = runsCrewMode(old?.agent, old?.agent_kind, old?.crew_mode_agent) && !memoryModeAllowsCrewMode(newMode)
+  const agent = leavesCrewMode ? undefined : old?.agent || undefined
   const opts = {
-    agent: old?.agent || undefined,
-    agent_kind: old?.agent ? old?.agent_kind || undefined : undefined,
+    agent,
+    agent_kind: agent ? old?.agent_kind || undefined : undefined,
     model: old?.model || undefined,
     mode: c.mode,
     memory_mode: newMode,
@@ -135,9 +144,14 @@ export async function runMemorySwitch(
     if (now !== from) left = true
     else if (left) revisited = true
   })
+  // Recorded before the switch: `switchSlot.pending` makes `next` active at
+  // once, and a host embedding `from` (the Papyrus co-author panel) must
+  // already know it is the hand-over, not an unrelated change of session.
+  recordSlotSuccession(from, next)
   try {
     await c.dispatch(switchSlot({ key: next, requestSeq: origin.seq })).unwrap()
   } catch (error) {
+    forgetSlotSuccession(from)
     // The rejected switch moves the view back to the old slot, and the
     // slot-change effect clears any error not marked to survive a switch --
     // which would erase the only report that the switch failed.
@@ -153,8 +167,12 @@ export async function runMemorySwitch(
   }
   // Timed out or unmounted while the switch loaded: the old slot's draft
   // and uploads may have moved on since. Keep both sessions.
-  if (attempt.timedOut || !c.composerMountedRef.current) return false
+  if (attempt.timedOut || !c.composerMountedRef.current) {
+    forgetSlotSuccession(from)
+    return false
+  }
   if (revisited || activeNow() === from) {
+    forgetSlotSuccession(from)
     dropReplacement(true)
     return false
   }

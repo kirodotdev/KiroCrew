@@ -17,9 +17,13 @@ The contract these tests pin:
 * ``"kirocrew"`` stays a perfectly legal explicit CHOICE, because a crew that
   boots the built-in agent against its own workspace/memory store is the common
   case and must keep working;
-* an unknown template is accepted with a WARNING rather than refused, matching
-  the sync path's EXECUTABLE INVARIANT posture — an edition may resolve a row
-  this listing cannot see, and hard-refusing it would itself be a bug.
+* any template other than ``"kirocrew"`` or the crew's own key is REFUSED
+  (400 ``mate_template_unsupported``): the crewmate's own file is the
+  source-free worker and reads no template, so the template's tools and
+  restrictions would never reach it;
+* a ``"kirocrew"`` missing from the listing is accepted with a WARNING rather
+  than refused, matching the sync path's EXECUTABLE INVARIANT posture — an
+  edition may resolve a row this listing cannot see.
 """
 
 from __future__ import annotations
@@ -207,13 +211,16 @@ class TestTemplateNameGrammar:
 
     @pytest.mark.asyncio
     async def test_underscores_and_digits_remain_valid(self):
-        """The guard must not narrow the legitimate name space."""
+        """The guard must not narrow the legitimate name space.
+
+        The name passes the grammar and reaches the start-template rule, which is
+        what answers it.
+        """
         cfg = _fake_config()
-        status, _ = await _post(
+        status, data = await _post(
             {"name": "crew-d", "kiro_agent": "my_agent2"}, cfg, installed=("my_agent2",)
         )
-        assert status == 200
-        assert cfg.written["doc"]["agents"]["crew-d"]["kiro_agent"] == "my_agent2"
+        assert (status, data["code"]) == (400, "mate_template_unsupported")
 
 
 class TestExplicitTemplateStillWorks:
@@ -265,7 +272,7 @@ class TestExplicitTemplateStillWorks:
         cfg = _fake_config()
         with caplog.at_level(logging.WARNING):
             status, _ = await _post(
-                {"name": "crew-a", "kiro_agent": "reviewer"},
+                {"name": "crew-a", "kiro_agent": "kirocrew"},
                 cfg,
                 installed=("kirocrew", "reviewer"),
             )
@@ -278,17 +285,76 @@ class TestMissingTemplateWarnsButCreates:
     async def test_unknown_template_warns_and_still_creates(self, caplog):
         cfg = _fake_config()
         with caplog.at_level(logging.WARNING):
-            status, _ = await _post(
-                {"name": "crew-c", "kiro_agent": "not-installed"},
-                cfg,
-                installed=("kirocrew",),
-            )
+            status, _ = await _post({"name": "crew-c", "kiro_agent": "kirocrew"}, cfg, installed=())
         # Accepted (an edition may resolve it even when unlisted)…
         assert status == 200
-        assert cfg.written["doc"]["agents"]["crew-c"]["kiro_agent"] == "not-installed"
+        assert cfg.written["doc"]["agents"]["crew-c"]["kiro_agent"] == "kirocrew"
         # …but the substitution risk is on the record rather than silent.
         assert "not in the installed agent listing" in caplog.text
-        assert "not-installed" in caplog.text
+        assert "'kirocrew'" in caplog.text
+
+
+class TestStartTemplateIsTheWorker:
+    """A crewmate starts as the built-in worker; another template is refused.
+
+    ``mate_config.adopt_own_file`` writes the source-free worker file, so a
+    template's ``excludedTools``, ``disabledTools`` and deny rules would be
+    dropped without a trace. The refusal lands before anything is written.
+    """
+
+    @pytest.mark.asyncio
+    async def test_another_template_is_refused_and_nothing_is_written(self):
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "crew-e", "kiro_agent": "locked-down"},
+            cfg,
+            installed=("kirocrew", "locked-down"),
+        )
+        assert (status, data["code"]) == (400, "mate_template_unsupported")
+        assert "built-in worker" in data["error"]
+        assert cfg.agents == {}
+        assert cfg.saved == []
+        assert cfg.written == {}
+
+    @pytest.mark.asyncio
+    async def test_the_key_is_what_the_template_is_judged_against(self):
+        """A free-form name keys an id; the template is compared with that id.
+
+        "Release Bot" keys ``release-bot``, so naming that template is the
+        crew's own key: the start-template rule lets it through to the
+        same-name rule, which answers it.
+        """
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "Release Bot", "kiro_agent": "release-bot"},
+            cfg,
+            installed=("kirocrew", "release-bot"),
+        )
+        assert (status, data["code"]) == (409, "template_name_in_use")
+        assert cfg.saved == []
+
+    @pytest.mark.asyncio
+    async def test_a_template_named_after_the_crew_is_not_this_refusal(self):
+        """The Templates tab's Enroll sends ``{name: X, kiro_agent: X}``.
+
+        The start-template rule admits it; the same-name rule answers it.
+        """
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "reviewer", "kiro_agent": "reviewer"},
+            cfg,
+            installed=("kirocrew", "reviewer"),
+        )
+        assert data["code"] != "mate_template_unsupported"
+        assert (status, data["code"]) == (409, "template_name_in_use")
+
+
+def test_start_template_refusal_admits_the_worker_and_the_crews_own_key():
+    from kiro_crew.mate_config import MATE_TEMPLATE_UNSUPPORTED, start_template_refusal
+
+    assert start_template_refusal("kirocrew", "crew-e") == ""
+    assert start_template_refusal("crew-e", "crew-e") == ""
+    assert start_template_refusal("locked-down", "crew-e") == MATE_TEMPLATE_UNSUPPORTED
 
 
 class TestFirstGreetingOwed:
@@ -447,3 +513,108 @@ class TestImportedCrewmateCreate:
         assert status == 400
         assert data["code"] == "invalid_imported"
         assert cfg.saved == [] and cfg.agents == {}
+
+
+class TestHeadlessAvatarDefault:
+    """A create with no avatar must store the name-seeded ICON the UI posts for
+    the same name, never an empty override (which renders the ghost);
+    an explicitly supplied avatar is never overridden."""
+
+    @pytest.mark.asyncio
+    async def test_no_avatar_stores_the_name_seeded_icon(self):
+        from kiro_crew.crew_avatar_seed import default_icon_avatar
+
+        cfg = _fake_config()
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew"}, cfg, installed=("kirocrew",)
+        )
+        assert status == 200
+        stored = cfg.written["doc"]["agents"]["scout"]["avatar"]
+        assert stored == default_icon_avatar("scout")
+        assert stored["kind"] == "icon"
+
+    @pytest.mark.asyncio
+    async def test_no_avatar_never_stores_an_empty_override(self):
+        cfg = _fake_config()
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew"}, cfg, installed=("kirocrew",)
+        )
+        assert status == 200
+        # An empty override is exactly what renders the trait ghost; a headless
+        # create must never land there.
+        assert cfg.written["doc"]["agents"]["scout"]["avatar"] != {}
+
+    @pytest.mark.asyncio
+    async def test_explicit_icon_avatar_is_not_overridden(self):
+        cfg = _fake_config()
+        chosen = {"kind": "icon", "pose": "pose-3", "bg": "#123456"}
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew", "avatar": chosen},
+            cfg,
+            installed=("kirocrew",),
+        )
+        assert status == 200
+        assert cfg.written["doc"]["agents"]["scout"]["avatar"] == chosen
+
+    @pytest.mark.asyncio
+    async def test_explicit_ghost_avatar_is_not_overridden(self):
+        from kiro_crew.config.sections import _safe_avatar
+
+        cfg = _fake_config()
+        ghost = {"kind": "ghost", "traits": {"eyes": "happy"}}
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew", "avatar": ghost},
+            cfg,
+            installed=("kirocrew",),
+        )
+        assert status == 200
+        # The ghost the user explicitly picked stands (in its validated form);
+        # only an ABSENT avatar is defaulted to a seeded icon.
+        stored = cfg.written["doc"]["agents"]["scout"]["avatar"]
+        assert stored == _safe_avatar(ghost)
+        assert stored["kind"] == "ghost"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ghost_reset",
+        [
+            {"kind": "ghost", "traits": {}},
+            {"kind": "ghost", "traits": {"eyes": "", "mouth": ""}},
+        ],
+    )
+    async def test_explicit_ghost_reset_is_not_replaced_by_the_icon(self, ghost_reset):
+        """An explicit ghost RESET -- a ghost override whose traits are all empty --
+        collapses to `{}` under `_safe_avatar` but is a deliberate choice of the
+        name-derived ghost (the `_is_ghost_shaped` canonical reset). The icon
+        default must NOT replace it; the stored avatar stays the empty-override
+        reset, not a seeded icon. (A bare `{"kind": "ghost"}` with no `traits`
+        key is not ghost-shaped and the handler rejects it 400 by existing design.)"""
+        cfg = _fake_config()
+        status, _ = await _post(
+            {"name": "scout", "kiro_agent": "kirocrew", "avatar": ghost_reset},
+            cfg,
+            installed=("kirocrew",),
+        )
+        assert status == 200
+        stored = cfg.written["doc"]["agents"]["scout"].get("avatar", {})
+        # The reset stored as the canonical empty override -- NOT an icon.
+        assert stored.get("kind") != "icon"
+        assert stored in ({}, None)
+
+    @pytest.mark.asyncio
+    async def test_free_form_name_seeds_from_the_shown_label(self):
+        from kiro_crew.crew_avatar_seed import default_icon_avatar
+
+        cfg = _fake_config()
+        # A free-form name becomes the crew's display label over a derived key;
+        # the icon must seed from the shown label, matching the UI preview.
+        status, _ = await _post(
+            {"name": "Scout Ranger", "kiro_agent": "kirocrew"},
+            cfg,
+            installed=("kirocrew",),
+        )
+        assert status == 200
+        agents = cfg.written["doc"]["agents"]
+        (key,) = agents.keys()
+        assert agents[key]["display_name"] == "Scout Ranger"
+        assert agents[key]["avatar"] == default_icon_avatar("Scout Ranger")

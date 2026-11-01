@@ -7,6 +7,12 @@
 #   2. Install the app to your workspace and copy the Bot Token (xoxb-...)
 #   3. Run `kirocrew setup` and paste both tokens
 #
+## Template notes (never rendered): a line ending in "#@<feature>" is rendered
+## only when that Slack Code switch (slack.<feature>, registered in
+## slack_manifest.FEATURE_SCOPES) is on.
+## `kirocrew manifest` and Settings → Slack render this file for the
+## switches you have on.
+#
 # See docs/guides/slack-setup.md for the full walkthrough.
 
 display_information:
@@ -19,6 +25,11 @@ features:
     home_tab_enabled: true
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
+  # Declares the app a Slack agent: threads become agent sessions with a live  #@agent_sessions
+  # status, a title and Slack's native Stop button. Slack cannot switch an app  #@agent_sessions
+  # back from agent_view to assistant_view once this is saved.  #@agent_sessions
+  agent_view:  #@agent_sessions
+    agent_description: Your personal AI agent. Chat, run multi-step tasks unattended, schedule jobs, and keep memory across sessions.  #@agent_sessions
   bot_user:
     display_name: KiroCrew-{{ALIAS}}
     always_online: true
@@ -32,6 +43,8 @@ oauth_config:
   scopes:
     bot:
       - app_mentions:read
+      # agents.sessions.* (status, title, Stop) for the agent_view feature.  #@agent_sessions
+      - assistant:write  #@agent_sessions
       - channels:history
       - channels:read
       - chat:write
@@ -67,6 +80,10 @@ settings:
       - message.groups
       - app_mention
       - app_home_opened
+      # Slack's native Stop button on an agent session (shown only while it is  #@agent_sessions
+      # processing), and a user's rename of a thread session.  #@agent_sessions
+      - agent_session_stopped  #@agent_sessions
+      - agent_session_title_changed  #@agent_sessions
       - file_change
       - member_joined_channel
   interactivity:

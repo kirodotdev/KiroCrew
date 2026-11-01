@@ -29,7 +29,7 @@ from kiro_crew.dashboard.slot_buffers import (
     serialize_deferred_notes,
 )
 from kiro_crew.dashboard.slot_persistence import metadata_codec as codec
-from kiro_crew.dashboard.slot_persistence import metadata_line
+from kiro_crew.dashboard.slot_persistence import metadata_line, metadata_values
 from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
 from kiro_crew.dashboard.state import durable_queue_entries
 from kiro_crew.history import SLOT_OWNED_META_KEYS
@@ -60,6 +60,7 @@ _POPULATED: dict = {
     "workspace": "ws",
     "memory_store": "silo",
     "agent_kind": "member",
+    "crew_mode_agent": "kirocrew-conductor",
     "app_agent_owner": "pr-bulk-ops/agent-a",
     "project": "/srv/p",
     "executor": "remote",
@@ -126,6 +127,7 @@ _BASE_LINE_ORDER = (
     "workspace",
     "memory_store",
     "agent_kind",
+    "crew_mode_agent",
     "app_agent_owner",
     "project",
     "executor",
@@ -138,6 +140,7 @@ _BASE_LINE_ORDER = (
     "app",
     "origin",
     "created_by",
+    "attribution",
     "artifact",
     "pinned",
     "mutes_opened",
@@ -182,11 +185,13 @@ _BASE_MERGE_ORDER = (
     "workspace",
     "memory_store",
     "agent_kind",
+    "crew_mode_agent",
     "app_agent_owner",
     "project",
     "app",
     "origin",
     "created_by",
+    "attribution",
     "linked_session_key",
     "channel_origin",
     "forked_from",
@@ -785,9 +790,9 @@ def test_a_resume_mints_a_tag_revision_even_for_a_slot_without_the_bump(tmp_path
     assert revisions == {codec.RECENT: False, codec.RESTORE: False, codec.RESUME: True}
 
 
-def test_the_facade_still_binds_every_name_that_moved_into_the_codec():
+def test_the_facade_still_binds_every_name_that_moved_into_the_codec_or_its_value_checks():
+    assert cp.COLOR_HEX_RE is codec.COLOR_HEX_RE
     for name in (
-        "COLOR_HEX_RE",
         "_RETIRED_MODES",
         "_rebase_rehydrated_refresh_mark",
         "_rehydrate_slot_title",
@@ -799,4 +804,4 @@ def test_the_facade_still_binds_every_name_that_moved_into_the_codec():
         "_restored_mode",
         "_validate_autocompact_pct",
     ):
-        assert getattr(cp, name) is getattr(codec, name), name
+        assert getattr(cp, name) is getattr(metadata_values, name), name

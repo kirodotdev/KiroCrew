@@ -171,6 +171,15 @@ Pinned by
 and the legacy importer drops a persisted `auto_approve` for the same reason
 (`migrate.import_legacy`).
 
+### Accepted-work rows (Shared Crew)
+
+`taskq.store_work` adds two tables to the same file: `accepted_work` (one admission
+record per accepted unit of work, unique on its idempotency `scope`, written through
+the writer thread with compare-and-set on `revision`) and `principal_storage` (the
+per-principal byte ledger). Both are created by `apply_schema` with `IF NOT EXISTS`;
+the schema version is unchanged because an older build that does not know the tables
+leaves them in place. `shared_crew.work_store` is their only writer.
+
 ## State machine
 
 Fifteen states, one table (`model.TRANSITIONS`), consulted by every write.
@@ -1096,6 +1105,15 @@ data instead: `GET /api/spawn/lanes` (`admission.lane_snapshot_async()`): per-la
 `lane_kind ∈ {system, session}` attribute on `kirocrew.taskq.depth` is left to
 the health sampler.
 
+### Per-person lanes (Shared Crew)
+
+While Shared Crew fair admission is on, the admission gate installs
+`lanes.set_lane_resolver`: a root session whose running work has an initiator maps to
+the lane `principal:<id>`, so the same round-robin is fair across people and one
+person's many sessions share one lane. A key the resolver does not know keeps its
+session lane; children still inherit their root's lane. See
+[shared-crew.md](shared-crew.md) section 4.
+
 ## Deferral (memory pressure)
 
 `defer(task_id, *, wait, reason)` sets `next_run_at` on a claimable row to the
@@ -1327,7 +1345,14 @@ at once, so the dispatcher (or the runner's `_resume_after_wait` → `admit` →
 `claim`) writes `running` when capacity is actually granted. A crash in the gap
 leaves a claimable row (`retry_wait` is not ACTIVE, so the boot reconciler
 leaves it alone) instead of a dead-owner `running` row that reconciles to
-`unknown_side_effect`. For a LIVE parent whose last child ended,
+`unknown_side_effect`. With the store reachable, a caller cancellation after
+a persisted dependency wake first uses the handle's generation-fenced terminal
+write. If the wake made that generation stale, a second write fenced to
+`retry_wait` and the wake's exact generation ends only that unclaimed handoff;
+a later `retry_wait` epoch, an answered-input handoff, or a row already claimed
+into `admitted`, `starting` or `running` is refused. Pinned by
+`test_taskq_runner_wait_cancel.py`.
+For a LIVE parent whose last child ended,
 `on_child_terminal(defer_wake=True)` records `children_settled` and leaves the
 row `waiting_children` until `resume_grant`. `answer_input` stores the answer
 text on the `wake` event so a crash cannot lose it: `waiting_input` reads the

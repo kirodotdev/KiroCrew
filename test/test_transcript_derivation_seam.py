@@ -71,6 +71,9 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/channel_transcript_migration.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
         ("kiro_crew/cli_commands_security.py", "recent"),
+        # `kirocrew consolidate`: a yes/no sensitive-session check on a tail
+        # consolidate_now left, to report the skip; no rows leave.
+        ("kiro_crew/cli_knowledge.py", "_read_messages"),
         # The live session's OWN rows into its OWN prompt / compaction.
         ("kiro_crew/context.py", "read_messages"),
         ("kiro_crew/context.py", "read_messages_chained"),

@@ -77,7 +77,9 @@ def resolve_crew_identity(
     One rule shared by every session-granting path (provider factory, warm-pool
     claim) so cold starts and claims can never disagree. An explicit
     ``crew_agent`` wins verbatim — including "" ("no crew"), which is how the
-    dashboard, the one kiro-name-passing surface, opts out of the fallback.
+    dashboard, the one kiro-name-passing surface, opts out of the fallback —
+    except that a crew's ``member_id`` answers with the key its record is
+    stored under (:func:`_crew_key_for_member_id`).
     When absent, the surface convention documented on
     :func:`_resolve_model_for_agent` applies: Slack threads, cron jobs and
     spawned agents pass a CREW name as ``agent``, so crew-namespace membership
@@ -85,7 +87,7 @@ def resolve_crew_identity(
     cross-namespace match.
     """
     if crew_agent is not None:
-        return crew_agent
+        return _crew_key_for_member_id(config, crew_agent) or crew_agent
     if agent and agent in config.agents:
         # DEBUG, not INFO: every Slack/cron session resolves here routinely.
         # The line exists so a kiro-template name that collides with a crew
@@ -94,6 +96,30 @@ def resolve_crew_identity(
         logger.debug("crew_agent %r resolved by crew-namespace fallback", agent)
         return agent
     return ""
+
+
+def _crew_key_for_member_id(config: "KiroCrewConfig", name: str | None) -> str:
+    """The ``config.agents`` key of the crew whose ``member_id`` is *name*, else ``""``.
+
+    For a name the caller has already stated is a CREW (an explicit
+    ``crew_agent``, a ``member`` selection), never for a bare ``agent`` that
+    may be a template: the crew namespace is stated, so no template name can
+    be taken for a crew here. A record from before crews were keyed by id is
+    keyed by its display name and is never re-keyed, so its id answers with
+    the key it is stored under. The match is
+    ``execution_context.member_config_for_id``'s unique-id rule; a stored key
+    answers ``""`` (callers have already matched it) and the ``display_name``
+    label is never matched.
+    """
+    if not name or name in config.agents:
+        return ""
+    from kiro_crew.execution_context import member_config_for_id
+
+    try:
+        key, _ = member_config_for_id(config, name)
+    except ValueError:
+        return ""
+    return key
 
 
 def _resolve_agent_selection(config, agent_name=None, project_dir=None, *, selection_kind=""):
@@ -113,6 +139,9 @@ def _resolve_agent_selection(config, agent_name=None, project_dir=None, *, selec
     alias_hit = selection_kind != "template" and bool(agent_name) and agent_name in config.agents
     if alias_hit:
         return config.agents[agent_name], agent_name, "", True
+    id_key = _crew_key_for_member_id(config, agent_name) if selection_kind == "member" else ""
+    if id_key:
+        return config.agents[id_key], id_key, "", True
     fallback = default_template(config)
     passthrough = (
         "" if selection_kind == "member" else _materialized_kiro_agent(agent_name, project_dir)

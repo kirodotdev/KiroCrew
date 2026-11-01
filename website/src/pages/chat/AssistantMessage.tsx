@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, memo, useRef, useId, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Copy, ClipboardType, Check, Volume2, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
+import { Copy, ClipboardType, Check, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
 import { lazy, Suspense } from 'react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
@@ -21,6 +21,7 @@ import OpenFileChips from '../../components/OpenFileChips'
 import DecisionStrip from './DecisionStrip'
 import { readDecisionRecords, readMemoryRecallInStrip } from './decisionRecord'
 import MemoryRecallStrip from './MemoryRecallStrip'
+import SpeakMenuItem from './SpeakMenuItem'
 import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
@@ -212,9 +213,14 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     window.addEventListener('resize', release)
     return () => window.removeEventListener('resize', release)
   }, [rawBoxHeight])
-  useEffect(() => { setRawBoxHeight(null) }, [content, variantIdx])
+  // Both resets run on every streamed chunk, when the value is almost always
+  // already null; reading it through a ref skips the no-op update, which would
+  // otherwise schedule a render of this row per chunk.
+  const rawBoxHeightRef = useRef(rawBoxHeight); rawBoxHeightRef.current = rawBoxHeight
+  useEffect(() => { if (rawBoxHeightRef.current !== null) setRawBoxHeight(null) }, [content, variantIdx])
   const [localIdx, setLocalIdx] = useState<number | null>(null)
-  useEffect(() => { setLocalIdx(null) }, [content, variants?.length])
+  const localIdxRef = useRef(localIdx); localIdxRef.current = localIdx
+  useEffect(() => { if (localIdxRef.current !== null) setLocalIdx(null) }, [content, variants?.length])
 
   const hasVariants = variants && variants.length > 1
   const activeIdx = onSwitchVariant ? (typeof variantIdx === 'number' ? variantIdx : (variants?.length ?? 1) - 1) : (localIdx ?? (typeof variantIdx === 'number' ? variantIdx : (variants?.length ?? 1) - 1))
@@ -554,14 +560,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
               </span>
             </DropdownMenuItem>
           )}
-          {hasSpeak && (
-            <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="speak-message" aria-description={i18nT('pages.chat.assistantMessage.speak_message')} onSelect={() => onSpeak?.(content)}>
-              <span className="flex items-center gap-2">
-                <Volume2 className="lucide-inline shrink-0" />
-                <span>{i18nT('pages.chat.assistantMessage.speak')}</span>
-              </span>
-            </DropdownMenuItem>
-          )}
+          {hasSpeak && <SpeakMenuItem onSelect={() => onSpeak?.(content)} />}
           {oldMenuContext && shareEnabled && (
           <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="share-message" onSelect={() => setShareOpen(true)}>
             <span className="flex items-center gap-2">
@@ -669,7 +668,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
       ? { overflowWrap: 'anywhere', wordBreak: 'break-word', height: rawBoxHeight, overflowY: 'auto', fontSize: 'var(--mc-message-font-size, 14px)' }
       : { overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
       {body ?? <MessageErrorBoundary rawContent={smoothedText}>
-        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} collapseDiffs mdCardToggle blockedLinks={effectiveBlockedLinks} redactions={effectiveRedactions} redactionCoach={showRedactionCoach} />
+        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} textPreviews textPreviewsPaused={isStreaming || draining} collapseDiffs mdCardToggle runYourselfCards blockedLinks={effectiveBlockedLinks} redactions={effectiveRedactions} redactionCoach={showRedactionCoach} />
       </MessageErrorBoundary>}
       {/* Render the steer ack the moment kiro-cli emits the [STEERING …] marker
           — including mid-stream — so the user sees the agent acknowledge the
@@ -749,8 +748,11 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
          code, and Tailwind's `font-mono` pins `var(--mono)` — a token the Font
          Family setting never writes, so this line ignored the user's choice.
          `tabular-nums` stays: fixed-width digits are what the mono was earning
-         here, and it works in a proportional face too. */
-      <div className="flex items-center gap-1 mt-1 text-[11px] leading-4 text-muted/60 tabular-nums" data-testid="turn-stats" title={turnStatsTitle}>
+         here, and it works in a proportional face too. Full `text-muted`, no
+         `/60`: at 60% the line read 2.3:1 on the card, under the 4.5:1 text
+         floor (mutedTextContrast.test.ts). The smaller size keeps it below the
+         timestamp. */
+      <div className="flex items-center gap-1 mt-1 text-[11px] leading-4 text-muted tabular-nums" data-testid="turn-stats" title={turnStatsTitle}>
         {/* Cost leads, elapsed trails: credits are the scarce resource users
             actually budget, so they read first. The clock icon travels WITH the
             elapsed value (never leads the line) so it never appears to label

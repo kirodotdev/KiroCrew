@@ -220,6 +220,7 @@ class TestLauncherInstall:
             [str(launcher), "-png", str(base / "absent.pdf"), str(base / "out" / "page")],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         # The SHIM reporting a missing input (exit 1) proves it was reached. A shell
         # failure to resolve the path would be 126/127 with no shim message.

@@ -46,19 +46,27 @@ advertises two extension methods the direct route does not, so its surface is a
 superset. ``_kiro/auth/getAccessToken`` is the one frame whose presence depends
 on the auth owner chosen above.
 
-Neither route brings a sandbox of its own, and this is the reason Crew's own
-seatbelt must stay on (see ``ACP_BACKENDS_INTERNAL_SANDBOX`` in
-:mod:`kiro_crew.acp.types`). KAS implements its own OS sandbox -- seatbelt on
-macOS, bubblewrap on Linux -- selected by an ``--sandbox`` argument on its ACP
-server, and it wraps each bash command rather than the agent process. kiro-cli's
-relay does NOT pass that argument (``spawn_kas_process`` builds exactly
-``node --experimental-wasm-modules <acp-server.js> --transport=stdio
+The two routes differ in who sandboxes the process, and Crew follows that per
+spawn. KAS implements its own OS sandbox -- seatbelt on macOS, bubblewrap on
+Linux -- selected by an ``--sandbox`` argument on its ACP server, and it wraps
+each bash command rather than the agent process. Neither route passes that
+argument (kiro-cli's ``spawn_kas_process`` builds exactly ``node
+--experimental-wasm-modules <acp-server.js> --transport=stdio
 --auth=acp-callback``), and KAS's sandbox factory returns its no-op backend for
-an absent config. So KAS runs with no OS sandbox of its own either way: the argv
-kiro-cli builds is byte-for-byte the argv Crew would build itself. Two
-consequences: there is no inner sandbox that could fail to nest inside Crew's
-seatbelt, and there is nothing for Crew to delegate isolation TO -- claiming the
-delegation would leave KAS unconfined on macOS.
+an absent config, so the KAS server never sandboxes itself.
+
+The relay process is kiro-cli, though, and kiro-cli starts its OWN internal
+sandbox when its settings switch is on, before it spawns the KAS server as its
+child -- the same layer the v2 engine runs under, and one that cannot nest
+inside Crew's seatbelt on macOS (a relay spawned inside Crew's seatbelt exits
+before ``initialize`` with ``sandbox initialization failed: Operation not
+permitted``). So the relay route takes kiro-cli's delegation, and the bundle
+route, with no kiro-cli in the chain, keeps Crew's seatbelt: the harness says
+which route a spawn is (``SpawnPlan.kiro_cli_internal_sandbox``, set on macOS
+while that sandbox is on) and ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX`` in
+:mod:`kiro_crew.agent_sdk.backends` is what lets that statement move the
+sandbox. On Windows the relay's KAS child was measured unconfined whatever the
+switch says, so there the relay keeps the no-backend path.
 """
 
 from __future__ import annotations

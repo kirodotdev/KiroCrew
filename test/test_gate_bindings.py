@@ -97,7 +97,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_record_crew_log_dispatch": (
         "function",
         "(self, info: 'SubagentInfo', *, from_queue: 'bool',"
-        " asked: \"'tuple[str, int] | None'\" = None) -> 'None'",
+        " asked: \"'Sequence[Any] | None'\" = None) -> 'None'",
         "gate_reporting",
     ),
     "_record_crew_log_spawn_started": (

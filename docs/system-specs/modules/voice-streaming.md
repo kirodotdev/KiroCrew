@@ -262,7 +262,13 @@ Read aloud request. This replaces a prior synthesis even during model loading,
 before any audio has started. `useVoiceInput` also dispatches it when an actual
 batch or streaming recording starts, before microphone acquisition, so the
 recognizer does not capture ongoing synthesized speech. Hover prewarming does
-not interrupt playback. Clicking Read aloud while audio plays stops it.
+not interrupt playback. Clicking Read aloud while audio plays stops it, on
+whichever reply it is clicked, so while `voicePlaying` is set the More menu
+item reads "Stop reading" with a stop glyph (`SpeakMenuItem`). While audio
+is still being prepared a click starts that reply instead, so the item keeps
+reading "Read aloud" until playback begins. The item reads the store only
+under a react-redux Provider, because the app SDK's `ChatEmbed` renders
+`AssistantMessage` with no store.
 The playback owner (`website/src/hooks/websocket/voicePlayback.ts`) maps the
 event to `stopVoice()`, which stops scheduled PCM sources,
 pauses an active media element, revokes queued blob URLs, invalidates pending

@@ -35,6 +35,16 @@ from kiro_crew.providers.base import EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK, LLM
 from kiro_crew.testing.wait import async_wait_until
 
 
+def _card_outcomes(slot: _ChatSlot) -> dict[str, str]:
+    """Each approval card's request id mapped to the decision its row shows."""
+    outcomes = {}
+    for row in slot.messages:
+        if row.get("role") == "permission":
+            meta = parse_cls_meta(row["cls"]) or {}
+            outcomes[meta.get("approval_id", "")] = meta.get("resolved", "")
+    return outcomes
+
+
 class TestBatchRejection:
     """Verify batch rejection auto-rejects remaining tools."""
 
@@ -128,6 +138,7 @@ class TestDenialCascadeLifetime:
         # The revised call was PROMPTED and could be approved — never swallowed.
         client.approve_tool.assert_any_call("req-2")
         assert ("req-2",) not in [c.args for c in client.reject_tool.call_args_list]
+        assert _card_outcomes(slot) == {"req-1": "rejected", "req-2": "approved"}
 
     @pytest.mark.asyncio
     async def test_same_group_still_cascades_after_the_fix(self, tmp_path):
@@ -158,6 +169,7 @@ class TestDenialCascadeLifetime:
         client.reject_tool.assert_any_call("req-1")
         client.reject_tool.assert_any_call("req-2")
         client.approve_tool.assert_not_called()
+        assert _card_outcomes(slot) == {"req-1": "rejected", "req-2": "rejected"}
 
 
 class TestBatchCascadeAttribution:
@@ -264,6 +276,7 @@ class TestBatchCascadeAttribution:
         client.reject_tool.assert_any_call("req-1")
         client.reject_tool.assert_any_call("req-2")
         client.steer.assert_not_called()
+        assert _card_outcomes(slot) == {"req-1": "rejected", "req-2": "rejected"}
 
     @pytest.mark.asyncio
     async def test_one_notice_covers_the_whole_cascaded_remainder(self, tmp_path):
@@ -439,30 +452,40 @@ class TestDenyOnce:
         assert "rejected_once" in repr(log.warning.call_args)
 
     @pytest.mark.asyncio
-    async def test_api_reject_once_maps_to_decision_override(self):
+    async def test_api_reject_once_maps_to_decision_override(self, monkeypatch):
         """The HTTP seam: ``reject_once`` is a valid action and sets the flag.
 
         Pinned at the handler, not in redux: a frontend-only test passes even when
-        the action never reaches ``resolve_approval``, leaving Deny once wired to
-        the plain batch reject in production.
+        the action never reaches the resolver, leaving Deny once wired to the plain
+        batch reject in production. The handler resolves through the Shared Crew
+        decision registry, which is where the flag must arrive.
         """
+        from kiro_crew.shared_crew import decisions as shared_decisions
+
         state = MagicMock()
-        state.resolve_approval.return_value = True
+        seen: list[dict] = []
+
+        def _resolve(_state, _request, approval_id, **kwargs):
+            seen.append({"id": approval_id, **kwargs})
+            return 200, {"ok": True}
+
+        monkeypatch.setattr(shared_decisions, "resolve_approval_by_id", _resolve)
 
         async def _call(action: str):
             request = MagicMock()
             request.get = {"app": ""}.get  # the dashboard user: an empty app claim
             request.app = {"state": state}
             request.match_info = {"id": "req-9", "action": action}
+            request.can_read_body = False
             return await api_approval_resolve(request)
 
         assert (await _call("reject_once")).status == 200
-        assert state.resolve_approval.call_args.args == ("req-9", False)
-        assert state.resolve_approval.call_args.kwargs["rejected_once"] is True
+        assert (seen[-1]["id"], seen[-1]["approved"]) == ("req-9", False)
+        assert seen[-1]["rejected_once"] is True
 
         # Plain reject must keep the cascading behavior (no override).
         assert (await _call("reject")).status == 200
-        assert state.resolve_approval.call_args.kwargs["rejected_once"] is False
+        assert seen[-1]["rejected_once"] is False
 
         # Unknown actions are still refused.
         assert (await _call("reject_twice")).status == 400

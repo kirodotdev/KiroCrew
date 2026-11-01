@@ -209,6 +209,12 @@ export function createArtifactsEndpoints({ get, post, del, patch, j, jfetch: fet
      */
     sandboxDocUrl: (html: string) =>
       post('/api/sandbox-doc', { html }).then(j) as Promise<{ url: string }>,
+    /** Stash a file the page built and get back a same-origin URL that downloads
+     *  it as an attachment. For browsers that drop a `blob:` download (an
+     *  Android in-app browser). With `encoding: 'base64'` the bytes are kept
+     *  exactly. See dashboard/handlers/artifact_download.py. */
+    artifactDownloadUrl: (filename: string, type: string, content: string, encoding?: 'base64') =>
+      post('/api/artifact-downloads', encoding ? { filename, type, content, encoding } : { filename, type, content }).then(j) as Promise<{ url: string }>,
     refreshArtifactSharing: (slug: string) => post(`/api/artifacts/${encodeURIComponent(slug)}/publish/refresh`, {}).then(j),
     pullLatest: (slug: string) =>
       post(`/api/artifacts/${encodeURIComponent(slug)}/pull-latest`, {}).then(j),

@@ -28,13 +28,12 @@ vi.mock('../components/CliPanel', () => ({
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))
-// Terminal off / Developer Mode off: the menu then lists exactly the views the
+// Terminal off: the menu then lists exactly the views the
 // assertions below name, with no environment-dependent extras.
 vi.mock('../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => false,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 
 // Disk preflight for a clean file tab's close batch (SidePanel.handleCloseTabs).
@@ -51,6 +50,7 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/SidePanel'
 import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
 import { LONG_PRESS_MS } from '../hooks/useLongPressReorder'
+import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 
 let panelController: ReturnType<typeof usePanelTabs>
 
@@ -102,9 +102,9 @@ describe('side panel + menu (shadcn dropdown)', () => {
     // The permanently pinned views are always in the strip already, so they must
     // never be offered here.
     expect(screen.queryByRole('menuitem', { name: 'Files' })).toBeNull()
-    // Diagnostics are behind Developer Mode, which this harness has off.
-    expect(screen.queryByRole('menuitem', { name: 'Logs' })).toBeNull()
-    expect(screen.queryByRole('menuitem', { name: 'Context breakdown' })).toBeNull()
+    // The diagnostics views are offered to everyone.
+    expect(screen.getByRole('menuitem', { name: 'Logs' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Context breakdown' })).toBeTruthy()
   })
 
   it('opens the picked view as a tab', () => {
@@ -139,10 +139,9 @@ describe('side panel + menu (shadcn dropdown)', () => {
     const menu = screen.getByRole('menu')
     const kids = Array.from(menu.children)
     const seps = kids.filter(el => el.getAttribute('role') === 'separator')
-    // Developer Mode is off in this harness, so the whole diagnostics group is
-    // gone and only two groups survive: session output, then Side + Browser
-    // (Terminal is disabled too). Two groups, one rule.
-    expect(seps).toHaveLength(1)
+    // Three groups: session output, Side + Browser (Terminal is disabled in
+    // this harness), then diagnostics. Three groups, two rules.
+    expect(seps).toHaveLength(2)
     expect(kids[0].getAttribute('role')).toBe('menuitem')
     expect(kids[kids.length - 1].getAttribute('role')).toBe('menuitem')
     // Rules separate groups, so no two are adjacent.
@@ -179,30 +178,74 @@ describe('side panel Dashboard view', () => {
   })
 })
 
+describe('side panel Crew tab with the Crew Mode preview off', () => {
+  beforeEach(() => { localStorage.clear() })
+  // A bucket restored from storage, as `usePanelTabs` does on a reload.
+  const Seeded = () => {
+    const tabsCtl = usePanelTabs('slot-a')
+    panelController = tabsCtl
+    if (!tabsCtl.tabs.some(t => t.kind === 'workers')) tabsCtl.openView('workers')
+    return <SidePanel tabsCtl={tabsCtl} slot="slot-a" onFileSave={async () => {}} onClose={() => {}} />
+  }
+  const renderSeeded = () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={createTestStore()}>
+          <Seeded />
+        </Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('withholds a stored Crew tab, keeps it in the bucket, and neither the strip nor the + menu offers it', () => {
+    renderSeeded()
+    expect(screen.queryByRole('tab', { name: /^Board/ })).toBeNull()
+    expect(screen.queryByTestId('crew-workers-none')).toBeNull()
+    // Withheld, not closed: the stored tab is still there for when the preview comes back.
+    expect(panelController.tabs.some(t => t.kind === 'workers')).toBe(true)
+    openMenu()
+    expect(screen.queryByRole('menuitem', { name: 'Board' })).toBeNull()
+  })
+
+  it('shows the stored Crew tab again when the preview is turned on', () => {
+    renderSeeded()
+    expect(screen.queryByRole('tab', { name: /^Board/ })).toBeNull()
+    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    expect(screen.getByRole('tab', { name: /^Board/ })).toBeTruthy()
+  })
+})
+
 describe('newMenuSections', () => {
-  const kinds = (o: { devMode: boolean; terminalEnabled: boolean; summaryEnabled?: boolean }) =>
+  const DIAGNOSTICS = new Set(['logs', 'context', 'crewlog'] as const)
+  const kinds = (o: { terminalEnabled: boolean; summaryEnabled?: boolean }) =>
     newMenuSections({ summaryEnabled: true, ...o }).map(g => g.items.map(i => i.kind))
 
   it('partitions every catalogued view exactly once', () => {
     // Both gates open, so nothing is filtered but the auto-pinned views. Any
     // view added to NEW_MENU_LABEL_KEY without being placed in a group — or
     // placed in two — fails here instead of quietly vanishing from the menu.
-    const flat = kinds({ devMode: true, terminalEnabled: true }).flat()
+    const flat = kinds({ terminalEnabled: true, crewMode: true }).flat()
     const pinned = ['changes', 'files', 'artifacts']
     const catalogued = Object.keys(NEW_MENU_LABEL_KEY).filter(k => !pinned.includes(k))
     expect([...flat].sort()).toEqual([...catalogued].sort())
     expect(new Set(flat).size).toBe(flat.length)
   })
 
+  it('offers Workers only on a Crew Mode root or one of its workers', () => {
+    expect(kinds({ terminalEnabled: true }).flat()).not.toContain('workers')
+    expect(kinds({ terminalEnabled: true, crewMode: true }).flat()).toContain('workers')
+  })
+
   it('hides Summary while session summaries are disabled', () => {
     // The feature is opt-in and its settings toggle ships separately, so
     // advertising the row while the flag is false sends every reader to a panel
     // that says it is off and offers no way to change that.
-    const flat = kinds({ devMode: true, terminalEnabled: true, summaryEnabled: false }).flat()
+    const flat = kinds({ terminalEnabled: true, summaryEnabled: false }).flat()
     expect(flat).not.toContain('summary')
     // Only that row goes — its group still carries the rest, so the group is not
     // dropped and nothing else is collateral.
-    expect(kinds({ devMode: true, terminalEnabled: true, summaryEnabled: false })[0])
+    expect(kinds({ terminalEnabled: true, summaryEnabled: false })[0])
       .toEqual(['command-center', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'])
   })
 
@@ -212,32 +255,32 @@ describe('newMenuSections', () => {
     // — `summaryEnabled` in particular starts undefined and flips when its
     // request lands, i.e. potentially mid-click. So the id a group reports must
     // depend only on its declaration, never on which rows survived.
-    const idsFor = (o: { devMode: boolean; terminalEnabled: boolean; summaryEnabled: boolean }) =>
+    const idsFor = (o: { terminalEnabled: boolean; summaryEnabled: boolean }) =>
       newMenuSections(o).map(g => g.id)
 
     // Gating a row must not touch its group's id.
-    expect(idsFor({ devMode: true, terminalEnabled: true, summaryEnabled: false }))
-      .toEqual(idsFor({ devMode: true, terminalEnabled: true, summaryEnabled: true }))
+    expect(idsFor({ terminalEnabled: true, summaryEnabled: false }))
+      .toEqual(idsFor({ terminalEnabled: true, summaryEnabled: true }))
 
-    // Dropping a whole group must not renumber the survivors: with Developer
-    // Mode off the diagnostics group disappears, and the two that remain keep
-    // the ids they had.
-    expect(idsFor({ devMode: true, terminalEnabled: true, summaryEnabled: true }))
+    // Dropping a whole group must not renumber the survivors: with every
+    // diagnostics row withheld that group disappears, and the two that remain
+    // keep the ids they had.
+    expect(idsFor({ terminalEnabled: true, summaryEnabled: true }))
       .toEqual(['session-output', 'workspaces', 'diagnostics'])
-    expect(idsFor({ devMode: false, terminalEnabled: true, summaryEnabled: true }))
+    expect(newMenuSections({ terminalEnabled: true, summaryEnabled: true, hiddenViews: DIAGNOSTICS }).map(g => g.id))
       .toEqual(['session-output', 'workspaces'])
 
     // And ids stay unique, or two groups would collide on one key.
-    for (const devMode of [false, true]) {
+    for (const terminalEnabled of [false, true]) {
       for (const summaryEnabled of [false, true]) {
-        const ids = idsFor({ devMode, terminalEnabled: true, summaryEnabled })
+        const ids = idsFor({ terminalEnabled, summaryEnabled })
         expect(new Set(ids).size).toBe(ids.length)
       }
     }
   })
 
   it('groups by session output, workspaces, then diagnostics', () => {
-    expect(kinds({ devMode: true, terminalEnabled: true })).toEqual([
+    expect(kinds({ terminalEnabled: true })).toEqual([
       ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser', 'terminal'],
       ['logs', 'context', 'crewlog'],
@@ -245,26 +288,27 @@ describe('newMenuSections', () => {
   })
 
   it('drops a group the gates emptied instead of leaving a stray separator', () => {
-    // Developer Mode off empties the diagnostics group entirely — the case the
-    // empty-group filter exists for. No returned group is ever empty, under any
-    // gate combination.
-    for (const devMode of [false, true]) {
+    // A host that withholds every diagnostics row empties that group — the
+    // case the empty-group filter exists for. No returned group is ever empty,
+    // under any gate combination.
+    for (const hiddenViews of [undefined, DIAGNOSTICS]) {
       for (const terminalEnabled of [false, true]) {
-        for (const group of newMenuSections({ devMode, terminalEnabled, summaryEnabled: true })) {
+        for (const group of newMenuSections({ terminalEnabled, summaryEnabled: true, hiddenViews })) {
           expect(group.items.length).toBeGreaterThan(0)
         }
       }
     }
-    // Both gates closed: diagnostics gone outright, Terminal dropped from
-    // Workspaces — two groups, not three with a hole.
-    expect(kinds({ devMode: false, terminalEnabled: false })).toEqual([
+    // Terminal off and diagnostics withheld: diagnostics gone outright,
+    // Terminal dropped from Workspaces — two groups, not three with a hole.
+    expect(newMenuSections({ terminalEnabled: false, summaryEnabled: true, hiddenViews: DIAGNOSTICS }).map(g => g.items.map(i => i.kind))).toEqual([
       ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
     ])
-    // Terminal back, diagnostics still gated.
-    expect(kinds({ devMode: false, terminalEnabled: true })).toEqual([
+    // Terminal off alone: diagnostics stay.
+    expect(kinds({ terminalEnabled: false })).toEqual([
       ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
-      ['side', 'browser', 'terminal'],
+      ['side', 'browser'],
+      ['logs', 'context', 'crewlog'],
     ])
   })
 })

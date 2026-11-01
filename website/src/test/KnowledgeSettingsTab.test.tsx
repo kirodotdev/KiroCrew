@@ -47,11 +47,15 @@ vi.mock('../hooks/useAvailableModels', () => ({
 
 import { SettingsTab } from '../pages/knowledge/SettingsTab'
 
-function wrap() {
+function wrap(opts: { onCommit?: () => void } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={qc}>
-      <SettingsTab />
+      {/* `onRender` runs in the commit phase, after the DOM is written and before
+          passive effects, so a probe there sees exactly what one commit shows. */}
+      <React.Profiler id="knowledge-settings" onRender={() => opts.onCommit?.()}>
+        <SettingsTab />
+      </React.Profiler>
     </QueryClientProvider>,
   )
 }
@@ -127,6 +131,24 @@ describe('KnowledgeSettingsTab', () => {
     // The scope cut removed the per-workload fetch effort: URL fetching keeps
     // the provider/model default and has no control anywhere.
     expect(screen.queryByText('URL fetch effort')).not.toBeInTheDocument()
+  })
+
+  it('shows the stored numbers in the first commit that enables the inputs', async () => {
+    // Both rows are seeded from the served config in the render that first has
+    // it, not latched by a later effect: a commit with the inputs enabled and
+    // empty is a frame a user can see and a test can land on.
+    const commits: { enabled: boolean; rate: string; pool: string }[] = []
+    wrap({
+      onCommit: () => {
+        const rate = screen.queryByRole('spinbutton', { name: 'Embedding rate limit' }) as HTMLInputElement | null
+        const pool = screen.queryByRole('spinbutton', { name: 'Extraction pool size' }) as HTMLInputElement | null
+        if (rate && pool) commits.push({ enabled: !rate.disabled && !pool.disabled, rate: rate.value, pool: pool.value })
+      },
+    })
+    const rate = await screen.findByRole('spinbutton', { name: 'Embedding rate limit' })
+    await waitFor(() => expect(rate).not.toBeDisabled())
+    const first = commits.find(c => c.enabled)
+    expect(first).toEqual({ enabled: true, rate: '120', pool: '3' })
   })
 
   it('PATCHes the embedding rate limit on blur with a valid value', async () => {

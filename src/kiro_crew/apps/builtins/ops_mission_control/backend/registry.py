@@ -253,7 +253,7 @@ class OpsProviderRegistry:
                     # CLEARED while they were still firing. Reported via the existing
                     # `snapshot=False` channel (built for the webhook spool's drain) rather
                     # than a new one, because the two cases are the same fact: this poll did
-                    # not see everything. Found in review (GPT 5.6).
+                    # not see everything.
                     logger.warning(
                         "ops-mission-control: %r returned %d signals, over the %d cap — "
                         "keeping the first %d and marking this poll non-authoritative so "
@@ -476,7 +476,7 @@ class OpsProviderRegistry:
                         # `ClaimedIncident.to_dict()` — the dashboard JSON and the model brief.
                         # The body was redacted here while the title beside it was copied raw,
                         # the same title/body asymmetry the Slack and brief sinks each had.
-                        # Found in review. Titles are short, so no headroom/budget dance.
+                        # Titles are short, so no headroom/budget dance.
                         title=redact_tokens(core_redact(item.title)),
                         body=body,
                         url=item.url,

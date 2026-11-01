@@ -1005,6 +1005,232 @@ class TestPersistenceRestoreGate:
         assert _rehydrate_slot_from_history(state, key) is None
         assert key not in state._slots
 
+    @staticmethod
+    def _id_binding(slug: str) -> str:
+        """A binding that names its crewmate by id, as a crewmate with a member_id has."""
+        key = member_slot_key(slug)
+        path = dm_binding_path(slug)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"member_id": slug, "member": CREW, "slug": slug, "slot_key": key}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return key
+
+    def test_an_id_binding_the_config_does_not_resolve_is_deferred_not_skipped(self):
+        from kiro_crew import execution_context
+        from kiro_crew.dashboard.chat_persistence import (
+            _DEFER_MEMBER_RESTORE,
+            _member_restore_identity,
+        )
+        from kiro_crew.members import dm_binding_depends_on_config
+
+        key = self._id_binding(slug_for_name(CREW))
+
+        def unresolved(_cfg, _member_id):
+            raise ValueError("member identity is missing or ambiguous")
+
+        with patch.object(execution_context, "member_config_for_id", unresolved):
+            assert dm_binding_depends_on_config(key)
+            assert _member_restore_identity(key) is _DEFER_MEMBER_RESTORE
+        # An absent binding is not this case: it is still skipped for good.
+        assert not dm_binding_depends_on_config(member_slot_key(slug_for_name(OTHER)))
+
+    def test_a_deferred_member_thread_comes_back_on_the_retry(self, tmp_path):
+        """A binding read that fails at boot keeps the thread, and the retry builds it."""
+        from types import SimpleNamespace
+
+        from kiro_crew import execution_context
+        from kiro_crew.dashboard import chat_persistence as cp
+        from kiro_crew.dashboard import member_slot_retry
+
+        state = _make_state(tmp_path)
+        key = self._id_binding(slug_for_name(CREW))
+        history_key = f"dashboard:{key}"
+        state.conversation_log.append(history_key, "user", "hello")
+        state.conversation_log.update_metadata(history_key, {"agent": CREW, "mode": DM_SLOT_MODE})
+
+        def unresolved(_cfg, _member_id):
+            raise ValueError("member identity is missing or ambiguous")
+
+        unrestored: set[str] = set()
+        with patch.object(execution_context, "member_config_for_id", unresolved):
+            meta, readable, messages, model_map, identity, agent, marker = (
+                cp._prefetch_rehydrate_inputs(state.conversation_log, history_key, with_status=True)
+            )
+            restored = cp._apply_restored_open_slot(
+                state,
+                key,
+                meta=meta,
+                readable=readable,
+                messages=messages,
+                model_map=model_map,
+                member_identity=identity,
+                agent=agent,
+                effort_marker=marker,
+                unrestored=unrestored,
+            )
+        assert identity is cp._DEFER_MEMBER_RESTORE
+        assert restored == 0 and key not in state._slots
+        # Kept in the reopen seed rather than dropped for the life of the process,
+        # and named as deferred, the only keys the retry may take out of the seed.
+        assert unrestored == {key}
+        assert state.deferred_member_slot_keys == {key}
+        state.unrestored_slot_keys = unrestored
+        assert member_slot_retry.deferred_member_slot_keys(state) == [key]
+
+        def resolved(_cfg, _member_id):
+            return CREW, SimpleNamespace()
+
+        with patch.object(execution_context, "member_config_for_id", resolved):
+            built = asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0))
+        assert built == 1
+        slot = state._slots[key]
+        assert slot.agent == CREW and slot.mode == DM_SLOT_MODE
+        assert key not in state.unrestored_slot_keys
+        assert state.deferred_member_slot_keys == set()
+
+    def test_a_retry_that_still_cannot_build_drops_the_key(self, tmp_path):
+        """A crewmate gone for good (deleted) is not carried from boot to boot."""
+        from kiro_crew import execution_context
+        from kiro_crew.dashboard import member_slot_retry
+
+        state = _make_state(tmp_path)
+        key = self._id_binding(slug_for_name(CREW))
+        history_key = f"dashboard:{key}"
+        state.conversation_log.append(history_key, "user", "hello")
+        state.conversation_log.update_metadata(history_key, {"agent": CREW, "mode": DM_SLOT_MODE})
+        # A crewmate key kept for another reason (an unreadable read, a remote-only
+        # transcript) is in the seed but was not deferred.
+        other = member_slot_key(slug_for_name(OTHER))
+        state.unrestored_slot_keys = {key, other, "chat-1-1"}
+        state.deferred_member_slot_keys = {key}
+
+        def unresolved(_cfg, _member_id):
+            raise ValueError("member identity is missing or ambiguous")
+
+        with patch.object(execution_context, "member_config_for_id", unresolved):
+            built = asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0))
+        assert built == 0 and key not in state._slots
+        # Only the deferred crewmate key leaves; every other seed stays.
+        assert state.unrestored_slot_keys == {other, "chat-1-1"}
+        assert state.deferred_member_slot_keys == set()
+
+    def test_a_transient_retry_failure_keeps_the_reopen_seed(self, tmp_path, monkeypatch):
+        """A read error on the retry is the next boot's to decide, not a reason to prune."""
+        from types import SimpleNamespace
+
+        from kiro_crew import execution_context
+        from kiro_crew.dashboard import chat_persistence as cp
+        from kiro_crew.dashboard import member_slot_retry
+
+        state = _make_state(tmp_path)
+        key = self._id_binding(slug_for_name(CREW))
+        state.unrestored_slot_keys = {key}
+        state.deferred_member_slot_keys = {key}
+
+        async def unreadable(_state, _name, **_kw):
+            raise OSError("transcript read failed")
+
+        def resolved(_cfg, _member_id):
+            return CREW, SimpleNamespace()
+
+        monkeypatch.setattr(cp, "rehydrate_slot_from_history_async", unreadable)
+        with patch.object(execution_context, "member_config_for_id", resolved):
+            built = asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0))
+        assert built == 0 and key not in state._slots
+        assert state.unrestored_slot_keys == {key}
+        # The retry still ran its one attempt: no second pass is owed.
+        assert state.deferred_member_slot_keys == set()
+
+    def test_a_thread_closed_during_the_retrys_binding_read_is_not_rebuilt(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew import members as members_mod
+        from kiro_crew.dashboard import chat_persistence as cp
+        from kiro_crew.dashboard import member_slot_retry
+        from kiro_crew.dashboard.channel_slots import note_slot_closed
+
+        state = _make_state(tmp_path)
+        key = member_slot_key(CREW)
+        state.unrestored_slot_keys = {key}
+        state.deferred_member_slot_keys = {key}
+        rebuilt: list[str] = []
+
+        def read_then_close(name):
+            # The user opens and closes the thread while the read runs.
+            note_slot_closed(state, name)
+            return {"member": CREW, "slot_key": name}
+
+        async def rehydrate(_state, name, **_kw):
+            rebuilt.append(name)
+            return None
+
+        monkeypatch.setattr(members_mod, "read_dm_binding_for_slot", read_then_close)
+        monkeypatch.setattr(cp, "rehydrate_slot_from_history_async", rehydrate)
+        assert asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0)) == 0
+        assert rebuilt == [] and key not in state._slots
+        assert state.unrestored_slot_keys == set()
+
+    def test_a_deferred_thread_another_path_built_still_leaves_the_seed(self, monkeypatch):
+        """Opened or loaded before the retry: the retry builds nothing and ends the deferral."""
+        from kiro_crew.dashboard import chat_persistence as cp
+        from kiro_crew.dashboard import member_slot_retry
+
+        key = member_slot_key(CREW)
+
+        class State:
+            def __init__(self) -> None:
+                self._slots = {key: object()}
+                self.unrestored_slot_keys = {key, "chat-1-1"}
+                self.deferred_member_slot_keys = {key}
+
+            def get_slot(self, name):
+                return self._slots.get(name)
+
+        built: list[str] = []
+
+        async def rehydrate(_state, name, **_kw):
+            built.append(name)
+            return None
+
+        monkeypatch.setattr(cp, "rehydrate_slot_from_history_async", rehydrate)
+        state = State()
+        assert asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0)) == 0
+        assert built == []
+        # A later close of that thread must not leave it counted as open.
+        assert state.unrestored_slot_keys == {"chat-1-1"}
+        assert state.deferred_member_slot_keys == set()
+
+    def test_a_skipped_member_thread_is_not_kept_for_a_retry(self, tmp_path):
+        from kiro_crew.dashboard import chat_persistence as cp
+
+        state = _make_state(tmp_path)
+        key = member_slot_key(CREW)
+        history_key = f"dashboard:{key}"
+        state.conversation_log.append(history_key, "user", "hello")
+        state.conversation_log.update_metadata(history_key, {"agent": CREW, "mode": DM_SLOT_MODE})
+        meta, readable, messages, model_map, identity, agent, marker = (
+            cp._prefetch_rehydrate_inputs(state.conversation_log, history_key, with_status=True)
+        )
+        assert identity is cp._SKIP_MEMBER_RESTORE
+        unrestored: set[str] = set()
+        assert (
+            cp._apply_restored_open_slot(
+                state,
+                key,
+                meta=meta,
+                readable=readable,
+                messages=messages,
+                model_map=model_map,
+                member_identity=identity,
+                agent=agent,
+                effort_marker=marker,
+                unrestored=unrestored,
+            )
+            == 0
+        )
+        assert unrestored == set()
+        assert key not in state.deferred_member_slot_keys
+
 
 class TestCentralReservation:
     """The reservation lives in the CONSTRUCTOR — one gate, every surface."""

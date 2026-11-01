@@ -42,7 +42,11 @@ from kiro_crew.dashboard.chat_tags_store import (
 )
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.create_rate_limit import TAG_CREATE, allow_create
-from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    _owner_denial_response,
+    read_bounded_json,
+    string_field_error,
+)
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
@@ -182,7 +186,11 @@ async def api_chat_tag_create(request: web.Request) -> web.Response:
     # straddles the length cut into a fragment the scanners cannot
     # recognize, persisting a raw prefix. Same boundary pattern as other
     # LLM-authored sinks.
-    name = (body.get("name") or "").strip()
+    name = body.get("name") or ""
+    not_string = string_field_error("name", name)
+    if not_string is not None:
+        return not_string
+    name = name.strip()
     name, _ = redact_exfiltration_urls(name)
     name, _ = redact_credentials(name)
     name = name.strip()[:_NAME_MAX]
@@ -221,6 +229,7 @@ async def api_chat_tag_create(request: web.Request) -> web.Response:
             error=reason,
         )
         return web.json_response({"error": "persist failed", "code": "persist_failed"}, status=500)
+    state.bump_tags_generation()
     state.push_slots_update()
     sel().log_api_access(
         caller=rl_caller,
@@ -383,6 +392,10 @@ async def api_chat_tag_adopt(request: web.Request) -> web.Response:
 
         response_row = _project_agent_tag(tag, None)
 
+    # Another tab learns of the vocabulary write from the slots frame's
+    # tags generation.
+    state.bump_tags_generation()
+    state.push_slots_update()
     sel().log_api_access(
         caller=caller,
         operation="chat.tag_adopt",
@@ -620,6 +633,7 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
                     )
         updated = tag
 
+    state.bump_tags_generation()
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",
@@ -789,6 +803,7 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
                 # Dangling board reference — pruned on next load.
                 logger.warning("tag delete: board strip persist failed for %s", tid, exc_info=True)
 
+    state.bump_tags_generation()
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -384,11 +385,15 @@ class TestFailOversizeRequest:
 class TestWriteJsonLine:
     @pytest.mark.asyncio
     async def test_serialises_one_newline_terminated_frame(self) -> None:
-        writer = MagicMock()
-        writer.drain = AsyncMock()
-        await _write_json_line(cast(Any, writer), {"a": 1})
-        assert writer.write.call_args.args[0] == b'{"a":1}\n'
-        writer.drain.assert_awaited_once()
+        near, far = socket.socketpair()
+        _, writer = await asyncio.open_connection(sock=near)
+        peer, peer_writer = await asyncio.open_connection(sock=far)
+        try:
+            await _write_json_line(writer, {"a": 1})
+            writer.close()
+            assert await finished(peer.read(), "serialized frame EOF") == b'{"a":1}\n'
+        finally:
+            peer_writer.close()
 
     @pytest.mark.asyncio
     async def test_per_backend_lock_is_used_when_present(self) -> None:

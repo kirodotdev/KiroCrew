@@ -234,10 +234,10 @@ class HotKeyStore:
         empty store. Blocking IO — call from a thread.
         """
         try:
-            raw = self._path.read_text()
+            raw = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             logger.warning("hot-keys: could not read %s: %s", self._path, exc)
             return
         try:

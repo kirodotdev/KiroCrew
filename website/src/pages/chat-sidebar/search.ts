@@ -18,11 +18,33 @@ import type { ChatFolder } from '../../types'
  */
 export function useDebouncedSessionSearch<T>(
   query: string,
-  transform: (sessions: { key: string; title?: string; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'; folder_id?: string; instance_id?: string; instance_name?: string }[]) => T,
+  transform: SessionSearchTransform<T>,
   revalidateSignal?: string,
   federated = false,
 ): T | null {
-  const [result, setResult] = useState<T | null>(null)
+  return useDebouncedSessionSearchState(query, transform, revalidateSignal, federated).result
+}
+
+type SessionSearchTransform<T> = (sessions: { key: string; title?: string; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'; folder_id?: string; instance_id?: string; instance_name?: string }[]) => T
+
+/**
+ * `useDebouncedSessionSearch` plus whether the latest search failed.
+ *
+ * A failed search drops the previous result instead of keeping it: the old rows
+ * answered a different query, so showing them under the new one says the search
+ * worked when it did not. `failed` lets the caller say so instead. Only the
+ * newest request may write either value, so a slow, older response (success or
+ * failure) never lands over a newer one.
+ */
+export function useDebouncedSessionSearchState<T>(
+  query: string,
+  transform: SessionSearchTransform<T>,
+  revalidateSignal?: string,
+  federated = false,
+): { result: T | null; failed: boolean } {
+  const [state, setState] = useState<{ result: T | null; failed: boolean }>({ result: null, failed: false })
+  const setResult = (result: T | null) => setState({ result, failed: false })
+  const setFailed = () => setState({ result: null, failed: true })
   const token = useRef(0)
   const queryRef = useRef(query)
   queryRef.current = query
@@ -59,16 +81,24 @@ export function useDebouncedSessionSearch<T>(
     const myToken = ++token.current
     if (q.length < SEARCH_MIN_CHARS) { setResult(null); debounceActive.current = false; return }
     debounceActive.current = true
+    // A failure described the PREVIOUS query; drop the flag for the new one
+    // while its request is pending, but keep any result on screen.
+    setState(s => (s.failed ? { ...s, failed: false } : s))
     let cancelled = false
     const t = setTimeout(async () => {
       try {
         const d = await fetchSessions(q)
         if (cancelled || myToken !== token.current) return
         setResult(transform(d.sessions || []))
-      } catch { /* keep previous result on error */ }
+      } catch {
+        if (cancelled || myToken !== token.current) return
+        setFailed()
+      }
       // Cleared AFTER the await: clearing first leaves a window where the debounce
       // has "finished" but the fetch is outstanding, so the effect below duplicates it.
-      finally { debounceActive.current = false }
+      // A cancelled run leaves it alone: the cleanup already cleared it, and the
+      // NEXT query's debounce may have set it again since.
+      finally { if (!cancelled) debounceActive.current = false }
     }, 250)
     return () => { cancelled = true; clearTimeout(t); debounceActive.current = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -93,13 +123,16 @@ export function useDebouncedSessionSearch<T>(
         const d = await fetchSessions(q)
         if (cancelled || myToken !== token.current) return
         setResult(transform(d.sessions || []))
-      } catch { /* keep previous result on error */ }
+      } catch {
+        if (cancelled || myToken !== token.current) return
+        setFailed()
+      }
     }, 100)
     return () => { cancelled = true; clearTimeout(t) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revalidateSignal])
 
-  return result
+  return state
 }
 
 /** The backend ranking while the query is long enough, and folders whose name matches. */

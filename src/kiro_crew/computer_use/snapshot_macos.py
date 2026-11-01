@@ -83,6 +83,11 @@ AX_MAIN = "AXMain"
 # picked. Bounded so an app with a hundred open windows cannot make the
 # correlation scan expensive; the target is almost always in the first few.
 MAX_WINDOWS_TO_INSPECT = 16
+# Returned by ``_frontmost_window`` in place of an AX error when ``AXWindows``
+# listed only the application element itself. Positive, so it can never collide
+# with a real ``AXError`` (0 or negative); an EMPTY ``AXWindows`` stays
+# ``AX_ERR_SUCCESS`` and keeps the ordinary no-window message.
+AX_SELF_REFERENCE_ONLY = 1
 # U+2026, the character CoreGraphics uses when it elides a long window title.
 TITLE_ELLIPSIS = "…"
 # Shortest title prefix trusted to identify a window. Below this a match is more
@@ -216,6 +221,15 @@ def build_snapshot(app: AppRef, req: SnapshotRequest) -> Snapshot:
                     # loading, so this is not hypothetical.
                     bounds = _window_bounds(window)
 
+                if window is None and err == AX_SELF_REFERENCE_ONLY:
+                    # ``AXWindows`` answered, but every entry was the application
+                    # element itself: the OS accessibility state is malformed.
+                    raise ComputerUseError(
+                        f"'{app.name}' (pid {app.pid}) exposed no accessible window: "
+                        "macOS listed the application itself as its only window, which "
+                        "means the system accessibility state is malformed. Restarting "
+                        "the app, or logging out, usually clears it."
+                    )
                 if window is None:
                     raise ComputerUseError(
                         f"'{app.name}' (pid {app.pid}) exposed no accessible window "
@@ -254,6 +268,10 @@ def _frontmost_window(
 ) -> "tuple[object | None, int]":
     """``(window_element_or_None, ax_error)`` for the window we mean to observe.
 
+    ``ax_error`` is :data:`AX_SELF_REFERENCE_ONLY` when ``AXWindows`` listed only
+    the application element itself, so callers can tell that apart from an app
+    with no windows (an empty list, ``AX_ERR_SUCCESS``).
+
     The returned window is a **+1 reference the caller must release**
     (:func:`macos_ffi.ax_retained_elements` retains, because the AX children of a
     ``Copy``-returned array die with the array — using one afterwards would be a
@@ -281,9 +299,16 @@ def _frontmost_window(
     3. the window the app itself marks ``AXMain``;
     4. ``AXWindows[0]``, as a last resort.
     """
-    windows = macos_ffi.ax_retained_elements(
+    listed = macos_ffi.ax_retained_elements(
         app_elem, WINDOW_ATTRIBUTE, limit=MAX_WINDOWS_TO_INSPECT
     )
+    # A degraded accessibility server can list the APPLICATION element itself in
+    # ``AXWindows``. It is not a window, and the last-resort ``windows[0]`` below
+    # would otherwise walk the whole app as one. Drop it before any selection rule
+    # sees it.
+    windows = _drop_self_references(app_elem, listed)
+    if listed and not windows:
+        return None, AX_SELF_REFERENCE_ONLY
     if not windows:
         # ``ax_retained_elements`` returns [] both for an AX error and for an app
         # with no windows; re-read the error only in that case so the caller can
@@ -361,6 +386,26 @@ def _dedup_against(seen: list, found: list) -> list:
         if len(seen) + len(kept) >= MAX_CHILDREN_PER_NODE or any(
             macos_ffi.same_element(child, other) for other in (*seen, *kept)
         ):
+            macos_ffi.release_all([child])
+            continue
+        kept.append(child)
+    return kept
+
+
+def _drop_self_references(parent: object, children: list) -> list:
+    """*children* without any entry that IS *parent*, releasing the dropped ones.
+
+    A degraded accessibility server can answer ``AXChildren`` with the element
+    itself (measured on macOS 26.5: an ``AXApplication`` listed as its own first
+    child). Walking that entry pushes the same element one level deeper on every
+    pass, so the walk renders one node repeated to the node budget, reports itself
+    truncated, and the fail-closed capture rule then suppresses the screenshot for
+    a reason that does not describe the window. The dropped entry is the element
+    already being classified, so ``saw_secure`` loses nothing.
+    """
+    kept: list = []
+    for child in children:
+        if macos_ffi.same_element(child, parent):
             macos_ffi.release_all([child])
             continue
         kept.append(child)
@@ -458,6 +503,9 @@ def _needs_manual_accessibility(window: "object | None", err: int, stats: WalkSt
       up looking like a working application with no controls.
     """
     if window is None:
+        if err == AX_SELF_REFERENCE_ONLY:
+            # A malformed AX server, not an Electron app: the opt-in cannot fix it.
+            return False
         return err == macos_ffi.AX_ERR_CANNOT_COMPLETE or err != macos_ffi.AX_ERR_SUCCESS
     return stats.visited < ELECTRON_STUB_NODE_THRESHOLD
 
@@ -676,7 +724,7 @@ def _walk(
             merged.extend(_dedup_against(merged, found))
         if len(merged) >= MAX_CHILDREN_PER_NODE:
             truncated = True
-        return merged
+        return _drop_self_references(element, merged)
 
     # (element, depth, owned) — ``owned`` is False only for the caller's root.
     stack: list[tuple[object, int, bool]] = [(window, 0, False)]

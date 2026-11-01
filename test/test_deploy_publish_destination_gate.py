@@ -66,9 +66,11 @@ class _Req:
 
 def test_deploy_denied_when_destination_closed(monkeypatch):
     """A denied destination returns 403 and never reaches the deploy engine."""
-    monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy")
+    monkeypatch.setattr(
+        handlers, "publish_denied_reason", lambda _req, _pid, **_k: "closed by policy"
+    )
 
-    async def _must_not_run(_params):  # pragma: no cover - reached only on regression
+    async def _must_not_run(_params, **_k):  # pragma: no cover - reached only on regression
         raise AssertionError("_do_deploy ran despite a denied destination")
 
     monkeypatch.setattr(handlers, "_do_deploy", _must_not_run)
@@ -81,12 +83,12 @@ def test_deploy_asks_about_the_deploy_web_destination(monkeypatch):
     """The gate is consulted for ``deploy-web-aws``, not some other provider id."""
     seen: list[str] = []
 
-    def _record(_req, provider_id):
+    def _record(_req, provider_id, **_k):
         seen.append(provider_id)
         return None
 
     monkeypatch.setattr(handlers, "publish_denied_reason", _record)
-    monkeypatch.setattr(handlers, "_do_deploy", lambda _p: _permitted())
+    monkeypatch.setattr(handlers, "_do_deploy", lambda _p, **_k: _permitted())
     _run(handlers._handle_deploy(_Req({"site_id": "x"})))
     assert seen == ["deploy-web-aws"]
 
@@ -96,8 +98,8 @@ async def _permitted():
 
 
 def test_deploy_proceeds_when_permitted(monkeypatch):
-    monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: None)
-    monkeypatch.setattr(handlers, "_do_deploy", lambda _p: _permitted())
+    monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid, **_k: None)
+    monkeypatch.setattr(handlers, "_do_deploy", lambda _p, **_k: _permitted())
     resp = _run(handlers._handle_deploy(_Req({"site_id": "x"})))
     assert resp.status == 200
 
@@ -109,7 +111,9 @@ def test_denials_carry_a_machine_readable_code(monkeypatch):
     denial is the only translatable one — and this denial is the message a whole
     team sees after an operator closes the destination.
     """
-    monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy")
+    monkeypatch.setattr(
+        handlers, "publish_denied_reason", lambda _req, _pid, **_k: "closed by policy"
+    )
     deploy = _run(handlers._handle_deploy(_Req({"site_id": "x"})))
     pending = _run(handlers._handle_pending_confirm(_Req(match_info={"id": "p1"})))
     for resp in (deploy, pending):
@@ -147,7 +151,9 @@ def test_internal_secret_preview_is_denied_too(monkeypatch):
     The preview is the surface that tells an agent the destination exists; a closed
     destination must not advertise one.
     """
-    monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy")
+    monkeypatch.setattr(
+        handlers, "publish_denied_reason", lambda _req, _pid, **_k: "closed by policy"
+    )
     req = _Req({"site_id": "x"}, headers={"X-Internal-Secret": "s"})
     resp = _run(handlers._handle_deploy(req))
     assert resp.status == 403
@@ -163,7 +169,9 @@ def test_pending_confirm_denied_without_consuming_the_entry(monkeypatch):
     confirms cannot double-deploy), so gating after the claim would turn every
     denied confirm into a silently discarded pending deploy.
     """
-    monkeypatch.setattr(handlers, "publish_denied_reason", lambda _req, _pid: "closed by policy")
+    monkeypatch.setattr(
+        handlers, "publish_denied_reason", lambda _req, _pid, **_k: "closed by policy"
+    )
     from kiro_crew.deploy import pending as pending_mod
 
     def _must_not_claim(_entry_id):  # pragma: no cover - reached only on regression
@@ -182,7 +190,9 @@ def test_provider_registry_omits_closed_destination(monkeypatch):
     from kiro_crew.apps import routes
 
     monkeypatch.setattr(routes, "list_apps", lambda: [])
-    monkeypatch.setattr(routes, "publish_denied_reason", lambda _req, _pid: "closed by policy")
+    monkeypatch.setattr(
+        routes, "publish_denied_reason", lambda _req, _pid, **_k: "closed by policy"
+    )
     resp = _run(routes.handle_publish_providers(_Req()))
     ids = [p["id"] for p in json.loads(resp.text)["providers"]]
     assert "deploy-web-aws" not in ids
@@ -192,7 +202,7 @@ def test_provider_registry_lists_open_destination(monkeypatch):
     from kiro_crew.apps import routes
 
     monkeypatch.setattr(routes, "list_apps", lambda: [])
-    monkeypatch.setattr(routes, "publish_denied_reason", lambda _req, _pid: None)
+    monkeypatch.setattr(routes, "publish_denied_reason", lambda _req, _pid, **_k: None)
     resp = _run(routes.handle_publish_providers(_Req()))
     rows = json.loads(resp.text)["providers"]
     assert [p["id"] for p in rows] == ["deploy-web-aws"]
@@ -238,7 +248,9 @@ def test_an_app_cannot_squat_the_core_destination_id_when_denied(monkeypatch):
 
     monkeypatch.setattr(routes, "list_apps", _squatter_app)
     monkeypatch.setattr(routes, "_provider_is_configured", lambda _n, _pp: True)
-    monkeypatch.setattr(routes, "publish_denied_reason", lambda _req, _pid: "closed by policy")
+    monkeypatch.setattr(
+        routes, "publish_denied_reason", lambda _req, _pid, **_k: "closed by policy"
+    )
     resp = _run(routes.handle_publish_providers(_Req()))
     rows = json.loads(resp.text)["providers"]
     assert [p["id"] for p in rows] == []
@@ -260,7 +272,7 @@ def test_an_app_cannot_squat_the_core_destination_id_when_cloud_is_withheld(monk
     monkeypatch.setattr(routes, "_provider_is_configured", lambda _n, _pp: True)
     monkeypatch.setattr(_shared, "admits_cloud_deployment", lambda _t: False)
 
-    def _must_not_run(_req, _pid):  # pragma: no cover - reached only on regression
+    def _must_not_run(_req, _pid, **_k):  # pragma: no cover - reached only on regression
         raise AssertionError("gate 2 consulted although the platform already closed it")
 
     monkeypatch.setattr(routes, "publish_denied_reason", _must_not_run)
@@ -282,7 +294,7 @@ def test_the_permitted_path_leaves_a_shadowing_app_row_alone(monkeypatch):
 
     monkeypatch.setattr(routes, "list_apps", _squatter_app)
     monkeypatch.setattr(routes, "_provider_is_configured", lambda _n, _pp: True)
-    monkeypatch.setattr(routes, "publish_denied_reason", lambda _req, _pid: None)
+    monkeypatch.setattr(routes, "publish_denied_reason", lambda _req, _pid, **_k: None)
     resp = _run(routes.handle_publish_providers(_Req()))
     rows = [p for p in json.loads(resp.text)["providers"] if p["id"] == "deploy-web-aws"]
     assert [r["endpoint"] for r in rows] == [
@@ -312,7 +324,9 @@ def test_an_app_declaring_a_different_id_is_untouched(monkeypatch):
         ],
     )
     monkeypatch.setattr(routes, "_provider_is_configured", lambda _n, _pp: True)
-    monkeypatch.setattr(routes, "publish_denied_reason", lambda _req, _pid: "closed by policy")
+    monkeypatch.setattr(
+        routes, "publish_denied_reason", lambda _req, _pid, **_k: "closed by policy"
+    )
     resp = _run(routes.handle_publish_providers(_Req()))
     assert [p["id"] for p in json.loads(resp.text)["providers"]] == ["notes-publish"]
 
@@ -348,7 +362,7 @@ def test_config_allowlist_reaches_the_deploy_endpoint(narrowed_allowlist, monkey
     allowlist) and is what actually proves the operator's knob is wired through.
     """
 
-    async def _must_not_run(_params):  # pragma: no cover - reached only on regression
+    async def _must_not_run(_params, **_k):  # pragma: no cover - reached only on regression
         raise AssertionError("_do_deploy ran despite a narrowed allowlist")
 
     monkeypatch.setattr(handlers, "_do_deploy", _must_not_run)
@@ -363,7 +377,7 @@ def test_deploy_permitted_when_allowlist_names_it(monkeypatch):
     cfg = KiroCrewConfig.load()
     cfg.publish = PublishConfig(allowed_destinations=["deploy-web-aws"])
     monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: cfg))
-    monkeypatch.setattr(handlers, "_do_deploy", lambda _p: _permitted())
+    monkeypatch.setattr(handlers, "_do_deploy", lambda _p, **_k: _permitted())
     resp = _run(handlers._handle_deploy(_Req({"site_id": "x"})))
     assert resp.status == 200
 
@@ -772,3 +786,19 @@ def test_an_absent_publish_section_stays_default_open(tmp_path, monkeypatch, _qu
     _config_on_disk(tmp_path, monkeypatch, '{"dashboard": {}}')
 
     assert pg.publish_denied_reason(_Req(), pg.DEPLOY_WEB_PROVIDER_ID) is None
+
+
+def test_a_shadowing_app_row_is_dropped_while_the_publish_lists_restrict(monkeypatch):
+    """Only the core row's endpoint checks regions, audience and accounts."""
+    from kiro_crew.apps import routes
+
+    monkeypatch.setattr(routes, "list_apps", _squatter_app)
+    monkeypatch.setattr(routes, "_provider_is_configured", lambda _n, _pp: True)
+
+    def _lists_restrict(_req, _pid, *, lists_checked_by_caller=False):
+        return None if lists_checked_by_caller else "the policy bounds regions"
+
+    monkeypatch.setattr(routes, "publish_denied_reason", _lists_restrict)
+    resp = _run(routes.handle_publish_providers(_Req()))
+    rows = [p for p in json.loads(resp.text)["providers"] if p["id"] == "deploy-web-aws"]
+    assert [r["endpoint"] for r in rows] == ["/api/deploy/deploy"]

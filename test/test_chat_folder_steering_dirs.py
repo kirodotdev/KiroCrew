@@ -267,6 +267,24 @@ def test_silo_fence_is_case_insensitive_like_the_sensitive_path_gate():
         assert not crosses_memory_silo(Path(spelling), silos), spelling
 
 
+def test_silo_fence_holds_when_either_side_is_a_drive_root(tmp_path):
+    """A drive root (``H:\\``, or ``/``) already ends in a separator.
+
+    Appending another would make the fence clear a steering root at the drive
+    root that contains a silo, and a root inside a silo placed at a drive root.
+    Built from the host's own drive root so it runs on every platform.
+    """
+    from pathlib import Path
+
+    from kiro_crew.folder_steering import crosses_memory_silo
+
+    drive_root = Path(os.path.splitdrive(str(tmp_path))[0] + os.sep)
+    silo = tmp_path / "crew" / "workspace"
+    assert crosses_memory_silo(drive_root, (silo,))
+    assert crosses_memory_silo(tmp_path / "notes", (drive_root,))
+    assert crosses_memory_silo(drive_root, (drive_root,))
+
+
 @_needs_pinned_walk
 def test_validate_rejects_a_configured_absolute_workspace_as_a_silo(tmp_path, monkeypatch):
     """A V1 workspace configured at an ABSOLUTE path outside the data home is a silo too.

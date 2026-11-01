@@ -18,8 +18,12 @@ import argparse
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_help
-from kiro_crew.config.loader import DASHBOARD_PORT
-from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
+from kiro_crew.cli_arg_types import non_negative_int, positive_int
+from kiro_crew.cron_service.model import (
+    _ALERT_AFTER_DEFAULT,
+    _AUTO_PAUSE_MAX,
+    _AUTO_PAUSE_THRESHOLD,
+)
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -32,6 +36,11 @@ _AUTO_PAUSE_AFTER_HELP = (
     f"above {_AUTO_PAUSE_THRESHOLD}, from the {_AUTO_PAUSE_THRESHOLD}th consecutive "
     "failure each further run waits 5 minutes, doubling per failure up to "
     "one hour, until it succeeds or reaches a nonzero limit)"
+)
+_ALERT_AFTER_HELP = (
+    f"Consecutive failed runs before the failure message is sent (1..{_AUTO_PAUSE_MAX}, "
+    f"default {_ALERT_AFTER_DEFAULT}). The dashboard bell still records every failure; "
+    "policy denials and the run that auto-pauses the job always alert"
 )
 
 # Helper for commands with examples
@@ -47,6 +56,11 @@ Examples:
   kirocrew chat                      # Interactive mode
   kirocrew chat -m 'check my CRs'    # Single message
   kirocrew chat --model claude-opus  # Use specific model
+
+Tool permission prompt (same keys as kiro-cli chat):
+  y  allow this call once
+  n  deny (default; anything else also denies)
+  o  deny and type a reply to the agent instead
 """,
         formatter_class=_fmt,
         parents=[_jail_opts],
@@ -128,7 +142,9 @@ Examples:
         dest="agent",
         default="",
         help="Agent name for this job (e.g. 'customer360-code-agent'). "
-        "Empty or omitted uses the default kirocrew agent.",
+        "Empty or omitted uses agent.default_agent, or the kirocrew agent "
+        "when that is unset or not eligible (e.g. a default that restricts "
+        "subagents).",
     )
     cron_add_kind.add_argument(
         "--script",
@@ -174,6 +190,13 @@ Examples:
         dest="auto_pause_after_failures",
         default=None,
         help=_AUTO_PAUSE_AFTER_HELP,
+    )
+    cron_add.add_argument(
+        "--alert-after",
+        type=int,
+        dest="alert_after_failures",
+        default=None,
+        help=_ALERT_AFTER_HELP,
     )
     cron_add.add_argument(
         "--model",
@@ -252,13 +275,21 @@ Examples:
         default=None,
         help=_AUTO_PAUSE_AFTER_HELP,
     )
+    cron_update.add_argument(
+        "--alert-after",
+        type=int,
+        dest="alert_after_failures",
+        default=None,
+        help=_ALERT_AFTER_HELP,
+    )
     cron_update.add_argument("--cron", dest="cron_expr", help="New cron expression")
     cron_update.add_argument("--channel", help="New channel ID")
     cron_update.add_argument(
         "--agent",
         dest="agent",
         default=None,
-        help="New agent name (empty string resets to default kirocrew agent)",
+        help="New agent name (empty string resets to agent.default_agent, "
+        "or the kirocrew agent when that is unset or not eligible)",
     )
     cron_update.add_argument(
         "--approval-mode",
@@ -358,7 +389,12 @@ Examples:
         help="Run on this model id; it outranks the member's and the template's pin",
     )
     spawn_sub.add_parser("list", help="List subagents")
-    spawn_parser.add_argument("--port", type=int, default=DASHBOARD_PORT, help="Dashboard port")
+    spawn_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Dashboard port (default: found as `kirocrew status` finds it)",
+    )
 
 
 def register_run_parser(sub: _Commands, _jail_opts: argparse.ArgumentParser) -> None:
@@ -398,9 +434,10 @@ Examples:
         default=0,
         help="Global timeout in seconds (0 = no limit)",
     )
-    run_parser.add_argument(
-        "--port", type=int, default=DASHBOARD_PORT, help="Dashboard port for status"
-    )
+    # Nothing in `kirocrew run` reads --port: the task runner reports to this
+    # terminal, never to a dashboard. It is still accepted so a script that
+    # passes it keeps parsing, and help does not offer it.
+    run_parser.add_argument("--port", type=int, default=None, help=argparse.SUPPRESS)
 
 
 def register_knowledge_parser(sub: _Commands) -> None:
@@ -532,7 +569,9 @@ Examples:
 
     art_show = art_sub.add_parser("show", help="Print an artifact's content")
     art_show.add_argument("slug", help="Artifact slug")
-    art_show.add_argument("--version", type=int, help="Specific version (default: current)")
+    art_show.add_argument(
+        "--version", type=positive_int, help="Specific version, 1 or more (default: current)"
+    )
     art_show.add_argument(
         "--meta",
         action="store_true",
@@ -629,7 +668,7 @@ def register_memory_parser(sub: _Commands) -> None:
     mem_sub.add_parser("migrate", help="Migrate legacy markdown memory to vector store")
     mem_backup = mem_sub.add_parser("backup", help="Back up active memory stores now")
     mem_backup.add_argument(
-        "--keep", type=int, default=None, help="How many backups to keep per store"
+        "--keep", type=positive_int, default=None, help="How many backups to keep per store"
     )
     mem_backups = mem_sub.add_parser("backups", help="List memory backups, newest first")
     mem_backups.add_argument("--store", default=None, help="Only this store")
@@ -695,13 +734,17 @@ def register_memory_parser(sub: _Commands) -> None:
         choices=["scope", "surface", "crew", "session_key", "derived_from", "kind"],
         help="Report counts grouped by this axis instead of listing rows",
     )
-    mem_carve.add_argument("--limit", type=int, default=50, help="How many rows to list")
-    mem_carve.add_argument("--offset", type=int, default=0, help="Rows to skip when listing")
+    mem_carve.add_argument("--limit", type=positive_int, default=50, help="How many rows to list")
+    mem_carve.add_argument(
+        "--offset", type=non_negative_int, default=0, help="Rows to skip when listing"
+    )
     mem_retired = mem_sub.add_parser(
         "retired", help="List episodes a semantic write superseded, and restore one"
     )
     mem_retired.add_argument("--restore", dest="restore_id", default=None, help="Restore this id")
-    mem_retired.add_argument("--limit", type=int, default=20, help="How many to list")
+    mem_retired.add_argument(
+        "--limit", type=positive_int, default=20, help="How many to list (default: 20)"
+    )
     mem_forget = mem_sub.add_parser(
         "forget",
         help="Delete one semantic memory key after you confirm it (owner only; "
@@ -732,7 +775,14 @@ def register_agent_parser(sub: _Commands) -> None:
         help="Agent id, or any name: shown as typed, stored under a URL-safe id",
     )
     agent_create.add_argument("--display-name", default="", help="Label the dashboard shows")
-    agent_create.add_argument("--kiro-agent", default="kirocrew", help="Kiro agent name")
+    agent_create.add_argument(
+        "--kiro-agent",
+        default="kirocrew",
+        help=(
+            "Template the crew starts from. Only 'kirocrew', the built-in worker "
+            "(the default), is accepted; add other abilities in the crew's editor"
+        ),
+    )
     agent_create.add_argument(
         "--workspace",
         default="",

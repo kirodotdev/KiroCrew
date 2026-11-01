@@ -49,7 +49,14 @@ jobs:
     # actually gates the override, not the trigger), and a non-collaborator
     # commenter's dispatch is rejected by the AWS webhook's actor allowlist,
     # queuing the job forever instead of running it.
-    runs-on: ubuntu-latest
+    #
+    # Off the fleet is not the same as on the standard pool: this takes the
+    # `kirocrew-runners` group, which has no actor allowlist, so the
+    # availability bug above cannot recur. Named by its runner LABEL rather
+    # than by `group:`, because the group belongs to the kirodotdev
+    # organization and a fork cannot reach it; the `||` leg keeps a fork on
+    # the hosted image instead of waiting forever for a runner.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       # The release-record module comes from the default branch's tree at the

@@ -3,7 +3,7 @@ title: Crew Enterprise Edition -- a build-time edition that requires login, fetc
 status: accepted
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-22
-last-audited: 2026-10-23
+last-audited: 2026-10-29
 audited-at: a7ecdf3f1
 doc-pr: null
 implementation-prs: []
@@ -14,13 +14,13 @@ superseded-by: []
 
 # RFC: Crew Enterprise Edition
 
-- Status: accepted. The owner approved this design on 2026-10-23; D1, D2 and D3 in section 5 are owner decisions. This document landed first so the implementation pull requests that follow have a design for the First Principles and Design lanes to check against: the enterprise edition changes defaults (every governable feature off) and adds a startup gate.
+- Status: accepted. The owner approved this design on 2026-10-23; D1 to D5 in section 5 are owner decisions (D4 and D5 added 2026-10-29). This document landed first so the implementation pull requests that follow have a design for the First Principles and Design lanes to check against: the enterprise edition changes defaults (every governable feature off) and adds a startup gate.
 - Tracking issue: [#23206](https://github.com/kirodotdev/KiroCrew/issues/23206)
 - Related: [rfc-central-governance-ceiling](rfc-central-governance-ceiling.md) (the policy ceiling this edition fetches and enforces), [platform-context](../system-specs/modules/platform-context.md) (the existing edition seam), [governance](../system-specs/modules/governance.md) (the evaluator and catalog this edition tightens)
 
 ## Summary
 
-Kiro Crew gains an enterprise edition built from the same codebase. The build picks the edition (`make desktop EDITION=enterprise`, default `oss`) and writes it into the package as a constant. At run time the enterprise edition will not open until the user has a kiro login and Crew has fetched the organisation's governance rules; either failing makes Crew exit. Every action is then checked against those rules, and every governable feature is off by default or keeps only a minimal set until a rule turns it on. The `oss` edition is unchanged.
+Kiro Crew gains an enterprise edition built from the same codebase. The build picks the edition (`make desktop EDITION=enterprise`, default `oss`) and writes it into the package as a constant. At run time the enterprise edition will not open until the user has a kiro login and Crew has fetched the organisation's governance rules. With no login it opens only a sign-in screen; any other failure makes Crew exit (amended 2026-10-29). Every action is then checked against those rules, and every governable feature is off by default or keeps only a minimal set until a rule turns it on. The `oss` edition is unchanged.
 
 ## Motivation
 
@@ -34,7 +34,7 @@ An organisation that wants to run Crew today can install a governance ceiling ([
 
 ## Goals
 
-1. Crew requires a kiro login before it starts. No login, no Crew: it exits.
+1. Crew requires a kiro login before it opens the dashboard (amended 2026-10-29, D4 and D5). With no login it opens only a sign-in screen; every other startup failure makes it exit.
 2. Most local shims are turned off. Governance controls the real behaviour.
 3. No new repository: one codebase builds both editions.
 
@@ -56,25 +56,27 @@ This is a different axis from the existing [platform-context](../system-specs/mo
 
 ### 2. Enterprise gate: login and governance are one gate
 
-The identity from login is the key that fetches the rules.
+The identity from login is the key that fetches the rules. One sign-in resolver (D4) gives that identity to the login check, the rules fetch and the account lock.
 
 ```mermaid
 flowchart LR
-    S[start] --> L[kiro login]
+    S[start] --> L[resolve sign-in]
     L -->|ok| F[fetch governance rules]
-    L -->|fail| X1[exit]
+    L -->|no sign-in| G[sign-in-only gateway]
+    G -->|signed in| F
+    L -->|other failure| X1[exit]
     F -->|ok| O[open]
     F -->|fail| X2[exit]
 ```
 
 | When | What the gate does |
 |---|---|
-| Start | Login and fetch rules. If either fails, exit |
+| Start | Resolve the sign-in, then fetch rules. No sign-in: open the sign-in-only gateway (D5). Any other failure: exit |
 | Every action | Check the rules, then allow or deny |
 | Login expires | Close the gate and log in again |
 | Rules change | Re-fetch on the policy's `crew_policy_refresh_seconds` |
 
-Any failed step denies (fail-closed). While the gate is closed, gateway middleware denies every API except login.
+Any failed step denies (fail-closed). While the gate is closed, gateway middleware denies every route outside the sign-in allow-list: sign-in, health and static routes (D5).
 
 ### 3. Every governable feature off by default
 
@@ -104,9 +106,9 @@ The browser (wheel) build can carry the same `EDITION` stamp, but its tamper res
 
 ### 5. Decisions
 
-The repository owner decided these three rules on 2026-10-23. They hold in an enterprise build only; the `oss` edition is unchanged.
+The repository owner decided D1 to D3 on 2026-10-23. They hold in an enterprise build only; the `oss` edition is unchanged.
 
-**D1. One enterprise fact.** The build-time `EDITION` is the only source for "is this enterprise". In an enterprise build, `resolve_profile` in `src/kiro_crew/platform/profile.py` returns the enterprise profile and ignores the `KIROCREW_PROFILE` environment variable, the SSO-marker probe and the installed `kirocrew.plugins` entry points, all of which it reads today. `PlatformContext.is_enterprise` stays the one property callers read. Consequence: an enterprise build with no companion installed fails closed at boot (the `PlatformCompositionError` path in `src/kiro_crew/platform/discovery.py`), and that is intended; `KIROCREW_PROFILE=standalone` no longer escapes it.
+**D1. One enterprise fact.** The build-time `EDITION` is the only source for "is this enterprise". In an enterprise build, `resolve_profile` in `src/kiro_crew/platform/profile.py` returns the enterprise profile and ignores the `KIROCREW_PROFILE` environment variable, the SSO-marker probe and the installed `kirocrew.plugins` entry points, all of which it reads today. `PlatformContext.is_enterprise` stays the one property callers read. Consequence (amended 2026-10-28, see the decision log below): an enterprise build with no companion installed boots on the core defaults under the enterprise profile, so every enterprise gate (login, governance fetch, deny-unnamed, edition locks) stays on. An installed companion that is broken, rejected at admission, ambiguous or contract-mismatched still fails closed (the `PlatformCompositionError` path in `src/kiro_crew/platform/discovery.py` and `src/kiro_crew/platform/bootstrap.py`). No environment variable or config changes the profile or the edition; `KIROCREW_PROFILE=standalone` still does not escape it.
 
 **D2. Locked policy source.** In an enterprise build, the governance policy URL is a build-time constant. The `POLICY_URL_ENV` environment variable (`KIROCREW_POLICY_URL`, defined in `src/kiro_crew/platform/policy_distribution_source.py`) and local config cannot change it. The address is public, so it lives in the repository. Until the real endpoint is chosen it is the placeholder `https://governance.example.invalid/crew/policy`, on a reserved domain that never resolves; it is replaced before the enable step (Migration plan phase 2). Testing against a different address needs its own build; local environment cannot do it.
 
@@ -121,14 +123,40 @@ The repository owner decided these three rules on 2026-10-23. They hold in an en
 | Profiles | no | yes |
 | Dashboard settings | no | yes |
 
+The owner added D4 and D5 on 2026-10-29, after the enterprise smoke test (see the decision log below).
+
+**D4. One sign-in.** In an enterprise build, one resolver answers "who is signed in". The login check at start, the rules fetch and the account lock (the profile pin from [#24661](https://github.com/kirodotdev/KiroCrew/pull/24661)) all read it, so they can never name different accounts. It accepts two sign-ins, in this order:
+
+| Order | Sign-in | Written by |
+|---|---|---|
+| 1 | Crew's own vault | `kirocrew kas login`, or the dashboard's Sign in |
+| 2 | kiro-cli's own sign-in | `kiro-cli login` |
+
+The vault is preferred because kiro-cli will be removed later; kiro-cli's sign-in is accepted until then. The source is picked by presence (amended 2026-10-30): when the vault holds an entry, the vault is the only source, and a lapsed vault entry is not signed in rather than a reason to read kiro-cli; when it holds none, kiro-cli's sign-in is the only source. Crew does not renew kiro-cli's token, so an expired one is not signed in. Step 2 reads kiro-cli's own credential store, the one the KAS relay already uses when the vault holds no identity; it is not the `kiro-cli whoami` probe. When both hold a sign-in with different profile ARNs, Crew refuses and names both accounts. When neither holds one, the message names both ways to sign in (`kirocrew kas login` and `kiro-cli login`).
+
+The `oss` edition reads the same resolver with the same order (amended 2026-10-30): when the vault holds an entry, the vault is the only source, and a lapsed or unreadable entry is not signed in (the message names `kirocrew kas login --provider idc`, and says that removing the Crew sign-in with `kirocrew kas logout` hands over to kiro-cli's); when it holds none, kiro-cli's sign-in is used. The two are never mixed. Two differences from the enterprise build: two stored sign-ins on different accounts use the vault and log one warning naming both, instead of refusing; and a sign-in with no profile (a Builder ID) is accepted. The KAS spawn, `kirocrew doctor` and the Settings sign-in status in `oss` all read this pick.
+
+Each refusal names one real cause, from this list: both sign-ins disagree, governance service unreachable, rules that cannot be applied, account not eligible for enterprise management, or account changed while running. The account lock pins the first sign-in the resolver returns, at start or after a sign-in in the sign-in-only gateway (D5), and compares every later answer with that pin.
+
+**D5. Signed-out start opens a sign-in screen.** When the resolver finds no sign-in at start, an enterprise build does not exit. It opens a sign-in-only gateway bound to `127.0.0.1`. That gateway keeps the dashboard's token auth, serves an allow-list of sign-in, health and static routes, refuses every other route, and shows a sign-in screen on web and desktop naming both ways to sign in. After the user signs in, the resolver runs again with D4's rules, then the rules fetch runs. A refusal from either still exits with its named cause. A failure from D4's cause list at start exits as before and never opens this gateway.
+
+**Decision log.**
+
+- 2026-10-28: the owner amended D1's consequence. Why it changes: (1) on 2026-10-23 D1 made a missing companion fail closed because the governance fetch was then planned to live in a companion package; (2) on 2026-10-27 the owner moved the control-plane policy fetch into this repository, reusing the existing control-plane client, and it merged as [#24661](https://github.com/kirodotdev/KiroCrew/pull/24661); (3) every enterprise gate (the login gate, the policy fetch that exits on failure, deny-unnamed, local-only-stricter and the edition locks) now lives in the core behind the build-time `EDITION`, so a companion supplies nothing the enterprise edition needs and the D1 refusal only stops enterprise builds from starting. New consequence: an enterprise build with no companion boots on the core defaults with every enterprise gate on. What does not change: a host with a companion installed takes the same path as before; a broken, rejected, ambiguous or contract-mismatched companion still fails closed with `PlatformCompositionError`; no environment variable or config changes the profile or the edition; the `oss` edition is unchanged.
+- 2026-10-29: the owner added D4 and D5. Why it changes: the enterprise smoke test found that (1) the login check at start read only kiro-cli's sign-in (`kiro-cli whoami`) while the rules fetch read only Crew's vault, so a user signed in through kiro-cli was refused and the two checks could name different accounts; (2) the rules were fetched before the login check ran; (3) a signed-out user got a generic message and no way to sign in, and the desktop app had no sign-in path at all. New consequence: the login check, the rules fetch and the account lock read one resolver, vault first because kiro-cli will be removed later (D4); a signed-out enterprise start shows a sign-in screen on `127.0.0.1` instead of exiting (D5). What does not change: D1 to D3; every other startup failure exits; the gate stays fail-closed; the `oss` edition is unchanged.
+- 2026-10-30: the owner amended D4. Why it changes: in review of the code PR (#26100), the gate, the rules fetch and the account lock each picked the sign-in source on their own, by liveness, so a lapsed vault entry next to a live kiro-cli sign-in could make the fetch use one account while the lock saw another, refusing every start. New consequence: one selection, by presence, read by every check: a vault entry means the vault only, and a lapsed one is not signed in; no vault entry means kiro-cli's sign-in only. Crew does not renew kiro-cli's token at boot (follow-up #26183). What does not change: the vault is preferred; two stored sign-ins on different accounts are refused naming both; D5; the `oss` edition is unchanged. Delivery: the vault sign-in lands first (#26100); the kiro-cli fallback lands in its own change, written so the `oss` edition can reuse the same resolver.
+- 2026-10-30: the owner extended D4's sign-in order to the `oss` edition. Why it changes: users moving from older Kiro Crew, which needed kiro-cli, must keep working on their kiro-cli sign-in without a new Crew sign-in (a migration path); and `oss` picked its KAS sign-in with its own rule, which quietly fell back from a lapsed or unreadable vault entry to kiro-cli's account, so the two sign-ins could mix. New consequence: `oss` reads D4's resolver: a vault entry means the vault only, and a lapsed or unreadable one is not signed in; no vault entry means kiro-cli's sign-in; two accounts use the vault with one warning. The old silent fallback from a lapsed vault entry to kiro-cli is removed on purpose. What does not change: the enterprise rules in D4, including the refusal of two accounts; D5; the kiro-cli bundle route, which has no kiro-cli and stays Crew-owned. Delivery: #26841 (issue #26829).
+
 ### 6. Changes
 
 | Where | What changes |
 |---|---|
 | `src/kiro_crew/edition.py` | New `EDITION` constant, written by the build |
 | Startup entry point | Enterprise edition passes the enterprise gate first |
-| Gateway middleware | While the gate is closed, deny every API except login |
-| `src/kiro_crew/kiro_prerequisite_status.py` | Reuse the existing login check |
+| Gateway middleware | While the gate is closed, deny every route outside the sign-in allow-list (D5) |
+| Sign-in resolver (new) | Vault first, then kiro-cli's own sign-in; read by the login check, the rules fetch and the account lock (D4). Replaces `kiro-cli whoami` (`src/kiro_crew/kiro_prerequisite_status.py`) as the enterprise login check |
+| Sign-in-only gateway (new) | Signed-out start serves only sign-in, health and static routes on `127.0.0.1` (D5) |
+| Sign-in screen, web and desktop (new) | Shown by the sign-in-only gateway; names both ways to sign in (D5) |
 | Governance client (new) | Fetch, cache and query rules from the organisation's governance service |
 | `src/kiro_crew/platform/profile.py` | `resolve_profile`: enterprise build returns the enterprise profile from `EDITION` alone (D1) |
 | `src/kiro_crew/platform/policy_distribution_source.py` | Enterprise build uses the build-time policy URL; `POLICY_URL_ENV` and config are ignored (D2) |
@@ -142,8 +170,8 @@ The repository owner decided these three rules on 2026-10-23. They hold in an en
 
 Each phase is one pull request and changes nothing in the `oss` edition.
 
-1. **Edition stamp.** Add `edition.py`, the `EDITION=enterprise` build, the build-time policy URL placeholder and the `resolve_profile` change (D1, D2). Exit: an `oss` build and an enterprise build differ only in `edition.py`; a test asserts that no config key or environment variable changes `EDITION`; in an enterprise build `KIROCREW_PROFILE=standalone` still resolves the enterprise profile, boot with no companion raises `PlatformCompositionError`, and setting `KIROCREW_POLICY_URL` does not change the policy URL.
-2. **Enterprise gate.** Login check, governance fetch, middleware deny, expiry and refresh. The placeholder URL is replaced with the real endpoint before this phase enables the gate. Exit: with no login, or with the governance fetch failing, an enterprise build exits; while the gate is closed every API except login is denied. Blocked on the Open question.
+1. **Edition stamp.** Add `edition.py`, the `EDITION=enterprise` build, the build-time policy URL placeholder and the `resolve_profile` change (D1, D2). Exit: an `oss` build and an enterprise build differ only in `edition.py`; a test asserts that no config key or environment variable changes `EDITION`; in an enterprise build `KIROCREW_PROFILE=standalone` still resolves the enterprise profile, boot with no companion composes the core defaults under the enterprise profile while boot with a broken or mismatched companion raises `PlatformCompositionError` (amended 2026-10-28), and setting `KIROCREW_POLICY_URL` does not change the policy URL.
+2. **Enterprise gate.** Login check, governance fetch, middleware deny, expiry and refresh. The placeholder URL is replaced with the real endpoint before this phase enables the gate. Exit: with no sign-in, an enterprise build opens only the sign-in-only gateway (D5), and after sign-in it fetches the rules; with the governance fetch failing, or any other startup failure, it exits; the login check, the rules fetch and the account lock read the one sign-in resolver (D4); while the gate is closed every route outside the sign-in allow-list is refused; tests cover the disagreement refusal, the sign-in screen naming both commands, each refusal naming its cause, and a route outside the allow-list being refused (amended 2026-10-29). Blocked on the Open question.
 3. **Deny unnamed controls, no local loosening.** Enterprise `_query_level` denies anything outside the remote policy and the built-in baseline policy (D3). Exit: an empty remote policy leaves each `yes` control at its appendix minimal set; a local config, environment, profile or dashboard setting that would widen a control has no effect, and one that narrows it does.
 4. **Hardcoded defaults for controls with no key.** Exit: each `no` and Red control behaves as its appendix row in an enterprise build.
 
@@ -153,7 +181,7 @@ The `oss` edition is the default and reads the same constant, so every existing 
 
 ## Security considerations
 
-The gate is fail-closed: a failed login, fetch or refresh denies. The edition, the profile and the policy URL cannot be changed by config or environment (D1, D2), no local source can widen a control (D3), and the desktop app's install directory is write-protected and signed. The wheel build's weaker tamper resistance is recorded in Design section 4. The local floor (credential files, no self-disable) stays on whatever the policy says.
+The gate is fail-closed: a missing sign-in opens only the sign-in-only gateway (D5); any other failed login, fetch or refresh denies. The sign-in-only gateway (D5) binds only `127.0.0.1` and serves only its allow-list, so a signed-out start exposes no other route. Two sign-ins that name different accounts refuse the start rather than picking one (D4). The edition, the profile and the policy URL cannot be changed by config or environment (D1, D2), no local source can widen a control (D3), and the desktop app's install directory is write-protected and signed. The wheel build's weaker tamper resistance is recorded in Design section 4. The local floor (credential files, no self-disable) stays on whatever the policy says.
 
 ## Alternatives considered
 
@@ -164,6 +192,8 @@ The gate is fail-closed: a failed login, fetch or refresh denies. The edition, t
 ## Open questions
 
 1. **The governance service API is not decided.** Endpoint, authentication (how the login identity is presented) and response format are TBD. The design names it only as the organisation's governance service, and the build carries the placeholder URL from D2 until the endpoint is chosen.
+
+2. **A sign-in lost while Crew runs.** The table in Design section 2 says the gate closes and the user logs in again. Whether that reuses the sign-in-only gateway's screen is not decided (added 2026-10-29). Signing back in as a different account is refused by the account lock (D4).
 
 How deny-unnamed keeps each control's minimal set was open in the first draft; D3 decides it with the built-in baseline policy.
 

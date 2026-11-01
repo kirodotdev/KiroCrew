@@ -23,6 +23,11 @@ from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers.memory_graph import _build_memory_graph
 from kiro_crew.dashboard.handlers.memory_services import _get_vector_store_async, _sel
+from kiro_crew.dashboard.memory_request_bounds import (
+    bounded_promote_min_count,
+    bounded_promote_min_sim,
+    bounded_semantic_confidence,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import (
     make_sync_embed_fn,
@@ -55,6 +60,12 @@ from ._shared import (
 from .cron import _recognize_session
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.memory")
+
+# PUT /api/memory/settings bounds; the Memory tab's inputs use the same ones.
+_HISTORY_IDLE_HOURS_MIN = 0.5
+_HISTORY_IDLE_HOURS_MAX = 24.0
+_HISTORY_MAX_DAYS_MIN = 7
+_HISTORY_MAX_DAYS_MAX = 365
 
 
 def memory_recall_deadline(
@@ -580,16 +591,34 @@ async def api_memory_settings(request: web.Request) -> web.Response:
         # Validated BEFORE the transaction: none of it reads the config, and a
         # 400 should not have taken the lock or occupied a worker.
         updates: dict[str, Any] = {}
+        # Out-of-range values are clamped, never refused: the Memory tab's inputs
+        # carry these same bounds and clamp before sending, so both sides store
+        # and show one value. The upper clamp also keeps a non-finite float
+        # (`"inf"`) out of config.json.
         if "history_idle_hours" in body:
             try:
-                updates["history_idle_hours"] = max(0.5, float(body["history_idle_hours"]))
+                idle = float(body["history_idle_hours"])
+            except OverflowError:
+                # An integer too large for a float (`10**400`) is still a number
+                # past a bound: clamp it like `"inf"` rather than 500.
+                idle = (
+                    _HISTORY_IDLE_HOURS_MAX
+                    if body["history_idle_hours"] > 0
+                    else _HISTORY_IDLE_HOURS_MIN
+                )
             except (ValueError, TypeError):
                 return web.json_response(
                     {"error": "history_idle_hours must be numeric"}, status=400
                 )
+            updates["history_idle_hours"] = min(
+                _HISTORY_IDLE_HOURS_MAX, max(_HISTORY_IDLE_HOURS_MIN, idle)
+            )
         if "history_max_days" in body:
             try:
-                updates["history_max_days"] = max(7, body_int(body["history_max_days"]))
+                updates["history_max_days"] = min(
+                    _HISTORY_MAX_DAYS_MAX,
+                    max(_HISTORY_MAX_DAYS_MIN, body_int(body["history_max_days"])),
+                )
             except (ValueError, TypeError):
                 return web.json_response(
                     {"error": "history_max_days must be an integer"}, status=400
@@ -662,7 +691,8 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
             status=400,
         )
     try:
-        limit = min(int(request.query.get("limit", "1000")), 1000)
+        # Floored as well as capped: SQLite reads a negative LIMIT as "no limit".
+        limit = max(1, min(int(request.query.get("limit", "1000")), 1000))
         # Clamped before the store binds it: see ``clamp_query_offset``.
         offset = clamp_query_offset(int(request.query.get("offset", "0")))
     except (ValueError, TypeError):
@@ -703,11 +733,7 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     key = body.get("key", "")
     value = body.get("value")
-    confidence = (
-        float(body.get("confidence", 1.0))
-        if isinstance(body.get("confidence"), (int, float))
-        else 1.0
-    )
+    confidence = bounded_semantic_confidence(body.get("confidence"))
     source = body.get("source", "user_explicit")
     if not key or value is None:
         return web.json_response({"error": "key and value required"}, status=400)
@@ -898,7 +924,7 @@ async def api_memory_events(request: web.Request) -> web.Response:
     if denial is not None:
         return denial
     try:
-        limit = min(int(request.query.get("limit", "50")), 200)
+        limit = max(1, min(int(request.query.get("limit", "50")), 200))
         offset = clamp_query_offset(int(request.query.get("offset", "0")))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
@@ -951,7 +977,7 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
         return denial
     query = request.query.get("q", "")[:500]
     try:
-        limit = min(int(request.query.get("limit", "20")), 50)
+        limit = max(1, min(int(request.query.get("limit", "20")), 50))
     except (ValueError, TypeError):
         limit = 20
     tag_filter = [t.strip() for t in request.query.get("tags", "").split(",") if t.strip()] or None
@@ -993,7 +1019,7 @@ async def api_memory_episodic_list(request: web.Request) -> web.Response:
             status=400,
         )
     try:
-        limit = min(int(request.query.get("limit", "50")), 100)
+        limit = max(1, min(int(request.query.get("limit", "50")), 100))
         offset = clamp_query_offset(int(request.query.get("offset", "0")))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
@@ -1052,9 +1078,10 @@ async def api_memory_stats(request: web.Request) -> web.Response:
     stats["embedding_provider"] = cfg.memory.embedding_provider
     stats["migrated"] = cfg.memory.migrated
     # Legacy markdown presence (diagnostics; migration is automatic at boot).
+    # Offload: it reads two markdown files, globs history/ and stats lessons.jsonl.
     from kiro_crew.memory import legacy_memory_present  # noqa: F811
 
-    stats["has_legacy_memory"] = legacy_memory_present()
+    stats["has_legacy_memory"] = await asyncio.to_thread(legacy_memory_present)
     return web.json_response(stats)
 
 
@@ -1211,7 +1238,13 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    key = body.get("key", "").strip()
+    key = body.get("key", "")
+    if not isinstance(key, str):
+        return web.json_response(
+            {"error": "session key must be a string", "code": "invalid_session_key"},
+            status=400,
+        )
+    key = key.strip()
     if not key:
         return web.json_response({"error": "session key required"}, status=400)
     from kiro_crew.context import store_of_session
@@ -1419,9 +1452,11 @@ async def api_memory_promote(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # The promotion tombstones every row it folds, so a threshold that would
+    # fold rows nobody asked to fold is bounded rather than run as sent.
     try:
-        min_count = body_int(body.get("min_count", 5))
-        min_sim = float(body.get("min_sim", 0.75))
+        min_count = bounded_promote_min_count(body_int(body.get("min_count", 5)))
+        min_sim = bounded_promote_min_sim(float(body.get("min_sim", 0.75)))
     # OverflowError: float() of a JSON integer beyond float range raises it.
     except (ValueError, TypeError, OverflowError):
         return web.json_response({"error": "min_count/min_sim must be numeric"}, status=400)
@@ -1437,8 +1472,9 @@ async def api_memory_graph(request: web.Request) -> web.Response:
     mem = _get_memory(state)
 
     try:
+        partial: dict[str, bool] = {}
         nodes, edges = await asyncio.to_thread(
-            lambda: _build_memory_graph(mem, state.lessons.load_all())
+            lambda: _build_memory_graph(mem, state.lessons.load_all(), partial)
         )
 
         for n in nodes:
@@ -1448,7 +1484,8 @@ async def api_memory_graph(request: web.Request) -> web.Response:
         _sel().log_tool_invocation(
             session_key="dashboard", tool_name="memory_graph", outcome="success"
         )
-        return web.json_response({"nodes": nodes, "edges": edges})
+        # ``partial`` says which capped populations left rows out of the graph.
+        return web.json_response({"nodes": nodes, "edges": edges, "partial": partial})
     except Exception:
         logging.getLogger(__name__).exception("memory_graph failed")
         _sel().log_tool_invocation(
@@ -1475,6 +1512,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_memory_embedding_model,
         api_memory_embedding_status,
         api_memory_enable_embeddings,
+    )
+    from kiro_crew.dashboard.handlers.memory_graph import (  # noqa: F401
+        GRAPH_LESSON_LIMIT,
+        GRAPH_SEMANTIC_LIMIT,
     )
     from kiro_crew.dashboard.handlers.memory_services import (  # noqa: F401
         _get_vector_store,

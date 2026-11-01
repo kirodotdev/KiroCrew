@@ -12,7 +12,7 @@ import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
   Clock, X, Monitor, Copy, Terminal,
-  Target, Settings2, Star, ShieldAlert,
+  Target, Settings2, Star, ShieldAlert, ExternalLink,
 } from 'lucide-react'
 import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
@@ -29,10 +29,13 @@ import AppSource from '../components/appstore/AppSource'
 import { consentTierFor } from '../components/appstore/registryTier'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
+import { useActionsInFlight } from '../hooks/useActionsInFlight'
 import ErrorNotice from '../components/ErrorNotice'
 import { useConfirm } from '../components/ConfirmDialog'
 import { findReport, recordError } from '../utils/errorReport'
 import { copyCode } from '../utils/clipboard'
+import AppStoreDialog from '../components/appstore/AppStoreDialog'
+import { safeHttpUrl } from '../lib/safeUrl'
 
 import { i18nT } from '../i18n/t'
 import type { AppContributor } from '../types'
@@ -84,7 +87,11 @@ export default function AppDetailPage() {
   const stagedEvents = app?.approvedGrants
     ? (app.manifest?.permissions?.events || []).filter(e => !(app.approvedGrants?.events || []).includes(e))
     : []
-  const hasStagedGrants = stagedApi.length + stagedEvents.length > 0
+  // Link-preview hosts and text patterns an update widened wait the same way.
+  const stagedLinkHosts = app?.linkPreviewGrant?.stagedHosts || []
+  const stagedLinkPatterns = app?.linkPreviewGrant?.stagedTextPatterns || []
+  const stagedFullUrl = app?.linkPreviewGrant?.stagedFullUrl === true
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length > 0 || stagedFullUrl
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -93,7 +100,9 @@ export default function AppDetailPage() {
   const clearError = useCallback(() => {
     setError('')
   }, [])
-  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  // Each button's spinner reads its own action; `actionBusy` locks every action
+  // button while ANY action runs, since they all change the same app.
+  const { startAction, finishAction, isActionRunning, actionBusy } = useActionsInFlight()
   const [installLog, setInstallLog] = useState('')
   const [showInstallLog, setShowInstallLog] = useState(false)
   const [installDone, setInstallDone] = useState(false)
@@ -256,6 +265,7 @@ export default function AppDetailPage() {
             enabled: installed.enabled,
             sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
             approvedGrants: installed.approvedGrants,
+            linkPreviewGrant: installed.linkPreviewGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -381,6 +391,7 @@ export default function AppDetailPage() {
             enabled: installed.enabled,
             sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
             approvedGrants: installed.approvedGrants,
+            linkPreviewGrant: installed.linkPreviewGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -462,7 +473,7 @@ export default function AppDetailPage() {
    */
   const runInstall = async (): Promise<'done' | 'trust-required' | 'failed' | 'aborted'> => {
     if (!app) return 'done'
-    setActionLoading('install')
+    startAction('install')
     setInstallLog('')
     setInstallDone(false)
     setShowInstallLog(true)
@@ -502,7 +513,7 @@ export default function AppDetailPage() {
       if (result.needsClientInstall) {
         setClientInstall(result.clientInstall || app.platform?.clientInstall || {})
         setShowInstallLog(false)
-        setActionLoading(null)
+        finishAction('install')
         return 'done'
       }
       // A refused install is a consent prompt, not an error. The gate runs
@@ -547,7 +558,7 @@ export default function AppDetailPage() {
       // compare by identity to avoid the race where a second invocation
       // replaces the ref before this finally runs.
       if (installAbortRef.current === controller) {
-        setActionLoading(null)
+        finishAction('install')
       }
     }
     return 'done'
@@ -638,7 +649,7 @@ export default function AppDetailPage() {
       setKeepData(true)
       return
     }
-    setActionLoading(action)
+    startAction(action)
     let updateResult: { notice?: string } | undefined
     clearError()
     setSuccessMsg('')
@@ -702,13 +713,13 @@ export default function AppDetailPage() {
         setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
       }
     } finally {
-      setActionLoading(null)
+      finishAction(action)
     }
   }
 
   const confirmUninstall = async () => {
     if (!app) return
-    setActionLoading('uninstall')
+    startAction('uninstall')
     clearError()
     try {
       const res = await api.uninstallApp(app.name, keepData)
@@ -719,7 +730,7 @@ export default function AppDetailPage() {
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_uninstall'))
     } finally {
-      setActionLoading(null)
+      finishAction('uninstall')
       setShowUninstallConfirm(false)
     }
   }
@@ -775,6 +786,34 @@ export default function AppDetailPage() {
   const agents = app.manifest?.agents || []
   const skills = app.manifest?.skills || []
   const crons = app.manifest?.crons || []
+  // Source-repo and issue-tracker links for the Details card (#9912). The repo
+  // Source-repo and issue-tracker links for the Details card (#9912). The repo
+  // string is third-party manifest/registry input, so it becomes a link ONLY
+  // when it parses as an http(s) URL with no userinfo (safeHttpUrl rejects
+  // javascript:/data: and credential-smuggling forms); anything else falls back
+  // to plain text. `app.repo` is the value the card already DISPLAYS, so the
+  // link's text and its href are built from the SAME string — otherwise the
+  // text could name one repo while the click opened another (`repoUrl` may be
+  // resolved from manifest.repo/trustRepository/source, not app.repo).
+  // `typeof` guard first: `app.repo` is third-party registry data typed as a
+  // string, but an entry can ship `"repo": ["…"]`; safeHttpUrl would URL-coerce
+  // the array to validate yet return the array itself, and `.replace` on it
+  // would throw and blank the whole detail page. A non-string repo stays plain
+  // text, exactly as it rendered before this change.
+  const sourceRepoUrl = typeof app.repo === 'string' && app.repo ? safeHttpUrl(app.repo) : null
+  const sourceRepoHost = (() => {
+    try { return sourceRepoUrl ? new URL(sourceRepoUrl).hostname : '' } catch { return '' }
+  })()
+  // Issue tracker: a GitHub repo's /issues page, built from the same displayed
+  // repo so the link cannot point somewhere the row does not name. Scoped to
+  // GitHub (the only host whose tracker path this knows) and deliberately a
+  // plain outbound LINK, never an in-app flow that files on the user's behalf —
+  // that needs new manifest metadata and a credential/product decision the
+  // maintainer owns (#9912).
+  const issuesUrl =
+    sourceRepoUrl && sourceRepoHost === 'github.com'
+      ? `${sourceRepoUrl.replace(/\/+$/, '').replace(/\.git$/, '')}/issues`
+      : ''
   // Theme-aware hero banner source (mirrors the Browse card resolution).
   // Prefer the wide detail-ratio banner (heroImageDetail*); fall back to the
   // Browse hero, then the opposite theme.
@@ -921,6 +960,29 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
+              {stagedLinkHosts.length > 0 && (
+                <div>
+                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_hosts')}</div>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {stagedLinkHosts.map(h => (
+                      <code key={h} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{h}</code>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {stagedLinkPatterns.length > 0 && (
+                <div>
+                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_patterns')}</div>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {stagedLinkPatterns.map(p => (
+                      <code key={p} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text break-all">{p}</code>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {stagedFullUrl && (
+                <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_full_url')}</div>
+              )}
               {app.enabled && (
                 <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
               )}
@@ -932,20 +994,26 @@ export default function AppDetailPage() {
             <Btn
               primary
               onClick={async () => {
-                setActionLoading('approve_grants')
-                const approved = [...stagedApi, ...stagedEvents].join(', ')
+                startAction('approve_grants')
+                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : [])].join(', ')
                 try {
-                  await api.enableApp(app.name, false, { api: stagedApi, events: stagedEvents })
+                  await api.enableApp(app.name, false, {
+                    api: stagedApi,
+                    events: stagedEvents,
+                    linkPreviewHosts: stagedLinkHosts,
+                    linkPreviewTextPatterns: stagedLinkPatterns,
+                    linkPreviewFullUrl: stagedFullUrl ? ['fullUrl'] : [],
+                  })
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
                   await load()
                   window.dispatchEvent(new Event('mc:apps-changed'))
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e))
                 } finally {
-                  setActionLoading(null)
+                  finishAction('approve_grants')
                 }
               }}
-              disabled={actionLoading === 'approve_grants'}
+              disabled={actionBusy}
             >
               {i18nT('pages.appDetailPage.approve_new_permissions')}
             </Btn>
@@ -1017,15 +1085,14 @@ export default function AppDetailPage() {
         />
         {consentDialog}
 
-        {/* Uninstall confirmation modal */}
+        {/* Uninstall confirmation modal. Click-to-dismiss on the backdrop is a
+            mouse affordance; keyboard users close with Escape, and Tab stays
+            inside the dialog (AppStoreDialog). */}
         {showUninstallConfirm && app && (
-          // Modal backdrop: click-to-dismiss is a mouse affordance; keyboard
-          // users dismiss via the Escape handler in onKeyDown below.
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
-            onClick={() => setShowUninstallConfirm(false)}
-            onKeyDown={e => { if (e.key === 'Escape') setShowUninstallConfirm(false) }}
-            tabIndex={-1} ref={el => el?.focus()} role="dialog" aria-modal="true" aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}
+          <AppStoreDialog
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
+            onClose={() => setShowUninstallConfirm(false)}
+            aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}
           >
             {/* Presentational wrapper: stops backdrop-dismiss on inner clicks. */}
             {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
@@ -1049,12 +1116,12 @@ export default function AppDetailPage() {
 
               <div className="flex items-center gap-2 justify-end">
                 <Btn onClick={() => setShowUninstallConfirm(false)}>{i18nT('pages.appDetailPage.cancel')}</Btn>
-                <Btn danger onClick={confirmUninstall} disabled={actionLoading === 'uninstall'}>
-                  {actionLoading === 'uninstall' ? i18nT('pages.appDetailPage.removing') : i18nT('pages.appDetailPage.uninstall')}
+                <Btn danger onClick={confirmUninstall} disabled={actionBusy}>
+                  {isActionRunning('uninstall') ? i18nT('pages.appDetailPage.removing') : i18nT('pages.appDetailPage.uninstall')}
                 </Btn>
               </div>
             </div>
-          </div>
+          </AppStoreDialog>
         )}
 
         {/* Hero banner (only when the app ships one, or its local fallback survives a load failure) */}
@@ -1098,8 +1165,8 @@ export default function AppDetailPage() {
             {/* Actions */}
             <div className="flex items-center gap-2 flex-wrap">
               {!app.installed && !clientInstall && (
-                <Btn {...uiLocation('apps.detail.install')} primary onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle}>
-                  {actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.installing')}</> : <><Download size={14} /> {i18nT('pages.appDetailPage.install')}</>}
+                <Btn {...uiLocation('apps.detail.install')} primary onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle}>
+                  {isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.installing')}</> : <><Download size={14} /> {i18nT('pages.appDetailPage.install')}</>}
                 </Btn>
               )}
               {!app.installed && clientInstall && (
@@ -1108,7 +1175,7 @@ export default function AppDetailPage() {
               {app.installed && isBuiltin && (
                 <>
                   {app.enabled ? (
-                    <Btn onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
+                    <Btn onClick={() => handleAction('disable')} disabled={actionBusy}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
                   ) : (
                     /* Enable stays available in a browser: enabling is a
                        server-side state change (backend, agents and crons run
@@ -1121,7 +1188,7 @@ export default function AppDetailPage() {
                        store row / feature card keep the badge alone (the decision
                        does not happen there). */
                     <>
-                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {enableLabel}</Btn>
+                    <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
                     {desktopOnly && (
                     <span className="text-[13px] text-muted flex items-center gap-1.5">
                       <Monitor size={14} /> {i18nT('pages.appDetailPage.desktop_app_hint')}
@@ -1134,14 +1201,14 @@ export default function AppDetailPage() {
               {app.installed && isSelfManaged && !isBuiltin && (
                 <>
                   <div className="text-[13px] text-ok flex items-center gap-1.5"><Check size={14} /> {i18nT('pages.appDetailPage.installed_version', { version: app.installedVersion })}</div>
-                  {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
-                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
+                  {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionBusy} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
               )}
               {app.installed && !isSelfManaged && !isBuiltin && (
                 <>
                   {app.enabled ? (
-                    <Btn {...uiLocation('apps.detail.disable')} onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
+                    <Btn {...uiLocation('apps.detail.disable')} onClick={() => handleAction('disable')} disabled={actionBusy}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
                   ) : (
                     /* Enable stays available in a browser: enabling is a
                        server-side state change (backend, agents and crons run
@@ -1151,7 +1218,7 @@ export default function AppDetailPage() {
                        where store rows land, so it was the common path. Same
                        pattern as AppListRow / FeaturedSpotlight rows. */
                     <>
-                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {enableLabel}</Btn>
+                    <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
                     {desktopOnly && (
                     /* The consequence is VISIBLE here, not only in `title`. A
                        hover tooltip does not exist on touch and is not reachable
@@ -1168,9 +1235,9 @@ export default function AppDetailPage() {
                   )}
                     </>
                   )}
-                  {canUpdate && app.updateAvailable && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
-                  {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => handleAction('update')} disabled={actionLoading === 'update'} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
-                  {canUninstall && <Btn {...uiLocation('apps.detail.uninstall')} danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
+                  {canUpdate && app.updateAvailable && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                  {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => handleAction('update')} disabled={actionBusy} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
+                  {canUninstall && <Btn {...uiLocation('apps.detail.uninstall')} danger onClick={() => handleAction('uninstall')} disabled={actionBusy}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
               )}
             </div>
@@ -1501,7 +1568,37 @@ export default function AppDetailPage() {
           <Card>
             <CardTitle>{i18nT('pages.appDetailPage.details')}</CardTitle>
             <div className="grid gap-1.5 mt-2 text-[13px] text-muted">
-              {app.repo && <div>{i18nT('pages.appDetailPage.repository')} {app.repo}</div>}
+              {app.repo && (
+                sourceRepoUrl ? (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="shrink-0">{i18nT('pages.appDetailPage.repository')}</span>
+                    <a
+                      href={sourceRepoUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-accent no-underline hover:underline break-all"
+                    >
+                      {app.repo}
+                      <ExternalLink size={12} className="shrink-0" aria-hidden="true" />
+                    </a>
+                  </div>
+                ) : (
+                  <div>{i18nT('pages.appDetailPage.repository')} {app.repo}</div>
+                )
+              )}
+              {issuesUrl && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <a
+                    href={issuesUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-accent no-underline hover:underline"
+                  >
+                    {i18nT('pages.appDetailPage.report_issue')}
+                    <ExternalLink size={12} className="shrink-0" aria-hidden="true" />
+                  </a>
+                </div>
+              )}
               {typeof app.stargazersCount === 'number' && <div>{i18nT('pages.appDetailPage.github_stars_2', { value: fmtNumber(app.stargazersCount) })}</div>}
               {app.author && <div>{i18nT('pages.appDetailPage.author')} {app.author}</div>}
               {repoUrl && (contribLoading || contributors.length > 0 || contribError) && (

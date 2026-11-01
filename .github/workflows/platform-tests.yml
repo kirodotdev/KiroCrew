@@ -112,19 +112,24 @@ jobs:
     # can land a heavier mix on any one shard. So 5 shards: the same suite
     # spread one way further is about 26 minutes a shard at the 33-minute shape,
     # 1.5x inside the cap, for one more runner's sub-minute fixed overhead.
-    # The 5 shards run 4 at a time (test_workflow_matrix_max_parallel.py holds
-    # every matrix job to that shared-pool rule), so the fifth starts when the
-    # first finishes: each JOB stays inside the cap, which is the invariant,
-    # for about one more shard of lane wall time.
+    # MEASURED at 5 shards: a nightly took 34, 31, 30, 30 and 28 minutes of job
+    # wall, and on a slow runner day a shard at that shape crosses 40:00 and is
+    # cancelled. So 6 shards: about 25 minutes a shard, 1.6x inside the cap.
+    # The 6 shards run 4 at a time (test_workflow_matrix_max_parallel.py holds
+    # every matrix job to that shared-pool rule), so they run in two waves, 4
+    # then 2. Any count from 5 to 8 is two waves, so the sixth shard joins the
+    # second wave rather than opening a third: each JOB drops to about 25
+    # minutes inside the cap, which is the invariant, for about the same total
+    # lane wall time.
     timeout-minutes: 40
     strategy:
       max-parallel: 4
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5]
+        group: [1, 2, 3, 4, 5, 6]
     env:
-      SHARD_COUNT: 5
+      SHARD_COUNT: 6
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

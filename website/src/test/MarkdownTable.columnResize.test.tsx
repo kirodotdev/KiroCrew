@@ -123,7 +123,7 @@ describe('markdown table column resize', () => {
     for (const t of tables) expect(stops(t)).toEqual(['0', '-1'])
 
     const [first, second] = Array.from(tables[0].querySelectorAll<HTMLElement>('[role="separator"]'))
-    first.focus()
+    act(() => { first.focus() })
     fireEvent.keyDown(first, { key: 'ArrowDown' })
     expect(document.activeElement).toBe(second)
     expect(stops(tables[0])).toEqual(['-1', '0'])

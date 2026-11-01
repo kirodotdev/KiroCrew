@@ -26,8 +26,14 @@ import { useGuidePredicate } from '../../guide/guidePredicates'
 export function useShelfMeasure() {
   // Shelf responsiveness: measure the shelf row width and collapse chips to
   // icon-only (agent/project) + drop the model effort label when space is tight.
-  // Truncation handles the in-between cases.
-  const [shelfWidth, setShelfWidth] = useState(9999)
+  // Truncation handles the in-between cases. Only the width's band is state,
+  // not the width: the shelf resizes on every frame a side panel slides, and
+  // a new number each frame re-rendered the whole composer each frame. The
+  // last values are also kept in a ref and a setter runs only on a change: an
+  // equal setState still schedules a composer render when React cannot bail
+  // out early, which it often cannot mid-slide.
+  const [shelfBand, setShelfBand] = useState<'wide' | 'compact' | 'tiny'>('wide')
+  const lastShelf = useRef<{ band: string; h: number }>({ band: 'wide', h: 32 })
   // Border-box height of the shelf, handed to `.glass-shelf::before` as
   // `--glass-shelf-h`: the fade under the shelf is positioned against the
   // dock's input-area wrapper (so it spans exactly the dock root, which already
@@ -42,21 +48,25 @@ export function useShelfMeasure() {
     if (!el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(entries => {
       const w = entries[0]?.contentRect.width
-      if (typeof w === 'number') setShelfWidth(w)
+      // Below ~340px the labels no longer fit comfortably alongside the context
+      // bar + model chip, so the chips (agent/project) collapse to icon-only.
+      // A two-column split can leave under 200px per composer. The effort level
+      // on the model chip is the only at-a-glance readout of what a turn runs
+      // at, so it survives the compact collapse and drops only when even a
+      // short word has no room (the picker the chip opens always shows the
+      // level in force).
+      if (typeof w === 'number') {
+        const band = w < 220 ? 'tiny' : w < 340 ? 'compact' : 'wide'
+        if (band !== lastShelf.current.band) { lastShelf.current.band = band; setShelfBand(band) }
+      }
       const h = entries[0]?.borderBoxSize?.[0]?.blockSize ?? entries[0]?.target.getBoundingClientRect().height
-      if (typeof h === 'number' && h > 0) setShelfHeight(h)
+      if (typeof h === 'number' && h > 0 && h !== lastShelf.current.h) { lastShelf.current.h = h; setShelfHeight(h) }
     })
     ro.observe(el)
     shelfRoRef.current = ro
   }, [])
-  // Below ~340px the labels no longer fit comfortably alongside the context bar
-  // + model chip, so collapse the chips (agent/project) to icon-only.
-  const shelfCompact = shelfWidth < 340
-  // A two-column split can leave under 200px per composer. The effort level on
-  // the model chip is the only at-a-glance readout of what a turn runs at, so
-  // it survives the compact collapse and drops only when even a short word has
-  // no room (the picker the chip opens always shows the level in force).
-  const shelfTiny = shelfWidth < 220
+  const shelfCompact = shelfBand !== 'wide'
+  const shelfTiny = shelfBand === 'tiny'
   return { shelfRef, shelfHeight, shelfCompact, shelfTiny }
 }
 
@@ -205,10 +215,11 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
 
 /** The context-window readout and its popover (usage, model, the per-session
  *  auto-compact threshold). */
-export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, showContextPct, showContextTokens, shelfCompact, modelName, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
+export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
   contextPct: number
   contextUsedTokens?: number
   contextWindowTokens?: number
+  derivePctFromUsed?: boolean
   showContextPct?: boolean
   showContextTokens?: boolean
   shelfCompact: boolean
@@ -225,19 +236,29 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   const agentDefaultSource = autoCompact?.agent_pct != null
     ? i18nT('components.chatInput.agent_default_source', { agent: autoCompact.agent ?? '' })
     : undefined
-  const pct = Math.round(contextPct)
   const win = contextWindowTokens || 0
-  const used = contextUsedTokens != null ? contextUsedTokens : (win ? Math.round((pct / 100) * win) : 0)
+  const used = contextUsedTokens != null ? contextUsedTokens : (win ? Math.round((contextPct / 100) * win) : 0)
+  // Only on a model switch does the stored entry carry `used` with NO measured
+  // window (the reducer drops the stale pct and window, keeps `used`): the
+  // caller signals that shape with `derivePctFromUsed`, and the percentage is
+  // derived from `used` against the window this control resolved, so the old
+  // model's percentage never pairs with the new model's window. On every other
+  // frame the backend's reported `contextPct` is used exactly as before — a
+  // backend whose percentage is not simply `used / window` (overhead counted,
+  // or a percentage backfilled against tokens) keeps rendering its own number.
+  const effectivePct = derivePctFromUsed && contextUsedTokens != null && win > 0
+    ? (used / win) * 100
+    : contextPct
   const remaining = win ? Math.max(win - used, 0) : 0
   const approx = contextUsedTokens == null
-  const pctColor = contextColor(contextPct)
+  const pctColor = contextColor(effectivePct)
   const showAnyReadout = !!(showContextPct || showContextTokens)
   // Graceful degrade: on a narrow shelf, collapse to the percentage
   // alone (or tokens, if that's the only segment enabled) so the
   // readout never crowds out the agent/model controls.
   const readout = shelfCompact
-    ? composeContextReadout(contextPct, used, win, { approx, showPct: showContextPct, showTokens: !!showContextTokens && !showContextPct })
-    : composeContextReadout(contextPct, used, win, { approx, showPct: showContextPct, showTokens: showContextTokens })
+    ? composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: !!showContextTokens && !showContextPct })
+    : composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: showContextTokens })
   // Opens on the mouse press (usePressActivation); keyboard and touch on click.
   // `useContextPopover`'s outside-press dismiss skips `ctxWrapRef`, which holds
   // this button, so a press while open toggles it closed.
@@ -247,18 +268,18 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
     <button
       className={`inline-flex items-center h-7 px-2.5 rounded-md transition-colors border-none cursor-pointer ${ctxPopoverOpen ? 'bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]' : 'bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]'}`}
       {...bindPress(() => setCtxPopoverOpen(o => !o))}
-      title={contextTip(contextPct)}
+      title={contextTip(effectivePct)}
       aria-label={i18nT('components.chatInput.context_usage')}
       {...uiLocation('composer.context-usage')}
     >
-      <ContextBar pct={contextPct} width={40} height={3} />
+      <ContextBar pct={effectivePct} width={40} height={3} />
       {showAnyReadout && <span className="text-[11px] ml-1.5 tabular-nums whitespace-nowrap" style={{ color: pctColor }}>{readout}</span>}
     </button>
     {ctxPopoverOpen && (
       <div className="absolute bottom-full right-0 mb-1 z-[60] w-52 rounded-xl border border-border bg-bg-elevated shadow-xl p-3 animate-slide-up">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[11px] font-semibold text-text">{i18nT('components.chatInput.context_window')}</span>
-                  <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{fmtPercent(contextPctClamped(contextPct) / 100)}</span>
+                  <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{fmtPercent(contextPctClamped(effectivePct) / 100)}</span>
                 </div>
                 <div className="flex flex-col gap-1 text-[11px] font-mono">
                   <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.used')}</span><span className="text-text">{approx ? '~' : ''}{fmtTokens(used)}</span></div>
@@ -329,6 +350,11 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                         {autoCompact.agent_pct != null
                           ? <Trans i18nKey="components.chatInput.following_agent_default" values={{ pct: Math.round(autoCompact.agent_pct) }} components={{ agent: agentName }} />
                           : i18nT('components.chatInput.following_global', { pct: Math.round(autoCompact.global_pct) })}
+                      </div>
+                    )}
+                    {autoCompact.harness_managed && (
+                      <div className="mt-1 text-[10px] text-muted" data-testid="autocompact-harness-managed-note">
+                        {i18nT('components.chatInput.harness_managed_note', { backend: autoCompact.harness_managed.toUpperCase() })}
                       </div>
                     )}
                   </div>

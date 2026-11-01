@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -16,7 +17,6 @@ from kiro_crew.dashboard.slot_queue_repository import (
     durable_queue_view,
     queue_persist_signature,
 )
-from kiro_crew.dashboard.state_parts import own_methods
 from kiro_crew.dashboard.state_parts import slot_ladder as _slot_ladder
 from kiro_crew.dashboard.state_parts import slot_session as _slot_session
 from kiro_crew.dashboard.state_parts import slot_sidebar as _slot_sidebar
@@ -36,6 +36,8 @@ from kiro_crew.security.credential_sources import CredentialEvidence
 if TYPE_CHECKING:
     from kiro_crew.dashboard.git_repo_touches import TouchCandidates
     from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
+    from kiro_crew.dashboard.steer_retract import SteerClear, SteerRetract
+    from kiro_crew.dashboard.transcript_binding import TranscriptBinding
     from kiro_crew.subagent import SubagentDelivery
     from kiro_crew.trust_patterns import GrantDeadline
 
@@ -63,6 +65,7 @@ class _ChatSlot:
         "title",
         "agent",
         "agent_kind",
+        "crew_mode_agent",
         "app_agent_owner",
         "model",
         "jev_route",
@@ -84,7 +87,7 @@ class _ChatSlot:
         "workspace",
         "memory_store",
         "_memory_assignment_from_history",
-        "project",
+        "_binding",
         "created_at",
         "_messages",
         "_lazy_window",
@@ -94,6 +97,7 @@ class _ChatSlot:
         "_task",
         "_turn_admission_reserved",
         "_turn_generation",
+        "_unstarted_generation",
         "_wake_starting_task",
         "_chunk_seq",
         "event",
@@ -109,8 +113,10 @@ class _ChatSlot:
         "_approval_instances",
         "_approval_stopped",
         "_trust",
+        "_trust_card_scoped",
         "_trust_scope",
         "_trust_reads",
+        "_posture_inherited",
         "_member_approval_seeded",
         "_trusted_patterns",
         "_trusted_pattern_deadlines",
@@ -128,7 +134,9 @@ class _ChatSlot:
         "_detail_render_lock",
         "_last_stop_reason",
         "_created_by",
+        "_attribution",
         "_created_by_sid",
+        "_saved_created_by",
         "_lineage_minted",
         "_reports_to_creator",
         "_revived_by",
@@ -172,10 +180,8 @@ class _ChatSlot:
         "_dirty_gen",
         "_metadata_persist_inflight",
         "_guarded_history_writes",
-        "recovery_retrigger_count",
         "_last_turn_auth_required",
         "_cycle_reached_provider",
-        "_recovery_chat_triggered",
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
@@ -191,6 +197,7 @@ class _ChatSlot:
         "tags_revision",
         "_pending_subagent_failures",
         "_pending_synthesis",
+        "_synthesis_armers",
         "_synthesis_inflight",
         "_synthesis_recheck",
         "_synthesis_rechecks",
@@ -259,6 +266,10 @@ class _ChatSlot:
         "_human_seen",
         "_origin",
         "_pending_variants",
+        "_regenerate_target",
+        "_swap_in_flight",
+        "_window_swap_epoch",
+        "_window_swap_applying",
         "_lock",
         "forked_from",
         "_fork_lock",
@@ -287,6 +298,7 @@ class _ChatSlot:
         "_git_repo_walk_pending",
         "_git_repo_walk_task",
         "_turn_reply_mids",
+        "_file_changes_flush",
         "linked_session_key",
         # Relay-archive marker: an older build ran this slot's turns on a peer
         # crew. See ``dashboard/relay_archive.py``.
@@ -301,7 +313,9 @@ class _ChatSlot:
         "_acp_client",
         "_last_turn_awaiting_permission",
         "_last_turn_children_announced",
+        "_crew_dispatch_notice_turn_gen",
         "_steer_segment_cut",
+        "_owed_segment_cut",
         "_native_subagent_tracker",
         "_native_subagent_output",
         "_steer_confirmed",
@@ -310,13 +324,18 @@ class _ChatSlot:
         "_steer_send_ids",
         "_steer_user_origin",
         "_steer_channel_origin",
+        "_steer_owner_origin",
         "_turn_channel_narrowed",
         "_turn_channel_origin",
         "_turn_user_sent",
+        "_turn_owner_sent",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
         "_steer_rpc_in_flight",
+        "_native_steer_in_flight",
+        "_steer_retract",
+        "_steer_clear",
         "_steer_audience_fences",
         "_steer_audience_fence_holders",
         "_steer_attachment_meta",
@@ -367,6 +386,7 @@ class _ChatSlot:
 
     # Initialised by state_parts/slot_session.py.
     agent_kind: str
+    crew_mode_agent: str
     app_agent_owner: str
     _welcomed_agent: str
     jev_route: bool
@@ -386,7 +406,7 @@ class _ChatSlot:
     _turn_timeout_hydrated: bool
     memory_store: str
     _memory_assignment_from_history: bool
-    project: str
+    _binding: TranscriptBinding
     executor: str
     instance_id: str
     remote_slot: str
@@ -405,7 +425,9 @@ class _ChatSlot:
     _summary_turn_mark: int
     _last_stop_reason: str
     _created_by: str
+    _attribution: Any
     _created_by_sid: str
+    _saved_created_by: str
     _lineage_minted: bool
     _reports_to_creator: bool
     _revived_by: str
@@ -420,8 +442,6 @@ class _ChatSlot:
     _eager_spawn_failures: int
     _eager_spawn_retry_at: float
     _prefetch_ttl_task: asyncio.Task[None] | None
-    _recovery_chat_triggered: bool
-    recovery_retrigger_count: int
     _slack_linked: bool
     _slack_channel: str
     _slack_thread_ts: str
@@ -452,6 +472,7 @@ class _ChatSlot:
     _task: asyncio.Task[Any] | None
     _turn_admission_reserved: bool
     _turn_generation: int
+    _unstarted_generation: int
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
     event: asyncio.Event
@@ -467,8 +488,10 @@ class _ChatSlot:
     _approval_instances: dict[str, tuple[asyncio.Future[str], str]]
     _approval_stopped: set[str]
     _trust: bool
+    _trust_card_scoped: bool
     _trust_scope: str
     _trust_reads: bool
+    _posture_inherited: bool
     _member_approval_seeded: bool
     _trusted_patterns: set[str]
     _trusted_pattern_deadlines: dict[str, GrantDeadline]
@@ -496,6 +519,16 @@ class _ChatSlot:
     _deferred_notes: list[dict[str, Any]]
     _dropped_note_ids: set[str]
     _pending_variants: list[dict]
+    # ``chat_turn.regenerate_swap.RegenerateTarget`` while a Regenerate turn runs.
+    _regenerate_target: Any
+    # Bumped under the transcript lock by each committed Regenerate swap, and
+    # the swap memory does not show yet (``slot_persistence.write_guards``):
+    # a save whose window copy predates the swap re-takes it.
+    _window_swap_epoch: int
+    # A Regenerate swap is between its snapshot and its memory update: the
+    # window's front trim waits (``slot_transcript.append``).
+    _swap_in_flight: bool
+    _window_swap_applying: Any
     _lock: asyncio.Lock
     _file_changes: list[dict[str, Any]]
     _git_repos: list[str]
@@ -509,6 +542,7 @@ class _ChatSlot:
     _git_repo_walk_pending: list[str]
     _git_repo_walk_task: asyncio.Task[None] | None
     _turn_reply_mids: list[str]
+    _file_changes_flush: asyncio.Future[None] | None
     linked_session_key: str
     _active_turn_session_key: str
     _responsive: Any
@@ -516,11 +550,18 @@ class _ChatSlot:
     _acp_client: None
     _last_turn_awaiting_permission: bool
     _last_turn_children_announced: bool
+    #: The ``_turn_generation`` a Crew Mode dispatch notice was last written for
+    #: (``crew_dispatch_notice``). One notice per person turn: the first
+    #: successful ``session_create`` of a turn stamps this, and the rest of that
+    #: turn's dispatches see the generation already stamped and write nothing.
+    #: ``-1`` means none written yet; in-memory only, so a restart starts fresh.
+    _crew_dispatch_notice_turn_gen: int
     _question_pending: dict[str, dict]
 
     # Initialised by state_parts/slot_ladder.py.
     _pending_subagent_failures: list[str]
     _pending_synthesis: bool
+    _synthesis_armers: set[str]
     _synthesis_inflight: bool
     _synthesis_recheck: asyncio.TimerHandle | None
     _synthesis_rechecks: int
@@ -572,6 +613,7 @@ class _ChatSlot:
     _compaction_fail_streak: int
     _compaction_fail_cooldown_until: float
     _steer_segment_cut: Callable[[], None] | None
+    _owed_segment_cut: Callable[[], None] | None
     _native_subagent_tracker: dict[str, dict[str, Any]]
     _native_subagent_output: dict[str, list[str]]
     _steer_confirmed: set[str]
@@ -580,13 +622,21 @@ class _ChatSlot:
     _steer_send_ids: dict[str, str]
     _steer_user_origin: dict[str, bool]
     _steer_channel_origin: dict[str, bool]
+    _steer_owner_origin: dict[str, bool]
     _turn_channel_narrowed: bool
     _turn_channel_origin: bool
     _turn_user_sent: bool
+    _turn_owner_sent: bool
     _steer_admissions: dict[str, dict]
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]
     _steer_rpc_in_flight: set[str]
+    #: Native-card ids with a /question/steer delivery in flight (handlers/slot_question).
+    #: A SEPARATE set, never on the card's pending record, so a steer claim is never
+    #: serialized out through GET .../question or a question_card broadcast.
+    _native_steer_in_flight: set[str]
+    _steer_retract: SteerRetract | None
+    _steer_clear: SteerClear | None
     _steer_audience_fences: dict[str, dict]
     _steer_audience_fence_holders: dict[str, int]
     _steer_attachment_meta: dict[str, dict[str, Any]]
@@ -673,6 +723,22 @@ class _ChatSlot:
         # legacy sessions; the identity COMPARISON still requires a non-empty
         # ``created_at`` on both sides.
         self._disk_meta_observed: bool = False
+
+    @property
+    def project(self) -> str:
+        """The session's project directory, held in the binding aliases share.
+
+        Live slots on one transcript run one session with one working directory, so
+        they hold one value: a write on any of them is the group's write
+        (``dashboard/transcript_binding.py``).
+        """
+        return self._binding.project
+
+    @project.setter
+    def project(self, value: str) -> None:
+        from kiro_crew.dashboard.transcript_binding import write_project
+
+        write_project(self._binding, value)
 
     @property
     def reasoning_effort(self) -> str:
@@ -1122,4 +1188,17 @@ class _ChatSlot:
     to_dict = _slot_transcript.to_dict
 
 
-own_methods(_ChatSlot)
+#: The owners whose functions :class:`_ChatSlot` binds as its members, this shell included.
+_MEMBER_OWNERS = frozenset(
+    {
+        "kiro_crew.dashboard.state_parts.chat_slot",
+        "kiro_crew.dashboard.state_parts.slot_session",
+        "kiro_crew.dashboard.state_parts.slot_sidebar",
+        "kiro_crew.dashboard.state_parts.slot_todo",
+        "kiro_crew.dashboard.state_parts.slot_transcript",
+        "kiro_crew.dashboard.state_parts.slot_turns",
+        "kiro_crew.dashboard.state_parts.source_links",
+    }
+)
+
+own_methods(_ChatSlot, _MEMBER_OWNERS)

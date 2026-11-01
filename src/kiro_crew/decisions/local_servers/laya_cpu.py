@@ -16,11 +16,35 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 ATTEST = os.environ.pop("KIROCREW_LOCAL_ATTEST", "")
 
 
+def _wait_for_end_of_input() -> None:
+    # On Windows stdin is a synchronous pipe, and a read left pending on it makes
+    # other queries of that pipe wait behind it. The start-up code of numpy's
+    # OpenBLAS DLL is one of them, so the model imports would never return. There
+    # the pipe is polled until the gateway closes its end; no read is left
+    # pending. A stdin that is not a pipe is read to its end as elsewhere.
+    if sys.platform == "win32":
+        import msvcrt
+        import time
+
+        import _winapi
+
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        while True:
+            try:
+                _winapi.PeekNamedPipe(handle, 0)
+            except BrokenPipeError:
+                return
+            except OSError:
+                break
+            time.sleep(0.5)
+    sys.stdin.buffer.read()
+
+
 def _exit_when_gateway_lets_go() -> None:
     # The gateway holds this process's stdin open for as long as it wants the
     # server. End of input -- a stop, or the gateway exiting -- ends the server,
     # so it never outlives the process that started it.
-    sys.stdin.buffer.read()
+    _wait_for_end_of_input()
     os._exit(0)
 
 

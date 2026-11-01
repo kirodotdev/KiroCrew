@@ -14,8 +14,8 @@
  * must keep the one-level listing rather than render a panel the backend will
  * refuse with 403.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { recordError, recentErrors, consumeChatHandoff, __resetErrorJournalForTests } from '../utils/errorReport'
 
@@ -347,8 +347,8 @@ describe('FolderPanel — project-root workspace tree', () => {
       renderPanel({ path: ROOT, projectDir: ROOT })
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
 
-      await vi.advanceTimersByTimeAsync(BROWSE_FILES_TIMEOUT_MS)
-      await vi.advanceTimersByTimeAsync(FILE_SEARCH_TIMEOUT_MS - BROWSE_FILES_TIMEOUT_MS)
+      await act(async () => { await vi.advanceTimersByTimeAsync(BROWSE_FILES_TIMEOUT_MS) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(FILE_SEARCH_TIMEOUT_MS - BROWSE_FILES_TIMEOUT_MS) })
       // Both reads journaled, the tree's LAST: the newest `deadline exceeded` is not the listing's.
       await waitFor(() => expect(recentErrors().map(r => r.endpoint))
         .toEqual(['/api/project/tree', '/api/browse-files']))
@@ -377,12 +377,12 @@ describe('FolderPanel — project-root workspace tree', () => {
     try {
       renderPanel({ path: ROOT, projectDir: ROOT })
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-      await vi.advanceTimersByTimeAsync(FILE_SEARCH_TIMEOUT_MS)
+      await act(async () => { await vi.advanceTimersByTimeAsync(FILE_SEARCH_TIMEOUT_MS) })
       const notice = await screen.findByRole('alert')
       expect(notice).toHaveTextContent("Couldn't load the file tree")
       expect(recentErrors().map(r => r.endpoint)).toEqual(['/api/project/tree'])
 
-      recordError({ source: 'api', message: 'deadline exceeded', code: 'timeout', endpoint: '/api/file-search' })
+      act(() => { recordError({ source: 'api', message: 'deadline exceeded', code: 'timeout', endpoint: '/api/file-search' }) })
       expect(recentErrors()[0].endpoint).toBe('/api/file-search')
       // A re-render after the newer entry landed, as any keystroke causes: the notice's report is
       // read at render time, so without one a stale-but-right prop would mask a wrong lookup.
@@ -412,11 +412,14 @@ describe('FolderPanel — project-root workspace tree', () => {
   it('feeds the search box into the tree instead of the recursive file search', async () => {
     renderPanel({ path: ROOT, projectDir: ROOT })
     await waitFor(() => expect(tree()).toBeTruthy())
+    // Fake timers go on once the tree has settled, so the 200ms debounce below runs on the fake clock.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
     fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
-    await waitFor(() => expect(tree().getAttribute('data-query')).toBe('read'))
+    expect(tree().getAttribute('data-query')).toBe('read')
     // Past the 200ms debounce the listing body would have dispatched a walk; the
     // tree already holds the path set, so nothing is requested.
-    await new Promise(resolve => setTimeout(resolve, 260))
+    await act(async () => { await vi.advanceTimersByTimeAsync(260) })
     expect(api.fileSearch).not.toHaveBeenCalled()
   })
 

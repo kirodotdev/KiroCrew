@@ -11,9 +11,8 @@ from __future__ import annotations
 import os
 import stat
 
-from kiro_crew import members
+from kiro_crew import members, pinned_fs
 from kiro_crew.atomic_write import atomic_write_at
-from kiro_crew.pinned_fs_primitives import PinnedPathRefusal, pin_parent
 
 
 class NotesError(Exception):
@@ -51,8 +50,8 @@ def write_member_notes(slug: str, text: str) -> int:
             os.mkdir(parent, 0o700)
         except FileExistsError:
             pass
-        dir_fd = pin_parent(str(parent), what="member briefing")
-    except (PinnedPathRefusal, OSError) as exc:
+        dir_fd = pinned_fs.pin_parent(str(parent), what="member briefing")
+    except (pinned_fs.PinnedPathRefusal, OSError) as exc:
         raise NotesError("notes_unwritable", "the notes file could not be opened") from exc
     try:
         leaf = os.stat(members.BRIEFING_FILE_NAME, dir_fd=dir_fd, follow_symlinks=False)

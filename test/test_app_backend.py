@@ -1047,7 +1047,7 @@ class TestBackendLifecycle:
         assert any("escapes app root" in r.message for r in caplog.records)
 
     def test_third_party_backend_refused_when_gate_off(self, tmp_path, app_env, monkeypatch, caplog):
-        # security-review finding: the apps_allow_third_party off-switch must also block
+        # The apps_allow_third_party off-switch must also block
         # the OUT-OF-PROCESS backend spawn, not just in-process module loads. A
         # file-path (third-party) backend must be refused (None, before any Popen)
         # when the switch is off.

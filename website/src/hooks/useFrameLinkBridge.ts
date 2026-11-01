@@ -139,19 +139,25 @@ export function tiedToFrame(frame: HTMLIFrameElement, now: number = performance.
  * The web URL an open message asks for, or null when it is not one the link
  * bridge honours.
  *
- * The URL rule is `safeHttpUrl`: only an absolute `http:` or `https:` URL with no
- * user name or password passes, so `javascript:`, `data:`, `blob:`, `file:`,
- * `mailto:` and every custom scheme are refused. The returned value is the PARSED form, so the URL that opens is exactly
- * the one the link's hover title shows.
+ * A path (`/artifacts/<slug>`, `/chat?sid=<key>`) is a page of this dashboard and
+ * resolves against its origin. The URL rule is then `safeHttpUrl`: only an
+ * `http:` or `https:` URL with no user name or password passes, so `javascript:`,
+ * `data:`, `blob:`, `file:`, `mailto:` and every custom scheme are refused. The
+ * returned value is the PARSED form, so the URL that opens is exactly the one the
+ * link's hover title shows.
  */
 export function webUrlOf(data: unknown): string | null {
   if (!data || typeof data !== 'object') return null
   const msg = data as { type?: unknown; url?: unknown }
   if (msg.type !== OPEN_MESSAGE_TYPE || typeof msg.url !== 'string') return null
-  // The URL rule is the dashboard's one web-link gate (safeHttpUrl); this only
-  // normalises what passes it.
-  const ok = safeHttpUrl(msg.url)
-  return ok ? new URL(ok).href : null
+  let href: string
+  try {
+    href = new URL(msg.url, window.location.origin).href
+  } catch {
+    return null
+  }
+  // The URL rule is the dashboard's one web-link gate (safeHttpUrl).
+  return safeHttpUrl(href)
 }
 
 /**
@@ -223,7 +229,7 @@ export function useFrameLinkBridge(
     }
     setChip({ url, frame })
   }, [openRef, tiedRef])
-  useFrameOpenLink(frames, answer, gesture, webUrlOf)
+  useFrameOpenLink(frames, webUrlOf, answer, gesture)
   if (!chip) return null
   const { url, frame } = chip
   return createElement(FrameLinkChip, {

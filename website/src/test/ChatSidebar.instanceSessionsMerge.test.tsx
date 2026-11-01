@@ -7,7 +7,7 @@
  * ChatSidebar.offline.test.tsx, the owner of the mock setup).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -271,6 +271,31 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
     expect(newer).toBeLessThan(older)
     expect(older).toBeLessThan(remote)
     expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('REMOTE middle row')
+  })
+
+  it("keeps a peer's crew members in the list: this machine's Crew panel cannot reach them", async () => {
+    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    // A peer's Crew Mode chat and one of its crew members, both OPEN on the peer.
+    // A LOCAL crew member leaves the list because its root's Crew panel lists it;
+    // a peer's root opens in the crew window with no such panel, and the panel
+    // reads this gateway's slots, so for a peer's crew member the list is the one
+    // way in. Red when the peer rows go through `crewModeView`.
+    instanceChatSlotsMock.mockResolvedValue([
+      { ...DEFAULT_REMOTE_SLOT, key: 'peer-root', row_identity: 'inst-a:peer-root', title: 'Peer crew chat', crew_mode_root: true },
+      {
+        ...DEFAULT_REMOTE_SLOT,
+        key: 'peer-member',
+        row_identity: 'inst-a:peer-member',
+        title: 'Peer crew member',
+        crew_root: 'peer-root',
+      },
+    ])
+    renderSidebar()
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('Peer crew chat')
+    })
+    expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('Peer crew member')
+    expect(screen.getByText('LIVE newer slot')).toBeInTheDocument()
   })
 
   it('prints each date-segment header once, even when a remote row was created in another bucket', async () => {
@@ -638,7 +663,7 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
     expect(vi.mocked(api.createChatSlot)).not.toHaveBeenCalled()
     expect(selectInstanceMock).not.toHaveBeenCalled()
     expect(JSON.parse(sessionStorage.getItem('kirocrew.crewWindow') || 'null')).toEqual({ instanceId: 'inst-a', key: 'chat-9' })
-    closeCrewWindow()
+    act(() => { closeCrewWindow() })
   })
 
   it('hands a crew row to a host with no chat pane of its own', async () => {
@@ -824,7 +849,7 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
       // raw-key lookup has two candidates. The remote one sits in its crew group.
       expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('REMOTE same-key newer row')
 
-      store.dispatch(requestSlotReveal('s-new'))
+      act(() => { store.dispatch(requestSlotReveal('s-new')) })
 
       await waitFor(() => expect(scrolledInto).toHaveLength(1))
       expect(scrolledInto[0]).toContain('LIVE newer slot')

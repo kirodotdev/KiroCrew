@@ -96,13 +96,14 @@ class TestAgentCli:
                 _ns(
                     agent_action="create",
                     name="new",
-                    kiro_agent="ka",
+                    kiro_agent="kirocrew",
                     workspace="ws",
                     memory_store="",
                 )
             )
         doc = _read_doc(cfg_path)
-        assert doc["agents"]["new"]["kiro_agent"] == "ka"
+        # Created from the built-in worker, then bound to its own file.
+        assert doc["agents"]["new"]["kiro_agent"] == "new"
         assert doc["agents"]["new"]["workspace"] == "ws"
         store = doc["agents"]["new"]["memory_store"]
         assert store != "default"
@@ -275,7 +276,7 @@ class TestAgentCli:
                 _ns(
                     agent_action="create",
                     name="new",
-                    kiro_agent="ka",
+                    kiro_agent="kirocrew",
                     workspace="ws",
                     memory_store="",
                 )
@@ -307,7 +308,7 @@ class TestAgentCli:
                 _ns(
                     agent_action="create",
                     name="new",
-                    kiro_agent="ka",
+                    kiro_agent="kirocrew",
                     workspace="ws",
                     memory_store="",
                 )
@@ -464,6 +465,187 @@ class TestWorkspaceCopyFrom:
         assert (tmp_path / "workspace-copy3").is_dir()
 
 
+# Other spellings of the folder the "src" workspace already uses
+# (``workspace-src``): each one names the same directory once resolved.
+_SAME_FOLDER_SPELLINGS = ["./workspace-src", "workspace-src/", "sub/../workspace-src", "ABS"]
+
+
+def _spelled(spelling: str, home: Path) -> str:
+    return str(home / "workspace-src") if spelling == "ABS" else spelling
+
+
+class TestWorkspaceDirInUseResolved:
+    """The "already used" check compares resolved folders, not raw strings."""
+
+    def _base(self) -> KiroCrewConfig:
+        return _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="workspace-src"),
+            }
+        )
+
+    def _run(self, home: Path, cfg: KiroCrewConfig, cfg_path: Path, **ns: Any) -> None:
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_workspace(_ns(**ns))
+        assert exc.value.code == 1
+
+    @pytest.mark.parametrize("spelling", _SAME_FOLDER_SPELLINGS)
+    @pytest.mark.parametrize("copy_from", [None, "src"])
+    def test_create_refuses_another_spelling_of_a_used_folder(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        spelling: str,
+        copy_from: str | None,
+    ) -> None:
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        (home / "sub").mkdir()
+        cfg = self._base()
+        cfg_path = _seed_doc_file(home, cfg)
+        self._run(
+            home,
+            cfg,
+            cfg_path,
+            workspace_action="create",
+            name="clash",
+            dir=_spelled(spelling, home),
+            copy_from=copy_from,
+        )
+        assert "already used by another workspace" in capsys.readouterr().err
+        assert "clash" not in _read_doc(cfg_path)["workspaces"]
+
+    @pytest.mark.parametrize("spelling", _SAME_FOLDER_SPELLINGS)
+    def test_update_refuses_another_spelling_of_a_used_folder(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], spelling: str
+    ) -> None:
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        (home / "sub").mkdir()
+        cfg = self._base()
+        cfg_path = _seed_doc_file(home, cfg)
+        self._run(
+            home,
+            cfg,
+            cfg_path,
+            workspace_action="update",
+            name="default",
+            dir=_spelled(spelling, home),
+        )
+        assert "already used by another workspace" in capsys.readouterr().err
+        assert _read_doc(cfg_path)["workspaces"]["default"]["dir"] == "workspace"
+
+    def test_create_refuses_a_case_variant_on_a_case_insensitive_filesystem(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """``WORKSPACE-SRC`` is ``workspace-src`` on macOS/Windows: same folder, other string.
+
+        Linux test hosts are case-sensitive, so ``Path.stat`` is made to fold case
+        for names directly under the data home -- the one thing such a filesystem
+        does differently here. ``resolve()`` keeps the spelling it was given.
+        """
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        cfg = self._base()
+        cfg_path = _seed_doc_file(home, cfg)
+        real_stat = Path.stat
+
+        def _case_folding_stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+            if self.parent == home:
+                self = self.with_name(self.name.lower())
+            return real_stat(self, *args, **kwargs)
+
+        with patch.object(Path, "stat", _case_folding_stat):
+            self._run(
+                home,
+                cfg,
+                cfg_path,
+                workspace_action="create",
+                name="clash",
+                dir="WORKSPACE-SRC",
+                copy_from=None,
+            )
+        assert "already used by another workspace" in capsys.readouterr().err
+        assert "clash" not in _read_doc(cfg_path)["workspaces"]
+
+    def test_two_existing_folders_with_distinct_identities_are_not_a_collision(
+        self, tmp_path: Path
+    ) -> None:
+        """Equal paths, two directories (a case-sensitive Windows folder): identity decides."""
+        from kiro_crew import cli_commands_workspace as ws_mod
+
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        identities = iter([(1, 100), (1, 200)])  # candidate first, then the stored dir
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            patch.object(ws_mod, "_dir_identity", side_effect=lambda _p: next(identities)),
+        ):
+            assert ws_mod._ws_dir_in_use(home / "workspace-src", ["workspace-src"]) is False
+
+    def test_in_lock_recheck_compares_resolved_folders(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A folder another process registered after the snapshot is still caught."""
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        cfg_path = _seed_doc_file(home, self._base())
+        stale = _cfg_with(workspaces={"default": WorkspaceConfig(dir="workspace")})
+        self._run(
+            home,
+            stale,
+            cfg_path,
+            workspace_action="create",
+            name="clash",
+            dir="./workspace-src",
+            copy_from=None,
+        )
+        self._run(
+            home,
+            stale,
+            cfg_path,
+            workspace_action="update",
+            name="default",
+            dir="workspace-src/",
+        )
+        assert capsys.readouterr().err.count("already used by another workspace") == 2
+        doc = _read_doc(cfg_path)["workspaces"]
+        assert "clash" not in doc
+        assert doc["default"]["dir"] == "workspace"
+
+    def test_stored_dir_that_no_longer_resolves_does_not_block_a_create(
+        self, tmp_path: Path
+    ) -> None:
+        """Existing entries are never rejected; only the new dir is checked."""
+        home = tmp_path.resolve()
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "gone": WorkspaceConfig(dir="~no_such_user_kirocrew_test/ws"),
+            }
+        )
+        cfg_path = _seed_doc_file(home, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="fresh", dir=None, copy_from=None)
+            )
+        doc = _read_doc(cfg_path)["workspaces"]
+        assert doc["fresh"]["dir"] == "workspace-fresh"
+        assert doc["gone"]["dir"] == "~no_such_user_kirocrew_test/ws"
+
+
 # ── security subcommands ──
 
 
@@ -514,11 +696,28 @@ class TestSecurityCli:
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_commands.scan_history", return_value=history),
             patch("kiro_crew.cli_commands.scan_memory", return_value=memory),
+            pytest.raises(SystemExit) as exc,
         ):
             cc._security(_ns(sec_action="audit"))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
         assert "1 suspicious entries found" in out and "s.jsonl" in out
         assert "1 suspicious memory entries" in out and "[semantic] k" in out
+
+    def test_audit_memory_findings_only_exits_nonzero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        memory = [{"type": "semantic", "key": "k", "warning": "odd", "value": "v"}]
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_commands.scan_history", return_value=[]),
+            patch("kiro_crew.cli_commands.scan_memory", return_value=memory),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._security(_ns(sec_action="audit"))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "No suspicious tool usage" in out and "1 suspicious memory entries" in out
 
     def test_audit_history_findings_with_clean_memory(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -528,8 +727,10 @@ class TestSecurityCli:
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_commands.scan_history", return_value=history),
             patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
+            pytest.raises(SystemExit) as exc,
         ):
             cc._security(_ns(sec_action="audit"))
+        assert exc.value.code == 1
         assert "No suspicious content in vector memory." in capsys.readouterr().out
 
     def test_events_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -746,23 +947,25 @@ class TestSecurityCli:
         assert "cron.add → allowed" in out and "error: boom" in out and "slack" in out
 
     @pytest.mark.parametrize(
-        ("total", "valid", "verifiable", "expected"),
+        ("total", "valid", "verifiable", "expected", "exit_code"),
         [
-            (0, 0, True, "No security events to verify."),
-            (3, 3, True, "HMAC chain intact"),
-            (3, 1, True, "HMAC chain COMPROMISED"),
+            (0, 0, True, "No security events to verify.", 0),
+            (3, 3, True, "HMAC chain intact", 0),
+            (3, 1, True, "HMAC chain COMPROMISED", 1),
             (
                 5,
                 5,
                 False,
                 "Audit history UNVERIFIABLE: segment directory refused to pin",
+                1,
             ),
-            (0, 0, False, "Audit history UNVERIFIABLE"),
+            (0, 0, False, "Audit history UNVERIFIABLE", 1),
             (
                 5,
                 3,
                 False,
                 "the live log shows tampered entries: 3/5 entries valid",
+                1,
             ),
         ],
     )
@@ -772,6 +975,7 @@ class TestSecurityCli:
         valid: int,
         verifiable: bool,
         expected: str,
+        exit_code: int,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         outcome = sel_mod.SelVerification(
@@ -782,7 +986,12 @@ class TestSecurityCli:
         )
         with patch("kiro_crew.cli_commands.sel") as sel:
             sel.return_value.verify_integrity.return_value = outcome
-            cc._security(_ns(sec_action="verify"))
+            if exit_code:
+                with pytest.raises(SystemExit) as exc:
+                    cc._security(_ns(sec_action="verify"))
+                assert exc.value.code == exit_code
+            else:
+                cc._security(_ns(sec_action="verify"))
         assert expected in capsys.readouterr().out
 
     def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -977,12 +1186,93 @@ class TestPolicyCli:
             ),
             patch("kiro_crew.platform.governance_profiles._profiles_dir", return_value=pdir),
             patch("kiro_crew.platform.governance_profiles.get_store_profile", side_effect=_get),
+            patch(
+                "kiro_crew.platform.governance_profiles.fallback_profile_names",
+                return_value=frozenset(),
+            ),
+            pytest.raises(SystemExit) as exc,
         ):
             cc._policy(_ns(policy_action="validate"))
-        out = capsys.readouterr().out
-        assert "Policy: v2 OK" in out
-        assert "bad.json: INVALID→deny-all" in out
-        assert "some profiles failed validation" in out
+        # An invalid profile must fail the command so a config-management run can gate on it.
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "Policy: v2 OK" in captured.out
+        assert "good.json: OK" in captured.out
+        assert "bad.json: INVALID→deny-all" in captured.out
+        assert "✅ valid" not in captured.out
+        assert "some profiles failed validation" in captured.err
+
+    @pytest.mark.parametrize("declared_fallback", [False, True])
+    def test_validate_flags_malformed_profile_file_from_real_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        declared_fallback: bool,
+    ) -> None:
+        from kiro_crew.platform import governance_profiles as gp
+        from kiro_crew.platform.governance_parts.carriers import deny_all_profile
+
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        (pdir / "broken.json").write_text("{not json", encoding="utf-8")
+        (pdir / "host.json").write_text(
+            json.dumps(
+                {
+                    "name": "host",
+                    "bind": {"type": "surface", "id": "host"},
+                    "tools": {"mode": "allow", "allow": ["read"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gp, "_PROFILES_DIR", pdir)
+        gp.reset_store()
+        ceiling = _fake_ceiling()
+        # A policy-declared `fallback` keeps the stem as the substituted profile's name.
+        ceiling.fallback_profile = deny_all_profile("_declared") if declared_fallback else None
+        try:
+            with (
+                patch(
+                    "kiro_crew.platform.context.current_context",
+                    return_value=SimpleNamespace(governance=ceiling),
+                ),
+                pytest.raises(SystemExit) as exc,
+            ):
+                cc._policy(_ns(policy_action="validate"))
+        finally:
+            gp.reset_store()
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "broken.json: INVALID→deny-all" in captured.out
+        assert "host.json: OK" in captured.out
+        assert "some profiles failed validation" in captured.err
+
+    def test_validate_all_profiles_ok_exits_zero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        pdir = tmp_path / "profiles"
+        pdir.mkdir()
+        (pdir / "good.json").write_text("{}", encoding="utf-8")
+        with (
+            patch(
+                "kiro_crew.platform.context.current_context",
+                return_value=SimpleNamespace(governance=_fake_ceiling()),
+            ),
+            patch("kiro_crew.platform.governance_profiles._profiles_dir", return_value=pdir),
+            patch(
+                "kiro_crew.platform.governance_profiles.get_store_profile",
+                side_effect=lambda stem: SimpleNamespace(name=stem),
+            ),
+            patch(
+                "kiro_crew.platform.governance_profiles.fallback_profile_names",
+                return_value=frozenset(),
+            ),
+        ):
+            cc._policy(_ns(policy_action="validate"))
+        captured = capsys.readouterr()
+        assert "good.json: OK" in captured.out and "✅ valid" in captured.out
+        assert captured.err == ""
 
     def test_explain_unknown_scope_lists_catalog(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
@@ -994,6 +1284,7 @@ class TestPolicyCli:
                 "kiro_crew.platform.governance.SCOPE_CATALOG",
                 {"capabilities.telemetry": object()},
             ),
+            pytest.raises(SystemExit) as exc,
         ):
             cc._policy(
                 _ns(
@@ -1005,8 +1296,10 @@ class TestPolicyCli:
                     app=None,
                 )
             )
-        out = capsys.readouterr().out
-        assert "Unknown scope" in out and "capabilities.telemetry" in out
+        assert exc.value.code == 1
+        out, err = capsys.readouterr()
+        assert "Unknown scope" in err and "capabilities.telemetry" in err
+        assert out == ""
 
     def test_explain_known_scope_prints_verdicts(self, capsys: pytest.CaptureFixture[str]) -> None:
         decision = SimpleNamespace(
@@ -1087,9 +1380,46 @@ class TestPolicyCli:
                 return_value=SimpleNamespace(governance=None),
             ),
             patch("kiro_crew.platform.governance_profiles.get_store_profile", return_value=None),
+            pytest.raises(SystemExit) as exc,
         ):
             cc._policy(_ns(policy_action="profile", name="ghost"))
-        assert "No profile named 'ghost'" in capsys.readouterr().out
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "No profile named 'ghost'" in captured.err
+        assert captured.out == ""
+
+    def test_source_misconfigured_exits_nonzero(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with (
+            patch(
+                "kiro_crew.platform.context.current_context",
+                return_value=SimpleNamespace(governance=None),
+            ),
+            patch(
+                "kiro_crew.platform.policy_distribution.distribution_posture",
+                return_value={"error_code": "bad_url"},
+            ),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._policy(_ns(policy_action="source"))
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "distribution is misconfigured" in captured.err
+        assert captured.out == ""
+
+    def test_source_not_configured_exits_zero(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with (
+            patch(
+                "kiro_crew.platform.context.current_context",
+                return_value=SimpleNamespace(governance=None),
+            ),
+            patch(
+                "kiro_crew.platform.policy_distribution.distribution_posture",
+                return_value={"configured": False},
+            ),
+        ):
+            cc._policy(_ns(policy_action="source"))
+        captured = capsys.readouterr()
+        assert "not configured" in captured.out and captured.err == ""
 
     def test_profile_prints_bind_and_scopes(self, capsys: pytest.CaptureFixture[str]) -> None:
         prof = SimpleNamespace(

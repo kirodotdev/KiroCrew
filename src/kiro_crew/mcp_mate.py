@@ -128,7 +128,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "update_self",
             "description": (
                 "Change what the user sees of you: your display name, your description "
-                "(a short line about what you do), or your ghost face. Applied at once, "
+                "(a short line about what you do), or your ghost face. A display name is "
+                "a label only: other mates still reach you by your short name, which it "
+                "never changes. Applied at once, "
                 "shown in this chat as one line the user can undo. Pass only the fields "
                 "the user asked to change, with the values exactly as they gave them. "
                 'avatar is {"traits": {...}} naming one or more axes (' + vocab + "; "
@@ -273,7 +275,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "out to add a goal; pass the id of one of your goals (goal_read lists "
                 "them) to replace its text. A few goals are easier to keep track of "
                 "than many, so when the list grows, suggest merging goals that overlap "
-                "rather than adding another; the user decides. " + _CARD_NOTE
+                "rather than adding another; the user decides. While your Heartbeat is "
+                "off and the user never declined it, the card also carries a Heartbeat "
+                "checkbox, on by default, so setting the goal and keeping it moving on "
+                "your own is one press: do not ask about the Heartbeat separately or "
+                "propose set_check_ins for it after this card. " + _CARD_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -632,10 +638,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         changed = d.get("changed") or []
         if not changed:
             return _render({**d, "next": "Those were already your values; nothing changed."})
+        short_name = str(d.get("member") or "").strip()
         shown = {
             "display_name": "Your name now shows as "
             + str((d.get("after") or {}).get("display_name") or "")
-            + " everywhere in the dashboard; answer to it from now on.",
+            + " everywhere in the dashboard; answer to it from now on. The new name is "
+            "a label: other mates still reach you by your short name"
+            + (f", {short_name}" if short_name else "")
+            + ", which does not change. Tell the user that in the same reply.",
             "description": "Your description is updated on the roster and in your prompt.",
             "avatar": "Your face is updated everywhere the dashboard shows you.",
         }

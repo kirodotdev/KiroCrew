@@ -28,6 +28,7 @@ export function useCommandBarOverlaySlots({
   debounced,
   query,
   sessions,
+  openSessionsKey,
   recentSessions,
   artifacts,
   folderSortMode,
@@ -35,19 +36,17 @@ export function useCommandBarOverlaySlots({
   runningMates,
   mates,
   argCommand,
-  crewPreview,
   ranked,
   selected,
   setSelected,
 }: Pick<
   ReturnType<typeof useCommandBarOverlayEngines>,
-  'sessions' | 'recentSessions' | 'artifacts' | 'folderSortMode' | 'folders' | 'runningMates' | 'mates'
+  'sessions' | 'openSessionsKey' | 'recentSessions' | 'artifacts' | 'folderSortMode' | 'folders' | 'runningMates' | 'mates'
 > & {
   scope: Scope
   debounced: string
   query: string
   argCommand: ContributedCommand | null
-  crewPreview: boolean
   ranked: RankedRow[]
   selected: number
   setSelected: Dispatch<SetStateAction<number>>
@@ -63,10 +62,18 @@ export function useCommandBarOverlaySlots({
     isError,
     refetch: refetchSessions,
   } = useQuery({
-    queryKey: ['command-bar', 'sessions', scopedQuery],
+    // The open-session set is part of the key: these rows are ranked by it (#21290),
+    // so a session opened since the last search must re-rank the cached rows.
+    queryKey: ['command-bar', 'sessions', scopedQuery, openSessionsKey],
     queryFn: () => Promise.resolve(sessions.search(scopedQuery)) as Promise<Result[]>,
     enabled: searchArmed,
     staleTime: 15_000,
+    // Hold the rows on screen across a change of the open-session set only, the
+    // way the crewmates view holds them across its running set: a slot added in
+    // the background must not blank the list or reset the selection. A change of
+    // the query still drops them.
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey?.[2] === scopedQuery ? prev : undefined,
   })
 
   /**
@@ -348,7 +355,7 @@ export function useCommandBarOverlaySlots({
         out.push({ key: 'slot:retry', tag: 'retry-mates' })
       } else if (!matesFetching && out.length === 0 && mateQuery) {
         out.push({ key: 'slot:clear-query', tag: 'clear-query-mates' })
-      } else if (crewPreview && !matesFetching && out.length === 0 && mateRows !== undefined) {
+      } else if (!matesFetching && out.length === 0 && mateRows !== undefined) {
         // NO CREW AT ALL, and the reader is one keystroke from fixing that. A centred
         // sentence naming the Crewmates page was the dead end here: a reader reported
         // that "nothing looks like a link", so the one thing they came to do had no
@@ -389,9 +396,7 @@ export function useCommandBarOverlaySlots({
       // a session title or an artifact name far more often than it is a crew's name —
       // and a crew name that IS typed is often distinctive enough to have already
       // matched the view row's own keywords above.
-      // Behind the same preview gate as the view row: this row is a second, independent
-      // way for a typed query to reach `/members`.
-      if (crewPreview) out.push({ key: 'slot:fallback-mates', tag: 'fallback-mates' })
+      out.push({ key: 'slot:fallback-mates', tag: 'fallback-mates' })
       // The recovery row exists for the dead end — a typed query that matched
       // nothing — not for every keystroke. Riding the fallback's own condition put a
       // row about switching the feature off under every successful search, and
@@ -399,7 +404,7 @@ export function useCommandBarOverlaySlots({
       if (ranked.length === 0) out.push({ key: 'slot:recovery', tag: 'recovery' })
     }
     return out
-  }, [argCommand, crewPreview, isError, isFetching, query, ranked, recentRows, scope, scopedResults, searchArmed, artifactSlotRows, artifactsError, artifactsFetching, artifactsQuery, folderQuery, folderRows, foldersError, foldersFetching, mateQuery, mateRows, matesError, matesFetching])
+  }, [argCommand, isError, isFetching, query, ranked, recentRows, scope, scopedResults, searchArmed, artifactSlotRows, artifactsError, artifactsFetching, artifactsQuery, folderQuery, folderRows, foldersError, foldersFetching, mateQuery, mateRows, matesError, matesFetching])
 
   const rowCount = slots.length
   /**

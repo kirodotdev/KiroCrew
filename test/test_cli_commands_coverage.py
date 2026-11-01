@@ -362,6 +362,25 @@ class TestAppCli:
         out = capsys.readouterr().out
         assert "one" in out and "enabled" in out and "two" in out and "disabled" in out
 
+    def test_list_prints_each_row_on_one_line(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A newline or control character in a stored field stays inside its row."""
+        apps = [
+            {
+                "name": "one\ntwo",
+                "version": "1.0\n",
+                "enabled": True,
+                "displayName": "One\x07\nApp",
+            },
+        ]
+        with patch("kiro_crew.cli_commands.list_apps", return_value=apps):
+            cc._handle_app(_ns(app_action="list"))
+        lines = capsys.readouterr().out.splitlines()
+        # Header plus one line for the app: the newlines did not split the row.
+        assert len(lines) == 2
+        assert lines[1].startswith("one\\x0atwo ")
+        assert "1.0\\x0a" in lines[1]
+        assert lines[1].endswith("One\\x0aApp")
+
     def test_enable_success_counts_registrations(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
             patch("kiro_crew.cli_commands.enable_app", return_value=_result(True, message="on")),
@@ -1130,7 +1149,7 @@ class TestAppCli:
     ) -> None:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler") as cleanup,
-            patch("kiro_crew.cli_commands.deregister_app") as dereg,
+            patch("kiro_crew.cli_commands.deregister_app", return_value=_registration()) as dereg,
             patch("kiro_crew.cli_commands.disable_app", return_value=_result(True, message="off")),
         ):
             cc._handle_app(_ns(app_action="disable", name="demo"))
@@ -1154,7 +1173,7 @@ class TestAppCli:
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
             patch(
                 "kiro_crew.cli_commands.deregister_app",
-                side_effect=lambda n: order.append("deregister"),
+                side_effect=lambda n: order.append("deregister") or _registration(),
             ),
             patch(
                 "kiro_crew.cli_commands.disable_app",
@@ -1167,7 +1186,7 @@ class TestAppCli:
     def test_disable_failure_exits_1(self) -> None:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
-            patch("kiro_crew.cli_commands.deregister_app"),
+            patch("kiro_crew.cli_commands.deregister_app", return_value=_registration()),
             patch("kiro_crew.cli_commands.disable_app", return_value=_result(False)),
             pytest.raises(SystemExit),
         ):
@@ -1182,7 +1201,7 @@ class TestAppCli:
     ) -> None:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
-            patch("kiro_crew.cli_commands.deregister_app"),
+            patch("kiro_crew.cli_commands.deregister_app", return_value=_registration()),
             patch("kiro_crew.cli_commands.uninstall_app", return_value=_result(True)) as uninstall,
         ):
             cc._handle_app(_ns(app_action="uninstall", name="demo", purge_data=purge))
@@ -1192,7 +1211,7 @@ class TestAppCli:
     def test_uninstall_failure_exits_1(self) -> None:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
-            patch("kiro_crew.cli_commands.deregister_app"),
+            patch("kiro_crew.cli_commands.deregister_app", return_value=_registration()),
             patch("kiro_crew.cli_commands.uninstall_app", return_value=_result(False)),
             pytest.raises(SystemExit),
         ):
@@ -1385,11 +1404,16 @@ class TestRunAppMcpServer:
         assert "run_mcp_server" in capsys.readouterr().err
 
     def test_runner_is_invoked(self) -> None:
-        runner = MagicMock()
-        with patch(
-            "importlib.import_module", return_value=SimpleNamespace(run_mcp_server=runner)
-        ) as imp:
+        # The server's own exit status must reach the shell unchanged.
+        runner = MagicMock(side_effect=SystemExit(4))
+        with (
+            patch(
+                "importlib.import_module", return_value=SimpleNamespace(run_mcp_server=runner)
+            ) as imp,
+            pytest.raises(SystemExit) as exc,
+        ):
             cc._run_app_mcp_server("my-app")
+        assert exc.value.code == 4
         runner.assert_called_once_with()
         # Hyphens in app names map to underscores in the module path.
         assert imp.call_args[0][0].endswith("my_app.mcp_server")

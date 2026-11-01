@@ -39,6 +39,9 @@ START_URL_EXTRA_KEY = "start_url"
 #: The vault's store slot -> the ``accountType`` kiro-cli prints for that kind of
 #: sign-in. The social slot is spelled from its provider instead (below), as
 #: ``Social<Provider>`` -- the same family :func:`is_personal_account_type` accepts.
+#: THE one table: the dashboard's vault reading
+#: (``kiro_crew.dashboard.handlers.kiro_vault_identity``) spells from it too, so
+#: a slot added or respelled here reaches every reader at once.
 _ACCOUNT_TYPE_BY_SLOT: Mapping[str, str] = {
     "builder_id": "BuilderId",
     "identity_center": "IamIdentityCenter",
@@ -130,6 +133,27 @@ def account_type_for(identity: str, provider: str) -> str:
     return _ACCOUNT_TYPE_BY_SLOT.get(identity, "")
 
 
+def recorded_start_url(token: KasToken) -> str:
+    """The start URL *token*'s sign-in recorded, or ``""`` when it recorded none."""
+    start_url = token.extra.get(START_URL_EXTRA_KEY) if isinstance(token.extra, dict) else None
+    return start_url if isinstance(start_url, str) else ""
+
+
+def whoami_document_for(identity: str, provider: str, start_url: object) -> dict[str, str]:
+    """The ``kiro-cli whoami --format json`` document for a slot, provider and start URL.
+
+    THE one writer of the vault's ``accountType`` and ``startUrl``: ``kirocrew kas
+    whoami``, the cloud login target and the dashboard's account modal
+    (``kiro_crew.dashboard.handlers.kiro_vault_identity``) all render from it, so
+    the card and the CLI cannot describe one sign-in differently. ``startUrl`` is
+    present only when *start_url* is a non-empty string.
+    """
+    doc = {"accountType": account_type_for(identity, provider)}
+    if isinstance(start_url, str) and start_url:
+        doc["startUrl"] = start_url
+    return doc
+
+
 def whoami_document(token: KasToken) -> dict[str, str]:
     """The ``kiro-cli whoami --format json`` document the stored *token* stands for.
 
@@ -137,11 +161,7 @@ def whoami_document(token: KasToken) -> dict[str, str]:
     ``accountType`` always, ``startUrl`` when the sign-in recorded one. Never the
     token itself, never the refresh token, never the profile ARN.
     """
-    doc = {"accountType": account_type_for(token.identity, token.provider)}
-    start_url = token.extra.get(START_URL_EXTRA_KEY) if isinstance(token.extra, dict) else None
-    if isinstance(start_url, str) and start_url:
-        doc["startUrl"] = start_url
-    return doc
+    return whoami_document_for(token.identity, token.provider, recorded_start_url(token))
 
 
 def resolve_signed_in(store: TokenStore) -> KasToken | None:
@@ -164,7 +184,12 @@ def resolve_signed_in(store: TokenStore) -> KasToken | None:
         token = store.resolve()
         if token is None or not token.is_usable():
             return None
-        if store.refresh_rejected(token.identity) is not None:
+        # Strict, the reading the enterprise gate uses: a marker that exists but is
+        # empty or malformed still records a refusal, so `kas login` goes on to a
+        # fresh sign-in instead of "already signed in" over a gate that stays closed.
+        if store.refused_in_process(token):
+            return None
+        if store.refresh_rejected_strict(token.identity) is not None:
             return None
     except Exception:  # noqa: BLE001 - a status read never raises
         return None

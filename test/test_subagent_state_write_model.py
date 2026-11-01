@@ -95,6 +95,15 @@ _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 #: updates or deletes its row here.
 _WRITE_SITES: dict[tuple[str, str, str], tuple[int, str]] = {
     (
+        "kiro_crew/shared_crew/tailscale_invite_store.py",
+        "set_display",
+        "update_state",
+    ): (
+        1,
+        "not a subagent state.json: the Shared Crew store's own update_state "
+        "rewrites invites.json, serialized by that store's _LOCK",
+    ),
+    (
         "kiro_crew/execution_context.py",
         "bind_session_execution",
         "update_execution_context",

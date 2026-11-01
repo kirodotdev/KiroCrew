@@ -57,8 +57,9 @@ export interface ComposerAttachments {
   removeFile: (path: string) => void
   /** Drop the staged files (after a send took them). */
   clear: () => void
-  /** Put a failed send's files back in front of anything staged since. */
-  restore: (paths: string[]) => void
+  /** Put a failed send's files back in front of anything staged since, with
+   *  the resize info `clear` dropped for them (the "resized" badge). */
+  restore: (paths: string[], resized?: Record<string, ResizeInfo>) => void
   /** Stage files that are already on the gateway's disk (an `@` mention),
    *  after anything staged before. Nothing is uploaded, so this needs no
    *  upload grant. */
@@ -120,7 +121,7 @@ export function useComposerAttachments({ resetKey, granted, post, deniedNotice }
     setInFlight(prev => [...prev, { id: uploadId, names: list.map(f => f.name) }])
     void (async () => {
       try {
-        const res = await uploadComposerFiles(list, body => postRef.current(body, controller.signal))
+        const res = await uploadComposerFiles(list, body => postRef.current(body, controller.signal), controller.signal)
         if (gen !== generation.current) return
         if (res.error) throw new Error(res.error)
         const paths = res.paths.filter((p): p is string => typeof p === 'string' && p !== '')
@@ -144,8 +145,9 @@ export function useComposerAttachments({ resetKey, granted, post, deniedNotice }
   }, [])
 
   const clear = useCallback(() => { setFiles([]); setResizedInfo({}) }, [])
-  const restore = useCallback((paths: string[]) => {
+  const restore = useCallback((paths: string[], resized?: Record<string, ResizeInfo>) => {
     setFiles(prev => [...paths, ...prev.filter(p => !paths.includes(p))])
+    if (resized && Object.keys(resized).length) setResizedInfo(prev => ({ ...prev, ...resized }))
   }, [])
   const stage = useCallback((paths: string[]) => {
     setFiles(prev => [...prev, ...paths.filter(p => !prev.includes(p))])

@@ -14,6 +14,7 @@ const {
   setGlobalHotkeyLogger,
 } = require("./global-hotkey");
 const { initAutoUpdate } = require("./auto-update");
+const { requiredUpdateChannelFor } = require("./runtime/update/policy-channel");
 const { makeUpdaterLogger } = require("./update-logger");
 const { detectWsl2 } = require("./wsl-detection");
 const { crashNoticeSummary } = require("./crash-collector");
@@ -52,6 +53,10 @@ function createIpcRegistrar({
   // only to redeem an external-terminal grant at this shell's own gateway.
   readInternalSecret = () => "",
   fetchFn = (url, init) => fetch(url, init),
+  // The update channel this build must follow, "" when Settings decides (an oss
+  // build). See runtime/update/policy-channel.js.
+  getRequiredChannel = requiredUpdateChannelFor(),
+  clipboardImageTimeoutMs = 1000,
 } = {}) {
   if (!electron) throw new Error("createIpcRegistrar: electron is required");
   if (!store) throw new Error("createIpcRegistrar: store is required");
@@ -70,15 +75,96 @@ function createIpcRegistrar({
     ipcMain,
     shell,
     webContents,
+    clipboard,
   } = electron;
   const log = typeof glog === "function" ? glog : (() => {});
+
+  const RESTORABLE_TEXT_FORMATS = new Set(["text/plain", "text/html", "text/rtf"]);
+  const RESTORABLE_IMAGE_FORMATS = new Set(["image/png", "image/jpeg", "image/tiff", "image/bmp"]);
+  // An image format counts only when readImage() can capture it as a raster.
+  const isRestorableFormat = (f, hasRasterImage) =>
+    RESTORABLE_TEXT_FORMATS.has(f) || (hasRasterImage && RESTORABLE_IMAGE_FORMATS.has(f));
+
+  function snapshotClipboard() {
+    const image = clipboard.readImage();
+    const saved = {
+      text: clipboard.readText(),
+      html: clipboard.readHTML(),
+      rtf: clipboard.readRTF(),
+    };
+    if (!image.isEmpty()) saved.image = image;
+    return saved;
+  }
+
+  function restoreClipboardIfEmpty(saved) {
+    if (clipboard.availableFormats().length > 0) return;
+    const data = {};
+    for (const [key, value] of Object.entries(saved)) if (value) data[key] = value;
+    if (Object.keys(data).length > 0) clipboard.write(data);
+  }
+
+  // `replaced` lists formats only a successful copy can remove, so an image
+  // counts once they are gone and the answer never reflects the prior contents.
+  async function clipboardHoldsImage(replaced = []) {
+    const deadline = Date.now() + clipboardImageTimeoutMs;
+    for (;;) {
+      const formats = clipboard.availableFormats();
+      if (formats.some((f) => f.startsWith("image/"))
+          && !replaced.some((f) => formats.includes(f))) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 
   let shellRegistered = false;
   let updaterRegistered = false;
   let updater = null;
+  // True when the gateway reports that a security policy provider owns this
+  // install's updates and the Electron feed lane must stand down. Set by the
+  // renderer via update:notify-policy-governed once the gateway status lands.
+  let policyGoverned = false;
+  // Set of webContents IDs currently reporting governance=true. Governance is
+  // active as long as at least one sender is in the set; removing a sender's id
+  // (on explicit false or on destroyed) clears governance only when the set
+  // empties, so a second window closing does not re-enable the feed lane while
+  // another window on the same bundled gateway is still governed.
+  const governanceSenders = new Set();
+  // Per-sender sequence counter to discard out-of-order async completions.
+  // Two notifications from the same sender (e.g. false then true at startup)
+  // are probed concurrently; if the probes complete in reverse order the
+  // earlier continuation would overwrite the later verdict. Recording the
+  // latest seq before awaiting and checking after guards this race condition.
+  const senderSeq = new Map();
   // True while a native folder chooser is on screen, so a second request
   // answers "no choice" instead of stacking another dialog.
   let folderPickOpen = false;
+
+  // Shared local-dashboard gate — used by both registerShell() and
+  // registerUpdater() so the contract test finds a single spelling.
+  // See the comment block inside registerShell() for the full rationale.
+  const assertLocalDashboard = async (event, channel) => {
+    let origin = "";
+    try {
+      origin = new URL(event.senderFrame.url).origin;
+    } catch { /* about:blank, malformed URL, or torn-down frame */ }
+    if (origin !== backendUrl) {
+      log(`${channel} rejected for sender origin ${origin || "(unreadable)"}`);
+      throw new Error(`${channel} is restricted to the local dashboard`);
+    }
+    const owner = windows.windowForWebContents(event.sender);
+    if (!windows.security.isGatewayLocalForWindow(owner)) {
+      log(`${channel} rejected for a sender window without a local gateway`);
+      throw new Error(`${channel} is restricted to the local dashboard`);
+    }
+    const portOwner = await gateway.probePrimaryPortOwner();
+    if (portOwner !== "kirocrew" && portOwner !== "service") {
+      log(
+        `${channel} rejected: :${port} held by ${portOwner}, `
+        + "not this shell's gateway",
+      );
+      throw new Error(`${channel} is restricted to the local dashboard`);
+    }
+  };
 
   setGlobalHotkeyLogger(log);
   const summonDashboard = createSummonHandler({
@@ -167,6 +253,40 @@ function createIpcRegistrar({
       windows.chrome.watchFocusCursor(event.sender, watching));
     ipcMain.on("window-control", (event, action) =>
       windows.chrome.windowControl(event.sender, action, event.senderFrame));
+    // The chat bubble's Copy image for an image the page cannot fetch (another
+    // origin, or no async Clipboard API over plain HTTP). The renderer passes
+    // CSS pixels in its own main frame; copyImageAt takes zoomed ones.
+    // copyImageAt reports nothing, so success means an image reached the
+    // clipboard after it was cleared. A clipboard holding formats the snapshot
+    // cannot restore, such as copied files, is never cleared.
+    ipcMain.handle("image:copy-at", async (event, x, y) => {
+      const sender = event.sender;
+      if (!sender || event.senderFrame !== sender.mainFrame) return false;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) return false;
+      const zoom = typeof sender.getZoomFactor === "function" ? sender.getZoomFactor() : 1;
+      const hasRasterImage = !clipboard.readImage().isEmpty();
+      const unrestorable = clipboard.availableFormats()
+        .filter((f) => !isRestorableFormat(f, hasRasterImage));
+      if (unrestorable.length > 0) {
+        try {
+          sender.copyImageAt(Math.round(x * zoom), Math.round(y * zoom));
+        } catch {
+          return false;
+        }
+        return clipboardHoldsImage(unrestorable);
+      }
+      const saved = snapshotClipboard();
+      try {
+        clipboard.clear();
+        sender.copyImageAt(Math.round(x * zoom), Math.round(y * zoom));
+      } catch {
+        restoreClipboardIfEmpty(saved);
+        return false;
+      }
+      if (await clipboardHoldsImage()) return true;
+      restoreClipboardIfEmpty(saved);
+      return false;
+    });
     ipcMain.on("theme-mode-changed", (_event, pref) =>
       windows.chrome.setThemeMode(pref));
     ipcMain.on("titlebar-overlay-theme", (_event, mode) =>
@@ -210,44 +330,7 @@ function createIpcRegistrar({
     // Every rejection is LOGGED, not silent. The UI renders a sender rejection
     // and a genuinely empty answer ("no crashes", "no WSL install") the same
     // way, so diagnostics are the only place those two causes can be told apart.
-    const assertLocalDashboard = async (event, channel) => {
-      // Gate 1 — document origin: the page must have been served from this
-      // shell's own fixed primary gateway URL.
-      let origin = "";
-      try {
-        origin = new URL(event.senderFrame.url).origin;
-      } catch {
-        // about:blank, a malformed URL, or a torn-down frame is not a dashboard.
-      }
-      if (origin !== backendUrl) {
-        log(`${channel} rejected for sender origin ${origin || "(unreadable)"}`);
-        throw new Error(`${channel} is restricted to the local dashboard`);
-      }
-
-      // Gate 2 — the sending window's gateway must genuinely be on this machine.
-      // Loopback is necessary but insufficient because a configured remote
-      // gateway reached through an SSH tunnel also presents as localhost.
-      const owner = windows.windowForWebContents(event.sender);
-      if (!windows.security.isGatewayLocalForWindow(owner)) {
-        log(`${channel} rejected for a sender window without a local gateway`);
-        throw new Error(`${channel} is restricted to the local dashboard`);
-      }
-
-      // Gate 3 — positive listener ownership. A MANUAL SSH tunnel can occupy the
-      // primary local port without appearing in the remote-host config, so only
-      // this shell's gateway or its service manager is accepted. Foreign
-      // holders, an unbound port, and an unavailable owner probe all fail
-      // closed. Gate 1 already fixed the sender to backendUrl, which is why the
-      // supervisor's fixed primary-port probe is also probing the sender's port.
-      const portOwner = await gateway.probePrimaryPortOwner();
-      if (portOwner !== "kirocrew" && portOwner !== "service") {
-        log(
-          `${channel} rejected: :${port} held by ${portOwner}, `
-          + "not this shell's gateway",
-        );
-        throw new Error(`${channel} is restricted to the local dashboard`);
-      }
-    };
+    // (assertLocalDashboard is defined at createIpcRegistrar scope, above.)
 
     // Crash artifacts left by a previous run, so the dashboard can say "this
     // happened" instead of leaving the user to discover it themselves.
@@ -324,6 +407,45 @@ function createIpcRegistrar({
     ipcMain.handle("wsl:detect", async (event) => {
       await assertLocalDashboard(event, "wsl:detect");
       return detectWsl();
+    });
+
+    // What the main window's close button does. Deliberately narrower than
+    // `assertLocalDashboard`, which would hide the row from a main window on a
+    // configured remote host and leave that user no way to change it. The
+    // sender must be the main window's top frame, still on its assigned
+    // dashboard origin. That trusts the main window's dashboard, local or
+    // remote, with a visible, reversible two-valued preference.
+    const assertMainWindowDashboard = (event, channel) => {
+      const refuse = (why) => {
+        log(`${channel} rejected: ${why}`);
+        throw new Error(`${channel} is restricted to the main window's dashboard`);
+      };
+      const main = windows.getMainWindow();
+      if (!main || windows.windowForWebContents(event.sender) !== main) {
+        refuse("sender is not the main window");
+      }
+      if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
+        refuse("sender is not the top frame");
+      }
+      let origin = "";
+      let expected = "";
+      try {
+        origin = new URL(event.senderFrame.url).origin;
+        expected = new URL(main._mcBackendUrl).origin;
+      } catch {
+        // An unreadable URL matches nothing.
+      }
+      if (!origin || origin !== expected) {
+        refuse(`sender origin ${origin || "(unreadable)"} is not the main window's dashboard`);
+      }
+    };
+    ipcMain.handle("close-action:get", async (event) => {
+      assertMainWindowDashboard(event, "close-action:get");
+      return windows.closeAction.get();
+    });
+    ipcMain.handle("close-action:set", async (event, value) => {
+      assertMainWindowDashboard(event, "close-action:set");
+      return windows.closeAction.set(value);
     });
 
     // Open a file the chat referenced in the user's own editor, by handing its
@@ -477,6 +599,28 @@ function createIpcRegistrar({
       }
     });
 
+    // First-run setup's "connect to a crew on another machine" exit. It stops the
+    // gateway this app started and reconnects the main window to a crew the
+    // user names, so it is an action on the machine in front of the user and
+    // takes the full three-gate check. The supervisor then decides from its own
+    // state whether that window may switch: the main window only, on a gateway
+    // this app spawned. The renderer supplies nothing either way.
+    //
+    // `can-...` answers a bare boolean so setup shows the link only where the
+    // switch works, and never opens the form.
+    ipcMain.handle("first-run:can-use-remote-crew", async (event) => {
+      try {
+        await assertLocalDashboard(event, "first-run:can-use-remote-crew");
+      } catch {
+        return false;
+      }
+      return gateway.canSwitchToRemoteCrew(windows.windowForWebContents(event.sender)) === true;
+    });
+    ipcMain.handle("first-run:use-remote-crew", async (event) => {
+      await assertLocalDashboard(event, "first-run:use-remote-crew");
+      return gateway.switchToRemoteCrew(windows.windowForWebContents(event.sender));
+    });
+
     // Open the user's own terminal app in a project directory. Gated like
     // `dashboard:open-file` because it is a LAUNCH on the machine in front of
     // the user, and a connection window pointed at a remote gateway shares this
@@ -575,11 +719,15 @@ function createIpcRegistrar({
   }
 
   function broadcastUpdateState(payload) {
+    // Include the main-process governance verdict in every state update so
+    // the renderer can distinguish a local bundled gateway (governed) from
+    // a remote one connected via SSH (not governed here, regardless of stamp).
+    const enriched = { ...payload, policyGoverned };
     try {
       for (const contents of webContents.getAllWebContents()) {
         if (!contents.isDestroyed()) {
           try {
-            contents.send("update-state", payload);
+            contents.send("update-state", enriched);
           } catch {
             // The view disappeared between enumeration and dispatch.
           }
@@ -610,10 +758,15 @@ function createIpcRegistrar({
         // electron-updater's AppUpdater, NOT Electron's built-in autoUpdater:
         // it generates/verifies feed metadata and also supports Linux.
         autoUpdater: require("electron-updater").autoUpdater,
+        isPolicyGoverned: () => policyGoverned,
+        // On Windows, 'session-end' fires on BaseWindow (not App). The feed
+        // lane uses this to register its pending-update notice on the window.
+        getMainWindow: () => windows.getMainWindow(),
         dialog: electron.dialog,
         Notification,
         getFlavor: () => "stable",
         getChannelPreference: () => store.get("updateChannel", ""),
+        getRequiredChannel,
         getAutoDownloadPreference: () =>
           store.get("autoDownloadUpdates", true) !== false,
         notifyUpdateFound: (version, { autoDownload = false } = {}) => {
@@ -683,8 +836,114 @@ function createIpcRegistrar({
     const updaterInfo = () => ({
       ...updater.getInfo(),
       disabled: updater.disabled,
+      policyGoverned,
     });
 
+    // One-way notification from the renderer: the gateway status reported that
+    // a security policy provider governs this install's updates. The feed lane
+    // stands down until notified the opposite. Fire-and-forget: no response
+    // expected; the lane reads policyGoverned on its next scheduled check.
+    //
+    // Three-gate guard (assertLocalDashboard): origin, window-locality, and
+    // port-owner proof. The `lsof` binary is required on Linux for gate 3;
+    // it is declared as a Debian package dependency in electron/package.json.
+    ipcMain.on("update:notify-policy-governed", async (_event, governed) => {
+      const srcId = _event?.sender?.id ?? null;
+      // Per-sender sequence: bump before awaiting so if a later notification
+      // from the same sender completes the probe first, this older continuation
+      // is discarded and does not overwrite the newer verdict.
+      const mySeq = (senderSeq.get(srcId) ?? 0) + 1;
+      senderSeq.set(srcId, mySeq);
+
+      // Three-gate check via the shared assertLocalDashboard helper.
+      try {
+        await assertLocalDashboard(_event, "update:notify-policy-governed");
+      } catch {
+        return;
+      }
+      // Gate 4 — current-bundle ownership (governance handler only).
+      // A second copy of the app can also hold the port as "kirocrew"; its
+      // policy provider would incorrectly suppress this copy's updater.
+      // Unlike assertLocalDashboard's three gates which apply to every shell
+      // channel, this check is only relevant for governance, and
+      // isCurrentBundleGateway returns false on Windows/dev so must not
+      // run for other channels. Skip when the function is unavailable.
+      if (typeof gateway.isCurrentBundleGateway === "function") {
+        let isCurrentBundle = false;
+        try {
+          isCurrentBundle = await gateway.isCurrentBundleGateway();
+        } catch { /* probe failed — fail closed */ }
+        if (!isCurrentBundle) {
+          log("update:notify-policy-governed ignored: running gateway belongs to a different bundle");
+          return;
+        }
+      }
+      // Reject senders that were destroyed while the probe was awaited.
+      // If the window closed during assertLocalDashboard's async port probe,
+      // the srcId must not be added to governanceSenders: the destroyed event
+      // already fired before the add, so no cleanup listener will fire.
+      if (_event?.sender?.isDestroyed?.()) {
+        log("update:notify-policy-governed: sender destroyed during probe — rejecting");
+        return;
+      }
+      // Discard if a newer notification from the same sender already landed.
+      if (senderSeq.get(srcId) !== mySeq) {
+        log("update:notify-policy-governed: superseded notification discarded");
+        return;
+      }
+      const prev = policyGoverned;
+      if (governed) {
+        if (srcId !== null) {
+          governanceSenders.add(srcId);
+          // Remove from the set when the window is destroyed so governance is
+          // lifted automatically once all governing windows close.
+          // Uses the captured srcId (not a live sender reference) because the
+          // sender object is gone by the time destroyed fires.
+          if (_event?.sender) {
+            _event.sender.once("destroyed", () => {
+              governanceSenders.delete(srcId);
+              // On macOS the app stays alive after all windows close
+              // (Cmd+W vs Cmd+Q). If this was the last window, do not clear
+              // governance: the user may reopen a window and the governance
+              // state re-sent by the new window's hook will re-establish it.
+              // On other platforms the app exits when the last window closes,
+              // so clearing is safe. Only clear when another window is open
+              // or we're not on macOS.
+              const { BrowserWindow } = electron;
+              const anyOpen = BrowserWindow && BrowserWindow.getAllWindows().length > 0;
+              if (anyOpen || process.platform !== "darwin") {
+                const wasGoverned = policyGoverned;
+                policyGoverned = governanceSenders.size > 0;
+                // Broadcast the cleared verdict to any remaining windows so
+                // their useIsPolicyGoverned can stop treating the old
+                // update-state cache value as authoritative (same as the
+                // explicit-false path).
+                if (wasGoverned && !policyGoverned) {
+                  updater?.check?.();
+                }
+              }
+            });
+          }
+        }
+        policyGoverned = srcId !== null ? governanceSenders.size > 0 : true;
+        if (!prev) {
+          // Governance just became active: trigger a check immediately so the
+          // feed lane emits not-available and clears any stale "found" state.
+          updater?.check?.();
+        }
+      } else {
+        // Lift governance for this sender. Other windows may still be governed.
+        if (srcId !== null) governanceSenders.delete(srcId);
+        else governanceSenders.clear();
+        policyGoverned = governanceSenders.size > 0;
+        // On a true-to-false transition: broadcast the cleared verdict by
+        // triggering a check so the renderer's update-state cache updates
+        // (useIsPolicyGoverned reads policyGoverned from the broadcast).
+        if (prev && !policyGoverned) {
+          updater?.check?.();
+        }
+      }
+    });
     ipcMain.handle("update:get-info", () => updaterInfo());
     ipcMain.handle("update:check", () => {
       updater.check();
@@ -702,6 +961,18 @@ function createIpcRegistrar({
       const next = typeof channel === "string" ? channel : "";
       if (next !== "" && next !== "insider" && next !== "stable") {
         return { ok: false, error: `invalid channel: ${next}` };
+      }
+      // A required channel replaces the preference, so storing another one
+      // would be a switch that does nothing. The dashboard's
+      // POST /api/update/channel answers the same way (409 locked_by_policy).
+      const required = getRequiredChannel();
+      if (required && next !== required) {
+        return {
+          ok: false,
+          code: "locked_by_policy",
+          error: `updates follow the ${required} channel set by your organization's policy`,
+          info: updaterInfo(),
+        };
       }
       store.set("updateChannel", next);
       updater.check();

@@ -22,8 +22,16 @@ from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, is_valid_timezone, parse_time_string
-from kiro_crew.cron_service.model import validate_auto_pause_after_failures
-from kiro_crew.dashboard.cron_inject import chat_folder_exists, move_cron_job_tab
+from kiro_crew.cron_service.model import (
+    validate_alert_after_failures,
+    validate_auto_pause_after_failures,
+)
+from kiro_crew.dashboard.cron_inject import (
+    chat_folder_exists,
+    chat_folder_move_refuses_store,
+    chat_folder_refuses_store,
+    move_cron_job_tab,
+)
 from kiro_crew.dashboard.cron_timeout_field import timeout_secs_from_body
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.cron_shared import (
@@ -33,6 +41,7 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _cron_unreadable_response,
     _invalid_path_id_response,
     _refuse_foreign_app_job,
+    _sel,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -346,6 +355,71 @@ def _unknown_chat_folder_response() -> web.Response:
     )
 
 
+def _refuse_mate_home_chat_folder(
+    request: web.Request,
+    state: DashboardState,
+    chat_folder_id: str,
+    memory_store: str,
+    operation: str,
+    current_chat_folder_id: str = "",
+) -> web.Response | None:
+    """A 403 ``mate_home_locked`` when the job's tab could never be filed in *chat_folder_id*.
+
+    A mate's home and the folders inside it hold only that mate's sessions, and a
+    job's tab runs on the job's memory store: a job on any other store would be
+    saved with a folder its runs are never placed in. *current_chat_folder_id*
+    is the folder an existing job is filed in: moving its tab out of a mate's
+    home its store may not write is refused the same way. Refused here, while a
+    person is present to be told, and recorded like the routes' other denials.
+    """
+    if not chat_folder_move_refuses_store(
+        state, current_chat_folder_id, chat_folder_id, memory_store
+    ):
+        return None
+    moving_out = not chat_folder_refuses_store(state, chat_folder_id, memory_store)
+    app = _app_caller(request)
+    resources = f"chat_folder_id={chat_folder_id}"
+    if moving_out:
+        resources += f",current_chat_folder_id={current_chat_folder_id}"
+    try:
+        _sel().log_api_access(
+            caller=f"app:{app}" if app else "dashboard",
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=resources,
+            error="mate_home_locked",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+    error = (
+        "This schedule's runs are filed in a mate's folder, and only that mate can "
+        "move them out."
+        if moving_out
+        else "That chat folder belongs to a mate, so this schedule's runs cannot be "
+        "filed there. Pick another folder, or choose not to file runs."
+    )
+    return web.json_response({"error": error, "code": "mate_home_locked"}, status=403)
+
+
+def _member_store(member_id: str) -> str:
+    """The memory store a schedule bound to *member_id* runs on, or ``""``. Blocking.
+
+    ``""`` (the person's) also for a member that does not resolve: the create
+    refuses that member anyway, and ``""`` is kept out of every mate's home.
+    """
+    if not member_id:
+        return ""
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.execution_context import resolve_member_execution
+
+    try:
+        execution = resolve_member_execution(KiroCrewConfig.load(), member_id)
+    except Exception:
+        return ""
+    return execution.store.legacy_name
+
+
 class _ChatFolderGone(Exception):
     """The job's chat folder was deleted before the save could commit."""
 
@@ -385,7 +459,11 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # declarable paths (see ``docs/app-kit/api-reference.md``). No
     # ``internal_auth`` clause: this route has no ``X-Internal-Secret`` caller,
     # and a clause naming one would exempt a future caller nobody reviewed.
-    if request.get("app") == "":
+    # The test is ``not app`` rather than ``app == ""``: an internal-secret
+    # request carries no ``app`` key at all, and must meet the owner gate too
+    # (same shape as the file and workflow routes) -- this and the sibling
+    # delete/batch-delete/update/enable gates below.
+    if not request.get("app"):
         # Body-scope import, like the sibling gates in this package
         # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
         # reaches back into sibling handler modules, so importing the helper at
@@ -523,6 +601,18 @@ async def api_crons_create(request: web.Request) -> web.Response:
     agent_id, member_id = await asyncio.to_thread(
         split_cron_agent_member, agent_id or "", member_id or ""
     )
+    # Kept out of a mate's home even as the person; the member is resolved only
+    # when the folder is in one.
+    if chat_folder_refuses_store(state, chat_folder_id, ""):
+        refused = _refuse_mate_home_chat_folder(
+            request,
+            state,
+            chat_folder_id,
+            await asyncio.to_thread(_member_store, member_id or ""),
+            "crons.create",
+        )
+        if refused is not None:
+            return refused
     add_kwargs: dict[str, Any] = {
         "channel": channel,
         "agent_id": (agent_id or ""),
@@ -617,7 +707,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
 
 async def api_cron_delete(request: web.Request) -> web.Response:
     """DELETE /api/crons/{id} — remove a cron job."""
-    if request.get("app") == "":
+    if not request.get("app"):
         owner_denied = await require_owner_dashboard_request(request, "crons.delete")
         if owner_denied is not None:
             return owner_denied
@@ -683,7 +773,7 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
     purged per successfully-removed job, mirroring the single-delete path, and a
     single ``crons`` refresh is pushed after the batch instead of one per id.
     """
-    if request.get("app") == "":
+    if not request.get("app"):
         owner_denied = await require_owner_dashboard_request(request, "crons.batch_delete")
         if owner_denied is not None:
             return owner_denied
@@ -734,7 +824,7 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
 
 async def api_cron_update(request: web.Request) -> web.Response:
     """PATCH /api/crons/{id} — update a cron job (partial)."""
-    if request.get("app") == "":
+    if not request.get("app"):
         owner_denied = await require_owner_dashboard_request(request, "crons.update")
         if owner_denied is not None:
             return owner_denied
@@ -815,6 +905,34 @@ async def api_cron_update(request: web.Request) -> web.Response:
         if chat_folder_err is not None:
             return chat_folder_err
         kwargs["chat_folder_id"] = resolved
+    # The folder the job's tab is moved to: an explicit one, or none when
+    # persistence is turned off (the store then clears a filed job's folder).
+    next_chat_folder: str | None = kwargs.get("chat_folder_id")
+    if next_chat_folder is None and "persistent_session" in kwargs:
+        next_chat_folder = "" if not kwargs["persistent_session"] else None
+    # Function-local: ``mate_folders`` reaches this module back through the folder records.
+    from kiro_crew.dashboard.mate_folders import is_mate_home
+
+    if next_chat_folder is not None and any(is_mate_home(folder) for folder in state._folders):
+        # The move may go into or out of a mate's home. A schedule's member, and so its store, is
+        # fixed once created, so the store the job already runs on decides.
+        existing = await state.crons.get_job_async(job_id)
+        # An unreadable store loads as no job, which would skip the refusal.
+        try:
+            state.crons.raise_if_store_unreadable()
+        except CronStoreUnreadable as exc:
+            return _cron_unreadable_response(exc)
+        if existing is not None:
+            refused = _refuse_mate_home_chat_folder(
+                request,
+                state,
+                next_chat_folder,
+                str(getattr(existing, "memory_store", "") or ""),
+                "crons.update",
+                current_chat_folder_id=str(getattr(existing, "chat_folder_id", "") or ""),
+            )
+            if refused is not None:
+                return refused
     if "chat_folder_id" in kwargs or "persistent_session" in kwargs:
         # Turning persistence off clears a filed job's folder in the store, so
         # that edit moves the tab through the same path an explicit clear does.
@@ -892,6 +1010,15 @@ async def api_cron_update(request: web.Request) -> web.Response:
 
         app = _app_caller(request)
         kwargs["audit_actor"] = f"app:{app}" if app else audit_actor(request, "dashboard")
+    if "alert_after_failures" in body:
+        try:
+            kwargs["alert_after_failures"] = validate_alert_after_failures(
+                body["alert_after_failures"]
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_alert_after_failures"}, status=400
+            )
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
     try:
@@ -929,7 +1056,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
 
 async def api_cron_enable(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/enable — toggle enable/disable."""
-    if request.get("app") == "":
+    if not request.get("app"):
         owner_denied = await require_owner_dashboard_request(request, "crons.enable")
         if owner_denied is not None:
             return owner_denied

@@ -78,6 +78,13 @@ describe('ProjectAwsProfileStatus read failure', () => {
     expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
     expect(container.querySelector('button')).toBeNull()
   })
+
+  it('says the gateway is busy when the read times out', async () => {
+    read.mockRejectedValue(Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }))
+    renderWithProviders(<ProjectAwsProfileStatus project={PROJECT} />)
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('The gateway is busy and did not answer')
+  })
 })
 
 describe('ProjectAwsProfileSection (the project picker row)', () => {
@@ -198,6 +205,18 @@ describe('ProjectAwsProfileSection (the project picker row)', () => {
     expect(title.className).not.toContain('shrink-0')
     expect(value.className).toContain('shrink-0')
     expect(value.className).toMatch(/max-w-/)
+  })
+
+  it.each([
+    ['our deadline', Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })],
+    ['a dropped connection', new TypeError('Failed to fetch')],
+    ['a proxy timeout', new ApiError(504, 'gateway timeout')],
+  ])('says the gateway is busy, not that the profile is unreadable, on %s', async (_label, failure) => {
+    read.mockRejectedValue(failure)
+    renderWithProviders(<ProjectAwsProfileSection project={PROJECT} />)
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('The gateway is busy and did not answer')
+    expect(alert.textContent).not.toContain("Could not read this project's AWS profile")
   })
 
   it('reports a failed read through the error notice, but stays silent on the owner-only refusal', async () => {

@@ -315,11 +315,9 @@ class TestGitStatus:
     def test_git_status_parsing(self, tmp_tree):
         """Test _git_status with a mocked spawn wrapper."""
         with patch.object(server, "run_limited") as mock_run:
-            # Mock branch
             branch_result = MagicMock()
             branch_result.returncode = 0
             branch_result.stdout = "main\n"
-            # Mock status
             status_result = MagicMock()
             status_result.returncode = 0
             status_result.stdout = " M file.txt\x00?? new.py\x00"
@@ -895,7 +893,7 @@ class TestAutoSdeRound1Findings:
         results = server._search_python(tmp_tree, "needle", "", "")
         files = {r["file"] for r in results}
         assert any(
-            f.endswith("src/main.py") for f in files
+            Path(f).as_posix().endswith("src/main.py") for f in files
         ), f"src/main.py missing from results — allowlist side-effect: {files}"
 
     def test_python_search_never_surfaces_kirocrew_root_files(self, tmp_tree):

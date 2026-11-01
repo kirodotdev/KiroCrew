@@ -325,6 +325,9 @@ class TestPoolAgentResolvesLikeASession:
         await mgr._fill_warm_pool()
 
         assert factory.call_args.kwargs.get("agent") == "kirocrew"
+        claimed = mgr._claim_from_pool("kirocrew")
+        assert claimed is not None
+        assert mgr._warm_pool.qsize() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +586,9 @@ class TestGetOrCreatePoolIntegration:
         )
 
         # Pool skipped
+        assert provider is not pooled
+        assert is_new is True
+        assert mgr._warm_pool.qsize() == 1
         mgr._drain_and_claim.assert_not_awaited()
         # Factory called for cold start, cwd forwarded
         factory.assert_called_once()
@@ -598,8 +604,13 @@ class TestGetOrCreatePoolIntegration:
         mgr._warm_pool.put_nowait((pooled, time.monotonic()))
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
 
-        await mgr.get_or_create("side:parent:1", agent="kirocrew", side_read_only=True)
+        provider, is_new, _ = await mgr.get_or_create(
+            "side:parent:1", agent="kirocrew", side_read_only=True
+        )
 
+        assert provider is not pooled
+        assert is_new is True
+        assert mgr._warm_pool.qsize() == 1  # the pooled child is left for a later claim
         mgr._drain_and_claim.assert_not_awaited()
         factory.assert_called_once()
         assert factory.call_args.kwargs.get("side_read_only") is True
@@ -776,6 +787,146 @@ class TestModelMatchesPoolDefault:
         pooled.client.set_model.assert_awaited_once_with("claude-sonnet-4.6")
 
     @pytest.mark.asyncio
+    async def test_a_pinned_model_cold_starts_on_a_harness_that_launches_its_model(self):
+        """A harness that takes its model only at launch refuses set_model, so a
+        pinned chat must not claim the pooled process: it cold-starts on the pin."""
+        from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
+        from kiro_crew.providers.acp import AcpProvider
+
+        backend = sorted(ACP_BACKENDS_MODEL_AT_LAUNCH)[0]
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.backend = backend
+        pooled.client.set_model = AsyncMock(side_effect=AssertionError("live switch"))
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+        mgr._dispatch_hard_kill = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="auto"):
+            provider, is_new, _ = await mgr.get_or_create(
+                "test-key", agent="kirocrew", model="openai/gpt-4.1"
+            )
+
+        assert provider is not pooled
+        assert is_new is True
+        pooled.client.set_model.assert_not_awaited()
+        mgr._dispatch_hard_kill.assert_called_once_with(pooled)
+        mgr._schedule_replenish.assert_called()
+        factory.assert_called_once()
+        assert factory.call_args.kwargs.get("model_override") == "openai/gpt-4.1"
+
+    @pytest.mark.asyncio
+    async def test_the_cold_start_after_a_launch_pin_is_counted_once_as_its_own_decision(
+        self,
+    ):
+        from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
+        from kiro_crew.providers.acp import AcpProvider
+
+        mgr, _factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.backend = sorted(ACP_BACKENDS_MODEL_AT_LAUNCH)[0]
+        pooled.client.set_model = AsyncMock()
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+        mgr._dispatch_hard_kill = MagicMock()
+        mgr._record_pool_decision = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="auto"):
+            await mgr.get_or_create("test-key", agent="kirocrew", model="openai/gpt-4.1")
+
+        assert [c.args[0] for c in mgr._record_pool_decision.call_args_list] == [
+            "bypass_model_at_launch"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_auto_chat_keeps_a_pool_launched_on_a_named_model(self):
+        """The claim sends nothing for ``auto``, so nothing is killed for it either."""
+        from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
+        from kiro_crew.providers.acp import AcpProvider
+
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.backend = sorted(ACP_BACKENDS_MODEL_AT_LAUNCH)[0]
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+        mgr._dispatch_hard_kill = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="openai/gpt-4.1"):
+            provider, _, _ = await mgr.get_or_create("test-key", agent="kirocrew", model="auto")
+
+        assert provider is pooled
+        factory.assert_not_called()
+        mgr._dispatch_hard_kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("pool_model", "applies"),
+        [("openai/gpt-4.1", True), ("auto", False), ("", True)],
+        ids=["same-as-pool", "another-harness-pin", "pool-has-no-model"],
+    )
+    async def test_a_pin_the_claim_would_not_switch_keeps_the_pooled_process(
+        self, pool_model, applies
+    ):
+        """No kill and no cold start when the claim would leave the model alone."""
+        from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
+        from kiro_crew.providers.acp import AcpProvider
+
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.backend = sorted(ACP_BACKENDS_MODEL_AT_LAUNCH)[0]
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+        mgr._dispatch_hard_kill = MagicMock()
+
+        with (
+            patch.object(type(mgr), "_resolve_agent_model", return_value=pool_model),
+            patch("kiro_crew.session.model_scope.pin_applies", return_value=applies),
+        ):
+            provider, _, _ = await mgr.get_or_create(
+                "test-key", agent="kirocrew", model="openai/gpt-4.1"
+            )
+
+        assert provider is pooled
+        factory.assert_not_called()
+        mgr._dispatch_hard_kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unpinned_chat_still_claims_the_pool_on_a_launch_model_harness(self):
+        from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
+        from kiro_crew.providers.acp import AcpProvider
+
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.backend = sorted(ACP_BACKENDS_MODEL_AT_LAUNCH)[0]
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        provider, _, _ = await mgr.get_or_create("test-key", agent="kirocrew")
+
+        assert provider is pooled
+        factory.assert_not_called()
+        pooled.client.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_pool_claude_backend_translates_canonical_key_on_switch(self):
         """On the claude backend, a canonical wire key (e.g. opus-4.8-1m) is
         translated to a provider id before set_model — else the adapter
@@ -800,6 +951,59 @@ class TestModelMatchesPoolDefault:
 
         pooled.client.set_model.assert_awaited_once_with("global.anthropic.claude-opus-4-8[1m]")
         assert provider is pooled
+
+    @pytest.mark.asyncio
+    async def test_pool_claude_backend_switches_to_an_advertised_bare_alias(self, monkeypatch):
+        """On Claude Code a bare alias the backend advertised is sent unchanged, so a
+        pooled process on the versioned flagship id compares unequal and is switched
+        to the alias."""
+        from kiro_crew import model_registry
+        from kiro_crew.providers.acp import AcpProvider
+
+        monkeypatch.setattr(
+            model_registry,
+            "advertised_models",
+            lambda provider: ["opus"] if provider == "claude_code" else [],
+        )
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.backend = "claude"
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="claude-opus-4.8"):
+            await mgr.get_or_create("test-key", agent="kirocrew", model="opus")
+
+        pooled.client.set_model.assert_awaited_once_with("opus")
+
+    @pytest.mark.asyncio
+    async def test_pool_claude_backend_folds_an_unadvertised_bare_alias(self, monkeypatch):
+        """With no advertised bare alias, 'opus' and the pool's versioned flagship id
+        fold to the same registry provider id, so no redundant switch is sent."""
+        from kiro_crew import model_registry
+        from kiro_crew.providers.acp import AcpProvider
+
+        monkeypatch.setattr(model_registry, "advertised_models", lambda provider: [])
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.backend = "claude"
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="claude-opus-4.8"):
+            await mgr.get_or_create("test-key", agent="kirocrew", model="opus")
+
+        pooled.client.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_pool_claude_backend_skips_redundant_switch_cross_namespace(self):

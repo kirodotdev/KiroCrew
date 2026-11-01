@@ -10,6 +10,7 @@ import { api } from '../../api/client'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../../components/autoNudgeLoop'
 import {
   dashboardAutomationSlotKey,
+  isAutomationRunning,
   isFullLegacyAutomationRecord,
   normalizeAutomationRecord,
 } from '../../monitoring/automation'
@@ -132,6 +133,19 @@ export function useAutomationSeed(dispatch: AppDispatch, queryClient: QueryClien
             const protectedSlots = [...protectedSlotSet]
             const records = [...legacyRecords, ...structuredSnapshotRecords.filter(record => record.active)]
               .filter(record => stillFresh(record) && !protectedSlotSet.has(record.slotKey))
+            // A slot protected only because its per-slot cold read landed during
+            // the seed holds a record newer than this snapshot, but that read
+            // writes the query cache, not Redux. Carry a running one across, or
+            // the sidebar (Redux only) drops the chip the header still shows.
+            // A live frame already wrote Redux, so those slots are left alone.
+            for (const [, cached] of queryClient.getQueriesData<
+              ReturnType<typeof normalizeAutomationRecord>
+            >({ queryKey: ['session-automation'] })) {
+              if (cached && protectedSlotSet.has(cached.slotKey) && stillFresh(cached)
+                && isAutomationRunning(cached)) {
+                records.push(cached)
+              }
+            }
             const terminalRecords = new Map(structuredSnapshotRecords
               .filter(record => !record.active && stillFresh(record)
                 && !protectedSlotSet.has(record.slotKey))
@@ -216,7 +230,10 @@ export function useAutomationSeed(dispatch: AppDispatch, queryClient: QueryClien
         if (record) {
           // The live projection is already authoritative and normalized;
           // cache it directly instead of issuing one REST request for
-          // every probe frame.
+          // every probe frame. A cold read still in flight predates this
+          // frame, so cancel it first: its late answer must not replace the
+          // frame, or a reconnect seed would carry that stale record.
+          void queryClient.cancelQueries({ queryKey: ['session-automation', slot] })
           queryClient.setQueryData(['session-automation', slot], record)
           dispatch(sseAutomation(record))
         }

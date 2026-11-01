@@ -1,8 +1,8 @@
-"""Tests for the phase-aware status reaction ladder.
+"""Tests for the status reactions.
 
-Two halves: Slack's ``StatusReactionController`` as the channel that shipped it
-first, and the channel-neutral ladder in ``messaging.status_reactions`` that any
-channel drives through an injected emoji sink.
+Two halves: Slack's ``StatusReactionController`` (one ack or error reaction, no
+phase trail), and the channel-neutral phase ladder in ``messaging.status_reactions``
+that the other channels drive through an injected emoji sink.
 """
 
 from __future__ import annotations
@@ -23,10 +23,7 @@ from kiro_crew.messaging.status_reactions import (
 )
 from kiro_crew.messaging.status_reactions import tool_to_phase as shared_tool_to_phase
 from kiro_crew.slack import handler as handler_mod
-from kiro_crew.slack.handler import (
-    StatusReactionController,
-    _tool_to_phase,
-)
+from kiro_crew.slack.handler import StatusReactionController
 from kiro_crew.testing.wait import await_until
 
 # ── FakeSlack helper ────────────────────────────────────────────────────
@@ -131,409 +128,117 @@ _SOFT = 1.0
 _HARD = 3.0
 
 
-@pytest.fixture(autouse=True)
-def _fast_timers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Set deterministic timer values (consumed by FakeClock.advance)."""
-    monkeypatch.setattr(handler_mod, "_PHASE_DEBOUNCE_SECS", _DEBOUNCE)
-    monkeypatch.setattr(handler_mod, "_STALL_SOFT_SECS", _SOFT)
-    monkeypatch.setattr(handler_mod, "_STALL_HARD_SECS", _HARD)
+# ── Slack's StatusReactionController ────────────────────────────────────
 
 
-# ── Core phase transition tests ─────────────────────────────────────────
-
-
-class TestPhaseTransitions:
-    """Basic phase lifecycle."""
+class TestSlackStatusReaction:
+    """Slack wears ONE reaction: the ``queued`` ack where no native thread status
+    shows, removed at the reply (no ``done`` reaction), or ``error`` on failure."""
 
     @pytest.mark.asyncio
-    async def test_queued_adds_eyes(self) -> None:
-        with fake_clock():
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            assert ("add", _TS, "eyes") in slack.calls
-
-    @pytest.mark.asyncio
-    async def test_thinking_swaps_eyes_to_thinking_face(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            ctrl.set_phase("thinking")
-            await clock.advance(_DEBOUNCE + 0.01)
-            assert ("remove", _TS, "eyes") in slack.calls
-            assert ("add", _TS, "thinking_face") in slack.calls
-
-    @pytest.mark.asyncio
-    async def test_finalize_done_is_immediate(self) -> None:
-        with fake_clock():
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            ctrl.finalize(error=False)
-            await asyncio.sleep(0)
-            assert ("remove", _TS, "eyes") in slack.calls
-            assert ("add", _TS, "lobster") in slack.calls
-
-    @pytest.mark.asyncio
-    async def test_finalize_error(self) -> None:
-        with fake_clock():
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            ctrl.finalize(error=True)
-            await asyncio.sleep(0)
-            assert ("remove", _TS, "eyes") in slack.calls
-            assert ("add", _TS, "scream") in slack.calls
-
-    @pytest.mark.asyncio
-    async def test_debounce_suppresses_rapid_transitions(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            ctrl.set_phase("thinking")
-            ctrl.set_phase("coding")
-            ctrl.set_phase("browsing")
-
-            await clock.advance(_DEBOUNCE + 0.01)
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert "thinking_face" not in add_emojis
-            assert "man_technologist" not in add_emojis
-            assert "globe_with_meridians" in add_emojis
-
-
-class TestToolToPhase:
-    """_tool_to_phase mapping."""
-
-    def test_coding_tool_by_name(self) -> None:
-        assert _tool_to_phase("Bash") == "coding"
-        assert _tool_to_phase("Edit") == "coding"
-
-    def test_web_tool_by_name(self) -> None:
-        assert _tool_to_phase("WebFetch") == "browsing"
-
-    def test_unknown_tool(self) -> None:
-        assert _tool_to_phase("SomethingElse") == "tool"
-
-    def test_kind_preferred_over_name(self) -> None:
-        assert _tool_to_phase("UnknownTool", tool_kind="bash") == "coding"
-
-    def test_web_kind(self) -> None:
-        assert _tool_to_phase("X", tool_kind="webfetch") == "browsing"
-
-    def test_mcp_tool_extracts_base(self) -> None:
-        assert _tool_to_phase("mcp__builder-mcp__Bash") == "coding"
-
-    def test_mcp_web_tool_extracts_base(self) -> None:
-        assert _tool_to_phase("mcp__some-server__WebFetch") == "browsing"
-
-
-# ── Stall detection tests ──────────────────────────────────────────────
-
-
-class TestStallDetection:
-    """Stall watchdog fires soft/hard reactions and can be paused/reset."""
-
-    @pytest.mark.asyncio
-    async def test_stall_soft_fires_after_delay(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            await clock.advance(_SOFT + 0.01)
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert "yawning_face" in add_emojis
-
-    @pytest.mark.asyncio
-    async def test_stall_hard_replaces_soft(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            await clock.advance(_HARD + 0.01)
-            assert ("remove", _TS, "yawning_face") in slack.calls
-            assert ("add", _TS, "fearful") in slack.calls
-
-    @pytest.mark.asyncio
-    async def test_progress_resets_stall(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            await clock.advance(_SOFT - 0.2)
-            ctrl.on_progress()
-
-            await clock.advance(0.4)
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert "yawning_face" not in add_emojis
-
-            await clock.advance(_SOFT)
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert "yawning_face" in add_emojis
-
-    @pytest.mark.asyncio
-    async def test_pause_prevents_stall(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            ctrl.pause_stall_watchdog()
-
-            await clock.advance(_SOFT + 0.5)
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert "yawning_face" not in add_emojis
-
-    @pytest.mark.asyncio
-    async def test_resume_restarts_stall_watchdog(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            ctrl.pause_stall_watchdog()
-
-            await clock.advance(_SOFT + 0.5)
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert "yawning_face" not in add_emojis
-
-            ctrl.resume_stall_watchdog()
-            await clock.advance(_SOFT + 0.01)
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert "yawning_face" in add_emojis
-
-    @pytest.mark.asyncio
-    async def test_finalize_cleans_up_stall(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-
-            await clock.advance(_SOFT + 0.01)
-            assert ("add", _TS, "yawning_face") in slack.calls
-            slack.calls.clear()
-
-            ctrl.finalize(error=False)
-            await asyncio.sleep(0)
-            assert ("remove", _TS, "yawning_face") in slack.calls
-            assert ("add", _TS, "lobster") in slack.calls
-
-
-# ── Disabled reactions tests ─────────────────────────────────────────────
-
-
-class TestDisabledReactions:
-    """When enabled=False, no reactions should be added or removed."""
-
-    @pytest.mark.asyncio
-    async def test_disabled_set_phase_no_ops(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS, enabled=False)
-            ctrl.set_phase("queued")
-            await clock.advance(0.5)
-            assert slack.calls == []
-
-    @pytest.mark.asyncio
-    async def test_disabled_finalize_no_ops(self) -> None:
+    async def test_ack_then_removed_with_nothing_in_its_place(self) -> None:
         slack = FakeSlack()
-        ctrl = StatusReactionController(slack, _CH, _TS, enabled=False)
+        ctrl = StatusReactionController(slack, _CH, _TS)
+        ctrl.start(native_status=False)
+        await asyncio.sleep(0)
+        ctrl.finalize(error=False)
+        await asyncio.sleep(0)
+        assert slack.calls == [("add", _TS, "eyes"), ("remove", _TS, "eyes")]
+
+    @pytest.mark.asyncio
+    async def test_native_status_means_no_reaction(self) -> None:
+        slack = FakeSlack()
+        ctrl = StatusReactionController(slack, _CH, _TS)
+        ctrl.start(native_status=True)
         ctrl.finalize(error=False)
         await asyncio.sleep(0)
         assert slack.calls == []
 
     @pytest.mark.asyncio
-    async def test_disabled_full_lifecycle_no_ops(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS, enabled=False)
-            ctrl.set_phase("queued")
-            ctrl.set_phase("thinking")
-            ctrl.on_progress()
-            ctrl.set_phase("coding")
-            ctrl.finalize(error=False)
-            await clock.advance(0.5)
-            assert slack.calls == []
+    async def test_error_swaps_the_ack_for_the_error_reaction(self) -> None:
+        slack = FakeSlack()
+        ctrl = StatusReactionController(slack, _CH, _TS)
+        ctrl.start(native_status=False)
+        await asyncio.sleep(0)
+        ctrl.finalize(error=True)
+        await asyncio.sleep(0)
+        assert slack.calls == [
+            ("add", _TS, "eyes"),
+            ("remove", _TS, "eyes"),
+            ("add", _TS, "scream"),
+        ]
 
     @pytest.mark.asyncio
-    async def test_enabled_true_still_works(self) -> None:
-        with fake_clock():
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS, enabled=True)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            assert ("add", _TS, "eyes") in slack.calls
+    async def test_start_and_finalize_are_idempotent(self) -> None:
+        slack = FakeSlack()
+        ctrl = StatusReactionController(slack, _CH, _TS)
+        ctrl.start(native_status=False)
+        ctrl.start(native_status=False)
+        await asyncio.sleep(0)
+        ctrl.finalize(error=False)
+        ctrl.finalize(error=False)
+        await asyncio.sleep(0)
+        assert slack.calls == [("add", _TS, "eyes"), ("remove", _TS, "eyes")]
 
     @pytest.mark.asyncio
-    async def test_disabled_resume_stall_watchdog_no_ops(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS, enabled=False)
-            ctrl.pause_stall_watchdog()
-            ctrl.resume_stall_watchdog()
-            await clock.advance(_SOFT + 0.5)
-            assert slack.calls == []
+    async def test_an_error_after_a_clean_finalize_upgrades_once(self) -> None:
+        """The reply failed to post after the turn ended: the error still shows."""
+        slack = FakeSlack()
+        ctrl = StatusReactionController(slack, _CH, _TS)
+        ctrl.start(native_status=False)
+        await asyncio.sleep(0)
+        ctrl.finalize(error=False)
+        await asyncio.sleep(0)
+        ctrl.finalize(error=True)
+        ctrl.finalize(error=True)
+        ctrl.finalize(error=False)
+        await asyncio.sleep(0)
+        assert slack.calls == [
+            ("add", _TS, "eyes"),
+            ("remove", _TS, "eyes"),
+            ("add", _TS, "scream"),
+        ]
 
     @pytest.mark.asyncio
-    async def test_disabled_on_progress_no_stall(self) -> None:
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS, enabled=False)
-            ctrl.on_progress()
-            await clock.advance(_SOFT + 0.5)
-            assert slack.calls == []
+    async def test_disabled_never_calls_slack(self) -> None:
+        slack = FakeSlack()
+        ctrl = StatusReactionController(slack, _CH, _TS, enabled=False)
+        ctrl.start(native_status=False)
+        ctrl.finalize(error=True)
+        await asyncio.sleep(0)
+        assert slack.calls == []
 
 
-# ── Per-phase suppression tests (slack.reactions with null values) ──────
+class TestSlackReactionSuppression:
+    """``slack.reactions`` may set the ack or the error reaction to ``null``."""
 
-
-class TestPhaseSuppression:
-    """When a phase emoji is set to ``None`` in ``_PHASE_EMOJIS``, that phase
-    must neither add a new reaction nor emit a stray ``add`` call. Transitions
-    into and out of a suppressed phase should still clean up any prior emoji.
-    """
-
-    @pytest.mark.asyncio
-    async def test_build_phase_emojis_accepts_none(self) -> None:
-        result, unknown = handler_mod._build_phase_emojis({"done": None, "error": "boom"})
-        assert result["done"] is None
-        assert result["error"] == "boom"
-        # Other defaults untouched
-        assert result["queued"] == "eyes"
+    def test_build_phase_emojis_accepts_none(self) -> None:
+        result, unknown = handler_mod._build_phase_emojis({"queued": None, "error": "boom"})
+        assert result == {"queued": None, "error": "boom"}
         assert unknown == []
 
     @pytest.mark.asyncio
-    async def test_suppressed_queued_adds_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A suppressed immediate phase makes no API calls on entry."""
-        suppressed = dict(handler_mod._PHASE_EMOJIS)
-        suppressed["queued"] = None
-        monkeypatch.setattr(handler_mod, "_PHASE_EMOJIS", suppressed)
-        with fake_clock():
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            add_calls = [c for c in slack.calls if c[0] == "add"]
-            assert add_calls == []
+    async def test_suppressed_ack_adds_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(handler_mod._PHASE_EMOJIS, "queued", None)
+        slack = FakeSlack()
+        ctrl = StatusReactionController(slack, _CH, _TS)
+        ctrl.start(native_status=False)
+        ctrl.finalize(error=False)
+        await asyncio.sleep(0)
+        assert slack.calls == []
 
     @pytest.mark.asyncio
-    async def test_suppressed_intermediate_phase_no_add(
+    async def test_suppressed_error_still_takes_the_ack_down(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A suppressed intermediate phase still clears the prior emoji but adds nothing."""
-        suppressed = dict(handler_mod._PHASE_EMOJIS)
-        suppressed["thinking"] = None
-        monkeypatch.setattr(handler_mod, "_PHASE_EMOJIS", suppressed)
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            ctrl.set_phase("thinking")
-            await clock.advance(_DEBOUNCE + 0.01)
-            # Old emoji removed, no new one added
-            assert ("remove", _TS, "eyes") in slack.calls
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert "thinking_face" not in add_emojis
-            assert add_emojis == []
-
-    @pytest.mark.asyncio
-    async def test_suppressed_done_finalize_no_lobster(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The original motivating case: suppressing `done` leaves no terminal emoji
-        but still cleans up any prior phase emoji."""
-        suppressed = dict(handler_mod._PHASE_EMOJIS)
-        suppressed["done"] = None
-        monkeypatch.setattr(handler_mod, "_PHASE_EMOJIS", suppressed)
-        with fake_clock():
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            ctrl.finalize(error=False)
-            await asyncio.sleep(0)
-            assert ("remove", _TS, "eyes") in slack.calls
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert "lobster" not in add_emojis
-            assert add_emojis == []
-
-    @pytest.mark.asyncio
-    async def test_suppressed_done_still_cleans_up_stall(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Stall emoji still removed on finalize even when `done` is suppressed."""
-        suppressed = dict(handler_mod._PHASE_EMOJIS)
-        suppressed["done"] = None
-        monkeypatch.setattr(handler_mod, "_PHASE_EMOJIS", suppressed)
-        with fake_clock() as clock:
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-
-            await clock.advance(_SOFT + 0.01)
-            assert ("add", _TS, "yawning_face") in slack.calls
-            slack.calls.clear()
-
-            ctrl.finalize(error=False)
-            await asyncio.sleep(0)
-            assert ("remove", _TS, "yawning_face") in slack.calls
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert add_emojis == []
-
-    @pytest.mark.asyncio
-    async def test_suppressed_error_finalize_no_scream(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`error` can be suppressed too (symmetry with `done`)."""
-        suppressed = dict(handler_mod._PHASE_EMOJIS)
-        suppressed["error"] = None
-        monkeypatch.setattr(handler_mod, "_PHASE_EMOJIS", suppressed)
-        with fake_clock():
-            slack = FakeSlack()
-            ctrl = StatusReactionController(slack, _CH, _TS)
-            ctrl.set_phase("queued")
-            await asyncio.sleep(0)
-            slack.calls.clear()
-
-            ctrl.finalize(error=True)
-            await asyncio.sleep(0)
-            add_emojis = [e for a, _, e in slack.calls if a == "add"]
-            assert "scream" not in add_emojis
-            assert add_emojis == []
+        monkeypatch.setitem(handler_mod._PHASE_EMOJIS, "error", None)
+        slack = FakeSlack()
+        ctrl = StatusReactionController(slack, _CH, _TS)
+        ctrl.start(native_status=False)
+        await asyncio.sleep(0)
+        ctrl.finalize(error=True)
+        await asyncio.sleep(0)
+        assert slack.calls == [("add", _TS, "eyes"), ("remove", _TS, "eyes")]
 
 
 # ── Channel-neutral ladder (messaging.status_reactions) ─────────────────
@@ -957,23 +662,23 @@ class TestSharedLadderSinkFailures:
 
 
 class TestSharedToolClassification:
-    """The hoisted mapping answers exactly as Slack's own copy does."""
+    """The shared tool-to-phase mapping the channel-neutral ladder reads."""
 
     @pytest.mark.parametrize(
-        "name,kind",
+        "name,kind,phase",
         [
-            ("Bash", ""),
-            ("WebFetch", ""),
-            ("SomethingElse", ""),
-            ("UnknownTool", "bash"),
-            ("X", "webfetch"),
-            ("mcp__builder-mcp__Bash", ""),
-            ("mcp__some-server__WebFetch", ""),
-            ("Read", "other"),
+            ("Bash", "", "coding"),
+            ("WebFetch", "", "browsing"),
+            ("SomethingElse", "", "tool"),
+            ("UnknownTool", "bash", "coding"),
+            ("X", "webfetch", "browsing"),
+            ("mcp__builder-mcp__Bash", "", "coding"),
+            ("mcp__some-server__WebFetch", "", "browsing"),
+            ("Read", "other", "coding"),
         ],
     )
-    def test_matches_the_slack_mapping(self, name: str, kind: str) -> None:
-        assert shared_tool_to_phase(name, kind) == _tool_to_phase(name, kind)
+    def test_classifies_tools(self, name: str, kind: str, phase: str) -> None:
+        assert shared_tool_to_phase(name, kind) == phase
 
     def test_display_title_prefix_is_stripped_for_classification(self) -> None:
         assert shared_tool_to_phase("Running: Bash") == "tool"
@@ -1155,7 +860,7 @@ class TestImportDoesNotCreateTheDataHome:
             data = home / ".kiro" / "crew"
             data.mkdir(parents=True)
             (data / "config.json").write_text(
-                json.dumps({"slack": {"reactions": {"thinking": "brain"}}}), encoding="utf-8"
+                json.dumps({"slack": {"reactions": {"queued": "brain"}}}), encoding="utf-8"
             )
         env = {k: v for k, v in os.environ.items() if k != "KIROCREW_HOME"}
         env["HOME"] = str(home)
@@ -1177,8 +882,8 @@ class TestImportDoesNotCreateTheDataHome:
     def test_a_fresh_interpreter_import_leaves_an_absent_home_absent(self, tmp_path):
         emojis, home = self._import_in_a_fresh_interpreter(tmp_path, seeded=False)
         assert not (home / ".kiro").exists()
-        assert emojis["thinking"] == handler_mod._DEFAULT_PHASE_EMOJIS["thinking"]
+        assert emojis["queued"] == handler_mod._DEFAULT_PHASE_EMOJIS["queued"]
 
     def test_an_existing_config_still_supplies_the_overrides(self, tmp_path):
         emojis, _ = self._import_in_a_fresh_interpreter(tmp_path, seeded=True)
-        assert emojis["thinking"] == "brain"
+        assert emojis["queued"] == "brain"

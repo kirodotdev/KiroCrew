@@ -331,6 +331,10 @@ class TestDoctorStt:
 
         section = self._stt_section(out)
         assert "status:      ⏹ disabled" in section
+        # Wired to the constant pinned against the dashboard's own labels.
+        from kiro_crew.doctor_checks import features
+
+        assert f"enable from dashboard → {features._STT_SETTINGS_PATH}" in section
         assert "ffmpeg:      ⏭  not installed (not needed)" in section
         assert "engine:" not in section
         assert "model:" not in section

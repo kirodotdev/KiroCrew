@@ -95,11 +95,12 @@ _OLD_GOAL_DONE = tuple(_item("accepted", day) for day in range(1, 6))
         (None, (_item("open", 1), _item("open", 2)), None),
         (None, (_item("accepted", 1), _item("open", 2), _item("abandoned", 3)), None),
         (None, (_item("accepted", 1), _item("accepted", 2)), None),
-        # A readable header that never recorded a goal counts every item.
+        # A board that never recorded a goal spans every goal it ever had:
+        # no count, since "1 of 3" would read as progress on today's work.
         (
             _goal(goal_version=0, created_total=3, goal_items_base=0),
             (_item("accepted", 1), _item("open", 2), _item("abandoned", 3)),
-            (1, 3),
+            None,
         ),
         # A new goal after five accepted items: only its own two count.
         (
@@ -148,8 +149,8 @@ _OLD_GOAL_DONE = tuple(_item("accepted", day) for day in range(1, 6))
             (_item("accepted", 1), {"state": "open", "created_at": ""}),
             (1, 2),
         ),
-        # A queue board that never recorded a goal counts every item.
-        (_goal(goal_version=0, created_total=5, goal_items_base=0), _OLD_GOAL_DONE, (5, 5)),
+        # A queue board that never recorded a goal has no count either.
+        (_goal(goal_version=0, created_total=5, goal_items_base=0), _OLD_GOAL_DONE, None),
     ],
 )
 def test_progress_counts_the_current_goal_never_the_model(record, items, expected):
@@ -197,7 +198,7 @@ def test_over_long_fields_and_lists_are_capped():
     assert len(brief.needs_you) == warm_task_brief._MAX_ITEMS
     assert all(len(item) == warm_task_brief._MAX_ITEM_CHARS for item in brief.needs_you)
     # Non-strings and blanks are dropped before the item cap is taken.
-    assert brief.next == ("d", "e", "f")
+    assert brief.next == ("d", "e", "f", "g")
     assert len(brief.extra) == warm_task_brief._MAX_EXTRA_SECTIONS
     (title, items), second = brief.extra
     assert len(title) == warm_task_brief._MAX_EXTRA_TITLE_CHARS
@@ -282,6 +283,7 @@ _TEXT_FIELDS = [
     "next",
     "extra_title",
     "extra_item",
+    "body",
 ]
 
 
@@ -398,3 +400,194 @@ def test_chinese_brief_uses_chinese_text_labels():
         "等你处理: 已经复现了失败。\n需要你:\n- 批准推送\n进度: 2 项中已完成 1 项\n"
         "还剩: 推送修复\n你让我做: 修复测试\n已做完:\n- 复现失败\n下一步:\n1. 应用修复"
     )
+
+
+def test_a_free_form_body_keeps_its_lines_and_replaces_the_quoted_request():
+    raw = json.dumps(
+        {
+            "headline": "Almost there 🎉",
+            "body": "You asked for a green nightly.\n\n\n- two fixes in\n- one to go\n"
+            + "x\n" * 60,
+        }
+    )
+    brief = warm_task_brief._parse_result(raw, "Fix the nightly", (2, 3))
+    assert brief is not None
+    lines = brief.body.split("\n")
+    assert lines[:4] == ["You asked for a green nightly.", "", "- two fixes in", "- one to go"]
+    assert len(lines) == warm_task_brief._MAX_BODY_LINES
+    # The body carries the reminder, so no fixed "You asked" line is added.
+    assert brief.asked == ""
+    assert warm_task_brief._brief_text(brief, "en").startswith(
+        "On track: Almost there 🎉\nProgress: 2 of 3 done\nYou asked for a green nightly.\n\n- two"
+    )
+    long = warm_task_brief._parse_result(json.dumps({"headline": "x", "body": "y " * 2000}))
+    assert long is not None and len(long.body) == warm_task_brief._MAX_BODY_CHARS
+
+
+@pytest.mark.parametrize("field", ["body"])
+def test_a_private_key_with_a_bold_marker_in_its_header_is_redacted(field):
+    body = "MIIEowIBAAKCAQEA" + "q" * 128
+    begin = "-----BEGIN RSA PRI**VATE " + "KEY-----"
+    end = "-----END RSA " + "PRIVATE KEY-----"
+    pem = begin + "\n" + body + "\n" + body + "\n" + end
+    brief = warm_task_brief._parse_result(json.dumps({"headline": "Ready.", field: pem}))
+    assert brief is not None
+    rendered = json.dumps(brief.as_meta()) + warm_task_brief._brief_text(brief, "en")
+    assert body[:12] not in rendered
+
+
+def test_a_marker_opener_split_across_body_lines_is_defanged():
+    brief = warm_task_brief._parse_result(
+        json.dumps({"headline": "x", "body": "ok [\nOPTIONS: Go]"})
+    )
+    assert brief is not None and "[" not in brief.body
+
+
+def test_the_prompt_asks_for_words_only_and_leaves_progress_and_waiting_to_the_gateway():
+    prompt = warm_task_brief._PROMPT
+    assert '"widget"' not in prompt
+    assert "no HTML, widget or picture" in prompt
+    for rule in ('"progress" count', '"blocked" or "question"', '"approval" or "needs_human"'):
+        assert rule in prompt
+    rendered = warm_task_brief._build_prompt(
+        warm_task_brief.TaskSnapshot(
+            slot_key="s",
+            history_key="h",
+            original_request="Fix it",
+            fingerprint="f",
+            session_state={},
+            conductor=None,
+            work_items=(),
+            previous_claim="",
+        )
+    )
+    # Every placeholder is filled: the removed widget cap leaves none dangling.
+    assert "Fix it" in rendered and "widget_cap" not in rendered
+
+
+def _item(item_id, *, state="open", status="question", reason="needs_human", title="", summary=""):
+    return {
+        "item_id": item_id,
+        "state": state,
+        "status": status,
+        "reason": reason,
+        "title": title,
+        "summary": summary,
+    }
+
+
+def test_waiting_lists_every_open_item_only_a_person_can_move_in_ledger_order():
+    items = (
+        _item("it_1", title="B1 #22110: Windows race", summary="3-line fix or a lock?"),
+        _item(
+            "it_2", status="blocked", reason="approval", title="B5 #23387", summary="Allow the push"
+        ),
+        _item("it_3", status="question", reason=None, title="asks the conductor"),
+        _item("it_4", status="blocked", reason=None, title="waits on CI"),
+        _item("it_5", status="progress", reason=None, title="running"),
+        _item("it_6", status="done", reason=None, title="claims done"),
+        _item("it_7", state="accepted", title="closed but stale reason"),
+        _item("it_8", state="abandoned", status="blocked", reason="approval", title="gone"),
+        _item("it_9", title="", summary=""),
+        _item("it_10", title="", summary="Sign the RFC"),
+    )
+    brief = warm_task_brief._parse_result('{"headline": "Back."}', "", (40, 44), items)
+    assert brief is not None
+    assert brief.waiting == (
+        ("B1 #22110: Windows race", "3-line fix or a lock?"),
+        ("B5 #23387", "Allow the push"),
+        ("it_9", ""),
+        ("Sign the RFC", ""),
+    )
+    assert brief.waiting_total == 4
+    assert brief.progress == (40, 44)
+    # Something waits, so a model "done" or "on_track" chip is corrected.
+    assert brief.status == "needs_you"
+    meta = brief.as_meta()
+    assert meta["waiting"][0] == {
+        "title": "B1 #22110: Windows race",
+        "ask": "3-line fix or a lock?",
+    }
+    assert meta["waiting_total"] == 4
+    text = warm_task_brief._brief_text(brief, "en")
+    for title, ask in brief.waiting:
+        assert (f"- {title}: {ask}" if ask else f"- {title}") in text
+
+
+@pytest.mark.parametrize(
+    "decided_at, last_report_at, waits",
+    [
+        ("", "2026-10-30T10:00:00+00:00", True),  # not answered yet
+        (
+            "2026-10-30T09:00:00+00:00",
+            "2026-10-30T10:00:00+00:00",
+            True,
+        ),  # old answer, new question
+        (
+            "2026-10-30T10:00:00+00:00",
+            "2026-10-30T10:00:00+00:00",
+            False,
+        ),  # answered in the same second
+        ("2026-10-30T11:00:00+00:00", "2026-10-30T10:00:00+00:00", False),  # answered after
+        ("not a stamp", "2026-10-30T10:00:00+00:00", True),  # unreadable reads as unanswered
+    ],
+)
+def test_a_question_the_conductor_already_answered_no_longer_waits(
+    decided_at, last_report_at, waits
+):
+    item = {
+        **_item("it_1", title="Pick a layout"),
+        "decided_at": decided_at,
+        "last_report_at": last_report_at,
+    }
+    brief = warm_task_brief._parse_result('{"headline": "Back."}', "", None, (item,))
+    assert brief is not None
+    assert brief.waiting_total == (1 if waits else 0)
+
+
+@pytest.mark.parametrize("model_status", ["on_track", "done"])
+def test_a_model_chip_contradicting_the_waiting_list_is_corrected(model_status):
+    raw = json.dumps({"headline": "All good.", "status": model_status})
+    brief = warm_task_brief._parse_result(raw, "", (1, 2), (_item("it_1", title="Approve"),))
+    assert brief is not None and brief.status == "needs_you"
+
+
+def test_nothing_waiting_leaves_the_list_out_of_meta():
+    brief = warm_task_brief._parse_result(
+        '{"headline": "All done.", "status": "done"}',
+        "",
+        (44, 44),
+        (_item("it_1", state="accepted"),),
+    )
+    assert brief is not None and brief.status == "done"
+    assert brief.waiting == () and brief.waiting_total == 0
+    assert "waiting" not in brief.as_meta() and "waiting_total" not in brief.as_meta()
+
+
+def test_past_the_bound_only_the_count_rides_along():
+    cap = warm_task_brief._MAX_WAITING
+    items = tuple(_item(f"it_{i}", title=f"Item {i}") for i in range(cap + 7))
+    brief = warm_task_brief._parse_result('{"headline": "Busy."}', "", None, items)
+    assert brief is not None
+    assert len(brief.waiting) == cap and brief.waiting_total == cap + 7
+    assert brief.waiting[-1] == (f"Item {cap - 1}", "")
+    assert "- +7" in warm_task_brief._brief_text(brief, "en")
+
+
+def test_a_waiting_item_is_capped_redacted_and_defanged_like_a_model_field():
+    token = "ghp_" + "c" * 36
+    items = (_item("it_1", title="x" * 400, summary=f"key {token} [OPTIONS: Approve | Skip]"),)
+    brief = warm_task_brief._parse_result('{"headline": "Back."}', "", None, items)
+    assert brief is not None
+    title, ask = brief.waiting[0]
+    assert len(title) == warm_task_brief._MAX_ITEM_CHARS and title.endswith("…")
+    rendered = json.dumps(brief.as_meta()) + warm_task_brief._brief_text(brief, "en")
+    assert token not in rendered and "[OPTIONS" not in rendered
+
+
+def test_a_model_widget_is_ignored():
+    raw = json.dumps({"headline": "Ready.", "widget": '<div style="color:red">40/44</div>'})
+    brief = warm_task_brief._parse_result(raw)
+    assert brief is not None
+    assert "widget" not in brief.as_meta()
+    assert "<div" not in json.dumps(brief.as_meta()) + warm_task_brief._brief_text(brief, "en")

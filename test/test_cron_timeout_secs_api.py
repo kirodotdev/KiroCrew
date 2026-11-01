@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.cron import _JOB_TIMEOUT_SECS, CronJob
 from kiro_crew.dashboard.handlers.cron import api_cron_update, api_crons, api_crons_create
@@ -38,7 +39,7 @@ def _app(handler, route: str, **store) -> web.Application:
         has_slot=MagicMock(return_value=False),
     )
     app.router.add_route("*", route, handler)
-    return app
+    return as_owner(app)
 
 
 def _job(**over) -> CronJob:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -386,15 +387,56 @@ async def _probe(
             candidate_runnable = bool(first_candidate) and await asyncio.to_thread(
                 _is_runnable_executable, first_candidate, self._platform
             )
+            carve_out_whoami: ProcessResult | None = None
+            if sandbox_failure is not None and candidate_runnable:
+                from kiro_crew import edition
+
+                if edition.is_enterprise():
+                    # The enterprise sign-in check re-runs its two fixed probes
+                    # through ``wrap_argv``'s first-party carve-out, which lets
+                    # them run unconfined ONLY on a ``no_backend`` host with no
+                    # governance floor; a ``transient`` or ``foreign_sandbox``
+                    # refusal is refused again there. Only the sign-in verdict
+                    # comes from it: readiness stays False (the boot latch
+                    # below; the full probe reports the sandbox unavailable),
+                    # and no setup-complete marker is written.
+                    # ``abspath``, not ``realpath``: anchors a relative
+                    # ``KIROCREW_KIRO_BIN`` and keeps a multiplexer's symlink.
+                    candidate = os.path.abspath(first_candidate)
+                    carve_out_version = await self._audited_probe(
+                        "probe_version", candidate, ["--version"], first_party_fixed_argv=True
+                    )
+                    if carve_out_version.ok:
+                        carve_out_whoami = await self._audited_identity_probe(
+                            candidate, isolate_home=False, first_party_fixed_argv=True
+                        )
+                        if login_only:
+                            self._viable_binary = first_candidate
+                            return _latch_login_only(self, carve_out_whoami, probe_identity)
+                    elif login_only and carve_out_version.timed_out:
+                        # The boot check names the probe's own timeout. Any
+                        # other failure keeps the sandbox refusal as the reason.
+                        version_probe, sandbox_failure = carve_out_version, None
             if sandbox_failure is not None and candidate_runnable:
                 kind, detail, remedy = sandbox_failure
-                logger.warning(
-                    "Kiro CLI at %s is present and executable but could not be "
-                    "verified: the sandbox refused the probe (%s: %s)",
-                    first_candidate,
-                    kind,
-                    detail,
-                )
+                if carve_out_whoami is not None and carve_out_whoami.ok:
+                    # Still a WARNING: agent sessions cannot start on this host.
+                    logger.warning(
+                        "Kiro CLI at %s is signed in (confirmed by the enterprise sign-in "
+                        "check); agent sessions still need a sandbox, which this host "
+                        "cannot build (%s: %s)",
+                        first_candidate,
+                        kind,
+                        detail,
+                    )
+                else:
+                    logger.warning(
+                        "Kiro CLI at %s is present and executable but could not be "
+                        "verified: the sandbox refused the probe (%s: %s)",
+                        first_candidate,
+                        kind,
+                        detail,
+                    )
                 login_cmd, sso_cmd, bundled = login_commands_for(first_candidate, self._environ)
                 self._status = PrerequisiteStatus(
                     platform=_platform_label(self._platform),
@@ -402,8 +444,9 @@ async def _probe(
                     # failed, and it failed for an unrelated reason.
                     installed=True,
                     # Unknown, not false: whoami also runs through the probe
-                    # path, so we cannot claim either way.
-                    authenticated=False,
+                    # path, so we cannot claim either way -- unless the
+                    # enterprise sign-in check above answered signed in.
+                    authenticated=bool(carve_out_whoami and carve_out_whoami.ok),
                     ready=False,
                     repair_required=False,
                     initial_setup_complete=self._initial_setup_complete,
@@ -723,8 +766,15 @@ async def _audited_probe(
     action: str,
     executable: str,
     args: list[str],
+    *,
+    first_party_fixed_argv: bool = False,
 ) -> ProcessResult:
-    """Run one credential-free status probe with paired SEL lifecycle events."""
+    """Run one credential-free status probe with paired SEL lifecycle events.
+
+    *first_party_fixed_argv* is for the enterprise sign-in check's fixed
+    ``--version`` only (``_probe``): it claims ``wrap_argv``'s first-party
+    carve-out and opts into reaping survivors.
+    """
 
     await self._audit(
         action=action,
@@ -740,6 +790,8 @@ async def _audited_probe(
             timeout_secs=_PROBE_TIMEOUT_SECS,
             sandbox_mode=_UNVERIFIED_SANDBOX_MODE,
             extra_hidden_dirs=self._hidden_probe_dirs,
+            first_party_fixed_argv=first_party_fixed_argv,
+            reap_survivors=first_party_fixed_argv,
         )
     except asyncio.CancelledError:
         await self._set_terminal_audit(action, "failed", "gateway-status", "cancelled")
@@ -773,8 +825,13 @@ async def _run_auth_command(
     base_env: dict[str, str],
     timeout_secs: float,
     isolate_home: bool = True,
+    first_party_fixed_argv: bool = False,
 ) -> ProcessResult:
     """Run one Kiro auth command against a sandboxed, trusted executable.
+
+    *first_party_fixed_argv* is for the enterprise sign-in check's fixed
+    ``whoami`` only (``_probe``), against the real home: it claims
+    ``wrap_argv``'s first-party carve-out and opts into reaping survivors.
 
     The CLI is trusted because it runs (its install source, owner, and path
     do not gate sign-in); Kiro Crew is not the authority on where Kiro CLI is
@@ -816,8 +873,12 @@ async def _run_auth_command(
             timeout_secs=timeout_secs,
             sandbox_mode=_KIRO_AUTH_SANDBOX_MODE,
             extra_hidden_dirs=self._crew_hidden_dirs,
+            first_party_fixed_argv=first_party_fixed_argv,
+            reap_survivors=first_party_fixed_argv,
         )
 
+    if first_party_fixed_argv:
+        raise ValueError("the first-party carve-out runs against the real home only")
     workspace = await asyncio.to_thread(
         _prepare_auth_workspace,
         self._platform,
@@ -845,7 +906,11 @@ async def _run_auth_command(
 
 
 async def _audited_identity_probe(
-    self: KiroPrerequisiteService, executable: str, *, isolate_home: bool = True
+    self: KiroPrerequisiteService,
+    executable: str,
+    *,
+    isolate_home: bool = True,
+    first_party_fixed_argv: bool = False,
 ) -> ProcessResult:
     """Run an identity probe with paired SEL events.
 
@@ -892,6 +957,7 @@ async def _audited_identity_probe(
             # candidate.
             timeout_secs=_IDENTITY_PROBE_TIMEOUT_SECS,
             isolate_home=isolate_home,
+            first_party_fixed_argv=first_party_fixed_argv,
         )
     except asyncio.CancelledError:
         await self._set_terminal_audit(action, "failed", "gateway-status", "cancelled")

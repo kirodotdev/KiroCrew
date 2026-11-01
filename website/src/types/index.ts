@@ -91,6 +91,14 @@ export type {
   PendingApproval,
   SubagentInfo,
   SessionInfo,
+  CrewWorker,
+  CrewWorkFacts,
+  CrewWorkItemFacts,
+  CrewTimeline,
+  CrewTimelineHandoff,
+  CrewTimelineLane,
+  CrewTimelineMark,
+  CrewTimelineSegment,
 } from './index.chat'
 export type {
   PullRequestCommit,
@@ -127,3 +135,12 @@ export type {
   WebAppTeardown,
   WebAppMetadata,
 } from './index.artifacts'
+export type {
+  PrincipalKind,
+  DisplaySnapshot,
+  PublicPrincipal,
+  AttributionAvailability,
+  SessionTriggerKind,
+  SessionTrigger,
+  SessionAttribution,
+} from './index.sharedCrew'

@@ -191,10 +191,10 @@ code.
      `release/X.Y` before the RC is cut. Rebuilt stable bytes already carry the
      bare stamp, but insider, legacy promoted installs, and the byte-reuse escape
      hatch still depend on the display contract.
-   - *kiro-cli pin (read only by a `BUNDLE_KIRO_CLI=1` desktop build; a
-     default release has no reader, so this step is skipped unless such a
-     build is planned)*: compare `packaging/kiro-cli-version` with the
-     version the release manifest names today
+   - *kiro-cli pin (every release: the published Docker image installs exactly
+     this version, and a `BUNDLE_KIRO_CLI=1` desktop build bundles it)*:
+     compare `packaging/kiro-cli-version` with the version the release
+     manifest names today
      (`https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json`)
      and decide whether to bump it — after testing the app against the newer
      release, never blind. A bump is two files in one commit: the version in
@@ -213,6 +213,31 @@ code.
      version prefix, which is also why a hotfix rebuild of an older tag keeps
      working after upstream releases. See [desktop-app](desktop-app.md) "Bundled
      kiro-cli".
+   - *VC++ runtime pin (read by the same `BUNDLE_KIRO_CLI=1` Windows build)*:
+     `packaging/vc-runtime-pin.json` pins the Microsoft Visual C++
+     redistributable whose `vcruntime140*.dll` and `msvcp140*.dll` are staged
+     beside `kiro-cli.exe`. Bump it when a newer kiro-cli needs a newer runtime
+     (it was built with a newer MSVC toolset), or for a Microsoft runtime fix.
+     Resolve `https://aka.ms/vs/17/release/vc_redist.x64.exe` to the immutable
+     `download.visualstudio.microsoft.com/download/pr/<id>/<SHA256>/VC_redist.x64.exe`
+     URL it redirects to (`curl -sI`), download it
+     (`curl -fsSLo VC_redist.x64.exe <that url>`), then run
+     `python3 packaging/vc_runtime.py pin <that url> VC_redist.x64.exe`: it
+     prints the new installer and DLL sha256 values; fill in `version` with the
+     redistributable's ProductVersion and replace the file in one commit. Run
+     `test/test_vc_runtime_pin.py`, and prove the bump with a
+     `BUNDLE_KIRO_CLI=1` Windows packaging probe, whose `--version` probe runs
+     the staged binary against the staged runtime. A sha mismatch fails the
+     build closed; a stale pin is not a failure, since the URL is immutable.
+   - *Installer tool pins*: the source installers download mise
+     (`scripts/lib/pinned-mise.sh`) and the AWS CLI and Session Manager plugin
+     (`packaging/pins/aws-tools.env`) at pinned versions and refuse a sha256
+     mismatch. Compare each pin with upstream and bump the stale ones: pick a
+     release at least 7 days old, record each artifact's sha256 (mise: its
+     release `SHASUMS256.txt`; AWS: two downloads that match), keep
+     `AWSCLI_VERSION` equal to the crew runtime Dockerfile's, and run
+     `test/test_installer_tool_pins.py`. The procedure is in each file's header. A
+     stale pin is not a failure; the pinned artifacts stay downloadable.
 2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
    `github-release` has an `if:`; `CHANGELOG.md` line 5 is `## [X.Y.Z]` with zero
    non-bare-release `##` headings; no `### Contributors` (the GitHub Release
@@ -272,7 +297,7 @@ concurrency group, and their version derivation.
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. A second macOS job, `build-desktop-mac-single-arch`, builds arm64-only and x86_64-only DMGs behind the `mac_single_arch` input (`nightly.yml` and `release.yml` both pass true). It is `continue-on-error` only under `soft_fail_mac_single_arch: true`, which `nightly.yml` passes and `release.yml` does not: on release both DMGs are required promotion-bundle roles, so a failed single-arch build fails the aggregate before any publisher writes an immutable key. Each DMG is then signed and fed by its own `sign-and-notarize.yml` call (`mac_variant`), and the universal call excludes both artifact names when flattening, so the universal DMG stays the only mac bytes the universal leg signs and feeds. |
-| `build-windows.yml` | reusable build | `windows-latest`, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
+| `build-windows.yml` | reusable build | `kirocrew-windows-4-core` on this repository and `windows-latest` on a fork, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-windows.yml` | reusable publish | Publishes the signed x64 installer and blockmap, then `feed/<channel>/latest.yml` and the `latest/` installer alias. It probes the soft-failed build artifact and skips when none exists; stable uses the fresh build by default or the optional candidate pair in byte-reuse mode. |
 | `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. |
 | `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
@@ -284,7 +309,7 @@ Release-adjacent, deliberately outside the release path:
 
 | Workflow | Role |
 |---|---|
-| `ota-test.yml` | End-to-end macOS auto-update proof: builds two real app versions signed with one throwaway self-signed identity in a temp keychain, serves a local feed, drives consent over the Chrome DevTools Protocol, and asserts the on-disk bundle version flips. Nightly at `40 8 * * *` plus dispatch. Proves the **swap mechanism**, not Gatekeeper acceptance. Needs no secrets. |
+| `ota-test.yml` | End-to-end macOS auto-update proof: builds two real app versions signed with one throwaway self-signed identity in a temp keychain, serves a local feed, drives consent over the Chrome DevTools Protocol, and asserts the on-disk bundle version flips and the app relaunches. A second leg pads the update ZIP past 1.1 GiB with incompressible bytes, the size at which the macOS updater once crashed mid-install. Nightly at `40 8 * * *` plus dispatch. Proves the **swap mechanism**, not Gatekeeper acceptance. Needs no secrets. |
 | `docker-smoke.yml` | PR gate on the container contract (amd64, load-to-daemon, no push). |
 | `pages.yml` | Deploys the marketing site in `site/` to GitHub Pages on `main`, path-scoped to `site/**`. |
 | `ship-report.yml` | Daily (3am PDT) merged-PR summary to Slack. Not a release step. |
@@ -343,6 +368,16 @@ feed/<channel>/latest-cli.json                               pointer, no-cache
 feed/<channel>/simple/ + feed/<channel>/simple/kirocrew/     pointer, no-cache
 cli.sh                                                       pointer, no-cache (only root object)
 ```
+
+Every `latest-mac.yml` also carries `minimumSystemVersion`, which electron-builder
+never writes but electron-updater enforces: a client whose `os.release()` is below it
+declines the update instead of installing a build it cannot launch. The publish job
+reads it from the notarized ZIP's own `Contents/Info.plist` (`LSMinimumSystemVersion`,
+which Electron stamps from its deployment target) through
+`scripts/feed_min_system_version.py`, and writes it as the Darwin kernel version the
+updater compares (macOS 13.0 is `22.0.0`), so an Electron major that raises the real
+floor raises the declared one. The step fails closed when the ZIP names no floor, or
+one with no exact kernel version (a non-`.0` macOS 11+ floor).
 
 Every public URL is exactly one of two classes, and the class decides the cache
 policy:
@@ -1100,6 +1135,7 @@ The consequences to know:
 - **The "you are running prerelease bytes" note still keys on the stamp**
   (`stampedChannel`), not on the followed channel, because that statement is
   about the bytes and stays literally true on a promoted stable install.
+- **An enterprise build has no opt-in.** It follows `stable`, the minimal set of the `updates.channel` control (RFC crew-enterprise-edition, D3), whatever the preference says. `runtime/update/policy-channel.js` reads the baked edition, `resolveChannel()` lets that channel replace the preference, About shows the channel read-only with the "Locked by policy" badge, and `update:set-channel` refuses with `locked_by_policy`. A build that cannot follow the required channel (a nightly install) gets no update lane (`disabled: "policy-channel"`); About names the required channel and links that channel's build. An oss build is unchanged.
 
 The specific to Kiro Crew part is install ordering: the app supervises a bundled
 Python gateway child, so before `quitAndInstall` the client stops it gracefully
@@ -1372,7 +1408,19 @@ rather than replacing them — so the published body is always
 for one to appear.
 
 - **Remove the generated commit list.** `generate_release_notes: true` appends a
-  `## What's Changed` line per commit since the previous tag. On v0.5.0 that was
+  `## What's Changed` line per pull request since the previous tag. The step
+  names that tag itself (`scripts/release_previous_tag.py`): the previous
+  stable tag for a stable release, and the previous prerelease of the same
+  `X.Y.Z` line for a prerelease, or the previous stable for the first one.
+  Candidates are the repository's release pages, not its tags: a prerelease
+  counts only once its page is published, so a prerelease tag whose run failed
+  before the page was created is skipped, while a stable page counts even as a
+  draft, because it stays one until `record-stable-promotion` publishes it.
+  It reads names with `scripts/check_feed_advance.py::parse_version`, and if
+  listing releases or choosing one fails, GitHub chooses as before.
+  GitHub's own choice is the newest ancestor release tag, and since each
+  release is tagged on its own release branch that is a tag from the project's
+  first weeks. A stable list can still be long: on v0.5.0 it was
   **746 lines for 922 commits** — 65% of the body, and it pushed the whole thing
   to 125,219 characters, past GitHub's 125,000-character ceiling, so the body was
   published truncated mid-word. The page already links "N commits to main since

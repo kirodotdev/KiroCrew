@@ -23,34 +23,17 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-from skill_script_helpers import load_skill_script
-
-ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = (
-    ROOT
-    / "src"
-    / "kiro_crew"
-    / "builtin_skills"
-    / "kirocrew-dev"
-    / "kirocrew-prepare-pr"
-    / "scripts"
-    / "pr_findings.py"
+from prepare_pr_rounds_helpers import (
+    CLASS_A,
+    HEADS,
+    SCRIPT,
+    SCRIPTS_DIR,
+    _contract,
+    _disp,
+    _load,
+    _wire,
 )
-
-
-def _load() -> ModuleType:
-    return load_skill_script("prepare_pr_findings_rounds", SCRIPT)
-
-
-def _disp(
-    cid: int, target: str, head: str, span: str | None, extra: str = "", word: str = "fixed"
-) -> dict:
-    marker = "<!-- ai-review-disposition target={} head={} -->\n".format(target, head)
-    claim = (
-        "**{}** — span={}\n".format(word, span) if span else "**{}** — a watch item\n".format(word)
-    )
-    body = marker + claim + extra + "\n> rationale line naming span=deadbeef0000 as evidence only\n"
-    return {"id": cid, "body": body, "user": {"login": "writer"}}
+from skill_script_helpers import load_skill_script
 
 
 def _fix_counts(module: ModuleType) -> dict:
@@ -58,19 +41,6 @@ def _fix_counts(module: ModuleType) -> dict:
     by_head, order, _, _ = module._collect_rounds("o/r", 7)
     fixes = module._review_contract.fix_rounds(order, by_head)
     return {sp: len(rs) for sp, rs in fixes.items()}
-
-
-def _wire(
-    module: ModuleType, monkeypatch, comments: list[dict], on_head: set[str] | None = None
-) -> None:
-    """Serve the dispositions and the spans on the current head (None: unreadable, so present)."""
-    monkeypatch.setattr(module, "current_head_spans", lambda repo, number, head: on_head)
-    monkeypatch.setattr(module, "fetch_disposition_comments", lambda repo, number: comments)
-    monkeypatch.setattr(
-        module,
-        "writer_disposition_records",
-        lambda repo, cs: [module.parse_disposition_record(c) for c in cs],
-    )
 
 
 def test_rounds_are_grouped_by_judged_head_in_order(monkeypatch, capsys):
@@ -221,8 +191,6 @@ def test_the_goal_line_is_redacted_before_printing(monkeypatch, capsys):
     assert secret not in out
 
 
-HEADS = ["1" * 40, "2" * 40, "3" * 40, "4" * 40, "5" * 40, "6" * 40, "7" * 40]
-CLASS_A = "class: a hook can come from a source other than core.hooksPath\n"
 CLASS_A2 = "class: a git hook can come from a source other than core hooksPath\n"
 CLASS_B = "class: the export path drops the trailing newline\n"
 
@@ -745,12 +713,7 @@ def test_nth_covers_the_teens_and_larger_numbers():
 
 # One fence reader: pr_status_issue_links.py. _review_contract.py loads it and builds the
 # line readers on it; no other script keeps a copy.
-SCRIPTS_DIR = SCRIPT.parent
 FENCE_OWNER = "pr_status_issue_links.py"
-
-
-def _contract() -> ModuleType:
-    return load_skill_script("prepare_pr_contract_fences", SCRIPTS_DIR / "_review_contract.py")
 
 
 def test_exactly_one_prepare_pr_script_defines_the_fence_rules():

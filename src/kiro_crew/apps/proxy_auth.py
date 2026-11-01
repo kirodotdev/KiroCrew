@@ -19,6 +19,17 @@ directly and bypass the gateway's token auth + per-app scope enforcement
 The gateway's own health probe hits the backend directly (unsigned), so callers
 must leave the health endpoint unauthenticated — see the backends' dispatch.
 
+The v1 signature carries no nonce, so a backend cannot tell a first delivery from
+a copy sent again inside the freshness window. Every forwarded request therefore
+also carries a replay-proof v2 signature in two further headers::
+
+    X-KiroCrew-Proxy-Nonce: <32 lowercase hex>
+    X-KiroCrew-Proxy-V2: <ts>:<hmac_sha256(secret, "v2:<ts>:<nonce>:<method>:<target>:<sha256(body)>")>
+
+:func:`verify_proxy_request_v2`, called with one long-lived
+:class:`ProxyPrincipalReplayCache`, accepts each nonce once. The v1 header is unchanged, so
+a backend that verifies only v1 keeps working and simply ignores the new headers.
+
 An app whose manifest sets ``backend.signedPrincipal`` also receives
 ``X-KiroCrew-Principal``: a base64url canonical-JSON claim naming the kind of
 caller the gateway authenticated, a period, and an HMAC that binds that exact
@@ -45,6 +56,12 @@ if TYPE_CHECKING:  # typing only — ThreadingHTTPServer backends never need aio
 
 _ENV_KEY = "KIROCREW_PROXY_SECRET"
 _MAX_SKEW_SECONDS = 60
+
+PROXY_V2_HEADER = "X-KiroCrew-Proxy-V2"
+PROXY_NONCE_HEADER = "X-KiroCrew-Proxy-Nonce"
+# A ten-digit epoch second covers every date until 2286; the bound keeps an
+# attacker-chosen timestamp from reaching ``int()`` as a multi-kilobyte string.
+_MAX_TS_DIGITS = 12
 
 PROXY_PRINCIPAL_HEADER = "X-KiroCrew-Principal"
 PRINCIPAL_OWNER_SESSION = "owner-session"
@@ -163,6 +180,90 @@ class ProxyPrincipalReplayCache:
             return True
 
 
+def _is_request_id(value: Any) -> bool:
+    """Whether *value* has the one request-id shape: 32 lowercase hex characters.
+
+    A v2 nonce and a principal claim's ``requestId`` share this shape. The gateway
+    draws each one independently, and each verifier records only its own value.
+    """
+    if not isinstance(value, str) or len(value) != _REQUEST_ID_HEX_LENGTH:
+        return False
+    return all(char in "0123456789abcdef" for char in value)
+
+
+def new_proxy_nonce() -> str:
+    """A fresh per-request nonce: 32 lowercase hexadecimal characters."""
+    return secrets.token_hex(_REQUEST_ID_HEX_LENGTH // 2)
+
+
+def _proxy_v2_signature(
+    key: str, ts: str, nonce: str, *, method: str, target: str, body: bytes
+) -> str:
+    # The ``v2:`` prefix keeps this MAC's input disjoint from v1's, which always
+    # starts with the timestamp's digits, so neither signature can stand in for the other.
+    body_hash = hashlib.sha256(body or b"").hexdigest()
+    message = f"v2:{ts}:{nonce}:{method}:{target}:{body_hash}"
+    return hmac.new(key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def sign_proxy_request_v2(
+    *, secret: str, ts: int, nonce: str, method: str, target: str, body: bytes
+) -> str:
+    """Build the ``X-KiroCrew-Proxy-V2`` value, ``<ts>:<hmac>``, for one request.
+
+    Raises ``ValueError`` for an empty secret, a negative timestamp or a nonce
+    outside the one valid shape, so the gateway never forwards a signature that
+    every verifier would refuse.
+    """
+    if not secret or ts < 0 or not _is_request_id(nonce):
+        raise ValueError("invalid proxy v2 signature input")
+    ts_str = str(ts)
+    signature = _proxy_v2_signature(secret, ts_str, nonce, method=method, target=target, body=body)
+    return f"{ts_str}:{signature}"
+
+
+def verify_proxy_request_v2(
+    header_value: str,
+    nonce: str,
+    *,
+    method: str,
+    target: str,
+    body: bytes,
+    replay_cache: ProxyPrincipalReplayCache,
+    secret: str | None = None,
+    now: float | None = None,
+) -> bool:
+    """Verify and consume one ``X-KiroCrew-Proxy-V2`` signature and its nonce.
+
+    Returns ``False`` for a missing secret or cache, a malformed header or nonce,
+    a timestamp outside ±60s, a signature mismatch, a nonce already accepted, or a
+    full cache. The replay check runs last, so only a request that passed every
+    other check takes a cache entry.
+    """
+    key = proxy_secret() if secret is None else secret
+    if not key or replay_cache is None or not header_value or not nonce:
+        return False
+    if not _is_request_id(nonce):
+        return False
+    ts_str, _, signature = header_value.partition(":")
+    # ``str.isdigit`` alone admits non-ASCII digits such as "²", which ``int`` rejects.
+    if not (ts_str.isascii() and ts_str.isdigit()) or len(ts_str) > _MAX_TS_DIGITS:
+        return False
+    if not signature:
+        return False
+    ts = int(ts_str)
+    clock = time.time() if now is None else now
+    if not clock - _MAX_SKEW_SECONDS <= ts <= clock + _MAX_SKEW_SECONDS:
+        return False
+    expected = _proxy_v2_signature(key, ts_str, nonce, method=method, target=target, body=body)
+    # Compared as bytes for the reason ``verify_proxy_request`` gives above.
+    if not hmac.compare_digest(
+        expected.encode("utf-8", "surrogatepass"), signature.encode("utf-8", "surrogatepass")
+    ):
+        return False
+    return replay_cache.accept(nonce, expires_at=ts + _MAX_SKEW_SECONDS, now=clock)
+
+
 def _claim_shape_valid(
     *, kind: Any, owner_id: Any, issued_at: Any, request_id: Any, version: Any
 ) -> bool:
@@ -182,9 +283,7 @@ def _claim_shape_valid(
     # so a backend can never read an identity off a claim that does not vouch for one.
     if (kind == PRINCIPAL_OWNER_SESSION) != bool(owner_id):
         return False
-    if not isinstance(request_id, str) or len(request_id) != _REQUEST_ID_HEX_LENGTH:
-        return False
-    return all(char in "0123456789abcdef" for char in request_id)
+    return _is_request_id(request_id)
 
 
 def _encode_claim(claim: ProxyPrincipalClaim) -> str:

@@ -217,6 +217,13 @@ agent can use the operator's ssh-agent there, including a forwarded one. Under
 `strict`, or a harness mask over `~/.ssh`, it is scrubbed unless the operator
 records consent in the keystone leaf `ssh_auth_sock_consent.json`.
 
+To grant that consent, write `{"enabled": true}` to
+`<config_dir>/ssh_auth_sock_consent.json` from a terminal outside Kiro Crew;
+the next agent that starts picks it up. It applies to every agent whose
+sandbox hides `~/.ssh`. When a spawn starts without the socket for lack of this
+consent, the gateway log carries one warning per harness that names the file and
+this remedy, and `kirocrew doctor` lists those harnesses under Sandbox.
+
 ## Layer 1: Filesystem gate (`security/` package + `hooks.py`)
 
 `is_sensitive_path()` is the shared read+write block, and
@@ -348,6 +355,21 @@ model's title **and** the raw command:
 - **Exfiltration shapes** (`audit_bash_exfiltration`): data-egress and
   reverse-shell forms, narrowly scoped so it can be a hard deny at the gate
   without blocking benign local commands.
+
+**The exfiltration-shape check is defence in depth, not a boundary.** It
+matches flags and command forms, so it cannot close every way a client that
+talks to a remote service, such as `gh`, can send local bytes; each flag it
+added would also refuse ordinary use of that client. What keeps a credential
+store out of a shell's reach is the OS sandbox (Layer 0) at a tier that masks
+it, on a spawn Kiro Crew wraps: Kiro Crew's own secret stores are hidden in
+every tier, while `~/.aws`, `~/.kube` and the `gh` config are masked under
+`strict` but not by the default `standard` tier (the per-tier lists
+in `sandbox_tiers.py`; `security/paths.py::sandbox_credential_targets` is the
+matching set for the adapter-harness and Claude deny lists). Output redaction
+(Layer 4) covers credential text that reaches a human or an external service
+through tool output; it does not see bytes a subprocess sends itself. A command
+that sends local bytes past this check is a gap in an extra layer, and closing
+it for credentials is the sandbox tier's job, not a longer flag list.
 
 `SUSPICIOUS_BASH_PATTERNS` / `audit_bash_command()` are a **separate, advisory**
 surface: they back the `kirocrew security audit` history scan and the posture
@@ -582,7 +604,11 @@ allowlist would have decided -- rather than reverting to default-open.
 Dashboard tool approvals offer four decisions, in widening scope: `trust_command`
 (this exact command, session-scoped), `trust_base` (the base command glob, e.g.
 `ls *`, plus the bare binary, session-scoped), `trust_reads` (read-only bash for
-the slot), and `trust` (all tools for the slot). `yolo` is the global escalation.
+the slot, plus Kiro Crew's own read-only MCP tools -- `@kirocrew-core/memory_recall`
+and the rest of the closed `hooks._FIRST_PARTY_READ_ONLY_MCP_TOOLS` set, matched on
+the trusted `(server, tool)` identity the transport stamped, never on the title; every
+other MCP call still prompts), and `trust` (all tools for the slot). `yolo` is the
+global escalation.
 
 `trust_command` and `trust_base` can also be timed. The chat approval prompt
 offers each one for an hour or for the rest of the user's day, beside the grant

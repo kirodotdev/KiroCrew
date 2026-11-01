@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_crew.cli_commands import _cron
+from kiro_crew.cron import CronService
 from kiro_crew.history import ConversationLog
 
 
@@ -109,15 +110,21 @@ class TestCronAdopt:
         assert "results are delivered there" in out
         assert "dashboard:chat-3-1712793600" in out
 
-    def test_session_of_adds_the_prefix_the_consumers_strip(self):
+    @staticmethod
+    def _owner_after_adopt(tmp_path, session_of: str) -> str:
+        """Adopt a job held in a real store and return the owner it now carries."""
+        svc = CronService(base_dir=tmp_path)
+        job = svc.add_job(name="j", message="m", every_secs=60)
         with (
-            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.CronService", return_value=svc),
             patch("kiro_crew.cli_commands.sel"),
         ):
-            mock_svc = mock_svc_cls.return_value
-            mock_svc.adopt_job.return_value = True
-            _cron(_adopt_args(session_of="chat-3-1712793600"))
-            mock_svc.adopt_job.assert_called_once_with("abc12345", "dashboard:chat-3-1712793600")
+            _cron(_adopt_args(job.id, session_of=session_of))
+        return CronService(base_dir=tmp_path).get_job(job.id).session_key
+
+    def test_session_of_adds_the_prefix_the_consumers_strip(self, tmp_path):
+        owner = self._owner_after_adopt(tmp_path, "chat-3-1712793600")
+        assert owner == "dashboard:chat-3-1712793600"
 
     def test_session_of_round_trips_through_the_real_delivery_resolver(self):
         """Drift guard: ``--session-of`` must be the exact inverse of the
@@ -142,18 +149,12 @@ class TestCronAdopt:
 
         assert stored["abc12345"].removeprefix("dashboard:") == "chat-7-1712793999"
 
-    def test_session_of_accepts_an_already_qualified_key_unchanged(self):
+    def test_session_of_accepts_an_already_qualified_key_unchanged(self, tmp_path):
         """A key that already carries a namespace is passed through, so an
         operator pasting a full key into ``--session-of`` is not double-prefixed
         into an undeliverable ``dashboard:dashboard:...``."""
-        with (
-            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            mock_svc = mock_svc_cls.return_value
-            mock_svc.adopt_job.return_value = True
-            _cron(_adopt_args(session_of="dashboard:chat-3-1712793600"))
-            mock_svc.adopt_job.assert_called_once_with("abc12345", "dashboard:chat-3-1712793600")
+        owner = self._owner_after_adopt(tmp_path, "dashboard:chat-3-1712793600")
+        assert owner == "dashboard:chat-3-1712793600"
 
     def test_release_clears_the_owner(self, capsys):
         with (
@@ -275,7 +276,7 @@ class TestAdoptTargetVisibility:
             _cron(_adopt_args(session_of="chat-9-typo"))
         assert "no recorded session" in capsys.readouterr().err
 
-    def test_existence_is_checked_on_the_delivery_resolved_key(self):
+    def test_existence_is_checked_on_the_delivery_resolved_key(self, capsys, tmp_path, monkeypatch):
         """Not on the prefix-stripped slot, which no transcript is keyed by.
 
         The check must ask for the same file the DELIVERY path would read, so
@@ -283,8 +284,17 @@ class TestAdoptTargetVisibility:
         the full session key; the two tests below cover the spellings where
         delivery resolves something else.
         """
-        mock_log_cls = self._run_adopt_with_known(True)
-        mock_log_cls.return_value.has_log.assert_called_once_with("dashboard:chat-9-1712799999")
+        # A transcript under the prefix-stripped slot only: a lookup on that
+        # spelling would find it and stay quiet.
+        monkeypatch.setattr("kiro_crew.history._sessions_dir", lambda: tmp_path)
+        ConversationLog(base_dir=tmp_path).append("chat-9-1712799999", "user", "hello")
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            mock_svc_cls.return_value.adopt_job.return_value = True
+            _cron(_adopt_args(session_of="chat-9-1712799999"))
+        assert "no recorded session" in capsys.readouterr().err
 
     def test_a_channel_origin_slot_does_not_warn(self, capsys, tmp_path, monkeypatch):
         """``dashboard:slack_<ts>`` has no ``dashboard_`` on its transcript.

@@ -264,9 +264,17 @@ python -m kiro_crew.frontend stage .
 Then:
 
 ```powershell
+kirocrew kas install   # the built-in KAS engine this release pins (optional)
 kirocrew setup
 kirocrew gateway
 ```
+
+`kirocrew kas install` downloads the KAS engine this release pins into the data
+home, so the built-in engine route (`agent.kas_bundle`, off by default) can be
+turned on with no further download. A source build does not run it for you; the
+desktop installer already carries the engine inside the app. `install.ps1` is
+the cloud path's thin client and runs no gateway on this machine: the instance
+it launches installs with `install.sh`, which downloads the engine by default.
 
 Open the dashboard URL printed by the gateway. On first launch, Kiro Crew checks
 the **Windows gateway host** for a runnable and authenticated Kiro CLI. If it is
@@ -598,8 +606,8 @@ budget as `TasksMax` and `JobMemoryLimit` against `MemoryMax`, and
 `sandbox.apply_windows_resource_ceiling` reads the **same** `resource_limits`
 config as the cgroup path, but the Job object enforces only two of its keys:
 `max_processes` and `max_memory_mb`. The others — `cpu_weight`,
-`max_cpu_percent`, `max_cpu_seconds`, `max_open_files`, `max_total_memory_mb`
-and `max_total_processes` — are accepted but inert on Windows, and the gateway
+`max_cpu_percent`, `max_cpu_seconds`, `max_open_files`, `max_total_memory_mb`,
+`max_total_processes`, `scope_memory_high_pct` and `slice_reclaim_trigger_pct` — are accepted but inert on Windows, and the gateway
 logs one warning naming each one that is set. The memory limits are equivalent; the process limits are not one-for-one, because
 `TasksMax` counts every thread while `ActiveProcessLimit` counts processes — the
 same number is therefore a looser bound here, though it still bounds a fork
@@ -689,7 +697,7 @@ POSIX fleet too, where the Windows branches never execute.
 
 ## The RSS-recycle ceiling measures real trees on Windows
 
-`session.watchdog_rss_max_mb` (default `0`, off) recycles a
+`session.watchdog_rss_max_mb` (default `4096`) recycles a
 non-busy session whose process tree exceeds the ceiling. Its measurement is
 `/proc`-based on POSIX. On Windows `get_session_rss_mb` delegates to
 `platform_compat.proc_rss_tree_mb_for_pid`; a `/proc` read there would measure

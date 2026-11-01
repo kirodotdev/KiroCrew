@@ -656,12 +656,21 @@ async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
     # kiro-cli emits this notification when an MCP server's token
     # has expired or never existed. Surface as an inline banner —
     # kiro-cli's local callback handles the rest of the OAuth flow.
+    # The turn-start sign-in offer re-requests every unauthorized server, so
+    # this arm sees a carded provider on every turn of every session. It is
+    # tagged exactly as the session-init drain tags it, or the render layer
+    # cannot drop a prompt the Connections card already shows.
+    server_name = event.server_name or ""
+    managed = (
+        await asyncio.to_thread(_connections_managed_mcp_names) if server_name else frozenset()
+    )
     await _approve_discovered_mcp_oauth_endpoint(event.server_name, event.oauth_url)
     _emit_mcp_oauth_request(
         state,
         slot,
         event.server_name,
         event.oauth_url,
+        card_owned=bool(server_name) and server_name in managed,
         minted_by=str(getattr(client, "process_instance", "") or ""),
     )
     _record_session_mcp_event(

@@ -92,7 +92,7 @@ async def notify(
         try:
             # Widen the call only when there is a conversation to carry, so a
             # notification with no origin reaches every sink through the exact
-            # call it received before this parameter existed.
+            # call shape it accepts without ``session_key``.
             if session_key and _accepts_session_key(callback):
                 await cast(SessionAwareNotify, callback)(
                     title, body, task_id, session_key=session_key

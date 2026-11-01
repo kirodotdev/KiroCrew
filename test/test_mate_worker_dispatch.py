@@ -367,7 +367,7 @@ def test_a_worker_that_lands_on_kiro_cli_is_refused(
     """kiro-cli loads member specs but reads ``--agent`` off disk, where the worker
     spec is not, so a worker that lands there (KAS not selectable) is refused."""
     _set_backends(tmp_path, default="kiro", member="kiro")
-    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda _agent: ACP_BACKEND_KIRO)
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda *_a: ACP_BACKEND_KIRO)
     state, caller, _execution = crewmate
     before = set(state._slots)
 
@@ -430,3 +430,22 @@ def test_every_backend_carries_the_kit_or_refuses_the_worker(backend, monkeypatc
     spec = mate_worker.worker_session_spec(base, "dashboard:chat-9")
 
     assert "@jira/delete_issue" in spec.get("excludedTools", [])
+
+
+def test_unknown_harness_pin_refuses_worker_creation_without_echoing_it(crewmate, caplog):
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    secret = "sk-test-not-a-real-secret-0000"
+    cfg = KiroCrewConfig.load()
+    cfg.agents["pixel"].acp_backend = secret
+    cfg.save()
+    state, caller, _execution = crewmate
+    before = set(state._slots)
+    with pytest.raises(sc.SessionControlError) as raised:
+        _create(state, caller)
+    assert raised.value.status == 409
+    assert raised.value.code == "crewmate_harness_unavailable"
+    assert "an unknown harness" in raised.value.message
+    assert secret not in str(raised.value) + caplog.text
+    assert set(state._slots) == before
+    assert KiroCrewConfig.load().agents["pixel"].acp_backend == secret

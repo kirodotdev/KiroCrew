@@ -16,12 +16,13 @@ cd website && npm run i18n:check
 
 | CI job | Step | What it runs |
 |---|---|---|
-| `frontend-lint` | Check i18n extraction, key references and plurals | `npm run i18n:check` (the runner below) |
+| `frontend-ratchets` | Check i18n extraction, key references and plurals | `npm run i18n:check` (the runner below). This job is off `lint-gate`'s path, so an i18n failure reds the pull request without skipping the heavy matrix |
 | `frontend-test` | Unit tests | `npx vitest run --coverage`, sharded across a matrix with each shard's coverage merged by `frontend-coverage-merge`; it includes the diff-scoped `localeFormatting.test.ts` gates and the catalog duplicate-key guard `duplicateKeys.test.ts` (see below) |
 | `i18n-render` | Render every surface under en-XA, head vs base | `npm run i18n:render` (`scripts/check-i18n-render.mjs --build`) |
 
 The render gate is its own job (`i18n Render Gate (en-XA, head vs base)`), on the
-default-size Linux runner, path-filtered like `frontend-lint` (skipped on a
+default-size Linux runner, path-filtered like `frontend-lint` and
+`frontend-ratchets` (skipped on a
 backend-only diff). It needs no gateway, no token and no backend: it serves the
 build over loopback and answers every `/api/**` call from fixtures, and the
 Chromium it installs is the same exact-version cached download the `e2e` job
@@ -38,7 +39,7 @@ ceiling on 27% of fork-PR runs, against 2.5% on the fleet's large instance.
 every check they contain in one table.
 
 An `&&` chain short-circuits. With this many checks that means a PR only ever learns
-about its **first** failure, fixes it, pushes, waits for another full frontend-lint
+about its **first** failure, fixes it, pushes, waits for another full frontend-ratchets
 round, and discovers the next — one round per check, over independent
 measurements of the same tree. The runner reports all of them once, and folds each
 script's raw output into its own collapsed CI group so nothing is lost.
@@ -269,9 +270,9 @@ two values carrying Bengali digits landed in separate PRs, the second crossed th
 ceiling of 8, and the next CI round took **every open pull request's Frontend Tests
 shard red at once**, naming a key none of their authors had touched. The register
 check (§5) in the same file already had the right shape, so the fix was to give the
-numerals rule the same one: the count keeps guarding the inherited catalog, while the
-values the branch itself wrote are held at zero and the failure names the key and its
-owner.
+numerals rule the same one: the values the branch itself wrote are held at zero and the
+failure names the key and its owner. Once the inherited values were converted, the
+ceiling itself went to zero, so the catalog-wide check now fails on any Bengali digit.
 
 So when you add or relax an inline ceiling, add the `[changed-values]` half in the
 same change. A ceiling with no diff-scoped companion is not a lenient gate, it is a

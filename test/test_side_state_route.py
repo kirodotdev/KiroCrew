@@ -306,7 +306,8 @@ async def test_an_interrupted_turn_sends_no_partial_answer_into_a_reopened_conve
     tmp_path, monkeypatch
 ):
     """A conversation closed and reopened while a turn was unwinding holds none of
-    that turn's rows, so the turn's partial answer is not broadcast into it."""
+    that turn's rows, so neither the turn's partial answer nor its notice is
+    broadcast into it."""
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")
@@ -334,10 +335,7 @@ async def test_an_interrupted_turn_sends_no_partial_answer_into_a_reopened_conve
     await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
 
     assert parent._side.messages == []
-    final_frames = [d for d in _side_frames(events) if d.get("final")]
-    assert [frame["content"] for frame in final_frames] == [
-        "(side conversation interrupted — please retry)"
-    ]
+    assert [d for d in _side_frames(events) if d.get("final")] == []
 
 
 @pytest.mark.asyncio

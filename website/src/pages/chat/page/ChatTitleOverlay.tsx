@@ -1,4 +1,5 @@
 import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
+import { CrewWorkerBreadcrumb } from '../../../components/crew/CrewWorkerBreadcrumb'
 import { Undo2, ExternalLink, Columns2 } from 'lucide-react'
 import type { SidePanelDock } from '../../../hooks/useSidePanelDock'
 import type { AppDispatch } from '../../../store'
@@ -19,6 +20,7 @@ import Clickable from '../../../components/Clickable'
 import type { useLabelTip } from '../../../components/InstantTip'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
+import { crewRootOf } from '../../../lib/crewMode'
 
 interface ChatTitleOverlayProps {
   embedMode?: 'chat' | 'sessions'
@@ -45,6 +47,8 @@ interface ChatTitleOverlayProps {
   returnSelfToMain: () => void
   splitFeatureEnabled: boolean
   currentSlot: ChatSlot | undefined
+  /** CSS variables for the session colour band; absent for an uncoloured session. */
+  headerColorStyle?: Record<string, string>
   effectiveMode: string | undefined
   title: string
   activeIsSplitAnchor: boolean
@@ -72,10 +76,11 @@ interface ChatTitleOverlayProps {
  */
 export default function ChatTitleOverlay({
   embedMode, popout, activeSlot, dispatch, filteredSlots, isMobile, titleInTopbar, activityOpen, setActionError, showActionError, onPinCollapsedHeight, pinCardRef, pinExpanded, pinFoldRef, pinned,
-  scrollToPinnedPrompt, scrollTranscriptBy, setPinExpanded, activePoppedOut, focusActivePopout, openActivePopout, returnSelfToMain, splitFeatureEnabled, currentSlot, effectiveMode, title,
+  scrollToPinnedPrompt, scrollTranscriptBy, setPinExpanded, activePoppedOut, focusActivePopout, openActivePopout, returnSelfToMain, splitFeatureEnabled, currentSlot, headerColorStyle, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarPinned, sidebarAutoHidden, sidebarPinned, sidePanelDock, splitAnchorForActive, toggleAct, openSidebar, sidebarOnScreen,
   sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, popOutTip, activityTip,
 }: ChatTitleOverlayProps) {
+  const currentCrewRoot = crewRootOf(currentSlot)
   return (
     <>
       {/* Claude-style title row — absolute overlay, solid top fading to transparent.
@@ -100,8 +105,29 @@ export default function ChatTitleOverlay({
             so the inline copy stands down. The fold sentinel, the pinned
             prompt and the header fade stay: they belong to the transcript
             column, not to the bar. */}
-        {!titleInTopbar && (
-        <div className={`@container/chathead relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
+        {/* A Crew Mode worker in the main pane: the breadcrumb replaces the title
+            row on every width (on a phone it sits under the shell bar), so whose
+            worker this is and the way back are always on screen. */}
+        {currentCrewRoot && currentSlot && (
+          <div className={`relative pr-4 ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : 'pl-4'} pt-[9px] pb-2 flex items-center bg-bg border-b border-border`} data-testid="crew-worker-header">
+            <CrewWorkerBreadcrumb root={currentCrewRoot} worker={currentSlot} />
+            {/* The panel's open control, which the title row carries and the
+                breadcrumb replaces: with the panel closed, one click brings the
+                Workers list back beside the worker. */}
+            {!embedMode && !popout && !activityOpen && (
+              <Clickable
+                className="ml-1.5 flex items-center justify-center w-11 h-11 md:w-7 md:h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                onClick={toggleAct}
+                aria-label={i18nT('pages.chatPage.open_activity_panel')}
+                data-testid="crew-worker-open-panel"
+              >
+                <SidePanelGlyph size={15} />
+              </Clickable>
+            )}
+          </div>
+        )}
+        {!titleInTopbar && !currentCrewRoot && (
+        <div style={headerColorStyle} className={`@container/chathead relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none ${headerColorStyle ? 'chat-header-colored' : ''} transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
           {/* Divider between toggle and title — ALWAYS mounted and
               absolute (zero width, no flex-gap participation) so it can
               never change the row's layout; it rides the row (title
@@ -111,6 +137,7 @@ export default function ChatTitleOverlay({
             <span aria-hidden="true" className={`absolute left-[52px] top-[13px] w-px h-5 bg-border transition-opacity ${sidebarOpen ? 'opacity-0 duration-100' : 'opacity-100 duration-150 delay-[90ms]'}`} />
           )}
           {embedMode !== 'chat' && isMobile && mobileSessionsToggle}
+          {headerColorStyle && <span className="chat-header-dot" aria-hidden="true" />}
           <div className="group/header flex min-w-0 items-stretch gap-0.5 pointer-events-auto">
           <div className="flex items-center rounded-l-md rounded-r-[2px] px-1.5 py-0.5 group-hover/header:bg-bg-hover transition-colors">
           <ChatHeaderMenu

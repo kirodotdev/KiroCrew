@@ -82,6 +82,7 @@ from kiro_crew.config.sections import (
     TITLE_REFRESH_EVERY_TURNS_MAX,
     TRANSCRIBE_LANGUAGES_MAX,
     TRANSCRIBE_LANGUAGES_MIN,
+    TRANSLUCENT_PANELS_VALUES,
     SttConfig,
     transcribe_language_options,
     transcribe_vocabulary_name,
@@ -261,8 +262,11 @@ async def logo(request: web.Request) -> web.StreamResponse:
         if _h.is_sensitive_path(cfg.dashboard.avatar):
             return web.Response(status=404)
         validated = validate_file_path(cfg.dashboard.avatar)
-        if validated and Path(validated).is_file():
-            return web.FileResponse(validated)
+        # Two ifs, not `validated and await ...`: mypy infers the right operand of
+        # `and` in the left operand's type (str | None), which rejects is_file's bool.
+        if validated:
+            if await asyncio.to_thread(Path(validated).is_file):
+                return web.FileResponse(validated)
     # The DEFAULT logo is channel-aware: nightly builds serve the night-sky
     # variant so the whole in-app surface -- sidebar logo, browser favicon,
     # and native-notification avatar all resolve through /logo.png -- matches
@@ -276,7 +280,7 @@ async def logo(request: web.Request) -> web.StreamResponse:
         names.insert(0, "kirocrew-logo-nightly.png")
     for name in names:
         path = _h._STATIC_DIR / name
-        if path.is_file():
+        if await asyncio.to_thread(path.is_file):
             return web.FileResponse(path)
     return web.Response(status=404)
 
@@ -288,11 +292,19 @@ async def api_branding(request: web.Request) -> web.Response:
     # direct-local (loopback, no proxy) caller. The dashboard reads it to gate
     # OS-desktop file actions (open/reveal); any future consumer of origin
     # posture should reuse this flag rather than invent a second home.
+    #
+    # `desktop_launcher` is the other half of that gate: whether this host can
+    # open a file manager right now (the launcher those actions start, and on
+    # Linux a desktop session for it). Without that, `/api/reveal` can only
+    # answer a clipboard copy, so the dashboard does not offer them. It is a
+    # fact about this gateway process, read in a worker thread (a stat of a
+    # fixed system path), and no part of the request decides it.
     return web.json_response(
         {
             "bot_name": cfg.dashboard.bot_name or "Kiro Crew",
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
+            "desktop_launcher": await asyncio.to_thread(platform_compat.desktop_launcher_available),
         }
     )
 
@@ -334,6 +346,17 @@ async def _liveness_payload(request: web.Request) -> dict[str, object]:
                 "gateway_id": await asyncio.to_thread(gateway_id),
             }
         )
+        # The off-loop watchdog's sustained-lag reading, for a local probe
+        # telling a slow gateway from a dead one.
+        from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
+
+        state = request.app.get("state")
+        watchdog = getattr(state, "_loop_watchdog", None)
+        if isinstance(watchdog, LoopStallWatchdog):
+            payload["loop"] = {
+                "lagging": bool(watchdog.lagging),
+                "sustained_lag_episodes": int(watchdog.sustained_lag_episodes),
+            }
     return payload
 
 
@@ -459,6 +482,7 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "mode": cfg.dashboard.theme_mode or "",
         "color": cfg.dashboard.theme_color or "",
         "language": cfg.dashboard.language or "",
+        "translucent_panels": cfg.dashboard.translucent_panels or "",
         "onboarded": cfg.dashboard.onboarded,
         "import_onboarded": cfg.dashboard.import_onboarded,
         "privacy_acked": cfg.dashboard.privacy_acked,
@@ -481,8 +505,9 @@ async def api_theme_config(request: web.Request) -> web.Response:
     """GET/PUT /api/config/theme — read or update workspace display settings.
 
     GET returns the current config. PUT accepts
-    {mode?, color?, language?, onboarded?, import_onboarded?, privacy_acked?,
-    crewmates_onboarded?} and persists ONLY those ``dashboard.*`` keys.
+    {mode?, color?, language?, translucent_panels?, onboarded?, import_onboarded?,
+    privacy_acked?, crewmates_onboarded?} and persists ONLY those ``dashboard.*``
+    keys.
 
     The PUT is a locked delta read-modify-write, never a whole-document
     ``KiroCrewConfig.save()``. A momentarily unreadable ``config.json`` (a torn
@@ -503,7 +528,10 @@ async def api_theme_config(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "config.theme.write")
     if denied is not None:
         return denied
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (LookupError, RecursionError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         raise web.HTTPBadRequest(text="request body must be an object")
 
@@ -533,6 +561,15 @@ async def api_theme_config(request: web.Request) -> web.Response:
         updates["language"] = language
     # A real bool only: ``bool("false")`` is True, so a string here is a client bug
     # this endpoint must answer 400, not persist inverted.
+    if "translucent_panels" in body:
+        # Like ``mode``, a string with "" for "never chosen": a bool could not
+        # tell a workspace that chose solid from one that predates the key, and
+        # that is the case where the browser's own stored choice must keep
+        # holding (see ``_translucent_panels_from`` in the loader).
+        translucent = body["translucent_panels"]
+        if translucent not in TRANSLUCENT_PANELS_VALUES:
+            raise web.HTTPBadRequest(text="translucent_panels must be '', 'on', or 'off'")
+        updates["translucent_panels"] = translucent
     for flag in ("onboarded", "import_onboarded", "privacy_acked", "crewmates_onboarded"):
         if flag in body:
             if not isinstance(body[flag], bool):
@@ -582,7 +619,11 @@ async def pwa_file(request: web.Request) -> web.StreamResponse:
     path = _DIST_DIR / name
     # Resolve both sides so a symlinked _DIST_DIR (dev-backend.sh points it
     # at KiroCrewWebsite/dist) still passes the traversal guard.
-    if path.is_file() and _DIST_DIR.resolve() in path.resolve().parents:
+    if (
+        await asyncio.to_thread(path.is_file)
+        and await asyncio.to_thread(_DIST_DIR.resolve)
+        in (await asyncio.to_thread(path.resolve)).parents
+    ):
         return web.FileResponse(path)
     raise web.HTTPNotFound()
 
@@ -636,8 +677,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.core_config_patch import (
         _MOVED_CONFIG_FIELDS,
         _beacon_governance_pinned_off,
+        _check_default_profile_is_saved,
         _ConfigKeyAlreadySet,
+        _keep_omitted_session_environment_keys,
+        _keep_vm_profiles,
+        _profile_ids,
+        _session_environment_key_validators,
         _tailnet_governance_pinned_off,
+        _UnknownDefaultProfile,
         api_kirocrew_config_patch,
     )
     from kiro_crew.dashboard.handlers.core_config_schema import (
@@ -647,6 +694,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _acp_backend_patch_values,
         _agent_values,
         _editable_config_spec,
+        _preview,
         _selectable_acp_backends,
         _tier,
     )
@@ -656,6 +704,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _changed_paths_need_restart,
         _hot_apply_after_write,
         _mask_agent_free_text,
+        _mask_strings,
         _masked_config_dict,
         api_kirocrew_config,
     )
@@ -687,11 +736,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stt_positive_int,
     )
     from kiro_crew.dashboard.handlers.core_stt_settings import (
+        _LANGUAGE_IDENTIFYING_PROVIDERS,
         _STT_LANGUAGE_CODES,
         _STT_MODEL_SIZES,
         _STT_THREAD_LADDER,
         _builtin_stt_rows,
         _ffmpeg_install_commands,
+        _language_identifying_providers,
         _stt_language_codes,
         _stt_prereq_commands,
         _stt_provider_rows,
@@ -839,29 +890,38 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     resp.headers["Cache-Control"] = "no-cache"
     await resp.prepare(request)
 
-    last_pos = 0
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
+    from kiro_crew.session_workspace_tail import ResultTail  # noqa: F811
 
-    for _ in range(1200):  # 20 min max
-        try:
-            if path.exists():
-                content = path.read_text(encoding="utf-8")
-                if len(content) > last_pos:
-                    chunk = content[last_pos:]
-                    last_pos = len(content)
-                    chunk, _ = redact_exfiltration_urls(chunk)
-                    chunk, _ = redact_credentials(chunk)
-                    await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+    # Each poll reads only the bytes appended since the last one, in a thread:
+    # re-reading the whole file every second on the loop grows with its square.
+    tail = ResultTail(path)
+
+    async def _send(chunk: str) -> None:
+        if chunk:
+            chunk, _ = redact_exfiltration_urls(chunk)
+            chunk, _ = redact_credentials(chunk)
+            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+
+    polls = 1200  # 20 min max
+    try:
+        for poll in range(polls):
+            chunk = await asyncio.to_thread(tail.read_new)
             # Check if the subagent is done.
             state: DashboardState = request.app["state"]
-            if state.subagents:
-                info = state.subagents.get(agent_id)
-                if info and info.done:
-                    await resp.write(b"event: done\ndata: {}\n\n")
-                    break
-        except (ConnectionResetError, ClientConnectionResetError):
-            break
-        await asyncio.sleep(1)
+            info = state.subagents.get(agent_id) if state.subagents else None
+            done = bool(info and info.done)
+            if done or poll == polls - 1:
+                # The decoder may still hold a final "\r"; it belongs to this
+                # last chunk, as the whole-file read gave it.
+                chunk += tail.finish()
+            await _send(chunk)
+            if done:
+                await resp.write(b"event: done\ndata: {}\n\n")
+                break
+            await asyncio.sleep(1)
+    except (ConnectionResetError, ClientConnectionResetError):
+        pass
     return resp
 
 

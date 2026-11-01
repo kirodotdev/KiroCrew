@@ -102,6 +102,7 @@ from kiro_crew.config.memory_sections import (  # noqa: F401
 )
 from kiro_crew.config.resolution import _OBSERVED_DEGRADED_SECTIONS, DEGRADED_TAILSCALE
 from kiro_crew.config.sections_agent import (  # noqa: F401
+    _CREW_MODE_AGENT_DEFAULT,
     _YOLO_DURATION_DEFAULT,
     AgentConfig,
     _read_skip_permissions,
@@ -118,6 +119,8 @@ from kiro_crew.config.sections_agent_env import (  # noqa: F401
     CHILD_ENV_DEFAULT_MAX,
     CHILD_ENV_DEFAULT_MIN,
     CHILD_ENV_DEFAULT_NAMES,
+    STRANDS_ENV_NAMES,
+    STRANDS_PROVIDER_CHOICES,
     _agent_env_denied,
     _agent_env_entry_refusal,
     _agent_env_home_override_names,
@@ -128,6 +131,8 @@ from kiro_crew.config.sections_agent_env import (  # noqa: F401
     coerce_child_env_defaults,
     coerce_deepseek_env,
     deepseek_env_plaintext_keys,
+    merge_strands_env_patch,
+    validate_strands_env_patch,
 )
 from kiro_crew.config.sections_agent_fields import (  # noqa: F401
     _AVATAR_EXPRESSION_AXES,
@@ -213,6 +218,7 @@ from kiro_crew.config.sections_dashboard import (  # noqa: F401
     CHAT_ENTRY_CACHE_ENTRIES_MAX,
     CHAT_ENTRY_CACHE_ENTRIES_MIN,
     EXTERNAL_TERMINAL_APPS,
+    FEATURE_PREVIEW_FLAGS,
     LEGACY_VERBOSITY_ALIASES,
     LINK_PATTERN_PATTERN_MAX_LEN,
     LINK_PATTERN_URL_MAX_LEN,
@@ -295,6 +301,8 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     IDLE_EXEMPT_KEY_MAX_CHARS,
     IDLE_EXEMPT_KEYS_MAX,
     IMPORT_CHUNK_BUDGET_MAX,
+    KAS_DELETE_DELAY_SECS_MAX,
+    KAS_DELETE_DELAY_SECS_MIN,
     MAX_SUBAGENTS_FIXED_FLOOR,
     MCP_PROBE_TIMEOUT_MAX,
     MCP_PROBE_TIMEOUT_MIN,
@@ -318,6 +326,7 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     TITLE_REFRESH_EVERY_TURNS_MIN,
     TOOL_APPROVAL_TIMEOUT_MAX,
     TOOL_APPROVAL_TIMEOUT_MIN,
+    TRANSLUCENT_PANELS_VALUES,
     UPLOAD_MAX_MB_MAX,
     UPLOAD_MAX_MB_MIN,
     AutocompactPctError,
@@ -335,6 +344,30 @@ from kiro_crew.config.sections_session import (  # noqa: F401
     WorkspaceConfig,
     _archive_retention_days,
     _migrate_workspaces,
+)
+from kiro_crew.config.sections_shared_crew import (  # noqa: F401
+    CHILD_DEADLINE_SECONDS,
+    CREW_CPU_QUOTA_PERCENT,
+    CREW_QUEUE_DEPTH,
+    MAX_REQUEST_BYTES,
+    PRINCIPAL_CHILD_LIMIT,
+    PRINCIPAL_CPU_QUOTA_PERCENT,
+    PRINCIPAL_MEMORY_MAX_MB,
+    PRINCIPAL_QUEUE_DEPTH,
+    PRINCIPAL_STORAGE_MB,
+    PRINCIPAL_TASKS_MAX,
+    QUEUE_EXPIRY_SECONDS,
+    ROOT_DEADLINE_SECONDS,
+    SESSION_CREATES_PER_MINUTE,
+    SHARED_CREW_BOUNDS,
+    SHARED_CREW_EXPOSURE_FLAGS,
+    SHARED_CREW_FLAGS,
+    SHARED_CREW_NEEDS_PREVIEW_HELP,
+    EffectiveLimits,
+    SharedCrewConfig,
+    effective_limits,
+    load_shared_crew_config,
+    shared_crew_config_from,
 )
 from kiro_crew.config.sections_slack import (  # noqa: F401
     _VALID_ACTIVATIONS,
@@ -382,6 +415,7 @@ from kiro_crew.config.sections_stt import (  # noqa: F401
     warn_deferred_stt_providers,
 )
 from kiro_crew.config.sections_tailnet import (  # noqa: F401
+    TAILNET_OPENING_PATHS,
     TailscaleConfig,
     _tailscale_config_from,
     effective_pin_scope,
@@ -406,8 +440,10 @@ from kiro_crew.config.service_sections import (  # noqa: F401
     HeartbeatConfig,
     MessagingConfig,
     MonitoringConfig,
+    PowerConfig,
     TaskRunnerConfig,
     WatchdogConfig,
+    WorkLedgerConfig,
 )
 from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB as _DEFAULT_SPAWN_MIN_MEMORY_GB
 from kiro_crew.constants import DEFAULT_SUBAGENT_COST_GB as _DEFAULT_SUBAGENT_COST_GB
@@ -458,6 +494,7 @@ _OWNERS = (
     "kiro_crew.config.sections_session",
     "kiro_crew.config.sections_limits",
     "kiro_crew.config.sections_tailnet",
+    "kiro_crew.config.sections_shared_crew",
     "kiro_crew.config.sections_dashboard",
     "kiro_crew.config.sections_dashboard_hosts",
     "kiro_crew.config.sections_slack",

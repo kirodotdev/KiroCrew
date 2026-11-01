@@ -291,34 +291,69 @@ always returns false, and the channel-join allowlist prompt is a no-op. A
 
 ### Reaction Emojis
 
-Kiro Crew adds phase-aware emoji reactions during message processing (queued → thinking → coding → done). Customize or disable:
+Kiro Crew shows that it picked up your message without a trail of reactions:
+
+- Where Slack shows the bot's native thread status ("Kiro Crew is working on your request…", e.g. in the assistant DM), that status is the progress signal and your message gets no reaction.
+- Where it does not, your message gets a single 👀 while it is being answered. It is removed when the reply lands: the reply itself is the done signal.
+- A turn that fails gets 😱, on either surface.
+
+Customize or disable:
 
 ```json
 {
   "slack": {
     "reactions": {
-      "done": "sparkle",
-      "thinking": "brain",
-      "coding": "computer"
+      "queued": "hourglass_flowing_sand",
+      "error": "warning"
     },
     "reactions_enabled": true
   }
 }
 ```
 
-Set `reactions_enabled` to `false` to disable all phase reactions. Valid keys: `queued`, `thinking`, `coding`, `browsing`, `tool`, `done`, `error`.
+Set `reactions_enabled` to `false` to disable both. Valid keys: `queued` (the ack) and `error`. Set either to `null` to suppress it. Keys from the older per-phase trail (`thinking`, `coding`, `browsing`, `tool`, `done`) are accepted and ignored.
 
-To suppress a single phase (keep the others at their defaults), set it to `null`. For example, to keep the working/browsing/tool reactions but hide the terminal `🦞` on every message:
+---
 
-```json
-{
-  "slack": {
-    "reactions": { "done": null }
-  }
-}
-```
+## Slack Code: Agent Sessions
 
-A suppressed phase removes any prior reaction but adds nothing new; stall reactions (`🥱` / `😨`) are unaffected.
+Settings → Messaging Channels → Slack → **Slack Code** has an opt-in **Agent sessions** switch.
+Turning it on needs a few more permissions for your Slack app, so an app you already
+installed needs an update and a reinstall. Until the app has the new permissions, the
+switch changes nothing even when it is on, and the **Update your Slack app** panel says
+what is missing.
+
+With agent sessions on, Slack shows each thread as a session with a live status and
+title, and Slack's own Stop button cancels a running turn. Slack documents the feature in
+[agent sessions](https://docs.slack.dev/ai/agent-sessions.md); the manifest block is
+[`features.agent_view`](https://docs.slack.dev/reference/app-manifest) and the events
+include [`agent_session_stopped`](https://docs.slack.dev/reference/events/agent_session_stopped/).
+If Slack refuses the feature for your workspace, the panel reads **Workspace not
+enabled**, and Slack keeps working as before.
+
+| Switch | Manifest additions |
+|---|---|
+| Agent sessions (`slack.agent_sessions`) | `features.agent_view`; bot scope `assistant:write`; events `agent_session_stopped`, `agent_session_title_changed` |
+
+> **Agent view is one-way.** Slack cannot switch an app from `agent_view` back to
+> `assistant_view` once the manifest is saved in Slack.
+
+To update an existing app:
+
+1. Turn the switch on in Settings and **Save**.
+2. In the **Update your Slack app** panel, select **Copy manifest YAML**, then **Open App
+   Manifest** (or **App Config → App Manifest** on <https://api.slack.com/apps>).
+3. Replace the YAML with the copied manifest and select **Save Changes**. The copied
+   manifest keeps your app's slash command. Only if you edited the app in Slack by hand:
+   add just the lines the panel lists instead, because replacing the YAML replaces the
+   app's whole configuration.
+4. Reinstall when Slack asks (**Install App → Reinstall to Workspace**). The bot token
+   usually stays the same; if Slack issues a new one, paste it in Settings.
+5. Select **Check again**. The panel reads **Up to date**. No gateway restart is needed.
+
+`kirocrew manifest` renders the same manifest for the switches saved in `config.json`.
+See [Slack integration](../../src/kiro_crew/docs/slack-integration.md#slack-code-agent-sessions)
+for how the switch and the update check behave.
 
 ---
 

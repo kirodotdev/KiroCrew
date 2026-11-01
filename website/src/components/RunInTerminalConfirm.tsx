@@ -117,7 +117,7 @@ export default function RunInTerminalConfirm(
           {lines.map((line, i) => (
             <div key={i} className="flex gap-2.5">
               {lines.length > 1 && (
-                <span className="shrink-0 select-none text-muted/60 text-right w-4 tabular-nums">{i + 1}</span>
+                <span className="shrink-0 select-none text-muted text-right w-4 tabular-nums">{i + 1}</span>
               )}
               <span className="min-w-0 flex-1">{line || '\u00a0'}</span>
             </div>

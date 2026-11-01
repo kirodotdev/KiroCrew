@@ -20,6 +20,7 @@ import pytest
 import sandbox_argv_helpers
 
 import kiro_crew.sandbox as sandbox_mod
+from kiro_crew.instances import run_marker
 from kiro_crew.sandbox import (
     _CC_FILES,
     _STRICT_DIRS,
@@ -131,6 +132,11 @@ class TestWrapArgv:
         # Deny-by-default: the passthrough is gated SOLELY on the explicit
         # KIROCREW_SANDBOX_ACTIVE marker (not the dual-purpose KIROCREW_HOST_PID).
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        # The outer tier is unknown here, as from a launcher that exports none, so no
+        # tier downgrade can be proven and the argv passes through unchanged. A host
+        # value (a sandboxed dev shell exports `standard`) would make a `strict`
+        # request a downgrade, which wraps the argv in the stricter env scrub.
+        monkeypatch.delenv("KIROCREW_SANDBOX_LEVEL", raising=False)
         # Fix the macOS kernel cross-check explicitly: "unanswerable" (None) is the
         # platform-neutral input, so this assertion holds on a sandboxed dev
         # machine and an unsandboxed CI runner alike.
@@ -156,6 +162,8 @@ class TestWrapArgv:
         # spawn outage (every in-sandbox MCP spawn bricked). The spawn is
         # confined by the outer namespace regardless, so we log and proceed.
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        # Unknown outer tier, so no downgrade wrap: see test_inside_sandbox_passes_through.
+        monkeypatch.delenv("KIROCREW_SANDBOX_LEVEL", raising=False)
         monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
         argv = ["kiro-cli", "acp"]
         with patch("kiro_crew.sel.sel", side_effect=OSError("SEL transport down")):
@@ -226,6 +234,19 @@ class TestBuildSeatbeltProfile:
         assert f'(deny file-read* (subpath "{relocated}"))' in profile
         assert f'(deny file-write* (subpath "{relocated}"))' in profile
         assert f'(deny file-link (subpath "{relocated}"))' in profile
+
+    def test_a_relocated_home_profile_denies_writes_to_the_default_run_dir(
+        self, monkeypatch, tmp_path
+    ):
+        custom_home = tmp_path / "custom-home"
+        custom_home.mkdir()
+        default_run = tmp_path / "user" / ".kiro" / "crew" / "run"
+        monkeypatch.setattr(sandbox_mod, "config_dir", lambda: custom_home)
+        monkeypatch.setattr(run_marker, "_DEFAULT_RUN_DIR", default_run)
+
+        profile = _build_seatbelt_profile("standard")
+
+        assert f'(deny file-write* (subpath "{default_run}"))' in profile
 
     def test_voice_runtime_denies_lexical_and_canonical_paths_and_parent_renames(
         self, monkeypatch, tmp_path
@@ -862,11 +883,14 @@ class TestBuildSeatbeltProfile:
         # Standard mode doesn't hide .aws
         assert f'(subpath "{home}/.aws")' not in profile
 
-    def test_cc_mode_skips_aws_on_macos(self):
+    def test_cc_mode_hides_aws_except_config_on_macos(self):
         profile = _build_seatbelt_profile("cc")
-        home = str(Path.home())
-        # CC mode on macOS doesn't hide .aws (credential_process needs it)
-        assert f'(subpath "{home}/.aws")' not in profile
+        aws = os.path.join(str(Path.home()), ".aws")
+        # CC hides .aws and re-exposes only config, so credential_process resolves
+        assert (
+            f'(deny file-read* (require-all (subpath "{aws}")'
+            f' (require-not (literal "{aws}/config"))))'
+        ) in profile.splitlines()
 
     def test_cc_mode_denies_individual_files(self):
         profile = _build_seatbelt_profile("cc")
@@ -874,12 +898,12 @@ class TestBuildSeatbeltProfile:
         for f in _CC_FILES:
             assert os.path.join(home, f) in profile
 
-    def test_cc_mode_skips_aws_dir(self):
-        """CC mode does NOT deny .aws as a directory (credential_process needs it)."""
+    def test_cc_mode_denies_aws_hardlinks_and_no_whole_dir_read(self):
+        """CC denies hardlinking out of .aws; the read deny carries the config exception."""
         profile = _build_seatbelt_profile("cc")
-        home = str(Path.home())
-        # .aws should not appear as a subpath deny
-        assert f'(subpath "{home}/.aws")' not in profile
+        aws = os.path.join(str(Path.home()), ".aws")
+        assert f'(deny file-link (subpath "{aws}"))' in profile.splitlines()
+        assert f'(deny file-read* (subpath "{aws}"))' not in profile
 
     # ── hardlink bypass ──
     def test_strict_denies_hardlink_creation_to_dirs(self):

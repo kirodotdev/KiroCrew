@@ -185,6 +185,12 @@ class SessionTreeProjection:
         #: then hands out the same object until something actually changes.
         self._nodes: Optional[dict[str, TreeNode]] = None
         self._incomplete = False
+        #: ``(read, sid)`` for each unit whose decision (``"edge"``) or spawn (``"spawn"``)
+        #: reconcile read FAULTED and has not read cleanly since. Part of
+        #: ``incomplete`` while non-empty, and kept apart from ``_incomplete`` so a
+        #: later clean read of the same unit takes the fault back out: one transient
+        #: read error must not mark the tree incomplete until the process restarts.
+        self._fault_sids: set[tuple[str, str]] = set()
         self._over_cap = False
         #: Units whose decision this state may have WRONG: one evicted past the cap, or
         #: one whose bytes faulted after its head was read. The narrow half of
@@ -273,7 +279,7 @@ class SessionTreeProjection:
                 self._nodes = self._fold_locked()
             return TreeReading(
                 nodes=self._nodes,
-                incomplete=self._incomplete,
+                incomplete=self._incomplete or bool(self._fault_sids),
                 records=tuple(self._records.values()),
             )
 
@@ -339,6 +345,18 @@ class SessionTreeProjection:
         """
         with self._lock:
             return self._retry_due_locked()
+
+    @property
+    def seed_given_up(self) -> bool:
+        """Whether the state is a failed seed's EMPTY stand-in, awaiting a re-attempt.
+
+        No I/O. :attr:`seeded_for_current_store` is true for that state too, which is
+        right for a page that renders lineage as decoration and wrong for a reader
+        that DECIDES on an edge: an empty tree answers "no creator" for everything.
+        Such a reader asks this and falls back to its own scan while it holds.
+        """
+        with self._lock:
+            return self._seed_retry_at is not None
 
     def trusted_creator(self, slot: str, head_sid: str) -> str:
         """*slot*'s creator, if the slot's OWN logs prove it still hangs there. No I/O.
@@ -631,6 +649,7 @@ class SessionTreeProjection:
                 self._suspect_sids.add(spawn.sid)
         self._incomplete = True
         self._over_cap = True
+        self._prune_faults_locked()
 
     def _replace_unit_spawned_locked(self, sid: str, found: "list[EdgeRecord]") -> bool:
         """Make *found* the whole set of spawns held for creator unit *sid*. Caller
@@ -670,6 +689,7 @@ class SessionTreeProjection:
                 self._suspect_sids.add(edge.sid)
         self._incomplete = True
         self._over_cap = True
+        self._prune_faults_locked()
 
     def _evict_to_cap_locked(self) -> None:
         """Bring the records back within :data:`TREE_UNIT_CAP`. Caller holds the lock.
@@ -694,6 +714,22 @@ class SessionTreeProjection:
             self._suspect_sids.discard(record.sid)
         self._incomplete = True
         self._over_cap = True
+        self._prune_faults_locked()
+
+    def _prune_faults_locked(self) -> None:
+        """Drop each fault marker whose unit does not hold the evidence it was about.
+
+        A marker is added only for a unit with a held decision (``edge``) or spawn
+        (``spawn``), so this keeps the set within what the bounded stores hold.
+        Caller holds the lock.
+        """
+        edge_sids = {edge.sid for edge in self._edges.values()}
+        spawn_sids = {spawn.sid for spawn in self._spawned.values()}
+        self._fault_sids = {
+            (kind, sid)
+            for kind, sid in self._fault_sids
+            if sid in (edge_sids if kind == "edge" else spawn_sids)
+        }
 
     def retract_parent(self, sid: str) -> None:
         """Keep the record, drop its citation -- the LOG does not carry one.
@@ -783,11 +819,17 @@ class SessionTreeProjection:
             found = edge_record(slot, sid, find_last_tree_edge(root / _store_name(sid)))
         except (OSError, ValueError):
             with self._lock:
-                self._incomplete = True
+                self._fault_sids.add(("edge", sid))
+                # A new ``nodes`` object, so a reader caching by its identity sees
+                # the completeness change.
+                self._nodes = None
                 if sid in self._records:
                     self._suspect_sids.add(sid)
             return
         with self._lock:
+            if ("edge", sid) in self._fault_sids:
+                self._fault_sids.discard(("edge", sid))
+                self._nodes = None
             held = self._edges.get(key)
             if held is None:
                 return
@@ -830,12 +872,18 @@ class SessionTreeProjection:
             )
         except (OSError, ValueError):
             with self._lock:
-                self._incomplete = True
+                self._fault_sids.add(("spawn", sid))
+                # A new ``nodes`` object, so a reader caching by its identity sees
+                # the completeness change.
+                self._nodes = None
                 if sid in self._records:
                     self._suspect_sids.add(sid)
             return
         found = [s for e in entries if (s := spawned_record(slot, sid, e)) is not None]
         with self._lock:
+            if ("spawn", sid) in self._fault_sids:
+                self._fault_sids.discard(("spawn", sid))
+                self._nodes = None
             # This path never caches a scan identity for the unit (it pops it), so a
             # hit_cap-but-not-cut scan needs no extra guard here -- the next read is a
             # fresh reconcile. Only a load-bearing cut makes the projection incomplete.
@@ -893,7 +941,9 @@ class SessionTreeProjection:
             # directory some later session happens to be given the same name.
             self._scans.pop(sid, None)
             self._suspect_sids.discard(sid)
-            if self._records.pop(sid, None) is None and not dropped_edges:
+            faulted = bool({("edge", sid), ("spawn", sid)} & self._fault_sids)
+            self._fault_sids -= {("edge", sid), ("spawn", sid)}
+            if self._records.pop(sid, None) is None and not dropped_edges and not faulted:
                 return
             self._nodes = None
             self._dirty = True

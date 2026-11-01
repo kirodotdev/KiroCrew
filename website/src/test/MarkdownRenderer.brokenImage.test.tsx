@@ -133,11 +133,13 @@ describe('broken-image fallback chip', () => {
     vi.useRealTimers()
   })
 
-  it('copies via keyboard activation (Enter)', () => {
-    const { getByTestId } = renderErrored(`![shot](${GONE})`)
+  it('copies via keyboard activation (Enter)', async () => {
+    const { getByTestId, findByText } = renderErrored(`![shot](${GONE})`)
+    // The 404 probe lands after render and swaps the wording; wait for it.
+    await findByText(MISSING_LABEL)
     const chip = getByTestId(CHIP)
     expect(chip.getAttribute('tabindex')).toBe('0')
-    fireEvent.keyDown(chip, { key: 'Enter' })
+    await act(async () => { fireEvent.keyDown(chip, { key: 'Enter' }) })
     expect(copyToClipboard).toHaveBeenCalledWith(GONE)
   })
 
@@ -148,17 +150,19 @@ describe('broken-image fallback chip', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('falls back to the path as the visible label without repeating it in the tooltip', () => {
-    const { getByText, getByTestId } = renderErrored(`![](${GONE})`)
+  it('falls back to the path as the visible label without repeating it in the tooltip', async () => {
+    const { getByText, getByTestId, findByText } = renderErrored(`![](${GONE})`)
     getByText(GONE)
+    await findByText(MISSING_LABEL)
     // Label already shows the path — the tooltip must not restate it.
     expect(getByTestId(CHIP).getAttribute('title')).toBe('Click to copy')
   })
 
-  it('decodes a producer-emitted angle-bracket destination back to the on-disk path', () => {
+  it('decodes a producer-emitted angle-bracket destination back to the on-disk path', async () => {
     const spaced = '/tmp/shots/screen one.png'
-    const { getByTestId } = renderErrored('![shot](</tmp/shots/screen%20one.png>)')
-    fireEvent.click(getByTestId(CHIP))
+    const { getByTestId, findByText } = renderErrored('![shot](</tmp/shots/screen%20one.png>)')
+    await findByText(MISSING_LABEL)
+    await act(async () => { fireEvent.click(getByTestId(CHIP)) })
     expect(copyToClipboard).toHaveBeenCalledWith(spaced)
   })
 })

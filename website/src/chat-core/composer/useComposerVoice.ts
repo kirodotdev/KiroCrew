@@ -53,17 +53,19 @@ let micOwner: string | null = null
  *  holds the mic (a lone DM thread shows nothing else that is capturing). */
 let micOwnerSession: string | null = null
 const micSubs = new Set<() => void>()
-function setMicOwner(next: string | null, session: string | null = null): void {
+/** Exported so a non-composer mic (the comment boxes' dictation button) takes
+ *  the same one-at-a-time lock instead of capturing beside a composer. */
+export function setMicOwner(next: string | null, session: string | null = null): void {
   if (micOwner === next && micOwnerSession === session) return
   micOwner = next
   micOwnerSession = next === null ? null : session
   for (const fn of micSubs) fn()
 }
-function subscribeMic(fn: () => void): () => void {
+export function subscribeMic(fn: () => void): () => void {
   micSubs.add(fn)
   return () => { micSubs.delete(fn) }
 }
-const readMicOwner = () => micOwner
+export const readMicOwner = () => micOwner
 const readMicOwnerSession = () => micOwnerSession
 /** Test seam. */
 export function _resetMicOwner(): void { setMicOwner(null) }
@@ -89,6 +91,9 @@ export interface ComposerVoiceHost {
   onAutoSubmit?: () => void
   /** Own the document-wide push-to-talk key binding. Default false. */
   pushToTalk?: boolean
+  /** No new capture may start (someone else holds this chat's typing lock).
+   *  A capture already underway can still stop, cancel and deliver. */
+  startBlocked?: boolean
   /** Host-owned caret refs (a host that also reads them, e.g. to splice a picked
    *  file token at the caret). Omit and the hook creates its own. */
   caretRef?: React.MutableRefObject<{ start: number; end: number } | null>
@@ -96,6 +101,19 @@ export interface ComposerVoiceHost {
 }
 
 export type SttConfig = { streaming?: boolean; streaming_providers?: string[]; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string; polish?: boolean; submit_on_release?: boolean; code?: string; prereqs?: string[]; providers?: unknown[] }
+
+/**
+ * Whether dictation streams. The saved preference alone is not enough: a
+ * provider that cannot stream (an edition's batch-only provider) would be sent
+ * to /api/ws/stt and refused. Stream only when the served capability list names
+ * the selected provider; a gateway that serves no list keeps the preference.
+ */
+export function sttCanStream(cfg: SttConfig | undefined): boolean {
+  return !!cfg?.streaming && (
+    !Array.isArray(cfg?.streaming_providers)
+    || (typeof cfg?.provider === 'string' && cfg.streaming_providers.includes(cfg.provider))
+  )
+}
 
 /**
  * A deliberate finish (`StopIntent` 'finish') waiting for its transcript to
@@ -193,14 +211,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     queryKey: ['sttConfig'],
     queryFn: () => api.sttConfig() as Promise<SttConfig>,
   })
-  // The saved preference alone is not enough: a provider that cannot stream
-  // (an edition's batch-only provider) would be sent to /api/ws/stt and refused.
-  // Stream only when the served capability list names the selected provider; a
-  // gateway that serves no list keeps the preference as it was.
-  const sttStreaming = !!sttCfg?.streaming && (
-    !Array.isArray(sttCfg?.streaming_providers)
-    || (typeof sttCfg?.provider === 'string' && sttCfg.streaming_providers.includes(sttCfg.provider))
-  )
+  const sttStreaming = sttCanStream(sttCfg)
   const sttEnabled = !!sttCfg?.enabled
   // Whether a finished transcript is handed to a fast model for punctuation and
   // spacing. Read here rather than inside the replacement so the request is never
@@ -734,6 +745,8 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   // startup) cannot release ownership while the first start is still pending
   // and let another composer capture concurrently.
   const startingRef = useRef(false)
+  const startBlockedRef = useRef(false)
+  startBlockedRef.current = !!host.startBlocked
   const startGenRef = useRef(0)
   // Release when THIS instance's capture and transcription are both over. Runs
   // every render on purpose: a start that fails (permission denied) never flips
@@ -781,6 +794,9 @@ export function useComposerVoice(host: ComposerVoiceHost) {
    * itself.
    */
   const startVoice = useCallback((opts?: { silent?: boolean }): Promise<void> | void => {
+    // A typing-locked composer takes no dictation: the transcript would edit a
+    // read-only draft. The mic button and the push-to-talk key both come here.
+    if (startBlockedRef.current) return
     // Starting a recording while server-side STT is disabled would capture
     // audio that never gets transcribed. Point the user at the enable setting
     // instead — unless this came from the keyboard (see `silent`).
@@ -1047,7 +1063,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   // opens capture on the keydown itself, so there is no warm-up step to
   // schedule. Only the host that owns the binding (`pushToTalk`) is armed: N
   // composers each listening would open N captures on one keystroke.
-  usePushToTalk(
+  const { config: pttConfig } = usePushToTalk(
     {
       recording: voice.recording,
       // silent: a bare modifier is also an ordinary typing modifier, so a
@@ -1058,6 +1074,16 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     },
     { disabled: !voiceInputSupported || !host.pushToTalk, shiftDraftStop: submitOnRelease },
   )
+  // The key the mic may name: only on the composer the key is armed for, only
+  // while the key trigger is on, and only when a press would record. A keyboard
+  // start is silent, so with STT not ready the key does nothing and names
+  // nothing; a live recording keeps the name, since the key still stops it.
+  const pttBinding =
+    voiceInputSupported && host.pushToTalk && pttConfig.enabled
+      && ((sttConfigLoaded && sttEnabled && sttAvailable)
+        || (voice.sessionOwner === sessionId && voice.recording))
+      ? pttConfig.binding
+      : null
   // Stop any in-flight recording and clear the streaming prefix when the host's
   // session changes. The mic is a single shared device, so a recording can't
   // follow the user to another session; a BATCH transcript is still delivered
@@ -1205,6 +1231,8 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     micBusyElsewhereSession,
     /** True for a moment after a HELD transcript landed in this composer. */
     heldLanded,
+    /** The push-to-talk key the mic may name, or null (see `pttBinding`). */
+    pttBinding,
     /** `VoiceDisabledModal` state; the host renders the modal and routes its settings link. */
     setup: {
       open: voiceSetupOpen,
@@ -1262,6 +1290,9 @@ export function composerVoiceInputProps(cv: ComposerVoice) {
     voiceBusyElsewhereSession: cv.micBusyElsewhereSession,
     /* A held dictation just landed here: the composer shows a brief cue. */
     voiceHeldLanded: cv.heldLanded,
+    /* The push-to-talk key the mic may name; null where pressing it would not
+       record here. */
+    voicePttBinding: cv.pttBinding,
     // The capture's own error wins: a microphone that never recorded outranks a
     // cleanup pass that did not run.
     voiceError: voice.error ?? polishError,

@@ -475,6 +475,16 @@ class LLMProvider(ABC):
         """
         return None
 
+    def set_delete_delay(self, seconds: float) -> None:
+        """Keep the session's record for ``seconds`` after it ends, then delete it.
+
+        Set by a workflow worker from ``session.kas_delete_delay_secs``. Only a
+        session on a host that can free a session and keep its record acts on it
+        (``AcpSessionHandle.destroy``). Default no-op for a provider whose
+        sessions end as they always did.
+        """
+        return None
+
     def disown_work_dir(self) -> None:
         """Declare that this provider does not own its work directory for reclaim.
 
@@ -663,6 +673,22 @@ class LLMProvider(ABC):
         Narrower than :attr:`supports_steer`: a harness can take a user's mid-turn
         message and still discard one sent while a refused tool call is being
         answered. Default False, granted by opt-in like the steer itself.
+        """
+        return False
+
+    @property
+    def supports_steer_retract(self) -> bool:
+        """True when a steer the turn has not read yet can be taken back with
+        :meth:`clear_pending_steers`. Default False, granted by opt-in."""
+        return False
+
+    async def clear_pending_steers(self) -> bool | None:
+        """Ask the backend to drop every steer its turn has not read yet.
+
+        True when the backend answered the request, False when it refused it or
+        has none, None when no answer came in time. An answer is not evidence that
+        anything was dropped; the backend reports that separately, as
+        ``EVENT_STEER_DROPPED`` on the turn. Default False: nothing is sent.
         """
         return False
 
@@ -879,6 +905,21 @@ class LLMProvider(ABC):
         :meth:`mark_mcp_config_changed`."""
         return False
 
+    @property
+    def mcp_config_relaunch_reload(self) -> bool:
+        """True when this provider's session takes a changed MCP server set by Crew
+        relaunching its process with the new launch-time config and loading the
+        same session there, at the session's next turn boundary, with the
+        conversation kept -- the third way a dashboard MCP write is applied
+        without the all-sessions reset.
+
+        Default False, for the reason ``mcp_config_hot_reload`` defaults False
+        (harness-parity H6/H14). The ACP implementation answers from
+        ``ACP_BACKENDS_MCP_RELAUNCH_RELOAD`` membership. Consumers act only on a
+        literal ``True``, and a True answer is collected by calling
+        :meth:`mark_mcp_config_changed`."""
+        return False
+
     def mark_mcp_config_changed(self) -> None:
         """Note that the MCP config this session was projected from has changed.
 
@@ -919,6 +960,15 @@ class LLMProvider(ABC):
         differently, which is indistinguishable from a session that reported
         nothing — and that silence is the false all-clear the report exists to
         remove. A provider without one returns None explicitly.
+        """
+        return None
+
+    def note_user_message(self, text: str) -> None:
+        """Hand the user's own message, as typed, to the MCP sign-in trigger.
+
+        A KAS session offers a server's sign-in only when the user names it
+        (see ``AcpSessionHandle.want_mcp_sign_in_named``). A provider with no
+        such trigger ignores it. Never raises.
         """
         return None
 

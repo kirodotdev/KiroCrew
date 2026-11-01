@@ -8,7 +8,19 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.browser_cli import chromium_compat
 from kiro_crew.browser_cli import launch as mod
+
+
+@pytest.fixture(autouse=True)
+def _no_host_chromium_probe(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep these tests off the real host's Playwright cache and libcups.
+
+    Patched through the isolation floor's own MonkeyPatch (D11), so a test's
+    ``monkeypatch.undo()`` cannot lift it. The probe's own behaviour is pinned in
+    ``test_browser_cli_chromium_compat``.
+    """
+    _floor_monkeypatch.setattr(chromium_compat, "compatible_chromium_executable", lambda: None)
 
 
 def test_launch_config_path_is_under_the_data_home(

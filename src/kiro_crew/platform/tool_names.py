@@ -108,11 +108,17 @@ def kas_verified_releases() -> str:
     return ", ".join(".".join(str(p) for p in v) for v in KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI)
 
 
+#: ``web_search`` is the one family member KAS does not register as a local
+#: built-in: the engine serves web search through its remote tool wrapper, which
+#: prefixes the tool's name (``idPrefix = "remote_"``), so the id an allowlist must
+#: spell is ``remote_web_search`` (the fixture's ``remote`` list). Without the row
+#: a spec's ``web_search`` matched no KAS id and the tool was never mounted.
 KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
     "fs_read": ("read_file", "list_directory"),
     "glob": ("file_search",),
     "grep": ("grep_search",),
     "fs_write": ("str_replace", "fs_append"),
+    "web_search": ("remote_web_search",),
 }
 
 #: KAS built-in tool id -> the kiro-cli name a policy about it is written under.
@@ -257,6 +263,29 @@ def deepseek_policy_alias(tool_name: str) -> str:
     """The kiro-cli policy name of a DeepSeek Harness read built-in, else ``""``."""
     entry = DEEPSEEK_READ_ONLY_TOOLS.get(tool_name)
     return entry[0] if entry else ""
+
+
+#: pi's read-only built-ins, by the bare name pi's gate extension states, -> the
+#: kiro-cli built-in that does the same job (``ls`` lists a directory, as
+#: ``fs_read`` does). For the pi Side Chat seam to map from.
+PI_READ_ONLY_BUILTINS: dict[str, str] = {
+    "read": "fs_read",
+    "grep": "grep",
+    "find": "glob",
+    "ls": "fs_read",
+}
+
+#: Every harness whose permission TITLE is its bare tool name -> that name's
+#: kiro-cli name, so governance asks the title and ``harness_builtin_tool`` as one
+#: tool. claude is not here: its permission title carries the arguments
+#: (``Read .env``), so it never equals a bare name. Only consulted once a seam
+#: has already stated ``harness_builtin_tool``; it proves nothing alone.
+HARNESS_READ_POLICY_NAMES: dict[str, str] = {**PI_READ_ONLY_BUILTINS}
+
+
+def is_harness_read_alias(native: str, builtin: str) -> bool:
+    """True when *native* is a harness's own name for the kiro-cli *builtin*."""
+    return bool(builtin) and HARNESS_READ_POLICY_NAMES.get(native) == builtin
 
 
 def policy_aliases(*identities: str) -> tuple[str, ...]:

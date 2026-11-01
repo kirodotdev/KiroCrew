@@ -85,6 +85,28 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
     expect(mintSpy).toHaveBeenCalledWith(HTML_CONTENT)
   })
 
+  it('carries the wheel relay and its mark only when asked (the side panel)', async () => {
+    buildSrcdocSpy.mockClear()
+    const { unmount } = render(<ArtifactBodyIframe artifact={makeArtifact(HTML_CONTENT)} relayWheel />)
+    const frame = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    expect(frame.hasAttribute('data-wheel-relay')).toBe(true)
+    expect(buildSrcdocSpy).toHaveBeenLastCalledWith(expect.objectContaining({ relayWheel: true }))
+    unmount()
+    buildSrcdocSpy.mockClear()
+    render(<ArtifactBodyIframe artifact={makeArtifact(HTML_CONTENT)} />)
+    const plain = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    expect(plain.hasAttribute('data-wheel-relay')).toBe(false)
+    expect(buildSrcdocSpy).toHaveBeenLastCalledWith(expect.objectContaining({ relayWheel: false }))
+  })
+
   it('does not delegate clipboard-write to agent-authored HTML', async () => {
     // A delegated write permission lets an on-load script overwrite the
     // clipboard without a Copy action. The injected shim still lets a real
@@ -195,7 +217,7 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
     // so a second call to the gateway is the behaviour under test.
     mintSpy.mockResolvedValue({ url: DOC_URL })
     const retry = screen.getByRole('button', { name: /retry/i })
-    retry.click()
+    act(() => { retry.click() })
 
     await waitFor(() => {
       expect(document.querySelector('iframe')?.getAttribute('src')).toBe(DOC_URL)
@@ -475,7 +497,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     await act(async () => { vi.advanceTimersByTime(4000) })
 
     mintSpy.mockResolvedValue({ url: '/sandbox-doc/fresh/tok' })
-    screen.getByRole('button', { name: /show artifact/i }).click()
+    act(() => { screen.getByRole('button', { name: /show artifact/i }).click() })
 
     await waitFor(() => {
       expect(pointedAt()).toBe('/sandbox-doc/fresh/tok')
@@ -569,7 +591,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     let settle: (v: { url: string }) => void = () => {}
     mintSpy.mockImplementationOnce(() => new Promise((res) => { settle = res }))
     const button = screen.getByRole('button', { name: /show artifact/i }) as HTMLButtonElement
-    button.click()
+    act(() => { button.click() })
     // Flush the passive effect first: the mint (and with it the deferred
     // resolver) does not exist until the [srcdoc, attempt] effect runs.
     await act(async () => { await Promise.resolve() })
@@ -599,7 +621,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     let settle: (v: { url: string }) => void = () => {}
     mintSpy.mockImplementationOnce(() => new Promise((res) => { settle = res }))
     const button = screen.getByRole('button', { name: /show artifact/i }) as HTMLButtonElement
-    button.click()
+    act(() => { button.click() })
     await act(async () => { await Promise.resolve() })
     expect(button.disabled).toBe(true)
 

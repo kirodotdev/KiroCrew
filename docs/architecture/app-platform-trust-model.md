@@ -16,9 +16,15 @@ When an app's executable surfaces are **admitted** and enabled, its in-process b
 The `AppContext` capability permissions (`permissions.cron`,
 `permissions.events`, `permissions.spawn`, `permissions.storage`, and
 `permissions.jobs`) gate only which SDK objects `context.py` populates.
-`permissions.mcpTools` is validated and displayed by `permissions.py`, but it
-currently has no runtime call site and must not be treated as an execution
-boundary. Neither mechanism restricts imports, filesystem, network, or
+A non-empty `permissions.mcpTools` scopes the app's OWN agents: when they are
+materialized, every host-managed (`kirocrew-*`) tool the app did not declare is
+added to the agent spec's `managedToolPolicy.exclude`, which the managed servers
+enforce per session. A managed server whose tool names cannot be read is withheld
+whole (`managedToolPolicy.excludeServers`) rather than left reachable. It covers sessions running on the app's agents (including
+its crons that name one) and nothing else: a cron with no `agent:` runs on the
+host default agent unscoped, the app's own MCP server tools and base built-ins
+are untouched, and an empty list leaves the app unrestricted. It is a tool-surface
+scope, not a process boundary. Neither mechanism restricts imports, filesystem, network, or
 subprocess use by the loaded module. There is currently **no process-level
 sandbox** around in-process app code (hooks and route handlers). An app's
 separate backend process is launched under the OS sandbox's `standard` mode
@@ -115,6 +121,17 @@ are **deny-by-default** confined by the dashboard auth middleware
 independently re-checks that the caller's token app matches the target app, since
 the proxy signs requests with the target app's secret.
 
+That signature is how a backend tells a gateway-forwarded request from a direct
+connection to its loopback port. The v1 `X-KiroCrew-Proxy` HMAC carries no nonce,
+so a copy of one signed request verifies again for up to 60 seconds. Every
+forwarded request therefore also carries `X-KiroCrew-Proxy-Nonce` and an
+`X-KiroCrew-Proxy-V2` HMAC that binds that nonce. A backend that verifies v2 with a
+process-lifetime replay cache accepts each request once. v1 is unchanged and still
+verifies, so a backend that never moves to v2 keeps working but stays replayable
+inside the window. The proxy strips caller-sent copies of all these headers, so a
+page cannot choose the nonce. Wire format and verifiers:
+[api-reference](../app-kit/api-reference.md#replay-proof-v2-signature).
+
 User-session routes add a second, semantic check. An enabled app must declare
 `permissions.sessionApproval: true` before its app token can send a message to
 an existing local user-owned session, choose a generated response option,
@@ -139,7 +156,9 @@ its handler runs (`dashboard/slot_ownership.py`). This holds because a
 passes only on a slot it owns that still runs on its own session (a task-runner
 result tab's own session is the one minted for it). Approving or
 denying a pending tool request is the one per-slot action the `sessionApproval`
-grant also reaches on a local user session. Any other app, on any other slot,
+grant also reaches on a local user session. The same grant lets an app read and
+answer the `ask_question` card on a slot it owns, and only there
+(`/api/chat/slots/{slot}/question`). Any other app, on any other slot,
 gets the same `404 slot_not_found` a missing slot gets, and a refusal for a slot
 that exists is recorded in the security-event log. The decision is keyed by the
 slot in the path. The `/api/approvals` and `/api/sessions` families and

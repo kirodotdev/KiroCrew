@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from kiro_crew.config.fields import _meta
 from kiro_crew.config.sections_defaults import (
@@ -178,13 +179,27 @@ class SessionConfig:
             "turn's copies.",
         ),
     )
+    kas_delete_delay_secs: int = field(
+        default=0,
+        metadata=_meta(
+            "KAS Session Record Delete Delay (seconds)",
+            "On the kas backend, seconds a task-runner session's record, and a reused "
+            "workflow worker's previous conversation, stay on disk after the session "
+            "ends before Kiro Crew deletes them. The session leaves the engine's "
+            "memory when it ends either way. 0 (the default) deletes the record when "
+            "the session ends. Incognito and temporary sessions are deleted when "
+            "they end whatever this says. A record that comes due while another "
+            "backend is selected waits until kas is selected again. Other backends "
+            "ignore it.",
+        ),
+    )
     watchdog_rss_max_mb: int = field(
         default=DEFAULT_WATCHDOG_RSS_MAX_MB,
         metadata=_meta(
             "Watchdog RSS Limit (MiB)",
             "Recycle a session when its process tree resident memory exceeds "
-            "this many MiB. 0 disables (the default); the internal background "
-            "runtime still recycles at 1536 MiB. Busy sessions (turn in "
+            "this many MiB (default 4096). 0 disables; the internal background "
+            "runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in "
             "flight) are never recycled.",
         ),
     )
@@ -269,6 +284,17 @@ class KiroCrewAgentConfig:
             "decides as usual (its own crew pin if it runs as a mate, else "
             "agent.reasoning_effort, else the model default). Set, one of the five "
             "standard levels. An explicit effort on the call wins.",
+        ),
+    )
+    acp_backend: str = field(
+        default="",
+        metadata=_meta(
+            "Harness",
+            "Agent harness for this crewmate's own chat and the worker sessions it "
+            "opens, spelled as agent.acp_backend (kiro, kas, claude, ...). Empty "
+            "inherits agent.member_acp_backend. A harness this gateway cannot start "
+            "refuses the session with the reason instead of running another one. "
+            "The model and worker_model pins are judged against this harness.",
         ),
     )
     dynamic_capabilities: bool = field(
@@ -519,6 +545,35 @@ class SessionEnvironmentsConfig:
             "compute_survives_stop}.",
         ),
     )
+    sprites_profiles: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Sprites Profiles",
+            "Named Fly.io Sprites profiles (at most 20), each {id, name, token_secret, "
+            "workdir}. token_secret names the Settings > Secrets entry that holds the "
+            "Sprites API token; the token itself is never stored here.",
+        ),
+    )
+    boxd_profiles: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata=_meta(
+            "boxd Profiles",
+            "Named boxd machine profiles (at most 20), each {id, name, snapshot, vcpu, "
+            "workdir}. The gateway machine's own boxd auth login authenticates; no "
+            "credential is stored.",
+        ),
+    )
+
+    default_profile: str = field(
+        default="",
+        metadata=_meta(
+            "Default Environment",
+            "Profile id new dashboard chats start on; empty runs them on this machine. "
+            "Applied once, when a chat is created, and changeable in its composer until "
+            "the first message. Scheduled jobs, channels and subagents are unaffected "
+            "(a subagent follows its parent).",
+        ),
+    )
 
     stop_on_shutdown: bool = field(
         default=True,
@@ -535,14 +590,22 @@ class SessionEnvironmentsConfig:
     def from_raw(cls, section: object) -> "SessionEnvironmentsConfig":
         """Build from the raw section, keeping every valid part (never raises)."""
         from kiro_crew.config.session_environments import (
+            load_boxd_profiles,
+            load_default_profile,
             load_session_environments,
+            load_sprites_profiles,
             load_stop_on_shutdown,
         )
 
         coder_url, profiles = load_session_environments(section)
+        # Keep cross-provider collisions visible to the launch resolver: choosing
+        # one provider by list order could send an existing session elsewhere.
         return cls(
             coder_url=coder_url,
             profiles=[SessionEnvironmentProfileConfig(**p) for p in profiles],
+            sprites_profiles=load_sprites_profiles(section),
+            boxd_profiles=load_boxd_profiles(section),
+            default_profile=load_default_profile(section),
             stop_on_shutdown=load_stop_on_shutdown(section),
         )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +14,25 @@ from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO, TurnUsage
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.state import _ChatSlot
+
+
+def _stored_token_rows(monkeypatch, tmp_path):
+    """Point the usage store at *tmp_path* and return a reader of its rows, so a
+    test checks the row the real persist wrote rather than the call into it."""
+    from kiro_crew.dashboard.handlers import usage as usage_mod
+
+    shard_dir = tmp_path / "tokens"
+    monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+
+    def rows() -> list[dict]:
+        return [
+            json.loads(line)
+            for shard in sorted(shard_dir.glob("*.jsonl"))
+            for line in shard.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+
+    return rows
 
 
 class TestTokenPersistenceBackfill:
@@ -488,16 +508,13 @@ class TestTokenUsageSurface:
         client.context_used_tokens = MagicMock(return_value=10)
         client.context_window_tokens = MagicMock(return_value=100)
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-
-        persist = AsyncMock()
-        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.persist_token_record_async", persist)
+        rows = _stored_token_rows(monkeypatch, tmp_path)
 
         from kiro_crew.dashboard.chat import _run_chat
 
         await _run_chat(state, slot, "hello")
 
-        assert persist.await_args.args[0] == slot_key
-        assert persist.await_args.kwargs["surface"] == expected
+        assert [(r["slot"], r["surface"]) for r in rows()] == [(slot_key, expected)]
 
     @pytest.mark.asyncio
     async def test_completion_keeps_source_of_session_that_ran(self, tmp_path, monkeypatch):
@@ -525,16 +542,13 @@ class TestTokenUsageSurface:
         client.stream = _stream
         client.stream_command = _stream
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-
-        persist = AsyncMock()
-        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.persist_token_record_async", persist)
+        rows = _stored_token_rows(monkeypatch, tmp_path)
 
         from kiro_crew.dashboard.chat import _run_chat
 
         await _run_chat(state, slot, "hello")
 
-        assert persist.await_args.args[0] == slot.key
-        assert persist.await_args.kwargs["surface"] == "slack"
+        assert [(r["slot"], r["surface"]) for r in rows()] == [(slot.key, "slack")]
 
 
 class TestCostOnlyTurnPersistGate:
@@ -557,16 +571,15 @@ class TestCostOnlyTurnPersistGate:
         slot = state.get_or_create_slot("s1")
         client = TestTokenPersistenceBackfill._make_mock_client(events)
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-
-        persist = AsyncMock()
-        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.persist_token_record_async", persist)
+        rows = _stored_token_rows(monkeypatch, tmp_path)
 
         from kiro_crew.dashboard.chat import _run_chat
 
         await _run_chat(state, slot, "hello")
 
-        assert persist.await_count == 1
-        assert persist.await_args.args[2].usage.cost_usd == pytest.approx(0.42)
+        stored = rows()
+        assert [r["slot"] for r in stored] == ["s1"]
+        assert stored[0]["cost"] == pytest.approx(0.42)
 
     @pytest.mark.asyncio
     async def test_an_all_zero_turn_still_writes_no_row(self, tmp_path, monkeypatch):
@@ -579,15 +592,13 @@ class TestCostOnlyTurnPersistGate:
         slot = state.get_or_create_slot("s1")
         client = TestTokenPersistenceBackfill._make_mock_client(events)
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-
-        persist = AsyncMock()
-        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.persist_token_record_async", persist)
+        rows = _stored_token_rows(monkeypatch, tmp_path)
 
         from kiro_crew.dashboard.chat import _run_chat
 
         await _run_chat(state, slot, "hello")
 
-        persist.assert_not_awaited()
+        assert rows() == []
 
 
 class TestKiroBackfillProfileGuard:

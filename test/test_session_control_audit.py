@@ -56,19 +56,21 @@ _DASHBOARD_TOOL_CALLS = {
     "session_continue": {"target": "chat-2"},
     "session_set_model": {"target": "chat-2", "model": "sonnet"},
     "session_reload": {"target": "chat-2"},
+    "session_set_color": {"target": "chat-2", "color": "1"},
     "session_rename": {"target": "chat-2", "title": "Worker"},
     "session_generate_title": {"target": "chat-2"},
     "session_close": {"target": "chat-2"},
     "session_revive": {"target": "chat-2"},
     "session_history_list": {},
     "session_send": {"target": "chat-2", "message": "hi"},
-    "session_broadcast": {"message": "hi", "mode": "queue"},
+    "session_broadcast": {"message": "hi", "mode": "queue", "all": True},
     "session_status": {},
     "session_adopt": {"target": "chat-2"},
     "session_handoff": {"target": "chat-2", "to": "chat-3"},
     "session_release": {"target": "chat-2"},
     "session_read_message": {"target": "chat-2"},
     "session_summary": {"target": "chat-2"},
+    "work_dispatch": {"title": "t", "acceptance": {}, "agent": "a", "seed": "s"},
 }
 
 

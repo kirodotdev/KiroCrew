@@ -233,6 +233,16 @@ _UNANCHORED_TARGET_ITEM = "\x00<governance:edit-target-unanchored-unverifiable>"
 _GUEST_UNVERIFIABLE_ITEM = "\x00<governance:guest-target-unverifiable>"
 
 
+#: Same never-permittable construction, for a scope a proven host built-in is
+#: judged in (``gate_decision``'s ``own_scopes``) whose arguments name no target
+#: there: a pathless ``grep`` searches a directory the gate cannot see. An
+#: allow-mode confinement refuses it; a deny-mode or ungoverned scope permits it.
+#: Absolute on purpose: the path matcher anchors a relative item at the gateway's
+#: working directory, which would put a relative marker inside a workspace
+#: allow-prefix whenever the gateway runs there.
+_NO_TARGET_ITEM = "/\x00<governance:own-scope-target-absent-unverifiable>"
+
+
 def _governed_targets(
     paths: Iterable[str], root: Optional[str], also_local: bool = False
 ) -> Tuple[str, ...]:

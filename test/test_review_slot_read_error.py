@@ -229,10 +229,11 @@ class TestTheGuardedReadsKeepTheirError:
 
         script = _publish_step(lane)
         captures = [line for line in script.split("\n") if '2>"$READ_ERR_FILE"' in line]
-        # four guarded reads: the slot occupancy read, the landing confirmation
-        # read on the other side of the write, the verdict lookup, and the
-        # override-body read that decides whether a repeat is allowed.
-        assert len(captures) == 4, f"{lane}: expected 4 captured reads, found {len(captures)}"
+        # five guarded reads: the slot occupancy read, the landing confirmation
+        # read on the other side of the write, the verdict lookup, the
+        # override-body read that decides whether a repeat is allowed, and the
+        # head read that decides the same.
+        assert len(captures) == 5, f"{lane}: expected 5 captured reads, found {len(captures)}"
 
     @pytest.mark.parametrize("lane", COVERED_LANES)
     def test_each_spent_budget_names_its_cause_once(self, lane: str) -> None:
@@ -240,14 +241,21 @@ class TestTheGuardedReadsKeepTheirError:
         script = _publish_step(lane)
         assert script.count("note_read_failure() {") == 1, f"{lane}: one reporter, not two"
         calls = [line for line in script.split("\n") if "note_read_failure " in line]
-        assert len(calls) == 4, f"{lane}: expected 4 reporter calls, found {len(calls)}"
+        assert len(calls) == 5, f"{lane}: expected 5 reporter calls, found {len(calls)}"
+        assert any(
+            "current head to decide whether this write may be repeated" in c for c in calls
+        ), f"{lane}: head read silent"
         assert any("to find this lane's slot" in c for c in calls), f"{lane}: slot read silent"
         assert any("previous write landed" in c for c in calls), f"{lane}: landing read silent"
         assert any(
             "accepted human override" in c for c in calls
         ), f"{lane}: override-body read silent"
         assert any(
-            'comment"' in c and "slot" not in c and "landed" not in c and "override" not in c
+            'comment"' in c
+            and "slot" not in c
+            and "landed" not in c
+            and "override" not in c
+            and "head" not in c
             for c in calls
         ), f"{lane}: verdict read silent"
 
@@ -636,4 +644,36 @@ exit 0
         for line in out.stdout.split("\n"):
             if "failed on attempt" in line:
                 assert "Resource not accessible" not in line, line
+        assert "created" not in out.stdout
+
+    # A replace whose write fails, and whose head read on the repeat is the one
+    # that cannot answer.
+    _HEAD_READ_FAILS = """
+if [ "$1" = "pr" ]; then
+  echo "gh: HTTP 502 Bad Gateway" >&2
+  exit 1
+fi
+case "$2" in
+  */pulls/*)
+    echo "gh: Resource not accessible by integration (HTTP 403)" >&2
+    exit 1
+    ;;
+esac
+exit 0
+"""
+
+    def test_an_unreadable_head_names_that_read(self, tmp_path: Path) -> None:
+        """The head read that decides whether a repeat is allowed reports its cause.
+
+        It stays fail-closed: the repeat is still withheld, and nothing is
+        written past the failed first attempt.
+        """
+        out = self._drive_replace(tmp_path, self._HEAD_READ_FAILS)
+        assert "rc=1" in out.stdout, out.stdout + out.stderr[-1000:]
+        assert "is unreadable, so this write was not repeated" in out.stdout
+        note = [line for line in out.stdout.split("\n") if line.startswith("note=")]
+        assert note and note[0] != "note=", out.stdout
+        assert "current head to decide whether this write may be repeated" in note[0], note[0]
+        assert "exited 1" in note[0], note[0]
+        assert "Resource not accessible by integration" in note[0], note[0]
         assert "created" not in out.stdout

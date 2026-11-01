@@ -137,6 +137,28 @@ class TestHeadSummary:
         assert head["red_other"] == []
         assert mod.is_static_only(head)
 
+    @pytest.mark.parametrize(
+        "ratchet", ["Backend Ratchets & Boundaries", "Frontend Ratchets & i18n"]
+    )
+    def test_a_push_red_only_on_a_ratchet_job_is_static_only(self, mod: Any, ratchet: str) -> None:
+        # The baselined ratchets run in their own ci.yml jobs, off lint-gate's
+        # path. Each is a local script, so a push red only there is avoidable;
+        # a name missing from LOCAL_COMMAND_JOBS would land in red_other and
+        # silently drop that push from M1/M2.
+        head = mod.summarise_head(sha(1), [job(ratchet, "failure", 0, 2)])
+        assert head["red_other"] == []
+        assert mod.is_static_only(head)
+
+    def test_every_lint_and_ratchet_job_in_ci_has_a_local_command(self, mod: Any) -> None:
+        # Pinned to the job ids, not to the names, so a gate moved into a new
+        # sibling job of the lint jobs cannot leave the census behind.
+        jobs = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))["jobs"]
+        ids = ("backend-lint", "frontend-lint", "backend-ratchets", "frontend-ratchets")
+        missing = sorted(
+            jobs[i]["name"] for i in ids if jobs[i]["name"] not in mod.LOCAL_COMMAND_JOBS
+        )
+        assert not missing, f"ci.yml jobs missing from LOCAL_COMMAND_JOBS: {missing}"
+
     def test_a_red_test_job_makes_the_push_not_static_only(self, mod: Any) -> None:
         runs = [job(LINT, "failure", 0, 2), job(HEAVY, "failure", 0, 20)]
         assert not mod.is_static_only(mod.summarise_head(sha(1), runs))

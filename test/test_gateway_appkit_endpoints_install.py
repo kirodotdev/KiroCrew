@@ -354,13 +354,11 @@ class TestRegistryInstallStream:
             assert resp.headers["Content-Type"] == "text/event-stream"
             body = await resp.text()
 
-            # Verify log events were streamed
             assert "event: log" in body
             assert "step 1: cloning" in body
             assert "step 2: building" in body
             assert "step 3: done" in body
 
-            # Verify done event
             assert "event: done" in body
             assert '"ok": true' in body or '"ok":true' in body
 

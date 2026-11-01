@@ -25,7 +25,7 @@ test.describe('Capabilities Page — /capabilities', () => {
     // (CapabilitiesPage.tsx:16), not a PageHeader subtitle, so there is no
     // page-subtitle testid on this route. KiroCrewAgentsPage renders the same
     // string as a real PageHeader subtitle, hence the #main-content scope.
-    await expect(page.locator('#main-content').getByText('Your AI teammates', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('#main-content').getByText('Always-on AI agents', { exact: false })).toBeVisible({ timeout: 5000 })
   })
 
   test('shows all 6 tab buttons in the side nav', async ({ page }) => {
@@ -96,8 +96,8 @@ test.describe('Capabilities Page — /capabilities', () => {
       // from" defaults to the built-in kirocrew template, so no pick is needed;
       // everything else sits behind the Advanced fold and keeps its defaults.
       await createSheet.getByPlaceholder('e.g. Radar or Dr. Eggbot').fill(agentName)
-      // This page opens the card with Advanced settings unfolded, so it ends
-      // with a second Create; both submit the same form. Press the first.
+      // This page opens the card with Advanced settings unfolded; the one
+      // Create sits in the sticky footer either way.
       await createSheet.getByTestId('crewmate-create-submit').click()
 
       // A successful create closes the dialog and refetches the roster; the page

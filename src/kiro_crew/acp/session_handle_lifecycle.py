@@ -9,10 +9,11 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_abandoned_steering``, ``_awaited_responses``,
 ``_cancel_grace_secs``, ``_cancel_ts``, ``_cancelled``, ``_ingress_seq``,
-``_session_key``, ``_stale_probe``, ``_steering_answers``.
+``_release_task``, ``_session_key``, ``_stale_probe``, ``_steering_answers``.
 
 Instance fields read: ``_pending_elicitations``, ``_prompt_or_tool_seen``, ``_queue``,
-``_runtime``, ``_session_id``, ``_steering_settled``, ``keep_transcript``, ``memory_mode``.
+``_runtime``, ``_session_id``, ``_steering_settled``, ``delete_delay_secs``,
+``keep_transcript``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import mediated_request_capability, released_sessions, sandbox_launch_mark
 from kiro_crew.acp.client import (
     AcpError,
     AcpProcessDied,
@@ -112,6 +114,9 @@ async def cancel(
     auto-recovery.
     """
     self._stale_probe = _stale_probe
+    # A cancelled turn's approved mediated-secret calls must not run later on
+    # their delivered grants: revoke them before the cancel goes out.
+    mediated_request_capability.invalidate_session(self._session_key or "")
     self._cancelled = True
     self._cancel_hook_tasks()
     self._cancel_ts = time.monotonic()
@@ -251,9 +256,12 @@ async def destroy(self: AcpSessionHandle) -> None:
     Exception: ``keep_transcript=True`` (set by SubagentManager before
     teardown) skips the transcript deletion — subagent transcripts are the
     resume material for ``spawn_continue`` and are lifecycle-managed by the
-    tombstone pruner / conversation TTL sweep instead. ``terminate_session``
-    still runs unconditionally: it is the RSS reclaim on the multiplexed
-    process; only the unlink is deferred.
+    tombstone pruner / conversation TTL sweep instead. The session is still
+    freed from the multiplexed process whatever ``keep_transcript`` says: that
+    is the RSS reclaim; only the unlink is deferred. A persistent session with
+    a delete delay, on a runtime that can release, is freed with the release
+    verb instead of ``terminate_session`` (``_release_ending``), and its record
+    is deleted later.
     """
     # The unlink runs in a `finally`, for the same reason
     # `terminate_session` unregisters the queue in one: that method swallows
@@ -282,10 +290,82 @@ async def destroy(self: AcpSessionHandle) -> None:
     if getattr(self, "_pending_elicitations", None):
         await self.cancel_pending_elicitations()
     try:
-        await self._runtime.terminate_session(self._session_id)
+        ending = self._release_ending()
+        if ending is not None:
+            # Shielded, as ``AcpClient._discard_claude_settings_seed`` is: the
+            # release waits for its entry to be written before it sends anything,
+            # and a cancellation in that wait would leave the entry written and
+            # the session still resident on the engine. As a task, the ending runs
+            # to completion even when this awaiter is cancelled.
+            await asyncio.shield(ending)
+        else:
+            await self._runtime.terminate_session(self._session_id)
     finally:
         if self.memory_mode != "persistent" or not getattr(self, "keep_transcript", False):
             self._cleanup_transcript()
+
+
+def _release_ending(self: AcpSessionHandle) -> "asyncio.Future[None] | None":
+    """The task that ends this session with a release, or ``None`` for the teardown.
+
+    Only a persistent session whose opener set ``delete_delay_secs``, on a
+    runtime that can release, is released: an incognito or temporary session's
+    record is deleted at once whatever the delay says. So is one in a process the
+    sandbox launched, whose ``released-sessions/`` is masked: on Linux the mask is
+    a writable stand-in that goes with the sandbox, so the entry would be lost and
+    the record kept with nothing left to delete it. The task is made once per
+    handle, so a second ``destroy()`` waits for the first one's ending instead of
+    writing the entry again with a later due time.
+    """
+    ending: asyncio.Future[None] | None = getattr(self, "_release_task", None)
+    if ending is not None:
+        return ending
+    delay = getattr(self, "delete_delay_secs", 0.0)
+    if delay <= 0 or self.memory_mode != "persistent" or not self._runtime.can_release():
+        return None
+    if sandbox_launch_mark.launched_in_sandbox():
+        return None
+    self._release_task = asyncio.ensure_future(self._release_for_later_delete(delay))
+    return self._release_task
+
+
+async def _release_for_later_delete(self: AcpSessionHandle, delay: float) -> None:
+    """Free this session and leave its record for a later delete.
+
+    The entry that schedules the delete (``released_sessions``) is written
+    BEFORE the release is sent, so an exit in between leaves an entry the next
+    sweep acts on rather than a record nothing deletes. When the entry cannot
+    be stored, or the release fails and the session may still be resident, the
+    session ends with the teardown as before. A failed release keeps its entry:
+    the teardown is best-effort too, so a record it could not delete is still
+    deleted by the sweep, and one it did delete is an id the engine answers
+    success for. Raises nothing but a cancellation, because it runs as a task
+    whose exception nothing else reads.
+    """
+    session_id = self._session_id
+    try:
+        try:
+            await asyncio.to_thread(
+                released_sessions.schedule,
+                session_id,
+                backend=self._runtime.acp_backend,
+                delay_secs=delay,
+            )
+        except Exception:
+            logger.warning(
+                "destroy: could not schedule the delete of %s; deleting it now",
+                session_id,
+                exc_info=True,
+            )
+            await self._runtime.terminate_session(session_id)
+            return
+        if not await self._runtime.release_session(session_id):
+            await self._runtime.terminate_session(session_id)
+    finally:
+        # The task itself is cancelled only when the loop shuts down; the session
+        # still leaves the reader loop then, as the teardown's own ``finally``
+        # guarantees.
+        self._runtime.unregister_session(session_id)
 
 
 def _cleanup_transcript(self: AcpSessionHandle) -> None:
@@ -294,7 +374,8 @@ def _cleanup_transcript(self: AcpSessionHandle) -> None:
     A NO-OP on the KAS backend: this unlinks from kiro-cli's sessions dir and
     KAS keeps its own store, so nothing here matches. The ``keep_transcript``
     guard therefore protects nothing on KAS — that backend's session record is
-    already gone, removed by the same verb that freed the session.
+    removed by the same verb that freed the session or, for a released session,
+    by the later ``released_sessions`` sweep.
     """
     self.cleanup_transcript_files(self._session_id)
 

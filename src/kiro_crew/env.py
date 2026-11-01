@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import threading
 from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
@@ -155,12 +156,23 @@ def _warn_rejected_bin_dir(raw: object, source: str) -> None:
 def _validated_bin_dirs(values: object, source: str) -> list[str]:
     """Validate an operator-supplied LIST of bin directories, dropping bad ones.
 
-    ``~`` is expanded first (a config file is where a human writes
-    ``~/.pixi/bin``), then each entry passes the same
-    :func:`_validated_bin_dir` gate as this module's own well-known dirs — one
-    absolute directory, no path separator, no NUL. A rejected entry is dropped
-    rather than failing the whole list: one typo must not cost an operator every
-    other directory they declared, nor abort PATH construction for every spawn.
+    ``~`` is expanded first (:func:`os.path.expanduser`, so ``~/.pixi/bin`` and a
+    ``~otheruser/bin`` both resolve the way an operator expects), then each entry
+    passes the same :func:`_validated_bin_dir` gate as this module's own
+    well-known dirs — one absolute directory, no path separator, no NUL. A
+    rejected entry is dropped rather than failing the whole list: one typo must
+    not cost an operator every other directory they declared, nor abort PATH
+    construction for every spawn.
+
+    A ``~otheruser`` prefix makes :func:`os.path.expanduser` call
+    ``pwd.getpwnam`` (POSIX) / the SAM database (Windows) SYNCHRONOUSLY, which on
+    an LDAP/SSSD/AD-backed host can block for as long as the directory service
+    takes to answer. That is tolerable on the paths that reach this at startup or
+    off the event loop, but NOT on the gateway's live ``.env`` PATH hot-reload,
+    which runs on the loop -- so that one caller expands and validates its
+    additions OFF the loop first (see :func:`extend_process_path` and
+    ``config.live.ConfigWatch._cycle``), and nothing on the loop reaches this
+    with an unexpanded ``~otheruser`` entry.
 
     *values* is typed ``object`` because both sources are hand-editable and can
     legally parse as something other than a list of strings.
@@ -241,27 +253,57 @@ def _extra_mcp_path_dirs() -> list[str]:
     ]
 
 
-def extend_process_path(value: str) -> None:
+def prepare_env_path_additions(value: str) -> tuple[str, ...]:
+    """Expand and validate a ``.env`` ``PATH`` line into absolute dirs to ADD.
+
+    The part of :func:`extend_process_path` that does NOT touch ``os.environ``,
+    split out so a caller on the event loop can run it OFF the loop. Each entry
+    goes through the absolute-directory gate the other operator lists use
+    (:func:`_validated_bin_dirs`, so ``~``/``~otheruser`` expands via
+    :func:`os.path.expanduser` and a relative or unexpanded entry such as
+    ``$HOME/bin`` is dropped with a warning), then is deduped in declared order.
+
+    This is where the only call that can BLOCK lives: a ``~otheruser`` entry
+    makes ``os.path.expanduser`` call ``pwd.getpwnam`` / the SAM database
+    synchronously, which an LDAP/SSSD/AD lookup can stall. The gateway's live
+    ``.env`` hot-reload (``config.live.ConfigWatch._cycle``) therefore calls THIS
+    off the loop and hands the result to :func:`extend_process_path`, so the only
+    work left on the loop is the ``os.environ`` mutation. Pure: no ``os.environ``
+    write, so it is safe to run in a worker thread.
+    """
+    wanted = [entry for entry in value.split(os.pathsep) if entry.strip()]
+    return tuple(_dedup_dirs(_validated_bin_dirs(wanted, ".env PATH")))
+
+
+def extend_process_path(value: str, *, prepared: tuple[str, ...] | None = None) -> None:
     """Append the directories of a data-home ``.env`` ``PATH`` line to this process's ``PATH``.
 
     The ``.env`` loader seeds the environment with ``setdefault``, and a process
     always has a ``PATH``, so this key cannot be applied the way every other one
-    is. The line is read as directories to ADD, never as a replacement: each entry
-    goes through the absolute-directory gate the other operator lists use
-    (:func:`_validated_bin_dirs`, so ``~`` expands and a relative or unexpanded
-    entry such as ``$HOME/bin`` is dropped with a warning), and lands behind the
-    ``PATH`` the process already has, so it can add a launcher but never shadow a
-    system tool. The existing string is kept byte for byte and an entry it
-    already holds is skipped, so the repeated loads of the file do not grow it.
+    is. The line is read as directories to ADD, never as a replacement: each
+    entry goes through :func:`prepare_env_path_additions` (``~``/``~otheruser``
+    expands, a relative or unexpanded entry such as ``$HOME/bin`` is dropped with
+    a warning), and lands behind the ``PATH`` the process already has, so it can
+    add a launcher but never shadow a system tool. The existing string is kept
+    byte for byte and an entry it already holds is skipped, so the repeated loads
+    of the file do not grow it.
+
+    *prepared* lets a caller that already ran :func:`prepare_env_path_additions`
+    OFF the event loop pass its result in, so the expand/validate step -- the one
+    that can block on a ``~otheruser`` directory-service lookup -- is not repeated
+    on the loop; only the ``os.environ`` mutation here runs on it. When omitted,
+    the expansion runs inline, which is what the boot and off-loop dashboard
+    callers want. A *prepared* value must be the result of
+    :func:`prepare_env_path_additions` over this same *value*.
 
     Nothing else about the environment widens. An agent child still receives its
     environment through the launch tail's scrub, and the terminal completion
     probe still filters this ``PATH`` through its ownership check.
     """
+    additions = prepare_env_path_additions(value) if prepared is None else prepared
     current = os.environ.get("PATH") or os.defpath
     held = _dedup_dirs(current.split(os.pathsep))
-    wanted = [entry for entry in value.split(os.pathsep) if entry.strip()]
-    merged = _dedup_dirs([*held, *_validated_bin_dirs(wanted, ".env PATH")])
+    merged = _dedup_dirs([*held, *additions])
     if len(merged) > len(held):
         os.environ["PATH"] = os.pathsep.join([current, *merged[len(held) :]])
 
@@ -875,6 +917,45 @@ def _managed_browser_cli_dirs() -> list[str]:
     return [value for entry in entries if (value := _validated_bin_dir(str(entry)))]
 
 
+def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str | None:
+    """Builder Toolbox's Windows bin dir, ``%LOCALAPPDATA%\\Toolbox\\bin``.
+
+    On Windows Toolbox does not use ``~/.toolbox/bin``: its install guide puts
+    every tool (``claude``, ``kiro-cli``, ...) under ``%LOCALAPPDATA%\\Toolbox\\bin``
+    and has the user add that to their own PATH, which a gateway started before
+    that edit (or by a launcher that does not read it) never sees. So the Agent
+    Harness probe reported a Toolbox-installed Claude Code as not installed.
+
+    ``LOCALAPPDATA`` names the account running this process, so a caller that
+    pinned another account's *pinned_home* gets that home's ``AppData\\Local``.
+    """
+    local = os.environ.get("LOCALAPPDATA", "") if pinned_home is None else ""
+    base = local or os.path.join(resolved_home, "AppData", "Local")
+    return _validated_bin_dir(os.path.join(base, "Toolbox", "bin"))
+
+
+def user_tool_bin_dirs(home: str) -> list[str]:
+    """:data:`_EXTRA_PATH_DIRS` formatted for *home*, invalid entries dropped.
+
+    The fixed tool-manager bin dirs, and nothing else: no managed browser CLI,
+    no per-version Node bins, no inherited ``PATH`` and no interpreter dir. That
+    is the part of :func:`augmented_path`'s search a process can pin once for a
+    whole account, which is what the pod gateway's default ``PATH`` needs (see
+    ``pod.config.default_gateway_path``). Every entry passes the same
+    absolute-only :func:`_validated_bin_dir` gate, so a relative
+    ``MISE_DATA_DIR`` cannot introduce a cwd-relative entry. Each entry is
+    ``os.path.normpath``-ed first: the templates join with ``/``, so on Windows
+    the raw entry mixes separators with *home*'s ``\\`` and would not match the
+    native spelling of the same directory.
+    """
+    mise_data = mise_data_dir(home)
+    return [
+        e
+        for d in _EXTRA_PATH_DIRS
+        if (e := _validated_bin_dir(os.path.normpath(d.format(home=home, mise_data=mise_data))))
+    ]
+
+
 def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     """Return *base_path* prepended with well-known MCP binary directories.
 
@@ -888,13 +969,17 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     sync.
 
     On Windows a launched (non-shell) gateway inherits a ``PATH`` that does
-    not include the venv's ``Scripts\\`` directory, so ``shutil.which`` fails
-    to resolve the ``kirocrew`` / ``kirocrew-core`` console-script wrappers
-    pip generated for MCP-server spawn. Append ``sys.executable``'s parent
-    directory as the LAST entry so the running interpreter's own
-    console-scripts (``Scripts\\`` on Windows, ``bin/`` on POSIX) are always
-    discoverable. Last, not first: the interpreter dir also contains
-    ``python``/``pip``, and placing it ahead of ``base_path`` would silently
+    not include the interpreter's console-scripts directory, so
+    ``shutil.which`` fails to resolve the ``kirocrew`` / ``kirocrew-core``
+    wrappers pip generated for MCP-server spawn, or the bundled ``uv`` /
+    ``uvx``. Append ``sys.executable``'s parent and then the interpreter's
+    ``sysconfig`` scripts directory as the LAST entries, so its own console
+    scripts are always discoverable. In a venv (``Scripts\\`` on Windows,
+    ``bin/`` on POSIX) and in a POSIX python-build-standalone tree they are
+    one directory. The Windows desktop backend is a python-build-standalone
+    tree with ``python.exe`` at its root and its console scripts in
+    ``Scripts\\``, so there they differ. Last, not first: the interpreter dir
+    also contains ``python``/``pip``, and placing it ahead of ``base_path`` would silently
     rebind a user MCP spec's bare ``"command": "python"`` (and the spawned
     agent's own ``python``/``pip`` shell calls) to the gateway's venv
     interpreter. As a pure fallback it resolves only names found nowhere
@@ -920,10 +1005,39 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
         for d in _EXTRA_PATH_DIRS
         if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
     ]
+    if platform_compat.IS_WINDOWS and (
+        toolbox_bin := _windows_toolbox_bin_dir(resolved_home, home)
+    ):
+        extra.append(toolbox_bin)
     extra += _node_all_bin_dirs(resolved_home, mise_data, _xdg_config_dir(resolved_home))
     parts = extra + ([base_path] if base_path else [])
-    parts.append(str(Path(sys.executable).parent))
+    parts.extend(_interpreter_script_dirs())
     return os.pathsep.join(parts)
+
+
+def _interpreter_script_dirs() -> list[str]:
+    """The running interpreter's own directory, then its console-scripts directory.
+
+    One entry when they are the same directory (a venv, POSIX
+    python-build-standalone); two on the Windows desktop backend, where
+    ``python.exe`` sits at the tree root and pip installs ``uv.exe`` and the
+    ``kirocrew`` wrappers into ``Scripts\\``.
+    """
+    dirs = [str(Path(sys.executable).parent)]
+    scripts = _INTERPRETER_SCRIPTS_DIR
+    same = os.path.normcase(os.path.normpath(scripts)) == os.path.normcase(
+        os.path.normpath(dirs[0])
+    )
+    if scripts and os.path.isabs(scripts) and not same:
+        dirs.append(scripts)
+    return dirs
+
+
+#: The interpreter's console-scripts directory, read once at import. It
+#: depends only on ``sys.prefix``, which does not change at runtime, and
+#: ``sysconfig.get_path`` runs ``os.path.expanduser`` over its result, so a
+#: per-call read would follow whatever home the caller is pinning.
+_INTERPRETER_SCRIPTS_DIR = sysconfig.get_path("scripts") or ""
 
 
 #: How many directories :func:`describe_search_path` names before truncating.
@@ -1170,6 +1284,27 @@ def resolved_command_casing(path: str | None) -> str:
     if len(matches) != 1:
         return path
     return path[: -len(name)] + matches[0]
+
+
+def saved_command_casing(path: str) -> str:
+    """Heal a saved absolute command whose only flaw is a PATHEXT extension.
+
+    Builds before :func:`resolved_command_casing` existed persisted
+    ``shutil.which`` results such as ``...\\demo-mcp.EXE`` as absolute
+    commands, and every resolver accepts an existing absolute command verbatim,
+    so the spelling never healed. This repairs only that signature: the stem
+    matches the on-disk entry exactly and the extension differs in case alone.
+    Any other spelling, a stem written in different case included, is the
+    operator's own and is returned unchanged.
+    """
+    repaired = resolved_command_casing(path)
+    if repaired == path:
+        return path
+    stem, ext = os.path.splitext(os.path.basename(path))
+    new_stem, new_ext = os.path.splitext(os.path.basename(repaired))
+    if stem == new_stem and ext != new_ext:
+        return repaired
+    return path
 
 
 def mcp_runtime_path(base_path: str = "") -> str:
@@ -1619,7 +1754,7 @@ def activate_mise(env: MutableMapping[str, str] | None = None) -> list[str]:
         proc = subprocess.run(
             [mise, "env", "--json"],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=10,
             env=dict(target),
             cwd=str(Path.home()),

@@ -54,7 +54,15 @@ class _RecordingStore:
             return receipts.get(source_id)
 
         def _apply(
-            *, source_id, session_key, source_total, result, snapshot, messages, facets
+            *,
+            source_id,
+            session_key,
+            source_total,
+            result,
+            snapshot,
+            messages,
+            facets,
+            kind_routing=None,
         ):  # noqa: ANN001
             receipts[source_id] = {
                 "source_total": source_total,

@@ -56,6 +56,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.dashboard.chat_folders import MAX_CHAT_FOLDERS, folder_ids_filed_into
+from kiro_crew.dashboard.mate_folders import home_owner_of
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -137,13 +138,16 @@ def _find(folders: list[dict[str, Any]], name: str, parent_id: str) -> dict[str,
     Matched case-insensitively on the STORED name so a person who fixed the
     capitalisation still owns the folder the next arrival lands in, and scoped to
     *parent_id* so an unrelated top-level ``from laptop`` is not mistaken for the
-    child of ``Imported``.
+    child of ``Imported``. A mate's home folder, or a folder inside one, never
+    answers: it holds only the mate's own sessions.
     """
     target = name.strip().lower()
     if not target:
         return None
     for folder in folders:
         if str(folder.get("name", "")).strip().lower() != target:
+            continue
+        if home_owner_of(folders, str(folder.get("id") or "")):
             continue
         if str(folder.get("parent_id", "") or "") == parent_id:
             return folder

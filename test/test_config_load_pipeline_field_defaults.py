@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from named_cases_helpers import named_cases
 from test_config_load_pipeline import _DECLARED_EXCEPTIONS, _document, _section_fields
 
 from kiro_crew.acp_backends import selectable_backends
@@ -928,19 +929,22 @@ def _stub_roster_migration_cases() -> list:
 
 
 class TestAMovedFieldDefaultMovesTheBuild:
-    @pytest.mark.parametrize(("moves", "document", "read", "expected"), _move_cases())
-    def test_the_build_follows_the_field(
-        self, tmp_path, monkeypatch, moves, document, read, expected
-    ):
-        for dto, name, value in moves:
-            _move_default(monkeypatch, dto, name, value)
-        assert read(_build(tmp_path, document)) == expected
-
     @pytest.mark.parametrize(
         ("moves", "document", "read", "expected"),
-        [*_own_value_cases(), *_stub_roster_migration_cases()],
+        [
+            *named_cases(
+                "test_the_build_follows_the_field",
+                ("moves", "document", "read", "expected"),
+                _move_cases(),
+            ),
+            *named_cases(
+                "test_a_value_of_its_own_holds_when_the_default_moves",
+                ("moves", "document", "read", "expected"),
+                [*_own_value_cases(), *_stub_roster_migration_cases()],
+            ),
+        ],
     )
-    def test_a_value_of_its_own_holds_when_the_default_moves(
+    def test_a_moved_default_reads_as_expected(
         self, tmp_path, monkeypatch, moves, document, read, expected
     ):
         for dto, name, value in moves:

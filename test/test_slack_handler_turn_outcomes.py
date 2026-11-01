@@ -640,7 +640,7 @@ class TestTransientCompactionRetry:
         log = MagicMock()
         log.get_metadata.return_value = {}
         log.get_metadata_status.return_value = ({}, True)
-        log.recent.return_value = [
+        log.read_messages.return_value = [
             {"role": "user", "content": "earlier question"},
             {"role": "assistant", "content": "earlier partial answer"},
         ]
@@ -726,8 +726,7 @@ class TestStopReasonCancelled:
     """Phase 4: handler response to stopReason='cancelled'."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _ensure_reactions_enabled(self, monkeypatch):
+    def _ensure_reactions_enabled(self, _floor_monkeypatch):
         import dataclasses
 
         from kiro_crew.config.loader import KiroCrewConfig
@@ -740,7 +739,7 @@ class TestStopReasonCancelled:
                 cfg, slack=dataclasses.replace(cfg.slack, reactions_enabled=True)
             )
 
-        monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
+        _floor_monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
 
     @pytest.mark.asyncio
     async def test_handler_stop_reason_cancelled_skips_record_success(self):
@@ -807,6 +806,8 @@ class TestStopReasonCancelled:
         )
 
         mock_consolidator.maybe_consolidate.assert_not_called()
+        # The turn itself ran: its partial text reached the thread.
+        assert any("partial" in t for t in _visible_texts(slack)), _visible_texts(slack)
 
     @pytest.mark.asyncio
     async def test_handler_stop_reason_end_turn_preserves_existing_behavior(self):
@@ -887,8 +888,7 @@ class TestLiveTurnPresentationFailure:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _ensure_reactions_enabled(self, monkeypatch):
+    def _ensure_reactions_enabled(self, _floor_monkeypatch):
         import dataclasses
 
         from kiro_crew.config.loader import KiroCrewConfig
@@ -901,7 +901,7 @@ class TestLiveTurnPresentationFailure:
                 cfg, slack=dataclasses.replace(cfg.slack, reactions_enabled=True)
             )
 
-        monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
+        _floor_monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
 
     @pytest.mark.asyncio
     async def test_progress_card_raise_does_not_render_terminal_error(self):

@@ -286,44 +286,37 @@ class TestLoopReadersMaterialiseOffLoop:
     one where it can hard-exit the gateway.
     """
 
-    @pytest.mark.parametrize("handler_name", ["get_entity_graph", "get_full_graph"])
-    def test_the_handler_offloads_the_materialisation(self, handler_name):
+    # Each handler reaches the graph only through a worker-thread call. A delete
+    # on another thread can mark the graph stale at any moment
+    # (``mark_graph_stale``), so a ``store.graph`` read on the loop -- even right
+    # after an offloaded load -- could rebuild the whole graph on the loop.
+    _OFFLOADED_READ = {
+        "get_full_graph": "graph = await asyncio.to_thread(store.ensure_graph_loaded)",
+        "get_entity_graph": "await asyncio.to_thread(store.get_entity_subgraph,",
+    }
+
+    @pytest.mark.parametrize("handler_name", sorted(_OFFLOADED_READ))
+    def test_the_handler_reads_the_graph_on_a_worker(self, handler_name):
         import inspect
 
         from kiro_crew.dashboard.handlers import knowledge as handlers
 
         src = inspect.getsource(getattr(handlers, handler_name))
         assert (
-            "asyncio.to_thread(store.ensure_graph_loaded)" in src
-        ), f"{handler_name} must materialise the graph off-loop before reading it"
+            self._OFFLOADED_READ[handler_name] in src
+        ), f"{handler_name} must read the graph on a worker thread"
 
-    @pytest.mark.parametrize("handler_name", ["get_entity_graph", "get_full_graph"])
-    def test_the_offload_precedes_every_graph_read(self, handler_name):
+    @pytest.mark.parametrize("handler_name", sorted(_OFFLOADED_READ))
+    def test_the_handler_never_reads_the_graph_property_on_the_loop(self, handler_name):
         import inspect
+        import re
 
         from kiro_crew.dashboard.handlers import knowledge as handlers
 
         src = inspect.getsource(getattr(handlers, handler_name))
-        offload = src.index("asyncio.to_thread(store.ensure_graph_loaded)")
-        # The graph must be materialised off-loop BEFORE anything reads it.
-        # get_full_graph reads the graph directly (`graph = store.graph` and reads
-        # through that local); get_entity_graph delegates the read to
-        # store.get_entity_subgraph, which pins and reads the graph itself.
-        # Either way the touch that reaches the graph must follow the offload.
-        read_tokens = (
-            "store.graph.",
-            "store.graph,",
-            "store.graph)",
-            "store.graph\n",
-            "store.graph ",
-            "store.get_entity_subgraph(",
-        )
-        first_read = min(
-            (src.index(tok) for tok in read_tokens if tok in src),
-            default=None,
-        )
-        assert first_read is not None, "handler no longer reads store.graph"
-        assert offload < first_read, "graph is read before it is materialised off-loop"
+        code = "\n".join(line.split("#", 1)[0] for line in src.splitlines())
+        assert not re.search(r"store\.graph\b", code), "graph property read on the loop"
+        assert "store.get_entity_subgraph(" not in code, "subgraph read on the loop"
 
     def test_ensure_graph_loaded_is_callable_off_loop(self, tmp_path):
         """``to_thread`` runs it with no running loop; the guard must allow that."""

@@ -265,6 +265,8 @@ so the panel's effects keep one order.
 | `markdownPanelSourcePos.ts` | where a selection sits in the source (`resolveSourcePos`, `findCoords`) |
 | `useMarkdownPanelFind.ts` | the CSS Custom Highlight registry and preview find (Cmd+F) |
 | `useMarkdownPanelDisk.ts` | the disk truth (the panel's reads, the catch-up latch, the watch, the missing-file retry, the last-copy rescue) and the working-tree diff against HEAD |
+| `useImageBoxComments.tsx` | image box comments: the box draft and its typed text (`useImageBoxDraft`), and the host the rendered images read plus the box composer (`useImageBoxHost`) |
+| `useCommentHint.ts` | who sees the comment hint, with which wording, and its New badge |
 | `ChatPane.tsx` | the pane's layout and dock, its store reads, the follow-up chips, the queue-card actions, and the transcript mount (`transcript={{ … }}`) |
 | `ChatPaneProps.ts` | the props interface and `PaneLeading` |
 | `useChatPaneDraft.ts` | the pane-local composer draft, parked and restored per slot |
@@ -319,8 +321,8 @@ navigation rail apart from a filter pill, and the System page stacks both.
 ### The About, Chat and MCP settings panels
 
 `pages/settings/AboutPanel.tsx` (Settings ▸ About), `pages/settings/ChatPanel.tsx`
-(Settings ▸ Chat) and `pages/settings/McpManagement.tsx` (the Developer page's MCP
-pool) are facades over sibling owners in `pages/settings/`. Each facade keeps its
+(Settings ▸ Chat) and `pages/settings/McpManagement.tsx` (Settings ▸ Developer ▸
+MCP Management) are facades over sibling owners in `pages/settings/`. Each facade keeps its
 module id and every export, so hosts and the specs that mock a panel keep naming the
 facade. Nothing outside a panel's own files imports one of its owners, and no owner
 imports its facade; the only edges between owners are `AboutPanelGatewayUpdate.tsx` to
@@ -340,9 +342,9 @@ fixed order.
 | `useChatPanelDashboard.ts` | the `dashboardConfig` read and writes, Feature Tips and the feature-video readout |
 | `useChatPanelTypedFields.ts` | the draft-backed number and path fields (Advanced, Sessions) |
 | `useChatPanelModels.ts` | the Model page: fallback models, defaults, selectable models, the agent-pin notice, per-role rows |
-| `McpManagement.tsx` | the page: the view tabs, the sharing and pre-resolve cards, the servers table, both dialogs |
+| `McpManagement.tsx` | the page: the view tabs, the sharing and pre-resolve cards, the servers table, the Share all list |
 | `mcpManagementModel.ts` | wire types, error-key tables, the row-state derivation and the sharing-evidence verdict |
-| `McpManagementLaunchReview.tsx` | the launch lines, the review a STUB switch opens, the refused-row panel |
+| `McpManagementLaunchReview.tsx` | a row's share button, its Details (the agents that declare it), and its hint |
 | `McpManagementAssessment.tsx` | the Sharing assessment view and its Measure control |
 
 New work for a responsibility in the table goes to its owner, and work that belongs
@@ -367,7 +369,7 @@ component moved whole, so each one registers its hooks in its BASE order.
 |---|---|
 | `SecurityPanel.tsx` | the rail: `SECURITY_SECTIONS`, `SECTION_LABEL_KEY` (read by `gen-ui-index.mjs`), `SECTION_GROUP_KEY`, the rail summaries, the panel, and the Documentation section |
 | `SecurityPanelPosture.tsx` | Live security posture, and the status row and chip the tailnet card reuses |
-| `SecurityPanelApprovals.tsx` | the ad-hoc auto-approve duration card and the flagged-file delivery consent card |
+| `SecurityPanelApprovals.tsx` | the ad-hoc auto-approve duration card |
 | `SecurityPanelDeniedCommands.tsx` | Denied commands: the built-in rules by category, the custom deny patterns, the pinned and floor tooltip keys |
 | `SecurityPanelTailnet.tsx` | the tailnet origin card and `TAILNET_STATE_KEY`, which the rail summary reads |
 | `SecurityPanelTrust.tsx` | third-party app trust grants, per-registry Git-identity trust grants, and their failure messages |
@@ -717,6 +719,7 @@ family imports an owner. A module beside them in `src/types/` that is not named
 | `index.chat.ts` | the chat slot row (`ChatSlot`) with its turn identity and the `chat_done` payload, its todo list, MCP report and channel links; sidebar folders, tags and board lanes; transcript messages and the slot detail read; subagent and tool activity; content blocks; notifications and their channels; approvals; history session rows |
 | `index.sources.ts` | pull requests, issues, the source provider id, an app repository's contributors |
 | `index.artifacts.ts` | artifacts and their publication, publishing providers, forks, remote listings, session docs, folders, events, comments, web-app metadata |
+| `index.sharedCrew.ts` | Shared Crew attribution: the browser-facing principal and its display snapshot, a session's creator, availability and trigger |
 
 Redux Toolkit (`src/store/index.ts`) holds the cross-page shell state in **four**
 slices:
@@ -769,12 +772,10 @@ is finalized within the same scope, so an untouched row resolves back to its bas
 object and keeps its identity.
 
 This is a convention for new and touched code, not a description of the current
-store. Two dashboard collections still assign wholesale and are known gaps rather
-than counterexamples: `sseSubagentStatus` rebuilds its `agents` array every frame,
-and `sseStatus` replaces `state.status` as a whole object that several panels
-subscribe to entirely. Converting them is worthwhile but is its own change —
-`state.status` in particular needs its consumers narrowed first, or the merge buys
-nothing.
+store. One dashboard collection still assigns wholesale and is a known gap rather
+than a counterexample: `sseStatus` replaces `state.status` as a whole object that
+several panels subscribe to entirely. Converting it is worthwhile but is its own
+change: its consumers need narrowing first, or the merge buys nothing.
 
 Two habits belong to the same concern:
 

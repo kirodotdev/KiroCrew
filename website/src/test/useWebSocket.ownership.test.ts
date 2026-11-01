@@ -53,6 +53,7 @@ const OWNER_MODULES = [
   'connection.ts',
   'contextTraceRefresh.ts',
   'dashboardFields.ts',
+  'foldWatch.ts',
   'frames.ts',
   'gatewayConnectivity.ts',
   'idleRowRefresh.ts',
@@ -66,6 +67,7 @@ const OWNER_MODULES = [
   'streamBuffers.ts',
   'turnCompletion.ts',
   'voicePlayback.ts',
+  'workDelta.ts',
   'workflowRuns.ts',
 ]
 
@@ -115,6 +117,7 @@ describe('one public surface', () => {
       'contextTraceKey',
       'crewLogProjectionsKey',
       'emitSlotFocused',
+      'endSplitPaneFocus',
       'fetchingAnyFoldQuery',
       'handleDashboardMoved',
       'healRedactionSwitchAfterReconnect',
@@ -227,6 +230,7 @@ describe('dependency direction', () => {
     'chatStream.ts': ['attention.ts', 'browserEvents.ts'],
     'composerCards.ts': ['attention.ts', 'retiredIds.ts'],
     'connection.ts': ['gatewayConnectivity.ts'],
+    'foldWatch.ts': ['serverState.ts'],
     'reconnectCatchUp.ts': ['bundleReload.ts', 'gatewayConnectivity.ts', 'serverState.ts'],
     'serverState.ts': ['browserEvents.ts'],
     'slotList.ts': ['idleRowRefresh.ts'],

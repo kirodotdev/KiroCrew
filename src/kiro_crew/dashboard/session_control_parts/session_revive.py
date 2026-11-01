@@ -522,6 +522,22 @@ async def revive_session(
 
         if not await state.read_folders(_exists):
             raise deny("folder not found", "folder_not_found", status=400)
+        # A mate's home takes sessions only from that mate, as in `create_session`,
+        # and a session archived in one leaves it only by that mate.
+        from kiro_crew.dashboard.mate_folders import (
+            MateHomeLockedError,
+            refuse_foreign_home_filing,
+        )
+
+        try:
+            await refuse_foreign_home_filing(
+                state,
+                slot_history_key(caller_slot),
+                folder_id,
+                _bounded_folder_id(meta.get("folder_id")),
+            )
+        except MateHomeLockedError:
+            raise deny("this folder belongs to a mate", "mate_home_locked", status=403) from None
 
     # A revive materialises the same resource a create does -- a live slot with
     # a hydrated transcript -- so it spends the same budgets: the per-caller
@@ -637,6 +653,18 @@ async def revive_session(
                 "creator_slot_cap_reached",
                 429,
             )
+        from kiro_crew.dashboard.approval_inheritance import (
+            inherit_posture,
+            is_profile_worker,
+        )
+
+        if built._created_by == caller_key and not is_profile_worker(built):
+            # Its verified creator brought it back: it takes the creator's posture
+            # as it is now, as session_create hands it at birth, and follows the
+            # creator's later mode changes (``approval_inheritance``). A crewmate's
+            # own worker is left to its Profile, which its first turn seeds
+            # (``crewmate_approval.seed_for_turn``), as create leaves it.
+            inherit_posture(built, live_caller)
         return None
 
     outcome = await resume_slot_from_history(
@@ -1057,11 +1085,18 @@ async def revive_own_archived_worker(
             return target
     except Exception:  # noqa: BLE001 - an unresolvable target keeps its own answer
         return target
+
+    def _caller_is_conductor() -> bool:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        execution = read_session_execution(caller_session_key)
+        return is_conductor_execution(execution, KiroCrewConfig.load())
+
     try:
-        execution = await asyncio.to_thread(read_session_execution, caller_session_key)
+        is_conductor = await asyncio.to_thread(_caller_is_conductor)
     except Exception:  # noqa: BLE001 - an unreadable caller record revives nothing
         return target
-    if not is_conductor_execution(execution):
+    if not is_conductor:
         return target
     try:
         revived = await revive_session(

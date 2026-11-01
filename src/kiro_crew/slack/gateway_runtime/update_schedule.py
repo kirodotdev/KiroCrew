@@ -11,7 +11,7 @@ Orchestrator fields read: ``_MANDATORY_UPDATE_MAX_DEFER_SECS``,
 ``task_runner``.
 Orchestrator fields written: ``_mandatory_update_deferred_at``,
 ``_mandatory_update_deferred_key``, ``_pending_update_respawn``,
-``_update_apply_deferred``.
+``_pending_update_version``, ``_update_apply_deferred``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -444,9 +444,13 @@ async def _run_update_checks(self: GatewayOrchestrator) -> None:
     while True:
         self._update_apply_deferred = False
         try:
-            if getattr(self, "_pending_update_respawn", None) is not None:
-                await self._retry_pending_update_restart()
-            else:
+            # A queued restart the user put off must not stop the checks: a
+            # policy floor raised since, or a newer release, is still found,
+            # and its own apply replaces the held respawn.
+            if (
+                getattr(self, "_pending_update_respawn", None) is None
+                or await self._retry_pending_update_restart()
+            ):
                 await self._check_for_updates()
         except asyncio.CancelledError:
             raise
@@ -459,26 +463,47 @@ async def _run_update_checks(self: GatewayOrchestrator) -> None:
         await asyncio.sleep(delay)
 
 
-async def _retry_pending_update_restart(self: GatewayOrchestrator) -> None:
+async def _retry_pending_update_restart(self: GatewayOrchestrator) -> bool:
     """Run, or retry, only the safe restart after an update already applied.
 
     Admission pauses here and nowhere earlier: an apply that builds beside
     the live install leaves the gateway serving until this point. A pending
     restart that serves a policy floor keeps its mandatory grace across
     retries (``_pending_update_mandatory`` and its key).
+
+    A voluntary managed-venv restart the user put off ("Later" in the update
+    prompt, read for ``_pending_update_version``) waits: the respawn stays queued and the
+    badge stays lit, so the update starts when the user installs it or the
+    deferral lapses. A policy floor's restart does not wait.
+
+    Returns True only for that hold, so the caller still runs the update
+    check; every other outcome (restarted, busy, nothing queued) is False.
     """
     respawn = getattr(self, "_pending_update_respawn", None)
     if respawn is None:
-        return
+        return False
+    mandatory = getattr(self, "_pending_update_mandatory", False)
+    version = getattr(self, "_pending_update_version", "")
+    if not mandatory and version:
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.update_deferral import user_deferred_update
+
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if user_deferred_update(cfg, version):
+            logger.info("Update %s is ready but was put off by the user — not restarting", version)
+            if self.dashboard_state:
+                self.dashboard_state.push_refresh("update_available")
+            return True
     if not await self._prepare_auto_update_apply(
-        mandatory=getattr(self, "_pending_update_mandatory", False),
+        mandatory=mandatory,
         mandatory_key=getattr(self, "_pending_update_mandatory_key", ""),
     ):
-        return
+        return False
     try:
         await self._restart_after_update(respawn)
     finally:
         await self._finish_auto_update_apply()
+    return False
 
 
 async def _check_for_updates(self: GatewayOrchestrator) -> None:
@@ -575,7 +600,11 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
     """Provider-delegated update check and apply."""
     from kiro_crew import __version__ as _running_version
     from kiro_crew.config import KiroCrewConfig
-    from kiro_crew.platform.update_governance import min_version, update_required
+    from kiro_crew.platform.update_governance import (
+        min_version,
+        unattended_apply_allowed,
+        update_required,
+    )
     from kiro_crew.platform.update_provider import UpdateProvider
 
     # Loaded BEFORE provider.apply(): the legacy-nested-venv migration the
@@ -616,6 +645,59 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
             self.dashboard_state.push_update_progress("failed", message)
             self.dashboard_state.push_refresh("update_available")
         return False
+
+    def _unattended_installs_turned_off(result: Any) -> bool:
+        """True, and reported, when policy turned unattended installs off mid-cycle.
+
+        The update stays offered for a person's Update; nothing was applied.
+        """
+        if unattended_apply_allowed():
+            return False
+        logger.info(
+            "Auto-update not applied: the security policy turned off unattended "
+            "installs while this update waited"
+        )
+        self._publish_provider_update_state(result)
+        if self.dashboard_state:
+            self.dashboard_state.push_refresh("update_available")
+        return True
+
+    async def _restart_unless_apply_changed_nothing(result: Any) -> None:
+        """Restart into the applied update, or report an apply that changed nothing.
+
+        The check runs again first. When it still offers the version the apply
+        was for, the apply left the install as it was (for example a package
+        manager pin the apply honours and the check ignores). Restarting then
+        would boot into the same check and the same apply on every cycle,
+        closing every session each time, so the outcome is reported and the
+        gateway keeps running. A re-check that errors, finds nothing, or offers
+        another version is not that loop, and the restart goes ahead.
+        """
+        assert isinstance(provider, UpdateProvider)
+        after = await provider.check()
+        offered = str(result.remote_version or "")
+        if after.available and not after.error and str(after.remote_version or "") == offered:
+            message = (
+                f"The update command finished, but the check still offers {offered}: "
+                "the install did not change, so Kiro Crew is not restarting. "
+                "Check the policy's apply_command and check_command."
+            )
+            logger.warning(
+                "Auto-update: apply_command exited 0 but the check still offers %s — "
+                "the install did not change; not restarting",
+                offered,
+            )
+            self._notice_wheel_update_once(
+                f"apply_unchanged:provider:{offered}",
+                "Kiro Crew update changed nothing",
+                message,
+            )
+            self._publish_provider_update_state(after)
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress("failed", message)
+                self.dashboard_state.push_refresh("update_available")
+            return
+        await self._restart_after_update(respawn_executable)
 
     # Say who owns updates on every path, "already latest" included, so the
     # dashboard need not run its own check to learn it.
@@ -688,9 +770,10 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
             )
             if self.dashboard_state:
                 self.dashboard_state.push_update_progress("pulling", "Applying mandatory update…")
+            self._pending_update_version = ""
             success = await provider.apply()
             if success:
-                await self._restart_after_update(respawn_executable)
+                await _restart_unless_apply_changed_nothing(result)
             elif self.dashboard_state:
                 self.dashboard_state.push_update_progress(
                     "failed", "Update apply failed — run manually: kirocrew update"
@@ -706,20 +789,35 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
         return
 
     if result.available:
+        from kiro_crew.update_deferral import user_deferred_update
+
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
-        if cfg.auto_update and effect.effect == AUTO_EFFECT_INSTALL:
+        deferred = user_deferred_update(cfg, str(result.remote_version or ""))
+        if cfg.auto_update and effect.effect == AUTO_EFFECT_INSTALL and not deferred:
             if not await self._prepare_auto_update_apply(mandatory=False):
                 self._publish_provider_update_state(result)
                 return
             try:
+                # The effect was derived before the check and the drain, and a
+                # policy installed since then decides. Read before the memory
+                # copy so a refused install spends none, and after it, with no
+                # wait between that read and the apply.
+                if _unattended_installs_turned_off(result):
+                    return
                 if not await _snapshot_memory_or_skip(result):
+                    return
+                if _unattended_installs_turned_off(result):
                     return
                 logger.info("Auto-update enabled — applying update via provider")
                 if self.dashboard_state:
                     self.dashboard_state.push_update_progress("pulling", "Downloading update…")
+                # The provider replaced the install on disk, so its queued
+                # restart is not held: only the managed-venv route, whose
+                # running tree is untouched, waits for "Later".
+                self._pending_update_version = ""
                 success = await provider.apply()
                 if success:
-                    await self._restart_after_update(respawn_executable)
+                    await _restart_unless_apply_changed_nothing(result)
                 elif self.dashboard_state:
                     self.dashboard_state.push_update_progress(
                         "failed", "Update apply failed — run manually: kirocrew update"
@@ -727,7 +825,12 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
             finally:
                 await self._finish_auto_update_apply()
         else:
-            if cfg.auto_update:
+            if deferred:
+                logger.info(
+                    "Update %s was put off by the user — not installing it unattended",
+                    result.remote_version,
+                )
+            elif cfg.auto_update:
                 logger.info("Auto-update is on, but %s — notifying instead", effect.reason)
             self._publish_provider_update_state(result)
             if self.dashboard_state:
@@ -824,6 +927,7 @@ async def _restart_after_update_claimed(
         return
     logger.info("Update callback drain complete, restarting gateway")
     self._pending_update_respawn = None
+    self._pending_update_version = ""
     # The exec is past the point of no return: the guard above removed the
     # reachable failures, but only the kernel can refuse the image itself
     # (wrong architecture, truncated, replaced since the check). Returning
@@ -960,6 +1064,7 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                         _running_version,
                         min_version(),
                     )
+                    self._pending_update_version = ""
                     await self._auto_apply_update(mandatory=True)
                 finally:
                     await self._finish_auto_update_apply()
@@ -1175,12 +1280,21 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
             # without a version bump lights the badge below instead, and the
             # dashboard's own apply path (`git pull`, dirty tree refused) is
             # the non-destructive way in.
-            installs = cfg.auto_update and effect.effect == AUTO_EFFECT_INSTALL
+            from kiro_crew.update_deferral import user_deferred_update
+
+            # "Later" in an update prompt is the user's answer for that version:
+            # it stays offered, and is never installed and restarted unattended.
+            deferred = user_deferred_update(cfg, str(info.get("latest_version") or ""))
+            installs = cfg.auto_update and effect.effect == AUTO_EFFECT_INSTALL and not deferred
             if installs and effect.route == AUTO_ROUTE_GIT and info.get("version_newer"):
                 if not await self._prepare_auto_update_apply(mandatory=False):
                     return
                 try:
                     logger.info("Auto-update enabled — applying update")
+                    # The git route reloads `kiro_crew` after rebuilding, so a
+                    # held restart would leave the floor check reading the new
+                    # `__version__` for old code; its restart is not held.
+                    self._pending_update_version = ""
                     await self._auto_apply_update()
                 finally:
                     await self._finish_auto_update_apply()
@@ -1199,7 +1313,12 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                     str(info.get("channel") or ""), str(info.get("latest_version") or "")
                 )
             else:
-                if cfg.auto_update and not installs:
+                if deferred:
+                    logger.info(
+                        "Update %s was put off by the user — not installing it unattended",
+                        info.get("latest_version"),
+                    )
+                elif cfg.auto_update and not installs:
                     logger.warning(
                         "Auto-update is on, but this install (%s) cannot apply it "
                         "unattended (%s) — notifying instead",

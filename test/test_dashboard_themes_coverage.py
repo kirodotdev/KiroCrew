@@ -203,6 +203,24 @@ class TestListThemesSync:
         _write_json(themes_dir / "lcars" / "theme.json", {"name": "LCARS"})
         assert self._slugs_despite_bad_encoding() == ["lcars"]
 
+    @pytest.mark.parametrize("non_object", [[], 42])
+    def test_non_object_custom_record_is_skipped(
+        self, themes_dir: Path, non_object: object
+    ) -> None:
+        # Valid JSON that is not an object has no .get, so it must be skipped
+        # like a corrupt file rather than fail the whole list.
+        _write_json(themes_dir / "odd.json", non_object)
+        _write_json(themes_dir / "ok.json", {"name": "Ok"})
+        assert [r["slug"] for r in th._list_themes_sync()] == ["ok"]
+
+    @pytest.mark.parametrize("non_object", [[], 42])
+    def test_non_object_installed_manifest_is_skipped(
+        self, themes_dir: Path, non_object: object
+    ) -> None:
+        _write_json(themes_dir / "odd" / "theme.json", non_object)
+        _write_json(themes_dir / "lcars" / "theme.json", {"name": "LCARS"})
+        assert [r["slug"] for r in th._list_themes_sync()] == ["lcars"]
+
     def test_dot_prefixed_staging_and_backup_dirs_are_never_listed(
         self, themes_dir: Path
     ) -> None:
@@ -229,6 +247,17 @@ class TestListThemesSync:
 class TestApiThemes:
     @pytest.mark.asyncio
     async def test_returns_the_enumerated_list(self, themes_dir: Path) -> None:
+        _write_json(themes_dir / "sunset.json", {"name": "Sunset"})
+        resp = await th.api_themes(_request("GET", "/api/themes"))
+        assert resp.status == 200
+        assert [t["slug"] for t in _body(resp)["themes"]] == ["sunset"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("non_object", [[], 42])
+    async def test_a_non_object_theme_file_does_not_fail_the_list(
+        self, themes_dir: Path, non_object: object
+    ) -> None:
+        _write_json(themes_dir / "odd.json", non_object)
         _write_json(themes_dir / "sunset.json", {"name": "Sunset"})
         resp = await th.api_themes(_request("GET", "/api/themes"))
         assert resp.status == 200
@@ -1171,6 +1200,18 @@ class TestApiThemeDetailPut:
         self, themes_dir: Path
     ) -> None:
         _write_text(themes_dir / "sunset.json", "{ not json")
+        resp = await th.api_theme_detail(_detail("PUT", "sunset", body=_theme_body()))
+        assert resp.status == 200
+        assert _body(resp)["theme"]["created_at"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("non_object", [[], 42])
+    async def test_non_object_existing_record_gets_a_fresh_created_at(
+        self, themes_dir: Path, non_object: object
+    ) -> None:
+        # The existing record is read only for its created_at; one that is not a
+        # JSON object is treated like a corrupt one, not a 500.
+        _write_json(themes_dir / "sunset.json", non_object)
         resp = await th.api_theme_detail(_detail("PUT", "sunset", body=_theme_body()))
         assert resp.status == 200
         assert _body(resp)["theme"]["created_at"]

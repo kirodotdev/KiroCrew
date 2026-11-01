@@ -54,11 +54,11 @@
       "id": "mcp-gateway",
       "feature": "MCP Gateway",
       "title": "Use less memory with the MCP gateway",
-      "body": "Route MCP tools through one shared broker instead of a copy per session to cut RAM. Enable the **Shared MCP gateway** toggle (Developer › MCP Pool — requires Developer Mode), or run `kirocrew config set mcp_gateway.enabled true`.",
+      "body": "Route MCP tools through one shared broker instead of a copy per session to cut RAM. Enable the **Shared MCP gateway** toggle (Settings › Developer › MCP Management), or run `kirocrew config set mcp_gateway.enabled true`.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open MCP Gateway", "route": "/developer?tab=mcp-pool" }
+      "action": { "kind": "route", "label": "Open MCP Gateway", "route": "/settings/developer/mcp-pool" }
     },
     {
       "id": "subagent-parallelism",
@@ -115,11 +115,11 @@
       "id": "system-monitor",
       "feature": "System Monitor",
       "title": "See what each session is spending",
-      "body": "A task manager for your agent: live CPU and memory per session, credits spent, and a Storage screen for what each session holds on disk. Open **Developer › System** — turn on **Developer Mode** in **Settings › Developer** to keep it in the sidebar.",
+      "body": "A task manager for your agent: live CPU and memory per session, credits spent, and a Storage screen for what each session holds on disk. Open **Settings › Developer › System**.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open System Monitor", "route": "/developer?tab=system" }
+      "action": { "kind": "route", "label": "Open System Monitor", "route": "/settings/developer/system" }
     },
     {
       "id": "web-terminal",

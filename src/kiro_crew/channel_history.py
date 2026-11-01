@@ -87,7 +87,6 @@ class ChannelHistory:
             new_buf: deque[HistoryEntry] = deque(buf, maxlen=self._observe_max_entries)
             self._channels[channel_id] = new_buf
 
-        # Load persisted history from disk
         self._load_observe(channel_id)
 
     def unset_observe(self, channel_id: str) -> None:
@@ -106,7 +105,14 @@ class ChannelHistory:
             except OSError:
                 logger.warning("Failed to remove history file %s", path, exc_info=True)
 
-    def push(self, channel_id: str, user: str, text: str, thread_ts: str | None = None, msg_ts: str | None = None) -> None:
+    def push(
+        self,
+        channel_id: str,
+        user: str,
+        text: str,
+        thread_ts: str | None = None,
+        msg_ts: str | None = None,
+    ) -> None:
         """Record a message in the channel buffer.
 
         Called on every message event in the gateway, not just @mentions.
@@ -128,7 +134,9 @@ class ChannelHistory:
 
         # Build entry — observe channels use wall clock for persistence
         wall_ts = time.time() if is_observe else None
-        entry = HistoryEntry(user=user, text=text, thread_ts=thread_ts, msg_ts=msg_ts, wall_ts=wall_ts)
+        entry = HistoryEntry(
+            user=user, text=text, thread_ts=thread_ts, msg_ts=msg_ts, wall_ts=wall_ts
+        )
         buf.append(entry)
 
         # Persist to disk for observe channels
@@ -273,6 +281,9 @@ class ChannelHistory:
                         data = json.loads(raw)
                     except json.JSONDecodeError:
                         logger.warning("Corrupt JSONL line %d in %s — skipping", line_no, path)
+                        continue
+                    if not isinstance(data, dict):
+                        logger.warning("Non-object JSONL line %d in %s — skipping", line_no, path)
                         continue
                     wall_ts = data.get("ts")
                     if wall_ts is None:

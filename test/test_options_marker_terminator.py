@@ -38,6 +38,7 @@ FOUND, and that the visible text is UNCHANGED.
 from __future__ import annotations
 
 import pytest
+from named_cases_helpers import named_cases
 
 from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import (
@@ -66,20 +67,36 @@ class TestAnUnterminatedMarkerDoesNotEatItsLine:
     @pytest.mark.parametrize(
         "text",
         [
-            "[OPTIONS: A | B then check arr[0]",
-            "[OPTIONS: Ship | Hold and read docs[4]",
-            "[OPTIONS: Merge | Wait then diff src/app[3]",
-            # A comma INSIDE the terminal bracket: ordinary punctuation, not a label
-            # boundary, so it must not rescue the shape.
-            "[OPTIONS: A | B then inspect dict[str, int]",
-            "[OPTIONS: Ship | Hold then arr[i, j]",
-            # The wrapper and stray-tic forms reach the same terminator, so the check
-            # has to survive both or the shape returns wearing one.
-            "**[OPTIONS: A | B then check arr[0]**",
-            "[OPTIONS: A | B then check arr[0](OPTIONS)",
+            *named_cases(
+                "test_it_is_refused",
+                "text",
+                [
+                    "[OPTIONS: A | B then check arr[0]",
+                    "[OPTIONS: Ship | Hold and read docs[4]",
+                    "[OPTIONS: Merge | Wait then diff src/app[3]",
+                    # A comma INSIDE the terminal bracket: ordinary punctuation, not a label
+                    # boundary, so it must not rescue the shape.
+                    "[OPTIONS: A | B then inspect dict[str, int]",
+                    "[OPTIONS: Ship | Hold then arr[i, j]",
+                    # The wrapper and stray-tic forms reach the same terminator, so the check
+                    # has to survive both or the shape returns wearing one.
+                    "**[OPTIONS: A | B then check arr[0]**",
+                    "[OPTIONS: A | B then check arr[0](OPTIONS)",
+                ],
+            ),
+            *named_cases(
+                "test_every_previously_refused_shape_still_is",
+                "text",
+                [
+                    "Use [OPTIONS: A | B] then check arr[0]",
+                    "[OPTIONS: Fix ]x logging | Skip]",
+                    "[OPTIONS: Fix list[dict[str, Any]] now | S]",
+                    "Note [OPTIONS: see [OPTIONS: x] below | Skip]",
+                ],
+            ),
         ],
     )
-    def test_it_is_refused(self, text: str):
+    def test_the_marker_is_refused(self, text: str):
         assert OPTIONS_RE_LINE.search(text) is None, text
 
     @pytest.mark.parametrize(
@@ -139,7 +156,14 @@ class TestAnUnterminatedMarkerDoesNotEatItsLine:
         # Unchanged: with no closer anywhere the end anchor was never satisfiable.
         assert OPTIONS_RE_LINE.search("[OPTIONS: A | B then check arr") is None
 
-    def test_the_separator_tail_form_is_refused_rather_than_truncated(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_the_separator_tail_form_is_refused_rather_than_truncated"),
+            *named_cases("test_the_separator_tail_form_is_declined_rather_than_truncated"),
+        ],
+    )
+    def test_the_separator_tail_form_is_not_truncated(self):
         # Documented in ``constants.py`` as unresolved, because ``], `` genuinely
         # continues the list and no guard at the INTERNAL closer can tell it apart.
         # Counting from the other end decides it: the ``[`` of ``CHANGELOG[1]`` is
@@ -239,18 +263,6 @@ class TestWhatMustNotHaveChanged:
         match = OPTIONS_RE_LINE.search(text)
         assert match is not None, text
         assert match.group("labels") == labels
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "Use [OPTIONS: A | B] then check arr[0]",
-            "[OPTIONS: Fix ]x logging | Skip]",
-            "[OPTIONS: Fix list[dict[str, Any]] now | S]",
-            "Note [OPTIONS: see [OPTIONS: x] below | Skip]",
-        ],
-    )
-    def test_every_previously_refused_shape_still_is(self, text: str):
-        assert OPTIONS_RE_LINE.search(text) is None, text
 
     def test_sub_removes_an_accepted_marker_and_leaves_a_refused_one(self):
         # ``sub`` is reimplemented on the matcher, so its two behaviours are pinned:

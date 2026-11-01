@@ -11,6 +11,7 @@ else about the gate moves.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import MagicMock
 from urllib.parse import urlencode
@@ -31,6 +32,7 @@ from kiro_crew.dashboard.chat_runner import _drain_session_init_oauth_requests
 from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.security import exfil
+from kiro_crew.sel import SecurityEventLog
 from kiro_crew.testing.clock import ManualClock
 
 MCP_URL = "https://mcp.unlisted-idp.example/mcp"
@@ -463,12 +465,16 @@ class TestRecordDiscoveredEndpoint:
         event = exfil.SecurityEventLog.return_value.log.call_args.args[0]
         assert len(event.metadata["mcp_url"]) == exfil._OAUTH_DISCOVERED_MCP_URL_MAX_LEN
 
-    def test_re_recording_audits_once(self):
+    def test_re_recording_audits_once(self, monkeypatch, sel_private_root):
+        monkeypatch.setattr(exfil, "SecurityEventLog", SecurityEventLog)
         for _ in range(3):
             security.record_discovered_oauth_endpoint(
                 "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=MCP_URL
             )
-        assert exfil.SecurityEventLog.return_value.log.call_count == 1
+        log = sel_private_root / "security_events.jsonl"
+        rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert len(rows) == 1, rows
+        assert "auth.unlisted-idp.example" in json.dumps(rows[0])
 
 
 class _FakeAcpClient:

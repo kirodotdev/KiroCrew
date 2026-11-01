@@ -171,9 +171,33 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
                 },
                 status=404,
             )
-        ok = state.resolve_approval(
-            approval_id, action == "approve", rejected_once=action == "reject_once"
+        # Shared Crew: resolve once under the decision registry, naming the
+        # verified responder; a different collaborator's later click gets 409
+        # with the winning decision, a retry of the same click replays it.
+        from kiro_crew.shared_crew import decisions as shared_decisions
+
+        try:
+            raw_body = await request.json() if request.can_read_body is True else {}
+        except ValueError:
+            raw_body = {}
+        response_id, response_id_ok = shared_decisions.read_response_id(
+            raw_body if isinstance(raw_body, dict) else {}
         )
+        if not response_id_ok:
+            return web.json_response(
+                {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
+            )
+        reply = shared_decisions.resolve_approval_by_id(
+            state,
+            request,
+            approval_id,
+            approved=action == "approve",
+            rejected_once=action == "reject_once",
+            response_id=response_id,
+        )
+        if reply is not None:
+            return shared_decisions.respond(reply)
+        ok = False
     if not ok:
         return web.json_response({"error": "not found or expired"}, status=404)
     return web.json_response({"ok": True})

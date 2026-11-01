@@ -225,22 +225,30 @@ class TestHandleAgent:
         assert "Only the owner" in respond.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_off_resets_default_agent(self):
+    async def test_off_resets_default_agent(self, monkeypatch):
+        from kiro_crew.config.loader_locations import config_path
+        from kiro_crew.slack import handler
+
+        monkeypatch.setattr(handler, "_cached_default_agent", "scout")
         respond = AsyncMock()
         with patch("kiro_crew.slack.handler.is_owner", return_value=True):
-            with patch("kiro_crew.slack.handler._set_default_agent") as setter:
-                await ev._handle_agent(_make_orch(), "U_OWNER", "off", respond)
-        setter.assert_called_once_with("")
+            await ev._handle_agent(_make_orch(), "U_OWNER", "off", respond)
+        assert json.loads(config_path().read_text())["agent"]["default_agent"] == ""
+        assert handler._get_default_agent() == ""
         assert "Reset to default agent" in respond.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_known_agent_switches(self):
+    async def test_known_agent_switches(self, monkeypatch):
+        from kiro_crew.config.loader_locations import config_path
+        from kiro_crew.slack import handler
+
+        monkeypatch.setattr(handler, "_cached_default_agent", None)
         respond = AsyncMock()
         with patch("kiro_crew.slack.handler.is_owner", return_value=True):
             with patch("kiro_crew.slack.handler._resolve_agent_name", return_value="scout"):
-                with patch("kiro_crew.slack.handler._set_default_agent") as setter:
-                    await ev._handle_agent(_make_orch(), "U_OWNER", "Scout", respond)
-        setter.assert_called_once_with("scout")
+                await ev._handle_agent(_make_orch(), "U_OWNER", "Scout", respond)
+        assert json.loads(config_path().read_text())["agent"]["default_agent"] == "scout"
+        assert handler._get_default_agent() == "scout"
         assert "Switched to agent" in respond.call_args[0][0]
 
     @pytest.mark.asyncio
@@ -456,8 +464,10 @@ class TestHandleAllowlistCmd:
     @pytest.mark.asyncio
     async def test_multi_user_is_refused(self):
         respond = AsyncMock()
-        await ev._handle_allowlist_cmd(_make_orch(), "U_OWNER", "add U2", respond)
+        orch = _make_orch()
+        await ev._handle_allowlist_cmd(orch, "U_OWNER", "add U2", respond)
         assert "Multi-user access is disabled" in respond.call_args[0][0]
+        assert orch._allowed_users == {"U_OWNER"}
 
 
 class TestHandleChannelCmd:
@@ -752,6 +762,10 @@ def _client(ack_fails: bool = False) -> MagicMock:
     return client
 
 
+def _acked_envelopes(client: MagicMock) -> list[str]:
+    return [c.args[0].envelope_id for c in client.send_socket_mode_response.await_args_list]
+
+
 class TestOnEventDispatch:
     @pytest.mark.asyncio
     async def test_ack_failure_short_circuits(self):
@@ -810,7 +824,7 @@ class TestOnEventDispatch:
         with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
             await on_event(client, _req("hello"))
         route.assert_not_called()
-        client.send_socket_mode_response.assert_awaited_once()
+        assert _acked_envelopes(client) == ["env-1"]
 
     @pytest.mark.asyncio
     async def test_member_joined_channel_routed_to_prompt(self):
@@ -858,7 +872,7 @@ class TestOnEventDispatch:
         with patch("kiro_crew.slack.events._publish_home_tab", new_callable=AsyncMock) as publish:
             await on_event(client, _req("events_api", payload))
         publish.assert_not_called()
-        client.send_socket_mode_response.assert_awaited_once()
+        assert _acked_envelopes(client) == ["env-1"]
 
     @pytest.mark.asyncio
     async def test_non_message_event_ignored(self):
@@ -869,7 +883,7 @@ class TestOnEventDispatch:
         with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
             await on_event(client, _req("events_api", payload))
         route.assert_not_called()
-        client.send_socket_mode_response.assert_awaited_once()
+        assert _acked_envelopes(client) == ["env-1"]
 
     @pytest.mark.asyncio
     async def test_message_deleted_is_delegated(self):
@@ -891,7 +905,7 @@ class TestOnEventDispatch:
         with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
             await on_event(client, _req("events_api", {"event": event}))
         route.assert_not_called()
-        client.send_socket_mode_response.assert_awaited_once()
+        assert _acked_envelopes(client) == ["env-1"]
 
     @pytest.mark.asyncio
     async def test_envelope_team_id_overrides_event_team(self):
@@ -1072,7 +1086,7 @@ class TestOnEventDispatch:
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(client, _req("events_api", {"event": event}))
         route.assert_not_called()
-        client.send_socket_mode_response.assert_awaited_once()
+        assert _acked_envelopes(client) == ["env-1"]
 
     @pytest.mark.asyncio
     async def test_human_message_routed_without_trusted_flag(self):

@@ -4,10 +4,11 @@
 ``finally``, spawns the terminal report, tears the session down and releases the slot.
 ``_teardown_run_session_impl`` releases and resets the run's own session,
 ``_record_reap_ending_impl`` records the ending of a run whose reap got there first,
-``_touch_activity_impl`` and ``_fire_event_impl`` are the activity stamp and the lifecycle
-events a run emits, and ``_effective_turn_limit_impl`` and ``update_completion_keep_impl``
-are the turn cap and the completion keep it applies. New work on a run's start-to-end path
-goes here; the turn itself is ``run_turn``.
+``_leave_for_next_start_impl`` leaves a run the shutdown ended to the next start's orphan
+sweep, ``_touch_activity_impl`` and ``_fire_event_impl`` are the activity stamp and the
+lifecycle events a run emits, and ``_effective_turn_limit_impl`` and
+``update_completion_keep_impl`` are the turn cap and the completion keep it applies. New
+work on a run's start-to-end path goes here; the turn itself is ``run_turn``.
 
 A function here whose first parameter is ``self`` is a ``RunEventCoordinator`` member: the
 class binds it under the same name in ``subagent_manager/run.py``. The ``*_impl`` ones are
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
         acp_error_is_session_not_found,
         append_fallback_story,
         failure_name,
+        has_dashboard_surface,
         is_runtime_death,
         join_failures,
         kill_set,
@@ -209,27 +211,43 @@ async def _teardown_run_session_impl(
                     fallback_ran = True
                     kill_failed = join_failures(kill_failed, missing)
             if kill_failed is not None:
-                # The record names the survivor BEFORE the report publishes:
-                # the terminal report spawned ahead of this teardown waits
-                # on ``teardown_done`` (set by the caller's ``finally`` once
-                # this returns) before it builds its payload, so the
-                # completion the parent receives, the ``subagent_done``
-                # event and the tombstone all carry the same failure -- and
-                # the survivor is recorded as a LEAKED PROCESS, separate
-                # from the delivery. Published first, the parent received a
-                # clean completion whose ``delivered`` tombstone hid the
-                # process from reconciliation for good (the cron reaper's
-                # ``last_error`` takes the same suffix, the one spelling).
-                # A completed run has no tombstone yet and gets none here:
-                # until the parent acknowledges the completion its folder
-                # must stay in orphan reconciliation, which re-delivers a
-                # completion a restart dropped from the parent's queue.
-                # ``_leaked_process`` is read by the report instead: an
-                # acknowledged delivery writes the ``delivered`` tombstone
-                # with ``leaked_process``, so the next start ends the
-                # process without announcing the run a second time
-                # (``_end_leaked_processes_impl``).
-                info.error = with_kill_failure(info.error or "", kill_failed)
+                # The survivor is recorded as a LEAKED PROCESS, separate from
+                # the run's outcome, BEFORE the report publishes: the terminal
+                # report spawned ahead of this teardown waits on
+                # ``teardown_done`` (set by the caller's ``finally`` once this
+                # returns) before it builds its payload. A completed run has
+                # no tombstone yet and gets none here: until the parent
+                # acknowledges the completion its folder must stay in orphan
+                # reconciliation, which re-delivers a completion a restart
+                # dropped from the parent's queue. ``_leaked_process`` is read
+                # by the report instead: an acknowledged delivery writes the
+                # ``delivered`` tombstone with ``leaked_process``, so the next
+                # start ends the process without announcing the run a second
+                # time (``_end_leaked_processes_impl``).
+                #
+                # A run that COMPLETED keeps its clean record, by design:
+                # folding the failure into ``info.error`` for every run makes
+                # ``outcome`` read ``failed`` (it is ``failed`` whenever
+                # ``error`` is set), so a finished answer reaches the parent as
+                # a failure with its result replaced by ``Error: …; kill
+                # failed: …``. The
+                # run's work is done; the process its teardown could not end is
+                # the gateway's to clean up, not the parent's to act on. The
+                # failure stays on the ``run_finally_force_kill`` audit row
+                # below and in the log, the reap's rule for a run that
+                # completed before its kill decided (``_reap_once_impl``). A
+                # run that already failed, timed out or was stopped still
+                # gains the suffix on its error text.
+                if info.outcome != "completed":
+                    info.error = with_kill_failure(info.error or "", kill_failed)
+                else:
+                    logger.warning(
+                        "Subagent %s: completed, but its teardown could not end its "
+                        "process; kept on the audit and flagged for the next start, "
+                        "not on the delivered record: %s",
+                        info.id,
+                        kill_failed,
+                    )
                 tombstone = read_tombstone(info.id)
                 if tombstone is None:
                     info._leaked_process = True
@@ -247,8 +265,9 @@ async def _teardown_run_session_impl(
                         source="subagent",
                         tool_name="run_finally_force_kill",
                         # Never ``sigkill`` for a process the kill left
-                        # alive; the failure it reported is the record's
-                        # error text and this row's.
+                        # alive; the failure it reported is this row's, and
+                        # the record's error text too unless the run
+                        # completed (then this row is where it lives).
                         outcome="sigkill" if kill_failed is None else "failed",
                         error=kill_failed or "",
                         metadata={"subagent_id": info.id},
@@ -311,6 +330,71 @@ def _record_reap_ending_impl(
     if not neutral:
         Stats().inc_subagent_failed()
     self._manager._write_tombstone(info, info._reap_reason or "reaped")
+
+
+def _leave_for_next_start_impl(
+    self: RunEventCoordinator, info: SubagentInfo, *, stop_reason: str | None = None
+) -> bool:
+    """Leave a run the shutdown ended to the next start's orphan sweep; False when it is not one.
+
+    True when the shutdown stopped it and its parent has a dashboard tab: a
+    dashboard chat, or a channel conversation open in one. The report this run
+    makes now would be queued in that slot's memory or start a turn the shutdown
+    refuses, and a tombstone would keep the next start's orphan sweep from
+    announcing it. So the caller writes none, the report skips the parent, and the
+    sweep announces the run in the tab as cut off by the restart, with a resume
+    hint while its conversation survives; its notices wait for that start's
+    channel tabs. Only a run whose folder was written is left to the sweep, which
+    finds runs by that folder. Any other kind of parent (cron, subagent, task
+    review) keeps the tombstone and the report.
+
+    The shutdown ends a run in more ways than cancelling its task: while
+    ``cancel_all`` still waits, ``close_all`` can cancel the run's turn, kill its
+    process or refuse its session start, and each of those ends the run in a
+    different arm. The report goes to the same closing tab whichever arm it is,
+    so each arm the shutdown can end a run through asks here before it writes its
+    tombstone. An outcome the run reached itself (a result, a failed or stalled
+    stop, its deadline, a limit) is not the shutdown's: it is reported now, with
+    the tombstone its arm writes.
+
+    The in-app restart (``_restart_gateway``) closes the sessions and re-execs
+    without calling ``cancel_all``, so ``_shutting_down`` stays False there and
+    the session manager's ``final_drain_started`` is what says its ``close_all``
+    began; an update pause also closes that manager, but it resumes, and is not a
+    final drain. The tail passes the stop its turn ended on, which is the
+    shutdown's only when it is the drain's cancel: acked (``cancelled``), or
+    unanswered while the runtime outlived it (``error: cancel unacked``). A reap
+    in flight (``_reap_started``) owns the ending: the run keeps its arm's
+    tombstone and its report, as the cancel arm's ``reaped`` guard already decides
+    for a run the reap has cancelled.
+    """
+    from kiro_crew.agent_sdk.drivers.acp_vocab import (
+        STOP_REASON_CANCEL_UNACKED,
+        STOP_REASON_CANCELLED,
+    )
+    from kiro_crew.messaging.link import is_channel_session_key
+
+    parent_key = info.parent_session_key
+    if not (
+        (
+            self._manager._shutting_down
+            or getattr(self._manager._sessions, "final_drain_started", False) is True
+        )
+        and stop_reason in (None, STOP_REASON_CANCELLED, STOP_REASON_CANCEL_UNACKED)
+        and not info._reap_started
+        and not info.user_stopped
+        and info.memory_mode == "persistent"
+        and info._folder_seeded
+        and (
+            parent_key.startswith(("dashboard:", "dashboard_"))
+            or is_channel_session_key(parent_key)
+        )
+        and has_dashboard_surface(parent_key)
+    ):
+        return False
+    info._left_for_next_start = True
+    logger.info("Subagent %s left for the next start's orphan sweep", info.id)
+    return True
 
 
 async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
@@ -440,7 +524,8 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
                 if not info.result and info.streaming_text:
                     info.result = info.streaming_text
                 Stats().inc_subagent_failed()
-                self._manager._write_tombstone(info, "cancelled")
+                if not self._leave_for_next_start_impl(info):
+                    self._manager._write_tombstone(info, "cancelled")
         if info._ending_claimed:
             logger.info("Subagent %s completed before a cancel ended the run", info.id)
         else:
@@ -632,7 +717,8 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
                 # (the failure-path window).
                 self._manager.arm_report_in_flight(info)
                 Stats().inc_subagent_failed()
-                self._manager._write_tombstone(info, "error")
+                if not self._leave_for_next_start_impl(info):
+                    self._manager._write_tombstone(info, "error")
             if info._ending_claimed:
                 logger.error("Subagent %s completed, then its run raised", info.id, exc_info=exc)
             else:
@@ -698,7 +784,7 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
             # Guard 2 of 3 — SLOT accounting on its own one-shot token, so
             # the count is released exactly once whichever terminal path
             # arrives first (and is NOT skipped just because the reaper set
-            # `reaped`, which is how an earlier revision leaked slots).
+            # `reaped`, which would leak slots).
             if self._manager._release_slot(info):
                 self._manager._running_count -= 1
                 self._manager._drain_queue()

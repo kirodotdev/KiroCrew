@@ -287,7 +287,6 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "dashboard/session_control_parts/target_authorization.py": 1,
     "dashboard/session_transfer_install.py": 1,
     "dashboard/state_parts/slot_turns.py": 1,
-    "knowledge/agent_fetch.py": 1,
     "mcp_cron_vet.py": 1,
     # The pooled-backend daemon never composes a companion context. Its
     # declared-temp warnings therefore use the baseline pass deliberately.
@@ -416,6 +415,25 @@ class TestSnapshotShape:
             # The UI turns `source` into a GitHub deep link; a typo would render a
             # 404 for every reader of that row.
             assert (repo_root / control["source"]).is_file(), control["source"]
+
+    def test_every_label_and_unit_has_matching_dashboard_wording(self, snapshot):
+        import json
+        from pathlib import Path
+
+        # The dashboard words each control's name and "<count> <unit>" from its
+        # catalog by `key`, so it can translate and pluralize them; the server's
+        # English `label` and `unit` are only the fallback for a key the dashboard
+        # does not know. A rename here without the catalog would leave every
+        # language showing the old words.
+        locales = Path(__file__).resolve().parent.parent / "website/src/i18n/locales"
+        catalog: dict[str, str] = {}
+        for name in ("en.json", "en.manual.json"):
+            settings = json.loads((locales / name).read_text(encoding="utf-8"))["pages"]["settings"]
+            catalog.update(settings.get("postureDisclosure", {}))
+        for control in snapshot["controls"]:
+            key = control["key"]
+            assert catalog.get(f"label_{key}") == control["label"], key
+            assert catalog.get(f"count_{key}_other") == f"{{{{count}}}} {control['unit']}", key
 
     @pytest.mark.asyncio
     async def test_async_builder_matches_the_sync_one(self, snapshot):

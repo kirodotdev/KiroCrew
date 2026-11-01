@@ -174,7 +174,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
         setChecked({ plan: await api.memberExportPreview(slug, member, choices) })
         return
       }
-      downloadBlob(blob, `${view.name}.crewmate`)
+      downloadBlob(blob, `${view.name}.crewjam`)
     },
   })
 

@@ -446,7 +446,9 @@ describe('DevFleetPage rebase', () => {
     const menu = await openRowMenu()
     fireEvent.click(menu.getByText('Rebase onto base branch'))
     const dialog = await screen.findByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Rebase' }))
+    // The confirm resolves the page's pending askConfirm promise; its continuation sets the busy
+    // flag a microtask later, so the click runs in an async act.
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Rebase' })) })
   }
 
   it('shows the new HEAD inline on success and clears it when dismissed', async () => {
@@ -1088,7 +1090,7 @@ describe('DevFleetPage make live', () => {
     const menu = await openRowMenu()
     fireEvent.click(menu.getByText('Make live'))
     const dialog = await screen.findByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: /Make live/i }))
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: /Make live/i })) })
   }
 
   it('shows the completed-cutover Undo banner and posts an explicit undo', async () => {

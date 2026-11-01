@@ -205,7 +205,7 @@ def _redacting_factory(base: Callable[..., logging.LogRecord]) -> Callable[..., 
             rendered = record.getMessage()
         except Exception:
             # Render failure: args were never inspected, so "unchanged text ⇒
-            # secretless" does not hold on this branch. Fall back to the old
+            # secretless" does not hold on this branch. Fall back to
             # unconditional destruction — scan the bare template and drop args
             # wholesale. Fidelity is already lost (the record cannot format),
             # and CPython's Handler.handleError prints ``Arguments: %s`` to

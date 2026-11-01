@@ -8,7 +8,7 @@
  * - Action buttons appear on hover only
  * - Detail page: pill badges for kind/status, grouped sections
  */
-import React, { useEffect, useState, useCallback, useRef } from 'react'
+import React, { useEffect, useId, useState, useCallback, useRef } from 'react'
 import { ArrowLeft, Eye, X } from 'lucide-react'
 import { WATCHLIST_PANEL_WIDTH } from '../shared/constants'
 import { TERMINAL_STATUSES, MIN_CHECK_INTERVAL_MINS } from '../shared/watchlistTypes'
@@ -18,6 +18,7 @@ import { DEFAULT_PET_NAME } from '../../builtinPacks'
 import { i18nT } from '../../../../i18n/t'
 import { watchKindLabel, watchPriorityLabel, watchStatusLabel } from '../../i18nKeys'
 import { fmtDateFields } from '../../../../i18n/format'
+import { useDialogFocusTrap } from '../../../../hooks/useDialogFocusTrap'
 
 // ── Editable fields type (exported for testing) ────────────────────────────
 
@@ -122,6 +123,7 @@ export interface WatchlistPanelProps {
 }
 
 export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose, petName }) => {
+  const priorityId = useId()
   const [items, setItems] = useState<WatchItem[]>([])
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState<Partial<EditableFields> | null>(null)
@@ -275,93 +277,99 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
       const isTerminal = TERMINAL_STATUSES.includes(item.status)
       const countdown = !isTerminal && item.nextCheckAfter ? formatCountdown(item.nextCheckAfter, now) : null
       const isOverdue = countdown?.kind === 'overdue'
+      const hasActions = !isTerminal || (item.kind !== 'reminder' && item.kind !== 'meeting')
 
       return (
+        // A plain row holding sibling buttons: "open this watch", which carries
+        // the row's text and top padding, and the action buttons below it. They
+        // used to be nested inside a role="button" row, which is invalid markup.
         <div
           key={item.id}
-          tabIndex={0}
-          role="button"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectItem(item.id) }
-          }}
-          onClick={() => selectItem(item.id)}
+          className="wl-row"
           style={{
-            cursor: 'pointer',
-            padding: '8px 12px',
+            position: 'relative',
+            // The 4px above the action strip lives inside the open button, so
+            // its focus ring clears the pills; a row with no strip makes up
+            // the difference here.
+            paddingBottom: hasActions ? 8 : 4,
             borderBottom: '1px solid rgba(255,255,255,0.08)',
             opacity: isTerminal ? 0.4 : 1,
           }}
         >
-          {/* Row 1: label + countdown */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-            <span style={{
-              fontSize: 13, fontWeight: 500, color: 'var(--text)',
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
-              letterSpacing: -0.2,
-            }}>
-              {item.label}
-            </span>
-            {countdown && (
+          <button
+            type="button"
+            onClick={() => selectItem(item.id)}
+            style={{
+              display: 'block', width: '100%', padding: '8px 12px 4px',
+              border: 'none', borderRadius: 0, background: 'none',
+              color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer',
+            }}
+          >
+            {/* Row 1: label + countdown */}
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
               <span style={{
-                fontSize: 11, flexShrink: 0,
-                color: isOverdue ? 'var(--danger)' : 'var(--text-muted)',
-                opacity: isOverdue ? 1 : 0.6,
+                fontSize: 13, fontWeight: 500, color: 'var(--text)',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
+                letterSpacing: -0.2,
               }}>
-                {i18nT(COUNTDOWN_KEY[countdown.kind], countdown.params)}
+                {item.label}
               </span>
-            )}
-          </div>
-
-          {/* Row 2: kind pill + status text */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{
-              display: 'inline-block', padding: '1px 6px', borderRadius: 4,
-              fontSize: 10, fontWeight: 500,
-              background: 'rgba(255,255,255,0.06)',
-              color: 'var(--text-muted)',
-            }}>{watchKindLabel(item.kind)}</span>
-            <span style={{
-              fontSize: 11, color: 'var(--text-muted)', opacity: 0.6,
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
-            }}>
-              {formatStatusSummary(item)}
+              {countdown && (
+                <span style={{
+                  fontSize: 11, flexShrink: 0,
+                  color: isOverdue ? 'var(--danger)' : 'var(--text-muted)',
+                  opacity: isOverdue ? 1 : 0.6,
+                }}>
+                  {i18nT(COUNTDOWN_KEY[countdown.kind], countdown.params)}
+                </span>
+              )}
             </span>
-          </div>
+
+            {/* Row 2: kind pill + status text */}
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{
+                display: 'inline-block', padding: '1px 6px', borderRadius: 4,
+                fontSize: 10, fontWeight: 500,
+                background: 'rgba(255,255,255,0.06)',
+                color: 'var(--text-muted)',
+              }}>{watchKindLabel(item.kind)}</span>
+              <span style={{
+                fontSize: 11, color: 'var(--text-muted)', opacity: 0.6,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
+              }}>
+                {formatStatusSummary(item)}
+              </span>
+            </span>
+          </button>
 
           {/* Row 3: hover actions — opacity + height transition */}
           {!isTerminal && (
-            <div className="wl-actions" role="presentation" style={{
-              display: 'flex', gap: 6, marginTop: 4,
+            <div className="wl-actions" style={{
+              display: 'flex', gap: 6, marginLeft: 12, position: 'relative',
               opacity: 0, maxHeight: 0, overflow: 'hidden',
               transition: 'opacity 150ms ease, max-height 150ms ease',
               width: 'fit-content',
-            }}
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => e.stopPropagation()}
-            >
-              <button className="wl-btn-done" onClick={() => handleSetStatus(item.id, 'done')} style={{
+            }}>
+              <button type="button" className="wl-btn-done" onClick={() => handleSetStatus(item.id, 'done')} style={{
                 background: 'rgba(34, 197, 94, 0.08)', border: 'none', borderRadius: 4,
                 color: 'var(--success)', fontSize: 11, fontWeight: 500,
                 padding: '3px 10px', cursor: 'pointer', transition: 'background 150ms ease',
               }}>{i18nT('apps.mochi.watchPanel.complete')}</button>
-              <button className="wl-btn-cancel" onClick={() => handleSetStatus(item.id, 'cancelled')} style={{
+              <button type="button" className="wl-btn-cancel" onClick={() => handleSetStatus(item.id, 'cancelled')} style={{
                 background: 'rgba(255, 107, 107, 0.08)', border: 'none', borderRadius: 4,
                 color: 'var(--danger)', fontSize: 11, fontWeight: 500,
                 padding: '3px 10px', cursor: 'pointer', transition: 'background 150ms ease',
               }}>{i18nT('apps.mochi.mochiPage.stop_watching')}</button>
             </div>
           )}
-          {isTerminal && item.kind !== 'reminder' && item.kind !== 'meeting' && (
-            <div className="wl-actions" role="presentation" style={{
-              display: 'flex', gap: 6, marginTop: 4,
+          {isTerminal && hasActions && (
+            <div className="wl-actions" style={{
+              display: 'flex', gap: 6, marginLeft: 12, position: 'relative',
               opacity: 0, maxHeight: 0, overflow: 'hidden',
               transition: 'opacity 150ms ease, max-height 150ms ease',
               width: 'fit-content',
-            }}
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => e.stopPropagation()}
-            >
-              <button className="wl-btn-reopen" onClick={() => handleSetStatus(item.id, 'watching')} style={{
+            }}>
+              <button type="button" className="wl-btn-reopen" onClick={() => handleSetStatus(item.id, 'watching')} style={{
                 background: 'rgba(var(--accent-rgb, 100, 149, 237), 0.08)', border: 'none', borderRadius: 4,
                 color: 'var(--accent)', fontSize: 11, fontWeight: 500,
                 padding: '3px 10px', cursor: 'pointer', transition: 'background 150ms ease',
@@ -577,10 +585,11 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
         {/* Priority + Interval side by side (interval hidden for reminder/meeting) */}
         <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, opacity: 0.5, fontWeight: 500 }}>
+            <label htmlFor={priorityId} style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, opacity: 0.5, fontWeight: 500 }}>
               {i18nT('apps.mochi.watchPanel.field.priority')}
-            </div>
+            </label>
             <select
+              id={priorityId}
               value={currentPriority}
               onChange={(e) => updateDraft('priority', e.target.value as WatchPriority)}
               style={{
@@ -792,12 +801,20 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
       {/* CSS hover + animations + focus */}
       <style>{`
         .wl-panel-root { animation: wl-panel-enter 0.2s ease-out both; }
-        [role="button"] { transition: background 150ms ease; }
-        [role="button"]:hover { background: rgba(255,255,255,0.03) }
-        [role="button"]:hover .wl-actions { opacity: 1 !important; max-height: 32px !important; }
+        .wl-row { transition: background 150ms ease; }
+        .wl-row:hover { background: rgba(255,255,255,0.03) }
+        .wl-row:hover .wl-actions { opacity: 1 !important; max-height: 32px !important; }
+        /* The row's open button spans the panel's full width, whose edges clip a
+           ring drawn outside it; inset the ring so all four sides show. */
+        .wl-row > button:focus-visible { outline-offset: -2px; }
+        /* A click anywhere on the row opens it, as when the row itself was the
+           control: the open button's hit area stretches over the whole row.
+           The action strip is positioned later, so it stays on top and keeps
+           its own clicks; the focus ring stays on the button's own box. */
+        .wl-row > button::after { content: ''; position: absolute; inset: 0; }
         /* Keyboard twin: without this, Tab reaches a zero-height invisible action
            button and Enter fires it blind. Reveal on focus-within too. */
-        [role="button"]:focus-within .wl-actions { opacity: 1 !important; max-height: 32px !important; }
+        .wl-row:focus-within .wl-actions { opacity: 1 !important; max-height: 32px !important; }
         .wl-panel-root ::-webkit-scrollbar { display: none; }
         .wl-panel-root { scrollbar-width: none; }
         .wl-btn-done:hover { background: rgba(34, 197, 94, 0.2) !important; }
@@ -847,16 +864,7 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
 
       {/* Clear-completed confirmation — innermost layer, so Escape lands here. */}
       {(clearState !== 'idle') && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={i18nT('apps.mochi.watchPanel.clear_confirm_title')}
-          style={{
-            position: 'fixed', inset: 0, zIndex: 1000,
-            background: 'rgba(0,0,0,0.5)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-        >
+        <ClearConfirmDialog>
           <div style={{
             background: 'var(--bg-elevated)', borderRadius: 10, padding: '16px 20px',
             width: 240, border: '1px solid var(--border)', boxShadow: '0 8px 24px var(--shadow)',
@@ -900,7 +908,7 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
                   }}
                   style={{
                     background: 'var(--danger)', border: 'none', borderRadius: 6,
-                    padding: '5px 12px', color: '#fff', fontSize: 12, fontWeight: 600,
+                    padding: '5px 12px', color: 'var(--danger-fg, #fff)', fontSize: 12, fontWeight: 600,
                     cursor: clearState === 'working' ? 'wait' : 'pointer',
                     opacity: clearState === 'working' ? 0.6 : 1,
                   }}
@@ -912,8 +920,37 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
               )}
             </div>
           </div>
-        </div>
+        </ClearConfirmDialog>
       )}
+    </div>
+  )
+}
+
+// Escape stays on the panel's own window listener, which unwinds this confirm
+// before the panel behind it, so the trap is wired with Escape off.
+const NO_ESCAPE = () => {}
+
+/**
+ * The clear-completed confirm's modal frame. It mounts with the confirm, so
+ * focus moves in when it opens, Tab stays inside, and focus goes back to the
+ * "Clear all completed" button when it closes.
+ */
+function ClearConfirmDialog({ children }: { children: React.ReactNode }) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
+  return (
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={i18nT('apps.mochi.watchPanel.clear_confirm_title')}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      {children}
     </div>
   )
 }

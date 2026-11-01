@@ -292,6 +292,11 @@ function mcpStatusLabel(status: string, auth: McpAuthState): string {
     // the gateway cannot read, so there is nothing local to verify.
     case 'registry':
       return i18nT('pages.overview.mcpTab.not_verified')
+    // A `secret://` server the running gateway starts: it runs there, where the
+    // reference resolves, and the dashboard does not probe it, so the label
+    // says where it runs and makes no health claim.
+    case 'routed':
+      return i18nT('pages.overview.mcpTab.routed')
     default:
       return i18nT('pages.overview.mcpTab.unknown')
   }
@@ -366,6 +371,9 @@ function mcpStatusVariant(status: string, auth: McpAuthState): 'ok' | 'err' | 'w
   // Muted, not amber: no local action changes a registry row, and on a governed
   // host every governed server would otherwise sit in the "act now" colour.
   if (status === 'registry') return 'muted'
+  // Muted for the same reason: routing is already on, so there is nothing to
+  // act on, and green would claim a health check that did not run.
+  if (status === 'routed') return 'muted'
   return auth === 'signed_in' ? 'muted' : 'warn'
 }
 
@@ -420,6 +428,7 @@ function mcpStatusHint(
     return probeFailing || reasonOnRow ? undefined : i18nT('pages.overview.mcpTab.outdated_help')
   }
   if (status === 'registry') return i18nT('pages.overview.mcpTab.registry_help', { provider: serverName })
+  if (status === 'routed') return i18nT('pages.overview.mcpTab.routed_help')
   if (status !== 'needs_auth') return undefined
   if (auth === 'sign_in_required') return i18nT('pages.overview.mcpTab.sign_in_required_next')
   if (auth === 'signed_in') return i18nT('pages.overview.mcpTab.signed_in_help', { provider: serverName })
@@ -956,8 +965,16 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         {/* The label tells the two off states apart in words: a
                             deliberate disable reads "Disabled", a non-boolean value
                             reads "Invalid value" -- colour and the chip are not the
-                            only distinction. */}
-                        {invalidValue ? i18nT('pages.overview.mcpTab.status_invalid_value') : mcpStatusLabel(s.status, mcpAuthState(s))}
+                            only distinction. A row that was not probed reads "Not
+                            probed", not the "Outdated" its status carries: beside a
+                            reason line saying no probe ran, "Outdated" names an aged
+                            result a refresh would fix, and a refresh repeats the
+                            refusal (#20376). The tone stays the status's own warn. */}
+                        {invalidValue
+                          ? i18nT('pages.overview.mcpTab.status_invalid_value')
+                          : notProbedReason
+                            ? i18nT('pages.overview.mcpTab.not_probed')
+                            : mcpStatusLabel(s.status, mcpAuthState(s))}
                       </Badge>
                       {(() => {
                         const hint = mcpStatusHint(s.status, s.name, mcpAuthState(s), s.probeFailing === true, notProbedReason)

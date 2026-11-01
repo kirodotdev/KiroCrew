@@ -3,13 +3,17 @@
  * (`enterprise_login_required`): no bypass hands over the dashboard, and the
  * first-run screens still run in order, so each prerequisite keeps its remedy.
  */
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import type React from 'react'
 import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import KiroPrerequisiteGate, {
   kiroPrerequisiteIsBlocking,
   kiroPrerequisiteRefetchInterval,
 } from '../components/KiroPrerequisiteGate'
+import Modal from '../components/Modal'
+import { LocalOverlayRoot } from '../components/overlayRoot'
+import { Dialog, DialogContent, DialogTitle } from '../components/ui/dialog'
 import { renderWithProviders } from './helpers'
 
 vi.mock('../utils/clipboard', () => ({
@@ -26,6 +30,7 @@ vi.mock('../api/client', async () => ({
     acpBackends: vi.fn(),
     acpBackendRecheck: vi.fn(),
     patchConfig: vi.fn(),
+    kasLoginStatus: vi.fn(),
   },
 }))
 
@@ -54,6 +59,70 @@ describe('KiroPrerequisiteGate enterprise login gate', () => {
     expect(kiroPrerequisiteIsBlocking(status({ ...locked, ready: true }))).toBe(true)
     expect(kiroPrerequisiteRefetchInterval(status({ ...locked, ready: true }))).toBe(5_000)
     expect(kiroPrerequisiteRefetchInterval(status({ ready: true }))).toBe(30_000)
+  })
+
+  it('shows Crew sign-in on a signed-out sign-in-only gateway, then waits for it to boot', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(
+      status({ ...locked, enterprise_sign_in_only: true }),
+    )
+    vi.mocked(api.kasLoginStatus).mockResolvedValue({
+      authenticated: false, provider: null, identity: null, transport: 'device',
+    })
+    const { unmount } = renderGate()
+    // Only an organisation sign-in can load the rules: Company SSO alone, already open.
+    // Lost-run bound: two chained queries (the prerequisite status, then the
+    // sign-in status the mounted KasLoginGate reads) resolve before this renders.
+    expect(await screen.findByTestId('kas-login-sso-form', undefined, { timeout: 10_000 })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue with Google' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue with GitHub' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+    unmount()
+
+    vi.mocked(api.kasLoginStatus).mockResolvedValue({
+      authenticated: true, provider: 'idc', identity: 'identity_center', transport: 'device',
+    })
+    renderGate()
+    // Same two-query chain as above, so the same lost-run bound.
+    expect(
+      await screen.findByRole('status', { name: 'Your crew is almost ready.' }, { timeout: 10_000 }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('tells the user to start Kiro Crew again once the sign-in landed, even after it exits', async () => {
+    vi.mocked(api.kiroPrerequisite)
+      .mockResolvedValueOnce(
+        status({
+          ...locked,
+          enterprise_sign_in_only: true,
+          enterprise_signed_in_restart: true,
+          enterprise_start_command: '/opt/kirocrew/bin/kirocrew gateway',
+        }),
+      )
+      .mockRejectedValue(new Error('Failed to fetch'))
+    // The sign-in screen's own cache still says signed out (a CLI sign-in).
+    vi.mocked(api.kasLoginStatus).mockResolvedValue({
+      authenticated: false, provider: null, identity: null, transport: 'device',
+    })
+    const { queryClient } = renderGate()
+    // Lost-run bound: the prerequisite query resolves before this renders.
+    expect(
+      await screen.findByTestId('enterprise-signed-in-restart', undefined, { timeout: 10_000 }),
+    ).toHaveTextContent('Signed in. Start Kiro Crew again.')
+    // The way to do it is on the page, since the sign-in app has exited.
+    expect(screen.getByTestId('enterprise-start-command')).toHaveTextContent(
+      '/opt/kirocrew/bin/kirocrew gateway',
+    )
+    expect(
+      screen.getByText('Run this in a terminal to start Kiro Crew, then open the link it prints.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('kas-login-sso-form')).not.toBeInTheDocument()
+    // The sign-in app has exited: polls fail, and the message stays.
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['kiro-prerequisite'] })
+    })
+    expect(screen.getByTestId('enterprise-signed-in-restart')).toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
   })
 
   it('shows the sign-in step instead of the dashboard for an established install', async () => {
@@ -124,28 +193,253 @@ describe('KiroPrerequisiteGate enterprise login gate', () => {
     expect(screen.queryByRole('button', { name: 'Use other coding agents' })).not.toBeInTheDocument()
   })
 
-  it('keeps the app mounted and on screen when an established session relocks', async () => {
-    // The relock screen is a follow-up; until then a relock leaves the app as
-    // it is, and the gateway refuses its requests while the gate is closed.
-    function Draft() {
-      const [text, setText] = useState('')
-      return <input aria-label="draft" value={text} onChange={e => setText(e.target.value)} />
-    }
-    const open = status({ ready: true, authenticated: true, installed: true, initial_setup_complete: true })
-    vi.mocked(api.kiroPrerequisite)
-      .mockResolvedValueOnce(open)
-      .mockResolvedValue(status({ ...locked, initial_setup_complete: true }))
-    const { queryClient } = renderWithProviders(<KiroPrerequisiteGate><Draft /></KiroPrerequisiteGate>)
+  // A relock of a dashboard in use: the app stays mounted and a display-only
+  // notice rides beside it, above any open dialog, without touching it.
+  function Draft() {
+    const [text, setText] = useState('')
+    return <input aria-label="draft" value={text} onChange={e => setText(e.target.value)} />
+  }
+  function RadixEditor() {
+    const [open, setOpen] = useState(true)
+    return (
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent aria-label="Editor">
+          <DialogTitle>Editor</DialogTitle>
+          <Draft />
+        </DialogContent>
+      </Dialog>
+    )
+  }
+  function ModalEditor() {
+    const [open, setOpen] = useState(true)
+    return <Modal open={open} onClose={() => setOpen(false)} title="Editor"><Draft /></Modal>
+  }
+  const open = status({ ready: true, authenticated: true, installed: true, initial_setup_complete: true })
+  const relockedStatus = status({ ...locked, initial_setup_complete: true })
+  async function relockTo(ui: React.ReactElement, after: ReturnType<typeof status>) {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValueOnce(open).mockResolvedValue(after)
+    const view = renderWithProviders(<KiroPrerequisiteGate>{ui}</KiroPrerequisiteGate>)
     fireEvent.change(await screen.findByLabelText('draft'), { target: { value: 'unsaved json' } })
-    await waitFor(() => expect(queryClient.getQueryData(['kiro-prerequisite'])).toBeTruthy())
+    await waitFor(() => expect(view.queryClient.getQueryData(['kiro-prerequisite'])).toBeTruthy())
+    await act(async () => { await view.queryClient.refetchQueries({ queryKey: ['kiro-prerequisite'] }) })
+    await waitFor(() => expect(view.queryClient.getQueryData(['kiro-prerequisite'])).toEqual(after))
+    return view
+  }
+  async function relock(ui: React.ReactElement, after = relockedStatus) {
+    const view = await relockTo(ui, after)
+    await screen.findByTestId('enterprise-relock-notice')
+    return view
+  }
 
-    await act(async () => { await queryClient.refetchQueries({ queryKey: ['kiro-prerequisite'] }) })
-    await waitFor(() => expect(
-      (queryClient.getQueryData(['kiro-prerequisite']) as { enterprise_login_required?: boolean })
-        .enterprise_login_required,
-    ).toBe(true))
+  it('keeps a page draft and shows the sign-in notice beside the app until the gate reopens', async () => {
+    const { queryClient, container } = await relock(<Draft />)
+    const notice = screen.getByTestId('enterprise-relock-notice')
     expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
-    expect(screen.queryByRole('button', { name: 'Check sign-in again' })).not.toBeInTheDocument()
+    expect(within(notice).getByText('Run this in a terminal to sign in again. This notice clears once you do.')).toBeInTheDocument()
+    expect(within(notice).getByText('kiro-cli login')).toBeInTheDocument()
+    // The notice is portaled away, nothing else joins the app's own flow, and
+    // no first-run chrome replaces the app.
+    expect(container).not.toContainElement(notice)
+    expect(container.textContent).toBe('')
+    expect(screen.queryByText('Set up Kiro')).not.toBeInTheDocument()
+
+    // Signing in reopens the gate: the next poll clears the notice, draft kept.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(open)
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['kiro-prerequisite'] }) })
+    await waitFor(() => expect(screen.queryByTestId('enterprise-relock-notice')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
+  })
+
+  it('is display only: no pointer input, nothing focusable, no event captured', async () => {
+    await relock(<Draft />)
+    const notice = screen.getByTestId('enterprise-relock-notice')
+    expect(notice).toHaveClass('pointer-events-none')
+    expect(notice.querySelectorAll('button, a, input, select, textarea, [tabindex]')).toHaveLength(0)
+    const seen: string[] = []
+    const record = (e: Event) => { seen.push(e.type) }
+    const types = ['pointerdown', 'mousedown', 'click', 'keydown', 'focusin', 'wheel', 'touchmove']
+    for (const t of types) document.addEventListener(t, record)
+    try {
+      fireEvent.pointerDown(notice)
+      fireEvent.mouseDown(notice)
+      fireEvent.click(notice)
+      fireEvent.keyDown(notice, { key: ',', altKey: true })
+      fireEvent.focusIn(notice)
+      fireEvent.wheel(notice)
+      fireEvent.touchMove(notice)
+      expect(seen).toEqual(types)
+    } finally {
+      for (const t of types) document.removeEventListener(t, record)
+    }
+  })
+
+  it('leaves an open Radix dialog and its draft alone on relock', async () => {
+    await relock(<RadixEditor />)
+    expect(screen.getByRole('dialog', { name: 'Editor' })).toBeInTheDocument()
+    expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
+  })
+
+  it('leaves an open Modal and its draft alone on relock', async () => {
+    await relock(<ModalEditor />)
+    expect(screen.getByRole('dialog', { name: 'Editor' })).toBeInTheDocument()
+    expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
+  })
+
+  it('draws the notice in the local pane overlay, so a remote Crew in front hides it', async () => {
+    // App mounts LocalOverlayRoot inside the gate; the notice must land in its
+    // container, which App hides while a remote Crew tab is active.
+    await relock(<LocalOverlayRoot hidden><Draft /></LocalOverlayRoot>)
+    const notice = screen.getByTestId('enterprise-relock-notice')
+    const local = document.querySelector<HTMLElement>('[data-local-overlay-root]')
+    expect(local).toContainElement(notice)
+    expect(local).toHaveStyle({ display: 'none' })
+  })
+
+  it('names the bare command with no hint when the gateway serves the bare command', async () => {
+    await relock(<Draft />)
+    const notice = screen.getByTestId('enterprise-relock-notice')
+    expect(within(notice).getByText('kiro-cli login')).toBeInTheDocument()
+    expect(within(notice).queryByText(/its own copy of Kiro CLI/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['the bundled desktop CLI', { bundled_cli: true, login_command: "'/Applications/Kiro Crew.app/Contents/Resources/kiro-cli/kiro-cli' login" }],
+    ['a KIROCREW_KIRO_BIN override off PATH', { bundled_cli: false, login_command: "'/opt/custom/kiro-cli' login" }],
+  ])('points %s to the sign-in screen for the exact command, still display only', async (_label, extra) => {
+    await relock(<Draft />, status({ ...locked, initial_setup_complete: true, ...extra }))
+    const notice = screen.getByTestId('enterprise-relock-notice')
+    // The hint is the primary line, and neither the bare command nor the
+    // run-it line shows: that command is not this gateway's.
+    const hint = within(notice).getByText(/its own copy of Kiro CLI.*new window or tab.*exact command.*copy button/)
+    expect(hint).toHaveClass('text-sm', 'text-text-strong')
+    expect(within(notice).queryByText('kiro-cli login')).not.toBeInTheDocument()
+    expect(within(notice).queryByText(/Run this in a terminal/)).not.toBeInTheDocument()
+    // The long command itself is never on the card, which stays display only.
+    expect(notice.textContent).not.toContain(extra.login_command)
+    expect(notice).toHaveClass('pointer-events-none', 'select-none')
+    expect(notice.querySelectorAll('button, a, input, select, textarea, [tabindex]')).toHaveLength(0)
+  })
+
+  it('tells a non-owner to ask the owner to sign in again, with no sign-in command', async () => {
+    await relock(<Draft />, status({ ...locked, initial_setup_complete: true, setup_allowed: false }))
+    const notice = screen.getByTestId('enterprise-relock-notice')
+    expect(within(notice).getByText(/Ask the .* owner to sign this gateway in again\. This notice clears once they do\./)).toBeInTheDocument()
+    // A non-owner cannot sign in, so neither the instruction nor the command shows.
+    expect(within(notice).queryByText(/Run this in a terminal/)).not.toBeInTheDocument()
+    expect(within(notice).queryByText('kiro-cli login')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
+  })
+
+  it('oss: an established install that signs out shows no notice and keeps the app', async () => {
+    // No enterprise_login_required: the oss status shape.
+    await relockTo(<Draft />, status({ installed: true, authenticated: false, ready: false, initial_setup_complete: true }))
+    expect(screen.queryByTestId('enterprise-relock-notice')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Run this in a terminal/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
+  })
+
+  // The gate reads Crew's vault sign-in: the gateway serves its command, and no
+  // enterprise surface may name kiro-cli's login then.
+  const VAULT_COMMAND = 'kirocrew kas login --provider idc --start-url'
+  const FILLED_COMMAND = `${VAULT_COMMAND} https://acme.awsapps.com/start`
+  const vaultLocked = {
+    ...locked,
+    enterprise_sign_in_command: VAULT_COMMAND,
+    enterprise_sign_in_needs_start_url: true,
+  }
+  const START_URL_HINT = /Enter it first: the command below fills it in/
+
+  it('names the vault sign-in on the sign-in screen, never kiro-cli login', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(
+      status({ ...vaultLocked, initial_setup_complete: true, installed: false, authenticated: true }),
+    )
+    renderGate()
+    const screenEl = await screen.findByTestId('enterprise-sign-in-required')
+    expect(within(screenEl).getByText(VAULT_COMMAND).tagName).toBe('CODE')
+    expect(screen.queryByText('kiro-cli login')).not.toBeInTheDocument()
+    // No kiro-cli install step: the vault gate does not need kiro-cli.
+    expect(screen.queryByText('Set up Kiro')).not.toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+    // The side panel names the organization sign-in, not a Kiro CLI install.
+    expect(screen.queryByText(/Install Kiro CLI/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Sign this gateway in to your organization's account/)).toBeInTheDocument()
+    // The start URL is unknown here, so a line OUTSIDE the copied text says where it is.
+    expect(within(screenEl).getByTestId('enterprise-start-url-hint')).toHaveTextContent(START_URL_HINT)
+    expect(within(screenEl).getByText(VAULT_COMMAND).textContent).not.toMatch(START_URL_HINT)
+  })
+
+  it('asks for the start URL first and keeps copy off until it is a valid https URL', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ ...vaultLocked, initial_setup_complete: true }))
+    renderGate()
+    const screenEl = await screen.findByTestId('enterprise-sign-in-required')
+    const field = within(screenEl).getByLabelText("Your organization's start URL")
+    const commandBox = within(screenEl).getByTestId('enterprise-sign-in-command')
+    const copy = within(commandBox).getByRole('button')
+    // The field comes before the line that says to run the command.
+    expect(field.compareDocumentPosition(within(screenEl).getByText(/Run this in a terminal/)))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(copy).toBeDisabled()
+
+    fireEvent.change(field, { target: { value: 'http://acme.awsapps.com/start' } })
+    expect(copy).toBeDisabled()
+    expect(within(commandBox).getByText(VAULT_COMMAND)).toBeInTheDocument()
+    fireEvent.change(field, { target: { value: 'https://acme.awsapps.com/start; echo hi' } })
+    expect(copy).toBeDisabled()
+
+    fireEvent.change(field, { target: { value: ' https://acme.awsapps.com/start/# ' } })
+    expect(copy).toBeEnabled()
+    const shown = within(commandBox).getByText(FILLED_COMMAND).textContent ?? ''
+    expect(shown).toBe(FILLED_COMMAND)
+    expect(shown).not.toMatch(/[<>]/)
+    // Client-side only: typing the URL sends nothing to the gateway.
+    expect(api.patchConfig).not.toHaveBeenCalled()
+    expect(api.acpBackendRecheck).not.toHaveBeenCalled()
+  })
+
+  it('copies a command the shell runs as-is: no < or >, and the known start URL filled in', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(
+      status({
+        ...vaultLocked,
+        enterprise_sign_in_command: FILLED_COMMAND,
+        enterprise_sign_in_needs_start_url: false,
+        initial_setup_complete: true,
+      }),
+    )
+    renderGate()
+    const screenEl = await screen.findByTestId('enterprise-sign-in-required')
+    const copied = within(screenEl).getByText(FILLED_COMMAND).textContent ?? ''
+    expect(copied).not.toMatch(/[<>]/)
+    // Known start URL: no field, and the copy button is on.
+    expect(within(screenEl).queryByTestId('enterprise-start-url-input')).not.toBeInTheDocument()
+    expect(within(screenEl).queryByTestId('enterprise-start-url-hint')).not.toBeInTheDocument()
+    expect(within(within(screenEl).getByTestId('enterprise-sign-in-command')).getByRole('button')).toBeEnabled()
+  })
+
+  it('tells a non-owner on the vault sign-in screen to ask the owner', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(
+      status({ ...vaultLocked, initial_setup_complete: true, setup_allowed: false }),
+    )
+    renderGate()
+    const screenEl = await screen.findByTestId('enterprise-sign-in-required')
+    expect(within(screenEl).getByText(/Ask the .* owner to sign this gateway in again/)).toBeInTheDocument()
+    expect(screen.queryByText(VAULT_COMMAND)).not.toBeInTheDocument()
+  })
+
+  it('sends the owner to a new window from the relock notice, where the command can be copied', async () => {
+    // The notice cannot be selected, so a long filled command is never shown there.
+    await relock(
+      <Draft />,
+      status({ ...vaultLocked, enterprise_sign_in_command: FILLED_COMMAND, initial_setup_complete: true }),
+    )
+    const notice = screen.getByTestId('enterprise-relock-notice')
+    expect(within(notice).getByTestId('enterprise-relock-new-window')).toHaveTextContent(
+      /open the dashboard in a new window or tab/,
+    )
+    expect(within(notice).queryByText(FILLED_COMMAND)).not.toBeInTheDocument()
+    expect(notice.querySelector('code')).toBeNull()
+    expect(within(notice).queryByText('kiro-cli login')).not.toBeInTheDocument()
+    expect(notice.querySelectorAll('button, a, input, select, textarea, [tabindex]')).toHaveLength(0)
+    expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
   })
 
   it('opens the dashboard once the gate reports open', async () => {

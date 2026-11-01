@@ -300,7 +300,9 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
         _cron_add_fail(f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})")
     if model:
-        if len(model) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model):
+        if len(model) > MAX_SHORT_STRING:
+            _cron_add_fail(f"invalid model format (expected at most {MAX_SHORT_STRING} characters)")
+        if not _MODEL_NAME_RE.match(model):
             # Read here, not at module level: the facade mirrors every module-level
             # import of its owners, and its import inventory is frozen.
             from kiro_crew.validation import MODEL_NAME_HINT
@@ -414,6 +416,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             timeout=int(timeout) if timeout else 0,
             timeout_secs=int(timeout_secs) if timeout_secs else 0,
             auto_pause_after_failures=getattr(args, "auto_pause_after_failures", None),
+            alert_after_failures=getattr(args, "alert_after_failures", None),
         )
         # ``member_id`` rides in the call ONLY when ``--agent`` resolved to a
         # crew member; a non-member (template or default) agent keeps the exact
@@ -474,11 +477,31 @@ def _cron(args: argparse.Namespace) -> None:
     `pause`, `resume` and `adopt` all persist through the same ``_save``, so
     catching at the dispatch boundary covers them without eight duplicated
     blocks, and any verb added later is covered by construction.
+
+    A ``PermissionError`` is translated the same way. The OS can refuse this
+    process a path the gateway itself can read: macOS data protection blocks a
+    terminal from even stat-ing ``.vault``, which ``cron remove`` must read to
+    revoke a job's secret grant before deleting it. The verb still refuses (the
+    revoke fence stays fail-closed); only the traceback is replaced by one line
+    naming the path and the OS refusal.
     """
     try:
         _cron_dispatch(args)
     except CronStoreUnreadable as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except PermissionError as exc:
+        if exc.errno is None:
+            # A policy refusal (``raise PermissionError("...")``), not the OS:
+            # keep it as it was rather than mislabel it an OS refusal.
+            raise
+        where = exc.filename or "a Kiro Crew data file"
+        print(
+            f"Error: the OS refused this process access to {where} ({exc.strerror or exc}). "
+            "Manage the job from the dashboard Schedule page, "
+            "or grant this terminal access to the data home (macOS: Full Disk Access).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -624,6 +647,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             "channel",
             "timeout_secs",
             "auto_pause_after_failures",
+            "alert_after_failures",
         ):
             val = getattr(args, field, None)
             if val is not None:
@@ -634,9 +658,10 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                         continue
                     if len(val) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(val):
                         print(
-                            f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})"
+                            f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})",
+                            file=sys.stderr,
                         )
-                        return
+                        sys.exit(1)
                 kwargs[field] = val
         if getattr(args, "agent", None) is not None:
             agent_val = args.agent.strip()
@@ -686,6 +711,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 resources=f"job_id={args.job_id} reason=not_found",
             )
             print(f"Job not found: {args.job_id}")
+            # Same exit as remove/pause/resume/trigger on a missing job, so a
+            # script that updates a stale id sees the failure.
+            sys.exit(1)
 
     elif action == "remove":
         job_id = getattr(args, "job_id", None)
@@ -718,7 +746,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if removed:
             print(f"Removed job: {job_id}")
         else:
-            print(f"Job not found: {job_id}")
+            print(f"Job not found: {job_id}", file=sys.stderr)
+            sys.exit(1)
 
     elif action == "pause":
         if svc.enable_job(args.job_id, enabled=False):

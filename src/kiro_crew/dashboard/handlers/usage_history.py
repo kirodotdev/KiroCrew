@@ -206,7 +206,6 @@ def _parse_token_history() -> dict[str, Any]:
     total_cache_create = sum(daily_cache_create.values())
     total_cache_read = sum(daily_cache_read.values())
 
-    # Build daily token history
     all_days = sorted(set(daily_input.keys()) | set(daily_output.keys()))
     daily_history = []
     for d in all_days:

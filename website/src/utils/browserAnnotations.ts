@@ -9,6 +9,8 @@
  * `browserAnnotations.prompt.ts`.
  */
 
+import { sliceCodePoints } from '../components/CommentOverlay'
+
 /** Window event: the panel hands a finished annotation set to ChatPage --
  *  `{ slot, files, draft }`. ChatPage uploads the files into the composer's
  *  attachments and puts `draft` into the composer text (NOT sent), so the
@@ -41,7 +43,7 @@ const LABEL_MAX = 40
 
 function truncate(s: string, max: number = LABEL_MAX): string {
   const t = s.replace(/\s+/g, ' ').trim()
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t
+  return t.length > max ? `${sliceCodePoints(t, 0, max - 1)}…` : t
 }
 
 /** The element's human label: accessible name first, visible text second. */

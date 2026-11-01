@@ -3,6 +3,7 @@ import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
+import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
 
 /** A message split into the prose the user reads and the choices offered alongside it. */
@@ -144,18 +145,31 @@ const rowIdentity = (m: ChatMessage, i: number): string =>
  * consume, leaving the user waiting on an answer the agent never receives.
  * Callers that never render a card pass nothing — suppressing pills there would
  * leave that surface with no way to answer at all.
+ *
+ * `movedOnRow` hides the pills once a running turn has moved past the row that
+ * offered them: a row it matches that is newer than the offering row means the
+ * agent kept working, so the question is stale (#15926). While the offering row
+ * is still the newest one, the pills stay, so a pick can be steered into the
+ * turn. The caller passes it only while its turn runs, and defines which rows
+ * count, because this module renders nothing and so cannot import the display
+ * layer's row classifiers. Callers that hide pills for the whole busy turn pass
+ * nothing.
  */
 export function deriveFollowUpOptions(
   messages: ChatMessage[],
   isStreaming: boolean,
   questionPending = false,
+  movedOnRow?: (m: ChatMessage) => boolean,
 ): FollowUpDerivation {
   if (isStreaming || questionPending) return NONE
   // Errors were already transparent here (no branch matched them); the flag is
   // what makes that transparency mean something.
   let sawError = false
+  // A row newer than the offering row that shows the running turn moved on.
+  let movedOn = false
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
+    if (movedOnRow?.(m)) { movedOn = true; continue }
     // A deliberate Stop ENDS the turn rather than interrupting it, so the choice is closed
     // by the user's own cancellation — the error licence below must not reach back past it.
     if (isStopEvent(m)) return NONE
@@ -173,11 +187,16 @@ export function deriveFollowUpOptions(
       continue
     }
     if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
+    // A say-nothing reply (a quiet patrol cycle's bare U+200B) is not drawn, so the
+    // question above it is still the newest thing the user reads: its chips stay.
+    // Same rule the transcript and the assistant footer use to skip that row.
+    if (isHiddenInvisibleAssistantRow(m)) continue
     // A note may carry options, so a zero-token cron can offer an action without an LLM turn.
     // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
     if (m.role === 'inject' && isNoteRow(m) && m.content) {
       const parsed = parseOptions(m.content)
       if (parsed.options.length) {
+        if (movedOn) return NONE
         // A note row still gets an identity: the bar keys its render off it, and a note whose
         // options never re-key would let a later identical note reuse the earlier row's key.
         return { followUpOptions: parsed.options, followUpSourceKey: rowIdentity(m, i), followUpMulti: parsed.multi }
@@ -190,7 +209,7 @@ export function deriveFollowUpOptions(
       // error, and that option-less row shadowed the question exactly as the `user` row did.
       // Crossing does NOT consume the error licence: the `user` row below still needs it.
       if (!options.length && sawError) continue
-      if (!options.length) return NONE
+      if (!options.length || movedOn) return NONE
       return { followUpOptions: options, followUpSourceKey: rowIdentity(m, i), followUpMulti: multi }
     }
   }

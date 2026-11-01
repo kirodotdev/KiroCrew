@@ -401,18 +401,16 @@ class TestUnpoisonRejectedCheckoutRevalidatesSubdirectoryAtWriteTime:
 
 
 class TestContainmentRefusalRestoreFromRespectsRestorableStale:
-    """Regression: the subdirectory-containment refusal's cleanup
+    """The subdirectory-containment refusal's cleanup
     (``_checkout_preexisted=False`` branch) must filter ``restore_from`` by
     ``_restorable_stale`` the same way every other restoration site in this
     module does.
 
-    Round-4 security review finding: the refusal passed the first
-    ``_pending_stale_cleanup`` entry to ``_unpoison_rejected_checkout``
-    unfiltered. When ``_clone_build_app_locked`` forces
-    ``_checkout_preexisted=False`` after an origin-mismatch (non-restorable,
-    different-repository) move-aside + a successful fresh clone/build, and
-    that fresh clone's declared ``subdirectory`` then fails containment, the
-    unfiltered ``restore_from`` renamed the origin-mismatched stale checkout
+    When ``_clone_build_app_locked`` forces ``_checkout_preexisted=False``
+    after an origin-mismatch (non-restorable, different-repository)
+    move-aside + a successful fresh clone/build, and that fresh clone's
+    declared ``subdirectory`` then fails containment, an unfiltered
+    ``restore_from`` would rename the origin-mismatched stale checkout
     back into ``pkg_dir`` — exactly the "hand the build the tree the gate
     refused" case ``_restorable_stale`` exists to prevent elsewhere in this
     file.
@@ -542,16 +540,14 @@ class TestContainmentRefusalRestoreFromRespectsRestorableStale:
 
 
 class TestIdentityMismatchPreBuildRestoreFromRespectsRestorableStale:
-    """Regression: the pre-build IDENTITY GATE inside ``_clone_build_app_locked``
+    """The pre-build IDENTITY GATE inside ``_clone_build_app_locked``
     must filter ``restore_from`` through the local ``restorable_stale`` list
-    before handing it to ``_refuse_identity_mismatch`` — the same class of bug
-    fixed at the containment refusal above, just at a different call site.
+    before handing it to ``_refuse_identity_mismatch`` — the same rule as the
+    containment refusal above, at a different call site.
 
-    Round-4 security review finding (step 10, site 1/3): this gate computed
-    ``restore_from`` as ``pending_cleanup[0] if pending_cleanup else None``
-    with no ``restorable_stale`` filter, so an origin-mismatched move-aside
-    could be restored into ``pkg_dir`` for a repo whose cloned ``app.json``
-    this very gate is refusing for declaring the wrong name.
+    Without the filter, ``restore_from`` is ``pending_cleanup[0]``, so an
+    origin-mismatched move-aside could be restored into ``pkg_dir`` for a repo
+    whose cloned ``app.json`` this very gate is refusing for declaring the wrong name.
     """
 
     @staticmethod

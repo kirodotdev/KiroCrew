@@ -16,22 +16,12 @@ import { BRAND_PURPLE } from '../lib/kiroGhostAvatar'
  * card from a Mate, and two rows of crewmate faces drifting past in opposite
  * directions.
  *
- * The poster's colours are the one deliberate exception to "styling uses design
- * tokens": the cream card and its ink ARE the design, the same in a dark theme
- * as in a light one, and a theme's own text colour on that cream would be
- * illegible in half the themes. Only what sits on the cream is fixed; the
- * accent (the "Try now" button, the sample card's reply bubble and its primary
- * pill) is the theme's own, so the dialog still wears the user's colour.
+ * Every colour is the active theme's: the dialog is the theme's card with a
+ * quiet wash of its accent, the outlines are the accent mixed into the theme's
+ * border, and the text is the theme's own, so the intro reads the same way in
+ * a light theme and a dark one. Only the crewmate faces keep their fixed
+ * palette: each face is a crewmate's avatar colour, not chrome.
  */
-
-/** The poster's cream card. */
-const CREAM = '#faf7f2'
-/** Ink on the cream: headline, button outlines, the sample card's border. */
-const INK = '#1a1523'
-/** The quieter ink for the one line under the title. */
-const INK_MUTED = '#6b6475'
-/** The sample chat card's own paper, a shade brighter than the cream. */
-const PAPER = '#ffffff'
 
 /** Faces per row. Twice `POSE_IDS` so every pose shows up in each row with a
  *  different colour, and the row is long enough to loop on a 640px card. */
@@ -98,17 +88,25 @@ export interface MeetYourMatesIntroProps {
 export default function MeetYourMatesIntro({ titleId, descId, title, description, onNotNow, onTryNow, tryNowRef, avatarRef }: MeetYourMatesIntroProps) {
   const reduceMotion = useReducedMotion() ?? false
   const pillBase = 'rounded-full px-3 py-1 text-[13px] font-medium'
+  // The sample card and the two outlined buttons share one outline: the accent
+  // mixed into the theme's border.
   return (
-    <div data-testid="meet-your-mates-intro" className="flex flex-col" style={{ background: CREAM, color: INK }}>
+    // Surface: the theme's card washed with its accent. Frame: a stronger
+    // accent mix, so the dialog stands off a scrim of the same tone.
+    <div
+      data-testid="meet-your-mates-intro"
+      className="flex flex-col rounded-[18px] text-text-strong"
+      style={{ background: 'color-mix(in srgb, var(--accent) 8%, var(--card))', border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border))' }}
+    >
       <div className="px-9 pt-8 pb-2">
         <h2 id={titleId} className="m-0 mb-2.5 text-[40px] leading-[1.05] font-semibold tracking-[-0.02em]">{title}</h2>
-        <p id={descId} className="m-0 text-[17px]" style={{ color: INK_MUTED }}>{description}</p>
+        <p id={descId} className="m-0 text-[17px] text-muted">{description}</p>
       </div>
 
       {/* A sample of what a Mate's message looks like: the sender, two short
           lines, and the two choices it offers. Static, not a real thread, so the
           pills are text and not buttons. */}
-      <div className="mx-9 mt-4 rounded-[14px] px-4 py-3.5" style={{ background: PAPER, border: `1.5px solid ${INK}` }}>
+      <div className="mx-9 mt-4 rounded-[14px] px-4 py-3.5 bg-card" style={{ border: '1.5px solid color-mix(in srgb, var(--accent) 45%, var(--border))' }}>
         <div className="flex items-center gap-2 text-[15px] font-bold">
           {/* Mate's avatar. On "Not now" this is what flies to the Mates rail
               row and becomes its "New" tag, so the dialog hands it up by ref. */}
@@ -116,16 +114,16 @@ export default function MeetYourMatesIntro({ titleId, descId, title, description
           {i18nT('components.assistantWelcome.default_name')}
         </div>
         <div className="ml-9 mt-2 flex flex-col items-start gap-1.5">
-          <span className="rounded-[10px] px-2.5 py-1.5 text-sm" style={{ background: 'color-mix(in srgb, var(--accent) 12%, white)' }}>
+          <span className="rounded-[10px] px-2.5 py-1.5 text-sm bg-accent-subtle">
             {i18nT('components.meetYourMatesIntro.sample_line_1')}
           </span>
-          <span className="rounded-[10px] px-2.5 py-1.5 text-sm" style={{ background: 'color-mix(in srgb, var(--accent) 12%, white)' }}>
+          <span className="rounded-[10px] px-2.5 py-1.5 text-sm bg-accent-subtle">
             {i18nT('components.meetYourMatesIntro.sample_line_2')}
           </span>
         </div>
         <div className="ml-9 mt-2.5 flex gap-2">
           <span className={`${pillBase} bg-accent text-accent-fg`}>{i18nT('components.meetYourMatesIntro.sample_merge')}</span>
-          <span className={pillBase} style={{ border: `1.5px solid ${INK}` }}>{i18nT('components.meetYourMatesIntro.sample_show_first')}</span>
+          <span className={pillBase} style={{ border: '1.5px solid color-mix(in srgb, var(--accent) 45%, var(--border))' }}>{i18nT('components.meetYourMatesIntro.sample_show_first')}</span>
         </div>
       </div>
 
@@ -142,8 +140,8 @@ export default function MeetYourMatesIntro({ titleId, descId, title, description
         <button
           type="button"
           data-testid="startup-video-not-now"
-          className="rounded-full px-5 py-2.5 text-[15px] font-semibold bg-transparent cursor-pointer"
-          style={{ border: `1.5px solid ${INK}`, color: INK }}
+          className="rounded-full px-5 py-2.5 text-[15px] font-semibold bg-transparent text-text-strong cursor-pointer"
+          style={{ border: '1.5px solid color-mix(in srgb, var(--accent) 45%, var(--border))' }}
           onClick={onNotNow}
         >
           {i18nT('components.startupVideoModal.not_now')}

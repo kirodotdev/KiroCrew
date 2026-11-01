@@ -18,6 +18,7 @@ import logging
 import os
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -26,6 +27,7 @@ from typing import Any, Callable, NamedTuple, Optional
 from kiro_crew import github_runner, platform_compat
 from kiro_crew.cloud import aws
 from kiro_crew.config.loader import config_dir
+from kiro_crew.platform.update_governance import git_command_env, repo_exec_driver_reason
 from kiro_crew.sel import sel
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -613,7 +615,11 @@ def _use_git_archive(root: Path, *, digest: Optional["hashlib._Hash"] = None) ->
         # which is the same substitutable name a reopen would be. stderr alone is
         # piped, because stdout is spoken for.
         rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
-            ["git", "-C", str(root), "archive", "--format=tar.gz", "HEAD"],
+            # Plain `tar`, compressed by _refilter_archive in Python: git runs the
+            # `tar.<format>.command` compressor the repository's config names, and
+            # `tar.tar.gz.command` is a repo-chosen program no env pin reaches.
+            ["git", "-C", str(root), "archive", "--format=tar", "HEAD"],
+            env=git_command_env(),
             stdout=out,
             stderr=subprocess.PIPE,
             timeout=120,
@@ -656,7 +662,8 @@ def _refilter_archive(archive: Any, *, digest: Optional["hashlib._Hash"] = None)
         archive.seek(0)
 
         def _fill(dst: tarfile.TarFile) -> None:
-            with tarfile.open(fileobj=archive, mode="r:gz") as src:
+            # "r:*": git now hands over a plain tar (see _use_git_archive).
+            with tarfile.open(fileobj=archive, mode="r:*") as src:
                 for member in src:
                     if _exclude_filter(member) is None:
                         logger.info("excluding %s from source tarball", member.name)
@@ -698,6 +705,43 @@ def _custom_home_rel_parts(root: Path) -> Optional[tuple]:
     return rel.parts or None
 
 
+def _tracked_attr_values(root: Path, names: list, attr: str) -> Optional[dict]:
+    """``{path: value}`` of git attribute *attr* for *names*, or ``None`` if git can't say.
+
+    ``check-attr`` reads attributes only and runs no driver.
+    """
+    try:
+        rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            ["git", "-C", str(root), "check-attr", "-z", "--stdin", attr],
+            env=git_command_env(),
+            input=b"\0".join(n.encode("utf-8", "surrogateescape") for n in names) + b"\0",
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc.returncode != 0:
+        return None
+    # `-z` output: `<path>\0<attr>\0<value>\0` per path.
+    fields = rc.stdout.decode("utf-8", "surrogateescape").split("\0")
+    return dict(zip(fields[0::3], fields[2::3]))
+
+
+def _tracked_paths_use_a_filter(root: Path) -> bool:
+    """True when any tracked path carries a ``filter`` attribute (or git can't say).
+
+    Fails toward True, which picks the working-tree packaging path: correct
+    content either way.
+    """
+    names = _git_tracked_files(root)
+    if not names:
+        return False
+    values = _tracked_attr_values(root, names, "filter")
+    if values is None:
+        return True
+    return any(v not in ("unspecified", "unset", "") for v in values.values())
+
+
 def _git_tracked_files(root: Path) -> Optional[list]:
     """The repo's tracked files (respects ``.gitignore``), or None if unavailable.
 
@@ -710,6 +754,8 @@ def _git_tracked_files(root: Path) -> Optional[list]:
     try:
         rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
             ["git", "-C", str(root), "ls-files", "-z"],
+            # Pins `core.fsmonitor`, which `ls-files` runs (measured on git 2.47).
+            env=git_command_env(),
             capture_output=True,
             timeout=60,
         )
@@ -735,6 +781,7 @@ def _tracked_tree_is_dirty(root: Path) -> bool:
     try:
         rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
             ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+            env=git_command_env(),
             capture_output=True,
             timeout=60,
             **UTF8_TEXT,
@@ -768,7 +815,33 @@ def _tar_fallback(root: Path, *, digest: Optional["hashlib._Hash"] = None) -> Pa
 
     home_parts = _custom_home_rel_parts(root)  # e.g. ("data", "kc-home") or None
 
+    # `git archive` leaves out `export-ignore` paths (a directory's attribute
+    # reaches every file under it, which `check-attr` reports per file). This
+    # path must leave out the same files, or it ships what the archive kept out.
+    # Fails closed: an unanswered query packages nothing.
+    # A directory's own `export-ignore` is not inherited by its files in
+    # `check-attr` output, but `git archive` honours it -- so every ancestor
+    # directory of a tracked path is asked too.
+    # Each directory is asked BOTH bare and with a trailing `/`: a directory-only
+    # pattern (`docs/ export-ignore`) matches only the slashed form in
+    # `check-attr` (git 2.47), while `git archive` still leaves the tree out.
+    ancestors = {str(parent.as_posix()) for rel in tracked for parent in Path(rel).parents}
+    ancestors.discard(".")
+    ancestor_queries = ancestors | {f"{a}/" for a in ancestors}
+    export = _tracked_attr_values(root, sorted(set(tracked) | ancestor_queries), "export-ignore")
+    if export is None:
+        raise aws.AWSError(
+            "cannot read the checkout's export-ignore attributes, so the source "
+            "cannot be packaged safely",
+            action="source:PackageLocalCheckout",
+        )
+    export_ignored = {path.rstrip("/") for path, value in export.items() if value == "set"}
+
     def _excluded(rel: str) -> bool:
+        if rel in export_ignored or any(
+            parent.as_posix() in export_ignored for parent in Path(rel).parents
+        ):
+            return True
         parts = Path(rel).parts
         if set(parts) & _EXCLUDE_DIRS:
             return True
@@ -853,6 +926,27 @@ def build_source_tarball(root: Optional[Path] = None) -> StagedSource:
     # fallback's checksum, which would then describe bytes the named file does not
     # contain -- and S3 would refuse a perfectly good tarball on a
     # --checksum-sha256 mismatch.
+    # `git status` and `git archive` run a repo-named `filter.<name>.clean` /
+    # `.smudge` from the checkout's own config, which an agent can write and no
+    # environment pin reaches. Such a tree skips both and is packaged by the
+    # tracked-file tar path, whose only git call (`ls-files`) runs no driver.
+    refused = repo_exec_driver_reason(str(root), git="git")  # the git spawned below
+    if refused:
+        logger.warning("%s; packaging the tracked files without git archive", refused)
+        guarded_digest = hashlib.sha256()
+        packaged = _tar_fallback(root, digest=guarded_digest)
+        return _staged(packaged, guarded_digest)
+
+    # `git archive` runs under the isolated env, which drops global config -- and
+    # with it a globally configured filter like `git lfs install`'s. A tracked
+    # path bound to ANY filter would then ship as its raw blob (an LFS pointer),
+    # so such a tree packages the checked-out working files instead.
+    if _tracked_paths_use_a_filter(root):
+        logger.info("tracked files use a content filter; packaging the working tree")
+        filtered_digest = hashlib.sha256()
+        packaged = _tar_fallback(root, digest=filtered_digest)
+        return _staged(packaged, filtered_digest)
+
     if _tracked_tree_is_dirty(root):
         logger.info("working tree has uncommitted tracked changes; packaging the working tree")
         dirty_digest = hashlib.sha256()
@@ -989,8 +1083,9 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     it here rather than per-launch CloudFormation, so:
 
     * it is created ONCE and reused by every launch (idempotent — an existing
-      one is left untouched, never re-versioned: that immutability is the whole
-      point);
+      one is never re-versioned by the launcher credential: that immutability is
+      the whole point; only an exact earlier document of this launcher's is
+      upgraded, and only by a caller holding ``iam:CreatePolicyVersion``);
     * the generated launcher policy grants only ``iam:CreatePolicy`` +
       ``iam:GetPolicy`` + ``iam:GetPolicyVersion`` on this exact name (no
       ``CreatePolicyVersion`` / ``Delete*``), so a leaked launcher credential
@@ -1028,6 +1123,7 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
         ),
         profile=profile,
         region=region,
+        previous=iam.previous_boundary_documents(account),
     )
 
 
@@ -1062,6 +1158,8 @@ def ensure_instance_kms_boundary(profile: str = "", region: str = "", create: bo
         profile=profile,
         region=region,
         admin_step="" if create else "kirocrew cloud iam-boundary --ssm-kms",
+        previous=iam.previous_kms_boundary_documents(account),
+        upgrade_step=KMS_UPGRADE_STEP,
     )
 
 
@@ -1143,11 +1241,15 @@ def _ensure_boundary(
     profile: str,
     region: str,
     admin_step: str = "",
+    previous: "list[dict] | tuple[dict, ...]" = (),
+    upgrade_step: str = "",
 ) -> str:
     """Create-once-and-verify, shared by every permissions boundary this launcher owns.
 
     ``admin_step`` set means this caller must NOT create the boundary: an absent
     one is refused with that command named, and an existing one is still verified.
+    ``previous`` lists earlier contents an admin may upgrade in place; an existing
+    boundary holding one is still refused, but the refusal names ``upgrade_step``.
 
     ONE copy of the sequence rather than one per lane, because the ORDER here is
     the security property and not an implementation detail: an existing policy is
@@ -1165,7 +1267,7 @@ def _ensure_boundary(
     # anything).
     rc, _out, read_err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
     if rc == 0:
-        _verify_boundary_content(arn, name, expected, profile, region)
+        _verify_boundary_content(arn, name, expected, profile, region, previous, upgrade_step)
         return arn
 
     # A DENIED read is not an absent boundary, and the two need different remedies.
@@ -1219,7 +1321,7 @@ def _ensure_boundary(
     # its content matches ours before trusting it (the racer could have seeded a
     # permissive one). Fail closed on mismatch.
     if "EntityAlreadyExists" in (err or ""):
-        _verify_boundary_content(arn, name, expected, profile, region)
+        _verify_boundary_content(arn, name, expected, profile, region, previous, upgrade_step)
         return arn
     # Any other failure (AccessDenied, throttling) is real — surface it with the
     # precise missing action so the user knows what to grant. The admin step is
@@ -1241,9 +1343,21 @@ def _ensure_boundary(
 
 
 def _verify_boundary_content(
-    arn: str, name: str, expected: dict, profile: str, region: str
+    arn: str,
+    name: str,
+    expected: dict,
+    profile: str,
+    region: str,
+    previous: "list[dict] | tuple[dict, ...]" = (),
+    upgrade_step: str = "",
 ) -> None:
     """Fail closed unless the existing boundary's default version equals our fixed doc.
+
+    A boundary holding exactly one of ``previous`` is first upgraded in place with
+    :func:`upgrade_boundary`, which only works for a caller allowed to re-version
+    it: a human terminal whose credentials hold ``iam:CreatePolicyVersion``. The
+    launcher policy never grants that, so a launcher-only credential (or an agent
+    session) gets the refusal naming ``upgrade_step`` instead.
 
     Shared by BOTH boundaries (``kirocrew-ec2-boundary`` and
     ``kirocrew-crew-boundary``) rather than copied per lane: the fail-closed
@@ -1258,7 +1372,51 @@ def _verify_boundary_content(
     creates/passes roles bounded by it. Fetches the default policy version and
     compares semantically (order-insensitive via canonical JSON). Raises
     :class:`aws.AWSError` on mismatch or if the content can't be read.
+
+    A boundary holding one of ``previous`` (what this launcher created before an
+    edition widened the document) is refused too, because the new launch would
+    attach policies it caps away, but the message names the admin step that
+    upgrades it rather than telling the operator to delete it.
     """
+    actual = _read_boundary_document(arn, name, profile, region)
+    if _canonical(actual) == _canonical(expected):
+        return
+    if any(_canonical(actual) == _canonical(doc) for doc in previous):
+        try:
+            upgrade_boundary(
+                name=name,
+                arn=arn,
+                expected=expected,
+                previous=previous,
+                profile=profile,
+                region=region,
+            )
+        except (aws.AWSError, aws.CloudActionDenied) as exc:
+            logger.info("automatic upgrade of boundary %s refused: %s", name, exc)
+            raise aws.AWSError(
+                f"the permissions boundary '{name}' holds the earlier content-fixed "
+                "document, and this build's instance role needs the newer one. An AWS "
+                "admin upgrades it once for this account with "
+                f"`{upgrade_step or UPGRADE_STEP}`, then retry.",
+                action="iam:GetPolicyVersion",
+            ) from exc
+        print(
+            f"Upgraded the permissions boundary '{name}' to this build's document.",
+            file=sys.stderr,
+        )
+        return
+    raise aws.AWSError(
+        f"the existing permissions boundary '{name}' does NOT match "
+        "the expected content-fixed document — refusing to reuse it (a boundary "
+        "that caps nothing would defeat the ceiling it exists to impose). If you "
+        "intentionally changed it, delete it and let the launcher recreate it, "
+        "or re-run `kirocrew cloud iam-boundary`.",
+        action="iam:GetPolicyVersion",
+    )
+
+
+def _read_boundary_document(arn: str, name: str, profile: str, region: str) -> dict:
+    """The document of the boundary's DEFAULT version; refuse when it cannot be read."""
     ver = aws.checked_json(
         ["iam", "get-policy", "--policy-arn", arn],
         profile,
@@ -1280,20 +1438,12 @@ def _verify_boundary_content(
         region,
         action="iam:GetPolicyVersion",
     )
-    actual = {}
+    actual: dict = {}
     if isinstance(doc_resp, dict):
         actual = doc_resp.get("PolicyVersion", {}).get("Document", {})
     # The CLI returns the Document as a decoded JSON object (not URL-encoded) with
-    # --output json. Compare canonically (sorted keys) against our fixed document.
-    if _canonical(actual) != _canonical(expected):
-        raise aws.AWSError(
-            f"the existing permissions boundary '{name}' does NOT match "
-            "the expected content-fixed document — refusing to reuse it (a boundary "
-            "that caps nothing would defeat the ceiling it exists to impose). If you "
-            "intentionally changed it, delete it and let the launcher recreate it, "
-            "or re-run `kirocrew cloud iam-boundary`.",
-            action="iam:GetPolicyVersion",
-        )
+    # --output json. Callers compare it canonically (sorted keys).
+    return actual
 
 
 def _canonical(doc: object) -> str:
@@ -1301,6 +1451,127 @@ def _canonical(doc: object) -> str:
     import json as _json
 
     return _json.dumps(doc, sort_keys=True, separators=(",", ":"))
+
+
+#: What :func:`upgrade_boundary` did: nothing to do, or a new default version.
+UPGRADE_CURRENT = "current"
+UPGRADE_UPGRADED = "upgraded"
+
+#: The admin commands that upgrade, or create, each instance boundary. The KMS one
+#: needs ``--ssm-kms``: without it the step touches the default boundary only.
+UPGRADE_STEP = "kirocrew cloud iam-boundary --upgrade"
+KMS_UPGRADE_STEP = "kirocrew cloud iam-boundary --upgrade --ssm-kms"
+
+
+def upgrade_instance_boundary(profile: str = "", region: str = "", kms: bool = False) -> str:
+    """Bring an existing instance boundary up to this build's document (admin only).
+
+    The one-time step for an account whose ``kirocrew-ec2-boundary`` (or, with
+    ``kms``, ``kirocrew-ec2-kms-boundary``) was created before an edition added
+    ``cloud_instance_policy`` statements. Returns :data:`UPGRADE_CURRENT` or
+    :data:`UPGRADE_UPGRADED`; raises :class:`aws.AWSError` otherwise.
+    """
+    from kiro_crew.cloud import iam
+
+    account = _require_account(profile, region)
+    if kms:
+        return upgrade_boundary(
+            name=iam.KMS_BOUNDARY_NAME,
+            arn=iam.kms_boundary_arn(account),
+            expected=iam.kms_boundary_policy_document(account),
+            previous=iam.previous_kms_boundary_documents(account),
+            profile=profile,
+            region=region,
+            create_step="kirocrew cloud iam-boundary --ssm-kms",
+        )
+    return upgrade_boundary(
+        name=iam.BOUNDARY_NAME,
+        arn=iam.boundary_arn(account),
+        expected=iam.boundary_policy_document(account),
+        previous=iam.previous_boundary_documents(account),
+        profile=profile,
+        region=region,
+    )
+
+
+def upgrade_boundary(
+    *,
+    name: str,
+    arn: str,
+    expected: dict,
+    previous: "list[dict] | tuple[dict, ...]",
+    profile: str,
+    region: str,
+    create_step: str = "kirocrew cloud iam-boundary",
+) -> str:
+    """Re-version a boundary ONLY when it holds an earlier document this launcher made.
+
+    The launcher policy grants no ``iam:CreatePolicyVersion``, and that stays true:
+    this runs with an admin's credentials, from a terminal (refused in an agent
+    session), and keeps the create-once property for everything else. A boundary
+    whose content is neither the current document nor one of ``previous`` is
+    refused unchanged: someone edited it, and overwriting it would hide that.
+
+    The new version is created as the default and then read back through the same
+    verify the launch uses, so a reported upgrade is one a launch will accept.
+    """
+    import json as _json
+
+    aws.assert_human_action("iam:CreatePolicyVersion")
+    rc, _out, read_err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
+    if rc != 0:
+        raise aws.AWSError(
+            f"could not read the permissions boundary '{name}' to upgrade it "
+            f"(create it with `{create_step}`): {(read_err or '').strip()[:300]}",
+            action="iam:GetPolicy",
+            missing_action=aws.map_missing_action(read_err),
+            returncode=rc,
+            stderr=read_err or "",
+        )
+    actual = _canonical(_read_boundary_document(arn, name, profile, region))
+    if actual == _canonical(expected):
+        return UPGRADE_CURRENT
+    if not any(actual == _canonical(doc) for doc in previous):
+        raise aws.AWSError(
+            f"the permissions boundary '{name}' holds neither this build's document "
+            "nor an earlier one this launcher created — refusing to overwrite it. "
+            "Someone changed it by hand; review that change before replacing it.",
+            action="iam:GetPolicyVersion",
+        )
+    create = [
+        "iam",
+        "create-policy-version",
+        "--policy-arn",
+        arn,
+        "--policy-document",
+        _json.dumps(expected),
+        "--set-as-default",
+    ]
+    rc, _out, err = aws.run_aws(create, profile, region)
+    if rc != 0:
+        _audit_iam_policy_change(
+            "iam.create-policy-version", arn, "denied", error=(err or "").strip()[:300]
+        )
+        hint = ""
+        if "LimitExceeded" in (err or ""):
+            hint = (
+                " — the policy already has five versions; delete a non-default one "
+                "(`aws iam delete-policy-version`) and retry"
+            )
+        else:
+            missing = aws.map_missing_action(err)
+            hint = f" — grant `{missing}` and retry" if missing else ""
+        raise aws.AWSError(
+            f"could not upgrade the permissions boundary '{name}': "
+            f"{(err or '').strip()[:300]}{hint}",
+            action="iam:CreatePolicyVersion",
+            missing_action=aws.map_missing_action(err),
+            returncode=rc,
+            stderr=err or "",
+        )
+    _audit_iam_policy_change("iam.create-policy-version", arn, "allowed")
+    _verify_boundary_content(arn, name, expected, profile, region)
+    return UPGRADE_UPGRADED
 
 
 def delete_instance_boundary(profile: str = "", region: str = "") -> dict:

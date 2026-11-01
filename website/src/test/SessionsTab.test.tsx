@@ -231,8 +231,11 @@ describe('Created-by citation', () => {
     await waitFor(() => {
       expect(screen.getByText('Worker whose conductor closed')).toBeInTheDocument()
     })
-    // The orphan names the slot its crew log cited; nothing else knows the creator.
-    expect(screen.getByText('Created by chat-99-gone (not running, so shown top-level)')).toBeInTheDocument()
+    // The creator (chat-99-gone) is CLOSED and has no row in this payload, so no name
+    // resolves. The line names it with a graceful label, never the raw slot id -- an
+    // id nobody recognises explains the nesting no better than silence (#18153).
+    expect(screen.getByText('Created by a closed session')).toBeInTheDocument()
+    expect(screen.queryByText(/chat-99-gone/)).toBeNull()
     // Rows start expanded, so the nested row is on screen under its creator,
     // whose expander says what it hides: that place IS the citation, so the
     // nested row does not repeat its creator's name beside its own.
@@ -263,9 +266,48 @@ describe('Created-by citation', () => {
     await waitFor(() => {
       expect(screen.getByText('Worker whose conductor closed under a live lead')).toBeInTheDocument()
     })
-    expect(screen.getByText('Created by chat-99-gone (closed)')).toBeInTheDocument()
+    // The closed creator has no row in this payload, so the line uses the graceful
+    // closed label rather than the raw slot id (#18153).
+    expect(screen.getByText('Created by a closed session')).toBeInTheDocument()
+    expect(screen.queryByText(/chat-99-gone/)).toBeNull()
     // The ancestor it nests under is named by its own expander, not by this row.
     expect(screen.queryByText(/Created by Debugging session/)).toBeNull()
+  })
+
+  it('names a closed creator by its last-known title when the payload carries one', async () => {
+    // Two rows whose DIFFERENT closed creators both resolve to no live row used to
+    // read the same generic line. The backend now sends the creator's last-known
+    // `parent.title` for a creator with no live row, and the line names it -- on the
+    // top-level orphan and on the row re-parented onto an open ancestor alike.
+    const payload = defaultPayload()
+    const base = payload.sessions[0]
+    payload.sessions.push(
+      {
+        ...base,
+        key: 'dashboard:chat-5',
+        title: 'Orphan of the release conductor',
+        slot_key: 'chat-5',
+        pid: 1007,
+        parent: { slot: 'chat-98-gone', key: null, title: 'Release conductor' },
+      },
+      {
+        ...base,
+        key: 'dashboard:chat-6',
+        title: 'Worker of the triage conductor',
+        slot_key: 'chat-6',
+        pid: 1008,
+        parent: { slot: 'chat-99-gone', key: 'dashboard:chat-1', ancestor: true, title: 'Triage conductor' },
+      },
+    )
+    mockSessionsMemory.mockResolvedValue(payload)
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Worker of the triage conductor')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Created by Release conductor (closed)')).toBeInTheDocument()
+    expect(screen.getByText('Created by Triage conductor (closed)')).toBeInTheDocument()
+    expect(screen.queryByText('Created by a closed session')).toBeNull()
+    expect(screen.queryByText(/chat-9[89]-gone/)).toBeNull()
   })
 
   it('keeps the orphan citation under a fold, where the parent row is a group row', async () => {
@@ -279,7 +321,7 @@ describe('Created-by citation', () => {
     await waitFor(() => {
       expect(screen.getByText('Worker whose conductor closed')).toBeInTheDocument()
     })
-    expect(screen.getByText('Created by chat-99-gone (not running, so shown top-level)')).toBeInTheDocument()
+    expect(screen.getByText('Created by a closed session')).toBeInTheDocument()
     expect(screen.getAllByText(/^Created by /)).toHaveLength(1)
   })
 

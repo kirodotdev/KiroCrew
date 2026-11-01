@@ -16,8 +16,9 @@ Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
 ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
-``_pool_lookup``, ``_process``, ``_remote_session_servers``, ``_remote_workspace_agents``,
-``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
+``_pool_lookup``, ``_process``, ``_refuse_over_ceiling_start``, ``_remote_session_servers``,
+``_remote_workspace_agents``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``,
+``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -28,13 +29,13 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from kiro_crew.acp import runtime_start
+from kiro_crew.acp import kas_env_launch, runtime_start
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
     build_session_new_params,
     parse_session_modes,
 )
-from kiro_crew.acp.kas_agents import hoist_managed_servers
+from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _pooled_session_servers_and_ref_spec,
@@ -49,7 +50,11 @@ from kiro_crew.acp.session_handle import (
     advertised_models_from_session,
 )
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
-from kiro_crew.acp.types import METHOD_SESSION_NEW, JsonRpcMessage
+from kiro_crew.acp.types import (
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    METHOD_SESSION_NEW,
+    JsonRpcMessage,
+)
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
@@ -169,6 +174,10 @@ async def create_session(
         self._stderr_lines.clear()
     if not self._initialized:
         raise AcpRuntimeError("Runtime not initialized — call spawn() first")
+    # The effective agent, checked before anything is acquired: a session that names
+    # no agent inherits the spawn agent, whose spec the spawn check saw only as it
+    # stood then.
+    await self._refuse_over_ceiling_start(agent or self._agent)
 
     # Inject the shared gateway's broker stubs unless the caller supplied an
     # explicit list. A session-injected server outranks the same-named entry
@@ -317,13 +326,20 @@ async def create_session(
     # The generation the wire payload was built from, or None when this host takes its
     # agent at spawn time. Consumed by the activation bracket below.
     payload_snapshot = kas_extras.derived_spec_snapshot
+    # The vault identity the request goes out under, for the KAS catalog recorder;
+    # read by the harness with the payload, ``""`` on every host but KAS.
+    request_identity = kas_extras.vault_identity
     # Crew's managed servers travel in the session-level array, the one
     # declaration site the captured 2.18.0 release honours over a same-named
     # global/workspace entry and 2.20.0 reports as the client's own (see
-    # ``hoist_managed_servers``). The kiro path returns None here and is
+    # ``hoist_servers_for_session``). The kiro path returns None here and is
     # untouched.
-    kas_agents, mcp_servers = hoist_managed_servers(
-        kas_agents, active_agent, mcp_servers, session_token=stub_token
+    kas_agents, mcp_servers = hoist_servers_for_session(
+        kas_agents,
+        active_agent,
+        mcp_servers,
+        session_token=stub_token,
+        managed_entries=kas_extras.managed_entries,
     )
     # The host's last word on its own tool surface. A host that reads an
     # agent spec passes the list straight back; one that has nothing else
@@ -442,6 +458,7 @@ async def create_session(
             session_key=session_key,
             member_dispatch_mounted=member_mounted,
             request_sent_at=request_sent_at,
+            request_identity=request_identity,
         )
         if collector is None:
             permit.release()
@@ -476,6 +493,7 @@ async def create_session(
         session_key=session_key,
         member_dispatch_mounted=member_mounted,
         request_sent_at=request_sent_at,
+        request_identity=request_identity,
     )
 
 
@@ -504,6 +522,7 @@ def _collect_late_start(
     session_key: str = "",
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
+    request_identity: str = "",
 ) -> StartCollector | None:
     """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -590,6 +609,7 @@ def _collect_late_start(
                 session_key=session_key,
                 member_dispatch_mounted=member_dispatch_mounted,
                 request_sent_at=request_sent_at,
+                request_identity=request_identity,
             )
             # A declining (or raising) adopter answers False and the
             # collector performs the one teardown.
@@ -653,6 +673,7 @@ async def _finish_create_session(
     session_key: str = "",
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
+    request_identity: str = "",
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -699,11 +720,26 @@ async def _finish_create_session(
     # What the registered agent batch grants, recorded by the harness that
     # registered one; a host that took its agent at spawn time records nothing.
     self._harness.record_session_projection(handle, kas_agents, active_agent)
+    # The snapshot names this projection wrote, for shutdown. session/new hoists
+    # only managed servers, which never start through the launcher, so the batch
+    # still names every launcher entry here.
+    handle.kas_launch_snapshots.extend(kas_env_launch.batch_snapshot_names(kas_agents))
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 
+    # The vault identity the request went out under, read by the KAS catalog
+    # recorder inside ``store_session_config``; see the handle's field.
+    handle.request_vault_identity = request_identity
     # Populate state from session/new response (configOptions, available models)
     handle.store_session_config(resp)
+    # A backend whose served list is the authority on what it accepts feeds
+    # that list into the cross-session advertised-model cache and persists it
+    # off the loop, so the picker keeps it after this session is gone. Gated
+    # HERE rather than inside the methods so the first-class kiro path gains no
+    # call and no failure point in service of an adapter (harness-parity H13).
+    if self.acp_backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION:
+        handle._feed_advertised_model_cache()
+        await handle._persist_advertised_models_if_changed()
     # Both halves of that snapshot are now known, which is what makes the
     # served-default check answerable: the model the backend picked for
     # this session can be one the account's partition does not serve.

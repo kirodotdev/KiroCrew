@@ -51,9 +51,12 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_PI,
     ACP_BACKEND_PROCESS_NAMES,
+    ACP_BACKEND_STRANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SELF_SERVED_ACP,
+    COPILOT_VERIFIED_VERSION,
     POLICY_ID_BY_BACKEND,
+    STRANDS_VERIFIED_VERSION,
     host_unservable_reason,
     launch_for,
 )
@@ -165,6 +168,11 @@ class BackendInstallState:
     fix: the harness is installed on disk NOW, but the running gateway already
     resolved its absence and cached that, so a session started right now would
     still fail. See :func:`_probe_claude`.
+
+    ``found_version`` is non-empty only on a ``MISSING`` verdict whose binary DOES
+    resolve but runs a release other than the one Crew verified (Copilot CLI's
+    pin): what is missing is that release, so the row names the release it found,
+    and ``install_command`` installs the verified one.
     """
 
     backend: str
@@ -173,6 +181,7 @@ class BackendInstallState:
     missing_components: Tuple[str, ...] = ()
     install_command: str = ""
     restart_required: bool = False
+    found_version: str = ""
 
 
 def _probe_kiro() -> BackendInstallState:
@@ -332,6 +341,20 @@ def _probe_self_served(backend: str) -> BackendInstallState:
     launch = launch_for(backend)
     policy_id = _policy_id(backend)
     if acp_driver.self_served_resolves(backend):
+        # A release the handshake refuses is not installed in any sense that helps:
+        # every session would end at ``initialize``. So the row says MISSING, names
+        # the verified release as the absent component and carries the command that
+        # installs it -- the same remedy a missing binary gets.
+        found = acp_driver.self_served_wrong_version(backend)
+        if found:
+            return BackendInstallState(
+                backend,
+                policy_id,
+                MISSING,
+                (f"{launch.binary} {COPILOT_VERIFIED_VERSION}",),
+                acp_driver.self_served_install_command(backend),
+                found_version=found,
+            )
         return BackendInstallState(
             backend,
             policy_id,
@@ -415,6 +438,36 @@ def _probe_pi() -> BackendInstallState:
     )
 
 
+def _probe_strands() -> BackendInstallState:
+    """The Strands CLI, its verified release, and the Python environment its project runs in.
+
+    The self-served shape for the binary, plus the one component that shape cannot
+    see: the CLI runs Kiro Crew's gate module with the ``.venv`` inside its project
+    directory, and a session without ``strands-harness`` there fails at its first
+    project load. File reads only.
+    """
+    state = _probe_self_served(ACP_BACKEND_STRANDS)
+    if state.installed != INSTALLED:
+        return state
+    found = acp_driver.strands_wrong_version()
+    launch = launch_for(ACP_BACKEND_STRANDS)
+    if found:
+        return BackendInstallState(
+            ACP_BACKEND_STRANDS,
+            state.policy_id,
+            MISSING,
+            (f"{launch.binary} {STRANDS_VERIFIED_VERSION}",),
+            acp_driver.self_served_install_command(ACP_BACKEND_STRANDS),
+            found_version=found,
+        )
+    component, command = acp_driver.strands_python_env_missing()
+    if component:
+        return BackendInstallState(
+            ACP_BACKEND_STRANDS, state.policy_id, MISSING, (component,), command
+        )
+    return state
+
+
 #: Backend id -> its probe. A probe that answers by calling :func:`probe_backend`
 #: for ANOTHER backend must also be named in :func:`forget_probe`, in BOTH
 #: directions: its own entry is a copy, so evicting the copy alone rebuilds it from
@@ -436,6 +489,8 @@ _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
         backend: functools.partial(_probe_self_served, backend)
         for backend in sorted(ACP_BACKENDS_SELF_SERVED_ACP)
     },
+    # Self-served, plus a Python environment the shared probe cannot see.
+    ACP_BACKEND_STRANDS: _probe_strands,
 }
 
 

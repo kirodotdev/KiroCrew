@@ -48,7 +48,7 @@ describe('crewCapabilitiesApi', () => {
 
 describe('crewWorkerKitApi', () => {
   it('reads, previews and applies the worker kit, escaping the name', async () => {
-    const body = { template: 'release-bot', keep_additions: true }
+    const body = { template: 'release-bot' }
     await expect(crewWorkerKitApi.get('on call')).resolves.toEqual({ ok: true })
     expect(transport.get).toHaveBeenCalledWith('/api/agents/on%20call/worker-kit')
     await crewWorkerKitApi.preview('pixel', body)

@@ -45,6 +45,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.validation import strip_hidden_unicode
 
 logger = logging.getLogger(__name__)
@@ -1028,7 +1029,7 @@ def _kiro_cli_version() -> str:
         out = subprocess.run(
             [binary, "--version"],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=5,
             check=False,
         )

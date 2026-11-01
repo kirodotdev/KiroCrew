@@ -28,6 +28,7 @@ import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
 import { SOURCE_DETAIL_GC_MS, SOURCE_REMOUNT_REVALIDATE_MS } from './PullRequestPanel'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
+import { useRovingTabs } from './Tablist'
 
 import { i18nT } from '../i18n/t'
 
@@ -425,6 +426,9 @@ export default function IssuePanel({
   // The selected tab can vanish (a refresh that drops linkedChanges), so the
   // rendered tab always falls back to one that exists.
   const effectiveTab: IssueTab = tab === 'linked' && !source?.linkedChanges.length ? 'description' : tab
+  // Both rails are one tab stop with arrow keys, like the shared Tablist.
+  const issueRoving = useRovingTabs(cappedIssues.map(item => ({ key: item.url })), selected?.url, onSelect)
+  const sectionRoving = useRovingTabs(tabs.map(item => ({ key: item.id })), effectiveTab, setTab)
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -434,13 +438,14 @@ export default function IssuePanel({
           aria-label={i18nT('components.issuePanel.issues')}
           className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto"
         >
-          {cappedIssues.map(item => {
+          {cappedIssues.map((item, i) => {
             const qualifier = tabQualifier(item)
             return (
             <Btn
               key={item.url}
               type="button"
               role="tab"
+              {...issueRoving(i)}
               aria-selected={item.url === selected?.url}
               onClick={() => onSelect(item.url)}
               className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none cursor-pointer text-[12px] transition-colors ${item.url === selected?.url ? 'bg-bg-hover text-text' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover/60'}`}
@@ -663,11 +668,12 @@ export default function IssuePanel({
             aria-label={i18nT('components.issuePanel.issue_sections')}
             className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto"
           >
-            {tabs.map(item => (
+            {tabs.map((item, i) => (
               <Btn
                 key={item.id}
                 type="button"
                 role="tab"
+                {...sectionRoving(i)}
                 id={`issue-tab-${item.id}`}
                 aria-selected={effectiveTab === item.id}
                 aria-controls="issue-tabpanel"

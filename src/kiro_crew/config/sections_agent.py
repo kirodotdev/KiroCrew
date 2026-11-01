@@ -12,6 +12,7 @@ from kiro_crew import model_registry
 from kiro_crew.acp_backends import DEFAULT_ACP_BACKEND
 from kiro_crew.config.fields import _meta, field_default
 from kiro_crew.config.sections_agent_env import (
+    STRANDS_PROVIDER_CHOICES,
     coerce_agent_env,
     coerce_child_env_defaults,
     coerce_deepseek_env,
@@ -67,6 +68,12 @@ def coerce_fallback_model(raw: object) -> str:
     if s.lower() == "auto":
         return "auto"
     return model_registry.to_provider_id(s, "acp") or field_default(AgentConfig, "fallback_model")
+
+
+#: The Crew Mode conductor template's name. Equal to
+#: ``crew_mode.DEFAULT_CREW_MODE_AGENT`` (a test pins it); defined here so this owner
+#: binds no name the sections facade does not.
+_CREW_MODE_AGENT_DEFAULT = "kirocrew-conductor"
 
 
 @dataclass
@@ -288,9 +295,35 @@ class AgentConfig:
             "accepted; redirects that leave the host are refused.",
         ),
     )
+    native_skill_projection: bool = field(
+        default=True,
+        metadata=_meta(
+            "Native skill views for kiro-cli",
+            "When true (the default), the 'kiro' backend launches each agent under a "
+            "Kiro Crew managed view (kirocrew-skill-view-*.json in the kiro agents "
+            "directory) that serves skills through Kiro Crew's skill search, and "
+            "overlays the workspace's .kiro/settings/cli.json while it runs. When "
+            "false, agents launch under their authored names, no view is written, "
+            "the workspace overlay is rolled back, and kiro-cli loads skill metadata "
+            "natively again. Same effect as KIROCREW_NATIVE_SKILL_PROJECTION=0, "
+            "which still disables projection whatever this says.",
+            # Latched at spawn: a running native process keeps the mode it was
+            # launched under until it is replaced.
+            restart=True,
+        ),
+    )
     default_agent: str = field(
         default="",
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
+    )
+    crew_mode_agent: str = field(
+        default=_CREW_MODE_AGENT_DEFAULT,
+        metadata=_meta(
+            "Crew Mode conductor",
+            "The conductor template a chat runs when Crew Mode is turned on. "
+            "Empty falls back to the default. Takes effect live for new chats; "
+            "no gateway restart.",
+        ),
     )
     deepseek_env: dict[str, str] = field(
         default_factory=dict,
@@ -313,6 +346,81 @@ class AgentConfig:
             "starts with a message naming the offending key. Empty means no key: "
             "a model served locally on this machine needs none. Ignored by every "
             "other backend.",
+        ),
+    )
+    strands_env: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Strands provider keys",
+            "Model-provider settings handed to the Strands harness ('strands' "
+            "backend) as environment variables at spawn, mapping an "
+            "environment-variable NAME to a 'secret://<vault name>' reference, the "
+            "same shape as agent.deepseek_env. Store the value under Settings > "
+            "Secrets, then map it here, e.g. "
+            '{"ANTHROPIC_API_KEY": "secret://my-anthropic-key"}. Only the names the '
+            "Strands CLI reads for its providers are accepted: "
+            "AWS_REGION, AWS_DEFAULT_REGION and AWS_BEARER_TOKEN_BEDROCK (Bedrock "
+            "and Bedrock Mantle), ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, "
+            "OLLAMA_HOST, OLLAMA_MODEL, LITELLM_BASE_URL, LITELLM_API_KEY and "
+            "LITELLM_MODEL. Kiro Crew withholds every mapped name from the shells "
+            "and code the Strands agent runs. A plaintext value is REFUSED at write "
+            "time, and any other name refuses the Strands session before it starts "
+            "with a message naming the key. The harness runs sandboxed and cannot "
+            "read ~/.aws, so Bedrock needs AWS_BEARER_TOKEN_BEDROCK (a Bedrock API "
+            "key) and AWS_REGION mapped here. Ignored by every other backend.",
+        ),
+    )
+    strands_project: str = field(
+        default="",
+        metadata=_meta(
+            "Strands project",
+            "The Strands Python project the 'strands' backend runs: the path of its "
+            "agent.py, or of a folder holding one. Empty runs Kiro Crew's bundled "
+            "minimal project. Either way Kiro Crew loads it through its own gate "
+            "module, which makes every Strands Agent the project builds ask Kiro "
+            "Crew before each tool call, so a project needs no change of its own. "
+            "Its imports must be installed in the Python environment Kiro Crew runs "
+            "Strands with. A project of yours runs only as the version recorded in "
+            "agent.strands_project_sha256. Takes effect for new Strands sessions. "
+            "Ignored by every other backend.",
+        ),
+    )
+    strands_project_sha256: str = field(
+        default="",
+        metadata=_meta(
+            "Strands project fingerprint",
+            "The fingerprint of the agent.strands_project version you confirmed: a "
+            "sha256 over every file in the project's folder. The project's code runs "
+            "with your provider keys and outside the tool gate, so a Strands session "
+            "on your project starts only when the folder still matches it; a refused "
+            "session prints the current value and the command that records it. Set it "
+            "yourself after reviewing the files (kirocrew config set "
+            "agent.strands_project_sha256 <value>); Kiro Crew never records it on its "
+            "own. Packages the project imports from outside its folder are not "
+            "covered. Ignored for the bundled project and by every other backend.",
+        ),
+    )
+    strands_provider: str = field(
+        default="bedrock",
+        metadata=_meta(
+            "Strands provider",
+            "The model provider a new Strands session ('strands' backend) runs on. "
+            "With agent.strands_model it builds the Strands CLI's --model "
+            "'<provider>/<model>' argument; with agent.strands_model 'auto' no "
+            "--model is passed. A model picked for the chat wins over both. Any "
+            "value outside the list refuses the session before it starts. Its key "
+            "comes from agent.strands_env. Ignored by every other backend.",
+            enum=list(STRANDS_PROVIDER_CHOICES),
+        ),
+    )
+    strands_model: str = field(
+        default="auto",
+        metadata=_meta(
+            "Strands model",
+            "The model a new Strands session runs when the chat picks none, as an id "
+            "for agent.strands_provider: Kiro Crew launches the Strands CLI with "
+            "--model '<provider>/<model>'. 'auto' (or empty) passes no --model, so "
+            "the provider's CLI default runs. Ignored by every other backend.",
         ),
     )
     sweep_agents_backups: bool = field(
@@ -687,6 +795,8 @@ class AgentConfig:
             "one and skip the detection, so a local disk whose mount table is "
             "unreadable keeps WAL by declaring it. Unknown values read as 'auto'.",
             restart=True,
+            # The loader lower-cases, then reads any other value as 'auto'.
+            enum=["auto", "wal", "delete"],
         ),
     )
     admit_wait_secs: int = field(
@@ -798,10 +908,14 @@ class AgentConfig:
             "kiro-cli Child Env Defaults",
             "Environment variables given to every spawned kiro-cli process (chat "
             "sessions, background sessions and subagents) ONLY when the variable "
-            "is not already set in the environment it inherits. Empty by default. "
-            "kiro-cli sizes its thread pools by core count, so on a many-core host "
-            "running dozens of kiro-cli processes they can be capped, e.g. "
-            '{"TOKIO_WORKER_THREADS": "4", "RAYON_NUM_THREADS": "4"}. Only '
+            "is not already set in the environment it inherits. kiro-cli sizes its "
+            "thread pools by core count, and every thread counts against the agent "
+            "slice's task ceiling, so where that ceiling is in force (Linux with "
+            "the agents slice) a name left out of this map defaults to "
+            "min(cpus, 4) for TOKIO_WORKER_THREADS and RAYON_NUM_THREADS; on other "
+            "hosts no default is set. kirocrew "
+            "doctor shows the value in force. A value set here wins, e.g. "
+            '{"TOKIO_WORKER_THREADS": "8"}. Only '
             "TOKIO_WORKER_THREADS and RAYON_NUM_THREADS are accepted, each a "
             "decimal integer string from 1 to 1024; any other "
             "entry is ignored with a warning. Kiro Crew's own agent environment "
@@ -1082,10 +1196,13 @@ class AgentConfig:
             "config: the tools come from the kirocrew-dashboard MCP server, so an "
             "agent that does not mount it never has them, exactly like any other "
             "MCP server. Turn this off to withdraw the capability from every agent "
-            "at once without editing each spec. Sessions can only reach peers in "
-            "the same workspace; incognito, app-scoped and scheduled sessions are "
-            "never addressable, and a crew member or a scheduled run reaches only "
-            "sessions it created itself.",
+            "at once without editing each spec, except crew member DM sessions and "
+            "the Conductor in your own dashboard tab, which keep dispatching "
+            "workers unless Member Dispatch is also off. Sessions can only reach "
+            "peers in the same workspace; incognito, app-scoped and scheduled "
+            "sessions are never addressable, and a crew member, a scheduled run, "
+            "or a Conductor admitted with this off reaches only sessions it "
+            "created itself.",
         ),
     )
     session_manager_chain: bool = field(
@@ -1102,15 +1219,16 @@ class AgentConfig:
         default=True,
         metadata=_meta(
             "Member Dispatch",
-            "Let a crew member's DM session open and drive worker sessions it "
-            "creates, even when Session Control is off. On by default, because "
-            "dispatching work into workers is the crew-member operating model, "
-            "not an opt-in: this is the zero-configuration contract. Turn this "
-            "off to put member callers back under the Session Control switch, so "
-            "an operator who withdrew session control keeps member DM threads "
-            "chat-only without disabling the member. When on, a member's reach is "
-            "still bounded to sessions it created itself (creator ownership), the "
-            "same fence that binds it when Session Control is on.",
+            "Let a crew member's DM session, and the Conductor in your own "
+            "dashboard tab, open and drive worker sessions they create, even when "
+            "Session Control is off. On by default, because dispatching work into "
+            "workers is the crew-member operating model, not an opt-in: this is "
+            "the zero-configuration contract. Turn this off to put member callers "
+            "and the Conductor back under the Session Control switch, so an "
+            "operator who withdrew session control keeps them chat-only without "
+            "disabling them. When on, their reach is still bounded to sessions "
+            "they created themselves (creator ownership), the same fence that "
+            "binds a member when Session Control is on.",
         ),
     )
     crew_panel: bool = field(
@@ -1301,6 +1419,9 @@ class AgentConfig:
         # names and values may BE is refused at spawn, by name -- see
         # coerce_deepseek_env.
         self.deepseek_env = coerce_deepseek_env(self.deepseek_env)
+        # The Strands map has the same shape and the same split: type here, names
+        # at spawn (``acp.harness.strands``).
+        self.strands_env = coerce_deepseek_env(self.strands_env)
         self.child_env_defaults = coerce_child_env_defaults(self.child_env_defaults)
         self.env = coerce_agent_env(self.env)
         # Same defensive coercion for the throttle-fallback model: normalize to

@@ -27,15 +27,18 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_stale_recovery_retries``, ``_steer_act_now``, ``_steer_admissions``,
 ``_steer_attachment_meta``, ``_steer_audience_fence_holders``,
 ``_steer_audience_fences``, ``_steer_automation``, ``_steer_channel_origin``,
-``_steer_confirmed``,
-``_steer_decision_strips``, ``_steer_delivery_ids``, ``_steer_possibly_delivered``,
-``_steer_rpc_in_flight``, ``_steer_segment_cut``, ``_steer_send_ids``,
+``_steer_clear``, ``_steer_confirmed``,
+``_steer_decision_strips``, ``_steer_delivery_ids``, ``_steer_owner_origin``,
+``_steer_possibly_delivered``,
+``_steer_retract``, ``_steer_rpc_in_flight``, ``_steer_segment_cut``, ``_steer_send_ids``,
 ``_steer_user_origin``, ``_subagent_deliveries_inflight``,
-``_subagents_inline_collected``, ``_synthesis_completion_turns``,
-``_synthesis_inflight``, ``_synthesis_recheck``, ``_synthesis_rechecks``,
+``_subagents_inline_collected``, ``_synthesis_armers``,
+``_synthesis_completion_turns``, ``_synthesis_inflight``, ``_synthesis_recheck``,
+``_synthesis_rechecks``,
 ``_tool_stall_exhausted_emitted``, ``_tool_stall_retries``, ``_transient_5xx_retries``,
 ``_transient_ladder_started``, ``_turn_channel_narrowed``, ``_turn_channel_origin``,
-``_turn_retries``, ``_turn_user_sent``, ``_wait_contested``, ``_wait_last_ping``,
+``_turn_owner_sent``, ``_turn_retries``, ``_turn_user_sent``, ``_wait_contested``,
+``_wait_last_ping``,
 ``_wait_state``, ``_wait_steer_baseline``, ``replays``.
 """
 
@@ -52,11 +55,16 @@ if TYPE_CHECKING:
 def init_ladder_fields(self: _ChatSlot) -> None:
     """Set this module's slot fields to their defaults (``_ChatSlot.__init__``)."""
     self._pending_subagent_failures = []
-    # Fix 2 (B1): armed by gateway when the LAST sub-agent of a fan-out
+    # Armed by gateway when the LAST sub-agent of a fan-out
     # completes; consumed once by chat_runner's drain/idle branch to fire a
     # single post-fan-out synthesis turn. Cleared if a user message drains
     # first (user takes over).
     self._pending_synthesis = False
+    # The sub-agent ids whose completions armed the current _pending_synthesis.
+    # An inline-collected skip removes only its own id and disarms once none
+    # is left, so a result the blocking spawn tool returned cannot cancel a
+    # synthesis an unrelated background child armed.
+    self._synthesis_armers = set()
     # True while chat_runner owns the one readiness-wait/synthesis task.
     # Kept separate from _pending_synthesis so readiness loss does not
     # consume the one-shot request or permit duplicate waiters.
@@ -74,7 +82,7 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # result, so the turn-end fire gate drops the arm instead of running a
     # synthesis that restates it.
     self._synthesis_completion_turns = 0
-    # Fix 2 (B1) race guard: number of sub-agent completion deliveries
+    # Race guard: number of sub-agent completion deliveries
     # currently in flight for this slot (incremented in gateway._subagent_done
     # from entry until the completion is queued/launched). The synthesis
     # fire-gate requires this to be 0 so a concurrently-finishing sibling
@@ -305,6 +313,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # chunk entries above it, which _flush_segment's trailing-run walk could
     # then never reclaim). None when idle.
     self._steer_segment_cut = None
+    # A segment cut a permission request owes: paid by ``append`` before the
+    # next durable row, dropped when the request lands none. None when idle.
+    self._owed_segment_cut = None
     # Native kiro-cli subagents run inside the parent ACP turn. Keep their
     # live and terminal state on the slot so reconnects can hydrate cards.
     self._native_subagent_tracker = {}
@@ -363,6 +374,13 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # provenance, narrowed by the flag below. Absent means "not through a
     # channel", the composer's case.
     self._steer_channel_origin = {}
+    # Whether an in-flight steer was sent by the OWNER's own dashboard request
+    # (`is_owner_dashboard_request`), keyed and kept in the same LOCKSTEP as the
+    # two maps above. The requeue reads it for `directive_owner_origin`: a
+    # requeued steer runs as its own turn, and the owner mark decides whether
+    # that turn may read a peer crew's sessions (`_turn_owner_sent` below).
+    # Absent means NOT the owner, which fails closed.
+    self._steer_owner_origin = {}
     # Whether a CHANNEL steer has been admitted into the turn this slot is
     # running. Set by `steer_into_running_turn(channel_origin=True)` at
     # admission -- before its RPC, since the client can inject the text and the
@@ -391,6 +409,23 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # that is not the user's clears it (`chat_delivery`), so the guide routes
     # that act for the user refuse them.
     self._turn_user_sent = False
+    # Whether the RUNNING turn's words are the OWNER's: the person whose dashboard
+    # claim `is_owner_dashboard_request` accepts, not any holder of a dashboard
+    # token (a channel user allow-listed for `/kirocrew dashboard` holds one too,
+    # and `_turn_user_sent` counts their turn as a person's). Set at the turn's
+    # outermost entry from that turn's own `_run_chat(_directive_owner_origin=)`
+    # -- passed by the dashboard send, regenerate and rewind handlers and by the
+    # queue drain from the consumed entries' marks -- and only when the opener is
+    # also `_turn_user_sent`, so a dispatch that does not declare (`openai_compat`,
+    # the spec-builder runtime, a loop wake, a cron) starts from False and a
+    # dispatch that never started leaves nothing behind. A steer that is not the owner's clears it
+    # (`chat_delivery`), and EVERY turn exit clears it (`queue_cycle`), the
+    # handed-off depth-1 exit included -- unlike the two flags above, which the
+    # outermost exit alone resets, because a stale value here is authority and
+    # the only cost of clearing early is a refusal. Read by the crew-scoped
+    # session reads (`handlers_instances_crew_reads`), whose peer transcripts
+    # only the owner may see.
+    self._turn_owner_sent = False
     # The containment that held when an in-flight steer was AUTHORIZED, keyed by
     # the same message text and kept in the same LOCKSTEP. The requeue stamps it
     # on the queue entry instead of reading the slot again: its own moment is the
@@ -421,6 +456,15 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # already be in the pipe, and the RPC's own verdict arrives too late to
     # mark an entry the drain may already have run.
     self._steer_rpc_in_flight = set()
+    # Native-card ids with a /question/steer delivery in flight. Off the card
+    # record on purpose, so a steer claim never rides a serialized pending card.
+    self._native_steer_in_flight = set()
+    # A pending steer the person is taking back, and the ``_session/steer/clear``
+    # written for it whose drop kiro-cli has not reported yet. Both live for one
+    # turn at most: the turn's report or its teardown settles them
+    # (``dashboard/steer_retract.py``). None when nothing is being taken back.
+    self._steer_retract = None
+    self._steer_clear = None
     # Admission snapshots of the peer steers that influenced THIS turn, keyed by
     # an opaque token. The turn consults them before publishing its CROSS-SURFACE
     # reply leg and withholds it when a constraint newly holds:
@@ -503,7 +547,7 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # True once two sleeps have been seen sharing this slot: neither may be
     # tracked or ended, because there is no way to know which one the user is
     # looking at. Latched for the rest of the turn and cleared by the same
-    # turn-end block that clears the two fields above -- an earlier revision
-    # expired it on a timer, which let whichever sleep pinged first after
-    # expiry re-publish its deadline onto the other's pill.
+    # turn-end block that clears the two fields above, never on a timer: an
+    # expiry would let whichever sleep pinged first re-publish its deadline
+    # onto the other's pill.
     self._wait_contested = False

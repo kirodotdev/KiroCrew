@@ -28,6 +28,15 @@ vi.mock('react-virtuoso', () => ({
 }))
 vi.mock('../api/client', () => ({
   api: {
+    // A gateway without the Shared Crew routes: every read answers "not here".
+    sharedCrewCapabilities: vi.fn().mockResolvedValue(null),
+    sharedCrewMode: vi.fn().mockResolvedValue(null),
+    sharedCrewPeople: vi.fn().mockResolvedValue(null),
+    sharedCrewViewer: vi.fn().mockResolvedValue(null),
+    sharedCrewSendState: vi.fn().mockResolvedValue(null),
+    sharedCrewTypingLease: vi.fn().mockResolvedValue(null),
+    sharedCrewPresence: vi.fn().mockResolvedValue(null),
+    sharedCrewDecisions: vi.fn().mockResolvedValue(null),
     // The composer's project pill reads the project's AWS profile binding.
     projectAwsProfile: vi.fn().mockResolvedValue({ path: '/repo', profile: null, boundDir: null, profiles: [], status: null }),
     // Both slots: the created one must be listed or `switchSlot` cannot activate it.
@@ -67,6 +76,9 @@ vi.mock('../api/client', () => ({
     // worktree-failure notice the assertions below look up by role.
     kirocrewConfig: vi.fn().mockResolvedValue({}),
     agentResolvedModel: vi.fn().mockResolvedValue({ pinned: false }),
+    // The composer's environment chip reads this on mount; unanswered, it
+    // fails and renders another `role="alert"`.
+    chatSlotEnvironment: vi.fn().mockResolvedValue({ profiles: [] }),
     // The composer's git probe, which decides between the worktree route and
     // the plain new-chat route on the card.
     projectGit: vi.fn().mockResolvedValue({ repo: true, branch: 'main' }),

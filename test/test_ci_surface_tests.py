@@ -172,8 +172,8 @@ def test_setup_cfg_carries_non_ascii_so_its_read_must_pin_utf8() -> None:
     encoding load-bearing DO hold everywhere, and this asserts both -- so the
     guard cannot rot silently on the runners that never feel it.
 
-    Deliberately not a repo-wide "missing encoding=" rule. `cross-platform.yml`
-    documents why it ships none (a line regex breaks on nested and multi-line
+    Deliberately not a repo-wide "missing encoding=" rule. The `Cross-Platform
+    Portability` step of `pr-policy.yml` documents why it ships none (a line regex breaks on nested and multi-line
     calls), and an AST version means editing `.github/workflows/**`. This stays
     the size of the defect.
     """
@@ -432,7 +432,6 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_pid_lifecycle_provider_tree.py",
         "test_pid_lifecycle_teardown.py",
         "test_pid_lifecycle_tracking_integrity.py",
-        "test_pid_sweep_helpers.py",
         "test_process_tree_kill.py",
         "test_source_providers.py",
         "test_source_providers_app_contributors.py",

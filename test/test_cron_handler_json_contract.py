@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.cron import CronService
 from kiro_crew.dashboard.handlers.cron import (
@@ -59,7 +60,7 @@ def _cron_app(handler, route: str, **store) -> web.Application:
         ack_notification=AsyncMock(),
     )
     app.router.add_route("*", route, handler)
-    return app
+    return as_owner(app)
 
 
 @pytest.mark.parametrize("payload", NON_OBJECT_BODIES)
@@ -269,7 +270,7 @@ async def test_lessons_delete_threads_repo_scope_to_the_store() -> None:
             )
             assert with_scope.status == 200
             app["state"].lessons.remove.assert_called_once_with(
-                "run the gate", "src/pkg", exact=False
+                "run the gate", "src/pkg", exact=False, keep_one=False
             )
 
             app["state"].lessons.remove.reset_mock()
@@ -279,7 +280,9 @@ async def test_lessons_delete_threads_repo_scope_to_the_store() -> None:
                 headers={"X-Session-Key": "dashboard:ui"},
             )
             assert no_scope.status == 200
-            app["state"].lessons.remove.assert_called_once_with("run the gate", None, exact=False)
+            app["state"].lessons.remove.assert_called_once_with(
+                "run the gate", None, exact=False, keep_one=False
+            )
 
 
 async def test_lessons_delete_refuses_selector_shapes_that_collide_with_global() -> None:
@@ -356,7 +359,9 @@ async def test_lessons_delete_refuses_selector_shapes_that_collide_with_global()
                 headers={"X-Session-Key": "dashboard:ui"},
             )
             assert whitespace_selector.status == 200
-            app["state"].lessons.remove.assert_called_once_with("run the gate", "   ", exact=False)
+            app["state"].lessons.remove.assert_called_once_with(
+                "run the gate", "   ", exact=False, keep_one=False
+            )
 
 
 # ── A damaged member store answers 503, not 500 ─────────────────────────────
@@ -393,3 +398,97 @@ async def test_a_damaged_member_store_answers_503_with_its_reason(tmp_path, monk
     assert response is not None and response.status == 503
     body = json.loads(response.body)
     assert body == {"error": str(opened.value), "code": "store_unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_member_lesson_check_prepares_a_cold_v1_store(monkeypatch) -> None:
+    """A V1 named store is opened before the lesson readers borrow its handle.
+
+    After a restart no caller has opened it, so ``get_memory_for`` would lend a
+    ``None`` vector store and ``learn_list`` would answer "No lessons saved." from
+    the empty JSONL tier until some turn of that member opened it.
+    """
+    from kiro_crew import memory_stores
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.dashboard.handlers import cron as cron_handlers
+
+    prepared: list[str] = []
+
+    async def _ensure_store(store):
+        prepared.append(store)
+        return object()
+
+    monkeypatch.setattr(memory_stores, "memory_store_version", lambda _store: 1)
+    monkeypatch.setattr(ContextBuilder, "ensure_store", staticmethod(_ensure_store))
+
+    assert await cron_handlers._prepare_member_lesson_store("member-v1") is None
+    assert prepared == ["member-v1"]
+
+
+@pytest.mark.asyncio
+async def test_member_lesson_check_keeps_a_v1_store_it_could_not_prepare(monkeypatch) -> None:
+    """``ensure_store`` answers None for a V1 store it could not open (and logs why);
+    the route keeps that store's fallback rather than refusing, as before."""
+    from kiro_crew import memory_stores
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.dashboard.handlers import cron as cron_handlers
+
+    async def _ensure_store(_store):
+        return None
+
+    monkeypatch.setattr(memory_stores, "memory_store_version", lambda _store: 1)
+    monkeypatch.setattr(ContextBuilder, "ensure_store", staticmethod(_ensure_store))
+
+    assert await cron_handlers._prepare_member_lesson_store("member-v1") is None
+
+
+@pytest.mark.asyncio
+async def test_member_lesson_check_still_refuses_an_unopenable_v2_store(monkeypatch) -> None:
+    from kiro_crew import memory_stores
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.dashboard.handlers import cron as cron_handlers
+
+    async def _ensure_store(_store):
+        return None
+
+    monkeypatch.setattr(memory_stores, "memory_store_version", lambda _store: 2)
+    monkeypatch.setattr(ContextBuilder, "ensure_store", staticmethod(_ensure_store))
+
+    response = await cron_handlers._prepare_member_lesson_store("member-v2")
+    assert response is not None and response.status == 503
+    assert json.loads(response.body)["code"] == "store_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_member_lesson_check_skips_an_unnamed_store(monkeypatch) -> None:
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.dashboard.handlers import cron as cron_handlers
+
+    async def _ensure_store(_store):
+        raise AssertionError("an unnamed (global) store is prepared at startup")
+
+    monkeypatch.setattr(ContextBuilder, "ensure_store", staticmethod(_ensure_store))
+
+    assert await cron_handlers._prepare_member_lesson_store("") is None
+
+
+@pytest.mark.parametrize("rule", [5, ["a"], {"a": 1}, True, None], ids=repr)
+async def test_lessons_delete_refuses_a_non_string_rule(rule) -> None:
+    """A non-string rule has no ``.strip()``, so it is a coded 400 and nothing is
+    removed."""
+    app = _lessons_app()
+
+    with (
+        patch("kiro_crew.dashboard.handlers.cron._recognize_session", AsyncMock(return_value=None)),
+        patch("kiro_crew.dashboard.handlers.cron._blocks_reads_session", return_value=False),
+        patch("kiro_crew.dashboard.handlers.cron._sel"),
+    ):
+        async with TestClient(TestServer(app)) as client:
+            response = await client.delete(
+                "/api/lessons", json={"rule": rule}, headers={"X-Session-Key": "dashboard:ui"}
+            )
+            body = await response.json()
+
+    assert response.status == 400
+    assert body == {"error": "rule must be a string", "code": "invalid_field_type"}
+    app["state"].lessons.remove.assert_not_called()

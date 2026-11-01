@@ -37,7 +37,7 @@ vi.mock('../../hooks/useVoiceInput', () => ({
   },
   voiceInputSupported: true,
 }))
-vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => undefined }))
+vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }) }))
 vi.mock('../../hooks/voiceTranscriptInbox', () => ({ redeliverPending: () => {} }))
 vi.mock('../../lib/haptic', () => ({ haptic: () => {} }))
 vi.mock('../../api/client', () => ({

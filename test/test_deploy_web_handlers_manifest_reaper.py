@@ -53,7 +53,6 @@ def test_do_deploy_writes_manifest_with_ttl(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "run_aws", fake_run_aws)
     monkeypatch.setattr(handlers, "_allowed_local_roots", lambda: [tmp_path])
 
-    # Mock profile resolution
     monkeypatch.setattr(profiles_mod, "resolve_profile", lambda p: ("default", "us-west-2"))
     monkeypatch.setattr(
         profiles_mod,

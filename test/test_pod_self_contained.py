@@ -247,11 +247,27 @@ def test_a_leading_flag_or_empty_argv_is_refused(argv):
         rt.require_pod_safe_verb(list(argv), "wt-feature")
 
 
-def test_the_refusal_names_a_pod_native_equivalent_where_one_exists():
+def test_the_refusal_names_a_pod_native_equivalent_where_one_exists(monkeypatch):
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
+    with pytest.raises(rt.PodError) as exc:
+        rt.require_pod_safe_verb(["stop"], "wt-feature")
+    assert "kirocrew pod down wt-feature" in str(exc.value)
+
+
+def test_the_restart_refusal_names_the_restart_that_keeps_the_home(monkeypatch):
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
     with pytest.raises(rt.PodError) as exc:
         rt.require_pod_safe_verb(["restart"], "wt-feature")
-    assert "kirocrew pod down wt-feature" in str(exc.value)
-    assert "pod up wt-feature" in str(exc.value)
+    assert "kirocrew pod restart wt-feature" in str(exc.value)
+    assert "pod down" not in str(exc.value)
+
+
+def test_the_restart_refusal_keeps_down_and_up_on_windows(monkeypatch):
+    # Windows refuses `pod restart`, so the hint must not name it there.
+    monkeypatch.setattr(rt, "IS_WINDOWS", True)
+    with pytest.raises(rt.PodError) as exc:
+        rt.require_pod_safe_verb(["restart"], "wt-feature")
+    assert "kirocrew pod down wt-feature && kirocrew pod up wt-feature" in str(exc.value)
 
 
 def test_the_refusal_lists_the_allowed_verbs_otherwise():

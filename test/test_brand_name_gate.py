@@ -432,7 +432,7 @@ class TestDiffScopedRun:
     @staticmethod
     def _head(root: str) -> str:
         return subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, encoding="utf-8", check=True
         ).stdout.strip()
 
     @staticmethod
@@ -467,7 +467,7 @@ class TestDiffScopedRun:
         root = self._repo(tmp_path)
         self._commit(root, "doc.md", "Old line about KiroCrew.\n", "base")
         base = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, encoding="utf-8", check=True
         ).stdout.strip()
         self._commit(root, "doc.md", "Old line about KiroCrew.\nA clean new line.\n", "head")
 
@@ -481,7 +481,7 @@ class TestDiffScopedRun:
         root = self._repo(tmp_path)
         self._commit(root, "doc.md", "Nothing to see.\n", "base")
         base = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, encoding="utf-8", check=True
         ).stdout.strip()
         self._commit(root, "doc.md", "Nothing to see.\nNow with KiroCrew in it.\n", "head")
 

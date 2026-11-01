@@ -208,7 +208,6 @@ class TestResourceManagement:
         run.tasks = [Step(index=1, title="T1", description="d")]
         runner._runs["cancel1"] = run
 
-        # Start execution in background
         async def _bg():
             try:
                 await runner._execute_tasks(run, "hk")
@@ -1244,13 +1243,18 @@ class TestExtractLesson:
         runner._notify.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_extract_lesson_no_store(self) -> None:
+    async def test_extract_lesson_no_store(self, tmp_path: Path) -> None:
         """No lesson_store → does nothing."""
         sessions = _make_mock_sessions()
-        runner = TaskRunner(sessions=sessions, auto_test=False, lesson_store=None)
+        runner = TaskRunner(
+            sessions=sessions, auto_test=False, lesson_store=None, work_dir=tmp_path
+        )
+        run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s")
         step = Step(index=1, title="X", description="d", error="boom")
-        # Should not raise
-        await runner._extract_lesson(step)
+        with patch.object(runner, "_call_llm_for_lesson", return_value={"rule": "R"}) as call:
+            await runner._extract_lesson(step, run)
+        assert run.lessons_learned == []
+        call.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_extract_lesson_invalid_response(self, tmp_path: Path) -> None:

@@ -47,6 +47,7 @@ from kiro_crew.apps.manifest import (
     cron_permission_error,
     is_reserved_app_name,
 )
+from kiro_crew.apps.point_grants import grant_source
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.sel import sel
 
@@ -71,8 +72,13 @@ def register_external_app(
     lifecycle: str = "app",
     source_repository: str = "",
     start_disabled: bool = False,
+    version_checked: bool = False,
 ) -> AppResult:
     """Register a self-managed app with Kiro Crew's app system.
+
+    ``version_checked=True`` says the caller already asked the governance
+    ``app_versions`` list off the loop (``admission.app_version_refusal``), so
+    admission skips that blocking read here.
 
     Self-managed apps (``resources="app"``) handle their own agent/skill/MCP
     registration.  Kiro Crew only tracks metadata so the dashboard can display them.
@@ -140,7 +146,19 @@ def register_external_app(
     admission_manifest = None
     if manifest_data:
         admission_manifest = AppManifest.from_dict(manifest_data)
-    denied = app_admission_denied(name, manifest=admission_manifest, action="register_external")
+        # Self-registration parses without validating, and parsing records a
+        # lifecycle timeout `int()` cannot read instead of raising. Refuse it here,
+        # before any write, the way install validation does.
+        setup_errors = admission_manifest.setup.validate()
+        if setup_errors:
+            return AppResult(ok=False, name=name, error="; ".join(setup_errors))
+    denied = app_admission_denied(
+        name,
+        manifest=admission_manifest,
+        action="register_external",
+        check_version=not version_checked,
+        version=version,
+    )
     if denied:
         sel().log_api_access(
             caller="app_register_external",
@@ -255,7 +273,7 @@ def register_external_app(
     # Same holding back as ``update_app`` for added api/events entries. A first
     # registration approves what it declares: there is no earlier approval to
     # widen, as with an install.
-    new_permissions = manifest_data.get("permissions") if isinstance(manifest_data, dict) else None
+    new_permissions = grant_source(manifest_data) if isinstance(manifest_data, dict) else None
     prior_grants = _effective_approved_grants(name, existing) if existing else None
     prior_grants_present = _approved_grants_path(name).is_file() if existing else False
     approved_grants: dict[str, list[str]] | None
@@ -263,13 +281,13 @@ def register_external_app(
         if existing:
             approved_grants = _effective_approved_grants(name, existing)
         elif (on_disk := get_app_manifest(name)) is not None:
-            approved_grants = _declared_grant_entries(on_disk.permissions)
+            approved_grants = _declared_grant_entries(grant_source(on_disk))
         else:
             approved_grants = None
     elif existing:
         approved_grants = _approved_grants_after_manifest_change(
             existing_approved=prior_grants,
-            old_permissions=prior_manifest.permissions if prior_manifest else None,
+            old_permissions=grant_source(prior_manifest),
             new_permissions=new_permissions,
         )
     else:

@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.project_scan import (
     DEFAULT_DEPTH_CAP,
@@ -225,8 +226,18 @@ class TestSignalConstants:
 
 
 class TestIsPruned:
-    @pytest.mark.parametrize("name", PRUNE_DIRS)
-    def test_listed_directories_are_pruned(self, name: str) -> None:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            *named_cases("test_listed_directories_are_pruned", "name", PRUNE_DIRS),
+            *named_cases(
+                "test_dot_directories_are_pruned",
+                "name",
+                [".git", ".tox", ".mypy_cache", ".idea", ".hidden"],
+            ),
+        ],
+    )
+    def test_the_directory_is_pruned(self, name: str) -> None:
         assert is_pruned(name)
 
     def test_dependency_build_and_virtualenv_names_are_all_covered(self) -> None:
@@ -244,10 +255,6 @@ class TestIsPruned:
             "__pycache__",
         ):
             assert is_pruned(name), name
-
-    @pytest.mark.parametrize("name", [".git", ".tox", ".mypy_cache", ".idea", ".hidden"])
-    def test_dot_directories_are_pruned(self, name: str) -> None:
-        assert is_pruned(name)
 
     def test_kiro_directory_survives_the_dot_rule(self) -> None:
         # ``.kiro`` is the one hidden directory carrying a detection signal, so

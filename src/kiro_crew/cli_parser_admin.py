@@ -2,7 +2,7 @@
 ``Develop Kiro Crew itself`` commands.
 
 One registrar per command of those ``cli_help.COMMAND_GROUPS`` sections: secrets,
-security, file-delivery, policy, telemetry, cloud, tailnet, snapshot, restore, pod and
+security, policy, telemetry, cloud, tailnet, snapshot, restore, pod and
 eval (``bench``, ``perf`` and ``desktop`` register from their own modules).
 ``kiro_crew.cli.main`` builds the top-level parser and calls every registrar in the command
 line's registration order, so a new command of these sections gets a registrar here and a
@@ -19,6 +19,7 @@ import argparse
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_help
+from kiro_crew.cli_arg_types import positive_int
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices
 
 if TYPE_CHECKING:
@@ -144,7 +145,9 @@ def register_security_parser(sub: _Commands) -> None:
     sec_sub.add_parser("audit", help="Scan conversation history for suspicious tool usage")
     sec_sub.add_parser("deny-list", help="Show active deny patterns")
     sel_parser = sec_sub.add_parser("events", help="Show recent security event log entries")
-    sel_parser.add_argument("-n", "--limit", type=int, default=20, help="Number of entries")
+    sel_parser.add_argument(
+        "-n", "--limit", type=positive_int, default=20, help="Number of entries (default: 20)"
+    )
     # A count alone cannot express "what happened around 14:05" — on a busy log
     # 6000 entries reach only 15 minutes back, so answering a question about a
     # two-hour-old event means pulling ~90k entries and filtering by hand.
@@ -278,6 +281,75 @@ def register_secrets_parser(sub: _Commands) -> None:
         action="store_true",
         help="Store the secrets and rewrite .env to secret:// refs (default: dry-run)",
     )
+    # authorize -- the owner binds a stored Custom secret to an exact https origin
+    # for the mediated ``call_api_with_secret`` tool, and SIGNS the policy so
+    # trusted host code can confirm the owner (not the agent) set the destination.
+    secrets_authorize = secrets_sub.add_parser(
+        "authorize",
+        help="Authorize a Custom secret for one exact https origin (agent write requests)",
+    )
+    # Parsed as ``name``: it is the vault ENTRY's name, never its value, and is
+    # echoed back in the CLI's confirmation line.
+    secrets_authorize.add_argument(
+        "name", metavar="SECRET_NAME", help="Name of the stored Custom secret"
+    )
+    secrets_authorize.add_argument(
+        "origin",
+        nargs="?",
+        default=None,
+        help=(
+            "Exact https origin the agent may call, e.g. https://api.example.com "
+            "(required when adding; omit it with --remove)"
+        ),
+    )
+    secrets_authorize.add_argument(
+        "--header",
+        default=None,
+        help="Inject the secret into this request header (default: Authorization: Bearer)",
+    )
+    secrets_authorize.add_argument(
+        "--remove",
+        action="store_true",
+        help="Remove the authorization for SECRET_NAME instead of adding it",
+    )
+    secrets_authorize.add_argument(
+        "--reset",
+        action="store_true",
+        help=(
+            "Discard an existing policy that does not verify or does not parse, and "
+            "start fresh. Without it, authorize refuses rather than erase entries."
+        ),
+    )
+
+
+def _add_pod_limit_args(parser: argparse.ArgumentParser) -> None:
+    """``--memory`` / ``--cpu`` for ``pod up`` and ``pod restart``.
+
+    Validated by ``kiro_crew.pod.limits``, which this parser does not import at
+    startup; argparse only carries the strings.
+    """
+    parser.add_argument(
+        "--memory",
+        metavar="SIZE",
+        default=None,
+        help=(
+            "Memory ceiling for this pod, e.g. 16G or 8192M (default 4G). Capped at "
+            "80%% of host RAM. Persisted per pod as MEMORY= in its env file; "
+            "applies at boot. Enforced as MemoryMax on Linux; recorded but not "
+            "enforced on macOS and Windows."
+        ),
+    )
+    parser.add_argument(
+        "--cpu",
+        metavar="QUOTA",
+        default=None,
+        help=(
+            "CPU ceiling for this pod as a percentage of one core, e.g. 800%% for "
+            "eight cores, or a bare core count such as 8 (default 200%%). Capped at "
+            "the host CPU count. Persisted per pod as CPU= in its env file; applies "
+            "at boot. Enforced as CPUQuota on Linux only."
+        ),
+    )
 
 
 def register_pod_parser(sub: _Commands) -> None:
@@ -285,7 +357,7 @@ def register_pod_parser(sub: _Commands) -> None:
     pod_parser = cli_help.add_command(sub, "pod")
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
-        metavar="{up,down,ls,prune,status,token,url,scenarios,api,logs,exec,provision,install}",
+        metavar="{up,down,restart,ls,prune,status,token,url,scenarios,api,logs,exec,provision,install}",
     )
     pod_up = pod_sub.add_parser("up", help="Schedule an isolated pod for a worktree")
     pod_up.add_argument("name", help="Worktree name")
@@ -370,6 +442,28 @@ def register_pod_parser(sub: _Commands) -> None:
             "below 5 are raised to 5, values above 3600 are capped at 3600."
         ),
     )
+    _add_pod_limit_args(pod_up)
+    pod_restart = pod_sub.add_parser(
+        "restart",
+        help="Restart a pod in place, keeping its home (applies new --memory/--cpu)",
+        description=(
+            "Stop the pod's gateway, keep its isolated home (sessions, config, apps, "
+            "models), and start it again from its env file. Use it to apply a new "
+            "--memory or --cpu, or to revive a pod that crashed. No token is minted; "
+            "`kirocrew pod token <name>` mints one."
+        ),
+    )
+    pod_restart.add_argument("name", help="Worktree name")
+    pod_restart.add_argument("--json", action="store_true", help="Emit the handle as JSON")
+    pod_restart.add_argument(
+        "--wait-secs",
+        dest="wait_secs",
+        type=int,
+        metavar="SECS",
+        default=None,
+        help="Health-wait budget in seconds (same default and bounds as `pod up`)",
+    )
+    _add_pod_limit_args(pod_restart)
     pod_down = pod_sub.add_parser("down", help="Evict a pod (zero residue)")
     pod_down.add_argument("name", help="Worktree name")
     pod_ls = pod_sub.add_parser("ls", help="List running pods")
@@ -464,7 +558,9 @@ def register_pod_parser(sub: _Commands) -> None:
     )
     pod_logs = pod_sub.add_parser("logs", help="Tail a pod's journal")
     pod_logs.add_argument("name", help="Worktree name")
-    pod_logs.add_argument("-n", "--lines", type=int, default=50, help="Lines to tail (default: 50)")
+    pod_logs.add_argument(
+        "-n", "--lines", type=positive_int, default=50, help="Lines to tail (default: 50)"
+    )
     pod_exec = pod_sub.add_parser(
         "exec",
         help="Run a kirocrew command against a pod, using the pod's own binary and data",
@@ -492,18 +588,6 @@ def register_pod_parser(sub: _Commands) -> None:
     pod_run.add_argument("name")
     pod_cleanup = pod_sub.add_parser("_cleanup")
     pod_cleanup.add_argument("name")
-
-
-def register_file_delivery_parser(sub: _Commands) -> None:
-    file_delivery_parser = cli_help.add_command(sub, "file-delivery")
-    file_delivery_parser.add_argument(
-        "action",
-        choices=["approve"],
-        help=(
-            "approve: finish a flagged-file delivery consent armed from the "
-            "dashboard's Security panel (proves you are at the host)"
-        ),
-    )
 
 
 def register_cloud_parser(sub: _Commands) -> None:
@@ -682,6 +766,12 @@ Examples:
         "iam-policy", help="Print the least-privilege IAM policy to apply"
     )
     _cloud_creds_opts(_c_iam)
+    _c_iam.add_argument(
+        "--host-policies",
+        action="store_true",
+        help="Print the second policy that lets the launcher attach this build's "
+        "host policies (only when the edition adds some)",
+    )
     _c_boundary = cloud_sub.add_parser(
         "iam-boundary",
         help="Pre-create the immutable EC2 + Fargate permissions boundaries (admin, one-time)",
@@ -692,6 +782,12 @@ Examples:
         action="store_true",
         help="Also pre-create the opt-in KMS-session instance boundary that "
         "`cloud launch --ssm-kms-key` uses",
+    )
+    _c_boundary.add_argument(
+        "--upgrade",
+        action="store_true",
+        help="Upgrade an existing instance boundary that holds the document an earlier "
+        "build created (with --ssm-kms, the KMS-session boundary too)",
     )
     _c_doctor = cloud_sub.add_parser("doctor", help="Check cloud prerequisites + AWS reachability")
     _cloud_creds_opts(_c_doctor)

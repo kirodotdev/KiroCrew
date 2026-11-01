@@ -112,8 +112,9 @@ describe('side panel mount decision', () => {
     // whole local dashboard, this panel included, is then off screen.
     expect(panel).toContain('if (!visible || crewHidden) return')
     // Close and exit-fullscreen go through the comment-draft guard, so those
-    // guarded callbacks are the deps rather than `onClose` itself.
-    expect(panel).toContain('}, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden])')
+    // guarded callbacks are the deps rather than `onClose` itself. `confirmOpen`
+    // re-binds it so Escape stands down while the discard prompt is open.
+    expect(panel).toContain('}, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden, confirmOpen])')
   })
 
   describe('find pane claims the dock', () => {

@@ -88,6 +88,13 @@ DENY_CLASS_STATEMENT_TEXT = "statement_text"
 #: other class's remediation presumes a real match, and a refusal that reads as
 #: one sends an agent hunting for a credential in an ordinary project file.
 DENY_CLASS_PATH_UNVERIFIED = "path_unverified"
+#: A download piped straight into a shell (``curl ... | sh``) — the usual shape
+#: of a one-line installer. Its own class because the next step is not obvious
+#: and the wrong guesses are both bad: re-spelling it, or saving the script to a
+#: file and running that (the same action in two steps), or promising the user a
+#: permission that does not exist. The step that IS open is handing the user the
+#: command to run in their own terminal.
+DENY_CLASS_REMOTE_SCRIPT = "remote_script"
 
 #: Ordered (class, anchors) rules, matched case-insensitively as substrings of
 #: the refusal text. Order is precedence and is load bearing: a command can
@@ -201,16 +208,22 @@ _CLASS_MATCHERS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = tuple(
 #: writing -- and the bare pattern line reads as a verdict on SQL the agent never
 #: ran. The guidance keeps the refusal and explains the reach.
 #:
-#: The other six categories (``aws-destructive``, ``local-destructive``,
-#: ``git-publish``, ``iac-teardown``, ``reverse-shell``, ``pipe-to-shell``) are
-#: deliberately absent, and a rule in them gets no guidance: a destructive ``rm``
-#: explains itself, and prose invented for it would bury the classes where the
-#: agent genuinely cannot infer the next step. That silence is ANSWERED, not
-#: merely missing — see :func:`_rule_class`.
+#: ``pipe-to-shell`` is here because a refused installer is a step the USER can
+#: take and the agent cannot: without guidance an agent promised the install,
+#: then offered the user an approval that no setting or card grants. The
+#: guidance keeps the refusal and hands the command back.
+#:
+#: The other five categories (``aws-destructive``, ``local-destructive``,
+#: ``git-publish``, ``iac-teardown``, ``reverse-shell``) are deliberately
+#: absent, and a rule in them gets no guidance: a destructive ``rm`` explains
+#: itself, and prose invented for it would bury the classes where the agent
+#: genuinely cannot infer the next step. That silence is ANSWERED, not merely
+#: missing — see :func:`_rule_class`.
 _CATEGORY_CLASSES: dict[str, str] = {
     "credential-exfil": DENY_CLASS_EXFIL_SHAPE,
     "self-protection": DENY_CLASS_SELF_PROTECTION,
     "sql": DENY_CLASS_STATEMENT_TEXT,
+    "pipe-to-shell": DENY_CLASS_REMOTE_SCRIPT,
 }
 
 #: Built-in rule ID → class, for the rules whose class is NOT their category's.
@@ -466,6 +479,17 @@ REMEDIATION: dict[str, str] = {
         "command line happened to carry it, say so plainly and report it as an "
         "over-block."
     ),
+    DENY_CLASS_REMOTE_SCRIPT: (
+        "This rule refuses piping a download straight into a shell, which runs "
+        "code nobody has read. It is about what the action would DO, so it is not "
+        "a spelling problem: do not re-spell it, and do not save the script to a "
+        "file and run that instead -- that is the same action in two steps. You "
+        "cannot lift this rule, and no approval or change card does, so do not "
+        "promise one and do not offer to ask for one. If the install or setup "
+        "is what the user wants, say plainly that a safety rule stopped you, give "
+        "them the exact command in a code block to run in their own terminal, and "
+        "carry on with the part of the task that does not need it."
+    ),
 }
 
 #: class → commands the prose above tells the caller to run. Pinned so
@@ -573,52 +597,6 @@ def classify_deny(reason: str, subject: str = "") -> str:
     return ""
 
 
-#: Prose for a permission-row refusal whose command carries ``BatchMode``. The
-#: option name contains a permission verb once case is folded, so a protected
-#: system path elsewhere in the command completes the row. The refusal stands;
-#: this only names the spelling that does not trip it. Display text only: it is
-#: selected by the refused command and can never make anything allowed.
-SSH_BATCHMODE_REMEDIATION = (
-    "This command changes no permissions: the option name `BatchMode` contains the "
-    "letters of a permission verb once case is ignored, and a protected system path "
-    "later in the command completes a permission-change rule. Retrying the same "
-    "spelling meets the same rule. Replace `-o BatchMode=yes` with the options that "
-    "disable the same prompts: `-o StrictHostKeyChecking=yes -o "
-    "NumberOfPasswordPrompts=0 -o PasswordAuthentication=no -o "
-    "KbdInteractiveAuthentication=no`. For scp, `-B` also works."
-)
-
-#: Row-id prefixes of the path-scoped permission rows (spelled in halves so the
-#: literal verbs do not appear in this file's text).
-_PERMISSION_ROW_PREFIXES = ("local-destructive-ch" + "mod-", "local-destructive-ch" + "own-")
-#: The ``BatchMode`` option in either ssh spelling, with any value.
-_BATCHMODE_OPTION_RE = re.compile(r"-o\s*batchmode=\S*", re.IGNORECASE)
-
-
-def _is_batchmode_permission_match(reason: str, subject: str) -> bool:
-    """True if *reason* names a permission row that only ``BatchMode`` completed.
-
-    The row is re-read against *subject* with the ``BatchMode`` option removed. If
-    it still matches, the command holds a real permission change as well, so the
-    BatchMode prose (which says nothing changes permissions) would be false.
-    """
-    if "batchmode" not in (subject or "").lower():
-        return False
-    head = (reason or "").split("\n", 1)[0].strip()
-    if not head.startswith(security.DENY_REASON_PREFIX):
-        return False
-    identity = head[len(security.DENY_REASON_PREFIX) :].strip()
-    rows = [
-        rule
-        for rule in security.BUILTIN_DENIED_RULES
-        if rule.id.startswith(_PERMISSION_ROW_PREFIXES) and identity in (rule.pattern, rule.id)
-    ]
-    if not rows:
-        return False
-    without = _BATCHMODE_OPTION_RE.sub(" ", subject)
-    return not any(re.search(rule.pattern, without, re.IGNORECASE) for rule in rows)
-
-
 def remediation_for(reason: str, subject: str = "", *, credential_tool_hint: str = "") -> str:
     """Guidance for *reason*, with the host's credential-vendor hint folded in.
 
@@ -626,8 +604,6 @@ def remediation_for(reason: str, subject: str = "", *, credential_tool_hint: str
     a vending tool can actually resolve. Appending it to, say, a trust-root
     refusal would suggest a credential tool could reach the security ceiling.
     """
-    if _is_batchmode_permission_match(reason, subject):
-        return SSH_BATCHMODE_REMEDIATION
     deny_class = classify_deny(reason, subject)
     if not deny_class:
         return ""

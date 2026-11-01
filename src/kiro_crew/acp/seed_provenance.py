@@ -367,7 +367,7 @@ def _cross_process_lock() -> Iterator[None]:
     outcome a failed write already gives, never a silent lost record.
     """
     lock_file = config_dir() / _LOCK_FILENAME
-    fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
+    fd = platform_compat.open_create_or_existing(str(lock_file), os.O_RDWR, 0o600)
     try:
         platform_compat.acquire_lock(fd, exclusive=True)
         yield

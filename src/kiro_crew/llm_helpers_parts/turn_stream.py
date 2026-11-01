@@ -453,7 +453,7 @@ async def stream_and_collect(
             # ATTEMPTS), advance on transient failure, propagate non-transient
             # immediately (the classifier gate above already ensures that).
             # Empty chain ⇒ this block is inert and Case 3 surfaces the error
-            # exactly as before this feature existed.
+            # directly.
             #
             # ``not _turn_tool_activity`` is load-bearing over and above
             # ``not result_text``: a tool call can complete an EXTERNAL

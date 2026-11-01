@@ -187,6 +187,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
   let widgetBuf: string[] = []
   let fenceTick = ''
   let fenceLang = ''
+  let fenceInfo = ''  // the info string after the tag (```lang title="x")
   let fenceLen = 0  // raw backtick count of the opening fence
   let innerFenceDepth = 0  // tracks nested fence pairs inside a code block
   let fenceNestable = false  // true when outer lang is markup/doc (nested fences expected)
@@ -215,6 +216,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
     else if (lang === 'excalidraw') type = 'excalidraw'
     else if (lang === 'diff' || isDiffContent(code, lang)) type = 'diff'
     const block: ContentBlock = { type, content: code, language: lang, complete, startLine: codeStart }
+    if (fenceInfo) block.info = fenceInfo
     // Finished streaming is not the same as an observed closer: a finalized
     // fence that never closed may hold the rest of the reply, so the renderer
     // must not fold it away like a normal patch.
@@ -223,6 +225,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
     codeBuf = []
     fenceTick = ''
     fenceLang = ''
+    fenceInfo = ''
     fenceLen = 0
     innerFenceDepth = 0
     fenceNestable = false
@@ -290,6 +293,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
           flushMd()
           fenceTick = escapeRegExp(fenceMatch[1])
           fenceLang = fenceMatch[2] || ''
+          fenceInfo = line.replace(/^`{3,}\s*[^`\s]*/, '').trim()
           fenceLen = fenceMatch[1].length
           fenceNestable = NESTABLE_LANGS.has(fenceLang.toLowerCase())
           codeStart = i + 2

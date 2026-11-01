@@ -485,6 +485,20 @@ def test_private_zip_retention_is_per_store(env):
     assert memory_backup.list_backups(env.paths["bob"]) == [bob]
 
 
+def test_private_zip_retention_never_deletes_a_stray_file(env):
+    """A ZIP with no stamp in its name is neither pruned nor restore's default."""
+    path = env.paths["alice"]
+    stamp = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    older = memory_backup.backup_store(path, now=stamp)
+    newer = memory_backup.backup_store(path, now=stamp + timedelta(days=1))
+    stray = memory_backup.backup_dir_for(path) / "memory.pre-upgrade.zip"
+    stray.write_bytes(b"operator copy")
+    assert memory_backup.prune_backups(path, keep=1) == 1
+    assert stray.read_bytes() == b"operator copy"
+    assert newer.exists() and not older.exists()
+    assert memory_backup.list_backups(path, stamped_only=True) == [newer]
+
+
 def test_prune_leaves_member_backup_stages_alone(env):
     """The V1 stale-stage sweep does not reach a member store's ZIP stages."""
     path = env.paths["alice"]

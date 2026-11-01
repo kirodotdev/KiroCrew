@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
+import { act, render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -596,14 +596,16 @@ describe('PrDetail — refresh, copy, and the AI summary', () => {
 
     // The pane instance is REUSED, so a write still in flight when the subject
     // changes carries a URL this row no longer points at.
-    view.rerender(
-      <QueryClientProvider client={view.qc}>
-        <PrDetail pull={{ ...ROW, number: 8, url: 'https://github.com/kirodotdev/Kiro/pull/8' }} />
-      </QueryClientProvider>,
-    )
+    await act(async () => {
+      view.rerender(
+        <QueryClientProvider client={view.qc}>
+          <PrDetail pull={{ ...ROW, number: 8, url: 'https://github.com/kirodotdev/Kiro/pull/8' }} />
+        </QueryClientProvider>,
+      )
+    })
     await waitFor(() => expect(api.pullDetail).toHaveBeenCalledTimes(2))
 
-    settle()
+    await act(async () => { settle() })
     // Drain the resolved write's continuation and the state flush it would cause.
     await new Promise((r) => setTimeout(r, 0))
     await new Promise((r) => setTimeout(r, 0))

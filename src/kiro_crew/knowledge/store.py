@@ -211,8 +211,9 @@ class IngestionGate:
                     break
             if self._maintenance:
                 logger.warning(
-                    "Knowledge maintenance skipped: another maintenance window "
-                    "held for %.0fs", timeout)
+                    "Knowledge maintenance skipped: another maintenance window " "held for %.0fs",
+                    timeout,
+                )
                 yield False
                 return
             self._maintenance = True
@@ -224,8 +225,10 @@ class IngestionGate:
                 self._maintenance = False
                 self._cond.notify_all()
                 logger.warning(
-                    "Knowledge maintenance skipped: %d ingestion(s) still in flight "
-                    "after %.0fs", self._ingesting, timeout)
+                    "Knowledge maintenance skipped: %d ingestion(s) still in flight " "after %.0fs",
+                    self._ingesting,
+                    timeout,
+                )
                 yield False
                 return
         try:
@@ -362,7 +365,7 @@ class KnowledgeStore:
         # `reclaim_orphans()`, kicked from a worker thread by `start_dashboard`
         # once the listener is up. What remains here is the schema DDL and the
         # per-column ALTERs, which are O(schema), not O(data).
-        # The suppression ends with the block: the six non-constructor
+        # The suppression ends with the block: the non-constructor
         # `_load_graph()` call sites and every query path stay fully guarded.
         if read_only:
             return
@@ -537,8 +540,7 @@ class KnowledgeStore:
         a reader is indistinguishable from "this entity has no neighbours",
         which is the failure mode worth paying a stall to avoid.
         """
-        self.ensure_graph_loaded()
-        return self._graph
+        return self.ensure_graph_loaded()
 
     # States a sources row may legitimately START in: the DURABLE ones, which a
     # caller (or a restored bundle) can assert about a source before any work has
@@ -625,6 +627,7 @@ class KnowledgeStore:
     ensure_graph_loaded = _entity_graph.ensure_graph_loaded
     _load_graph = _entity_graph._load_graph
     reload_graph = _entity_graph.reload_graph
+    mark_graph_stale = _entity_graph.mark_graph_stale
     add_entity = _entity_graph.add_entity
     find_entity = _entity_graph.find_entity
     merge_entities = _entity_graph.merge_entities

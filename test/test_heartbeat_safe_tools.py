@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kiro_crew import name_grant
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.slack.gateway import (
     _HEARTBEAT_KEEP_INJECTION,
@@ -681,7 +682,7 @@ class TestHeartbeatShellNameGrant:
         to fall through to."""
         sel_mock = MagicMock()
         monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
-        refusal = MagicMock(log_text="ls resolves to an agent-writable path")
+        refusal = name_grant.Refusal(name_grant.SHADOWED, "ls resolves to an agent-writable path")
 
         async def _refuse(event):
             return refusal
@@ -698,6 +699,48 @@ class TestHeartbeatShellNameGrant:
         kwargs = sel_mock.log_tool_invocation.call_args.kwargs
         assert kwargs["outcome"] == "denied"
         assert kwargs["metadata"]["reason"] == "name_grant_refused"
+
+    @pytest.mark.asyncio
+    async def test_a_platform_scope_decline_warns_once_and_audits_each(
+        self, orchestrator, monkeypatch, caplog
+    ) -> None:
+        """A platform-scope refusal's text is a constant: one warning per session,
+        while every call is still denied and audited."""
+        import logging
+
+        sel_mock = MagicMock()
+        monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
+        refusal = name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "lookup not modelled")
+
+        async def _refuse(event):
+            return refusal
+
+        declines: list[dict] = []
+        monkeypatch.setattr("kiro_crew.slack.gateway.name_grant.refusal_for_event", _refuse)
+        monkeypatch.setattr(
+            "kiro_crew.slack.gateway.name_grant.log_decline",
+            lambda **kw: declines.append(kw),
+        )
+        name_grant._DECLINE_NOTICES.clear()
+        try:
+            with caplog.at_level(logging.WARNING):
+                assert await orchestrator._heartbeat_approval(_shell("ls -la")) is False
+                assert await orchestrator._heartbeat_approval(_shell("ls -la")) is False
+        finally:
+            name_grant._DECLINE_NOTICES.clear()
+        warnings = [
+            r
+            for r in caplog.records
+            if "declining a heartbeat shell auto-approve" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert len(declines) == 2
+        denied = [
+            c.kwargs
+            for c in sel_mock.log_tool_invocation.call_args_list
+            if c.kwargs.get("outcome") == "denied"
+        ]
+        assert len(denied) == 2
 
     @pytest.mark.asyncio
     async def test_name_grant_is_not_consulted_for_a_denied_shell(

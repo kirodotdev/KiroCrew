@@ -244,6 +244,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     api_mcp_gateway_enable,
     api_mcp_gateway_metrics,
     api_mcp_gateway_server_launch,
+    api_mcp_gateway_server_launches,
     api_mcp_gateway_servers,
     api_mcp_gateway_set_stub,
     api_mcp_gateway_status,
@@ -270,7 +271,6 @@ from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
     api_member_fresh_start,
     api_member_greet,
     api_member_projections,
-    api_member_recap,
     api_member_rules_get,
     api_member_rules_put,
     api_member_thread,
@@ -364,6 +364,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_config_get,
     api_slack_config_save,
     api_slack_manifest,
+    api_slack_manifest_status,
     api_slack_pins,
     api_slack_profile,
     api_slack_reactions,
@@ -592,6 +593,9 @@ from kiro_crew.dashboard.handlers.telemetry import (  # noqa: E402, F401
     api_telemetry_startup,
     api_usage_turns,
 )
+from kiro_crew.dashboard.handlers.telemetry_ui_control import (  # noqa: E402, F401
+    api_ui_control_clicked,
+)
 from kiro_crew.dashboard.handlers.terminal import (  # noqa: E402, F401
     api_terminal_complete,
     api_terminal_create,
@@ -612,6 +616,7 @@ from kiro_crew.dashboard.handlers.themes import (  # noqa: E402, F401
     api_themes,
     api_themes_create,
     api_themes_install,
+    api_themes_install_zip,
 )
 
 # ── Browser UI preference backup (extracted to handlers/ui_prefs.py) ──
@@ -1055,17 +1060,6 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
     api_decisions_local_model_status,
     api_decisions_provider_get,
     api_decisions_provider_put,
-)
-
-# Flagged-file delivery consent — owner-gated, and the ONLY writer of
-# ``file_delivery_consent.json``. Recording is arm (owner POST) + approve
-# (host-only ``kirocrew file-delivery approve``, which consumes the nonce).
-from kiro_crew.dashboard.handlers.file_delivery_consent import (  # noqa: E402, F401
-    api_file_delivery_consent_approve,
-    api_file_delivery_consent_arm_status,
-    api_file_delivery_consent_delete,
-    api_file_delivery_consent_get,
-    api_file_delivery_consent_post,
 )
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_push_notification,

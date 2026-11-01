@@ -1,8 +1,7 @@
 /**
  * Screenshot harness for Settings > Security's credential-redaction section.
  *
- * Same shape as capture-file-delivery-consent.mjs: serves the REAL built SPA
- * (website/dist) and answers /api/** from the shared fixture router, with the
+ * Serves the REAL built SPA (website/dist) and answers /api/** from the shared fixture router, with the
  * security endpoints supplied here because the default table has no security
  * routes.
  *

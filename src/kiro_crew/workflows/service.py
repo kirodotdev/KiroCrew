@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import functools
 import hashlib
 import logging
 import secrets
@@ -56,6 +57,7 @@ from .library import (
     SOURCE_FORMAT_TASK_PLAN,
     SensitiveWorkflowSourceError,
     WorkflowDefinitionLibrary,
+    WorkflowSlugTakenError,
 )
 from .registry import (
     STATUS_CANCELLED,
@@ -130,8 +132,9 @@ not invent one.
 BUDGET — ctx.budget is a host-owned Budget object, NOT a number or a timeout.
 Never assign to or delete ctx.budget. The caller sets the run's token ceiling
 with budget_total when starting the workflow. Read ctx.budget.total,
-ctx.budget.spent(), or ctx.budget.remaining() to inspect it. Keep any script-local
-limit in a local variable instead of replacing the runtime object.
+ctx.budget.spent(), or ctx.budget.remaining() to inspect it; remaining() is
+float('inf') when total is None, so do not return or log it raw. Keep any
+script-local limit in a local variable instead of replacing the runtime object.
 
 ASYNC vs SYNC — get this right or the script crashes at runtime:
   * AWAIT these (they are async): ctx.agent(...), ctx.parallel(...),
@@ -212,6 +215,7 @@ class WorkflowService:
         store: Any = None,
         pool_agents: bool = True,
         nudge_authorizer: Optional[Callable[..., Any]] = None,
+        session_port: Any = None,
         timeout_secs: Optional[int] = None,
         definition_library: Any = None,
         task_runner: Any = None,
@@ -248,6 +252,12 @@ class WorkflowService:
         # teardown drains its own arms before the terminal transition.
         self._nudge_authorizer = nudge_authorizer
         self._nudge_tasks: dict[str, set[Any]] = {}
+        # Injected by the gateway: an object with async ``open_session`` /
+        # ``send_to_session`` / ``set_session_mode`` that act AS the run's launching
+        # session through the session-control verbs (deny-by-default + SEL audit).
+        # None in tests / non-dashboard hosts, and then the three ctx methods are
+        # not wired, so a script naming them is rejected before exec.
+        self._session_port = session_port
         self._now_fn = now_fn or (lambda: "1970-01-01T00:00:00Z")
         self._concurrency = concurrency
         # Default wall-clock ceiling for runs started through this service. The
@@ -774,7 +784,24 @@ class WorkflowService:
         def _nudge(**kw: Any) -> None:
             self._nudge_port(run_id=run_id, **kw)
 
-        ports = {"nudge": _nudge}
+        ports: dict[str, Any] = {"nudge": _nudge}
+        session_port = self._session_port
+        if session_port is not None:
+            # Bound to THIS run's id so the gateway's audit names the run, and to
+            # the run's captured memory mode (the strictest it inherited, which a
+            # rerun keeps even when the caller differs) so a restricted run never
+            # reaches a persistent transcript. The runner supplies the launching
+            # session key at call time.
+            run_mode = str(getattr(memory_scope, "memory_mode", "") or "")
+            ports["open_session"] = functools.partial(
+                session_port.open_session, run_id=run_id, memory_mode=run_mode
+            )
+            ports["send_to_session"] = functools.partial(
+                session_port.send_to_session, run_id=run_id, memory_mode=run_mode
+            )
+            ports["set_session_mode"] = functools.partial(
+                session_port.set_session_mode, run_id=run_id
+            )
 
         async def _drain() -> None:
             # Awaited by the runner BEFORE each terminal event: nudge outcome
@@ -999,6 +1026,9 @@ class WorkflowService:
                     resumed=_resumed,
                     agent="kirocrew-lite",
                     cwd=None,
+                    # Triggers read the operator's intent, not the authoring
+                    # instructions or the reference workflows quoted around it.
+                    skill_trigger_text=intent,
                 )
                 stop_reasons.clear()
                 text = await stream_and_collect(
@@ -1065,6 +1095,8 @@ class WorkflowService:
         execution_context=None,
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
+        fallback_title: str = "",
+        fallback_folder_id: str = "",
     ) -> dict:
         """Launch a background run that AUTHORS its own script from ``intent``.
 
@@ -1128,6 +1160,8 @@ class WorkflowService:
             budget_total=budget_total,
             intent=intent,
             author_fn=_author_fn,
+            fallback_title=fallback_title,
+            fallback_folder_id=fallback_folder_id,
         )
         if not started:
             return {"error": "gateway admission is closed"}
@@ -1149,6 +1183,8 @@ class WorkflowService:
         workflow_id: str = "",
         workflow_slug: str = "",
         workflow_revision: int = 0,
+        fallback_title: str = "",
+        fallback_folder_id: str = "",
     ) -> dict:
         """Validate + launch a background run; return {run_id} or {error}.
 
@@ -1198,6 +1234,8 @@ class WorkflowService:
             workflow_id=workflow_id,
             workflow_slug=workflow_slug,
             workflow_revision=workflow_revision,
+            fallback_title=fallback_title,
+            fallback_folder_id=fallback_folder_id,
         )
         if not started:
             return {"error": "gateway admission is closed"}
@@ -1235,8 +1273,13 @@ class WorkflowService:
         slug: str = "",
         derived_from: Any = None,
         source_format: str = SOURCE_FORMAT_PYTHON,
+        exact_slug: bool = False,
     ) -> dict[str, Any]:
-        """Validate and explicitly promote a source definition into the library."""
+        """Validate and explicitly promote a source definition into the library.
+
+        With *exact_slug* a used slug is answered ``slug_taken`` rather than saved
+        under a suffixed one.
+        """
         with self._definition_lock:
             errors: list[str] = []
             meta: dict[str, Any] = {}
@@ -1266,7 +1309,10 @@ class WorkflowService:
                     slug=slug,
                     derived_from=derived_from,
                     source_format=source_format,
+                    exact_slug=exact_slug,
                 )
+            except WorkflowSlugTakenError as exc:
+                return {"ok": False, "error": str(exc), "errors": [str(exc)], "slug_taken": True}
             except SensitiveWorkflowSourceError as exc:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)]}
         return {"ok": True, "definition": definition}
@@ -1405,6 +1451,8 @@ class WorkflowService:
         execution_context=None,
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
+        fallback_title: str = "",
+        fallback_folder_id: str = "",
     ) -> dict[str, Any]:
         """Run the exact current revision of a named saved workflow."""
         from kiro_crew.workflow_memory import capture_admission_execution
@@ -1461,6 +1509,8 @@ class WorkflowService:
             workflow_id=str(definition["id"]),
             workflow_slug=str(definition["slug"]),
             workflow_revision=int(definition["revision"]),
+            fallback_title=fallback_title,
+            fallback_folder_id=fallback_folder_id,
         )
         if "run_id" in started:
             started.update(

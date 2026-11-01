@@ -62,6 +62,7 @@ from kiro_crew.dashboard.token_auth import (
     generate_token,
 )
 from kiro_crew.qr import render_qr_data_uri
+from kiro_crew.shared_crew.preview import preview_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ MAX_QR_TTL_SECS = 12 * 3600
 MOBILE_QR_BOX_SIZE = 4
 
 Step = Literal[
+    "policy_off",
     "pinned",
     "untrusted_cli",
     "install",
@@ -111,6 +113,7 @@ Step = Literal[
 
 def _derive_step(
     *,
+    policy_off: bool = False,
     pinned: bool,
     probe: tailnet.DaemonProbe,
     trusted: bool,
@@ -123,6 +126,8 @@ def _derive_step(
     Ordered by what blocks what, so the operator is never sent to a switch that
     cannot help yet. Each branch is a different remedy:
 
+    0. ``policy_off`` — an enterprise build whose policy does not turn tailnet
+       access on (``tailnet.policy_off``). Dead end, ahead of every daemon step.
     1. ``pinned`` — an administrator's ceiling forbids tailnet access. Dead end;
        nothing below is actionable, and offering a toggle would be a lie.
     2. ``install`` / ``start_daemon`` / ``sign_in`` / ``enable_magicdns`` — the
@@ -147,8 +152,8 @@ def _derive_step(
        only by the formal gateway restart path.
     6. ``occupied`` — serve holds this port/mount for something that is not this
        dashboard, or its state could not be determined. Publishing would REPLACE
-       it, so this refuses and the card renders the manual command
-       (``kirocrew tailnet up``) for the operator to run deliberately. Decided
+       it, so this refuses and the card renders the manual ``tailscale serve``
+       publish (``serve_command``) for the operator to run deliberately. Decided
        on ``port_free``, not on ``published`` alone: a stranger's handler at the
        mount reads ``published=False`` exactly as a free port does, and offering
        the publish button for it walked the operator into ``publish()``'s own
@@ -157,6 +162,8 @@ def _derive_step(
     7. ``publish`` — everything is in place; one action left.
     8. ``ready`` — published and trusted.
     """
+    if policy_off:
+        return "policy_off"
     if pinned:
         return "pinned"
     if not probe.installed:
@@ -260,9 +267,9 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
     # whether the dashboard is currently published, and how many devices share
     # the tailnet — network facts about the operator's machine. Nothing consumes
     # it but the owner's own card, so refusing a non-owner costs nothing and
-    # closes the disclosure that survived making the FRONTEND owner-only. The
-    # renderer no longer needs an `is_owner` field: a refused read yields no
-    # data, and the card already renders nothing without data.
+    # closes the disclosure an owner-only FRONTEND alone leaves open. The
+    # renderer needs no `is_owner` field: a refused read yields no data, and
+    # the card already renders nothing without data.
     if request.get("app") != "" or not is_owner_dashboard_request(request):
         # A DENIED read is audited even though a successful one is not. The
         # docstring for `_audit` says reads are skipped because a polled question
@@ -310,11 +317,20 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
             # line; ``detail`` already says why in a sentence the card's body
             # copy repeats, so the card renders only the path.
             "refused_cli": probe.refused_cli,
-            # The publish the gateway cannot run for a refused binary, spelled
-            # for the operator to run by hand. Built here because only the
-            # server knows the port it actually listens on.
+            # The publish the gateway cannot or will not run here, spelled for
+            # the operator to run by hand. Built server-side because only this
+            # process knows the port it actually listens on. Two steps need it:
+            # ``untrusted_cli`` (the gateway refuses the planted binary) and
+            # ``occupied`` (serve already holds this mount for something else, so
+            # publishing would REPLACE it — the gateway refuses to, and the
+            # operator runs the publish deliberately if the existing mapping is
+            # safe to overwrite). ``kirocrew tailnet up`` was shown on
+            # ``occupied`` before and could not resolve it: it runs the very
+            # publish path that just refused.
             "serve_command": (
-                tailnet_serve.manual_publish_command(port) if probe.refused_cli and port else ""
+                tailnet_serve.manual_publish_command(port)
+                if port and (probe.refused_cli or live.step == "occupied")
+                else ""
             ),
             "download_url": TAILSCALE_DOWNLOAD_URL,
         }
@@ -362,9 +378,16 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         keep_awake = True
 
     try:
+        # A pure read, like the pin probe below (no SEL row per refresh).
+        policy_off = await asyncio.to_thread(tailnet.policy_off)
+    except Exception:
+        logger.debug("tailnet mobile: policy probe unavailable", exc_info=True)
+        policy_off = True
+    try:
         # No audit_tool: a polled read must not append an HMAC-chained SEL row
-        # per refresh (see tailnet.is_governance_pinned_off).
-        pinned = await asyncio.to_thread(tailnet.is_governance_pinned_off)
+        # per refresh (see tailnet.is_governance_pinned_off). Not asked when the
+        # enterprise policy already leaves tailnet off.
+        pinned = policy_off or await asyncio.to_thread(tailnet.is_governance_pinned_off)
     except Exception:
         # Fail CLOSED, matching the callee's own contract: an unknown ceiling is
         # treated as pinned, so the QR mint refuses rather than issuing an owner
@@ -389,6 +412,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
 
     startup_host = tailnet.running_tailnet_origin(request.app)[0]
     step = _derive_step(
+        policy_off=policy_off,
         pinned=pinned,
         probe=probe,
         trusted=trusted,
@@ -421,6 +445,10 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
 #: differ in which errand fixes them, which is the CARD's business, and the API
 #: contract only needs to say why no code was made.
 _QR_REFUSALS: dict[Step, tuple[str, str]] = {
+    "policy_off": (
+        "policy_off",
+        "Tailnet is off by policy, so no sign-in link can be issued for this machine.",
+    ),
     "pinned": (
         "governance_pinned",
         "An administrator's security policy pins tailnet access off, so no "
@@ -649,6 +677,12 @@ async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
         await _audit_async(request, "tailnet.mobile.configure", "denied", "restricted-session")
         return refusal
 
+    if await asyncio.to_thread(tailnet.policy_off, audit_tool="tailnet_mobile_configure"):
+        await _audit_async(request, "tailnet.mobile.configure", "denied", "policy-off")
+        return web.json_response(
+            {"error": tailnet.POLICY_OFF_DETAIL, "code": "policy_off"}, status=403
+        )
+
     pinned = await asyncio.to_thread(
         tailnet.is_governance_pinned_off, audit_tool="tailnet_mobile_configure"
     )
@@ -875,7 +909,7 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
         return web.json_response({"error": denied, "code": "governance_denied"}, status=403)
 
     port = _dashboard_port(request)
-    # Unconditional, unlike an earlier revision that nested this in `if port:`.
+    # Unconditional, deliberately not nested in `if port:`.
     # Both server entrypoints set ``app["port"]``, so an unresolved port is not a
     # reachable state today — but this handler's contract is that it refuses
     # unless the dashboard is actually published, and a gate that silently
@@ -1033,6 +1067,24 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
             "to use the persistent shape."
         )
         _persist = False
+    # The kernel proof runs only under the Shared Crew preview
+    # (``tailnet.resolve_forwarded_peer``), so only there can it strand a session.
+    if _persist and _identity_trusted and preview_enabled():
+        from kiro_crew.dashboard.tailnet_proxy_proof import proof_support
+
+        _proof_gap = await asyncio.to_thread(proof_support)
+        if _proof_gap:
+            # A ``require_peer`` session rotates only once the daemon-verified
+            # peer is proven, and this host cannot prove the proxy is
+            # ``tailscaled``. Minting one would hand out a link that can never
+            # be redeemed, so the phone gets the boot-bound shape instead.
+            logger.warning(
+                "dashboard.qr_session_persist_across_restart is on but this host "
+                "cannot prove a tailscale serve connection comes from tailscaled "
+                "(%s), so the phone session stays bound to this gateway process.",
+                _proof_gap,
+            )
+            _persist = False
     if _persist and not _identity_trusted:
         logger.warning(
             "dashboard.qr_session_persist_across_restart is on but tailnet "

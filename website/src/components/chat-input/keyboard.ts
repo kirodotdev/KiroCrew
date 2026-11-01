@@ -230,8 +230,11 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // Cmd+Shift+Enter (or Ctrl+Shift+Enter) → optimize prompt.
     // Gated on `promptOptimizer` like the Optimize button and plus-menu row:
     // a host that opted out (e.g. the side panel) has no optimize affordance,
-    // so the combo falls through to ordinary Enter/Shift+Enter handling there
-    // instead of rewriting a draft the surface meant to treat literally.
+    // so the chord must NOT optimize there — but it must not SEND there either.
+    // The `ctrl-enter` send binding below excludes Shift (`!e.shiftKey`), so the
+    // chord is a no-op (treated literally) on an opted-out host instead of being
+    // read as a plain Ctrl/Cmd+Enter send — which would submit the draft the
+    // surface meant the user to keep editing.
     // preventDefault always fires when the combo is detected so the browser's
     // default Enter behavior (newline insert) doesn't leak through when the
     // gateway is offline. The action itself is gated on `connected` to match
@@ -256,7 +259,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
       return
     }
     const sendKey = sendOnEnter === 'ctrl-enter'
-      ? (e.key === 'Enter' && (e.metaKey || e.ctrlKey))
+      ? (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.shiftKey)
       : (e.key === 'Enter' && !e.shiftKey)
     if (sendKey && !e.defaultPrevented) {
       // The key is ours as soon as it matches the send binding, so claim it before

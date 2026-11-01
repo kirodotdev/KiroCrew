@@ -53,13 +53,13 @@ def test_path_fallback_spawns_the_on_disk_spelling(tmp_path, monkeypatch, window
     actual, raw = _shim(tmp_path)
     monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(sys, "argv", [str(tmp_path / "kiro_crew" / "__main__.py"), "restart"])
+    proc = MagicMock(pid=UNALLOCATABLE_PID)
     with (
         patch("kiro_crew.cli_server.shutil.which", return_value=raw),
-        patch(
-            "kiro_crew.cli_server.subprocess.Popen", return_value=MagicMock(pid=UNALLOCATABLE_PID)
-        ) as popen,
+        patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as popen,
     ):
-        cli_server._spawn_detached_gateway(5476)
+        spawned = cli_server._spawn_detached_gateway(5476)
+    assert spawned is proc
     assert popen.call_args.args[0] == [actual, "gateway", "--port", "5476"]
 
 
@@ -76,11 +76,11 @@ def test_an_unrepairable_path_is_spawned_unchanged(tmp_path, monkeypatch, window
     raw = str(tmp_path / "missing" / "kirocrew.EXE")
     monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(sys, "argv", [str(tmp_path / "kiro_crew" / "__main__.py"), "restart"])
+    proc = MagicMock(pid=UNALLOCATABLE_PID)
     with (
         patch("kiro_crew.cli_server.shutil.which", return_value=raw),
-        patch(
-            "kiro_crew.cli_server.subprocess.Popen", return_value=MagicMock(pid=UNALLOCATABLE_PID)
-        ) as popen,
+        patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as popen,
     ):
-        cli_server._spawn_detached_gateway()
+        spawned = cli_server._spawn_detached_gateway()
+    assert spawned is proc
     assert popen.call_args.args[0] == [raw, "gateway"]

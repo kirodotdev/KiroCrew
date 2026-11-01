@@ -29,6 +29,7 @@ from kiro_crew.config.sections import (
     worker_session_defaults,
 )
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.dashboard.approval_inheritance import inherit_posture
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_folders import (
     _folder_declared_project,
@@ -49,10 +50,14 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     _channel_link_of,
     _cron_caller,
     _delegation_lineage_fenced,
-    _member_bypass,
+    _dispatch_bypass,
     _member_caller,
     caller_slot_key,
     session_control_enabled,
+)
+from kiro_crew.dashboard.session_control_parts.crew_filing import (
+    _crew_filing_answer,
+    _in_turned_on_crew_tree,
 )
 from kiro_crew.dashboard.session_control_parts.session_titles import _clean_new_session_title
 from kiro_crew.dashboard.session_control_parts.target_authorization import (
@@ -237,10 +242,12 @@ async def create_session(
     # opt-in — passes without `agent.session_control`. That member bypass is
     # itself gated by the operator ceiling `agent.member_dispatch` (default
     # true = today's behaviour); with it off the member falls back under the
-    # switch like any other caller. Every other caller still needs the switch.
-    # The member's automatic grant is bounded by ownership in `authorize_target`,
-    # not here: creation makes the caller the owner by construction.
-    if not session_control_enabled() and not _member_bypass(state, caller_key):
+    # switch like any other caller. The Conductor in the owner's own tab gets the
+    # same bypass under the same ceiling (`_conductor_bypass`). Every other caller
+    # still needs the switch. Both automatic grants are bounded by ownership in
+    # `authorize_target`, not here: creation makes the caller the owner by
+    # construction.
+    if not session_control_enabled() and not _dispatch_bypass(state, caller_key):
         raise SessionControlError(
             "session control is disabled in config (agent.session_control)",
             code="session_control_disabled",
@@ -296,14 +303,46 @@ async def create_session(
     # stale folder intent.
     folder_project_raw: str | None = None
     folder_project = ""
+    # A Crew Mode chat and every session it dispatches stay out of the person's
+    # folders: the session is not FILED in the named folder, for every caller of
+    # this verb, by the same rule the slot list stamps (``crew_mode``), and the
+    # answer says so. The folder still gives the child its declared project
+    # directory, so a worker does its work in the folder's repository.
+    in_crew_tree = _in_turned_on_crew_tree(state, str(getattr(caller_slot, "key", "") or ""))
+    folder_ignored = bool(folder_id) and in_crew_tree
+    # A mate's own chat files everything it opens in the mate's home folder:
+    # a folder it names is kept only when it sits inside that home, and a
+    # person's folder it names still supplies the project directory. No other
+    # caller may file into a mate's home.
+    project_folder_id = folder_id
+    if not in_crew_tree:
+        from kiro_crew.dashboard.mate_folders import (
+            MateFolderError,
+            MateHomeLockedError,
+            mate_home_filing,
+        )
+
+        # The conductor test the worker hand-off below uses, off the loop: it
+        # reads the config and may rescan the installed agents inline.
+        conductor = await asyncio.to_thread(_conducts_for_a_worker, caller_slot, caller_execution)
+        try:
+            folder_id, project_folder_id = await mate_home_filing(
+                state, caller_execution, folder_id, conductor=conductor
+            )
+        except MateFolderError:
+            raise SessionControlError("folder cap reached", code="folder_cap_reached") from None
+        except MateHomeLockedError:
+            raise SessionControlError(
+                "this folder belongs to a mate", status=403, code="mate_home_locked"
+            ) from None
     if folder_id:
         folder_snapshot = await state.read_folders(
             lambda folders: [dict(folder) for folder in _safe_folder_tree(folders)]
         )
-        if not any(str(folder.get("id") or "") == folder_id for folder in folder_snapshot):
+        if not {folder_id, project_folder_id} <= {str(f.get("id") or "") for f in folder_snapshot}:
             raise SessionControlError("folder not found", code="folder_not_found")
         folder_project_raw, folder_project_error = _folder_declared_project(
-            folder_snapshot, folder_id
+            folder_snapshot, project_folder_id
         )
         if folder_project_error:
             raise SessionControlError(
@@ -311,7 +350,7 @@ async def create_session(
                 code="folder_project_invalid",
             )
         folder_project, folder_project_error = await asyncio.to_thread(
-            _resolve_folder_project_dir, folder_snapshot, folder_id
+            _resolve_folder_project_dir, folder_snapshot, project_folder_id
         )
         if folder_project_error:
             raise SessionControlError(
@@ -571,9 +610,21 @@ async def create_session(
     # crewmate's backend (``members.select_provider_backend``), every other child
     # on the configured default. A worker on a backend that cannot carry its kit
     # is refused here, before anything is allocated.
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crew_for_member_id
     from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
 
-    child_backend = crewmate_worker_backend(cfg.agent) if own_worker else cfg.agent.acp_backend
+    try:
+        child_backend = (
+            crewmate_worker_backend(
+                cfg,
+                crew_for_member_id(cfg, getattr(caller_execution, "member_id", None) or ""),
+            )
+            if own_worker
+            else cfg.agent.acp_backend
+        )
+    except CrewmateHarnessUnavailable as exc:
+        # The crewmate's pinned harness cannot start, so neither can its worker.
+        raise SessionControlError(str(exc), code=exc.code, status=409) from None
     if own_worker:
         backend_reason = worker_kit_backend_refusal(child_backend)
         if backend_reason is not None:
@@ -581,7 +632,11 @@ async def create_session(
     model_reason = _model_pin_refusal(model_name, child_backend) if model_name else None
     if model_reason is None and "model" in inherited_fields:
         model_reason = _inherited_pin_foreign_to_child(
-            model_name, cfg, child_backend, validated_for_worker=model_from_worker_pin
+            model_name,
+            cfg,
+            child_backend,
+            validated_for_worker=model_from_worker_pin,
+            crew=crew_for_member_id(cfg, getattr(caller_execution, "member_id", None) or ""),
         )
     if model_reason is not None:
         if "model" not in inherited_fields:
@@ -897,7 +952,7 @@ async def create_session(
         ) -> tuple[bool, str | None, str | None]:
             tree = _safe_folder_tree(folders)
             exists = any(str(folder.get("id") or "") == folder_id for folder in tree)
-            raw_project, error = _folder_declared_project(tree, folder_id)
+            raw_project, error = _folder_declared_project(tree, project_folder_id)
             return exists, raw_project, error
 
         folder_exists, current_folder_project, current_folder_error = await state.read_folders(
@@ -978,6 +1033,23 @@ async def create_session(
             code="create_rate_limited",
             status=429,
         )
+    if not dry_run:
+        # Shared Crew: an agent's create is charged to the person whose work runs in
+        # the calling session, so one person's agents share that person's rate. The
+        # installed service is read synchronously: nothing may suspend between
+        # the eligibility gate above and the allocation below.
+        from kiro_crew.shared_crew import admission_gate
+
+        service = admission_gate.installed_service()
+        budget = (
+            service.budget_for_session(caller_key) if service is not None else None
+        ) or admission_gate.AUTOMATION_PRINCIPAL.id
+        if service is not None and service.check_session_create(budget) is not None:
+            raise SessionControlError(
+                "too many sessions created recently; retry shortly",
+                code="session_create_rate",
+                status=429,
+            )
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
         raise SessionControlError(
             f"slot cap reached ({MAX_LIVE_SLOTS})",
@@ -1117,8 +1189,13 @@ async def create_session(
         slot._trust = slot._trust_reads = False
         profile_worker = own_worker and bool(crewmate_name_for(cfg, child_execution))
         if not profile_worker:
-            slot._trust = bool(getattr(live_caller, "_trust", False))
-            slot._trust_reads = bool(getattr(live_caller, "_trust_reads", False))
+            # A trust granted from a Crew Mode conductor's approval card ("Trust
+            # this crew member", ``_trust_card_scoped``) covers that crew member and
+            # the subagents it spawns, not the sessions it creates: those are born
+            # asking, on that same card (``trust_carries``).
+            # Marked inherited, so a later mode change on the creator reaches this
+            # child too (``approval_inheritance``), not only the posture held now.
+            inherit_posture(slot, live_caller)
         inherited_trust = bool(slot._trust)
         inherited_trust_reads = bool(slot._trust_reads)
         # The agent's memory silo, from the bindings already resolved above. Held
@@ -1140,7 +1217,7 @@ async def create_session(
         # authorization-vs-execution split as the agent binding, one layer down.
         if not slot.project:
             slot.project = project_dir
-        if folder_id:
+        if folder_id and not folder_ignored:
             # Filed inside the same synchronous window that configures the slot, so
             # the session is never observable unfiled -- that atomicity is the point.
             # Existence was confirmed under the store lock above, and folder
@@ -1407,6 +1484,12 @@ async def create_session(
             "lineage_recorded": "true" if lineage_recorded else "false",
         },
     )
+    # The "parallel chats" milestone: counted here, where the child session
+    # exists, rather than at the tool result, which reports a refusal as an
+    # ordinary completed call. Never raises.
+    from kiro_crew.milestones import record as record_milestone
+
+    record_milestone("parallel-chats")
     return {
         "ok": True,
         "target": slot.key,
@@ -1416,6 +1499,7 @@ async def create_session(
         **({"autocompact_pct": pct_override} if pct_override is not None else {}),
         **({"inherited": inherited_fields} if inherited_fields else {}),
         **({"inherited_model_dropped": True} if inherited_model_dropped else {}),
+        **_crew_filing_answer(folder_named=bool(folder_id), in_crew_tree=in_crew_tree),
     }
 
 
@@ -1444,13 +1528,18 @@ def _model_pin_refusal(model_name: str, backend: str) -> str | None:
 
 
 def _inherited_pin_foreign_to_child(
-    model_name: str, cfg: KiroCrewConfig, child_backend: str, *, validated_for_worker: bool
+    model_name: str,
+    cfg: KiroCrewConfig,
+    child_backend: str,
+    *,
+    validated_for_worker: bool,
+    crew: str = "",
 ) -> str | None:
     """Why a crewmate's model pin cannot follow its worker onto the child's harness, or ``None``.
 
-    A crewmate's own thread runs on ``agent.member_acp_backend`` and its own
-    ``model`` was validated against THAT harness's catalog
-    (``_pin_entitlement_backend``). A child that inherits is never a crewmate
+    A crewmate's own thread runs on its harness pin when *crew* has one, else
+    on ``agent.member_acp_backend``, and its own ``model`` was validated against
+    THAT harness's catalog (``_pin_entitlement_backend``). A child that inherits is never a crewmate
     itself: it runs on *child_backend* -- the crewmate's own backend for its
     worker, ``agent.acp_backend`` for any other child, as
     ``select_provider_backend`` picks them -- and an id one harness serves is
@@ -1470,13 +1559,28 @@ def _inherited_pin_foreign_to_child(
     """
     if model_name == DEFAULT_MODEL:
         return None
+    from kiro_crew.crewmate_harness import (
+        CrewmateHarnessUnavailable,
+        crewmate_pin_for,
+        pinned_backend,
+    )
+
     child_namespace = capabilities_for(child_backend).model_id_namespace
-    member_namespace = capabilities_for(cfg.agent.member_acp_backend).model_id_namespace
+    try:
+        own_backend = pinned_backend(cfg, crew, cfg.agent.member_acp_backend)
+    except CrewmateHarnessUnavailable:
+        # The crewmate's own harness stopped being startable (a policy narrowed
+        # it): the model it chose there is stale, dropped like any stale pin.
+        return "the crewmate's model pin was chosen for a harness this gateway cannot start"
+    member_namespace = capabilities_for(own_backend).model_id_namespace
     if not validated_for_worker and child_namespace != member_namespace:
+        pin = crewmate_pin_for(cfg, crew)
+        setting = (
+            pin.display_stored if pin is not None else (cfg.agent.member_acp_backend or "default")
+        )
         return (
-            "the crewmate's model pin was chosen for its own harness "
-            f"({cfg.agent.member_acp_backend or 'default'}), and the worker runs on "
-            f"{child_backend or 'the default backend'}"
+            f"the crewmate's model pin was chosen for its own harness ({setting}), "
+            f"and the worker runs on {child_backend or 'the default backend'}"
         )
     if not model_scope.pin_applies(model_name, child_namespace):
         return "the crewmate's model pin is not served by the harness the worker runs on"

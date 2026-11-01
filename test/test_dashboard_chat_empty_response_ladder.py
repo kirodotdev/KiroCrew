@@ -45,7 +45,10 @@ class TestEmptyResponseRetryLadder:
             patch.object(_ChatSlot, "queue_insert", spy),
             patch("kiro_crew.dashboard.chat_runner.save_slot_off_loop") as mock_save,
             patch("kiro_crew.dashboard.chat_runner._maybe_consolidate") as mock_consolidate,
-            patch("kiro_crew.dashboard.chat_runner._flush_file_changes") as mock_flush,
+            patch(
+                "kiro_crew.dashboard.chat_runner._flush_file_changes_off_loop",
+                new=AsyncMock(return_value=None),
+            ) as mock_flush,
             patch(
                 "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
                 new=AsyncMock(return_value=False),
@@ -97,14 +100,15 @@ class TestEmptyResponseRetryLadder:
             }
         mock_consolidate.assert_not_called()
         state.sessions.record_success.assert_not_called()
-        # _flush_file_changes is intentionally NOT skipped: the try-body call (inside
-        # the `if not _retrying_empty` guard) is skipped, but the finally block calls
-        # it once unconditionally ("ensure file changes always surface, even on
-        # cancel/error"). Scope the assertion to this slot because finalization of a
-        # task created by another test can run while this module-level function is
-        # patched and must not change the behavior observed for this turn.
+        # The file-change flush is intentionally NOT skipped: the try-body await
+        # (inside the `if not _retrying_empty` guard) is skipped, but the finally
+        # block awaits it once unconditionally ("ensure file changes always
+        # surface, even on cancel/error"). Scope the assertion to this slot because
+        # finalization of a task created by another test can run while this
+        # module-level function is patched and must not change the behavior
+        # observed for this turn.
         own_flushes = [
-            mock_call for mock_call in mock_flush.call_args_list if mock_call.args[:1] == (slot,)
+            mock_call for mock_call in mock_flush.await_args_list if mock_call.args[:1] == (slot,)
         ]
         assert len(own_flushes) == 1
 

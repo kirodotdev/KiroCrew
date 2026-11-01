@@ -83,7 +83,10 @@ declares nothing) and lives in a root that session loads.
 The Steering files tab reads, creates, edits and deletes these documents. The
 inclusion mode is a segmented control in the editor, and the rewrite happens
 server-side so your body text is preserved byte for byte. An entry that is a
-symlink is listed and readable but never editable, and a workspace write must
+symlink is listed and readable but never editable. A symlink that points
+outside the folders the dashboard may read (for global steering, outside your
+home folder) is listed as "linked, not shown": sessions can still load it, but
+the dashboard never opens it or shows where it points. A workspace write must
 echo the project it was listed under — a chat slot's project can move, and a
 delete issued from a stale listing would otherwise unlink the same-named file in
 a different project.
@@ -133,6 +136,10 @@ tool call before it runs, or block it outright.
 | `PreToolUse` | before a tool runs | allows the tool |
 | `PostToolUse` | after a tool ran | nothing |
 | `Stop` | the turn ends | usually nothing — but see the continuation contract below |
+
+A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
+(with the task its parent wrote) before its prompt is sent, and their exit-0
+stdout is added to that prompt the same way.
 
 `PreToolUse` is the only event whose exit code can decide anything — and only
 on the path where the gateway is the one approving the call:
@@ -281,6 +288,12 @@ them with a default: `session_key` is the firing session's own key (a dashboard
 chat, a channel thread); `subagent_id` and `parent_session_key` appear only on
 an event a spawned subagent fired. To tell a person's turn from a subagent's,
 check for `subagent_id`, not `parent_session_key`.
+
+An agent spec's own `hooks` that Kiro Crew runs for a KAS chat session also get
+the session's ACP id, as `KIRO_SESSION_ID` in the environment and
+`acp_session_id` on stdin, the same `KIRO_SESSION_ID` kiro-cli gives them. Before
+the session has an id, both are left out. Hooks-page hooks and subagent events do
+not get it.
 
 **A hook does not inherit the gateway's environment.** The gateway process holds
 provider keys and tokens, so a hook subprocess gets an allowlisted slice instead

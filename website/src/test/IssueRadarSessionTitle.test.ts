@@ -4,7 +4,7 @@
 // first, costs a round-trip, and — being best-effort — can drop the name silently
 // and leave the auto-titler free to invent its own.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 
 const { dispatch, apiMock, saveInvestigation, getInvestigation } = vi.hoisted(() => ({
   dispatch: vi.fn(),
@@ -42,14 +42,18 @@ function createArg(): { folder_id?: string; title?: string; project?: string | n
 
 async function open(workspacePath?: string) {
   const { result } = renderHook(() => useAgentSession())
-  return result.current.openSession({
-    repoRef: { host: 'github.com', owner: 'acme', repo: 'demo-repo' } as never,
-    number: 4237,
-    title: TITLE,
-    prompt: 'seed',
-    existing: null,
-    workspacePath,
+  let r
+  await act(async () => {
+    r = await result.current.openSession({
+      repoRef: { host: 'github.com', owner: 'acme', repo: 'demo-repo' } as never,
+      number: 4237,
+      title: TITLE,
+      prompt: 'seed',
+      existing: null,
+      workspacePath,
+    })
   })
+  return r
 }
 
 describe('Issue Radar names the session it opens up front', () => {

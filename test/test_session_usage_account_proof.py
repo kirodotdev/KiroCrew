@@ -122,6 +122,9 @@ class TestCredentialSelectionIsAnchored:
         ):
             await sessions_mod._fetch_usage_bg()
         assert fetch.call_args.kwargs.get("expected_arn") == self.ARN
+        # The anchored read is the one published, labelled with that same account.
+        assert sessions_mod._usage_cache.get("credits_used") == 1.0
+        assert sessions_mod._usage_cache.get("email") == "me@corp.com"
 
     @pytest.mark.asyncio
     async def test_api_branch_re_resolves_whoami_adjacent_to_the_publish(self):
@@ -248,9 +251,9 @@ class TestCredentialSelectionIsAnchored:
         published: list[dict] = []
         real_publish = sessions_mod._publish_usage
 
-        def recording_publish(payload):
+        def recording_publish(payload, **kwargs):
             published.append(dict(payload))
-            real_publish(payload)
+            real_publish(payload, **kwargs)
 
         spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
         with (
@@ -342,9 +345,9 @@ class TestCredentialSelectionIsAnchored:
             events.append("spawn")
             return _mock_proc(stdout)
 
-        def recording_publish(payload):
+        def recording_publish(payload, **kwargs):
             published.append(dict(payload))
-            real_publish(payload)
+            real_publish(payload, **kwargs)
 
         if prior is not None:
             sessions_mod._usage_cache = dict(prior)

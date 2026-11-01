@@ -481,8 +481,8 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # Theme-contrast verdict for the clients, same relay pattern as
     # ``slug_collided_with``: computed once here at the convergence point so
     # EVERY authoring surface (MCP tool, CLI, dashboard) sees the same
-    # verdict -- the motivating incident traveled the CLI, which never runs
-    # the MCP-layer hint. Scans ``art.content`` (what was actually persisted),
+    # verdict -- the CLI never runs the MCP-layer hint. Scans ``art.content``
+    # (what was actually persisted),
     # not the request body: a file-promoted save persists the server-read
     # bytes, and the client's copy can be stale or redacted. Advisory only;
     # the save has already succeeded.
@@ -551,11 +551,10 @@ async def api_artifact_update(request: web.Request) -> web.Response:
         event_type = raw_event_type if isinstance(raw_event_type, str) and raw_event_type else None
         if event_type == "reverted":
             snapshot = True
-        raw_from_version = body.get("from_version")
-        try:
-            from_version = int(raw_from_version) if raw_from_version is not None else None
-        except (TypeError, ValueError):
-            from_version = None
+        # Passed through as sent: store.update() refuses anything that is not a
+        # real version of this record (wrong type or out of range) with a 400,
+        # rather than coercing it here and recording a version that never was.
+        from_version = body.get("from_version")
         # Explicit render-kind change (the type control on the artifact page).
         # Restricted to the inline-editable kinds: `widget` / `html` render in a
         # sandboxed iframe and are NOT editable, so letting a caller select one
@@ -855,7 +854,11 @@ async def api_artifact_update(request: web.Request) -> web.Response:
     # Inert in the public edition (empty registry -> push_version_by_slug's
     # provider resolve raises PublishUnavailableError, swallowed here).
     if content_changed and snapshot and art.publication is not None and art.publication.auto_sync:
-        if _publish_governance_denied(request, art.publication.provider) is None:
+        if (
+            await _run_off_loop(
+                lambda: _publish_governance_denied(request, art.publication.provider)
+            )
+        ) is None:
             try:
                 await publish_sync.push_version_by_slug(art.slug)
             except Exception as exc:  # noqa: BLE001 - best-effort egress
@@ -863,8 +866,8 @@ async def api_artifact_update(request: web.Request) -> web.Response:
     payload = _serialize(art, include_content=True)
     # Same relay as the save path's ``theme_contrast_warning``: a
     # content-carrying update gets the verdict computed here at the
-    # convergence point, so the CLI's PATCH (the motivating incident's
-    # path) hears it too. Unlike save, PATCH never file-promotes, so the
+    # convergence point, so the CLI's PATCH hears it too. Unlike save, PATCH never
+    # file-promotes, so the
     # body IS the persisted content -- and scanning the body (not
     # ``art.content``) keeps metadata-only updates (rename/retag) from
     # warning about pre-existing content they didn't touch.

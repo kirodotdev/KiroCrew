@@ -5,6 +5,7 @@
  */
 
 import type { ClientTransport } from './transport'
+import { CONFIRM_IRREVERSIBLE_HEADER } from '../sharedCrewInvites'
 import type { CrewBoardAction, CrewBoardActionResult, WorkBoardResponse } from '../crewBoard'
 
 export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_crew.history.SEARCH_MIN_CHARS)
@@ -45,7 +46,7 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
          * nests under the session that owns the run and the citation still names the
          * creator that is gone.
          */
-        parent: { slot: string; key: string | null; ancestor?: boolean } | null
+        parent: { slot: string; key: string | null; ancestor?: boolean; title?: string } | null
       }[]
       tasks: {
         id: string; task: string; agent: string; parent: string
@@ -97,7 +98,9 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
     sessionMeta: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key) + '/meta')
       .then(r => (r.status === 404 ? null : j(r))) as Promise<{ key: string; title?: string } | null>,
     deleteSession: (key: string) => del('/api/sessions/' + encodeURIComponent(key)).then(j),
-    clearSessions: (userOnly = false) => del('/api/sessions' + (userOnly ? '?user_only=1' : '')).then(j),
+    // Deleting every session cannot be undone; the caller's own dialog confirmed it.
+    clearSessions: (userOnly = false) =>
+      del('/api/sessions' + (userOnly ? '?user_only=1' : ''), undefined, undefined, CONFIRM_IRREVERSIBLE_HEADER).then(j),
   }
 
   const crewBoard = {

@@ -26,6 +26,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 import type { AppConfig } from '../apps/mochi/src/shared/config'
 import type { CompanionStats, McpServerInfo } from '../apps/mochi/src/shared/types'
@@ -637,6 +638,26 @@ describe('SettingsPanel MCP section', () => {
     expect(saveButton().disabled).toBe(false)
   })
 
+  it.each(['{Enter}', ' '])('revokes a server from the keyboard (%s) without expanding its row', async (key) => {
+    api.getConfig.mockResolvedValue(makeConfig({
+      mochi: { extraMcpServers: [{ name: 'extra-b', agents: ['chat'], autoApprove: [], disabledTools: [] }] },
+    }))
+    api.getMcpServers.mockResolvedValue([makeServer({ name: 'extra-b' })])
+    const user = userEvent.setup()
+    await mount()
+    openSection('MCP Servers')
+
+    const remove = await screen.findByRole('button', { name: 'Remove extra-b' })
+    remove.focus()
+    await user.keyboard(key)
+    // The row used to be a role="button" whose key handler took this keystroke
+    // and expanded the row instead of removing the server.
+    expect(await screen.findByRole('button', { name: /Add/ })).toBeTruthy()
+    expect(api.discoverMcpTools).not.toHaveBeenCalled()
+    // Remove must not sit inside another control.
+    expect(remove.parentElement?.closest('button, [role="button"]')).toBeNull()
+  })
+
   it('discovers tools on first expand and groups them by effective policy', async () => {
     api.getConfig.mockResolvedValue(makeConfig({
       mochi: { extraMcpServers: [{ name: 'extra-b', agents: ['chat'], autoApprove: [], disabledTools: [] }] },
@@ -674,14 +695,19 @@ describe('SettingsPanel MCP section', () => {
     await mount()
     openSection('MCP Servers')
 
+    const user = userEvent.setup()
     const row = await screen.findByRole('button', { expanded: false })
-    fireEvent.keyDown(row, { key: 'x' })
+    row.focus()
+    await user.keyboard('x')
     expect(screen.getByRole('button', { expanded: false })).toBeTruthy()
 
-    fireEvent.keyDown(row, { key: 'Enter' })
+    await user.keyboard('{Enter}')
     expect(await screen.findByText('Refresh Tools')).toBeTruthy()
     // A core server has no per-agent toggles — its grant is not negotiable here.
     expect(screen.queryByText('Apply to Chat')).toBeNull()
+
+    await user.keyboard(' ')
+    expect(screen.queryByText('Refresh Tools')).toBeNull()
   })
 
   it('shows the per-agent policy for the selected tab', async () => {
@@ -698,12 +724,70 @@ describe('SettingsPanel MCP section', () => {
     fireEvent.click(await screen.findByRole('button', { expanded: false }))
     expect(await screen.findByText('Auto-approved')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Background Tools' }))
+    // Radix selects on the mouse press, not the click.
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Background Tools' }))
     expect(await screen.findByText('Disabled')).toBeTruthy()
     expect(screen.queryByText('Auto-approved')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Chat Tools' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Chat Tools' }))
     expect(await screen.findByText('Auto-approved')).toBeTruthy()
+  })
+
+  // The selected tab used to be shown by colour alone: two plain buttons, no
+  // tablist, nothing a screen reader could announce as "selected".
+  it('exposes the Chat / BG selector as a labelled tablist with the selection announced', async () => {
+    api.getMcpServers.mockResolvedValue([makeServer({
+      name: 'mochi:self',
+      core: true,
+      chatPolicy: { autoApprove: ['read_file'], disabledTools: [] },
+    })])
+    api.discoverMcpTools.mockResolvedValue({ tools: [{ name: 'read_file' }], fromCache: false })
+    await mount()
+    openSection('MCP Servers')
+
+    fireEvent.click(await screen.findByRole('button', { expanded: false }))
+    const list = await screen.findByRole('tablist', { name: 'mochi:self' })
+    const tabs = within(list).getAllByRole('tab')
+    expect(tabs.map(t => t.textContent)).toEqual(['Chat Tools', 'Background Tools'])
+    expect(tabs.map(t => t.getAttribute('aria-selected'))).toEqual(['true', 'false'])
+    // The selected tab names the panel it controls, and that panel holds the list.
+    const panelId = tabs[0].getAttribute('aria-controls')
+    expect(panelId).toBeTruthy()
+    const panel = document.getElementById(panelId!)
+    expect(panel?.getAttribute('role')).toBe('tabpanel')
+    expect(panel?.contains(await screen.findByText('Auto-approved'))).toBe(true)
+    // Only the selected tab's panel is mounted, so the other tab names none:
+    // an `aria-controls` must never point at an element that does not exist.
+    expect(tabs[1].hasAttribute('aria-controls')).toBe(false)
+    fireEvent.mouseDown(tabs[1])
+    await waitFor(() => expect(tabs[1].getAttribute('aria-selected')).toBe('true'))
+    expect(tabs[0].hasAttribute('aria-controls')).toBe(false)
+    const bgPanel = document.getElementById(tabs[1].getAttribute('aria-controls') ?? '')
+    expect(bgPanel?.getAttribute('role')).toBe('tabpanel')
+  })
+
+  it('moves the Chat / BG selection with the arrow keys', async () => {
+    api.getMcpServers.mockResolvedValue([makeServer({
+      name: 'mochi:self',
+      core: true,
+      chatPolicy: { autoApprove: ['read_file'], disabledTools: [] },
+      bgPolicy: { autoApprove: [], disabledTools: ['read_file'] },
+    })])
+    api.discoverMcpTools.mockResolvedValue({ tools: [{ name: 'read_file' }], fromCache: false })
+    await mount()
+    openSection('MCP Servers')
+
+    fireEvent.click(await screen.findByRole('button', { expanded: false }))
+    expect(await screen.findByText('Auto-approved')).toBeTruthy()
+    const chat = screen.getByRole('tab', { name: 'Chat Tools' })
+    chat.focus()
+    fireEvent.keyDown(chat, { key: 'ArrowRight' })
+    const bg = screen.getByRole('tab', { name: 'Background Tools' })
+    // Radix moves roving focus on the next task, then selects on focus.
+    await waitFor(() => expect(document.activeElement).toBe(bg))
+    expect(bg.getAttribute('aria-selected')).toBe('true')
+    expect(await screen.findByText('Disabled')).toBeTruthy()
+    expect(screen.queryByText('Auto-approved')).toBeNull()
   })
 
   it('stages a per-agent grant change from the expanded row', async () => {

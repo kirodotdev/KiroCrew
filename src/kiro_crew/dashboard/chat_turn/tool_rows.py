@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
 from kiro_crew.dashboard.chat_utils import (
     _tool_identity_fields,
     open_construct_at_end,
@@ -16,6 +17,7 @@ from kiro_crew.dashboard.chat_utils import (
     tighten_replacement_to_restricted_original,
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.tool_call_title import derive_tool_call_title
 from kiro_crew.wakatime.heartbeats import is_coding_event
 
 if TYPE_CHECKING:
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
         _post_native_question_card,
     )
     from kiro_crew.dashboard.chat_turn.recipient import (
+        _retire_mirror_thinking,
         cross_surface_withheld,
         slack_publication_withheld,
     )
@@ -190,6 +193,26 @@ def _tool_call_ws_payload(event: "LLMEvent") -> dict[str, str | bool]:
         "input_preview": _redact_tool_field(event.tool_input),
         **_tool_identity_fields(event),
     }
+
+
+def _mirror_task_label(event: Any) -> str:
+    """The Slack mirror's task-step label for a tool call with no purpose line.
+
+    The same derivation the dashboard transcript's rows and the channel task
+    labels render (``tool_call_title``, the Python half of
+    ``toolCallTitle.ts``), so a step reads "Git status" or "Wait" rather than
+    the raw ``@server/tool`` id. Falls back to the transport title only when
+    the derivation has nothing at all.
+    """
+    derived = derive_tool_call_title(
+        title=event.title or "",
+        kind=event.tool_kind or "",
+        raw_input=event.tool_input or "",
+        is_shell=bool(event.is_shell),
+        tool_name=event.tool_name or "",
+        mcp_server=event.mcp_server_name or "",
+    )
+    return derived.title or event.title or ""
 
 
 async def _on_tool_call(turn: _ChatTurn, event) -> None:
@@ -383,6 +406,13 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
         _raw = _raw[9:]
     if event.tool_call_id:
         _pending_tools[event.tool_call_id] = _raw
+        # Written every time, so a reused id never keeps the names an earlier
+        # call earned; its permission request may name it further.
+        _post_identity = post_tool_identity(client, event, is_shell=bool(event.is_shell))
+        if _post_identity is None:
+            turn._pending_tool_ids.pop(event.tool_call_id, None)
+        else:
+            turn._pending_tool_ids[event.tool_call_id] = _post_identity
         # The claim key binds the TOOL to its arguments, so only a call
         # that resolves to a directive tool records one: trusted
         # _meta.kiro identity first, else kiro-agent's own
@@ -459,38 +489,57 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     # stream's destination is the thread cached at turn start, judged
     # as the room it is beside the live comparison.
     if (
-        _mirror_stream_ts
+        _mirror_chan
+        and _mirror_thread
+        and state.slack_client
         and not cross_surface_withheld(state, slot)
         and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
     ):
         try:
-            if _mirror_active_task:
+            if not turn._mirror_stream_tried:
+                # First mirrored tool: the task stream takes over from
+                # the "Thinking…" placeholder, whose line would
+                # otherwise sit above the plan's own header for good.
+                turn._mirror_stream_tried = True
+                _mirror_stream_ts = (
+                    await state.slack_client.start_stream(_mirror_chan, _mirror_thread) or ""
+                )
+                turn._mirror_stream_ts = _mirror_stream_ts
+                if _mirror_stream_ts:
+                    turn._mirror_thinking_ts = await _retire_mirror_thinking(
+                        state.slack_client, _mirror_chan, turn._mirror_thinking_ts
+                    )
+        except Exception:
+            logger.debug("Mirror task stream start failed", exc_info=True)
+        if _mirror_stream_ts:
+            try:
+                if _mirror_active_task:
+                    await state.slack_client.append_task(
+                        _mirror_chan,
+                        _mirror_stream_ts,
+                        _mirror_active_task,
+                        _mirror_active_task_title,
+                        "complete",
+                    )
+                _mirror_task_counter += 1
+                turn._mirror_task_counter = _mirror_task_counter
+                _mirror_active_task = f"tool_{_mirror_task_counter}"
+                turn._mirror_active_task = _mirror_active_task
+                _task_title = event.tool_purpose or _mirror_task_label(event)
+                _task_title, _ = redact_exfiltration_urls(_task_title)
+                _task_title, _ = redact_credentials(_task_title)
+                _task_title = _task_title[:75]
+                _mirror_active_task_title = _task_title
+                turn._mirror_active_task_title = _mirror_active_task_title
                 await state.slack_client.append_task(
                     _mirror_chan,
                     _mirror_stream_ts,
                     _mirror_active_task,
-                    _mirror_active_task_title,
-                    "complete",
+                    _task_title,
+                    "in_progress",
                 )
-            _mirror_task_counter += 1
-            turn._mirror_task_counter = _mirror_task_counter
-            _mirror_active_task = f"tool_{_mirror_task_counter}"
-            turn._mirror_active_task = _mirror_active_task
-            _task_title = event.tool_purpose or event.title
-            _task_title, _ = redact_exfiltration_urls(_task_title)
-            _task_title, _ = redact_credentials(_task_title)
-            _task_title = _task_title[:75]
-            _mirror_active_task_title = _task_title
-            turn._mirror_active_task_title = _mirror_active_task_title
-            await state.slack_client.append_task(
-                _mirror_chan,
-                _mirror_stream_ts,
-                _mirror_active_task,
-                _task_title,
-                "in_progress",
-            )
-        except Exception:
-            logger.debug("Mirror tool task failed", exc_info=True)
+            except Exception:
+                logger.debug("Mirror tool task failed", exc_info=True)
 
 
 async def _on_tool_call_update(turn: _ChatTurn, event) -> None:

@@ -719,20 +719,34 @@ def test_a_rebound_listener_republishes_the_sidecar_it_owns(
 
 
 def test_a_second_listener_that_cannot_withdraw_ends_the_process(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Losing the second loopback family degrades to an explicit sign-in only while
     its sidecar was withdrawn; otherwise both guards are asked for the exit."""
+    import logging
+
     secondary = server.SecondaryLoopback(address="::1", site=MagicMock())
     state = types.SimpleNamespace(_listener_guard=MagicMock(), _secondary_listener_guard=None)
     monkeypatch.setattr(server, "_withdraw_listener_sidecar", lambda s, which: True)
-    server._secondary_listener_given_up(state, 25301, secondary, "rebind refused")
+    with caplog.at_level(logging.WARNING, logger=_FACADE):
+        server._secondary_listener_given_up(state, 25301, secondary, "rebind refused")
     state._listener_guard.request_exit.assert_not_called()
+    serving_on = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == _FACADE]
+    assert len(serving_on) == 1
+    assert serving_on[0][0] == logging.WARNING
+    assert "keeps serving its primary listener" in serving_on[0][1]
+    caplog.clear()
     monkeypatch.setattr(server, "_withdraw_listener_sidecar", lambda s, which: False)
     state._secondary_listener_guard = MagicMock()
-    server._secondary_listener_given_up(state, 25301, secondary, "rebind refused")
+    with caplog.at_level(logging.WARNING, logger=_FACADE):
+        server._secondary_listener_given_up(state, 25301, secondary, "rebind refused")
     state._listener_guard.request_exit.assert_called_once_with("rebind refused")
     state._secondary_listener_guard.request_exit.assert_called_once_with("rebind refused")
+    exiting = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == _FACADE]
+    assert len(exiting) == 1
+    assert exiting[0][0] == logging.CRITICAL
+    assert "could not be withdrawn" in exiting[0][1]
+    assert f"exiting with status {server.LISTENER_LOST_EXIT_CODE}" in exiting[0][1]
 
 
 @pytest.mark.asyncio

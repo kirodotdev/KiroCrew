@@ -145,7 +145,7 @@ function TreeRow({
           {isOpen ? <FolderOpen size={14} className="shrink-0 text-muted" /> : <Folder size={14} className="shrink-0 text-muted" />}
           <span className="truncate">{node.name || i18nT('components.skillDirectoryBrowser.root')}</span>
           {node.children.length > 0 && (
-            <span className="ml-auto text-[10px] text-muted/60 mr-2">{node.children.length}</span>
+            <span className="ml-auto text-[10px] text-muted mr-2">{node.children.length}</span>
           )}
         </button>
         {isOpen && node.children.map(c => (
@@ -173,7 +173,7 @@ function TreeRow({
       <span className="w-3 shrink-0" aria-hidden />
       <FileText size={14} className="shrink-0 text-muted" />
       <span className="truncate">{node.name}</span>
-      <span className="ml-auto text-[10px] text-muted/60 mr-2">{humanSize(node.size)}</span>
+      <span className="ml-auto text-[10px] text-muted mr-2">{humanSize(node.size)}</span>
     </button>
   )
 }

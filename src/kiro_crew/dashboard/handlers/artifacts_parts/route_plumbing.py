@@ -34,7 +34,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
     _redact_text,
 )
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.publish_governance import publish_denied_reason
+from kiro_crew.publish_governance import bind_egress_session, publish_denied_reason
 from kiro_crew.validation import infer_use_case
 
 
@@ -77,6 +77,32 @@ def _err(message: str, status: int = 400) -> web.Response:
     return web.json_response({"error": message}, status=status)
 
 
+# Largest anchor offset or version a comment may carry: int32, so the value
+# survives a JavaScript number and a provider's integer field unchanged.
+_ANCHOR_INT_MAX = 2**31 - 1
+
+
+def _anchor_int_error(anchor: dict[str, Any]) -> str | None:
+    """Why a comment anchor's offsets or version are not usable ints; ``None`` if fine.
+
+    Each field may be absent or null. ``start_offset`` and ``end_offset`` are
+    ints from 0 to ``_ANCHOR_INT_MAX``, with start <= end when both are given;
+    ``version_number`` is an int from 1. A bool is refused: JSON ``true`` is not
+    an offset, though Python counts it as an int.
+    """
+    bounds = {"start_offset": 0, "end_offset": 0, "version_number": 1}
+    for key, low in bounds.items():
+        value = anchor.get(key)
+        if value is None:
+            continue
+        if type(value) is not int or not low <= value <= _ANCHOR_INT_MAX:
+            return f"anchor.{key} must be an integer from {low} to {_ANCHOR_INT_MAX}"
+    start, end = anchor.get("start_offset"), anchor.get("end_offset")
+    if start is not None and end is not None and start > end:
+        return "anchor.start_offset must not exceed anchor.end_offset"
+    return None
+
+
 async def _non_owner_refusal(request: web.Request, operation: str) -> web.Response | None:
     """Refuse a signed-in dashboard caller who is not the owner; ``None`` admits.
 
@@ -87,7 +113,12 @@ async def _non_owner_refusal(request: web.Request, operation: str) -> web.Respon
     tools, the CLI and app drivers use. That transport leaves ``app`` absent
     and marks ``internal_auth``, so it is admitted on that mark rather than
     refused by the owner check, which needs a present empty app claim.
+
+    Being first on every write route, it is also where the request's session is
+    bound for the enterprise check each publish send runs at dispatch
+    (``publish_governance.dispatch_denied_reason``).
     """
+    bind_egress_session(request)
     if request.get("app") or request.get("internal_auth") is True:
         return None
     return await require_owner_dashboard_request(request, operation)

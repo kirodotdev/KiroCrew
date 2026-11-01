@@ -34,6 +34,7 @@ from kiro_crew.dashboard import chat_runner
 from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_STOP,
+    HOOK_EVENT_USER_PROMPT_SUBMIT,
     ScriptHook,
     ScriptHookResult,
     ScriptHookStore,
@@ -319,6 +320,93 @@ def test_a_spec_pre_tool_use_hook_exit_2_blocks(tmp_path, agents_dir, monkeypatc
     assert Path(results[0].stderr).resolve() == workspace.resolve()
 
 
+def _session_id_probe(tmp_path: Path, out_name: str) -> str:
+    """A hook command that writes its ``KIRO_SESSION_ID`` env and stdin ``acp_session_id``."""
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "event = json.load(sys.stdin)\n"
+        "out = sys.argv[1]\n"
+        "with open(out, 'w', encoding='utf-8') as f:\n"
+        "    json.dump({'env': os.environ.get('KIRO_SESSION_ID'),"
+        " 'stdin': event.get('acp_session_id', '<absent>')}, f)\n",
+        encoding="utf-8",
+    )
+    return f'"{sys.executable}" "{script}" "{tmp_path / out_name}"'
+
+
+def test_a_spec_hook_gets_the_acp_session_id_and_a_stored_hook_does_not(tmp_path, monkeypatch):
+    """On KAS a spec hook sees the session id kiro-cli gives it as KIRO_SESSION_ID."""
+    _passthrough_sandbox(monkeypatch)
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    monkeypatch.delenv("KIRO_SESSION_ID", raising=False)
+    store = ScriptHookStore(tmp_path)
+    store._hooks["stored"] = ScriptHook(
+        id="stored", event=HOOK_EVENT_USER_PROMPT_SUBMIT, command=_session_id_probe(tmp_path, "s")
+    )
+    spec = ScriptHook(
+        id="spec:a1:x",
+        event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+        command=_session_id_probe(tmp_path, "x"),
+    )
+    asyncio.run(
+        store.fire(
+            HOOK_EVENT_USER_PROMPT_SUBMIT,
+            "hi",
+            session_key="dashboard:1",
+            extra_hooks=[spec],
+            acp_session_id="sess_abc",
+        )
+    )
+    spec_seen = json.loads((tmp_path / "x").read_text(encoding="utf-8"))
+    stored_seen = json.loads((tmp_path / "s").read_text(encoding="utf-8"))
+    assert spec_seen == {"env": "sess_abc", "stdin": "sess_abc"}
+    assert stored_seen == {"env": None, "stdin": "<absent>"}
+
+
+def test_an_unknown_acp_session_id_leaves_kiro_session_id_unset(tmp_path, monkeypatch):
+    _passthrough_sandbox(monkeypatch)
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    monkeypatch.delenv("KIRO_SESSION_ID", raising=False)
+    spec = ScriptHook(
+        id="spec:a1:x",
+        event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+        command=_session_id_probe(tmp_path, "x"),
+    )
+    asyncio.run(
+        ScriptHookStore(tmp_path).fire(
+            HOOK_EVENT_USER_PROMPT_SUBMIT, "hi", extra_hooks=[spec], acp_session_id=None
+        )
+    )
+    seen = json.loads((tmp_path / "x").read_text(encoding="utf-8"))
+    assert seen == {"env": None, "stdin": "<absent>"}
+
+
+@pytest.mark.parametrize(("sid", "expected"), [("sess_abc", "sess_abc"), ("", None)])
+def test_the_chat_turn_hands_the_spec_hooks_its_session_id(sid, expected):
+    from kiro_crew.dashboard.chat_turn import turn_spec_hooks
+
+    seen: dict = {}
+
+    class _Store:
+        async def fire(self, *a, **kw):
+            seen.update(kw)
+            return []
+
+    spec = ScriptHook(id="spec:a1:x", event=HOOK_EVENT_USER_PROMPT_SUBMIT, command="c")
+    turn = SimpleNamespace(
+        session_key="dashboard:1",
+        slot=SimpleNamespace(key="1"),
+        state=SimpleNamespace(_hook_store=_Store()),
+        client=SimpleNamespace(session_id=sid),
+        _spec_hooks=[spec],
+        _spec_hooks_unreadable=False,
+        _spec_hooks_cwd=None,
+    )
+    asyncio.run(turn_spec_hooks._fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, "hi"))
+    assert seen["acp_session_id"] == expected
+
+
 def test_a_governance_denied_spec_hook_does_not_spawn(tmp_path, monkeypatch):
     monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": "off")
 
@@ -492,3 +580,132 @@ async def test_an_in_turn_switch_that_leaves_the_session_stale_stops_the_turn(
     # Refused BEFORE the switch is recorded: the slot keeps its agent.
     assert recorded == []
     assert slot.agent == "helper"
+
+
+# --- `file://` steering nothing loads on a mirrored harness ----------------------
+
+_UNREAD_STEERING = "does not load them"
+_MIRRORED = [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE]
+
+
+@pytest.mark.parametrize("backend", _MIRRORED)
+def test_a_mirrored_new_session_names_the_custom_agents_unread_steering(
+    backend, agents_dir, notices
+):
+    _write_spec(
+        agents_dir,
+        "a1",
+        resources=["skill://~/s/**/SKILL.md", "file://.kiro/steering/**/*.md"],
+    )
+    _prepare(_client(backend), "a1", is_new=True)
+    steering = [t for t in notices if _UNREAD_STEERING in t]
+    assert len(steering) == 1
+    assert "a1 lists steering files in resources (file://.kiro/steering/**/*.md)" in steering[0]
+    assert "skill://" not in steering[0]
+
+
+@pytest.mark.parametrize("backend", _MIRRORED)
+def test_the_unread_steering_notice_needs_a_new_session_and_a_file_entry(
+    backend, agents_dir, notices
+):
+    _write_spec(agents_dir, "a1", resources=["file://x.md"])
+    _write_spec(agents_dir, "skills_only", resources=["skill://~/s/**/SKILL.md"])
+    _prepare(_client(backend), "a1", is_new=False)
+    _prepare(_client(backend), "skills_only", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_PI])
+def test_no_unread_steering_notice_where_resources_are_read_or_nothing_is_ruled(
+    backend, agents_dir, notices
+):
+    _write_spec(agents_dir, "a1", resources=["file://x.md"])
+    _prepare(_client(backend), "a1", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+def test_the_default_agent_gets_no_unread_steering_notice(agents_dir, notices):
+    _write_spec(agents_dir, "kirocrew", resources=["file://.kiro/steering/**/*.md"])
+    _prepare(_client(ACP_BACKEND_CODEX), "kirocrew", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+def test_the_unread_steering_notice_counts_entries_past_three(agents_dir, notices):
+    _write_spec(agents_dir, "a1", resources=[f"file://s{i}.md" for i in range(5)])
+    _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True)
+    assert "(file://s0.md, file://s1.md, file://s2.md and 2 more)" in notices[0]
+
+
+def test_an_unreadable_spec_renders_no_unread_steering_notice(agents_dir, notices):
+    (agents_dir / "a1.json").write_text("{not json", encoding="utf-8")
+    _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE])
+def test_the_resources_ruling_says_no_reader_not_injected_steering(backend):
+    from kiro_crew.agent_sdk.backend_mcp_ability import OFF_CARD_CONCERNS
+    from kiro_crew.providers.mirrors import mirror_for
+    from kiro_crew.providers.mirrors.base import Concern
+
+    reason = mirror_for(backend).rulings()[Concern.RESOURCES].reason
+    assert reason.startswith("no-reader:")
+    assert "file:// steering is not loaded from this field" in reason
+    for text in (reason, OFF_CARD_CONCERNS["RESOURCES"]):
+        assert "steering files are injected as context text" not in text
+        # Folder steering and member essentials can still carry the same file.
+        assert "reaches nothing" not in text
+
+
+def test_the_unread_steering_notice_names_the_field_not_a_loss(agents_dir, notices):
+    """The row must not say the file has no effect: other routes may carry it."""
+    _write_spec(agents_dir, "a1", resources=["file://.kiro/steering/review.md"])
+    _prepare(_client(ACP_BACKEND_OPENCODE), "a1", is_new=True)
+    (row,) = [t for t in notices if _UNREAD_STEERING in t]
+    assert "from that field" in row
+    assert "can still reach the model through folder steering" in row
+    assert "no effect" not in row
+    assert "only if" not in row
+
+
+def test_the_spec_fields_doc_no_longer_calls_the_resources_reasons_wrong():
+    """Footnote 6 names the reason each mirror gives ``resources``."""
+    from pathlib import Path
+
+    import kiro_crew
+
+    doc = (Path(kiro_crew.__file__).parent / "docs" / "agent-spec-fields.md").read_text(
+        encoding="utf-8"
+    )
+    assert "reason the\n   code does not support" not in doc
+    assert "issues/12215" not in doc
+    assert "the shared `no-reader`\n   reason (`RESOURCES_NO_READER`)" in doc
+
+
+def test_the_spec_fields_doc_gives_goose_its_withheld_ruling():
+    """Footnote 6 matches goose's real ``resources`` disposition."""
+    from pathlib import Path
+
+    import kiro_crew
+    from kiro_crew.providers.mirrors import mirror_for
+    from kiro_crew.providers.mirrors.base import Concern, Disposition
+
+    assert mirror_for(ACP_BACKEND_GOOSE).rulings()[Concern.RESOURCES].disposition == (
+        Disposition.WITHHELD
+    )
+    doc = (Path(kiro_crew.__file__).parent / "docs" / "agent-spec-fields.md").read_text(
+        encoding="utf-8"
+    )
+    assert "`goose` rules it `withheld` too" in doc
+    assert "`goose` rules it `no-channel`" not in doc
+
+
+def test_the_unread_steering_notice_redacts_an_entry_before_cutting_it(agents_dir, notices):
+    """A cut at 120 characters must not split a credential so it escapes redaction."""
+    secret = "Zq7xLw9pRt3vNk2sQ8"
+    head = "file://https://alice:"
+    entry = head + "a" * (120 - len(head) - len(secret)) + secret + "@example.com/x.md"
+    _write_spec(agents_dir, "a1", resources=[entry])
+    _prepare(_client(ACP_BACKEND_OPENCODE), "a1", is_new=True)
+    (row,) = [t for t in notices if _UNREAD_STEERING in t]
+    assert secret not in row

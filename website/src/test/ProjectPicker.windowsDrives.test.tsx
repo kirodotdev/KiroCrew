@@ -253,8 +253,10 @@ describe('ProjectPicker: Windows drive roots', () => {
     await drain()
     const input = screen.getByRole('combobox') as HTMLInputElement
     fireEvent.change(input, { target: { value: 'D:\\work\\' } })
-    releaseDrives(DRIVES)
+    await act(async () => { releaseDrives(DRIVES) })
     await drain()
+    // The typed trailing separator debounces an auto-drill; let it run here.
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
     // The late drive list is dropped: the typed path survives for its own drill.
     expect(input.value).toBe('D:\\work\\')
     expect(screen.queryByRole('option', { name: /E:\\/ })).toBeNull()

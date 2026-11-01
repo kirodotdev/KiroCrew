@@ -16,6 +16,7 @@ import pytest
 import yarl
 from link_unfurl_helpers import _isolate  # noqa: F401
 from link_unfurl_helpers import _public
+from named_cases_helpers import named_cases
 
 from kiro_crew import link_unfurl as lu
 
@@ -64,55 +65,62 @@ def test_vet_rejects_malformed_port() -> None:
     assert exc.value.code == "invalid_url"
 
 
-@pytest.mark.parametrize("host", ["secret.onion", "printer.local", "DEEP.SUB.ONION"])
-def test_vet_rejects_blocked_suffixes(host: str) -> None:
+@pytest.mark.parametrize(
+    "host",
+    [
+        *named_cases(
+            "test_vet_rejects_blocked_suffixes",
+            "host",
+            ["secret.onion", "printer.local", "DEEP.SUB.ONION"],
+        ),
+        *named_cases(
+            "test_vet_rejects_internal_ipv4_literals",
+            "host",
+            [
+                "127.0.0.1",  # loopback
+                "127.1",  # short form
+                "0x7f000001",  # hex
+                "2130706433",  # 32-bit decimal
+                "0177.0.0.1",  # octal
+                "10.0.0.5",  # private
+                "172.16.3.4",  # private
+                "192.168.1.1",  # private
+                "169.254.169.254",  # link-local (cloud metadata)
+                "0xa9fea9fe",  # link-local, hex-encoded
+                "224.0.0.1",  # multicast
+                "240.0.0.1",  # reserved
+                "0.0.0.0",  # unspecified
+            ],
+        ),
+        *named_cases(
+            "test_vet_rejects_internal_ipv6_literals",
+            "host",
+            [
+                "[::1]",  # loopback
+                "[::]",  # unspecified
+                "[fe80::1]",  # link-local
+                "[fc00::1]",  # unique local (private)
+                "[fd12:3456::1]",  # unique local
+                "[ff02::1]",  # multicast
+            ],
+        ),
+        *named_cases(
+            "test_vet_rejects_multicast_despite_is_global",
+            "host",
+            [
+                "224.0.0.1",  # IPv4 multicast — CPython reports is_global True for these,
+                "[ff02::1]",  # so `not is_global` alone would admit them
+            ],
+        ),
+    ],
+)
+def test_vet_rejects_an_internal_or_blocked_host(host: str) -> None:
     with pytest.raises(lu.UnfurlRejected) as exc:
         lu.vet_unfurl_url(f"http://{host}/", resolve=_public)
     assert exc.value.code == "blocked_url"
 
 
 # --- vet: IP literals ------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "host",
-    [
-        "127.0.0.1",  # loopback
-        "127.1",  # short form
-        "0x7f000001",  # hex
-        "2130706433",  # 32-bit decimal
-        "0177.0.0.1",  # octal
-        "10.0.0.5",  # private
-        "172.16.3.4",  # private
-        "192.168.1.1",  # private
-        "169.254.169.254",  # link-local (cloud metadata)
-        "0xa9fea9fe",  # link-local, hex-encoded
-        "224.0.0.1",  # multicast
-        "240.0.0.1",  # reserved
-        "0.0.0.0",  # unspecified
-    ],
-)
-def test_vet_rejects_internal_ipv4_literals(host: str) -> None:
-    with pytest.raises(lu.UnfurlRejected) as exc:
-        lu.vet_unfurl_url(f"http://{host}/", resolve=_public)
-    assert exc.value.code == "blocked_url"
-
-
-@pytest.mark.parametrize(
-    "host",
-    [
-        "[::1]",  # loopback
-        "[::]",  # unspecified
-        "[fe80::1]",  # link-local
-        "[fc00::1]",  # unique local (private)
-        "[fd12:3456::1]",  # unique local
-        "[ff02::1]",  # multicast
-    ],
-)
-def test_vet_rejects_internal_ipv6_literals(host: str) -> None:
-    with pytest.raises(lu.UnfurlRejected) as exc:
-        lu.vet_unfurl_url(f"http://{host}/", resolve=_public)
-    assert exc.value.code == "blocked_url"
 
 
 @pytest.mark.parametrize(
@@ -131,19 +139,6 @@ def test_vet_rejects_rfc6598_shared_address_space(host: str) -> None:
     user's private overlay network. Guarding the whole class (`is_global`) rather
     than a list of categories is what keeps this closed.
     """
-    with pytest.raises(lu.UnfurlRejected) as exc:
-        lu.vet_unfurl_url(f"http://{host}/", resolve=_public)
-    assert exc.value.code == "blocked_url"
-
-
-@pytest.mark.parametrize(
-    "host",
-    [
-        "224.0.0.1",  # IPv4 multicast — CPython reports is_global True for these,
-        "[ff02::1]",  # so `not is_global` alone would admit them
-    ],
-)
-def test_vet_rejects_multicast_despite_is_global(host: str) -> None:
     with pytest.raises(lu.UnfurlRejected) as exc:
         lu.vet_unfurl_url(f"http://{host}/", resolve=_public)
     assert exc.value.code == "blocked_url"
@@ -271,7 +266,10 @@ def test_vet_rejects_every_special_purpose_range(prefix: str) -> None:
 @pytest.mark.parametrize("host", ["8.8.8.8", "[2606:4700::1111]", "93.184.216.34"])
 def test_vet_allows_globally_routable_literals(host: str) -> None:
     """The allowlist must not be so tight that ordinary public addresses fail."""
-    lu.vet_unfurl_url(f"http://{host}/", resolve=_public)
+    vetted = lu.vet_unfurl_url(f"http://{host}/", resolve=_public)
+    # A literal is dialled as written, never swapped for a resolver answer.
+    literal = host.strip("[]")
+    assert (vetted.ip, vetted.addresses, vetted.port) == (literal, (literal,), 80)
 
 
 @pytest.mark.parametrize(

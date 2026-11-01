@@ -259,7 +259,13 @@ def _open_contained_nofollow(base: Path, target: Path) -> int:
     backed by symlink creation being privileged there; junction swaps of
     the DATA dir are separately caught by _PinnedDir.verify.
     """
-    rel_parts = target.relative_to(base).parts
+    # Windows' ``\\?\`` prefix folded off both sides first, so a resolve that
+    # kept it on one operand is not read as an escape. Lexical only.
+    rel_parts = (
+        platform_compat.strip_extended_length_prefix(target)
+        .relative_to(platform_compat.strip_extended_length_prefix(base))
+        .parts
+    )
     if not rel_parts:
         raise OSError("requirements path resolves to the app root itself")
     if not pinned_fs.supports_pinned_walk():

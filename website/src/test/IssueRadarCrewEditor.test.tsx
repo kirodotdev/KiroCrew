@@ -22,6 +22,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { i18nT } from '../i18n/t'
 
 /* ── Mocks: the api transport and the shared context ──
@@ -739,6 +741,31 @@ describe('CrewEditor — the close guard', () => {
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
     expect(guard()).not.toBeInTheDocument()
+  })
+})
+
+describe('CrewEditor — the idle wake shows the interval crews really use', () => {
+  it('matches the idle_secs the backend arms every crew loop with', async () => {
+    // REGRESSION (#25467): the field showed 120 while every crew loop is armed
+    // with `DEFAULT_IDLE_SECS = 300`. The number is read from the backend source,
+    // so a change on either side without the other fails here.
+    const src = readFileSync(
+      join(
+        __dirname, '..', '..', '..',
+        'src', 'kiro_crew', 'apps', 'builtins', 'issue_radar', 'backend',
+        'crew_runtime_session.py',
+      ),
+      'utf8',
+    )
+    const match = /^DEFAULT_IDLE_SECS = (\d+)$/m.exec(src)
+    expect(match).not.toBeNull()
+    const idleSecs = Number(match![1])
+
+    await openCreate()
+    expect(screen.getByTestId('crew-editor-backstop')).toHaveValue(String(idleSecs))
+    expect(
+      screen.getByText(i18nT(`${K}.backstop_fixed`, { seconds: idleSecs })),
+    ).toBeInTheDocument()
   })
 })
 

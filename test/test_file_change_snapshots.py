@@ -849,9 +849,9 @@ class TestStrReplaceFullBeforeReconstruction:
         assert result["content"] == self.BEFORE
 
     def test_replace_all_declines_reconstruction(self, tmp_path: Path):
-        """Server review finding: replaceAll doesn't enforce oldStr
+        """A ``replaceAll`` edit doesn't enforce oldStr
         uniqueness, so reversing every newStr occurrence over-reverts any
-        that pre-existed (NEW\\nOLD\\nOLD edited with replaceAll fabricated
+        that pre-existed (NEW\\nOLD\\nOLD edited with replaceAll would show
         +3/−3 instead of +2/−2). Reconstruction declines; fragment chain
         applies."""
         f = tmp_path / "multi.txt"
@@ -907,9 +907,9 @@ class TestStrReplaceFullBeforeReconstruction:
         assert result["content"] == "line 2\n"
 
     def test_ambiguous_new_str_declines_reconstruction(self, tmp_path: Path):
-        """Full-scope review finding: post-write content with MULTIPLE newStr
+        """Post-write content with MULTIPLE newStr
         occurrences (newStr pre-existed elsewhere) makes the edit site
-        ambiguous — reversing an arbitrary occurrence attributed the edit to
+        ambiguous — reversing an arbitrary occurrence would attribute the edit to
         the wrong line. Reconstruction declines; fragment chain applies."""
         f = tmp_path / "ambig.txt"
         f.write_text("NEW\nNEW\n")  # true before was "NEW\nOLD\n" — unknowable
@@ -923,10 +923,10 @@ class TestStrReplaceFullBeforeReconstruction:
         assert result["content"] == "OLD"
 
     def test_post_write_masquerading_as_pre_write_declines(self, tmp_path: Path):
-        """Server review finding: strReplace("ab"→"a") on "aabb" yields "aab",
+        """The edit strReplace("ab"→"a") on "aabb" yields "aab",
         which contains exactly one "ab" and so looks pre-write-plausible —
-        but it IS the post-write state. Classifying it pre-write recorded
-        the after as the before and erased the edit from the chip. With
+        but it IS the post-write state. Classifying it pre-write would record
+        the after as the before and erase the edit from the chip. With
         newStr present and non-unique, post-write cannot be excluded →
         decline."""
         f = tmp_path / "masquerade.txt"
@@ -941,7 +941,7 @@ class TestStrReplaceFullBeforeReconstruction:
         assert result["content"] == "ab"
 
     def test_seam_reformation_declines(self, tmp_path: Path):
-        """Server review finding: oldStr can re-form across the replacement
+        """The oldStr needle can re-form across the replacement
         seam (oldStr='ab', newStr='a', before='abb' → after='ab'), making
         the disk content valid as BOTH states. Dual-hypothesis
         classification declines instead of misclassifying as pre-write."""
@@ -957,7 +957,7 @@ class TestStrReplaceFullBeforeReconstruction:
         assert result["content"] == "ab"
 
     def test_special_file_declines(self):
-        """Server review finding: /dev/zero stats as 0 bytes but reads
+        """/dev/zero stats as 0 bytes but reads
         unboundedly — the S_ISREG gate declines non-regular files before
         any read."""
         result = _snapshot_write_target(
@@ -1013,9 +1013,9 @@ class TestStrReplaceFullBeforeReconstruction:
         assert len(result["content"]) < _MAX_SNAPSHOT + 500
 
     def test_pre_write_with_coincidental_new_str_is_before(self, tmp_path: Path):
-        """Server review finding: pre-write file containing BOTH needles
+        """A pre-write file containing BOTH needles
         (newStr coincidentally pre-exists) must classify as before —
-        reversing the unrelated newStr occurrence fabricated a changed line.
+        reversing the unrelated newStr occurrence would fabricate a changed line.
         oldStr present with oldStr ⊄ newStr PROVES pre-write (strReplace
         consumes every oldStr occurrence)."""
         f = tmp_path / "both.txt"
@@ -1048,7 +1048,7 @@ class TestStrReplaceFullBeforeReconstruction:
         assert result["content"] == "head\nvalue = 1\ntail\n"
 
     def test_oversized_file_declines_reconstruction(self, tmp_path: Path, monkeypatch):
-        """Server review finding: the synchronous reconstruction read runs on
+        """The synchronous reconstruction read runs on
         the event loop — files past _MAX_RECONSTRUCT_BYTES decline and fall
         through to the fragment chain instead of stalling the loop."""
         import kiro_crew.dashboard.chat_runner as cr

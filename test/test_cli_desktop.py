@@ -158,6 +158,27 @@ class TestReading:
         monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
         assert cli_desktop.desktop_cmd(_args(tmp_path)) == 3
 
+    def test_a_tilde_path_is_read_from_the_home_directory(self, monkeypatch, capsys, tmp_path):
+        """``--path ~/x`` reaches the CLI unexpanded from a Windows shell or ``--path=``."""
+        monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        (tmp_path / "desktop-metrics.json").write_text(json.dumps(_doc()), encoding="utf-8")
+        monkeypatch.chdir(tmp_path / "..")
+        assert cli_desktop.desktop_cmd(_args(Path("~") / "desktop-metrics.json", json=True)) == 0
+        assert json.loads(capsys.readouterr().out) == _doc()
+
+    def test_an_unknown_tilde_user_is_not_found_rather_than_a_crash(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
+
+        def _no_such_user(self):
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr(Path, "expanduser", _no_such_user)
+        assert cli_desktop.desktop_cmd(_args(Path("~nosuchuser") / "m.json")) == 3
+
     def test_missing_numeric_fields_render_as_dashes(self, monkeypatch, capsys, tmp_path):
         """A partial record must not raise a formatting error."""
         monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
@@ -421,6 +442,23 @@ class TestParserWiring:
         cli_desktop.register_desktop_parser(sub)
         args = parser.parse_args(["desktop", "metrics", "--json", "--top", "3"])
         assert args.json is True and args.top == 3
+
+    @pytest.mark.parametrize("raw", ["0", "-1"])
+    def test_top_below_one_is_refused(self, raw, capsys):
+        """``--top -1`` would slice off the last process and print "top -1"."""
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers(dest="command")
+        cli_desktop.register_desktop_parser(sub)
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args(["desktop", "metrics", "--top", raw])
+        assert exc.value.code == 2
+        assert "must be 1 or more" in capsys.readouterr().err
+
+    def test_top_of_one_is_kept(self):
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers(dest="command")
+        cli_desktop.register_desktop_parser(sub)
+        assert parser.parse_args(["desktop", "metrics", "--top", "1"]).top == 1
 
     def test_metrics_subcommand_is_required(self):
         parser = argparse.ArgumentParser()

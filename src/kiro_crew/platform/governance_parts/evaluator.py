@@ -28,8 +28,9 @@ from kiro_crew.platform.governance_parts.archetypes import (
 from kiro_crew.platform.governance_parts.baseline import BASELINE_UNGATED
 from kiro_crew.platform.governance_parts.carriers import GovernanceCeiling, Profile
 from kiro_crew.platform.governance_parts.catalog import _SCOPE_ALIASES
-from kiro_crew.platform.governance_parts.parsing import baseline_controls
+from kiro_crew.platform.governance_parts.parsing import baseline_controls, with_inner_baseline
 from kiro_crew.platform.governance_parts.tool_calls import (
+    _NO_TARGET_ITEM,
     _governed_targets,
     classify_tool_args,
     classify_tool_title,
@@ -67,19 +68,18 @@ def _policy_level(
     (``baseline=False``) get no baseline.
     """
     control = ceiling.get(scope) if ceiling is not None else None
-    if (
-        control is not None
-        or not baseline
-        or isinstance(ceiling, Profile)
-        or not edition.is_enterprise()
-    ):
+    if not baseline or isinstance(ceiling, Profile) or not edition.is_enterprise():
         return control, False
     # A policy's ``folders.*`` rule is stored under its ``filesystem.*`` scope at
     # parse time, so an alias query must find it there before the baseline answers.
     canonical = _SCOPE_ALIASES.get(scope, scope)
-    named = ceiling.get(canonical) if ceiling is not None else None
+    named = (
+        control
+        if control is not None
+        else (ceiling.get(canonical) if ceiling is not None else None)
+    )
     if named is not None:
-        return named, False
+        return with_inner_baseline(canonical, named), False
     if canonical in BASELINE_UNGATED:
         return None, False
     return baseline_controls().get(canonical, _DENY_UNLISTED), True
@@ -206,6 +206,7 @@ def gate_decision(
     extra_titles: Tuple[str, ...] = (),
     alias_groups: Tuple[Tuple[str, ...], ...] = (),
     deny_aliases: Tuple[str, ...] = (),
+    own_scopes: Tuple[str, ...] = (),
 ) -> Decision:
     """Resolve a PreToolUse gate title against the governance ceiling ∩ profile.
 
@@ -258,9 +259,44 @@ def gate_decision(
     Each is asked for an explicit deny only; an allow-mode miss on it is not a
     refusal, and the identity itself (in ``extra_titles`` or the title) still
     has to be permitted on its own name.
+
+    ``own_scopes`` is set by a caller that has PROVEN the call is not a shell
+    call, and names the scopes it is judged in: ``("mcp",)`` for an MCP-served
+    call (named by ``mcp_ref``), or ``("tools", *row)`` for a host built-in whose
+    ``BUILTIN_TOOL_SCOPES`` row has no ``commands`` (named in ``extra_titles`` or
+    ``alias_groups``). An unprefixed name classifies to ``commands`` and ``tools``
+    both, because a bare title may be a command body; for a proven non-shell call
+    that reading is wrong, and an allow-mode ``commands`` set then refuses every
+    read-only tool. So every ``commands`` pair, the title's ``tools`` pair, an MCP
+    identity's ``tools`` pair, and a built-in's argument pair in a scope outside
+    its row (the kindless read-and-write guess) may refuse the call only by an
+    explicit deny, as ``deny_aliases`` do. Each scope of a built-in's row that
+    the arguments name no target in is asked about :data:`_NO_TARGET_ITEM`, so an
+    allow-mode confinement refuses a pathless search or a non-edit write rather
+    than never being asked. Empty keeps the old reading.
     """
+    builtin = "tools" in own_scopes
+    if (builtin and not (extra_titles or alias_groups)) or ("mcp" in own_scopes and not mcp_ref):
+        # The proof names no identity to judge, so nothing is demoted.
+        own_scopes, builtin = (), False
+    off_scope: list = []
+
+    def _own(found: Tuple[Tuple[str, str], ...], *, identity: bool) -> list:
+        """*found* minus the pairs outside the call's own scope (kept deny-only)."""
+        if not own_scopes:
+            return list(found)
+        kept = []
+        for scope, item in found:
+            if scope == "commands" or (scope == "tools" and not (identity and builtin)):
+                off_scope.append((scope, item))
+            else:
+                kept.append((scope, item))
+        return kept
+
     _grouped = {s for group in alias_groups for s in group if s}
-    pairs = list(classify_tool_title(tool_title)) if tool_title not in _grouped else []
+    pairs = (
+        _own(classify_tool_title(tool_title), identity=False) if tool_title not in _grouped else []
+    )
     # Additional NON-model-authored titles the caller holds for the same call --
     # e.g. the trusted ``_meta.kiro.toolName`` beside an LLM-authored display
     # title. They are classified here, in ONE decision, rather than asked as
@@ -273,7 +309,7 @@ def gate_decision(
     # could match a rule it has nothing to do with.
     for extra in extra_titles:
         if extra:
-            pairs.extend(classify_tool_title(extra))
+            pairs.extend(_own(classify_tool_title(extra), identity=True))
     # A remote-workspace call's title-derived path (``Reading <path>``) names the
     # same guest file its arguments do, so it is read the way they are; a plain
     # twin judged as this gateway's path would refuse a permitted guest read.
@@ -289,14 +325,37 @@ def gate_decision(
                 else (item,)
             )
         ]
-    pairs.extend(classify_tool_args(tool_kind, raw_params, diff_path))
+    arg_pairs = classify_tool_args(tool_kind, raw_params, diff_path)
+    if builtin:
+        off_scope.extend(p for p in arg_pairs if p[0] not in own_scopes)
+        arg_pairs = tuple(p for p in arg_pairs if p[0] in own_scopes)
+        named = {scope for scope, _ in arg_pairs}
+        arg_pairs += tuple(
+            (scope, _NO_TARGET_ITEM)
+            for scope in own_scopes
+            if scope not in ("tools", "mcp") and scope not in named
+        )
+    pairs.extend(arg_pairs)
     if mcp_ref:
         pairs.append(("mcp", mcp_ref))
     # Order-preserving dedupe -- a caller whose title already equals its trusted
     # identity must not pay the same resolve twice.
     pairs = list(dict.fromkeys(pairs))
-    if not pairs and not alias_groups and not deny_aliases:
+    # Each spelling's pairs, classified once so its off-scope pairs join the
+    # deny-only check below before the group is judged.
+    group_pairs = {
+        spelling: _own(classify_tool_title(spelling), identity=True)
+        for group in alias_groups
+        for spelling in group
+        if spelling
+    }
+    if not pairs and not alias_groups and not deny_aliases and not off_scope:
         return Decision(True, "title not name-gate-governed", rule="default")
+    # Off-scope pairs of a proven non-shell call bind by explicit deny only.
+    for scope, item in dict.fromkeys(off_scope):
+        decision = resolve(ceiling, profile, scope, item)
+        if not decision.permitted and decision.explicit_deny:
+            return replace(decision, item=item)
     # Deny-only spellings first: an explicit deny written under the alias binds
     # the identity, and nothing else about the alias is consulted -- an
     # allow-mode set that does not list it is not a refusal, because the alias
@@ -348,7 +407,7 @@ def gate_decision(
             last_refusal: Optional[Decision] = None
             for spelling in spellings:
                 spelling_ok = True
-                for scope, item in dict.fromkeys(classify_tool_title(spelling)):
+                for scope, item in dict.fromkeys(group_pairs[spelling]):
                     decision = resolve(
                         layer_ceiling, layer_profile, scope, item, baseline=layer_baseline
                     )

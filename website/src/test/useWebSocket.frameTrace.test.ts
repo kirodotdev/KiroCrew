@@ -38,6 +38,7 @@ import { threadLiveStore } from '../state/threadLiveStore'
 import { _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold'
 import type { ChatSlot } from '../types'
+import { setViewedThreadSlot, _resetViewedThreadForTests } from '../lib/viewedThread'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -306,6 +307,20 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
     { type: 'slot_projection', data: { slot: `dashboard:${BACKGROUND}` } },
     { type: 'slot_projection', data: {} },
   ]],
+  // A non-work slot fold frame as the gateway sends it now (no value) and as it
+  // sent it before (with one): the router must take the same effects for both.
+  ['slot_projection workstreams with a value', [{ type: 'slots', data: [
+    { key: ACTIVE, title: 'Active', last_ts: TS },
+    { key: BACKGROUND, title: 'Background', last_ts: TS, created_by: ACTIVE },
+  ] }], [
+    { type: 'slot_projection', data: { slot: `dashboard:${BACKGROUND}`, fold: 'workstreams', revision: 4, value: { streams: [] } } },
+  ]],
+  ['slot_projection workstreams without a value', [{ type: 'slots', data: [
+    { key: ACTIVE, title: 'Active', last_ts: TS },
+    { key: BACKGROUND, title: 'Background', last_ts: TS, created_by: ACTIVE },
+  ] }], [
+    { type: 'slot_projection', data: { slot: `dashboard:${BACKGROUND}`, fold: 'workstreams', revision: 4 } },
+  ]],
   ['session_summary', [], [{ type: 'session_summary', data: { key: ACTIVE } }, { type: 'session_summary', data: {} }]],
   ['pins_changed', [], [{ type: 'pins_changed', data: { slot_key: ACTIVE } }, { type: 'pins_changed', data: {} }]],
   ['artifact_update', [], [{ type: 'artifact_update', data: { slug: 'doc' } }]],
@@ -373,6 +388,9 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
   ['steer_push', [{ type: 'chat_chunk', data: { slot: ACTIVE, seq: 1, content: 'pre' } }], [{
     type: 'steer_push', data: { slot: ACTIVE, content: 'steer', ts: TS, sendId: 's-1', steerState: 'written', mid: 'm-9', meta: { files: ['f'], dirs: ['d'] } },
   }]],
+  ['steer_push that can be taken back', [], [{
+    type: 'steer_push', data: { slot: ACTIVE, content: 'steer', ts: TS, steerState: 'written', mid: 'm-10', steerRetract: true },
+  }]],
   ['steer_push without a slot', [], [{ type: 'steer_push', data: { content: 'steer' } }]],
   ['chat_chunk', [], [
     { type: 'chat_chunk', data: { slot: ACTIVE, seq: 1, content: 'Hello', gen: 'g-1' } },
@@ -435,7 +453,7 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
       { type: 'other', data: {} },
     ] } },
   ]],
-  ['subagent status and text', [], [
+  ['subagent status and text dispatch nothing', [], [
     { type: 'subagent_status', data: { slot: ACTIVE, running: 1 } },
     { type: 'subagent_status', data: { running: 1 } },
     { type: 'subagent_text', data: { slot: ACTIVE, id: 'sa-1', text: 't' } },
@@ -528,6 +546,33 @@ describe('useWebSocket frame routing trace', () => {
   it.each(FRAME_CASES)('%s', async (name, setup, frames) => {
     const got = await run(setup, frames)
     expect(got).toEqual(EXPECTED_FRAMES[name])
+  })
+
+  it('chat_done in the active slot refreshes Explore once it has been read (session-keyed)', async () => {
+    const { ws } = await mountOpen()
+    // What useMilestones caches: the key carries the session.
+    qc.setQueryData(['milestones', `dashboard:${ACTIVE}`], { enabled: true })
+    act(() => { ws.frame({ type: 'chat_chunk', data: { slot: ACTIVE, seq: 1, content: 'answer' } }) })
+    act(() => { drainFrames() })
+    trace = []
+    act(() => { ws.frame({ type: 'chat_done', data: { slot: ACTIVE, ts: TS } }) })
+    act(() => { drainFrames() })
+    expect(trace).toContain('query invalidateQueries ["milestones"]')
+  })
+
+  it('refreshes Explore when the thread a non-chat page shows ends a turn (the Mate DM on Members)', async () => {
+    const { ws } = await mountOpen()
+    qc.setQueryData(['milestones', `dashboard:${ACTIVE}`], { enabled: true })
+    // Members registers the thread it renders; the chat's activeSlot is another one.
+    setViewedThreadSlot(BACKGROUND)
+    try {
+      trace = []
+      act(() => { ws.frame({ type: 'chat_done', data: { slot: BACKGROUND, ts: TS } }) })
+      act(() => { drainFrames() })
+      expect(trace).toContain('query invalidateQueries ["milestones"]')
+    } finally {
+      _resetViewedThreadForTests()
+    }
   })
 
   it('swallows a malformed frame and keeps routing the next one', async () => {
@@ -672,7 +717,7 @@ describe('useWebSocket lifecycle trace', () => {
   it('uses a secure socket on https and keeps the socket across a re-render', async () => {
     const original = window.location
     const { ws, view } = await mountOpen()
-    expect(ws.url).toMatch(/^ws:\/\/[^/]+\/api\/ws\?caps=slot_patch$/)
+    expect(ws.url).toMatch(/^ws:\/\/[^/]+\/api\/ws\?caps=slot_patch,fold_delta\.1,fold_delta\.2$/)
     // A re-render keeps the socket: no owner identity changes, so neither
     // the mount effect nor the connect it runs fires again.
     act(() => { view.rerender() })
@@ -684,7 +729,7 @@ describe('useWebSocket lifecycle trace', () => {
       wrapper: ({ children }) => createElement(Provider, { store: testStore },
         createElement(QueryClientProvider, { client: qc }, children)),
     })
-    expect(WS_INSTANCES[0].url).toBe('wss://crew.test/api/ws?caps=slot_patch')
+    expect(WS_INSTANCES[0].url).toBe('wss://crew.test/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2')
   })
 
   it('unmount', async () => {
@@ -1022,6 +1067,14 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["command-center","slot-b","work"] {"exact":true} {"cancelRefetch":false}',
     'query invalidateQueries ["command-center","slot-a","work"] {"exact":true} {"cancelRefetch":false}',
   ],
+  "slot_projection workstreams with a value": [
+    'query invalidateQueries ["command-center","slot-b","work"] {"exact":true} {"cancelRefetch":false}',
+    'query invalidateQueries ["command-center","slot-a","work"] {"exact":true} {"cancelRefetch":false}',
+  ],
+  "slot_projection workstreams without a value": [
+    'query invalidateQueries ["command-center","slot-b","work"] {"exact":true} {"cancelRefetch":false}',
+    'query invalidateQueries ["command-center","slot-a","work"] {"exact":true} {"cancelRefetch":false}',
+  ],
   "session_summary": [
     'query invalidateQueries ["session-summary","slot-a"]',
   ],
@@ -1110,9 +1163,9 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   ],
   "refresh with history": [
     'action dashboard/triggerRefresh undefined',
-    'query invalidateQueries ["cron-jobs"]',
-    'query invalidateQueries ["crons"]',
-    'query invalidateQueries ["cron-history-all"]',
+    'query invalidateQueries ["cron-jobs"] <predicate>',
+    'query invalidateQueries ["crons"] <predicate>',
+    'query invalidateQueries ["cron-history-all"] <predicate>',
     'query invalidateQueries ["agents-installed"]',
     'query invalidateQueries ["kirocrew-agents"]',
     'query invalidateQueries ["default-agent"]',
@@ -1219,6 +1272,12 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'cancel-frame 2',
     'action stream/flush {"slots":[],"subagents":[],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}]}',
   ],
+  "steer_push that can be taken back": [
+    'action chat/appendSlotMessage {"slot":"slot-a","message":{"role":"user","content":"steer","cls":"msg msg-u","meta":{"steer":true,"steerState":"written","mid":"m-10","steerRetract":true},"ts":"2026-09-01T00:00:00.000Z"}}',
+    'frame',
+    'cancel-frame 1',
+    'action stream/flush {"slots":[],"subagents":[],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}]}',
+  ],
   "steer_push without a slot": [
     'action chat/appendSlotMessage {"slot":"slot-a","message":{"role":"user","content":"steer","cls":"msg msg-u","meta":{"steer":true}}}',
   ],
@@ -1300,10 +1359,8 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'frame',
     'cancel-frame 3',
   ],
-  "subagent status and text": [
-    'action dashboard/sseSubagentStatus {"slot":"slot-a","running":1}',
-    'action dashboard/sseSubagentText {"slot":"slot-a","id":"sa-1","text":"t"}',
-  ],
+  // Every sub-agent surface reads the chat slice's per-agent frames instead.
+  "subagent status and text dispatch nothing": [],
   "app_reload": [
     'event mc:app-reload {"app":"notes"}',
   ],
@@ -1407,6 +1464,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["agent-resolved-model"]',
     'query invalidateQueries ["artifacts"]',
     'query invalidateQueries ["artifact-folders"]',
+    'action dashboard/triggerCronRefresh undefined',
     'action dashboard/triggerRefresh undefined',
     'query invalidateQueries ["cron-jobs"]',
     'query invalidateQueries ["crons"]',
@@ -1421,6 +1479,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["agent-resolved-model"]',
     'query invalidateQueries ["artifacts"]',
     'query invalidateQueries ["artifact-folders"]',
+    'action dashboard/triggerCronRefresh undefined',
   ],
   "update_progress": [
     'action dashboard/setUpdateProgress {"step":"downloading","detail":"1/2"}',
@@ -1467,8 +1526,9 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
 
 const EXPECTED_LIFECYCLE: Record<string, string[]> = {
   "first connect": [
-    'connect ws:/api/ws?caps=slot_patch',
+    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action dashboard/sseConnected undefined',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1476,7 +1536,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query fetchQuery ["workflow-runs-reconcile"] {"staleTime":0,"gcTime":30000,"retry":false}',
     'action chat/resyncWaitingSideConversations/pending',
     'action chat/clearSubagentsForSnapshot undefined',
-    'send {"type":"subscribe_subagents"}',
+    'send {"type":"subscribe_subagents","slots":["slot-a"]}',
     'send {"type":"subscribe_logs"}',
     'send {"type":"slot_focused","slot":"slot-a","announce":true}',
     'action chat/reconcileWorkflowRuns []',
@@ -1487,8 +1547,9 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
   ],
   "reconnect catch-up": [
     'action dashboard/sseDisconnected undefined',
-    'connect ws:/api/ws?caps=slot_patch',
+    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action stream/flush {"slots":[{"slot":"slot-a","thinking":"kept","status":{"content":true,"thinking":true}}],"subagents":[],"recency":[]}',
     'cancel-frame 1',
     'action dashboard/sseConnected undefined',
@@ -1505,6 +1566,8 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["chat-threads"]',
     'query invalidateQueries ["guide-pending"]',
     'query invalidateQueries ["change-cards"]',
+    'query invalidateQueries ["member-dashboard"]',
+    'query invalidateQueries ["session-dashboard"]',
     'query removeQueries ["member-thread"] <predicate>',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1513,7 +1576,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action chat/resyncWaitingSideConversations/pending',
     'action chat/refreshSlot/pending',
     'action chat/clearSubagentsForSnapshot undefined',
-    'send {"type":"subscribe_subagents"}',
+    'send {"type":"subscribe_subagents","slots":["slot-a"]}',
     'send {"type":"slot_focused","slot":"slot-a","announce":true}',
     'action dashboard/fetchSlots/fulfilled',
     'action chat/reconcileWorkflowRuns []',
@@ -1525,8 +1588,9 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
   ],
   "reconnect after an update restart reloads": [
     'action dashboard/sseDisconnected undefined',
-    'connect ws:/api/ws?caps=slot_patch',
+    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'reload',
   ],
   "unmount": [
@@ -1537,8 +1601,9 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
   ],
   "forceReconnect": [
     'close',
-    'connect ws:/api/ws?caps=slot_patch',
+    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action dashboard/sseConnected undefined',
     'action dashboard/fetchSlots/pending',
     'query invalidateQueries ["session-summary"]',
@@ -1553,6 +1618,8 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["chat-threads"]',
     'query invalidateQueries ["guide-pending"]',
     'query invalidateQueries ["change-cards"]',
+    'query invalidateQueries ["member-dashboard"]',
+    'query invalidateQueries ["session-dashboard"]',
     'query removeQueries ["member-thread"] <predicate>',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1561,7 +1628,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action chat/resyncWaitingSideConversations/pending',
     'action chat/refreshSlot/pending',
     'action chat/clearSubagentsForSnapshot undefined',
-    'send {"type":"subscribe_subagents"}',
+    'send {"type":"subscribe_subagents","slots":["slot-a"]}',
     'send {"type":"slot_focused","slot":"slot-a","announce":true}',
     'action dashboard/fetchSlots/fulfilled',
     'action chat/reconcileWorkflowRuns []',
@@ -1572,11 +1639,12 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action chat/refreshSlot/fulfilled',
   ],
   "StrictMode mounts twice and connects once": [
-    'connect ws:/api/ws?caps=slot_patch',
+    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
     'close',
     'action chat/setVoicePlaying false',
-    'connect ws:/api/ws?caps=slot_patch',
+    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action dashboard/sseConnected undefined',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1584,7 +1652,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query fetchQuery ["workflow-runs-reconcile"] {"staleTime":0,"gcTime":30000,"retry":false}',
     'action chat/resyncWaitingSideConversations/pending',
     'action chat/clearSubagentsForSnapshot undefined',
-    'send {"type":"subscribe_subagents"}',
+    'send {"type":"subscribe_subagents","slots":["slot-a"]}',
     'send {"type":"slot_focused","slot":"slot-a","announce":true}',
     'action chat/reconcileWorkflowRuns []',
     'query setQueryData ["command-center","workflows"]',
@@ -1668,9 +1736,10 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'send {"type":"slot_focused","slot":"slot-b"}',
     'send {"type":"slot_focused","slot":"pane-slot"}',
     'send {"type":"slot_focused","slot":null}',
-    'send {"type":"slot_focused","slot":"slot-b"}',
+    // A reveal re-announces the focused split-view pane, not activeSlot.
+    'send {"type":"slot_focused","slot":"pane-slot"}',
     'send {"type":"slot_read","slot":"slot-b","read_ts":"2026-09-01T00:00:00.000Z"}',
-    'send {"type":"slot_focused","slot":"slot-b"}',
+    'send {"type":"slot_focused","slot":"pane-slot"}',
     'close',
   ],
 }

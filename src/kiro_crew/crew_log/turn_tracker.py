@@ -95,6 +95,11 @@ class _LiveTurn:
     #: one whose closer is in flight are indistinguishable, and the claim treats both as
     #: stale.
     closer_owed: bool = False
+    #: Which try at this ordinal the record belongs to, once ``turn/started``'s job has
+    #: derived it (:meth:`TurnTracker.note_attempt`). 0 until then: the attempt is
+    #: derived on the writer thread, behind any resume seed, so a reader on the loop
+    #: can arrive first and must then treat the attempt as unobserved.
+    attempt: int = 0
 
 
 class SettledCall(NamedTuple):
@@ -215,7 +220,51 @@ class TurnTracker:
         with self._lock:
             return self._live_turn_locked(session_id)
 
-    def begin(self, session_id: str, turn: int) -> None:
+    def asking_turn(self, session_id: str) -> tuple[int, int]:
+        """``(turn, attempt)`` of *session_id*'s turn that can still ask, or ``(0, 0)``.
+
+        For a dispatch that names the turn which asked for it. Unlike :meth:`live_turn`
+        it skips a record whose terminal is already handed to the writer: that turn has
+        ended, and the record stays only until its closer lands. A cron, hook or slash
+        command dispatching in that window has no asking turn, and stamping the ended one
+        would file the child under a turn that never asked for it. :meth:`live_turn`
+        keeps counting such a record on purpose, because the tail repair must still stand
+        down for a closer that is on its way.
+
+        ``attempt`` is the one stamped on that turn's own record, so a regenerate or
+        rewind of the same ordinal reads its own try. 0 when ``turn/started``'s job has
+        not derived it yet, and a writer then omits it rather than guess.
+        """
+        if not session_id:
+            return (0, 0)
+        with self._lock:
+            live = [
+                (t, state)
+                for (sid, t), state in self._live.items()
+                if sid == session_id and not state.closer_owed
+            ]
+            if not live:
+                return (0, 0)
+            turn, state = max(live, key=lambda pair: pair[0])
+            return (turn, state.attempt)
+
+    def note_attempt(
+        self, session_id: str, turn: int, attempt: int, record: "_LiveTurn | None"
+    ) -> None:
+        """Stamp *attempt* on *record*, the one :meth:`begin` returned for this start.
+
+        Called by ``turn/started``'s job once the attempt is known. Stamps nothing when
+        *record* is not *turn*'s live record, because the turn has ended or a rerun of
+        the ordinal has replaced it. That rerun's attempt is its own job's to stamp.
+        Never creates a record.
+        """
+        if record is None:
+            return
+        with self._lock:
+            if self._live.get((session_id, int(turn))) is record:
+                record.attempt = int(attempt)
+
+    def begin(self, session_id: str, turn: int) -> "_LiveTurn | None":
         """Open the live-turn record for *turn*.
 
         Idempotent on purpose: a second start for the same turn keeps the record it
@@ -223,9 +272,23 @@ class TurnTracker:
         exists to prevent.
         """
         if not session_id:
-            return
+            return None
         with self._lock:
-            self._live_state_locked(session_id, turn)
+            state = self._live.get((session_id, int(turn)))
+            if state is not None and state.closer_owed:
+                # A rerun of this ordinal starting before the earlier try's closer
+                # has landed. That record belongs to the try that ended: its release
+                # is still owed to the writer, and this try is live. A fresh record
+                # in the same slot keeps both true, and the earlier closer's release
+                # drops only the record it marked (see :meth:`closing`).
+                fresh = _LiveTurn()
+                self._live[(session_id, int(turn))] = fresh
+                return fresh
+            state = self._live_state_locked(session_id, turn)
+            # A reused record still carries the earlier try's attempt. This start's
+            # own attempt is derived later, so until then it is unobserved.
+            state.attempt = 0
+            return state
 
     def release_unclosed(self, session_id: str) -> None:
         """Close every live-turn record of one session that no terminal is coming for.
@@ -267,13 +330,18 @@ class TurnTracker:
         terminal drop with nothing left to re-queue the repair.
         """
         with self._lock:
-            state = self._live.get((session_id, int(turn)))
-            if state is not None:
-                state.closer_owed = True
+            marked = self._live.get((session_id, int(turn)))
+            if marked is not None:
+                marked.closer_owed = True
 
         def _release() -> None:
             with self._lock:
-                self._release_locked(session_id, turn)
+                # Only the record this closer marked is its to drop. A rerun of the
+                # ordinal may have replaced it since (see :meth:`begin`), or created
+                # one where none existed at handover; either is the new try's. A
+                # record nothing closes is :meth:`release_unclosed`'s to reclaim.
+                if marked is not None and self._live.get((session_id, int(turn))) is marked:
+                    self._release_locked(session_id, turn)
                 if not any(sid == session_id for (sid, _) in self._live):
                     self._repair_owed.pop(session_id, None)
 

@@ -184,3 +184,45 @@ class TestMemoryStoreOpen:
             holder.close()
         assert fake.sleeps, "the open did not wait for the lock"
         assert str(mode).lower() == "wal"
+
+
+def _wal_db(tmp_path: Path) -> tuple[Path, stdlib_sqlite3.Connection]:
+    db = tmp_path / "w.db"
+    conn = stdlib_sqlite3.connect(db, isolation_level=None)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t(x)")
+    conn.execute("INSERT INTO t VALUES (1)")
+    return db, conn
+
+
+@pytest.mark.skipif(
+    not hasattr(stdlib_sqlite3.Connection, "setconfig"), reason="Python before 3.12"
+)
+def test_a_kept_connection_closes_without_deleting_its_wal(tmp_path: Path) -> None:
+    db, conn = _wal_db(tmp_path)
+    assert sqlite_wal.keep_wal_on_close(conn) is True
+    conn.close()
+    assert Path(f"{db}-wal").exists()
+
+
+def test_keep_wal_on_close_reports_a_connection_that_refuses_the_option(
+    tmp_path: Path,
+) -> None:
+    _db, conn = _wal_db(tmp_path)
+    conn.close()  # setconfig on a closed connection raises ProgrammingError
+    assert sqlite_wal.keep_wal_on_close(conn) is False
+
+
+def test_truncate_wal_before_close_empties_the_wal_in_place(tmp_path: Path) -> None:
+    db, conn = _wal_db(tmp_path)
+    wal = Path(f"{db}-wal")
+    assert wal.stat().st_size > 0
+    sqlite_wal.truncate_wal_before_close(conn)
+    assert wal.exists() and wal.stat().st_size == 0
+    conn.close()
+
+
+def test_truncate_wal_before_close_never_raises(tmp_path: Path) -> None:
+    _db, conn = _wal_db(tmp_path)
+    conn.close()
+    sqlite_wal.truncate_wal_before_close(conn)  # a closed connection is logged, not raised

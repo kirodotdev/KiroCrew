@@ -103,9 +103,8 @@ _MATE_AUTO_GRANTS = (
 #: the person arranged and would have to reconstruct by hand. Creation is otherwise
 #: recoverable clutter; mutation of what the user arranged is not.
 #:
-#: Both granted creation verbs earn half 2 from a server ceiling, and BOTH ceilings
-#: were added by this change — neither verb was safe to auto-approve as the code
-#: stood:
+#: Both granted creation verbs earn half 2 from a server ceiling — without its
+#: ceiling neither verb is safe to auto-approve:
 #:
 #: * ``chat_folder_create`` had no bound at all, so a loop grew durable on-disk
 #:   state without limit. Now ``MAX_CHAT_FOLDERS``, tested under the folder lock.
@@ -205,6 +204,9 @@ _MATE_AUTO_GRANTS = (
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
 #:   reachable; nothing bounds WHAT is sent.
+#: * ``work_dispatch`` — WITHHELD, on ``session_send``'s reason: its last step sends
+#:   the seed, and the approval prompt is where a person reads that seed. Granting
+#:   it is rfc-work-dispatch.md's open question Q1, not a default.
 #: * ``session_broadcast`` — WITHHELD, on ``session_send``'s reason multiplied by
 #:   the fleet: one call runs ingested text as a user-role turn in every session
 #:   this agent created. Nothing about the fan-out narrows what is sent, so the
@@ -239,6 +241,9 @@ _MATE_AUTO_GRANTS = (
 #:   session's turn forward (the target's ``wait`` returns early), which is a
 #:   change to state that is not the caller's own, and no conductor step needs it
 #:   unattended.
+#: * ``session_set_color`` — WITHHELD. Writes a session other than the
+#:   caller's (its sidebar tint). The route confines it to sessions the
+#:   caller created and refuses the caller's own, but no conductor step needs it.
 #: * ``session_reload`` — WITHHELD. Tears down another session's agent process
 #:   and relaunches it. The conversation survives, but a reload is still a
 #:   process-level action on a session a person may be watching, and no
@@ -281,7 +286,7 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
 #: → stop) stalls on an approval prompt at its second step with nobody at the
 #: keyboard.
 #: ``session_broadcast`` joins on exactly ``session_send``'s argument rather than a
-#: new one, and the fan-out does not widen it: the verb's DEFAULT audience is read
+#: new one, and the fan-out does not widen it: the verb's `all: true` audience is read
 #: from the same ``created_by`` field the ownership fence reads, and every delivery
 #: re-runs that fence per target, so a member's broadcast reaches the worker
 #: sessions it opened and nothing else — the same confinement, applied to each of
@@ -295,11 +300,18 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
 #: And it refuses a turn that finished or was stopped (``turn_not_failed``).
 #: Restarting a worker whose turn timed out is the patrol step the verb exists
 #: for, and that step runs with nobody at the keyboard.
+#: ``session_close`` joins under the same fence: ``close_target`` runs
+#: ``authorize_target``, so a member closes only worker sessions it created or
+#: manages, and ``close_target`` refuses a crewmate's own thread. A close archives
+#: (reopenable from History), never deletes. Closing a finished or stuck worker is
+#: the cleanup step of the same unattended loop; without the grant those workers
+#: stay open until a person closes each one.
 _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
     "@kirocrew-dashboard/session_send",
     "@kirocrew-dashboard/session_broadcast",
     "@kirocrew-dashboard/session_stop",
     "@kirocrew-dashboard/session_retry",
+    "@kirocrew-dashboard/session_close",
 )
 
 

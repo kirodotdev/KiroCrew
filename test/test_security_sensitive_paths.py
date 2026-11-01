@@ -811,13 +811,13 @@ class TestAdaptiveHomeTargetsExpiry:
     ) -> None:
         """The reachable stale-credential path is closed, not merely bounded.
 
-        The review finding: a keystone leaf such as ``security_policy.json`` is
-        not an anchor, so it is not in the cache key; repoint it and the stale
-        set answers with the old target until the entry expires. Under the
-        adaptive expiry alone that window grew with load, which made an ordinary
-        contended host the reachable case.
+        A keystone leaf such as ``security_policy.json`` is not an anchor, so it
+        is not in the cache key; repoint it and the stale set answers with the
+        old target until the entry expires. Under the adaptive expiry alone that
+        window grows with load, which makes an ordinary contended host the
+        reachable case.
 
-        The build now reports whether it traversed a symlink, and that pins the
+        The build reports whether it traversed a symlink, and that pins the
         expiry to the floor. So the very install where a repoint can strand a
         resolution-derived target is the install that keeps the 0.1s window it
         has today, while a host with no symlinked leaf keeps the long expiry. The
@@ -1025,6 +1025,9 @@ class TestAdaptiveHomeTargetsExpiry:
                 expected.add(os.path.join(roots.kiro_home, "agents"))
             if roots.kiro_home and gate._KIRO_MATE_AGENTS_DIR in tier:
                 expected.add(os.path.join(roots.kiro_home, "mates", "agents"))
+            for mate_leaf in gate._KIRO_MATE_STATE_LEAVES:
+                if roots.kiro_home and mate_leaf in tier:
+                    expected.add(os.path.join(roots.kiro_home, *gate._leaf_segments(mate_leaf)[1:]))
             # The registry leaf shares that class: one root, one guard shape. Derived
             # from the same constant the build reads, so it tracks a moved leaf.
             if roots.kiro_home and gate._KIRO_SETTINGS_MCP_JSON in tier:

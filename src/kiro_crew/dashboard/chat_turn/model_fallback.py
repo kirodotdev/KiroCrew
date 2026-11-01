@@ -812,6 +812,8 @@ async def _settle_session_model(
         # styling for the same reason the empty-response notices use it — a
         # plan change is not a crash. slot.append persists AND broadcasts one
         # chat_message, so it needs no companion broadcast_ws.
+        from kiro_crew.dashboard import gateway_notice as gn
+
         slot.append(
             "notice",
             f"{slot.model} isn't offered right now — "
@@ -819,6 +821,7 @@ async def _settle_session_model(
             f"from the composer, or leave it: your model choice is kept and "
             f"will be used automatically once it's offered again.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_MODEL_UNAVAILABLE, model=str(slot.model)),
         )
     return withheld_pin
 
@@ -1190,7 +1193,7 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
         # does (visible error card, structural meta so the frontend
         # offers the picker) and end the turn. A bare re-raise here would
         # escape _run_chat to a log-only callback and dead-end the turn
-        # with no card — the exact silent failure this PR fixes.
+        # with no card, a silent failure.
         logger.info(
             "model access fallback: slot %s provider exposes no set_model; "
             "surfacing entitlement error for %r",
@@ -1341,11 +1344,18 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                     # user, forced the model change, so it must be said out
                     # loud and survive a reload the way the throttle notice
                     # does).
+                    from kiro_crew.dashboard import gateway_notice as gn
+
                     slot.append(
                         "notice",
                         f"⚠️ Your account cannot use model '{_rejected_safe}' — "
                         f"running on '{_cand_safe}' instead.",
                         "msg msg-info",
+                        meta=gn.gateway_notice_meta(
+                            gn.GATEWAY_NOTICE_MODEL_ACCESS_FALLBACK,
+                            rejected=_rejected_safe,
+                            model=_cand_safe,
+                        ),
                     )
                     logger.warning(
                         "model access fallback: slot %s model %r not entitled; "

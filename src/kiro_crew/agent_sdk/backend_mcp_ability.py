@@ -130,9 +130,12 @@ OFF_CARD_CONCERNS: Mapping[str, str] = {
         "what happens"
     ),
     "RESOURCES": (
-        "same as PROMPT -- steering files are injected as context text rather than "
-        "projected into a backend's config, so the withhold is an implementation "
-        "route and not a loss the reader can act on"
+        "no mirrored harness reads resources, but the two schemes fare differently: "
+        "skill:// still arrives as the skill directory Crew injects on every backend, "
+        "so rendering the withhold would say mapped skills are lost when they are not; "
+        "file:// steering is not loaded from the spec, and that is told where it applies, "
+        "as a session-start notice naming the custom agent's entries "
+        "(providers.mirrors.base.RESOURCES_NO_READER)"
     ),
 }
 

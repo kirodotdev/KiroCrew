@@ -355,7 +355,7 @@ def set_settings(
     if branch_name is not None:
         # `set_top_level`, not an open-coded read/write: it holds `_ConfigLock` across the
         # read-modify-write, so a concurrent settings PUT cannot drop this key (or have its own
-        # dropped). The bare sequence here bypassed that lock. Found in review.
+        # dropped). The bare sequence here bypassed that lock.
         set_top_level(_BRANCH_KEY, branch_name.strip())
 
 
@@ -829,9 +829,9 @@ async def pull() -> tuple[bool, str]:
         # Off the loop: `has_conflict` reads the whole ledger and `resolve_conflict` re-parses
         # and REWRITES it, and a team ledger is the one file in this app that grows without
         # bound. `pull` is awaited from the heartbeat and from hygiene, so on a conflicted
-        # ledger this stalled the gateway — every chat token, every other app — for the length
-        # of a full parse-and-rewrite. Found in review; the async functions in this module are
-        # otherwise careful to keep file work in a thread, which is what made it stand out.
+        # ledger an inline run would stall the gateway — every chat token, every other app —
+        # for the length of a full parse-and-rewrite. The async functions in this module
+        # keep file work in a thread for the same reason.
         if await asyncio.to_thread(has_conflict):
             kept = await asyncio.to_thread(resolve_conflict)
             await _stage_and_commit("merge team ledger", allow_empty_message_only=True)
@@ -942,7 +942,7 @@ async def push(*, message: str = "update ops ledger") -> tuple[bool, str]:
     # `push` is a coroutine reached from the hygiene route. Same class as the store/ledger
     # parses already moved, but through a module-LOCAL helper, which is why the AST guard did
     # not see it — that guard matched `store.*`/`ledger.*` attribute calls only. It now also
-    # covers the local file-scanning helpers in this package. Found in review.
+    # covers the local file-scanning helpers in this package.
     leaky = await asyncio.to_thread(_credential_bearing_lines)
     if leaky:
         logger.error(

@@ -184,6 +184,42 @@ class TestPolicyParsing:
         assert ceiling.updates.source == ""
 
 
+class TestUnattendedApplyPin:
+    """``updates.unattended_apply``: may the gateway install without being asked?"""
+
+    @staticmethod
+    def _parse(value: object) -> UpdatePins:
+        doc = {"version": 1, "boot": {}, "updates": {"unattended_apply": value}}
+        return parse_policy(doc).updates
+
+    def test_absent_and_null_keep_unattended_installs_on(self):
+        assert parse_policy(_policy()).updates.unattended_apply is True
+        assert self._parse(None).unattended_apply is True
+
+    @pytest.mark.parametrize("value", [False, True])
+    def test_a_boolean_is_parsed_as_written(self, value):
+        assert self._parse(value).unattended_apply is value
+
+    @pytest.mark.parametrize("bad", ["false", "no", 0, 1, [], {}])
+    def test_a_non_boolean_fails_closed_not_coerced(self, bad):
+        """`"false"` is truthy: coercing it would turn installs ON, not off."""
+        with pytest.raises(PlatformCompositionError, match="must be true or false"):
+            self._parse(bad)
+
+    def test_the_seam_reads_the_active_pin(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance.active_update_pins",
+            lambda: UpdatePins(unattended_apply=False),
+        )
+        assert update_governance.unattended_apply_allowed() is False
+
+    def test_an_ungoverned_host_installs_unattended(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance.active_update_pins", lambda: UpdatePins()
+        )
+        assert update_governance.unattended_apply_allowed() is True
+
+
 class TestSeam:
     """The shared gate the API, CLI and boot paths call."""
 
@@ -252,7 +288,7 @@ class TestRemoteResolution:
             return _R("")
 
         monkeypatch.setattr("subprocess.run", fake_run)
-        url = update_governance.resolve_remote_url("/proj", branch="main")
+        url = update_governance.resolve_remote_url("/proj", fetch_env=None, branch="main")
         assert url == "https://git.corp/team/repo"
         assert ["ls-remote", "--get-url", "--", "upstream"] in [c[1:] for c in calls]
         # argv[0] must be the resolved binary, never a bare `git` off PATH.
@@ -266,11 +302,11 @@ class TestRemoteResolution:
             stdout = "origin\n"
 
         monkeypatch.setattr("subprocess.run", lambda argv, **kw: _R())
-        assert update_governance.resolve_remote_url("/proj", branch="main") == ""
+        assert update_governance.resolve_remote_url("/proj", fetch_env=None, branch="main") == ""
 
     def test_detached_head_is_unresolvable(self, monkeypatch):
         monkeypatch.setattr("subprocess.run", lambda *a, **k: pytest.fail("must not run git"))
-        assert update_governance.resolve_remote_url("/proj", branch="HEAD") == ""
+        assert update_governance.resolve_remote_url("/proj", fetch_env=None, branch="HEAD") == ""
 
     def test_fixed_remote_ignores_the_tracked_remote(self, monkeypatch):
         """CLI/boot fetch a hardcoded `origin`, so they must validate `origin`.
@@ -290,10 +326,12 @@ class TestRemoteResolution:
 
         monkeypatch.setattr("subprocess.run", fake_run)
         assert (
-            update_governance.resolve_remote_url("/proj", remote="origin")
+            update_governance.resolve_remote_url("/proj", fetch_env=None, remote="origin")
             == "https://git.corp/origin-repo"
         )
-        # Neither the branch nor its tracked remote is consulted.
+        # Neither the branch nor its tracked remote is consulted. The env
+        # builder's own `safe.directory` reads are host config, not this repo.
+        calls = [c for c in calls if "safe.directory" not in c]
         assert [c[1:] for c in calls] == [["ls-remote", "--get-url", "--", "origin"]]
         assert all(c[0] != "git" for c in calls), calls
 
@@ -316,7 +354,8 @@ class TestRemoteResolution:
             return _R("https://git.corp/team/repo\n")
 
         monkeypatch.setattr("subprocess.run", fake_run)
-        assert update_governance.resolve_remote_url("/proj") == "https://git.corp/team/repo"
+        url = update_governance.resolve_remote_url("/proj", fetch_env=None)
+        assert url == fake_run(["ls-remote"]).stdout.strip()  # the stub's URL answer
         assert ["rev-parse", "--abbrev-ref", "HEAD"] in [c[1:] for c in calls]
         assert all(c[0] != "git" for c in calls), calls
 
@@ -325,7 +364,7 @@ class TestRemoteResolution:
             raise FileNotFoundError("git")
 
         monkeypatch.setattr("subprocess.run", _no_git)
-        assert update_governance.resolve_remote_url("/proj", branch="main") == ""
+        assert update_governance.resolve_remote_url("/proj", fetch_env=None, branch="main") == ""
 
 
 class TestPrimaryBranchResolution:
@@ -643,9 +682,8 @@ class TestGitExecNeutralizers:
 class TestNoTestSideEffects:
     """Every git subprocess in THIS file must carry the sanitized environment.
 
-    `no-test-side-effects`, and it has now recurred four times across review rounds
-    (GIT_TEMPLATE_DIR, then GIT_DIR in the fixtures, then a control probe, then
-    seven bare calls at once). The failure is always the same: an inherited
+    `no-test-side-effects`: a fixture, a control probe or a bare call can each miss
+    it (GIT_TEMPLATE_DIR, GIT_DIR). The failure is always the same: an inherited
     ``GIT_DIR`` points a probe at an operator's real repository, where `git status`
     can invoke THAT repo's configured fsmonitor -- a host-side side effect from
     running the test suite, outside ``tmp_path``.
@@ -735,7 +773,8 @@ class TestWorktreeRedirectRefusal:
         """Cannot prove where a write would land, so do not write."""
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance._git_probe",
-            lambda proj, *a: "" if a[:1] == ("config",) else None,
+            # `ls-files` answers "no nested repos" so the work-tree probe is reached.
+            lambda proj, *a, **_k: "" if a[:1] in (("config",), ("ls-files",)) else None,
         )
         assert update_governance.repo_exec_config_reason("/proj") != ""
 
@@ -1828,13 +1867,30 @@ class TestGitCommandEnv:
         assert keys["core.fsmonitor"] == "false"
         assert keys["core.hooksPath"] == os.devnull
 
-    def test_unrelated_environment_survives(self, monkeypatch):
-        """PATH and friends must come through, or git does not run at all."""
-        monkeypatch.setenv("PATH", "/usr/bin")
+    def test_path_is_inherited_so_a_bare_git_still_resolves(self, monkeypatch):
+        """``git_command_env`` keeps PATH: some callers spawn a bare ``git``.
+
+        The isolated update fetch, whose git is a trusted absolute path, pins
+        PATH to the trusted system directories itself (see
+        test_update_check_git_exec_neutralized.test_a_git_shim_on_path_is_not_run).
+        """
+        monkeypatch.setenv("PATH", f"/somewhere/else{os.pathsep}/usr/bin")
         monkeypatch.setenv("SOME_UNRELATED_VAR", "keep-me")
         env = update_governance.git_command_env()
-        assert env["PATH"] == "/usr/bin"
+        assert env["PATH"] == f"/somewhere/else{os.pathsep}/usr/bin"
         assert env["SOME_UNRELATED_VAR"] == "keep-me"
+
+    def test_lazy_fetch_is_disabled(self):
+        """A partial clone's on-demand object fetch would bypass the isolated fetch."""
+        assert update_governance.git_command_env()["GIT_NO_LAZY_FETCH"] == "1"
+
+    def test_remote_helpers_and_git_proxy_are_closed(self, monkeypatch):
+        """Only built-in transports, and no repo-named git proxy, reach a fetch."""
+        monkeypatch.delenv("GIT_ALLOW_PROTOCOL", raising=False)
+        monkeypatch.delenv("GIT_PROXY_COMMAND", raising=False)
+        env = update_governance.git_command_env()
+        assert env["GIT_ALLOW_PROTOCOL"] == "file:git:ssh:http:https"
+        assert env["GIT_PROXY_COMMAND"] == ""
 
     def test_a_merge_would_not_have_worked(self):
         """Documents WHY this builds instead of merging, as an assertion.

@@ -152,9 +152,8 @@ _CRON_BRACE_EXPANSION_RE = re.compile(r"\$\{(?![A-Za-z_][A-Za-z0-9_]*\})")
 # `shopt -s braceexpand`) leaks — `eval "set -B"` reaches the same state — so the
 # refusal targets the braces, not the switch.
 # A NESTED comma form is a real expansion too — `.a{w,{w}}s` -> `.aws .a{w}s`, so
-# the first expanded word IS the credential directory — and it becomes reachable
-# precisely under this change, since the `+B` probe this ships alongside is what
-# admits a brace-expanding bash as the cron executor.
+# the first expanded word IS the credential directory — and it is reachable
+# because the `+B` probe admits a brace-expanding bash as the cron executor.
 # Whitespace inside the braces is what separates an expansion from an ordinary
 # braced argument such as `awk '{print x, y}'`, but only BARE whitespace is: bash
 # leaves `{a b,c}` literal and expands every QUOTED or ESCAPED spelling of that
@@ -563,10 +562,9 @@ _BRACE_SCAN_STEP_BUDGET = 1_000_000
 # bounds the brace walk and nothing else: a single long WORD with no whitespace is
 # quadratic through the rules below, independently of that walk, measured at 133 ms
 # for 2k, 781 ms for 8k, 11.4 s for 32k and 178 s for 128k, while the brace shape the
-# budget does cover stays flat (156 ms -> 269 ms across the same range). That path is
-# PRE-EXISTING -- the base commit measures 129 ms / 757 ms / 11.3 s for the same
-# inputs, within noise -- so it is not this change's to fix, but it is this ceiling's
-# to survive.
+# budget does cover stays flat (156 ms -> 269 ms across the same range). That path
+# lies outside the brace walk, so the step budget cannot fix it, but this ceiling has
+# to survive it.
 #
 # Hence a ceiling just above the storable maximum rather than a generous one. A
 # ``command`` is capped at 5000 where it is stored, so 8192 leaves ~1.6x headroom for

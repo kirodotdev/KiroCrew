@@ -673,7 +673,11 @@ def _mark_dead(
     # operators can tell an OOM/crash from a clean exit without DEBUG logs.
     rc = self._returncode_label()
     if self.recording_allowed:
-        tail = " | ".join(self._stderr_lines[-5:]) if self._stderr_lines else "<none>"
+        # Both spellings of the tail are checked, so a secret wrapped across two
+        # stderr lines cannot hide behind the " | " separator.
+        from kiro_crew.acp.stderr_tail import safe_stderr_tail
+
+        tail = safe_stderr_tail(self._stderr_lines[-5:], " | ") or "<none>"
     else:
         # Reader exceptions and child stderr can echo session content.
         # Restricted runs retain lifecycle facts, including the exit code.

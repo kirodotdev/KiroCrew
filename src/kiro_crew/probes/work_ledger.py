@@ -43,8 +43,12 @@ import json
 import logging
 from typing import Callable
 
-from kiro_crew import irq, ledger_wake, work_ledger
-from kiro_crew.work_vocab import WORK_BLOCKED_REASONS, WORK_REASON_STATUSES
+from kiro_crew import irq, ledger_wake, work_ledger, work_preview
+from kiro_crew.work_vocab import (
+    WORK_BLOCKED_REASONS,
+    WORK_REASON_STATUSES,
+    WORK_REMOTE_DISPATCH_STATUSES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -318,8 +322,16 @@ class WorkLedgerProbe(irq.Probe):
         keys never recur anyway.
         """
         found: list[irq.Observation] = []
+        remote_dispatch: bool | None = None
         for event in events:
-            if not ledger_wake.is_actionable_event(event.kind, event.status):
+            if remote_dispatch is None and (event.status or "").strip() in (
+                WORK_REMOTE_DISPATCH_STATUSES
+            ):
+                # Only a preview status pays for the switch's config read.
+                remote_dispatch = work_preview.remote_dispatch()
+            if not ledger_wake.is_actionable_event(
+                event.kind, event.status, remote_dispatch=bool(remote_dispatch)
+            ):
                 continue
             # Keyed on the event's content-addressed id, which is why these never
             # reset on a revision: the key already cannot recur, and clearing it
@@ -358,11 +370,15 @@ class WorkLedgerProbe(irq.Probe):
                     )
                 )
 
-        if work_ledger.is_stale(
+        running, closed, looping = work_ledger.item_liveness(
+            conductor_key,
             item,
-            worker_running=self._worker_running(item.worker_session_key or ""),
-            worker_closed=self._worker_closed(item.worker_session_key or ""),
-            worker_looping=self._worker_looping(item.worker_session_key or ""),
+            running=self._worker_running,
+            closed=self._worker_closed,
+            looping=self._worker_looping,
+        )
+        if work_ledger.is_stale(
+            item, worker_running=running, worker_closed=closed, worker_looping=looping
         ):
             # The whole liveness conjunction is ``is_stale``'s, not this module's:
             # quiet past the window -- or the worker's session gone, which needs no
@@ -503,6 +519,12 @@ def person_wait_fingerprint(
             item.status in WORK_REASON_STATUSES and item.reason in WORK_BLOCKED_REASONS
             for item in open_items
         ):
+            return None
+        if any(item.worker_instance_id for item in open_items):
+            # A remote worker's reports reach this board only when the conductor
+            # reads it (the hub pulls on read), so its fields here can be older than
+            # the peer's. Holding the patrol on them could hold it past the report
+            # that moves the item; the patrol runs instead.
             return None
         closed = worker_closed or _always_open
         if any(closed(item.worker_session_key or "") for item in open_items):

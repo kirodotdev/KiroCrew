@@ -21,8 +21,8 @@
  *   3. the probe FAILS (non-OK / error) -> App keeps the flag ON (default-on):
  *      a transient failure must not hide an enabled terminal
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
+import { act, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../integration/mocks/server'
 import { renderWithProviders } from './helpers'
@@ -118,8 +118,11 @@ describe('App terminal-enabled registry flag sync', () => {
     )
     renderWithProviders(<App />, { route: '/chat' })
     await waitFor(() => expect(isTerminalEnabled()).toBe(false))
-    // A second settle window guards against a late async re-flip.
-    await new Promise(r => setTimeout(r, 20))
+    // A second settle window guards against a late async re-flip. Fake timers go on only now that the
+    // render has settled; the 20ms window is advanced inside act so late App updates land in it.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     expect(isTerminalEnabled()).toBe(false)
   })
 })

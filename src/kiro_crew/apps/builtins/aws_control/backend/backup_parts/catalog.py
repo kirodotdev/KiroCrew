@@ -33,12 +33,12 @@ logger = logging.getLogger(_FACADE_MODULE)
 #: How many OTHER installs' prefixes one expanded listing will enumerate.
 #:
 #: A RUNAWAY BOUND, not a display choice, and the distinction is what makes the
-#: number this large. An earlier draft capped this at 8 and picked the shown
-#: subset with ``sorted(other_ids)[:8]`` -- hex order, which is arbitrary with
+#: number this large. A small cap that picks the shown subset with
+#: ``sorted(other_ids)[:8]`` sorts in hex order, which is arbitrary with
 #: respect to recency, so a stale prefix (a reinstall, or the process-local
 #: fallback id minting a fresh one per restart) could displace the install
 #: holding the newest surviving archive. That is a coin flip on exactly the
-#: replacement-machine path this expansion exists for. Set high enough that
+#: replacement-machine path this list serves. Set high enough that
 #: truncation cannot bite a real drive, the subset stops being a decision at all:
 #: every install present is listed, and which one sorts first only affects the
 #: order rows appear in, which the timestamp sort then fixes anyway.

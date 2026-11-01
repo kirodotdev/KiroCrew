@@ -2,9 +2,9 @@
  * Tests for the Auto Triage Pipeline API client (`./api`).
  *
  * The module reads THROUGH Issue Radar's crew-fabric seam and PROMISES to be
- * forward-tolerant: `crewFabric` and the fold clients never throw on "no
- * data yet" — a transport failure, any non-2xx, a non-JSON body, or a payload
- * from a newer/wrong schema all collapse to the same normalized empty result.
+ * forward-tolerant: `crewFabric` never throws on "no data yet" — a 404, a
+ * non-JSON body, or a payload from a newer/wrong schema all collapse to the
+ * same normalized empty result. A transport failure or any other non-2xx throws.
  * These tests assert that contract (the request built, the request query, and
  * the guaranteed shape on every degraded path), not merely line execution.
  *
@@ -141,7 +141,7 @@ describe('autoTriagePipelineApi.crewFabric', () => {
     expect(res.phases).toEqual([...CREW_PHASES])
   })
 
-  it('never throws on a non-2xx response — synthesizes the empty result carrying the requested ref', async () => {
+  it('never throws on a 404 — synthesizes the empty result carrying the requested ref', async () => {
     fetchSpy.mockResolvedValue(jsonResponse({ error: 'not found' }, 404))
 
     const ref: RepoRef = { owner: 'o', repo: 'r', provider: 'github', host: 'github.com' }
@@ -157,11 +157,46 @@ describe('autoTriagePipelineApi.crewFabric', () => {
     expect(res.items).toEqual([])
   })
 
-  it('synthesizes the empty result for a 500', async () => {
-    fetchSpy.mockResolvedValue(rawResponse('internal error', 500))
+  it('synthesizes the empty result for a 404 repo_not_connected', async () => {
+    fetchSpy.mockResolvedValue(
+      jsonResponse({ error: 'repo not connected', code: 'repo_not_connected' }, 404),
+    )
     const res = await autoTriagePipelineApi.crewFabric({ owner: 'o', repo: 'r' })
     expect(res.items).toEqual([])
     expect(res.host).toBeNull()
+  })
+
+  it('throws on an expired sign-in (403 X-Auth-Required), not an empty queue', async () => {
+    fetchSpy.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'auth required' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Required': 'true' },
+      }),
+    )
+    const err = await autoTriagePipelineApi
+      .crewFabric({ owner: 'o', repo: 'r' })
+      .then(() => null, (e: ApiError) => e)
+    expect(err?.status).toBe(403)
+  })
+
+  it('carries the backend code on a thrown refusal', async () => {
+    fetchSpy.mockResolvedValue(jsonResponse({ error: 'bad', code: 'missing_repo' }, 400))
+    const err = await autoTriagePipelineApi
+      .crewFabric({ owner: 'o', repo: 'r' })
+      .then(() => null, (e: ApiError) => e)
+    expect(err?.status).toBe(400)
+    expect(err?.code).toBe('missing_repo')
+  })
+
+  it('throws on a 500, carrying the status, so the view can say the read failed', async () => {
+    // A 5xx answered nothing; folding it into empty put "no activity yet" in
+    // front of an outage.
+    fetchSpy.mockResolvedValue(rawResponse('internal error', 500))
+    const err = await autoTriagePipelineApi
+      .crewFabric({ owner: 'o', repo: 'r' })
+      .then(() => null, (e: ApiError) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err?.status).toBe(500)
   })
 
   it('synthesizes the empty result for a malformed / non-JSON body at 200', async () => {
@@ -185,11 +220,9 @@ describe('autoTriagePipelineApi.crewFabric', () => {
     expect(res.items).toEqual([])
   })
 
-  it('never throws on a transport-level failure (offline / DNS)', async () => {
+  it('throws on a transport-level failure (offline / DNS): nothing was answered', async () => {
     fetchSpy.mockRejectedValue(new TypeError('Failed to fetch'))
-    const res = await autoTriagePipelineApi.crewFabric({ owner: 'o', repo: 'r' })
-    expect(res.items).toEqual([])
-    expect(res.owner).toBe('o')
+    await expect(autoTriagePipelineApi.crewFabric({ owner: 'o', repo: 'r' })).rejects.toThrow('Failed to fetch')
   })
 
   it('preserves an explicit schema number and falls back to the ref for missing owner/repo', async () => {

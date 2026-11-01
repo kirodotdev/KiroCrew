@@ -268,7 +268,7 @@ class TestTransportAdmissionSpool:
         assert routes[0].text == text
         assert routes[0].attachments_dropped == dropped
 
-    def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch):
+    def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch, caplog):
         from kiro_crew.session_allocation import SessionClosingError
 
         async def reject_turn(*_args, **_kwargs):
@@ -278,10 +278,13 @@ class TestTransportAdmissionSpool:
         monkeypatch.setattr(_CapturingSessions, "get_or_create", reject_turn)
         monkeypatch.setattr(transport_dispatch, "spool_refused_turn", spool)
         monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: True)
+        caplog.set_level("INFO", logger=transport_dispatch.logger.name)
 
         _run_transport(monkeypatch)
 
         spool.assert_not_awaited()
+        msgs = [r.getMessage() for r in caplog.records if r.name == transport_dispatch.logger.name]
+        assert any("gateway is shutting down" in m for m in msgs), msgs
 
 
 class TestTransportBookkeepingIsolation:

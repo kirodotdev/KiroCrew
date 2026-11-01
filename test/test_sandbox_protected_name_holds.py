@@ -289,7 +289,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: hold, so leaf-only is the only hold available to them:
     #:
     #: * ``credential_redaction.json`` -- the owner's credential-redaction
-    #:   switch, on the same read-only floor as ``file_delivery_consent.json``;
+    #:   switch, on the same read-only floor as ``aws_service_consent.json``;
     #: * ``auth-store-staging`` -- the masked directory the two gateway auth
     #:   stores publish through, so the temp holding a full signing key or
     #:   refresh-chain state is never listable from inside the namespace;
@@ -324,7 +324,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
     #:
-    #: One more root-level leaf, three more entries per tier:
+    #: One more root-level directory, three entries per tier:
     #:
     #: * ``gateway_id`` -- the id the Remote Crew cycle guard compares, sealed
     #:   read-only so an agent cannot choose whether a chaining loop is detected.
@@ -393,7 +393,43 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   (``notifications/push_store.py``), masked as a whole directory so the
     #:   ``atomic_write`` temps they publish through are hidden too. At the data-home
     #:   root beside writable siblings, so leaf-only is the only hold.
-    EXPECTED: dict[str, int] = {"standard": 296, "cc": 303, "strict": 304}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``secret-request-policy`` -- the mediated-secret request directory: the
+    #:   owner-signed egress policy ``kirocrew secrets authorize`` writes and its
+    #:   authorize lock, masked whole so an agent can neither read the allowlist nor
+    #:   plant an entry. Every publication renames INSIDE it, so the directory's own
+    #:   inode stays the same on a republish. It sits at the data-home root beside
+    #:   writable siblings, so no enclosing directory mask can hold it and leaf-only
+    #:   is the only hold available, the same as ``member-records``.
+    #:
+    #: One entry per tier for the default home's ``run`` under a relocated data
+    #: home (``sandbox_workspace.prime_voice_runtime_sandbox_paths``):
+    #:
+    #: * ``$HOME/.kiro/crew/run`` -- where every gateway leaves its run-dir pointer,
+    #:   whatever its data home, and the token mint follows that pointer to a
+    #:   launcher it runs outside the sandbox. Sealed read-only so an agent cannot
+    #:   plant one. Only the ``$HOME/.kiro/crew`` spelling is added: the relocated
+    #:   home's own ``run`` is already counted. It sits at the default home's root
+    #:   beside writable siblings, so no enclosing directory mask can hold it and
+    #:   leaf-only is the only hold available. The pointer is published by a rename
+    #:   INSIDE it, so the directory's own inode stays the same on a republish.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``released-sessions`` -- the gateway's pending deletes of released
+    #:   engine records. An entry has the gateway delete the record it names, so
+    #:   a forged one would delete a conversation. It sits at the root, masked,
+    #:   rather than under the sandbox read-write ``trust/``, and is leaf-only for
+    #:   the reason ``panel-dismissals`` is.
+    #:
+    #: One more root-level leaf, three entries per tier:
+    #:
+    #: * ``shared_crew_preview.json`` -- the owner's Shared Crew switch, a file at
+    #:   the data-home root beside writable siblings, so leaf-only is the only
+    #:   hold available, as for ``decisions_consent.json``.
+    EXPECTED: dict[str, int] = {"standard": 306, "cc": 313, "strict": 314}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

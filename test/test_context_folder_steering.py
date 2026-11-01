@@ -255,10 +255,14 @@ def test_steering_cap_truncates_with_the_marker_regardless_of_lazy_load(
 
 
 def test_empty_steering_dirs_is_byte_identical_to_omitting_the_argument(
-    tmp_path, home, standards, ample_host_resources
+    tmp_path, home, standards, ample_host_resources, monkeypatch
 ):
     # ``ample_host_resources`` keeps the [RESOURCES] advisory out: it carries the
-    # live CPU load, so two builds on a loaded runner would differ.
+    # live CPU load, so two builds on a loaded runner would differ. Both builds are
+    # session starts, so each also reads the live sub-agent cap for
+    # ``{{MAX_SUBAGENTS}}``; pin it, or a cap that moves between the two reads
+    # makes them differ by that one figure.
+    monkeypatch.setattr(ContextBuilder, "_live_cap_figure", staticmethod(lambda: "4"))
     builder = _builder(tmp_path)
     a, _ = builder.build_message("hello", True, "dashboard:x")
     b, _ = builder.build_message("hello", True, "dashboard:x", steering_dirs=())

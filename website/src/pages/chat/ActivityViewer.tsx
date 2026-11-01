@@ -18,20 +18,23 @@ import IssuePanel from '../../components/IssuePanel'
 import { PinnedMessagesPanel } from './PinnedMessagesPanel'
 import type { ChatPin } from '../../api/pins'
 import { useAppSelector, useAppDispatch } from '../../store'
+import { useSecondClock } from '../../hooks/useSecondClock'
 import { markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, isSpawnApprovalGone, isSpawnApprovalRetired, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
 import { Btn, PanelSectionHeader, ContentSkeleton } from '../../components/ui'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
+import { workflowRunsPollInterval } from './workflowRunsPoll'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import { slotRowByKey } from '../../store/slotIndex'
 
 // The crew log is a drill-in: six fold sections, their own i18n copy and the table
 // that draws each one, on a tab most sessions never open. Fetched on first open
 // rather than riding in the dashboard shell, the same shape `CapabilitiesPage` uses
-// for its templates tab and `DeveloperPage` for the memory graph.
+// for its templates tab and `DeveloperPanel` for the memory graph.
 const CrewLogTab = lazy(() => import('./CrewLogPanel').then(m => ({ default: m.CrewLogTab })))
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
@@ -168,6 +171,25 @@ function SubagentToolCalls({ a, isRunning }: { a: SubagentActivity; isRunning: b
   )
 }
 
+/**
+ * The card header's elapsed figure. Its own component so the live 1 Hz clock
+ * repaints this text, not the whole card and its streamed body.
+ *
+ * A running card whose start time was only ASSUMED has no elapsed figure to
+ * show: the agent may have been running long before the frame that minted its
+ * entry, so a number here would be wrong rather than merely imprecise. A
+ * `subagent_done` or snapshot frame supplies real timing and this resolves.
+ * Whole seconds, matching the progress-bar row, so one run reads the same
+ * figure in both places (and `1h 9m 32s`, not `69m 32s`, past an hour).
+ */
+function CardElapsed({ running, startedAt, assumed, finalSecs }: { running: boolean; startedAt: number; assumed?: boolean; finalSecs?: number }) {
+  const live = running && !assumed
+  const liveSecs = useSecondClock(now => Math.max(0, Math.floor((now - startedAt) / 1000)), live)
+  if (running && assumed) return <>--</>
+  const secs = running ? liveSecs : Math.round(finalSecs || 0)
+  return <>{fmtElapsed(secs * 1000, { wholeSeconds: true })}</>
+}
+
 function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -270,16 +292,6 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   }, [livenessOpen, a.approval_id, checkLiveness])
   const shownLivenessError = livenessOpen ? livenessError : null
 
-  // Live elapsed timer for running subagents
-  const [elapsed, setElapsed] = useState(0)
-  useEffect(() => {
-    if (!isRunning) return
-    const tick = () => setElapsed(Math.floor((Date.now() - a.startedAt) / 1000))
-    tick()
-    const id = setInterval(tick, 1000)
-    return () => clearInterval(id)
-  }, [isRunning, a.startedAt])
-
   useEffect(() => {
     const el = bodyRef.current
     if (el && autoScroll.current) el.scrollTop = el.scrollHeight
@@ -299,14 +311,6 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     api.spawnDelete(a.id).catch(() => setActionError(i18nT('pages.chat.activityViewer.cancel_failed')))
   }, [a.id])
 
-  const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
-  // A running card whose start time was only ASSUMED has no elapsed figure to
-  // show: the agent may have been running long before the frame that minted its
-  // entry, so a number here would be wrong rather than merely imprecise. A
-  // `subagent_done` or snapshot frame supplies real timing and this resolves.
-  // Whole seconds, matching the progress-bar row, so one run reads the same
-  // figure in both places (and `1h 9m 32s`, not `69m 32s`, past an hour).
-  const shownElapsed = isRunning && a.startedAtAssumed ? '--' : fmtElapsed(displayElapsed * 1000, { wholeSeconds: true })
   // What the header calls this agent. An entry recovered from an incremental
   // frame has no agent name, and showing nothing left two such cards reading as
   // the same "Running Tool" with no way to tell them apart -- the same complaint
@@ -401,7 +405,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           if (!resolvedKnown && !liveDowngrade && normalizeModelKey(display) !== 'auto') return null
           return (
             <code
-              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[7rem] truncate inline-block align-middle [direction:rtl] [unicode-bidi:plaintext] text-left${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted/60 bg-bg-hover'}`}
+              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[7rem] truncate inline-block align-middle [direction:rtl] [unicode-bidi:plaintext] text-left${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted bg-bg-hover'}`}
               data-testid="subagent-model"
               // The downgrade meaning rides on the amber colour + the AlertCircle
               // glyph (aria-hidden), and the chip's [direction:rtl] truncation can
@@ -429,7 +433,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         {!isPending && !retired && <span
           data-testid="subagent-run-stats"
           className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums"
-        >{shownElapsed}</span>}
+        ><CardElapsed running={isRunning} startedAt={a.startedAt} assumed={a.startedAtAssumed} finalSecs={a.elapsed} /></span>}
         {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger-text cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>
@@ -797,13 +801,13 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
   // Companion binding for this slot. Narrowed to the primitive so an unrelated
   // slot field changing (message count, running flag) can't re-render the tab.
   const boundArtifactSlug = useAppSelector(
-    s => s.dashboard.slots.find(x => x.key === slot)?.artifact || '',
+    s => slotRowByKey(s.dashboard.slots, slot)?.artifact || '',
   )
   // The sidebar folder this chat is filed in, if any: it adds a "Browse this
   // folder" link that opens the library scoped to the chats in that folder and
   // its sub-folders.
   const slotFolderId = useAppSelector(
-    s => s.dashboard.slots.find(x => x.key === slot)?.folder_id || '',
+    s => slotRowByKey(s.dashboard.slots, slot)?.folder_id || '',
   )
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['session-artifact-records', slot] })
@@ -1170,7 +1174,10 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     queryKey: ['workflow-runs'],
     queryFn: () => api.workflowRuns().then(d => (Array.isArray(d?.runs) ? (d.runs as WfRunRow[]) : [])),
     enabled: open,
-    refetchInterval: 2500,
+    // Fast only on the Workflows view or while this chat has a running run;
+    // a slow heal tick otherwise, and no tick at all on a hidden tab.
+    refetchInterval: query => workflowRunsPollInterval(view ?? tab, query.state.data, slot),
+    refetchIntervalInBackground: false,
   })
   const wfRunsForSlot = wfRuns.filter(r => runBelongsToSlot(r.session_key, slot))
   const wfRunningCount = wfRunsForSlot.filter(r => r.status === 'running').length
@@ -1258,6 +1265,11 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           ) : (
             <div className="text-muted text-[13px] pt-8 px-6 text-center">
               {i18nT('pages.chat.activityViewer.no_pull_requests_yet')}
+              {/* Says what the tab holds, so a first-time reader who expected
+                  edited files under "Changes" learns where those live. */}
+              <div className="mt-1 text-[12px] leading-snug">
+                {i18nT('pages.chat.activityViewer.changes_empty_hint')}
+              </div>
             </div>
           )}
         </div>

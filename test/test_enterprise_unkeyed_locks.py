@@ -10,14 +10,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock
 
 import pytest
 
 from kiro_crew import edition_locks
-from kiro_crew.apps import dev_mode
-from kiro_crew.computer_use import enable_state
 from kiro_crew.config.sections_telemetry import TelemetryConfig
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.dashboard.handlers.agents import api_config_schema
@@ -83,36 +80,6 @@ def test_oss_release_channel_file_still_applies(channel_file):
     assert update_layout.release_channel() == "nightly"
 
 
-def test_dev_mode_enable_is_refused(enterprise):
-    result = dev_mode.set_dev_mode("some-app", True)
-    assert result == {"error": edition_locks.LOCKED_BY_POLICY, "code": "locked_by_policy"}
-
-
-def test_dev_mode_metadata_is_ignored(enterprise, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(dev_mode, "_read_installed", lambda name: SimpleNamespace(dev=True))
-    monkeypatch.setattr(dev_mode, "_read_dev_sentinel", lambda: {"some-app"})
-    dev_mode._set_dev_cache({"some-app"})
-    try:
-        assert dev_mode.is_dev_mode("some-app") is False
-        assert dev_mode.is_dev_mode_cached("some-app") is False
-        assert dev_mode._load_dev_apps() == set()
-    finally:
-        dev_mode._set_dev_cache(set())
-
-
-def test_oss_dev_mode_metadata_still_applies(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(dev_mode, "_read_installed", lambda name: SimpleNamespace(dev=True))
-    assert dev_mode.is_dev_mode("some-app") is True
-
-
-def test_computer_use_opt_in_is_ignored(enterprise):
-    assert enable_state.is_enabled({"enabled": True}) is False
-
-
-def test_oss_computer_use_opt_in_still_applies():
-    assert enable_state.is_enabled({"enabled": True}) is True
-
-
 @pytest.fixture
 def default_telemetry(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(metrics_provider, "_telemetry_provider", DefaultTelemetryProvider)
@@ -163,20 +130,102 @@ def test_channel_switch_api_answers_locked_and_writes_nothing(enterprise, tmp_pa
     assert not (tmp_path / "channel").exists()
 
 
-def test_cli_dev_mode_refusal_is_audited(enterprise, monkeypatch: pytest.MonkeyPatch):
-    calls = []
-    monkeypatch.setattr(
-        dev_mode, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: calls.append(kw))
-    )
-    dev_mode.set_dev_mode("some-app", True)
-    assert [(c["operation"], c["outcome"], c["error"]) for c in calls] == [
-        ("app_dev_mode", "denied", "locked_by_policy")
-    ]
-
-
 def test_schema_marks_locked_config_paths(enterprise):
     req = MagicMock()
     req.query = {}
     entries = json.loads(asyncio.run(api_config_schema(req)).body)["entries"]
     locked = {e["path"] for e in entries if e.get("lockedByPolicy")}
     assert locked == set(edition_locks.CONFIG_PATH_LOCKS)
+
+
+# ── KIROCREW_DEV_MODE and slack.use_tunnel_url ──
+
+
+def test_dev_mode_env_does_not_enable_session_environments(enterprise, monkeypatch):
+    from kiro_crew import session_environment
+
+    monkeypatch.setenv("KIROCREW_DEV_MODE", "1")
+    assert session_environment.session_environments_enabled() is False
+
+
+def test_oss_dev_mode_env_still_enables_session_environments(monkeypatch):
+    from kiro_crew import session_environment
+
+    monkeypatch.setenv("KIROCREW_DEV_MODE", "1")
+    assert session_environment.session_environments_enabled() is True
+
+
+def _registers_simulate(monkeypatch, home: str) -> bool:
+    from aiohttp import web
+
+    from kiro_crew.dashboard.routes import system
+
+    monkeypatch.setenv("KIROCREW_DEV_MODE", "1")
+    monkeypatch.setenv("KIROCREW_HOME", home)
+    app = web.Application()
+    system.register(app)
+    return any(
+        r.method == "POST"
+        and r.resource is not None
+        and r.resource.canonical == "/api/update/simulate"
+        for r in app.router.routes()
+    )
+
+
+def test_dev_switches_do_not_register_the_update_simulator(enterprise, monkeypatch, tmp_path):
+    assert _registers_simulate(monkeypatch, str(tmp_path / "crew-dev")) is False
+
+
+def test_oss_dev_switches_still_register_the_update_simulator(monkeypatch, tmp_path):
+    assert _registers_simulate(monkeypatch, str(tmp_path / "crew-dev")) is True
+
+
+def test_slack_tunnel_opt_in_reads_off(enterprise, monkeypatch):
+    from kiro_crew import tunnel
+    from kiro_crew.dashboard import urls
+
+    monkeypatch.setattr(tunnel, "get_tunnel_url", lambda: "https://t.example")
+    assert urls.slack_tunnel_opt_in(True) is False
+    assert urls.tunnel_origin_if_opted_in(True) == ""
+
+
+def test_oss_slack_tunnel_opt_in_still_applies(monkeypatch):
+    from kiro_crew import tunnel
+    from kiro_crew.dashboard import urls
+
+    monkeypatch.setattr(tunnel, "get_tunnel_url", lambda: "https://t.example")
+    assert urls.slack_tunnel_opt_in(True) is True
+    assert urls.tunnel_origin_if_opted_in(True) == "https://t.example"
+
+
+def _send_link_ensure_calls(monkeypatch) -> int:
+    from unittest.mock import AsyncMock, patch
+
+    from kiro_crew.slack import allowlist as al
+
+    ensure = AsyncMock(return_value="connected")
+    slack = MagicMock()
+    slack.open_dm = AsyncMock(return_value="D1")
+    slack.post_message = AsyncMock()
+    cfg = MagicMock()
+    cfg.slack.use_tunnel_url = True
+    cfg.dashboard.url = "http://127.0.0.1:5476"
+    with (
+        patch.object(al, "get_tunnel_url", return_value=""),
+        patch.object(al, "sel", return_value=MagicMock()),
+        patch(
+            "kiro_crew.platform.current_context",
+            return_value=MagicMock(tunnel=MagicMock(ensure_available=ensure)),
+        ),
+        patch.object(al.KiroCrewConfig, "load", return_value=cfg),
+    ):
+        asyncio.run(al.send_dashboard_link(slack, "U1", ttl=600))
+    return ensure.await_count
+
+
+def test_slack_link_does_not_provision_a_tunnel(enterprise, monkeypatch):
+    assert _send_link_ensure_calls(monkeypatch) == 0
+
+
+def test_oss_slack_link_still_offers_the_provisioning_seam(monkeypatch):
+    assert _send_link_ensure_calls(monkeypatch) == 1

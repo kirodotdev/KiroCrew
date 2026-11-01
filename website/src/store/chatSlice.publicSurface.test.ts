@@ -33,14 +33,14 @@ const ACTION_CREATORS = [
   'ageFolderSuggestion', 'appendMessage', 'appendQueuedMessage', 'appendSlotMessage',
   'cancelQueuedMessage', 'clearFocusToolCallId', 'clearFolderSuggestion', 'clearFollowupCard',
   'clearMessages', 'clearPendingPermissions', 'clearQuestionCard', 'clearSlotCache',
-  'clearSlotReveal', 'clearSlotState', 'clearSubagentsForSnapshot', 'clearSwitchSlotGone',
+  'clearSlotReveal', 'clearSlotState', 'clearSubagentsForSnapshot', 'clearSwitchSlotGone', 'closeActivityPanel',
   'clearTerminalSubagents', 'clearUndeletableHistory', 'clearUnresumableResume',
-  'clearWorkflowRun', 'confirmOptimisticSend', 'dismissFollowupItem', 'dropActiveSlot', 'editQueuedMessage',
+  'clearWorkflowRun', 'confirmOptimisticSend', 'dismissFollowupItem', 'dropActiveSlot', 'dropUnconfirmedRow', 'editQueuedMessage',
   'endLocalTurn', 'finalizeAssistant', 'forkOpenSettled', 'forkOpenStarted', 'hydrateSlotMessages', 'markQuestionSettled', 'markSendUnconfirmed', 'markSubagentApprovalGone', 'markSubagentApproving',
   'openActivityPanel', 'openActivityToTab', 'openActivityToTool', 'reconcileSubagentApprovalGone', 'reconcileSubagentQueuedFromSlots', 'reconcileWorkflowRuns',
   'removeAutomation', 'removeByApprovalId', 'removeQueuedMessage', 'removeThinking',
   'reorderQueuedMessages', 'replaceMessages', 'requestFolderReveal', 'requestSlotFolderOpen', 'requestSlotReveal',
-  'resolveByApprovalId', 'resolveOptimisticSteer', 'resolveQuestionCard', 'selectSubagent',
+  'resolveByApprovalId', 'resolveOptimisticSteer', 'resolveQuestionCard', 'retireSwappedRows', 'selectSubagent',
   'setActiveSlot', 'setAgentSwitchNotice', 'setAutomations', 'setCloseRefused', 'setFolderSuggestion',
   'setFollowupCard', 'setPendingInput', 'setQuestionCard', 'setQuestionDraft', 'setQuestionNotice', 'setQuestionRequestInFlight', 'setSidePanelAlwaysOpen', 'setSlotRunning',
   'setSlotState', 'setSlotStatusDetail', 'setSlotStopping', 'setStopPressedAt', 'setVoiceAudio',
@@ -51,7 +51,7 @@ const ACTION_CREATORS = [
   'sseSubagentBatchUpdate', 'sseSubagentDone', 'sseSubagentPending', 'sseSubagentQueued',
   'sseSubagentRetrying', 'sseSubagentSnapshot', 'sseSubagentSpawn', 'sseSubagentStalled',
   'sseSubagentTool', 'sseThinkingChunk', 'sseToolActivity', 'sseToolResult', 'sseWorkflowEvent',
-  'stageToMainComposer', 'startLocalTurn', 'startServerTurn', 'syncSlotRunningFromServer', 'toggleActivity', 'truncateAfterIndex',
+  'stagePendingSend', 'stageToMainComposer', 'startLocalTurn', 'startServerTurn', 'subagentReplayDone', 'syncSlotRunningFromServer', 'toggleActivity', 'truncateAfterIndex',
   'updateStreamingMessage',
 ]
 
@@ -76,10 +76,10 @@ const THUNKS: Record<string, string> = {
 }
 
 const FUNCTIONS = [
-  'abortActiveOlderFetch', 'batchedTextAboveFloor', 'capturePendingAskId', 'clampToolOutput',
-  'countMatchedFetchLimit', 'floorForGen', 'hasUnidentifiedDurableRow', 'hydrateQueuedBubbles', 'isActiveSubagent', 'isAnsweredQuestionEnding', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired',
+  'abortActiveOlderFetch', 'batchedTextAboveFloor', 'beginSideQueueEdit', 'capturePendingAskId', 'clampToolOutput',
+  'countMatchedFetchLimit', 'finishSideQueueEdit', 'floorForGen', 'forgetSideSteerSubmittedText', 'hasUnidentifiedDurableRow', 'hydrateQueuedBubbles', 'isActiveSubagent', 'isAnsweredQuestionEnding', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired',
   'captureForkOrigin', 'forkMayOpen', 'isSupersededPagingRejection', 'isTerminalWorkflowStatus', 'listForkedSlot', 'mcpAppKey', 'missedChunkMarker', 'normalizeQueueEntries',
-  'openCreatedSlot', 'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryQuote', 'raiseChunkSeq', 'resumeStillOpening',
+  'noteSideQueueDroppedByClose', 'openCreatedSlot', 'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryPastes', 'queueEntryQuote', 'raiseChunkSeq', 'readSideSteerSubmittedText', 'recordSideSteerSubmittedText', 'resumeStillOpening', 'setSideQueueEditDraft',
   'selectActiveSlotProject', 'selectAutomationForSlot', 'selectComposerBusy', 'selectContinuable',
   'selectProjectChipLocked', 'selectSendAccepted', 'selectSendConfirmed', 'selectSidebarApprovalCounts', 'selectSidebarAutomationRunningKeys',
   'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSidebarWorkflowActive', 'selectSidebarWorkflowActiveKeys',
@@ -87,7 +87,7 @@ const FUNCTIONS = [
   'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotSubagents',
   'selectSlotSubagentsActive', 'selectSlotToolLog', 'selectSubagentActivityCount', 'selectTrailingSendUnconfirmed',
   'selectSlotTurnFromWake', 'selectTurnInterrupted', 'shouldResolveAskOnSend', 'slotCoverageShortfall',
-  'slotSwitchFetchLimit', 'snapshotChunkGen', 'snapshotChunkSeq', 'switchSlotNoticeCopy',
+  'slotSwitchFetchLimit', 'snapshotChunkGen', 'snapshotChunkSeq', 'switchSlotNoticeCopy', 'takeSideQueueDroppedByClose', 'takeSideQueueDroppedByResyncThenClose', 'takeSideSteerDroppedByClose', 'takeSideQueueEditForClose',
   'transcriptTsMs', 'wireTurnIdentity',
 ]
 
@@ -115,9 +115,9 @@ const INITIAL_STATE = {
   loadingOlder: false, slotOlderError: false, lastChunkSeq: undefined, lastChunkGen: undefined,
   _wsChunkedDuringFetch: false, liveFrameSeq: 0, refreshAppliedSeq: {}, _redeliveredFramesDropped: 0, history: [], historyHasMore: false,
   historyOffset: 0, unresumableResume: null, lastResumeRequestId: null, pendingResumes: {}, undeletableHistory: null,
-  pendingInput: null, mainComposerAppend: null, agentSwitchNotice: null, creatingSlot: false, foregroundCreateId: null, pendingForkOpens: 0,
+  pendingInput: null, pendingInputSend: false, mainComposerAppend: null, agentSwitchNotice: null, creatingSlot: false, foregroundCreateId: null, pendingForkOpens: 0,
   lastCreatedActivation: null, slotContextPct: {}, slotContextTokens: {}, voicePlaying: false,
-  voicePreparing: false, voiceAudio: null, subagents: {}, subagentQueued: {}, subagentQueuedReason: {}, automations: {},
+  voicePreparing: false, voiceAudio: null, subagents: {}, subagentQueued: {}, subagentQueuedReason: {}, subagentReplayUnconfirmed: null, automations: {},
   selectedSubagentId: null, toolLog: [], workflowRuns: {}, activityOpen: false, sidePanelAlwaysOpen: false, sidePanelAlwaysOpenSetting: null, sidePanelReopenSlot: null,
   activityTab: 'changes', activityTabRequest: 0, revealRequest: null, revealNonce: 0,
   focusToolCallId: null, mcpApps: {}, slotActivity: {}, slotMessages: {}, slotPaneHasMore: {},

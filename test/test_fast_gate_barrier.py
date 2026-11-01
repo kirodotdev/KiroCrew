@@ -37,6 +37,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from test_docs_gate_table_matches_fast_gate import fast_gate_source_gate_scripts
 
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -45,35 +46,47 @@ _CI = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _FAST_GATE = _REPO_ROOT / ".github" / "workflows" / "fast-gate.yml"
 _BUILD = _REPO_ROOT / ".github" / "workflows" / "build.yml"
 
-# The gates the split moved. Named explicitly rather than derived from the
-# file, so a gate silently DROPPED during a future edit fails here. scrub-lint is
-# gone: its replacement is the internal-content-scan check, which runs in its own
+# The stdlib-only gates, each one step of the `source-gates` job, named by the
+# script the step runs. Named explicitly rather than derived from the file, so
+# a gate silently DROPPED during a future edit fails here. scrub-lint is gone:
+# its replacement is the internal-content-scan check, which runs in its own
 # workflow because it needs OIDC and a private ruleset, not a repo script.
-_GATE_JOBS = (
-    "vendor-manifest",
-    "brand-lint",
-    "comment-history-lint",
-    "focus-cue-lint",
-    "feature-map-lint",
-    "changelog-history",
-    "decision-ledger-history",
-    "builtin-skill-scope",
-    "loop-bound-locks",
-    "testpaths-coverage",
-    "cwd-relative-repo-reads",
-    "harness-parity",
-    "docs-lint",
+_SOURCE_GATE_SCRIPTS = (
+    "scripts/verify_vendor_manifest.py",
+    "scripts/check_brand_name.py",
+    "scripts/check_comment_history.py",
+    "scripts/check_focus_cue.py",
+    "scripts/check_feature_map.py",
+    "scripts/check_changelog_history.py",
+    "scripts/check_decisions_history.py",
+    "scripts/check_builtin_skill_scope.py",
+    "scripts/check_loop_bound_locks.py",
+    "scripts/check_testpaths_coverage.py",
+    "scripts/check_cwd_relative_repo_reads.py",
+    "scripts/check_harness_parity.py",
+    "scripts/check_memory_store_seam.py",
+    "scripts/docs-lint.sh",
 )
-# Every job in fast-gate.yml, in file order: the moved gates plus the one gate
-# that was born there. Explicit for the same reason as _GATE_JOBS -- a job added
-# without the push/variable clause would be the one job left running on a
-# queue-on push, and a file-derived list would admit it silently.
-_FAST_GATE_JOBS = _GATE_JOBS[:-1] + (
-    "memory-store-seam",
-    "docs-lint",
+#: The one job that runs every stdlib-only gate as consecutive steps.
+_SOURCE_GATES_JOB = "source-gates"
+#: Run steps of that job which are not themselves a gate: the docs linter's
+#: self-test, which fires its rules at planted defects in a throwaway tree and
+#: so needs a step of its own. Every other gate self-tests inside its own step.
+_SOURCE_GATE_SELF_TEST_STEPS = 1
+# Every job in fast-gate.yml, in file order: the stdlib gates share one job so
+# a push holds one runner slot for all fourteen instead of fourteen; the two
+# pytest-backed ratchets keep their own because each installs the package.
+# Explicit for the same reason as _SOURCE_GATE_SCRIPTS -- a job added without
+# the push/variable clause would be the one job left running on a queue-on
+# push, and a file-derived list would admit it silently.
+_FAST_GATE_JOBS = (
+    _SOURCE_GATES_JOB,
     "static-ratchets",
     "flake-pattern-ratchet",
 )
+#: The condition every gate step carries so one red gate does not hide the
+#: verdicts of the gates after it (the job still fails; see the workflow header).
+_GATE_STEP_CONDITION = "${{ !cancelled() }}"
 
 #: The exact `if` clause that trims a job off the push path while the repository
 #: variable MERGE_QUEUE_ENABLED is 'true', and keeps it there while it is unset.
@@ -98,6 +111,22 @@ _LINT_JOBS = ("backend-lint", "frontend-lint")
 _NOT_BEHIND_LINT: dict[str, str] = {
     "lockfile-engines-floor": "10-minute lockfile check; cheaper than the wait",
     "cfn-lint": "10-minute template lint; gives its own early verdict",
+    # These two hold the baselined ratchets. They are OFF the gate path
+    # deliberately, and the trade is real: a ratchet failure does not SAVE the
+    # matrix, it reds the pull request alongside it. What is bought is the
+    # gate's wait -- behind `lint-gate`, the slowest ratchet would hold every
+    # test shard for a verdict that is not part of the decision the gate makes. The split line is whether a failure makes a test
+    # RESULT meaningless: a type error or a malformed import does, an over-cap
+    # file or a missing `encoding=` does not.
+    "backend-ratchets": "baselined ratchets; a failure reds the PR, not the matrix",
+    "frontend-ratchets": "baselined ratchets; a failure reds the PR, not the matrix",
+}
+#: The ratchet siblings, which must mirror their source lint job's surface
+#: condition exactly: a moved gate that stops inheriting it runs on diffs it
+#: cannot apply to, or stops running on the diffs it exists for.
+_RATCHET_SIBLINGS: dict[str, str] = {
+    "backend-ratchets": "backend-lint",
+    "frontend-ratchets": "frontend-lint",
 }
 
 _STATUS_FUNCTION = re.compile(r"\b(?:always|cancelled|failure|success)\(\)")
@@ -432,15 +461,72 @@ def _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci: dict) -> None:
 
 
 class TestTheGatesLiveInTheGateWorkflow:
+    @staticmethod
+    def _gate_steps(fast_gate: dict) -> list[dict]:
+        steps = fast_gate["jobs"][_SOURCE_GATES_JOB]["steps"]
+        return [step for step in steps if "run" in step]
+
     def test_all_gates_are_in_fast_gate_and_none_left_in_ci(
         self, ci: dict, fast_gate: dict
     ) -> None:
-        missing = [job for job in _GATE_JOBS if job not in fast_gate["jobs"]]
-        assert not missing, f"gate job(s) absent from fast-gate.yml: {missing}"
+        runs = "\n".join(str(step["run"]) for step in self._gate_steps(fast_gate))
+        missing = [script for script in _SOURCE_GATE_SCRIPTS if script not in runs]
+        assert not missing, f"gate(s) absent from fast-gate.yml's {_SOURCE_GATES_JOB}: {missing}"
         # The other direction matters just as much: a gate re-added to ci.yml would
         # run beside the matrix again, which is the arrangement this split removed.
-        strays = [job for job in _GATE_JOBS if job in ci["jobs"]]
-        assert not strays, f"gate job(s) back in ci.yml, racing the matrix again: {strays}"
+        ci_runs = "\n".join(
+            str(step.get("run", ""))
+            for spec in ci["jobs"].values()
+            for step in spec.get("steps") or []
+        )
+        strays = [script for script in _SOURCE_GATE_SCRIPTS if script in ci_runs]
+        assert not strays, f"gate(s) back in ci.yml, racing the matrix again: {strays}"
+
+    def test_every_gate_step_runs_unless_the_run_was_cancelled(self, fast_gate: dict) -> None:
+        # One job, fourteen gates: without the condition the first red gate ends
+        # the job and the author learns about the others one push at a time.
+        # Exactly `!cancelled()`, not `always()`: a cancelled run (a superseding
+        # push) must not keep spending its runner on gates nobody will read.
+        for step in self._gate_steps(fast_gate):
+            assert step.get("if") == _GATE_STEP_CONDITION, (
+                f"gate step {step.get('name')!r} must carry {_GATE_STEP_CONDITION!r}, "
+                f"got {step.get('if')!r}"
+            )
+            assert (
+                "continue-on-error" not in step
+            ), f"gate step {step.get('name')!r} is soft; a red gate must red the job"
+
+    def test_the_gates_run_in_one_job(self, fast_gate: dict) -> None:
+        # The point of the shared job: one runner slot per push for every
+        # stdlib-only gate. A gate that grows back into a job of its own is a
+        # slot the whole repository pays for on every push.
+        pytest_jobs = [
+            job
+            for job, spec in fast_gate["jobs"].items()
+            if any("pytest" in str(step.get("run", "")) for step in spec["steps"])
+        ]
+        assert set(pytest_jobs) == set(_FAST_GATE_JOBS) - {_SOURCE_GATES_JOB}, (
+            "only the pytest-backed ratchets may hold a job of their own; "
+            f"pytest jobs: {pytest_jobs}"
+        )
+        # The list this counts against is the job's own, so the count cannot be
+        # cleared by extending the list: a name added here that the job does not
+        # invoke fails the equality first.
+        assert set(_SOURCE_GATE_SCRIPTS) == fast_gate_source_gate_scripts(), (
+            "pinned gate list is not what source-gates enforces: pinned-only="
+            f"{sorted(set(_SOURCE_GATE_SCRIPTS) - fast_gate_source_gate_scripts())} "
+            f"job-only={sorted(fast_gate_source_gate_scripts() - set(_SOURCE_GATE_SCRIPTS))}"
+        )
+        # Exact, never a floor: a `>=` admits a gate smuggled in as one more
+        # step of this job, which is the one way a gate can now arrive without
+        # a job of its own to notice it.
+        steps = len(self._gate_steps(fast_gate))
+        expected = len(_SOURCE_GATE_SCRIPTS) + _SOURCE_GATE_SELF_TEST_STEPS
+        assert steps == expected, (
+            f"{_SOURCE_GATES_JOB} runs one step per gate plus "
+            f"{_SOURCE_GATE_SELF_TEST_STEPS} self-test step; expected {expected} run "
+            f"steps for {len(_SOURCE_GATE_SCRIPTS)} gates, found {steps}"
+        )
 
     @pytest.mark.parametrize("job", tuple(_workflow(_FAST_GATE)["jobs"]))
     def test_every_gate_skips_only_the_queued_push(self, fast_gate: dict, job: str) -> None:
@@ -562,7 +648,7 @@ class TestFastGatePythonRuntime:
     )
     def test_runtime_contract_rejects_broken_setup(self, defect: str) -> None:
         # Fresh workflow data keeps each mutation independent of the module fixture.
-        spec = _workflow(_FAST_GATE)["jobs"]["memory-store-seam"]
+        spec = _workflow(_FAST_GATE)["jobs"][_SOURCE_GATES_JOB]
         self._assert_runtime(spec)
         steps = spec["steps"]
         setup = steps[1]
@@ -1169,6 +1255,34 @@ class TestLintRunsBeforeTheHeavyJobs:
             assert job in ci["jobs"], f"_NOT_BEHIND_LINT names a job that is gone: {job}"
             assert _LINT_GATE not in self._needs(ci, job), job
 
+    @pytest.mark.parametrize(("sibling", "source"), sorted(_RATCHET_SIBLINGS.items()))
+    def test_a_ratchet_sibling_is_off_the_gate_and_keeps_its_source_condition(
+        self, ci: dict, sibling: str, source: str
+    ) -> None:
+        """The sibling must not feed the gate, and must gate on the same surface.
+
+        Two failures this catches, both silent. Wiring a sibling back into
+        `lint-gate` (or behind it) undoes the whole change and nothing else
+        would report it. Letting its `if:` drift from its source lint job's is
+        worse: the gates it holds read one surface's files, so a sibling that
+        runs on the other surface judges a tree it cannot apply to, and one that
+        stops running on its own surface goes quiet -- a skipped job still
+        writes a green check run, so nothing downstream notices the gate left.
+        """
+        assert _LINT_GATE not in self._needs(ci, sibling)
+        assert not self._reaches(ci, sibling, _LINT_GATE), (
+            f"{sibling} reaches {_LINT_GATE}, so the gate still waits on it "
+            "transitively and moving its gates bought nothing"
+        )
+        assert sibling not in self._needs(ci, _LINT_GATE)
+        assert ci["jobs"][sibling]["if"] == ci["jobs"][source]["if"], (
+            f"{sibling} no longer carries {source}'s surface condition; its gates "
+            "would run on a diff they cannot apply to, or stop running on the "
+            "diff they exist for"
+        )
+        # The barrier still applies: these are not a way around the Fast Gate.
+        assert "await-fast-gate" in self._needs(ci, sibling)
+
     def test_the_heavy_jobs_do_not_override_the_skip(self, ci: dict) -> None:
         # A heavy job carrying `always()` / `!cancelled()` would run on a skipped
         # gate unless it also requires the gate's success. Only the jobs that fail
@@ -1205,17 +1319,47 @@ class TestLintRunsBeforeTheHeavyJobs:
         [
             (
                 {"only_backend": "true", "only_frontend": "false"},
-                {"backend-test", "frontend-test", "coverage-combine", "real-adapter-contract"},
-                {"frontend-lint", "bundle-size", "frontend-coverage-merge"},
+                {
+                    "backend-test",
+                    "frontend-test",
+                    "coverage-combine",
+                    "real-adapter-contract",
+                    "backend-test-kernel-lock-owner",
+                    "backend-test-sandbox",
+                    "backend-test-crew-container",
+                    "backend-ratchets",
+                },
+                {"frontend-lint", "frontend-ratchets", "bundle-size", "frontend-coverage-merge"},
             ),
             (
                 {"only_backend": "false", "only_frontend": "true"},
-                {"backend-test", "frontend-test", "bundle-size", "frontend-coverage-merge"},
-                {"backend-lint", "coverage-combine", "real-adapter-contract"},
+                {
+                    "backend-test",
+                    "frontend-test",
+                    "bundle-size",
+                    "frontend-coverage-merge",
+                    "frontend-ratchets",
+                },
+                {
+                    "backend-lint",
+                    "backend-ratchets",
+                    "coverage-combine",
+                    "real-adapter-contract",
+                    "backend-test-kernel-lock-owner",
+                    "backend-test-sandbox",
+                    "backend-test-crew-container",
+                },
             ),
             (
                 {"only_backend": "false", "only_frontend": "false"},
-                {"backend-test", "frontend-test", "coverage-combine", "bundle-size"},
+                {
+                    "backend-test",
+                    "frontend-test",
+                    "coverage-combine",
+                    "bundle-size",
+                    "backend-ratchets",
+                    "frontend-ratchets",
+                },
                 set(),
             ),
         ],
@@ -1229,10 +1373,10 @@ class TestLintRunsBeforeTheHeavyJobs:
             _LINT_GATE,
             "backend-test-windows",
             "backend-test-ipv6",
-            "backend-test-kernel-lock-owner",
             "e2e",
             "integration",
             "electron-test",
+            "pod-boot-windows",
             "coverage-gate",
         }
         ran = {job for job, result in results.items() if result == "success"}

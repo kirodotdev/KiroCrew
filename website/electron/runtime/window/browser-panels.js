@@ -84,14 +84,21 @@ function attachBrowserPanels(win, view, {
       }),
       getContentBounds: () => win.getContentBounds(),
       // Keyboard focus belongs to exactly one child view of the BaseWindow.
-      // When the embedded page holds it as its view is hidden or released,
-      // the dashboard view takes it back — otherwise every text input in the
-      // dashboard stays deaf while pointer events keep working.
+      // When the embedded page holds it as its view is hidden or released, or
+      // takes it while already hidden, the dashboard view takes it back —
+      // otherwise every text input in the dashboard stays deaf while pointer
+      // events keep working.
       focusHost: () => {
         if (!win.isDestroyed() && !view.webContents.isDestroyed()) {
           view.webContents.focus();
         }
       },
+      // The already-hidden case runs only while this window is the active
+      // one, so a background load never brings the window forward.
+      hostActive: () => !win.isDestroyed() && win.isFocused(),
+      // One line per hand-back, naming the view that held focus and the
+      // trigger, so a recurrence of the deaf-composer symptom is decisive.
+      log: (message) => console.warn(message),
       addView: (child) => win.contentView.addChildView(child),
       removeView: (child) => win.contentView.removeChildView(child),
       // Chrome the embedded page needs but the module must not import Electron

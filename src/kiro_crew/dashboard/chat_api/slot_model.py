@@ -22,11 +22,11 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         LLMProvider,
+        SlotAgentSwitchCaller,
         _app_cancel_denied,
         _append_session_switch_notice,
         _ChatSlot,
         _context_usage_payload,
-        _history_key_for,
         _normalize_model,
         _owner_denial_response,
         _reset_slot_session,
@@ -36,11 +36,10 @@ if TYPE_CHECKING:
         _subagents_attached_response,
         _switch_target_busy,
         _sync_served_model,
+        app_owns_slot_session,
         capabilities_of,
         deny_app_slot_access,
         effective_session_key,
-        is_channel_session_key,
-        is_owner_dashboard_request,
         logger,
         model_registry,
         pick_epoch_host,
@@ -94,30 +93,46 @@ def _model_rejected_reason(
     if backend is not None:
         backends: list[str] = [backend]
     else:
+        from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
         from kiro_crew.members import select_provider_backend
 
+        cfg = None
         try:
-            agent = KiroCrewConfig.load().agent
-            default_backend = agent.acp_backend or ""
-            member_backend = agent.member_acp_backend or ""
+            cfg = KiroCrewConfig.load()
+            default_backend = cfg.agent.acp_backend or ""
+            member_backend = cfg.agent.member_acp_backend or ""
         except Exception:  # pragma: no cover - config load is resilient
             default_backend, member_backend = "", ""
         keys = list(session_keys or ())
-        backends = (
-            [select_provider_backend(k, member_backend, default_backend) for k in keys]
-            if keys
-            else [default_backend]
-        )
+        try:
+            backends = (
+                [
+                    select_provider_backend(
+                        k,
+                        member_backend,
+                        default_backend,
+                        crew_backend=crewmate_backend_pin(cfg, k) if cfg is not None else None,
+                    )
+                    for k in keys
+                ]
+                if keys
+                else [default_backend]
+            )
+        except CrewmateHarnessUnavailable as exc:
+            # A crewmate whose pinned harness cannot start takes no model at all.
+            return str(exc)
     from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.crewmate_harness import harness_label
 
     entry = model_registry.get_entry(model_name) or {}
     for name in dict.fromkeys(backends):
         namespace = capabilities_for(name).model_id_namespace
         if namespace != MODEL_NAMESPACE_ACP and entry.get("providers", {}).get(namespace):
             continue
+        # The harness by the name the dashboard shows it under, never the raw id.
         return (
             f"{model_name!r} is a display-only model identifier the "
-            f"{name or 'kiro'} backend does not accept; "
+            f"{harness_label(name or 'kiro')} harness does not accept; "
             f"select a listed model or 'auto'."
         )
     return None
@@ -294,16 +309,48 @@ def _broadcast_context_reset(state: "DashboardState", slot_key: str, provider: A
     (a frame WITHOUT ``reset`` never deletes, so the backend sets ``reset``
     whenever it has no real counts to send). With a live provider the payload
     carries the freshly rebased stats from ``set_model``; without one (the
-    session-reset path) it carries no tokens, so the reducer deletes the entry
-    and the UI falls back to its own model-derived window for the slot's new
-    model. Best-effort: a broadcast failure must not fail the switch.
+    cold-reset path) it carries no tokens, so the reducer keeps the stored
+    ``used`` and the UI derives the percentage against the new model's window.
+    Best-effort: a broadcast failure must not fail the switch.
+
+    When the new model's window is unknown, the frame carries ``used_tokens``
+    (if the live rebase knows it) but neither ``pct`` nor ``window_tokens``.
+    ``used`` is roughly model-independent and the transcript is unchanged across
+    a switch, so the meter derives ``used / new-window`` against its own
+    model-derived window — a correct reading, not the old model's percentage
+    pinned beside a window that does not describe it. A rebase that DID
+    resolve the new window ships the full ``pct``/``used``/``window`` triple and
+    is not a reset. When ``used`` is genuinely unknown (a percentage-only
+    backend) nothing is carried, and the reducer clears the reading rather than
+    derive a wrong number.
     """
     try:
         if provider is not None:
             payload = _context_usage_payload(slot_key, provider)
         else:
-            payload = {"slot": slot_key, "pct": 0.0}
+            # No provider on the cold-reset path: no measurement to send, so the
+            # reducer keeps its stored ``used`` and derives against the new
+            # window.
+            payload = {"slot": slot_key}
         payload["reset"] = True
+        if not payload.get("window_tokens"):
+            # New window unknown: a pct computed against the OLD window must not
+            # pair with the NEW model's window downstream, so drop both the pct
+            # and the (zero) window. Keep ``used_tokens`` when the provider has
+            # it — the meter derives the percentage from it against the new
+            # window. ``_context_usage_payload`` only sets ``used_tokens``
+            # alongside ``window_tokens``, so surface it here from the provider.
+            payload.pop("pct", None)
+            payload.pop("window_tokens", None)
+            payload.pop("used_tokens", None)
+            used = 0
+            if provider is not None and hasattr(provider, "context_used_tokens"):
+                try:
+                    used = int(provider.context_used_tokens() or 0)
+                except Exception:
+                    used = 0
+            if used > 0:
+                payload["used_tokens"] = used
         state.broadcast_context_usage(slot_key, payload)
     except Exception:
         logger.exception("Failed to broadcast context_usage reset for slot %s", slot_key)
@@ -331,13 +378,32 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    return await switch_slot_model(
+        state, slot, name, body.get("model", ""), SlotAgentSwitchCaller.for_request(request)
+    )
+
+
+async def switch_slot_model(
+    state: DashboardState,
+    slot: _ChatSlot,
+    name: str,
+    raw_model: Any,
+    caller: SlotAgentSwitchCaller,
+) -> web.Response:
+    """The model picker's transaction, for the HTTP route and the in-turn ``/model <id>``.
+
+    *caller* says who asked (see :class:`SlotAgentSwitchCaller`): the route passes
+    its request, the chat runner's command passes ``for_turn``, so the busy rules,
+    the deferral and the owner gate are the same for both. A turn caller is never
+    the owner, so it cannot arm "Auto (Jev)".
+    """
     # The "Auto (Jev)" entry is resolved HERE and nowhere else: every reader below
     # -- the guard, the live switch, the reset, the session allocation, the
     # composer chip -- takes the id it produces, which is the plain ``auto`` the
     # session actually runs on until a tier is answered. The choice itself
     # survives as ``slot.jev_route`` alone.
-    jev_route = _is_jev_route_pick(body.get("model", ""))
-    if jev_route and not is_owner_dashboard_request(request):
+    jev_route = _is_jev_route_pick(raw_model)
+    if jev_route and not caller.owner:
         # Arming routing is an OWNER action: it hands the per-turn model choice to
         # the oracle, and a dear tier spends the owner's credential on a model the
         # caller never named. The cross-app gate above cannot carry that decision --
@@ -352,8 +418,12 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             resources=f"slot={name}",
             error="non-owner identity rejected",
         )
-        return _owner_denial_response(request, "arming Jev routing is owner-only")
-    model_name = "auto" if jev_route else _normalize_model(body.get("model", ""))
+        if caller.request is not None:
+            return _owner_denial_response(caller.request, "arming Jev routing is owner-only")
+        return web.json_response(
+            {"error": "arming Jev routing is owner-only", "code": "owner_only"}, status=403
+        )
+    model_name = "auto" if jev_route else _normalize_model(raw_model)
     # Judged on THIS slot's harness: a member DM runs on agent.member_acp_backend.
     reason = _model_rejected_reason(model_name, session_keys=(effective_session_key(slot),))
     if reason:
@@ -397,7 +467,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         # Re-authorize after the await above (see _slot_replaced_while_queued):
         # ``name`` can be recreated for a different app while this request
         # queued, and every read of ``slot`` below would be of the stale one.
-        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_model"):
+        if _slot_replaced_while_queued(state, slot, name, caller.scope, "chat.slot_model"):
             return slot_not_found()
         # The session the switch will probe and, on the reset path, tear
         # down. ``effective_session_key``, never ``_history_key_for`` (the
@@ -420,13 +490,13 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         await _stack.enter_async_context(slot._model_pick_lock)
         # Two more lock-acquisition awaits, one re-check: nothing reads
         # ``slot`` between them, so a check after the last one covers both.
-        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_model"):
+        if _slot_replaced_while_queued(state, slot, name, caller.scope, "chat.slot_model"):
             return slot_not_found()
         # App isolation on the SESSION, not just the slot (the cancel
         # routes' policy): slot ownership does not imply ownership of a
         # linked channel session, so an app caller may not switch the model
         # a channel thread runs on. Denied as an indistinguishable 404.
-        denied = _app_cancel_denied(request, slot, "chat.slot_model", session_key)
+        denied = _app_cancel_denied(caller.scope, slot, "chat.slot_model", session_key)
         if denied is not None:
             return denied
         # The routing flag is committed on each SUCCESS path and nowhere else -- see
@@ -482,30 +552,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             state.push_slots_update()
             return web.json_response({"ok": True, "model": model_name, "jev_route": jev_route})
         provider = state.sessions.get_provider(session_key)
-        _busy = _switch_target_busy(state, slot, session_key, provider)
-        # A session that runs NATIVE channel turns (Slack/Discord/Telegram/
-        # Teams) must keep the pre-existing 409 for a mid-turn pick: those turn
-        # loops never pass through the dashboard boundaries apply_deferred_model_switch
-        # runs at, so deferring would report success while the channel kept
-        # replying on the old model. The deferral is thus confined to pure
-        # dashboard sessions. Three signals decide it, the same ones
-        # turn_admission reads to tell a channel-driven turn from a direct
-        # dashboard one: a channel session key; a mirror link that accepts
-        # inbound resume (a `!sessions` resume keeps its ``dashboard:`` key yet
-        # is driven by the channel, so the key prefix alone is not enough); or a
-        # Slack channel bound on the slot. A busy channel-owned session gets the
-        # same answer the session_set_model pick gives a busy channel target.
-        # Applying a deferred pick at a channel turn's completion is a separate,
-        # transport-wide change.
-        _channel_owned = (
-            is_channel_session_key(session_key)
-            or state.sessions.mirror_accepts_inbound(session_key)
-            or bool(getattr(slot, "_slack_channel", ""))
-        )
-        if _busy and _channel_owned:
-            return web.json_response(
-                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
-            )
+        _busy = _switch_target_busy(state, slot, session_key, provider, own_turn=caller.own_turn)
         if _busy:
             # Never tear down an in-flight turn: _try_live_model_switch
             # declines a mid-turn live switch (awaiting the backend's answer
@@ -537,6 +584,22 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             _reset_only = not isinstance(provider, AcpProvider) or not _wire_model_id(
                 provider, model_name
             )
+            # A session whose turns a channel (Slack/Discord/Telegram/Teams) can
+            # drive lands a deferred pick at a channel turn's end too, but only
+            # LIVE (``land_model_pick_after_channel_turn``): a channel turn
+            # cold-starts on the default model ladder, not on ``slot.model``, so
+            # the reset fallback cannot land the pick there. A reset-only pick on
+            # such a session keeps the pre-existing 409, the answer the
+            # session_set_model pick gives a busy channel target, rather than
+            # report a deferral the channel could keep serving the old model past.
+            # Which sessions count is ``channel_drives_session``.
+            # circular import: session_control imports dashboard modules at module level.
+            from kiro_crew.dashboard.session_control import channel_drives_session
+
+            if _reset_only and channel_drives_session(state, slot, session_key):
+                return web.json_response(
+                    {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+                )
             if _reset_only:
                 children_409 = await _subagents_attached_response(
                     state, slot, session_key, "slot_model"
@@ -715,7 +778,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             # (_switch_target_busy), so a sibling alias that began
             # cold-starting during either await is refused here too.
             recheck = state.sessions.get_provider(session_key)
-            if _switch_target_busy(state, slot, session_key, recheck):
+            if _switch_target_busy(state, slot, session_key, recheck, own_turn=caller.own_turn):
                 if _live_serves_target(recheck):
                     # The turn that slipped in runs on a session that already
                     # serves the target (set_model landed before the effort
@@ -956,11 +1019,12 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             if _slot_replaced_while_queued(state, slot, name, request, "chat.slots_model"):
                 skipped_running.append(name)
                 continue
-            if not is_dashboard_user and session_key != _history_key_for(name):
-                # Slot ownership does not imply ownership of a linked channel
-                # session (the cancel routes' second condition): an app caller
-                # does not get to switch the model a channel thread runs on.
-                # Skipped silently, like every other slot the app does not own.
+            if not is_dashboard_user and not app_owns_slot_session(request_app, slot):
+                # Slot ownership does not imply ownership of the session the
+                # slot runs on or the transcript it writes: the per-slot
+                # checkpoint's rule, re-read inside the locks so a binding that
+                # landed while this iteration queued is the one judged. Skipped
+                # silently, like every other slot the app does not own.
                 continue
             if slot.model == model_name:
                 # The MODEL is unchanged; the routing choice may not be. A slot

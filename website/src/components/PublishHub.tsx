@@ -23,6 +23,7 @@ import { safeHttpUrl } from '../lib/safeUrl'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import { errMessage } from '../utils/thunkError'
+import { toApiError } from '../api/apiError'
 
 import { i18nT } from '../i18n/t'
 interface UnifiedProvider {
@@ -281,6 +282,19 @@ function visibilityLabel(v: PublishVisibility): string {
   return v === 'PRIVATE'
     ? i18nT('components.publishHub.visibility_private')
     : i18nT('components.publishHub.visibility_public')
+}
+
+/** The JSON body of a failed publish, which carries the refusal fields the
+ *  confirm reads (`code`, `blocked`, `error`). A body that is not JSON, such as
+ *  a proxy's HTML 502, is thrown as the shared `ApiError`, so the banner shows
+ *  its status or text rather than a JSON parse error. */
+async function failedReplyFields(r: Response) {
+  const err = await toApiError(r)
+  try {
+    return JSON.parse(err.body)
+  } catch {
+    throw err
+  }
 }
 
 export function buildProviderList(
@@ -584,7 +598,7 @@ export function PublishHub({
         headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' },
         body: JSON.stringify(payload),
       })
-      const data = await r.json()
+      const data = r.ok ? await r.json() : await failedReplyFields(r)
       const outcome = readPublishOutcome(data)
       if (data?.code === 'stale_preview') {
         // Content changed since preview — force re-preview

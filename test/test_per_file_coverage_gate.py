@@ -610,9 +610,10 @@ def test_comments_and_blank_lines_are_ignored(tmp_path) -> None:
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, _SCRIPT_PATH, *args],
+        [sys.executable, "-X", "utf8", _SCRIPT_PATH, *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
         check=False,
     )

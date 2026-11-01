@@ -25,6 +25,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_retry` | `POST /api/session-control/retry` | Re-run a failed last turn through `continue_slot_turn`, the Resume button's path, with `require_interrupted=True` (`turn_not_failed` otherwise) and `authorize_target` re-run synchronously under the slot lock before the continuation is queued |
 | `session_continue` | `POST /api/session-control/continue` | The same `continue_slot_turn` call without `require_interrupted`, as the Continue button makes it, through the helper `retry_target` shares (`_continue_turn_of_target`); the result's `body` is `resumed` or `continued`, whichever continuation `_is_interrupted` chose, and the allowed audit line records it. Not in any auto-grant: a member or conductor is asked before each call |
 | `session_set_model` | `POST /api/session-control/set-model` | Record a pending model and/or reasoning-effort pick on an idle session; `apply_pending_model_pick` commits it at the start of the target's next turn after re-running `authorize_target` in the same synchronous step. Each half yields separately to a newer user pick from its own control. A busy target is refused with `target_busy` and keeps its settings |
+| `session_set_color` | `POST /api/session-control/set-color` | Set the sidebar tint (palette index 0-6, or clear). `authorize_target` (self refused), then a creator fence for every caller: only sessions it created |
 | `session_reload` | `POST /api/session-control/reload` | Relaunch the agent process of an idle session the caller created, through `chat_handlers.reload_slot_session` (shared with the tab menu's Reload session). The transcript is kept and gets one notice naming the caller. Self, remote-crew and busy targets (turn running or starting, queued messages, sub-agents) are refused |
 | `session_rename` | `POST /api/session-control/rename` | Set the caller's own title or a target's through `chat_title.apply_manual_title`, the sidebar rename's code, after `authorize_target` with `allow_self`; a scheduled run's own session is still refused as `unattended_target`. The title is final (`_TITLE_ORIGIN_USER`). An empty title, one over 200 characters (before or after `_scrub_text` redaction, which lengthens credential-shaped text into markers), one with no character that renders (only whitespace, characters `terminal_safe._is_invisible` reports such as zero-width, variation-selector and Hangul-filler characters, or the blank Braille pattern U+2800), one containing U+2800 anywhere (scanning normalization keeps it, so it could split a secret past the redactors), or one with a control character or any text-direction control (embeddings, overrides, isolates and the U+200E/U+200F/U+061C marks), or any other `Cf` format character except U+200C/U+200D and the tag characters U+E0020..U+E007F that spell flag subdivisions (`_is_allowed_format_char`; the tag block's other `Cf` character, U+E0001 LANGUAGE TAG, is refused; its unassigned code points are not `Cf`), is refused with `invalid_title`; if the history write fails the live slot keeps and broadcasts the new title (best-effort, like the sidebar and channel renames; the next full save writes it) and the verb answers `title_persist_failed` (500) instead of `ok` |
 | `session_generate_title` | `POST /api/session-control/generate-title` | Regenerate a session's title through `chat_title.generate_manual_title` and `chat_title.apply_regenerated_title`, the sidebar "Regenerate title" code: one awaited titling-model call; the result replaces the current title (a hand-set one included) and stays auto. After `authorize_target` (no `allow_self`), the target must be one the caller created (`not_creator`, 403) for every caller class. One admitted call per target per `create_rate_limit.WINDOW_SECS` (300 s) through the shared creation limiter keyed by the target slot, stamped before the model call (`title_rate_limited`, 429). After the model answers, the slot identity and closing flag are checked (`target_replaced`, 409) and `authorize_target` runs again synchronously; then every field is assigned before the first await, as `session_rename` does, and the save only makes that change durable. The save passes `still_current` (slot identity), so `_persist_title` refuses the write under the history lock when the slot left its key, and the verb then answers `target_replaced` (409) rather than overwriting a successor's saved title. A rename that landed during the model call wins (`changed: false`). If the history write fails the live slot keeps the title and the verb answers `title_persist_failed` (500). The sidebar push is skipped when the slot left its key during the save |
@@ -32,13 +33,14 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_revive` | `POST /api/session-control/revive` | Bring an archived session back into the live sidebar, as clicking it in the History tab does — the mirror of close, optionally filing it into a folder |
 | `session_history_list` | `GET /api/session-control/history` | List the archived sessions the caller could revive, newest first, optionally narrowed to one folder; every row passes the same containment and ownership fence `session_revive` applies |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
-| `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to several sessions — by default every session the caller created — in a required `queue` or `steer` mode, reporting the outcome per target |
+| `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to the named `targets`, or with `all: true` to every session the caller created, in a required `queue` or `steer` mode, reporting the outcome per target; a call that selects neither, or both, is refused |
 | `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
 | `session_adopt` | `POST /api/session-control/adopt` | Take another session under the caller in the session tree, keeping the parent it had on record; refused when the target is already above the caller |
 | `session_handoff` | `POST /api/session-control/handoff` | Make another session the manager of a target the caller manages, so the verbs that run the target answer to the new manager; `_created_by` does not move |
 | `session_release` | `POST /api/session-control/release` | Let a session the caller holds, or the caller itself, out from under its parent; the released session keeps its own subtree |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
+| `work_dispatch` | `POST /api/work-ledger/record`, then `POST /api/session-control/create`, `record` again and `POST /api/session-control/send` | Create a work item, open its worker, bind it and seed it in one call ([rfc-work-dispatch](../../request-for-change/rfc-work-dispatch.md)). No route of its own: the MCP process calls the four routes in order as the caller, sends the seed only after `bind` succeeded and only to the key `create` returned, and on a failure names the step and closes what it made (session, then item). The step-1 create carries `dispatch`; `/api/work-ledger/record` strips it before schema validation and refuses `no_ledger` when the verified caller owns no ledger, so `work_dispatch` never opens one and only `kirocrew-work`'s `work_ledger_record` does (rfc-work-dispatch amendment 2026-10-28); not auto-approved |
 
 `session_adopt` and `session_release` reshape the session tree, so both go
 through `authorize_target` like every other verb and add tree checks of their
@@ -112,18 +114,28 @@ then calls `send_to_target` once per target, so every bound above holds per
 delivery unchanged — the same gate, the same containment snapshot, the same
 queue-drain re-check — and a broadcast can reach nothing a sequence of
 `session_send` calls could not. What it adds is the audience rule and the
-reporting contract: the default audience is the caller's OWN created sessions
+reporting contract: the `all: true` audience is the caller's OWN created sessions
 (`broadcast_audience` reads the same `_created_by` field the ownership fence
 reads, so it is a subset of what the fence admits by construction), deliveries
 are SEQUENTIAL rather than gathered, one target's refusal is COLLECTED as a row
 instead of aborting the rest, and the audience is capped at
 `MAX_BROADCAST_TARGETS` (50) with an over-cap request refused rather than
 truncated — a silently-cut broadcast is one the caller believes reached everyone.
-That cap sits at `MAX_SLOTS_PER_CREATOR` and must never fall below it: the default
-audience is bounded by the per-creator slot cap and by nothing else, so a lower
-broadcast cap would make the default path refuse an audience the caller never
-chose. An explicit list is bounded at the ROUTE — both its length and each
-element's — before any name is resolved, because resolution is per-name work and
+That cap sits at `MAX_SLOTS_PER_CREATOR` and must never fall below it: the
+`all: true` audience is bounded by the per-creator slot cap and by nothing else, so
+a lower broadcast cap would make that path refuse an audience the caller never
+chose. Reaching the whole set always takes an explicit `all: true`: a `targets`
+that is absent, `null` or empty selects nobody, because Kiro CLI drops an empty
+list from a tool call and the server cannot tell it from an omission. A call with
+neither `targets` nor `all: true` is refused `target_required`, and one with both is
+refused `audience_conflict`, each before anything is sent. The tool runner
+refuses a call that names neither before it sends a request, because a gateway
+older than the tool reads a body without `targets` as every created session; an
+explicit `targets: []` is forwarded as given, since that older gateway refuses it.
+A session that still holds the old tool text is refused once and told to pass
+`all: true`. An explicit list is
+bounded at the ROUTE — both its length and each element's — before any name is
+resolved, because resolution is per-name work and
 the MCP schema's `maxItems` does not bind a caller that reaches the route itself.
 The `mode` argument (`queue` | `steer`) is required with no default, because the
 two are different instructions and defaulting either way silently substitutes one
@@ -303,7 +315,7 @@ stamped by `dashboard/channel_handoff.py` for a message a channel conversation
 queued into a resumed dashboard session), is stripped for the same reason with a
 wider blast radius — it names a conversation on a network surface — and its notice
 re-runs the outbound recipient check with the principal the channel authorized on
-inbound before anything is sent (see [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery-discord)).
+inbound before anything is sent (see [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery)).
 
 A send whose caller is the target's own creator (`_created_by` equals the
 caller's slot key) also sets the target's in-memory `_reports_to_creator`. With
@@ -521,6 +533,20 @@ memory boundary stay the caller's. An invalid folder project refuses the create
 with 400 `folder_project_invalid`, and a folder whose project changes while the
 creation is in flight refuses with 409 `folder_target_changed`.
 
+A caller inside a Crew Mode tree — a chat that turned Crew Mode on, or a session
+such a chat dispatched (`crew_mode.slot_in_turned_on_tree`, the rule the slot
+list stamps; see [crew-mode](crew-mode.md) § Crew Mode) — files nothing: the
+chat is the person's one entry for the whole crew. `session_create` with a
+`folder` still resolves it (an unknown or ambiguous reference is refused, no
+path segment is created), gives the child that folder's project directory, and
+leaves the child unfiled; the reply carries `folder_ignored: "crew_mode"` when
+a folder was named and `crew_mode: true` whenever the caller is in such a tree.
+`session_fork` from such a caller clears even the folder the source transcript
+carried before the child's first save and answers the same two fields.
+`chat_folder_file_self` from such a caller is a no-op that says where the
+session stays. The MCP tools' replies say "unfiled (this chat is in Crew Mode)"
+so the agent does not report a filing that did not happen.
+
 `session_create` also takes an optional `agent_kind`, with one value: `template`.
 It is the selection namespace for `agent`, and it exists for the one case a bare
 `agent` cannot express: a shared template that a crew member of the same name
@@ -565,7 +591,7 @@ including both slot ceilings, and returns `{"dry_run": true}` without minting a
 slot or spending a rate-limit token. A refusal there is returned before any
 segment exists. The folder endpoint refuses an agent caller (the internal
 transport) a sibling whose trimmed, case-folded name is already taken under the
-same parent, tested under the folder-store lock (`folder_name_exists`, 409).
+same parent, tested under the folder-store lock (`folder_name_exists`, 409). `PATCH /api/chat/folders/{id}` applies the same test, under the same lock, to an agent rename and to an agent reparent (`chat_folder_move` sends a `parent_id`-only PATCH), comparing the folder's resulting name with the destination's children; a write that changes neither the name nor the parent is not tested.
 When the one colliding sibling belongs to the caller's own principal, the
 endpoint returns it instead (200, `"reused": true` on the response only), so a
 lost race resolves to the winner's folder in the same request. A twin owned by
@@ -583,6 +609,73 @@ lock. The new folder is owned by the agent. Nowhere else in the person's tree
 opens, and renaming, moving or deleting the person's folders stays refused. A
 member's folder list adds that home folder and its ancestors, the path its own
 `[FOLDER]` line already shows, so the walk resolves `Ops` instead of missing it.
+
+A mate is the exception, and keeps everything it creates in ONE folder of its
+own (`dashboard/mate_folders.py`, #25935). Its home folder is a top-level folder
+owned by `member:<store>` and marked `mate_home`; it is created on first use under
+the folder-store lock (one per store, however many creates race), named with the
+mate's display name, and renamed when that changes: by the agent-update route on
+a saved `display_name`, and by the next `ensure_mate_home` for any other writer.
+The store is the link, so a rename never re-points it. Only a member identity
+(an execution with a `member_id`) has a home; a legacy selection without one
+files where it asks, as before. A folder a member caller
+creates (`api_chat_folder_create`) at the top level, or under any folder outside
+that home, is filed under the home instead (`home_parent_for_create`); one inside
+the home keeps its parent. A create filed home out of an existing person's folder
+with no `project_dir` of its own takes the project that folder inherits
+(`home_create_target`), the same rule a conductor's re-filed session follows, and the
+MCP folder-path walk reaches it through this route. A session a mate's conductor chat opens
+(`session_create`, `mate_home_filing`; the conductor is told by
+`_conducts_for_a_worker`, the worker hand-off's own test, run off the loop
+so it never schedules an installed-agents rescan) is filed in the folder it named when that
+folder is inside the home, else in the home itself. A person's folder it named
+still supplies the child's project directory, as in Crew Mode (filing dropped,
+project kept), and the late folder re-check compares that folder's project; a
+named folder that does not exist, or one in another mate's home, supplies
+nothing and the home is used for both. Any other caller naming a
+folder in a mate's home is refused `mate_home_locked` (403), unless it runs on
+that mate's store (one of the mate's own workers). Moves are fenced the same
+way, refused `mate_folder_scope` (403) rather than redirected: a member caller
+may not re-parent its home folder, re-parent any folder to outside the home,
+move a folder from outside the home into it, since a person's chats filed there
+would be locked in too (`api_chat_folder_update`), or file a chat outside it
+(`api_chat_slot_folder`).
+The home is also closed to everyone else, the person included, refused
+`mate_home_locked` (403): the home itself takes only `collapsed` and `order`
+(no rename, move, recolor, project or delete, from anyone), and nothing outside
+the mate may create a folder or chat in its subtree, file a chat into it or out of it, move a
+folder into it, or edit or delete a folder inside it (`home_owner_of`,
+`refuses_write_into`). Every writer of the folder tree applies this: the shared
+create (`create_folder_record`, so the folder scaffold too) refuses it under the
+folder-store lock (`FolderMateHomeLockedError`), the empty-folder cleanup never
+lists a home or a folder inside one (`mate_home_subtree_ids`), `session_fork`
+and `session_revive` refuse a named folder in another mate's home
+(`refuse_foreign_home_filing`), a fork that would inherit its parent's folder
+in a mate's home the forker does not own (the person's Fork, or `session_fork`
+by anyone but that mate) is left unfiled (`inherited_folder`), a scheduled job
+is saved with a chat folder there only when it runs on that mate's store (the
+cron create and update routes refuse it `mate_home_locked` (403) and record the
+denial in the security event log, the Schedule form does not offer such a
+folder, and the tab placement re-checks it at run time and records a refusal
+the same way), and the name lookups that adopt an existing
+folder (a channel's `session_folder`, the import arrival folder, Code Review
+Sage's follow-up folder) never adopt one. Every route that refiles an EXISTING
+chat checks both ends of the move with one rule (`refuses_refile`): the slot
+folder PATCH (`api_chat_slot_folder`), a slot create that names an open slot
+(`api_chat_slot_create`), `session_revive` against the archived record's folder,
+and the cron update route against the job's current chat folder (with
+`move_cron_job_tab` re-checking it), so none of them moves a chat out of a mate's
+home it may not write. Deleting the mate releases its home:
+after the delete succeeds, the agent-delete route drops the `mate_home` marker
+from the home of the retired store's principal (`release_mate_home`, best-effort), so it becomes
+an ordinary folder the person may rename, move or delete. Agent sync does the
+same for each V2 store it retires (`installed_agents`). Nothing else unlocks a
+home; a config read that finds no mate never does. Accepted gap: a mate removed
+by hand-editing `config.json` leaves its home locked. The sidebar draws the subtree
+the same way: no menu, no new-chat control, no rename, no drag, no drop
+(`isMateManaged`). Folders a mate
+made before this rule are left where they are. Pinned in
+`test/test_mate_folders.py`.
 
 `session_create` also takes an optional `model` — the model the child starts
 on, pinned as the person's own pick in the model dropdown would be (same
@@ -699,7 +792,9 @@ through the child's mint, message copy, save and the deleted-source rollback. Th
 session-control verb calls the same two, so what an agent's fork copies and what
 it inherits — agent, model, memory store and mode bound at birth, project,
 folder, tags, `forked_from` — is by construction what a person's fork copies
-and inherits, except the sidebar pin (last table row). The human route's behaviour is unchanged by the split; the core
+and inherits, except the sidebar pin (last table row) and the folder of a
+Crew Mode caller's child, which is cleared (§ `session_create`'s Crew Mode
+filing rule). The human route's behaviour is unchanged by the split; the core
 takes the request-derived facts as arguments (`request_app`, `origin`,
 `count_user_session`, `jev_route_allowed`, the SEL caller and operation) and the
 two routes answer them differently:
@@ -901,7 +996,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 
 | Refusal | Status | Why |
 |---------|--------|-----|
-| Config switch off (`agent.session_control` explicitly `false`) | 403 | Operator withdrew the capability from every agent at once. Defaults to true — the agent's `kirocrew-dashboard` mount is the grant. **Exception:** a crew member bypasses this switch while `agent.member_dispatch` is true (its default) — recognised either as a `member-*` DM caller key OR as a chat slot bound to that member's private V2 store; see "Member callers" below |
+| Config switch off (`agent.session_control` explicitly `false`) | 403 | Operator withdrew the capability from every agent at once. Defaults to true — the agent's `kirocrew-dashboard` mount is the grant. **Exception:** a crew member bypasses this switch while `agent.member_dispatch` is true (its default) — recognised either as a `member-*` DM caller key OR as a chat slot bound to that member's private V2 store; see "Member callers" below. The Conductor in the owner's own dashboard tab bypasses it under the same ceiling; see "The owner's Conductor" below |
 | Caller session cannot be identified | 403 | An unidentifiable caller makes the self-target guard blind |
 | Caller is an unattended session (`workflow-*`) | 403 | A `workflow-<run_id>` slot exists only once its originating tab is gone, so there is no owning session to fence it to. **Exception:** a cron slot (`cron-*` caller key) is admitted and fenced by creator ownership instead — see "Cron callers" below |
 | Caller is itself incognito, temporary, or app-scoped | 403 | Caller-side isolation — the direction the target-side checks cannot see |
@@ -935,16 +1030,43 @@ and `set_model` among them, and `session_create`'s delegation lineage, still rea
 `_created_by`, which a handoff never rewrites. So a manager runs the sessions it was
 handed and cannot fork them or open sessions against the creator's memory.
 
-The reach moves: once a session is handed on, the giver is refused the widened verbs
-on it. Both sides of a handoff go through `authorize_target` with the `handoff`
+The reach moves: once a session is handed on, a fenced giver is refused the widened
+verbs on it, unless `agent.session_manager_chain` is on and the giver still manages
+the new manager (see the chain paragraph below). Both sides of a handoff go through `authorize_target` with the `handoff`
 operation, so only the current manager can hand a session on, and the recipient must
-be a session the caller manages too. The verb then holds EVERY caller, fenced or not, to
-that manager rule (403 `not_manager`), so an unfenced agent in one of the person's own
-tabs cannot hand another of the person's tabs, which has no manager, to a fenced
-session. Refusals of its own, all 409: `self_manager` (the
+be a session the caller manages too. A fenced caller that fails either check is
+refused there with 403 `not_creator`, the ownership fence's code, so a fenced caller
+never sees `not_manager`. The verb then holds EVERY caller, fenced or not, to that
+manager rule (403 `not_manager`), and for an unfenced caller this is the only check
+that applies: an unfenced agent in one of the person's own tabs (not the Conductor
+while `agent.session_control` is off, which is fenced) cannot hand another
+of the person's tabs, which has no manager, to a fenced session. Refusals of its own,
+all 409: `self_manager` (the
 recipient is the target), `already_manager`, and `would_cycle` (the target manages the
 recipient, directly or up the line). A write that fails is 500 `handoff_write_failed`
 with nothing changed.
+
+The same reach rule bounds `session_adopt` and sets what a handoff can and cannot
+undo, for a fenced caller (every agent-created session, crewmate, cron and channel
+session, and the owner's Conductor while `agent.session_control` is off, see
+`_conductor_fenced`). Probed with the real gate:
+
+- `adopt` succeeds only on a session the caller manages: the manager of record (the
+  creator until a handoff names another) and, with the chain switch on, a session
+  above that manager. A third conductor, or a conductor adopting another
+  conductor's worker, gets 403 `not_creator`, with the switch off or on. A session
+  whose manager is no longer open can be adopted by no fenced caller; only an
+  unfenced agent in a person's own tab, or the person, reaches it.
+- There is no hand-back by the new manager. The recipient must be a session the
+  caller manages, and the giver is the caller's own manager, so the call is refused
+  `not_creator` with the switch off or on. With the switch on, the giver can take the
+  session back by handing it to itself while it still manages the new manager; with
+  it off, no fenced caller can.
+- A work-ledger `bind` after a handoff is a separate gap: `_refuse_unowned_worker`
+  compares `_created_by`, so the new manager is refused `worker_not_owned` while the
+  giver can still bind. Tracked in #19103.
+- A fenced caller adopting a crewmate's DM slot is refused `not_creator`, since no
+  fenced caller created it; an unfenced agent in a person's own tab can adopt it.
 
 The manager lives in `session_managers.json` under the data home's `crew-log` root
 (`src/kiro_crew/dashboard/session_managers.py`), keyed by slot key, holding the manager
@@ -1036,10 +1158,49 @@ Two rules give a member caller its shape:
   Every other refusal in the table above still applies to member callers
   unchanged.
 
-Ordinary (non-member) callers are untouched: they still require the switch.
+Ordinary (non-member) callers other than the owner's Conductor (next section)
+are untouched: they still require the switch.
 The exceptions are `session_end_wait`, whose own creator fence (below, "Ending
-a wait early") binds every caller class, owner sessions included, and
-`session_reload`, whose creator fence binds every caller class the same way.
+a wait early") binds every caller class, owner sessions included,
+`session_reload`, whose creator fence binds every caller class the same way,
+and `session_set_color`, whose creator fence also binds every caller class.
+
+#### The owner's Conductor: the same bypass, the same fence
+
+The shipped Conductor (`kirocrew-conductor`, and its deprecated alias
+`kirocrew-ledger-conductor`) exists to open and drive worker sessions. When the
+person starts it in their own dashboard tab, it gets the member bypass on the
+member's terms, so Crew Mode works on an install whose stored
+`agent.session_control` is `false`:
+
+- **Who.** `_owner_tab_conductor` reads positive identity off the caller's own
+  slot: a `chat-` key; an agent in `CONDUCTOR_AGENTS`; no `_created_by` (only
+  `create_session` writes it, so an empty value means a person opened the tab);
+  no channel or cron link and not channel-born; not app-scoped and no non-user
+  origin; and not a crew member, which keeps its own bypass. A cron tab, a
+  channel-linked or channel-born session, a member's chat, and every session any
+  agent created (the Conductor's own workers included) answer false at any depth.
+- **The ceiling.** `_conductor_bypass` is that predicate AND
+  `member_dispatch_enabled()`. One ceiling covers both dispatching callers, so an
+  operator who sets `agent.member_dispatch` to `false` withdraws the Conductor's
+  bypass too, and an unreadable or degraded `agent` section withdraws it exactly
+  as it does a member's. `_dispatch_bypass` (member OR Conductor) is what the
+  `session_create`, `session_fork` and `authorize_target` switch gates read.
+- **The fence.** While the bypass is what admits it (`agent.session_control`
+  off, read through `session_control_enabled()`, so an unreadable config counts
+  as off), the Conductor is creator-fenced (`_conductor_fenced`, one more
+  population of `_caller_is_ownership_fenced`). It reaches the sessions it created
+  and nothing else: the person's other tabs and another Conductor's workers
+  answer `not_creator`. `_delegation_lineage_fenced` treats it as fenced too, so
+  neither it nor anything rooted in it binds a private-member store. With the
+  switch on it is an ordinary owner caller, with the owner's reach, as before.
+- **Its children.** A worker it creates carries `_created_by`, so the worker gets
+  no bypass of its own and stays fenced whatever agent it inherits.
+
+This narrows what an explicit `agent.session_control: false` withdraws, in the
+same way the member bypass already does: the switch still refuses every ordinary
+caller, and `agent.member_dispatch: false` is the operator's way to refuse
+dispatching callers as well.
 
 #### The strict-internal surface admits a crew member in either spelling, not every scoped caller
 
@@ -1360,7 +1521,7 @@ KAS backend the wire agent projection additionally grants the server in
 conductor's set (`_CONDUCTOR_DASHBOARD_GRANTS`: `chat_folder_tree`,
 `chat_folder_create`, `chat_folder_file_self`, `session_create`,
 `session_read_message`, `session_status`) plus `session_send`,
-`session_broadcast`, `session_stop` and `session_retry` — the write verbs are safe to auto-approve for a member *specifically* because the
+`session_broadcast`, `session_stop`, `session_retry` and `session_close` — the write verbs are safe to auto-approve for a member *specifically* because the
 `created_by` ownership fence above bounds them to worker sessions the member
 itself opened. Member sessions also bypass the provider warm pool
 (`bypass_member`): a pooled child was spawned with no session key on the
@@ -1627,6 +1788,31 @@ The config read fails **closed**: `KiroCrewConfig.load()` raising resolves to
 disabled even though the field's declared default is enabled, so neither a
 malformed unrelated section nor an unreadable setting can produce cross-session
 reach.
+
+### Workflow runs: the launching session is the caller
+
+A dynamic workflow's `ctx.open_session` / `ctx.send_to_session` call
+`create_session` / `send_to_target` in-process with the run's launching session
+key as `caller_session_key` (`dashboard/workflow_session_port.py`), so every
+refusal and fence above applies to that session exactly as it does to its own
+`session_create` / `session_send`. There is no `workflow:` caller type: a run
+with no launching session (an empty key, a `cron:` key, or an unattended
+`cron-` / `workflow-` slot) is refused `no_launching_session` before these
+verbs run. A run whose captured memory mode is not `persistent` (an Incognito or
+Temporary run, or a rerun of one) is refused `restricted_memory_mode` on
+`open_session` / `send_to_session`, whoever its caller is. The HTTP scope gate in front of `/api/session-control/*`
+(`_private_caller_refusal`) is applied to the launching session by the port
+itself, with the same predicate (`member_admitted_to_scoped_surface`): a member
+it admits is carried in creator-fenced, any other private-store caller is
+refused `member_scope_denied`. `ctx.send_to_session` is narrower than the
+launching session's own `session_send`: it always runs creator-fenced
+(`caller_fenced=True`), even for an owner launcher, so it reaches only the
+sessions the launching session opened or was handed and refuses any other
+`not_creator`. `ctx.set_session_mode` resolves its target through `authorize_target`
+(operation `set_mode`), requires it to be a session the launching session
+created, and refuses a mode above that session's current mode or above the
+launching session's own posture, judged again after the write. The rest
+is in [workflows](workflows.md) (ports native to Kiro Crew).
 
 ### Owner-DM channel callers: the audience predicate
 
@@ -2070,7 +2256,9 @@ session before closing it. Close waives the self-target refusal
 (`allow_self=True`, as release does) on both its admission gate and its pre-pop
 re-check, so a session that has finished its one job can archive its own tab; the
 self-close cancels the caller's own running turn, which is the turn that asked
-for it, and every other caller and target rule still applies. It reuses the dashboard's own close path
+for it, and every other caller and target rule still applies. A crewmate's own
+DM thread (`mode == DM_SLOT_MODE`) is the exception and is refused
+`member_thread_self_close`: only the person dismisses it. It reuses the dashboard's own close path
 (`close_slot`), the same sequence the ✕ button runs: a synchronous tombstone,
 auto-nudge-loop retirement BEFORE the awaits so no nudge resurrects the tab, the
 owning app's close hook with rollback, persist-as-closed, and per-tab session
@@ -2237,6 +2425,73 @@ title or metadata line; when it runs out of them first it answers
 `scan_truncated: true` (and `more: true`), and the scan's memory stays bounded
 however large the archive is.
 
+## Remote dispatch: `crew=` on five verbs (preview)
+
+Wave 1 of [rfc-conductor-remote-dispatch.md](../../request-for-change/rfc-conductor-remote-dispatch.md). `session_create`, `session_send`, `session_read_message`, `session_stop` and `session_close` take an optional `crew` (a connected crew's instance id or exact name). A body (or, for the read, a query) that carries the `crew` key at all, whatever its value, is handed by its own `/api/session-control/*` route to `dashboard/handlers/remote_dispatch_routes.py` and never runs the local verb. Without the key the routes are unchanged.
+
+| Verb | Peer call |
+|---|---|
+| create | `POST api/chat/slots` `{memory_mode, agent?, model?}`, then `PATCH api/chat/slots/{s}/title` when a title was given |
+| send | `POST api/chat?ws=1` `{message, slot, turn_origin: "agent", steer?}` |
+| read | `GET api/chat/slots/{s}?limit=N` (1-100, no `since`) |
+| stop | `POST api/chat/slots/{s}/stop` |
+| close | `DELETE api/chat/slots/{s}` |
+
+Each call is checked in this order, and each refusal has its own code:
+
+1. **Switch.** `work_ledger.remote_dispatch` (default `false`, read per call) off refuses `remote_dispatch_disabled` before anything else. `agent.session_control` off then refuses `session_control_disabled`, as it does for every local verb. Off, the dashboard MCP server's `tools/list` is byte-for-byte the table's own; on, it adds a `crew` property to exactly these five schemas. The validator schemas accept `crew` either way, so the gateway, not an unknown-field error, answers a call that carries it.
+2. **Owner-only caller.** The declared key is owner-minted (`is_owner_minted_session_key`, the `dashboard` namespace; `owner_only`); the shared agent-caller resolver (`handlers/guide.py` `_resolve_agent_caller`) admits it with its own codes; the slot was not opened on another caller's behalf (`_created_by` / `_lineage_minted`) and is not a crew member's thread (`owner_only`); the session is not bound to a private member store (`private_memory`); the session is not the bound worker of any work-ledger item here, read through the same binding `work_brief` resolves and refused when it cannot be read (`crew_caller_is_worker`), which keeps dispatch one level deep: a session another gateway's conductor opens here is bound to its mailbox item once the peer side binds at create (RFC wave 2), and a nested conductor is a bound worker too; and finally the running turn must be one the owner sent (`crew_owner_unverifiable`). That last arm, `owner_unverifiable_reason`, is the crew-read gate's slot check (`handlers_instances_crew_reads._slot_refusal`): the turn carries `_turn_owner_sent` and the slot was not opened on another caller's behalf. A dashboard login a messaging channel minted for someone else fails it, and so does a turn the person did not send (a loop wake, a `session_send`, a sub-agent completion). The earlier arms refuse first, so each refusal still names the rule a caller fails.
+
+   **The patrol-wake exception (wave 4, maintainer decision by buluoray on #26651).** Two wave 4 paths are NOT held to the owner-sent arm: the pull `work_ledger_read` runs for a remote item, and the decide forward a recorded `decide` on a remote item sends. Both may run on a turn the owner did not send, such as a patrol wake, because the conductor's own patrol is what drives them. Their reach is the one remote item bound on the caller's own ledger: the pull reads only that item's crew and slot, and the forward PATCHes only that slot's `work-item`. Both run only with `work_ledger.remote_dispatch` on, which defaults to off. This is a deliberate exception, not a precedent: any later crew-scoped read still applies the owner-sent arm above.
+3. **Crew.** An exact id wins over any name; a name resolves only when one crew carries it (`crew_unknown`, `crew_ambiguous`, `crew_invalid`).
+4. **Target fence.** send/read/stop/close reach only a peer slot this caller's slot created with `session_create(crew=)` on that same crew (`crew_target_not_dispatched`). The record lives in gateway memory, at most 64 slots per caller (`crew_dispatch_limit`), and a close forgets the slot. It does not survive a hub restart. An open item on the caller's own ledger bound to that slot on that crew (`worker_session_key` + `worker_instance_id`, wave 4) also admits the slot, and that pair does survive a restart.
+5. **Version.** The crew's `major.minor` must match this hub's (`crew_version_mismatch`); a disconnected crew answers `proxy_peer_not_connected`.
+6. **Path fence and redaction.** Every peer path is built from the table above, its slot key held to one plain segment, and passes `_proxy_canonical_path` before `SshTunnelManager.proxy_request` sees it (`proxy_path_denied`). A reply cut off mid-body is refused `crew_peer_interrupted`. A peer reply must be JSON within `PROXY_REDACT_BUFFER_MAX_BYTES` and is run through `_redact_peer_payload` before any field is read. A create reply whose `key` is not one plain segment is refused `crew_reply_malformed` and nothing is recorded.
+
+Every send carries `turn_origin: "agent"` (`dashboard/agent_origin.py`), so the crew runs it as an agent's turn that holds no person-only right. Outgoing message and title text passes the exfiltration-URL then the credential redactor; an incognito or temporary caller is refused `ephemeral_caller`.
+
+A crew create takes only `title`, `agent`, `model` and `work_item` (`crew_field_unsupported` for anything else). `memory_mode` is always this hub's `dashboard.default_memory_mode`. An omitted `agent` sends none, so the crew applies its own default. A crew create without `work_item` arms no patrol.
+
+### Wave 4: a crew worker born bound, its reports pulled on read
+
+`session_create(crew=, work_item=<item id>)` creates the crew session already bound to one of the caller's own items (`dashboard/handlers/remote_ingest.py` `create_bound`). The item must be on the ledger the caller's key names, open and unbound (`unknown_item`, `item_closed`, `already_bound`). The peer create carries `work_item {conductor_key, item_id, title, acceptance, decision}`; a reply without the matching `work_item_id` has its slot closed at once and is refused `crew_peer_lacks_work_items`. Then a recorded `bind` stores `worker_session_key` (the peer's slot key) and `worker_instance_id` (the crew) on the item, writes no binding file, and arms the patrol a local bind arms. A bind that does not record closes the peer slot. With the switch off the tool refuses `work_item` without `crew`; the MCP schema advertises it on `session_create` only while the switch is on.
+
+With the switch on, a peer's `crew_busy` refusal of the create keeps its code (`crew_busy`, 503) instead of `crew_peer_refused`.
+
+With the switch on, `work_ledger_read` first pulls each open remote item (at most 32 per read, 4 s each and 6 s per read, tried longest-ago first), reading the roster under the board lock: the crew's slot list (`running`, `pending_approval`, and `closed` when a complete list lacks the slot) and `GET api/chat/slots/{s}/work-item`. Under the board lock, and only while the item still names the same crew and slot, the peer worker's LATEST fields (`status`, `summary`, `artifacts`, `pr`, `reason`, stamped with the peer's `last_report_at`) are filed as an ordinary recorded `report` (actor `worker`, `by` the peer slot, `board_copy`), unless the hub item already holds exactly those values or the snapshot is older than the item's `last_report_at`. Worker fields are latest-value, so the item is the dedupe and nothing else is remembered between reads; a status the worker passed through between two reads is not kept. The report passes the peer's own report schema, redaction and one-line fit; one that fails is not filed and the row says why. What the pull learnt is kept in `work-ledger/remote/<board>/<item>.json`, outside the board directory, so a rebuild never prunes it. A crew that is down, skewed or unreadable keeps the last answers and sets `crew_state`, `crew_down_since` and `remote_error`; nothing is ever invented as a status.
+
+A remote row adds `worker_instance_id`, `crew_state`, `crew_down_since`, `pending_approval` and `remote_error` (compact rows too). Its `stale`, the Crew board's and the work-ledger probe's stall wake all answer liveness from that stored record through `work_ledger.item_liveness`, never from this gateway's slot table; with no pull yet it reads neither running nor closed. A recorded `decide` on a remote item then PATCHes `api/chat/slots/{s}/work-item {decision}` (scrubbed); the reply carries `remote_decide` `{ok}` or `{ok: false, code}`, and the local decision stands either way. The whole forward (its per-item lock, the settled read and the PATCH) is bounded at 10 s (`DECIDE_DEADLINE_SECS`), under the record tool's 30 s wait, and past it answers `crew_decide_timeout`. The pull and the forward run on a patrol wake too; see the patrol-wake exception under the owner-only caller rule. With the switch off none of this runs and a board with no remote item reads and records exactly as before.
+
+### Wave 5: the hub picks the crew
+
+With the switch on, `session_create(work_item=)` without `crew` places the item (`dashboard/handlers/remote_placement.py`). The caller passes the same owner checks as `crew=`. A registered crew is eligible when its tunnel is `connected`, its `major.minor` matches, and a fresh `GET api/chat/headroom` shows `mem_free_gb` and `disk_free_gb` of at least one estimate each (`work_ledger.remote_dispatch_memory_gb`, default 5, and `remote_dispatch_disk_gb`, default 5; see Wave 6) and `load_per_cpu` under 1.0. A crew whose route answers 404, whose memory or disk reading is missing, or whose version and headroom reads take over 5 s is skipped; a missing `load_per_cpu` does not skip it, as the peer gate also passes an unknown load. The item is checked open and unbound on the caller's ledger before any crew is probed (`unknown_item`, `item_closed`, `already_bound`).
+
+Reservations: each open item on any ledger here bound to a worker on that crew (`work_ledger.open_remote_bindings`, a `done` worker kept open included) and each work-item create to that crew still in flight on this hub (placed, or named with `crew=`) reserve one estimate. The choice and the in-flight count are taken under one lock, so two dispatches at once never both rank the same crew first. The hub picks the crew whose scarcer of memory and disk, after reservations and counted in estimates, is largest (ties by instance id). A `crew_busy` reply moves on to the next crew. The 15 s limit is best effort: once 15 s have passed since placement began, no new crew is tried. A create already started (its config load, board-lock wait and peer POST included) runs to the end, so it can outlast the tool's 30 s wait and bind after the caller gave up; the next `work_ledger_read` shows the binding. A probe that fails in any way skips that crew; any other refusal ends the placement, because that create may have reached the peer. With no crew left the reply is `crew_none_available` (503) and the item stays open and unbound. A retry must come from a turn the owner sends: like every `crew=` call, placement refuses a patrol or loop wake (`crew_owner_unverifiable`). A placed reply carries `placed: true` and the crew it chose. With the switch off the create route never enters this path.
+
+### Wave 6: estimate defaults
+
+The two estimates are measured, not guessed. Both stay config keys; a missing or non-positive value uses the default. They are read only with the switch on.
+
+| Key | Old | New | Basis |
+|---|---|---|---|
+| `remote_dispatch_memory_gb` | 2 | 5 | largest worker session tree measured, full suite aside |
+| `remote_dispatch_disk_gb` | 10 | 5 | ~2x one self-contained clone with dependencies |
+
+Method, 2026-11-01, Linux, 48 CPUs, 184 GB, kiro-cli 2.37.0. Memory: every live `kiro-cli acp` session tree (the session root and all its descendants: the agent runtime, its MCP servers, and any build or test it ran) was sampled every 10 s for 10 minutes, 23 sessions. GB here is GiB, as the headroom reading uses. Per-process `VmRSS` and `RssAnon` come from `/proc/<pid>/status`; PSS was not readable across sandboxed sessions, so `RssAnon` (private memory) is the shared-page-free figure. Peak tree size per session, in GB, over the 22 sessions that did not run the full suite:
+
+| | median | p90 | max |
+|---|---|---|---|
+| `RssAnon` | 1.1 | 2.4 | 4.2 |
+| `VmRSS` | 1.7 | 2.9 | 5.0 |
+
+The memory gate compares free memory with the estimate alone, with no floor on top, so the default is set to the largest session, not the p90.
+
+An idle session with few MCP servers is 0.6 GB; one with the usual MCP servers is 1.4 to 2.9 GB. One session running the full test suite under xdist reached 102 GB (26 test workers at about 4 GB each). That run is left out on purpose: the suite sizes its own worker count from the host's free memory (`resource_status`), so no per-worker constant can cover it; the next create's live memory reading sees what such a run leaves free.
+
+Disk: a fresh `git clone --filter=blob:none` of the repository is 983 MB (356 MB of it `.git`), `website/node_modules` after `npm ci` is 869 MB, and an existing worktree's backend virtualenv is 430 MB (sizes from `du`): 2.3 GB for one self-contained worker. The default doubles that for build output, test temp files and repository growth.
+
+Why fixed defaults and not a peer-reported per-worker figure: a fixed default changes two numbers and no wire format, older peers and hubs agree on it, and the peer gate already reads live free memory and disk on every create, so a worker that outgrows the estimate shrinks the headroom the next create on that crew is checked against. A peer-reported average would add a reply field, sampling state on the peer and a trust question about a number the hub cannot check, for a ranking the peer gate overrides anyway.
+
 ## Configuration
 
 `agent.session_manager_chain` (bool, default **false**) lets a fenced caller reach
@@ -2325,7 +2580,8 @@ today's behaviour, so installing this key changes nothing until it is set. Set i
 `false` and a member caller stops bypassing: it falls back under
 `agent.session_control` like any ordinary caller, which lets an operator who
 withdrew session control keep member DM threads chat-only without disabling the
-member. Read at the switch gate via `member_dispatch_enabled()`, and **fails
+member. The same ceiling gates the owner's Conductor bypass ("The owner's
+Conductor" above). Read at the switch gate via `member_dispatch_enabled()`, and **fails
 closed** everywhere it can go wrong. (1) An unreadable config withdraws the member
 bypass (`member_dispatch_enabled()` returns false on a raising read). (2) A config
 that loads but *discarded the `agent` section* (or the whole file) also withdraws
@@ -2369,7 +2625,10 @@ goes to its owner, and the owners import each other lowest layer first, in this 
 - `src/kiro_crew/dashboard/session_control_parts/model_switch.py`: `session_set_model` and
   the deferred model pick.
 - `src/kiro_crew/dashboard/session_control_parts/session_titles.py`: title cleaning,
-  `session_rename` and `session_generate_title`.
+  `session_rename`, `session_generate_title` and `session_set_color`.
+- `src/kiro_crew/dashboard/session_control_parts/crew_filing.py`: the Crew Mode filing
+  rule `session_create` and `session_fork` share: whether the caller is in a turned-on
+  Crew Mode tree, and the `folder_ignored` / `crew_mode` reply keys.
 - `src/kiro_crew/dashboard/session_control_parts/session_create.py`: `session_create` and
   the spawn record a created or forked child gets.
 - `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,
@@ -2386,6 +2645,8 @@ goes to its owner, and the owners import each other lowest layer first, in this 
   history and `session_revive`.
 
 The facade itself holds no verb: its docstring, its logger and the mirror.
+
+The `crew=` half of five verbs sits outside the facade: `src/kiro_crew/dashboard/handlers/remote_dispatch_routes.py` (the gateway checks and peer calls), `src/kiro_crew/mcp_session_crew.py` (the tool bodies and the schema overlay) and `src/kiro_crew/remote_dispatch.py` (the switch).
 
 ## What is deliberately not here
 

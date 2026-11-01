@@ -8,8 +8,7 @@ A function here whose first parameter is ``self`` is a ``KnowledgeStore`` method
 the class binds it under the same name in ``knowledge/store.py``, so it reads the
 store's fields and calls its sibling methods through ``self``.
 
-The ``KnowledgeStore`` fields this module uses. Writes: none. Reads: ``_graph_loaded``,
-``_graph_lock``.
+The ``KnowledgeStore`` fields this module uses. Writes: none. Reads: none.
 """
 
 from __future__ import annotations
@@ -141,15 +140,9 @@ def reclaim_orphans(self: KnowledgeStore) -> None:
     except Exception:
         self.db.execute("ROLLBACK")
         raise
-    # Only a graph somebody already materialised can be holding the entities
-    # just dropped; an unloaded one is built fresh by its first reader. The
-    # flag is read under ``_graph_lock`` so a first load racing this sweep
-    # cannot slip between the check and the refresh: a load that holds the
-    # lock finishes first and then reads as loaded (so it is refreshed), and
-    # a load that arrives later reads the tables after the prune committed.
-    with self._graph_lock:
-        if self._graph_loaded:
-            self._load_graph()
+    # A graph somebody already materialised may hold the entities just
+    # dropped; drop it so its next reader rebuilds from the pruned tables.
+    self.mark_graph_stale()
 
 
 def _adopt_agent_sole_copy_residue(self: KnowledgeStore, source_id: str) -> set[str] | None:

@@ -60,9 +60,13 @@ class TestRequiredFields:
         with pytest.raises(KasAgentTranslationError):
             to_client_custom_agent("", _spec(), "p")
 
-    def test_empty_prompt_is_refused(self):
+    def test_an_empty_prompt_is_carried_as_the_key(self):
+        # KAS needs `prompt` present, not non-empty.
+        assert to_client_custom_agent("kirocrew", _spec(), "")["prompt"] == ""
+
+    def test_a_non_string_prompt_is_refused(self):
         with pytest.raises(KasAgentTranslationError):
-            to_client_custom_agent("kirocrew", _spec(), "   ")
+            to_client_custom_agent("kirocrew", _spec(), None)  # type: ignore[arg-type]
 
 
 class TestReservedIds:
@@ -229,6 +233,12 @@ class TestTheSpecIsSpelledInKasToolIds:
             "fs_append",
         ]
 
+    def test_web_search_mounts_the_engine_s_remote_tool(self):
+        """KAS serves web search as ``remote_web_search``; the kiro-cli name
+        alone matches no KAS tool, so the agent would have no web search."""
+        out = to_client_custom_agent("a", _spec(tools=["web_fetch", "web_search"]), "p")
+        assert out["tools"] == ["web_fetch", "web_search", "remote_web_search"]
+
     def test_excluded_tools_are_widened_the_same_way(self):
         """The restricting direction: excluding ``fs_read`` for kiro-cli must not
         leave ``read_file`` mounted on KAS."""
@@ -251,23 +261,12 @@ class TestTheSpecIsSpelledInKasToolIds:
         spec can name. A tag (``read``, ``@builtin``) would also match but grants
         by class rather than by tool, so none appears here."""
         registry = Path(__file__).resolve().parent / "fixtures" / "kas_builtin_tool_ids.json"
-        registered = set(json.loads(registry.read_text(encoding="utf-8"))["registered"])
+        reg = json.loads(registry.read_text(encoding="utf-8"))
+        registered = set(reg["registered"]) | set(reg["remote"]["ids"])
         for kiro_cli_name, family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.items():
-            assert kiro_cli_name in {"fs_read", "fs_write", "grep", "glob"}
+            assert kiro_cli_name in {"fs_read", "fs_write", "grep", "glob", "web_search"}
             assert set(family) <= registered, kiro_cli_name
             assert kiro_cli_name not in family, "a family lists the OTHER engine's ids"
-
-    def test_expand_is_pure_and_order_preserving(self):
-        entries = ["@a", "fs_read", "@b", "fs_read"]
-        assert expand_kiro_cli_tool_names(entries) == [
-            "@a",
-            "fs_read",
-            "read_file",
-            "list_directory",
-            "@b",
-        ]
-        assert entries == ["@a", "fs_read", "@b", "fs_read"], "input untouched"
-        assert expand_kiro_cli_tool_names([]) == []
 
 
 class TestDeliberateOmissions:
@@ -690,14 +689,11 @@ class TestPromptResolution:
                 resolve_prompt({"prompt": target}, agent_id="a", agents_dir=tmp_path)
 
     def test_proc_environ_prompt_is_refused(self, tmp_path):
-        # /proc/self/environ would leak the gateway's own environment. It must be
-        # refused either way: on POSIX it is absolute and caught by the pseudo-fs
-        # denylist ("not an allowed location"); on Windows it is not absolute (no
-        # drive letter), so it is treated as a relative prompt and rejected for
-        # escaping the agent directory. Both are fail-closed rejections.
-        with pytest.raises(
-            KasAgentTranslationError, match="not an allowed location|escapes the agent directory"
-        ):
+        # /proc/self/environ would leak the gateway's own environment. On POSIX it
+        # is caught by the pseudo-fs denylist; on Windows it has no drive, so it
+        # resolves to a `<drive>:\proc\...` that does not exist and the read fails.
+        # Both are fail-closed rejections.
+        with pytest.raises(KasAgentTranslationError, match="not an allowed location|unreadable"):
             resolve_prompt(
                 {"prompt": "file:///proc/self/environ"}, agent_id="a", agents_dir=tmp_path
             )
@@ -711,19 +707,28 @@ class TestPromptResolution:
         )
         assert out == "expert prompt"
 
-    def test_relative_prompt_escaping_the_agents_dir_is_refused(self, tmp_path):
-        with pytest.raises(KasAgentTranslationError, match="escapes"):
-            resolve_prompt({"prompt": "file://../../etc/passwd"}, agent_id="a", agents_dir=tmp_path)
+    def test_a_relative_prompt_may_climb_out_of_the_agents_dir(self, tmp_path):
+        # A user reported (0.11.0.3) `file://../prompts/x.md`, which kiro-cli loads,
+        # refused on KAS as escaping the agent directory.
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (tmp_path / "prompts").mkdir()
+        (tmp_path / "prompts" / "x.md").write_text("shared prompt", encoding="utf-8")
+        out = resolve_prompt({"prompt": "file://../prompts/x.md"}, agent_id="a", agents_dir=agents)
+        assert out == "shared prompt"
 
     @pytest.mark.parametrize("bad", [None, "", "   "])
-    def test_empty_prompt_falls_back_to_the_kas_constant(self, bad, tmp_path, caplog):
-        # KAS requires a non-empty prompt; a missing or blank string is an
-        # intentionally prompt-less agent (e.g. kirocrew-lite ships "prompt": ""),
-        # so the projection substitutes the small inline fallback constant
-        # instead of crashing the session.
+    def test_a_prompt_less_spec_resolves_to_an_empty_prompt(self, bad, tmp_path):
+        # On kiro-cli a prompt-less spec runs on kiro-cli's own default
+        # prompt with nothing added. KAS registers an agent whose prompt is ""
+        # and layers nothing on its own default, so that is what goes out -- not
+        # Crew's background-worker brief, which says the agent has no tools.
+        assert resolve_prompt({"prompt": bad}, agent_id="my-agent", agents_dir=tmp_path) == ""
+
+    @pytest.mark.parametrize("bad", [None, "", "   "])
+    def test_only_the_background_agent_gets_the_kas_brief(self, bad, tmp_path):
         out = resolve_prompt({"prompt": bad}, agent_id="kirocrew-lite", agents_dir=tmp_path)
         assert out == _KAS_FALLBACK_PROMPT
-        assert "falling back to the lightweight KAS prompt" in caplog.text
 
     @pytest.mark.parametrize("bad", [7, 3.14, True, [], {}, ["x"]])
     def test_non_string_prompt_is_refused_not_defaulted(self, bad, tmp_path):
@@ -745,6 +750,18 @@ class TestPromptResolution:
         with pytest.raises(KasAgentTranslationError, match="unreadable"):
             resolve_prompt({"prompt": f"file://{p}"}, agent_id="a", agents_dir=tmp_path)
 
+    def test_missing_file_prompt_names_the_spec_dir_and_the_remedy(self, tmp_path):
+        # A spec left behind by an uninstalled tool points at a prompt that no
+        # longer exists; the refusal must say where the spec lives and what to do.
+        gone = tmp_path / "gone" / "prompt.md"
+        with pytest.raises(KasAgentTranslationError) as excinfo:
+            resolve_prompt({"prompt": f"file://{gone}"}, agent_id="old", agents_dir=tmp_path)
+        message = str(excinfo.value)
+        assert "unreadable" in message
+        assert str(tmp_path) in message
+        assert "delete the 'old' spec" in message
+        assert "choose another agent" in message
+
     def test_build_projects_a_prompt_less_spec_with_the_fallback(self, tmp_path):
         (tmp_path / "kirocrew-lite.json").write_text(
             json.dumps({"name": "kirocrew-lite", "tools": [], "prompt": ""}), encoding="utf-8"
@@ -754,6 +771,17 @@ class TestPromptResolution:
         assert agents[0]["prompt"] == _KAS_FALLBACK_PROMPT
         # Tool restriction is preserved — the fallback only supplies a prompt.
         assert agents[0]["tools"] == []
+
+    def test_build_projects_a_user_prompt_less_spec_with_an_empty_prompt(self, tmp_path):
+        # The key stays on the wire: KAS refuses an entry without `prompt` and
+        # falls the session back to its `vibe` mode.
+        (tmp_path / "helper.json").write_text(
+            json.dumps({"name": "helper", "tools": ["fs_read"]}), encoding="utf-8"
+        )
+        spec = load_agent_spec(tmp_path, "helper")
+        agents = build_kas_custom_agents(tmp_path, "helper", spec)
+        assert "prompt" in agents[0]
+        assert agents[0]["prompt"] == ""
 
 
 def test_the_batch_cap_matches_the_schema():

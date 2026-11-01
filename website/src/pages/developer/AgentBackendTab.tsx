@@ -8,7 +8,7 @@ import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
-import { Badge } from '../../components/ui'
+import { Badge, Btn } from '../../components/ui'
 import {
   AgentDetailActions,
   AgentInstallDetail,
@@ -21,6 +21,7 @@ import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroSignInCard } from './KiroSignInCard'
+import { StrandsSetupCard } from './StrandsSetupCard'
 import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
 import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
 import { HarnessLogo } from '../../components/HarnessLogo'
@@ -32,6 +33,7 @@ const CONFIG_KEY = 'agent.acp_backend'
 const KIRO = ACP_BACKEND_KIRO
 const CLAUDE = 'claude'
 const KAS = ACP_BACKEND_KAS
+const STRANDS = 'strands'
 
 /**
  * The agents this frontend has a translated name and an icon for.
@@ -43,6 +45,13 @@ const KAS = ACP_BACKEND_KAS
  * names it, labelled with its `policy_id`.
  */
 const NAMED = [KAS, KIRO, CLAUDE]
+
+/**
+ * The harnesses listed first, in this order; the rest follow by `policy_id`. KAS
+ * leads because it is the default, and Strands sits directly under the two Kiro
+ * harnesses by the owner's ruling.
+ */
+const PINNED_ORDER = [KAS, KIRO, STRANDS]
 
 /**
  * The harnesses that never carry the Experimental tag: the default a new install
@@ -318,6 +327,8 @@ export function AgentBackendTab() {
    * there once the real value arrived. Resolved every render by `shown` instead.
    */
   const [highlighted, setHighlighted] = useState<string | null>(null)
+  /** The Kiro CLI → Kiro Agent callout's own save, so only that click shows its confirmation. */
+  const [savedKiroAgent, setSavedKiroAgent] = useState(false)
   /**
    * A failure of one of the STRIP's own controls -- the re-check, or the copy.
    *
@@ -358,7 +369,7 @@ export function AgentBackendTab() {
    * cheaper than the answer it re-reads, and the endpoint is a resolver read behind
    * that TTL cache rather than a fresh shell-out per request.
    */
-  const probeQ = useQuery<{ backends: AcpBackendProbe[] }>({
+  const probeQ = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean }>({
     queryKey: ['acpBackends'],
     queryFn: () => api.acpBackends(),
     retry: false,
@@ -393,10 +404,18 @@ export function AgentBackendTab() {
     // the restart was just the next session spawn.
     clearCachedModels()
     qc.resetQueries({ queryKey: ['available-models'] })
+    // The probe carries `kiro_selection_runs_on_kas`, which reads the STORED pick, so
+    // a save that changed it must re-ask rather than wait out the poll.
+    qc.invalidateQueries({ queryKey: ['acpBackends'] })
   }
 
   const patchMut = useMutation({
     mutationFn: (value: string) => api.patchConfig(CONFIG_KEY, value),
+    // A later save of anything but Kiro Agent ends the callout's "saved" state,
+    // so a Kiro CLI pick made after it brings the callout and row marker back.
+    onMutate: (value: string) => {
+      if (value !== KAS) setSavedKiroAgent(false)
+    },
     onSuccess: () => {
       setActionError('')
       applyBackendSwitchSideEffects()
@@ -432,9 +451,12 @@ export function AgentBackendTab() {
    * survives inside the poll's TTL window.
    */
   const spliceProbeRow = (row: AcpBackendProbe) =>
-    qc.setQueryData<{ backends: AcpBackendProbe[] }>(['acpBackends'], prev =>
+    qc.setQueryData<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean }>(['acpBackends'], prev =>
       prev
         ? {
+            // The response's other fields (the Kiro CLI → Kiro Agent flag) are
+            // not this row's to drop.
+            ...prev,
             backends: prev.backends.some(b => b.id === row.id)
               ? prev.backends.map(b => (b.id === row.id ? row : b))
               : [...prev.backends, row],
@@ -537,6 +559,9 @@ export function AgentBackendTab() {
   }
 
   const current = cfgQ.data ? configuredAcpBackend(cfgQ.data) : DEFAULT_ACP_BACKEND
+  /** A stored Kiro CLI pick that sessions run on KAS, until this panel saves KAS. */
+  const kiroPickRunsOnKas =
+    probeQ.data?.kiro_selection_runs_on_kas === true && !(savedKiroAgent && patchMut.isSuccess)
 
   /**
    * `undefined` while the schema is in flight — the switch stays enabled rather
@@ -602,8 +627,8 @@ export function AgentBackendTab() {
    * the same mistake as disabling one. `current` joins for the same reason: the saved
    * value must always have a row.
    *
-   * Sorted rather than left in arrival order: KAS first because it is the default,
-   * Kiro CLI second, and everything else by `policy_id`. Set iteration order would
+   * Sorted rather than left in arrival order: `PINNED_ORDER` first, then
+   * everything else by `policy_id`. Set iteration order would
    * otherwise follow whichever query resolved first and reshuffle the list.
    */
   const candidates = Array.from(
@@ -614,10 +639,9 @@ export function AgentBackendTab() {
       ...(probeQ.data?.backends ?? []).map(b => b.id),
     ]),
   ).sort((a, b) => {
-    if (a === KAS) return -1
-    if (b === KAS) return 1
-    if (a === KIRO) return -1
-    if (b === KIRO) return 1
+    const pa = PINNED_ORDER.indexOf(a)
+    const pb = PINNED_ORDER.indexOf(b)
+    if (pa !== pb) return pa === -1 ? 1 : pb === -1 ? -1 : pa - pb
     // Byte order, not `localeCompare`/`compareText`: these are machine identifiers,
     // and the point of the sort (see above) is to reproduce the order the probe
     // endpoint already returned them in. A collator reads the READER's locale, so
@@ -1057,6 +1081,11 @@ export function AgentBackendTab() {
   const status = (value: string): string => {
     const row = probe(value)
     if (buildExcluded(value)) return i18nT('pages.developer.agentBackendTab.not_offered_by_this_build')
+    if (row?.installed === 'missing' && row.found_version)
+      return i18nT('components.kiroPrerequisiteGate.agent_wrong_version_detail', {
+        name: nameOf(value),
+        version: row.found_version,
+      })
     if (row?.installed === 'missing')
       return i18nT('pages.developer.agentBackendTab.missing_components', {
         components: row.missing_components.join(', '),
@@ -1388,6 +1417,54 @@ export function AgentBackendTab() {
           Rendered only under a router: the panel is also rendered bare, in tests
           and captures, where there is no URL to read. */}
       {inRouter && <SignInDeepLink onSignIn={() => highlightRow(KIRO_SIGN_IN_BACKEND)} />}
+      {/* A stored Kiro CLI pick that sessions run on KAS: kiro-cli now serves its
+          v3 (KAS) engine, and the server resolves the pick there
+          (`agent_sdk.backends.KIRO_SELECTION_BACKEND`). The list below already
+          marks KAS as in use; this is the one click that makes the setting say so,
+          and where the once-only bell note about it lands. */}
+      {kiroPickRunsOnKas && (
+        <SettingsCard>
+          <div data-testid="kiro-runs-on-kas" className="flex flex-wrap items-center gap-3">
+            <div className="min-w-0 flex-1">
+              {/* Both states, side by side: what is saved and what runs. */}
+              <p
+                data-testid="kiro-runs-on-kas-states"
+                className="m-0 text-[13px] font-medium leading-relaxed text-text-strong"
+              >
+                {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas_states', {
+                  saved: nameOf(KIRO),
+                  running: nameOf(KAS),
+                })}
+              </p>
+              <p className="m-0 text-[13px] leading-relaxed text-text">
+                {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas')}
+              </p>
+            </div>
+            <Btn
+              primary
+              type="button"
+              disabled={patchMut.isPending}
+              onClick={() => {
+                setSavedKiroAgent(true)
+                patchMut.mutate(ACP_BACKEND_KAS)
+              }}
+            >
+              {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas_save')}
+            </Btn>
+          </div>
+        </SettingsCard>
+      )}
+      {/* Where the callout was, so the click visibly landed: the list below
+          already showed Kiro Agent in use and does not change. */}
+      {savedKiroAgent && patchMut.isSuccess && patchMut.variables === ACP_BACKEND_KAS && (
+        <p
+          role="status"
+          data-testid="kiro-runs-on-kas-saved"
+          className="m-0 text-[13px] leading-relaxed text-text"
+        >
+          {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas_saved')}
+        </p>
+      )}
       <SettingsCard>
         <p className="mb-0 text-[13px] leading-relaxed text-muted">
           {i18nT('pages.developer.agentBackendTab.new_sessions_use_this_agent_a_session_that_is_al')}
@@ -1432,6 +1509,16 @@ export function AgentBackendTab() {
                         title={i18nT('pages.developer.agentBackendTab.use_button_in_use')}
                       >
                         {i18nT('pages.developer.agentBackendTab.use_button_in_use')}
+                      </span>
+                    )}
+                    {/* The stored pick, when it is not what runs: the callout above
+                        names both, and this row is the one its first half means. */}
+                    {value === KIRO && kiroPickRunsOnKas && (
+                      <span
+                        data-testid="kiro-row-your-setting"
+                        className="text-[11px] font-medium text-muted"
+                      >
+                        {i18nT('pages.developer.agentBackendTab.kiro_runs_on_kas_your_setting')}
                       </span>
                     )}
                     {/* No verdict is not a verdict: a probe that did not answer gets
@@ -1525,6 +1612,11 @@ export function AgentBackendTab() {
                     {value === KIRO_SIGN_IN_BACKEND && offered.includes(KIRO_SIGN_IN_BACKEND) && (
                       <ErrorBoundary scope="developer-kiro-sign-in" fallback={null}>
                         <KiroSignInCard compact />
+                      </ErrorBoundary>
+                    )}
+                    {value === STRANDS && (
+                      <ErrorBoundary scope="developer-strands-setup" fallback={null}>
+                        <StrandsSetupCard />
                       </ErrorBoundary>
                     )}
                     {facts(value)}

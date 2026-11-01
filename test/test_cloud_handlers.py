@@ -30,7 +30,18 @@ def _posix_host(monkeypatch):
     Pinning the platform keeps the suite host-independent; the rejection itself
     is asserted by ``test_windows_rejected``, whose own monkeypatch overrides
     this fixture.
+
+    ``hc.sys`` is the process-wide ``sys``, so the pin is seen by every import
+    that runs while it holds. The shared teardown fixture imports the STT
+    engine, and with it numpy, whose import calls ``os.uname()`` when the
+    platform reads ``linux``; on a Windows host that has no ``os.uname`` and
+    errors every teardown when this module runs alone. Import it first, under
+    the real platform, so the pin cannot reach that import.
     """
+    try:
+        import kiro_crew.stt.engine  # noqa: F401
+    except ImportError:
+        pass
     monkeypatch.setattr(hc.sys, "platform", "linux")
 
 
@@ -1841,3 +1852,56 @@ class TestProvisionerSeam:
         )
         assert resp.status == 202
         assert provider.asked == []
+
+
+@pytest.mark.asyncio
+class TestIamPolicyHostPolicies:
+    """GET /api/cloud/iam-policy carries the edition's host-policy addendum."""
+
+    @pytest.fixture
+    def edition(self):
+        import dataclasses
+
+        from kiro_crew.platform.context import current_context, reset_context, set_context
+
+        def _install(policy):
+            class _Fixed:
+                def instance_policy(self):
+                    return policy
+
+            set_context(dataclasses.replace(current_context(), cloud_instance_policy=_Fixed()))
+
+        yield _install
+        reset_context()
+
+    async def test_no_addendum_without_edition_policies(self, tmp_path):
+        resp = await hc.api_cloud_iam_policy(
+            _req("GET", "/api/cloud/iam-policy", state=_state(tmp_path))
+        )
+        body = _body(resp)
+        assert resp.status == 200
+        assert set(body) == {"policy"}
+
+    async def test_addendum_is_returned_beside_the_policy(self, tmp_path, edition):
+        from kiro_crew.cloud import iam
+        from kiro_crew.platform.interfaces import CloudInstancePolicy
+
+        edition(CloudInstancePolicy(managed_policy_arns=("arn:aws:iam::{account}:policy/H",)))
+        resp = await hc.api_cloud_iam_policy(
+            _req("GET", "/api/cloud/iam-policy", state=_state(tmp_path))
+        )
+        body = _body(resp)
+        assert json.loads(body["host_policies"]) == iam.host_policy_document()
+        assert json.loads(body["policy"]) == iam.policy_document()
+        # The setup tab shows this beside its copy button.
+        assert "iam-policy --host-policies" in body["host_policies_notice"]
+
+    async def test_an_invalid_descriptor_is_reported_not_a_500(self, tmp_path, edition):
+        from kiro_crew.platform.interfaces import CloudInstancePolicy
+
+        edition(CloudInstancePolicy(managed_policy_arns=("arn:aws:iam::*:policy/H",)))
+        resp = await hc.api_cloud_iam_policy(
+            _req("GET", "/api/cloud/iam-policy", state=_state(tmp_path))
+        )
+        assert resp.status == 200
+        assert "not a managed-policy ARN" in _body(resp)["host_policies_error"]

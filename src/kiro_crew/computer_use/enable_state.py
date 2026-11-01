@@ -79,7 +79,7 @@ def load_state() -> dict:
         return {}
 
 
-def is_enabled(state: "dict | None" = None) -> bool:
+def is_enabled(state: "dict | None" = None, *, audit_tool: str = "") -> bool:
     """True only when the keystone explicitly says ``enabled: true``.
 
     Strict identity against ``True`` rather than a truthiness test: a
@@ -91,15 +91,22 @@ def is_enabled(state: "dict | None" = None) -> bool:
     *state* lets a caller that already loaded the file avoid a second read
     inside one dispatch.
 
-    An enterprise build ignores the opt-in and answers ``False``
-    (:mod:`kiro_crew.edition_locks`, RFC D3).
+    The opt-in is ANDed with the ``computer_use`` governance key: a policy that
+    pins it off keeps the feature off, and an enterprise build is off until a
+    policy turns it on (RFC D3; :func:`locked_by_policy`).
     """
-    from kiro_crew.edition_locks import local_enable_locked
-
-    if local_enable_locked("computer_use"):
-        return False
     data = load_state() if state is None else state
-    return data.get(STATE_KEY_ENABLED) is True
+    return data.get(STATE_KEY_ENABLED) is True and not locked_by_policy(audit_tool=audit_tool)
+
+
+def locked_by_policy(*, audit_tool: str = "") -> bool:
+    """True when governance keeps desktop control off whatever the opt-in says.
+
+    *audit_tool*, from an enforcement call, writes the decision to SEL.
+    """
+    from kiro_crew.edition_locks import policy_permits
+
+    return not policy_permits("capabilities.computer_use", audit_tool=audit_tool)
 
 
 def load_policy_config(state: "dict | None" = None) -> PolicyConfig:

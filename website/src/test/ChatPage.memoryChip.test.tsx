@@ -15,6 +15,7 @@ import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
+import { clearSlotSuccession, resolveSlotSuccession } from '../utils/slotSuccession'
 
 interface VirtuosoMockProps {
   data?: unknown[]
@@ -75,6 +76,9 @@ import { __resetComposerSendHoldsForTests, isComposerSendHeld, takeComposerArriv
 import '../surfaces/builtins'
 
 beforeEach(() => {
+  // runMemorySwitch records each hand-over; a chain left by an earlier test
+  // would change what a later one resolves.
+  clearSlotSuccession()
   createChatSlot.mockReset()
   deleteChatSlot.mockReset().mockResolvedValue(undefined)
   vi.mocked(api.chatSlotDetail).mockReset().mockImplementation(async () => ({
@@ -191,6 +195,8 @@ describe('memory chip above the composer', () => {
     await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
     // deleteSlot rethrows its own 'save failed' in place of the API error.
     await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('save failed'), SWITCH_CHAIN_WAIT)
+    // slot-a is still alive, so it is no longer recorded as replaced.
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-a')
   })
 
   it('keeps the unsent draft when switching memory mode, both directions', async () => {
@@ -208,6 +214,8 @@ describe('memory chip above the composer', () => {
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(composer().value).toBe('half-written prompt'), SWITCH_CHAIN_WAIT)
+    // The hand-over is recorded, so a host embedding slot-a can follow it.
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-b')
 
     // And back: the "switch to persistent" chip recreates the slot again.
     fireEvent.change(composer(), { target: { value: 'half-written prompt, more' } })
@@ -431,6 +439,7 @@ describe('memory chip above the composer', () => {
     fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-b')
 
     // While slot-b's transcript is still loading, the user goes back to slot-a
     // and then on to a third session before the switch resolves.
@@ -442,6 +451,8 @@ describe('memory chip above the composer', () => {
     // The switch was abandoned, so its replacement must not linger.
     await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-b'), SWITCH_CHAIN_WAIT)
     expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
+    // slot-a stays the session: no hand-over is left recorded.
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-a')
   })
 
   it('keeps the failure notice when the switch to the replacement is rejected', async () => {
@@ -468,6 +479,7 @@ describe('memory chip above the composer', () => {
     expect(screen.getByTestId('action-error')).toBeInTheDocument()
     expect(deleteChatSlot).not.toHaveBeenCalledWith('slot-a')
     expect(screen.getByLabelText('Message input')).not.toHaveAttribute('aria-disabled')
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-a')
   })
 
   it('keeps the replacement the user typed in when the switch rejects after the timeout', async () => {

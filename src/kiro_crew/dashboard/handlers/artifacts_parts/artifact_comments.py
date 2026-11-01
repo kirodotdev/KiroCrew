@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import _redact_text
 from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _REMOTE_PROVIDER_TIMEOUT_S,
+    _anchor_int_error,
     _audit,
     _err,
     _event_session_id,
@@ -38,6 +39,37 @@ from kiro_crew.publish_provider import DEFAULT_PROVIDER, Capability, CommentAnch
 
 
 # ── Comments ──────────────────────────────────────────────────────────────────
+def _comment_identity(request: web.Request, body: dict[str, Any], route: str) -> tuple[str, bool]:
+    """Return ``(author, is_agent)`` for a new comment or reply, read from the request.
+
+    Same rule as delete, resolve and mark-review: an MCP call carries the
+    X-Internal-Secret header (validated upstream) and a dashboard call does
+    not. An agent is shown as ``agent``; a person by the dashboard owner's
+    login, which is the only caller ``_non_owner_refusal`` lets through.
+    Older callers still send ``author`` / ``is_agent`` in the body; they are
+    accepted and ignored, never refused.
+    """
+    is_agent = request.headers.get("X-Internal-Secret") is not None
+    if is_agent:
+        author = "agent"
+    else:
+        try:
+            author = getpass.getuser()
+        except Exception:
+            author = ""
+    if "is_agent" in body and bool(body.get("is_agent")) != is_agent:
+        logger.debug(
+            "%s: ignoring body is_agent=%s; the request says is_agent=%s",
+            route,
+            bool(body.get("is_agent")),
+            is_agent,
+        )
+    claimed = body.get("author")
+    if claimed not in (None, "") and str(claimed) != author:
+        logger.debug("%s: ignoring body author; it differs from the request's author", route)
+    return author, is_agent
+
+
 async def api_artifact_comments(request: web.Request) -> web.Response:
     """GET /api/artifacts/{slug}/comments — list durable local comments."""
     state = request.app.get("state")
@@ -214,7 +246,6 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
 
-    # Build anchor if provided
     anchor_data = body.get("anchor")
     anchor_quote = None
     anchor_prefix = None
@@ -234,6 +265,10 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
                 return None
             return _redact_text(v)[:2000]
 
+        anchor_int_error = _anchor_int_error(anchor_data)
+        if anchor_int_error is not None:
+            return _err(anchor_int_error)
+
         anchor_quote = await asyncio.to_thread(_anchor_str, anchor_data.get("quote"))
         anchor_prefix = await asyncio.to_thread(_anchor_str, anchor_data.get("prefix"))
         anchor_suffix = await asyncio.to_thread(_anchor_str, anchor_data.get("suffix"))
@@ -244,21 +279,7 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
     now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     comment_id = str(uuid.uuid4())
 
-    # Determine if this is agent-authored
-    is_agent = bool(body.get("is_agent"))
-
-    # Author defaults to the dashboard user's alias (collaboration: comments
-    # show who left them). Agent comments keep their explicit
-    # author (or the agent badge). getpass.getuser() is the alias on dev desks.
-    # The author is LLM/agent-influenced on the MCP path and echoed to the
-    # dashboard, so redact + cap it like the body (backend-security-controls).
-    author = (await asyncio.to_thread(_redact_text, str(body.get("author") or "")))[:256]
-    if not author and not is_agent:
-
-        try:
-            author = getpass.getuser()
-        except Exception:
-            author = ""
+    author, is_agent = _comment_identity(request, body, "artifact_post_comment")
 
     comment = ArtifactComment(
         id=comment_id,
@@ -291,7 +312,13 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
     # must be denied too. Denial keeps the comment LOCAL (local_only) rather than
     # 403-ing — the local comment store is unaffected.
     gov_denied = (
-        _publish_governance_denied(request, comment.target_provider or DEFAULT_PROVIDER)
+        (
+            await _run_off_loop(
+                lambda: _publish_governance_denied(
+                    request, comment.target_provider or DEFAULT_PROVIDER
+                )
+            )
+        )
         if scope == "shared" and comment.target_external_id
         else "not shared"
     )
@@ -388,19 +415,7 @@ async def api_artifact_reply_comment(request: web.Request) -> web.Response:
 
     now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     reply_id = str(uuid.uuid4())
-    is_agent = bool(body.get("is_agent"))
-
-    # Author defaults to the dashboard user's alias (collaboration: replies show
-    # who left them), mirroring the create handler. Agent replies keep their
-    # explicit author. Without this, replies render as "Unknown". Redact + cap
-    # the LLM/agent-influenced author before it is echoed to the dashboard.
-    author = (await asyncio.to_thread(_redact_text, str(body.get("author") or "")))[:256]
-    if not author and not is_agent:
-
-        try:
-            author = getpass.getuser()
-        except Exception:
-            author = ""
+    author, is_agent = _comment_identity(request, body, "artifact_reply_comment")
 
     reply = ArtifactComment(
         id=reply_id,
@@ -430,7 +445,14 @@ async def api_artifact_reply_comment(request: web.Request) -> web.Response:
         parent.origin
         and parent.origin != "local"
         and reply.target_external_id
-        and _publish_governance_denied(request, reply.target_provider or DEFAULT_PROVIDER) is None
+        and (
+            await _run_off_loop(
+                lambda: _publish_governance_denied(
+                    request, reply.target_provider or DEFAULT_PROVIDER
+                )
+            )
+        )
+        is None
     ):
         try:
 
@@ -501,7 +523,14 @@ async def api_artifact_mark_review(request: web.Request) -> web.Response:
         target.origin
         and target.origin != "local"
         and target.target_external_id
-        and _publish_governance_denied(request, target.target_provider or DEFAULT_PROVIDER) is None
+        and (
+            await _run_off_loop(
+                lambda: _publish_governance_denied(
+                    request, target.target_provider or DEFAULT_PROVIDER
+                )
+            )
+        )
+        is None
     ):
         try:
 
@@ -725,7 +754,14 @@ async def api_artifact_delete_comment(request: web.Request) -> web.Response:
         target
         and is_provider_origin
         and target.target_external_id
-        and _publish_governance_denied(request, target.target_provider or DEFAULT_PROVIDER) is None
+        and (
+            await _run_off_loop(
+                lambda: _publish_governance_denied(
+                    request, target.target_provider or DEFAULT_PROVIDER
+                )
+            )
+        )
+        is None
     ):
         try:
 
@@ -842,7 +878,14 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
         target.origin
         and target.origin != "local"
         and target.target_external_id
-        and _publish_governance_denied(request, target.target_provider or DEFAULT_PROVIDER) is None
+        and (
+            await _run_off_loop(
+                lambda: _publish_governance_denied(
+                    request, target.target_provider or DEFAULT_PROVIDER
+                )
+            )
+        )
+        is None
     ):
         try:
             provider = get_provider(target.target_provider or DEFAULT_PROVIDER)

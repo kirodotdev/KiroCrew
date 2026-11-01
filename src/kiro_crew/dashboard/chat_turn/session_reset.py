@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.directives import _report_unclaimed_directives
     from kiro_crew.dashboard.chat_turn.recipient import (
+        _retire_mirror_thinking,
         cross_surface_withheld,
         slack_publication_withheld,
     )
@@ -364,6 +365,13 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
                 await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
             except Exception:
                 logger.debug("Stream cleanup failed", exc_info=True)
+        if turn._mirror_thinking_ts and state.slack_client and _mirror_chan:
+            # A turn that ended with neither a tool nor a mirrored answer
+            # (an error, a cancel, a withheld reply) still owes the thread
+            # its placeholder's removal. Best-effort and never raises.
+            turn._mirror_thinking_ts = await _retire_mirror_thinking(
+                state.slack_client, _mirror_chan, turn._mirror_thinking_ts
+            )
         if _acquired and (turn.needs_session_reset or turn.needs_conversation_discard):
             # Neither branch below goes through `_reset_slot_session`, so the
             # withhold verdict is dropped here: both replace the session that

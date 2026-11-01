@@ -137,8 +137,13 @@ def run_mcp_stdio_loop(
     advertise_caller_identity: bool = False,
     error_prefix_is_error: bool = False,
     reports_inflight: bool = False,
+    instructions: str = "",
 ) -> None:
     """Generic MCP stdio server loop — reads JSON-RPC from stdin, writes to stdout.
+
+    *instructions* is the server's MCP ``instructions``: returned in the
+    ``initialize`` result when non-empty, so every harness that mounts the server
+    gets its usage text (``kiro_crew.mcp_instructions``).
 
     Tool calls run in a worker thread so the main read loop stays responsive to
     ``notifications/cancelled`` messages from the gateway. A cancel for a call
@@ -201,6 +206,7 @@ def run_mcp_stdio_loop(
             advertise_caller_identity=advertise_caller_identity,
             error_prefix_is_error=error_prefix_is_error,
             reports_inflight=reports_inflight,
+            instructions=instructions,
         )
     finally:
         set_internal_caller(_prior_caller)
@@ -239,6 +245,7 @@ sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.mcp_caller import set_current_tool_call_id  # noqa: F401
     from kiro_crew.mcp_shared_calls import (  # noqa: F401
         CANCELLED_IDS_MAX,
         DEFERRED_PARKED_MAX,
@@ -263,6 +270,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _POLL_SECS,
         _WORKER_WAIT_SECS,
         JSONRPC_METHOD_NOT_FOUND,
+        _approved_tool_call_id,
         _tool_call_name,
         _WakePipe,
     )

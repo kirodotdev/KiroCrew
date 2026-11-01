@@ -37,6 +37,8 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
     STOP_CLASS_CANCELLED,
+    STOP_CLASS_SUCCEEDED,
+    STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
@@ -75,6 +77,12 @@ from kiro_crew.messaging.renderer import (
     TOOL_RESULT,
     OutputEvent,
     Renderer,
+)
+from kiro_crew.messaging.script_hooks import (
+    ScriptHookTurn,
+    fire_prompt_submit,
+    fire_stop,
+    with_hook_context,
 )
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
@@ -503,6 +511,14 @@ class TurnDriver:
         drain, and may also reject a structured monitor whose conversation
         generation changed. It must not await: the gate, monitor acceptance, and
         the stream's synchronous turn registration are one event-loop span.
+    event_tap:
+        Optional synchronous observer handed every RAW provider event, before
+        the driver acts on it. For a second surface that shows the turn as it
+        runs (the dashboard tab of a channel conversation) and needs fields an
+        ``OutputEvent`` does not carry -- a tool call's arguments and identity,
+        a tool's result. It only observes: its return value is ignored, and an
+        exception it raises is logged and swallowed, so a broken observer can
+        never change or end the turn.
     """
 
     def __init__(
@@ -522,8 +538,13 @@ class TurnDriver:
         closing_gate: Callable[[], None] | None = None,
         monitor_completion: MonitorCompletionHook | None = None,
         undelivered_watch_key: str = "",
+        event_tap: Callable[[Any], None] | None = None,
+        script_hooks: ScriptHookTurn | None = None,
     ) -> None:
         self.provider = provider
+        # The Hooks page's UserPromptSubmit and Stop hooks for this turn
+        # (:mod:`kiro_crew.messaging.script_hooks`). None fires none.
+        self.script_hooks = script_hooks
         self.renderer = renderer
         # The session key the caller authenticated for this turn, used ONLY to say
         # whose worker-tool call the harness failed to deliver
@@ -555,10 +576,12 @@ class TurnDriver:
         # identity was recorded at EVENT_TOOL_CALL — the forgery gate.
         self.directive_consumer = directive_consumer
         self.monitor_completion = monitor_completion
+        self.event_tap = event_tap
         # Terminal stop reason of the last run() — read by the dispatcher's
         # post-turn bookkeeping (e.g. COMPACTION_FAILED -> session reset).
         self.last_stop_reason: str = ""
-        # Whether run() saw an EVENT_COMPLETE at all. ``last_stop_reason`` is
+        # Whether run() saw an EVENT_COMPLETE or settled a pre-stream user cancel.
+        # ``last_stop_reason`` is
         # "" both before any completion and for a completion that carries no
         # reason, and the two mean opposite things to the post-compaction
         # re-injection bookkeeping (no completion: the prompt never landed; an
@@ -635,6 +658,17 @@ class TurnDriver:
         released = ""
         tool_gap = False
         break_after: str | None = None
+        # The run the redactor held when the first tool call after some text
+        # came: the END of that text, which comes out only with the first text
+        # after the call. ``release`` splits it off so a renderer can put it
+        # back before the call (``OutputEvent.continues_segment``). ``None``
+        # when nothing is pending.
+        segment_tail: str | None = None
+        # The part of ``segment_tail`` already released while the rest is held.
+        tail_released = ""
+        # How much raw text had been fed when ``segment_tail`` was taken: a
+        # second call before any MORE text keeps the run the first one saw.
+        tail_fed_at = 0
         pending_steer_events = 0
         unmatched_marker_events = 0
         # Monotonic start of this turn, compared with the provider's stamp of
@@ -741,18 +775,52 @@ class TurnDriver:
                     break_after = fed_raw[len(released) :]
             fed_raw += text
             safe = place_tool_break(stream_redactor.feed(text))
+            await release(safe)
+
+        async def flush_redactor() -> None:
+            await release(place_tool_break(stream_redactor.flush()), final=True)
+
+        async def release(safe: str, *, final: bool = False) -> None:
+            """Hand redacted output to the renderer, ending the pre-call text first.
+
+            While ``segment_tail`` is pending, the first output opens with the
+            run the redactor held when the tool call came. That run is the end
+            of the text BEFORE the call, so it goes out on its own as a
+            ``continues_segment`` chunk and the rest follows as ordinary text.
+            Joined, the two chunks are exactly the output, so a renderer that
+            lays text end to end sees no change. When the output does not open
+            with the run verbatim (a redaction reached across the join), the
+            continuation is empty and everything goes to the text after the
+            call. A release that is only a prefix of the run is kept back until
+            the rest comes, so the run is handed over whole. ``final`` closes a
+            pending tail even when nothing is left.
+            """
+            nonlocal accumulated, segment_tail, tail_released
+            if segment_tail is not None and (safe or final):
+                if safe.startswith(segment_tail):
+                    cut = len(segment_tail)
+                elif segment_tail.startswith(safe) and not final:
+                    # Only part of the run came out: it is still the earlier
+                    # text's, and so is what stays held. Wait for the rest; the
+                    # rescue's view of the turn still includes what came out.
+                    tail_released += safe
+                    segment_tail = segment_tail[len(safe) :]
+                    self.partial_text = accumulated + tail_released
+                    return
+                else:
+                    cut = 0
+                head = tail_released + safe[:cut]
+                safe = safe[cut:]
+                segment_tail, tail_released = None, ""
+                accumulated += head
+                self.partial_text = accumulated
+                await self.renderer.dispatch(
+                    OutputEvent(kind=TEXT_CHUNK, text=head, continues_segment=True)
+                )
             if safe:
                 accumulated += safe
                 self.partial_text = accumulated
                 await self.renderer.dispatch(OutputEvent(kind=TEXT_CHUNK, text=safe))
-
-        async def flush_redactor() -> None:
-            nonlocal accumulated
-            tail = place_tool_break(stream_redactor.flush())
-            if tail:
-                accumulated += tail
-                self.partial_text = accumulated
-                await self.renderer.dispatch(OutputEvent(kind=TEXT_CHUNK, text=tail))
 
         def steer_entered_turn() -> bool:
             try:
@@ -801,16 +869,37 @@ class TurnDriver:
                 )
 
         await self.renderer.on_turn_start()
+        # Before the monitor claim check, which must reach the stream with no
+        # await between them. So the hook means "a message arrived": a wake the
+        # check refuses, or a turn the closing gate refuses, has still fired it.
+        if self.script_hooks is not None:
+            message = await with_hook_context(message, await fire_prompt_submit(self.script_hooks))
         if self.monitor_completion is not None:
             if not await self.monitor_completion.authorize():
                 return accumulated
         # The closing gate remains yield-free with stream registration. Monitor
         # acceptance below is synchronous, so it cannot reopen that race.
+        if (
+            self.script_hooks is not None
+            and self.script_hooks.cancelled is not None
+            and self.script_hooks.cancelled()
+        ):
+            # A Stop during the hook has no provider turn to cancel yet. Settle
+            # it like a user-cancelled terminal, without registering a prompt.
+            self.last_stop_reason = STOP_REASON_CANCELLED
+            self.completion_observed = True
+            await self.renderer.dispatch(OutputEvent(kind=DONE, stop_reason=STOP_REASON_CANCELLED))
+            return accumulated
         if self.closing_gate is not None:
             self.closing_gate()
         if self.monitor_completion is not None:
             self.monitor_completion.mark_accepted()
         async for event in self.provider.stream(message):
+            if self.event_tap is not None:
+                try:
+                    self.event_tap(event)
+                except Exception:
+                    logger.debug("driver: event tap failed; the turn goes on", exc_info=True)
             kind = event.kind
             if kind == EVENT_TEXT_CHUNK:
                 filtered = compaction_filter.feed(event.text or "")
@@ -862,6 +951,16 @@ class TurnDriver:
                     mcp_server=getattr(event, "mcp_server_name", "") or "",
                 )
                 tool_gap = True
+                if segment_tail is not None and len(fed_raw) != tail_fed_at:
+                    # Text came since the pending run without ending it (it
+                    # joined the run, so nothing was released). The run cannot
+                    # be told apart from that text now, so the earlier call's
+                    # text ends as it stands and what is held now is this
+                    # call's.
+                    await release("", final=True)
+                if segment_tail is None and stream_redactor.held:
+                    segment_tail = stream_redactor.held
+                    tail_fed_at = len(fed_raw)
                 await self.renderer.dispatch(
                     OutputEvent(
                         kind=TOOL_CALL,
@@ -873,6 +972,15 @@ class TurnDriver:
                         tool_name=getattr(event, "tool_name", "") or "",
                         tool_kind=getattr(event, "tool_kind", ""),
                         tool_purpose=_purpose,
+                        text_held=segment_tail is not None,
+                        # The whole command behind a raw-fallback title, which
+                        # the title cuts to a line; a renderer that rewrites
+                        # the label for its audience starts from all of it.
+                        raw_title=(
+                            ""
+                            if _derived.derived or not _derived.title
+                            else _redact(_derived.raw_title)
+                        ),
                     )
                 )
                 # Forgery gate: record the directive-tool name ONLY from the
@@ -1056,12 +1164,15 @@ class TurnDriver:
                                 ),
                             )
                             continue
-                        logger.warning(
-                            "declining a hook auto-approve: %s; the request "
-                            "falls through to the channel's normal approval "
-                            "ladder",
-                            _ng_refusal.log_text,
-                        )
+                        # Once per session for a platform-scope refusal; the
+                        # audit row below is still written for every call.
+                        if name_grant.should_log_decline(self.audit_session_key, _ng_refusal):
+                            logger.warning(
+                                "declining a hook auto-approve: %s; the request "
+                                "falls through to the channel's normal approval "
+                                "ladder",
+                                _ng_refusal.log_text,
+                            )
                         # The decline row uses the shared cross-surface writer
                         # (log_tool_invocation) rather than this ladder's
                         # log_api_access rows, so every surface's decline has
@@ -1268,6 +1379,13 @@ class TurnDriver:
             self.empty_turn_notice = empty_turn_notice(
                 accumulated, completed=False, stop_reason="", productive=productive
             )
+        elif (
+            self.script_hooks is not None
+            and classify_stop_reason(self.last_stop_reason).name == STOP_CLASS_SUCCEEDED
+        ):
+            # Only a reply the backend finished: not one the user stopped, one
+            # it abandoned, or one that ended on a refusal or an error.
+            await fire_stop(self.script_hooks, accumulated)
         return accumulated
 
     async def _consume_directive(

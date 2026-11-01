@@ -7,6 +7,7 @@ import re
 import string
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.security import redact, redact_credentials
 from kiro_crew.security import redaction as _redaction
@@ -120,15 +121,32 @@ def test_no_seeded_commit_fires(template: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        f"{COMMIT}{KEY}",
-        f"{KEY}{COMMIT}",
-        f"{COMMIT.upper()}{KEY}",
-        f"https://github.com/kirodotdev/KiroCrew/blob/{KEY}",
-        f"https://github.com/kirodotdev/KiroCrew/blob/{COMMIT}/{KEY}",
-        f"https://github.com/kirodotdev/KiroCrew/blob/{COMMIT}/src/{KEY}/gateway.py",
+        *named_cases(
+            "test_a_key_beside_a_commit_is_still_redacted",
+            "text",
+            [
+                f"{COMMIT}{KEY}",
+                f"{KEY}{COMMIT}",
+                f"{COMMIT.upper()}{KEY}",
+                f"https://github.com/kirodotdev/KiroCrew/blob/{KEY}",
+                f"https://github.com/kirodotdev/KiroCrew/blob/{COMMIT}/{KEY}",
+                f"https://github.com/kirodotdev/KiroCrew/blob/{COMMIT}/src/{KEY}/gateway.py",
+            ],
+        ),
+        *named_cases(
+            "test_a_key_in_a_plural_route_link_is_still_redacted",
+            "text",
+            [
+                f"https://git.example/packages/WidgetHubChatBridge/blobs/{KEY}",
+                f"https://git.example/packages/WidgetHubChatBridge/blobs/{COMMIT}/{KEY}",
+                f"https://git.example/packages/WidgetHubChatBridge/trees/{COMMIT}/src/{KEY}/x.py",
+                f"https://git.example/packages/WidgetHubChatBridge/blobs/{KEY}/--/src/x.py",
+                f"{KEY}/blobs/{COMMIT}/--/x.py",
+            ],
+        ),
     ],
 )
-def test_a_key_beside_a_commit_is_still_redacted(text: str) -> None:
+def test_a_key_beside_a_link_is_still_redacted(text: str) -> None:
     result, warnings = redact_credentials(text)
     assert KEY not in result
     assert TAG in result
@@ -284,23 +302,6 @@ def test_a_plural_route_link_fires_one_digit_above_the_floor(
 def test_a_sha256_segment_after_a_plural_route_survives(template: str) -> None:
     url = template.format(SHA256)
     assert redact_credentials(url) == (url, [])
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        f"https://git.example/packages/WidgetHubChatBridge/blobs/{KEY}",
-        f"https://git.example/packages/WidgetHubChatBridge/blobs/{COMMIT}/{KEY}",
-        f"https://git.example/packages/WidgetHubChatBridge/trees/{COMMIT}/src/{KEY}/x.py",
-        f"https://git.example/packages/WidgetHubChatBridge/blobs/{KEY}/--/src/x.py",
-        f"{KEY}/blobs/{COMMIT}/--/x.py",
-    ],
-)
-def test_a_key_in_a_plural_route_link_is_still_redacted(text: str) -> None:
-    result, warnings = redact_credentials(text)
-    assert KEY not in result
-    assert TAG in result
-    assert warnings
 
 
 @pytest.mark.parametrize(

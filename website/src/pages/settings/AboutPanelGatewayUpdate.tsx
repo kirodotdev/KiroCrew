@@ -6,7 +6,7 @@
  * controls it places come from `AboutPanelUpdateFlow.tsx`; `AboutPanel.tsx` derives the
  * verdicts it shares with the hero card and passes them in.
  */
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, type QueryClient } from '@tanstack/react-query'
 import { RefreshCw, CheckCircle2, GitBranch, ArrowUp, Package, X, Copy } from 'lucide-react'
 import { Btn } from '../../components/ui'
@@ -19,6 +19,12 @@ import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 import { i18nT } from '../../i18n/t'
 import { fmtRelative } from '../../i18n/format'
 import { InAppUpdateFlow, RestartGatewayButton, copyCommand } from './AboutPanelUpdateFlow'
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
+
+// AboutPanel.tsx owns this dialog's Escape (it refuses while an apply or
+// restart is in flight), so the trap is wired with Escape off and a stable
+// no-op in its place.
+const NO_ESCAPE = () => {}
 
 /**
  * Why the GATEWAY update check produced no verdict.
@@ -493,9 +499,12 @@ export function AboutPanelUpdateConfirm({
   const {
     gwChanges, gwTarget, setShowConfirm, applyError, applyDirty, restarting, gwCheck, gwApply,
   } = gwUpdate
+  // Focus moves in on open, Tab stays inside, focus returns on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click-to-dismiss is a supplementary mouse affordance; the keyboard path is the document-level Escape listener in AboutPanel.tsx plus the Close button, and making the dialog surface itself a tab stop would put a stop in front of its own content
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
+    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
          role="dialog" aria-modal="true" aria-label={i18nT('pages.settings.aboutPanel.update')}
          onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}>
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- the only handler is a propagation guard keeping a click inside the panel from reaching the backdrop's dismiss; it performs no action, so there is no keyboard equivalent to provide */}
@@ -507,7 +516,11 @@ export function AboutPanelUpdateConfirm({
           <div className="text-sm font-bold text-text-strong flex items-center gap-1.5"><Package size={15} className="lucide-inline" /> {gwTarget && !gwDiverged
             ? i18nT('pages.settings.aboutPanel.update_to_version', { version: gwTarget })
             : i18nT('pages.settings.aboutPanel.update')}</div>
-          <button aria-label={i18nT('pages.settings.aboutPanel.close')} className="text-muted hover:text-text cursor-pointer bg-transparent border-none disabled:opacity-40 disabled:cursor-default" disabled={gwApply.isPending || restarting} onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}><X size={15} /></button>
+          {/* aria-disabled, not disabled: while the update runs every other
+              control is gone or disabled, and a disabled Close would leave the
+              focus trap with nothing to hold, so Tab would walk out. The
+              onClick guard below is what refuses the close. */}
+          <button aria-label={i18nT('pages.settings.aboutPanel.close')} className="text-muted hover:text-text cursor-pointer bg-transparent border-none aria-disabled:opacity-40 aria-disabled:cursor-default" aria-disabled={gwApply.isPending || restarting} onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}><X size={15} /></button>
         </div>
         {gwCheck.isPending ? (
           <div className="text-[13px] text-muted flex items-center gap-1.5 mb-4"><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.loading_changelog')}</div>

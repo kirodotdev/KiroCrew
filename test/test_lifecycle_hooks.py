@@ -226,7 +226,6 @@ class TestShellBeforePython:
         ):
             from kiro_crew.apps.routes import handle_enable_app
 
-            # Build a minimal fake request
             request = MagicMock()
             request.match_info = {"name": "test-app"}
             request.app = {"state": MagicMock(owner_id="")}

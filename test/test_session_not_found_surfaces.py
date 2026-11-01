@@ -437,6 +437,37 @@ def test_cron_sequence_step_defers_reset_when_subagents_pending(gw_and_cb):  # n
     assert reset_keys.count("cron:seqdef:a") == 0
 
 
+def test_cron_sequence_step_loss_does_not_reset_a_key_another_turn_holds(gw_and_cb):  # noqa: F811
+    """A lost step whose key another turn took after the release (the job's
+    dashboard tab shares it) leaves that turn running: neither reset tears
+    it down, and the step is given up rather than re-run on the stale
+    binding."""
+    gw, get_cb, capture_cron = gw_and_cb
+    gw.cron_svc = None
+    held = {"cron:seqbusy:a"}
+
+    async def reset(key, *, skip_if_busy=False):
+        return not (skip_if_busy and key in held)
+
+    gw.sessions.reset = AsyncMock(side_effect=reset)
+    gw.sessions.is_busy = MagicMock(side_effect=lambda key: key in held)
+    calls = 0
+
+    async def resume(_c, _m, **_k):
+        nonlocal calls
+        calls += 1
+        raise _lost()
+
+    with pytest.raises(AcpError, match=SESSION_NOT_FOUND_GIVE_UP_TEXT):
+        _run_cron(
+            gw, get_cb, capture_cron, _job(agent_sequence=["a", "b"], id="seqbusy"), resume=resume
+        )
+    assert calls == 1
+    resets = gw.sessions.reset.await_args_list
+    assert [c.args[0] for c in resets] == ["cron:seqbusy:a", "cron:seqbusy:a"]
+    assert all(c.kwargs == {"skip_if_busy": True} for c in resets)
+
+
 # ── subagent run ────────────────────────────────────────────────────────────
 
 

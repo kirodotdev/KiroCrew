@@ -345,7 +345,14 @@ jobs:
     # A fork's copy of this schedule would inspect the fork's own runs, which
     # are never CodeBuild-routed; spend nothing there.
     if: github.repository == 'kirodotdev/KiroCrew'
-    runs-on: ubuntu-latest
+    # Never fleet-routed: `WATCHED_WORKFLOWS` is derived from the workflows whose
+    # `runs-on` carries the fleet label, so a fleet route here would put this
+    # workflow in its own watch set, and an orphaned watchdog cannot unstick one.
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

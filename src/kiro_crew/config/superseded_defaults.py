@@ -352,11 +352,11 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#7248",
         new_default_display="0 (automatic: as many as are registered)",
     ),
-    # A stored False keeps every peer-session tool disabled, including a
-    # conductor whose agent spec deliberately mounts the dashboard server. False
-    # is also the supported global withdrawal, so this stays report-only: Doctor
-    # can name the stale-default possibility without overriding an operator's
-    # explicit security choice.
+    # A stored False withdraws session control from every ordinary agent. Crew
+    # members and the owner-tab Conductor keep a creator-fenced dispatch bypass
+    # unless agent.member_dispatch is also False. False is a supported operator
+    # withdrawal, so this stays report-only: Doctor can name the stale-default
+    # possibility without overriding an operator's explicit security choice.
     SupersededDefault(
         dotted_key="agent.session_control",
         old_default=False,
@@ -445,10 +445,10 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=0.25,
         changed_in="#12203",
     ),
-    # Session recycling is off by default. An install materialized while the
-    # default was 1536 MiB of process-tree RSS still recycles any idle session
+    # Session recycling defaults to 4096 MiB of process-tree RSS. An install
+    # materialized while the default was 1536 MiB still recycles any idle session
     # whose tree passes 1536 MiB, which an agent with several MCP servers reaches
-    # after one heavy turn.
+    # after one heavy turn. A stored 0 is the documented off switch, not drift.
     #
     # REPORT-ONLY: 1536 is an ordinary deliberate ceiling, and holding it is
     # survivable -- a recycled session keeps its history and restarts its process
@@ -456,7 +456,7 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     SupersededDefault(
         dotted_key="session.watchdog_rss_max_mb",
         old_default=1536,
-        new_default=0,
+        new_default=4096,
         changed_in="#16393",
     ),
     # The language default is auto-detect. On the local recogniser a stored 'en-US'
@@ -839,7 +839,7 @@ def _update_map(
         raise AckPathRefused(f"refusing to write through a link at {ACK_FILE_NAME}")
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.parent / (path.name + ".lock")
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with platform_compat.file_lock(fd, exclusive=True, wait=wait_for_lock):
             document, readable = _read_ack_document_status()

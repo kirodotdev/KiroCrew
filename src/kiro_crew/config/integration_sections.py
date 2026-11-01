@@ -126,7 +126,7 @@ MANAGED_STUB_LEADER = "kirocrew-core"
 #: already declares, so an opt-in server still reaches only the agents granted it.
 #:
 #: This is ``mcp_discovery._MANAGED_SERVERS_CALLER_AWARE`` minus the leader,
-#: ``kirocrew-computer`` and ``kirocrew-cron``. It is spelled out rather than
+#: ``kirocrew-computer``, ``kirocrew-cron`` and ``kirocrew-secrets``. It is spelled out rather than
 #: derived because this module may import only ``config.fields`` (the config
 #: boundary contract) and ``mcp_discovery`` pulls in aiohttp and the probe
 #: executor. A ratchet test pins the equality, so a new caller-aware server fails
@@ -136,7 +136,8 @@ MANAGED_STUB_LEADER = "kirocrew-core"
 #: per-connection tenant nonce (``mcp_caller.POOLING_REQUIRES_TENANT_NONCE``), so
 #: it stays an explicit choice. ``kirocrew-cron`` is not excluded for a known
 #: hazard: it is simply outside what this layer was measured on, and stays one
-#: operator toggle away like any other server.
+#: operator toggle away like any other server. ``kirocrew-secrets`` is the same:
+#: an opt-in, credential-bearing egress server this layer was not measured on.
 MANAGED_STUB_FOLLOWERS: tuple[str, ...] = (
     "kirocrew-guide",
     "kirocrew-mate",
@@ -825,6 +826,16 @@ class InstancesConfig:
             "to remote Kiro Crews and embed their dashboards. Default off (opt-in). "
             "Enabling also scopes a CSP frame-src relaxation to active tunnel ports.",
             restart=True,
+        ),
+    )
+    crew_reads_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Agent Crew Reads",
+            "Let the agent read another crew's sessions with the crew= scope of "
+            "search_chat_history, list_sessions and get_chat_session. Default off: a "
+            "peer's transcripts enter the agent's context as untrusted text, so this "
+            "is a separate opt-in on top of Enabled. Read per call; no restart.",
         ),
     )
     warm_set_cap: int = field(

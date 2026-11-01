@@ -134,7 +134,10 @@ async def _promote_verdict(
     # allowed roots (home, data home, publish.relocate_roots); outside them the
     # path is dropped and the save proceeds as ordinary content with no pointer.
     def _within_allowed() -> bool:
-        p = Path(canonical_path)
+        from kiro_crew.platform_compat import strip_extended_length_prefix
+
+        # Folded like the roots it is compared to.
+        p = strip_extended_length_prefix(Path(canonical_path))
         for r in get_default_store().allowed_source_roots():
             # Comparison kept INLINE (not factored into a helper): CodeQL's taint
             # tracker only recognises the containment guard in this shape.

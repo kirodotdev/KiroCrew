@@ -436,15 +436,24 @@ class TestReplacePathAndNormalization:
         assert left == 0
 
     @pytest.mark.asyncio
-    async def test_a_crlf_document_crash_is_reaped(self, kstore, pipeline):
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "line one\r\nline two\r\n",
+            # A leading U+FEFF is written as a UTF-8 BOM, which the reader strips.
+            "\ufeffline one\nline two\n",
+            "\ufeff\ufeffline one\nline two\n",
+        ],
+        ids=["crlf", "bom", "double-bom"],
+    )
+    async def test_a_crlf_document_crash_is_reaped(self, kstore, pipeline, content):
         # The marker hash must match the hash the pipeline stamps on chunks. The
-        # reader normalizes CRLF to LF before chunking, so the ingest normalizes
-        # the submitted text before hashing. A CRLF document crashed mid-ingest
-        # must therefore still be reaped -- its marker hash matches its chunks'.
+        # reader normalizes CRLF to LF (and drops a BOM) before chunking, so the
+        # ingest normalizes the submitted text before hashing. Such a document
+        # crashed mid-ingest must therefore still be reaped -- its marker hash
+        # matches its chunks'.
         sid, _ = ensure_agent_source(kstore)
-        await add_agent_document(
-            pipeline, title="CRLF", content="line one\r\nline two\r\n", source_uri=URI
-        )
+        await add_agent_document(pipeline, title="CRLF", content=content, source_uri=URI)
         slug = document_slug(URI)
         _, ids = get_state(kstore, sid, slug)
         assert ids

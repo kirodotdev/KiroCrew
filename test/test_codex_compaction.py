@@ -67,6 +67,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -137,14 +138,11 @@ CAPTURED_HISTORY_REPLAY: dict[str, Any] = {
 }
 
 
-#: codex-acp 2.2.2's ``/compact`` turn, captured in the Real Adapter Contract
-#: Tests lane: the same pair with NO ``_meta``, and a terminal with no title.
+#: codex-acp's ``/compact`` turn on the lane pin (2.3.0; 2.2.2 sent the same),
+#: captured in the Real Adapter Contract Tests lane: the same pair with NO
+#: ``_meta``, and a terminal with no title.
 FIXTURE_222 = (
-    Path(__file__).resolve().parent
-    / "fixtures"
-    / "acp_frames"
-    / "codex"
-    / "compact-live-2.2.2.jsonl"
+    Path(__file__).resolve().parent / "fixtures" / "acp_frames" / "codex" / "compact-live.jsonl"
 )
 
 
@@ -204,6 +202,7 @@ class TestMembership:
                 ACP_BACKEND_GOOSE,
                 ACP_BACKEND_KAS,
                 ACP_BACKEND_PI,
+                ACP_BACKEND_COPILOT,
             }
         )
         assert ACP_BACKENDS_INLINE_COMPACTION == frozenset(
@@ -213,6 +212,7 @@ class TestMembership:
                 ACP_BACKEND_OPENCODE,
                 ACP_BACKEND_GOOSE,
                 ACP_BACKEND_PI,
+                ACP_BACKEND_COPILOT,
             }
         )
 

@@ -37,6 +37,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_card_handshake_fields import live_init
 
 from kiro_crew.acp.client import (
     CLIENT_NAME,
@@ -1154,9 +1155,10 @@ class TestTheEffortChannelIsReadFromItsOwnTable:
 
 
 def _handle_on(backend: str) -> AcpSessionHandle:
-    """A handle whose runtime names *backend* -- the only thing these answers read."""
+    """A handle whose runtime names *backend*, on codex-acp 2.2.2's live handshake."""
     rt = MagicMock()
     rt.acp_backend = backend
+    rt.initialize_result = live_init("codex/steering-live.jsonl")
     return AcpSessionHandle("s1", asyncio.Queue(), rt)
 
 
@@ -1486,6 +1488,40 @@ class TestTheRuntimeSendsCodexNoAgentMode:
             await rt.create_session(cwd="/w", agent="kirocrew")
 
         assert METHOD_SET_MODE in plane.methods
+
+
+class TestTheRuntimePersistsTheAdvertisedModelCacheForCodex:
+    @pytest.mark.asyncio
+    async def test_create_session_feeds_and_persists_once(self, monkeypatch, tmp_path):
+        """codex is in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION, so the shared runtime
+        feeds the advertised-model cache and then offloads its persist after
+        session/new; the kiro side of the same gate is pinned in
+        test_acp_runtime_load_session.py."""
+        from kiro_crew import model_registry
+
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(model_registry, "_ADVERTISED_META", {})
+        sidecar = tmp_path / "provider_models.json"
+        monkeypatch.setattr(model_registry, "_advertised_models_cache_path", lambda: sidecar)
+        ids = ["test-model-a", "test-model-b"]
+        response = _codex_session_new_response()
+        response["configOptions"].append(
+            {
+                "id": "model",
+                "type": "select",
+                "currentValue": ids[0],
+                "options": [{"value": m, "name": m} for m in ids],
+            }
+        )
+        rt = _codex_runtime()
+        plane = _ControlPlane(response)
+
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            await rt.create_session(cwd="/w", agent="kirocrew")
+
+        assert model_registry.advertised_models("codex") == ids
+        assert json.loads(sidecar.read_text(encoding="utf-8"))["codex"] == ids
 
 
 class TestTheRuntimeArmsCodexPermissionRouting:

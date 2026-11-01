@@ -25,18 +25,45 @@ if TYPE_CHECKING:
         _redact,
         _spawn_scope_refusal,
         body_int,
+        body_not_object_error,
         dashboard_slot_key,
         effective_session_key,
         effort_applied_note,
         effort_drop_reason,
         effort_pending_note,
         internal_memory_scope,
+        parent_project_dirs,
         parent_template_allowlists,
         parent_work_supported,
         spawn_parent_claim,
+        stopped_before_start,
         validate_tool_args,
         warm_project_agents_for_spawn,
     )
+
+
+#: ``code`` for a start that was stopped while it waited, so it never ran (see
+#: :func:`kiro_crew.subagent_wait_reasons.stopped_before_start`). A route that
+#: tested only ``done and error`` would read that record as a started run.
+STOPPED_BEFORE_START_CODE = "stopped_before_start"
+
+
+def _stopped_before_start(info: Any, *, counted: bool = False) -> web.Response | None:
+    """409 ``stopped_before_start`` when *info* is a start stopped while it waited.
+
+    None for every other answer, so the caller goes on to its success body. A
+    start that ended in an error is the caller's typed rejection, not this.
+    ``counted`` adds ``counted: true`` for ``POST /api/spawn``, whose wave
+    reconcile reads it.
+    """
+    if not stopped_before_start(info):
+        return None
+    error = "the run was stopped before it started; nothing ran"
+    if counted:
+        return web.json_response(
+            {"error": error, "code": STOPPED_BEFORE_START_CODE, "counted": True}, status=409
+        )
+    return web.json_response({"error": error, "code": STOPPED_BEFORE_START_CODE}, status=409)
 
 
 async def _spawn_request_memory_mode(
@@ -210,6 +237,16 @@ async def api_spawn(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
+    # The parent's project scope, read as soon as the request names its parent
+    # and before any later await (the backend probe, the memory-scope and
+    # record reads), so a parent session that ends meanwhile cannot shrink the
+    # scope the gate checks now and the queued row records. Dict reads only;
+    # a non-string parent is refused below and reads no scope here.
+    asked_parent = body.get("parent_session", "")
+    parent_dirs = list(parent_project_dirs(asked_parent)) if isinstance(asked_parent, str) else []
     try:
         cleaned = validate_tool_args(
             {
@@ -321,7 +358,10 @@ async def api_spawn(request: web.Request) -> web.Response:
             (
                 parent_execution.template_id,
                 await asyncio.to_thread(
-                    parent_template_allowlists, parent_session, parent_execution.template_id
+                    parent_template_allowlists,
+                    parent_session,
+                    parent_execution.template_id,
+                    parent_dirs,
                 ),
             )
             if parent_execution is not None
@@ -362,35 +402,59 @@ async def api_spawn(request: web.Request) -> web.Response:
         batch_total = max(0, min(body_int(body.get("batch_total", 0) or 0), 1000))
     except (TypeError, ValueError):
         batch_total = 0
+    # Fair admission (Shared Crew): a child of whatever runs in the parent
+    # session, charged to that work's initiator. Refused before the manager
+    # counts the submission, so the refusal carries no ``counted``.
+    from kiro_crew.shared_crew.admission_entry import admit_subagent
+
+    child_admission = await admit_subagent(request, state, parent_session)
+    if child_admission.rejected:
+        return child_admission.refusal_response()
+    from kiro_crew.shared_crew.admission_gate import Admission
+    from kiro_crew.shared_crew.admission_link import link_spawn
+
+    run_id = await link_spawn(child_admission, state.subagents)
+    if run_id is None:
+        await child_admission.abandon()
+        return Admission(None, "rejected", store_unavailable=True).refusal_response()
     # The async moment preceding the synchronous spawn(): warm here so the
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
         await warm_project_agents_for_spawn(state, cwd)
-    info = await _spawn_on_loop(
-        state,
-        task,
-        parent_session_key=parent_session,
-        agent=agent,
-        max_turns=max_turns,
-        cwd=cwd,
-        model=model or None,
-        reasoning_effort=reasoning_effort,
-        backend=backend,
-        label=str(cleaned.get("label") or ""),
-        approval_mode=approval_mode or None,
-        silent=silent,
-        batch_id=batch_id,
-        batch_total=batch_total,
-        keep=keep,
-        include_memory=cleaned.get("include_memory", True) is not False,
-        include_lessons=cleaned.get("include_lessons", True) is not False,
-        include_project=cleaned.get("include_project", True) is not False,
-        memory_store=child_memory_store,
-        crew=crew,
-        _memory_mode=admitted_mode,
-        _execution_context=admitted_execution.to_record(),
-        _parent_spawn_policy=parent_spawn_policy,
-    )
+    from kiro_crew.shared_crew.admission_entry import admitted_scope
+
+    with admitted_scope(child_admission):
+        info = await _spawn_on_loop(
+            state,
+            task,
+            parent_session_key=parent_session,
+            agent=agent,
+            max_turns=max_turns,
+            cwd=cwd,
+            model=model or None,
+            reasoning_effort=reasoning_effort,
+            backend=backend,
+            label=str(cleaned.get("label") or ""),
+            approval_mode=approval_mode or None,
+            silent=silent,
+            batch_id=batch_id,
+            batch_total=batch_total,
+            keep=keep,
+            include_memory=cleaned.get("include_memory", True) is not False,
+            include_lessons=cleaned.get("include_lessons", True) is not False,
+            include_project=cleaned.get("include_project", True) is not False,
+            memory_store=child_memory_store,
+            crew=crew,
+            _memory_mode=admitted_mode,
+            _execution_context=admitted_execution.to_record(),
+            _parent_spawn_policy=parent_spawn_policy,
+            _parent_project_dirs=parent_dirs,
+            **({"_preassigned_id": run_id} if run_id else {}),
+        )
+    if not info or (info.done and info.error):
+        await child_admission.abandon()
+    else:
+        await child_admission.attach_child(info.id, session_key=f"subagent:{info.id}")
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
         # refused for capacity — tell the client so it does NOT reconcile
@@ -420,6 +484,11 @@ async def api_spawn(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Accepted (and counted) by mgr.spawn, then stopped before its claim: no run
+    # and no card will follow, so "spawned" would leave the caller waiting.
+    stopped = _stopped_before_start(info, counted=True)
+    if stopped is not None:
+        return stopped
     resp: dict[str, object] = {
         "id": info.id,
         "task": task,
@@ -585,6 +654,9 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     task = str(body.get("task", "") or "").strip()
     if not task:
         return web.json_response({"error": "task is required", "code": "task_required"}, status=400)
@@ -616,17 +688,42 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     # `continue_conversation` is synchronous. Doing it here keeps the gateway
     # responsive even when the recorded path lives on a stalled mount.
     resumed_cwd = await asyncio.to_thread(state.subagents.recorded_cwd, conv_id)
-    info = await _continue_on_loop(
-        state,
-        conv_id,
-        task,
-        parent_session_key=parent_session,
-        agent=agent,
-        model=model or None,
-        max_turns=max_turns,
-        cwd=resumed_cwd,
-        _memory_mode=admitted_mode,
-    )
+    from kiro_crew.shared_crew.admission_entry import admit_subagent
+
+    child_admission = await admit_subagent(request, state, parent_session)
+    if child_admission.rejected:
+        return child_admission.refusal_response()
+    from kiro_crew.shared_crew.admission_entry import admitted_scope
+    from kiro_crew.shared_crew.admission_gate import Admission
+    from kiro_crew.shared_crew.admission_link import link_spawn
+
+    run_id = await link_spawn(child_admission, state.subagents)
+    if run_id is None:
+        await child_admission.abandon()
+        return Admission(None, "rejected", store_unavailable=True).refusal_response()
+    with admitted_scope(child_admission):
+        info = await _continue_on_loop(
+            state,
+            conv_id,
+            task,
+            parent_session_key=parent_session,
+            agent=agent,
+            model=model or None,
+            max_turns=max_turns,
+            cwd=resumed_cwd,
+            _memory_mode=admitted_mode,
+            **({"_preassigned_id": run_id} if run_id else {}),
+        )
+    if not info or (info.done and info.error):
+        await child_admission.abandon()
+    else:
+        # A continuation runs on its conversation's session key
+        # (``subagent:<original-id>``), so that is the key its nested spawns name.
+        await child_admission.attach_child(
+            info.id,
+            session_key=getattr(info, "conversation_key", "") or f"subagent:{info.id}",
+            also=(f"subagent:{info.id}",),
+        )
     if not info:
         return web.json_response(
             {
@@ -647,4 +744,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         if info.error.startswith("conversation_gone"):
             return web.json_response({"error": info.error, "code": "conversation_gone"}, status=404)
         return web.json_response({"error": info.error, "code": _SPAWN_REJECTED_CODE}, status=400)
+    stopped = _stopped_before_start(info)
+    if stopped is not None:
+        return stopped
     return web.json_response({"id": info.id, "conversation": conv_id, "status": "spawned"})

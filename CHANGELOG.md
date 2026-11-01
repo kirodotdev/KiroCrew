@@ -2,17 +2,207 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.12.0] - 2026-11-01
+
+Mates (a working name, final name TBD) are now on for everyone, two more
+coding agents join the harness list, and a new Explore panel shows what to try
+next. Chat, the sidebar and notifications pick up many small controls, and
+Ultra Mode arrives as a preview you can switch on.
+
+### Mates for everyone (name TBD)
+
+- **Mates without a preview switch**: the Mates row in the left rail, the
+  `/members` page and the mate rows in the command bar are always shown, and a
+  first visit tours a mate's profile tabs and offers to let it keep track of its
+  own work.
+- **A desk of its own**: each mate keeps the chats and folders it opens in one
+  sidebar folder named after it, and works in its own git worktree per
+  repository, so two mates on one repo no longer commit each other's edits.
+- **Take a mate with you**: the mate profile card's "Export as file" writes a
+  `.crewjam` file with an editable lessons draft, and Mates > Import mate reads it
+  back (older `.crewmate` files still import).
+
+### More coding agents
+
+- **Strands**: Settings > Agent Harness lists Strands once the Strands CLI is
+  installed, and its setup card stores the model provider keys in Settings >
+  Secrets.
+- **GitHub Copilot CLI**: pick it under Settings > Agent Harness (needs
+  `copilot` 1.0.100 or later), and every harness's model picker now shows that
+  backend's own model names.
+- **Chat commands on KAS**: `/model`, `/tools` and `/mcp` work again on the
+  default KAS backend, and `/model <id>` switches the model like the picker.
+
+### Explore and settings
+
+- **Explore**: the "Explore" pill in the top bar opens a list of features you
+  have tried and not yet tried, and a new chat shows a "Try today" card; turn both
+  off at Settings > Display > Explore.
+- **Developer settings for everyone**: Developer Mode is gone, so Settings >
+  Developer always shows Feature Previews, Logs, System, Telemetry, Storage, MCP
+  Management, Memory, Config and Debug tools, and Feature Previews switches are
+  saved on the gateway, so they follow you to every browser and the desktop app.
+- **Two new themes**: "👁 Color-blind safe" and "💜 Amethyst OLED" are under
+  Settings > Display > Theme.
+
+### Chat you can handle more ways
+
+- **Take back a steer**: a steer the running turn has not read yet can be
+  unsent, edited in the message box or queued from its row's menu, on the Kiro CLI
+  harness.
+- **Copy what you need**: code blocks gain "Wrap lines", quotes gain "Copy
+  quote", right-clicking an image offers "Copy image", and Settings > Chat >
+  Transcript adds an opt-in "Copy on select".
+- **Attach and read more**: iPhone HEIC photos attach from the composer and are
+  converted to JPEG, a box you drag over an image in the file viewer can carry a
+  comment, and "Jump to the bottom when you send" in Settings > Chat can be turned
+  off.
+
+### A sidebar that sorts itself
+
+- **Session menu**: every session row's menu adds "Copy session ID" and
+  "Reference in chat", and "Move to folder" ends with "New folder" to create and
+  move in one step.
+- **Group and filter**: the sidebar Filter menu adds "Group by kind" and a "Not
+  in progress" row, and "Clean up sessions" adds 14 and 30 day windows.
+- **Color and tabs**: a session's color now tints its chat header, the
+  Categorical palette under Settings > Display > Sidebar gives twelve fixed hues,
+  and session tabs drag to reorder.
+
+### Notifications that reach you
+
+- **Push when closed**: Settings > Notifications > Push notifications > "Notify
+  me even when Kiro Crew is closed" delivers to an installed PWA, including iOS
+  after Add to Home Screen.
+- **Your own sounds**: Settings > Notifications > Custom sounds takes a short
+  MP3, WAV or OGG file for any category.
+- **Missed approvals**: an approval that expires unanswered leaves a bell note
+  naming the tool, and on phones the live banner swipes away.
+
+### Schedules and apps
+
+- **Quieter failures**: the job dialog's "Send the failure message after N
+  failures in a row" (and `kirocrew cron add --alert-after N`) rings only the
+  bell for earlier failures, and a run the security gate partly refused shows
+  "Partial".
+- **More ways to say when**: one-shot times accept days and weeks ("in 2
+  days", "in 1 week"), and the Start loop dialog offers "Run first cycle now".
+- **Apps in their own window**: an app page's "Pop out app to its own window"
+  control opens it separately, and right-clicking an app row in the sidebar opens
+  Details or Unpin with an update badge.
+
+### Desktop and command line
+
+- **Close means quit if you want**: Settings > Display > View > Desktop app
+  turns off "Keep running in the background after closing the window".
+- **Links that open the app**: `kirocrew://chat?sid=<key>` opens a session in
+  the desktop app, and `kirocrew open` does the same from the terminal.
+- **Phone sign-in**: the session-expired banner can scan the sign-in QR with
+  the phone camera in the page, and Connect your phone shows a QR for any
+  external address.
+
+### Lighter and faster
+
+The dashboard stays responsive while many sessions stream, the gateway no longer
+stalls on file reads, and boot is faster. Memory use drops by about 110 MiB from
+the entity graph and more from a capped transcript cache, and Linux arm64
+embeddings run about five times faster.
+
+### Previews you can turn on (Preview)
+
+These are not generally available yet. Each is a switch under Settings >
+Developer > Feature Previews and is off until you turn it on.
+
+- **Ultra Mode**: the "Ultra Mode" chip on a new chat runs it on a conductor
+  that hands each task to its own worker chat, and the side panel's Board tab
+  shows the crew by what needs you, with a catch-up message when you come back.
+- **Agent harness per mate (name TBD)**: a mate's profile gains an "Agent
+  harness" row, so one mate can run on Claude Code while the rest stay on KAS.
+- **Session Environments**: Settings > Session Environments connects Coder,
+  Fly.io Sprites or boxd workspaces, with an environment chip in the composer
+  and a remote Files panel and terminal; the gateway also needs
+  `KIROCREW_DEV_MODE` set.
+
+### Notable fixes
+
+**Chat and sessions.** A message sent while nothing is running is queued
+instead of leaving the chat stuck on thinking, and a reply keeps its footer
+however the turn ends. Regenerate that ends empty keeps the previous reply, and
+sessions with only sub-agents running stay under the In progress filter.
+
+**Mates (name TBD) and channels.** Mates you created are listed even with an
+empty chat, and a mate stays silent when it has nothing to say. Slack replies
+post only the
+final answer, Slack Socket Mode works behind a SOCKS proxy, and the Atlassian
+connection's Jira and Confluence tools work again.
+
+**Schedules, memory and desktop.** A cron's wall-clock time holds across a
+daylight saving change, and a memory backup folder with an extra file no longer
+deletes real backups. An update you put off is never installed behind your back,
+and fewer ordinary commands are wrongly denied.
+
+## [0.11.1] - 2026-10-31
+
+A hot patch for 0.11.0: memory stays fast and intact under load, the KAS
+engine follows your agent specs the way kiro-cli does, and a set of security,
+chat and desktop fixes lands.
+
+### Notable fixes
+
+**Memory.** Reading memory no longer waits behind a write, a busy memory pool
+ends a turn with a retryable error instead of leaving it waiting, and the
+first replies after a restart start sooner. The memory database keeps its
+write log when another process closes it, so recent memories are no longer
+lost, and the startup prefetch can no longer let the memory index be
+corrupted.
+
+**KAS engine.** KAS auto-approves the built-in tools a spec grants once Crew's
+own checks pass, honors a spec's allowed shell commands at the gate and
+refuses the rest when the spec denies by default, refuses a file write outside
+a deny-by-default spec's allowed paths, and mounts web search under the name
+the engine expects. Agent spec hooks block a tool only on exit code 2, as on
+kiro-cli, an MCP server gets its boolean env flags but never its secrets, and
+a relative prompt file may use `..` as on kiro-cli. A resumed KAS session
+replays its history when no turns come back.
+
+**Chat and settings.** File changes from kiro-cli v3 write tools show in the
+transcript again, each background tool approval gets its own id so one answer
+no longer settles another, and kiro-cli's read-only file searches are approved
+after the safety checks. A workflow run that stored an infinite or not-a-number
+value opens again, Settings refuses a save that `config.local.json` would
+override, and a schedule's time label keeps its wall-clock hour across a
+daylight saving change. Background work such as the live crew log, knowledge
+ingest and sub-agent events now runs to the end instead of stopping without a
+word.
+
+**Security.** The shell reader finds a `-c` script placed after options and
+redirections, and every agent process counts as an agent in the cloud guard
+for human-only actions. A deny rule that wrongly refused commands such as
+`find -type f` and `od -tx1` as a curl upload is removed. The local decision
+models install a `filelock` with its published advisory fixed.
+
+**Desktop and CLI.** The one-line and `install.sh` installers download Crew's
+built-in KAS engine by default (`--no-kas` skips it), `kirocrew restart` says
+when another gateway still serves the port, and `kirocrew stop` and `kirocrew
+restart` refuse a gateway the desktop app supervises. Quitting the desktop app
+while it starts no longer leaves a gateway running behind it, and Windows
+recovery retries a failed network check before it gives up. A new terminal
+stays above the iPhone keyboard, a working icon in the Crew stack blinks and
+sits flush, and a host-wide out-of-memory kill is no longer blamed on a single
+sandbox limit.
+
 ## [0.11.0] - 2026-10-24
 
-Mates become teammates with a setup of their own: each one gets its own
-configuration, a conductor that works with you and a worker that does the
-hands-on part, and "crewmate" now reads "Mate" wherever you see it. New installs
+Mates (a working name, final name TBD) become teammates with a setup of their
+own: each one gets its own configuration, a conductor that works with you and a
+worker that does the hands-on part, and "crewmate" now reads "Mate" wherever you
+see it. New installs
 start on the KAS engine, which no longer needs kiro-cli, and chat gains Escape
 to stop, a manual sidebar order and forks from the message menu. The Schedule
 form sets time and failure limits per job, long chats stream lighter, and a long
 list of security and platform fixes lands.
 
-### Mates with a conductor and a worker of their own
+### Mates with a conductor and a worker of their own (name TBD)
 
 - **Mate 2.0**: every mate owns an agent file under `~/.kiro/mates/agents/`,
   talks to you through a conductor chat that keeps its notes, and hands hands-on
@@ -176,12 +366,13 @@ stream is redacted as one piece, and certifi is updated for an advisory.
 
 ## [0.10.0] - 2026-10-15
 
-Crewmates start to plan with you: Mate greets a new user, goals carry milestones
-and check-ins, and a crewmate proposes changes you confirm as cards. Dashboards
+Crewmates (a working name, final name TBD) start to plan with you: Mate greets
+a new user, goals carry milestones and check-ins, and a crewmate proposes
+changes you confirm as cards. Dashboards
 leave preview for everyone and a crewmate can write its own page, while chat,
 the sidebar and every backend get faster ways to move, steer and recover.
 
-### Crewmates that plan with you (Preview)
+### Crewmates that plan with you (Preview, name TBD)
 
 - **Meet Mate**: with Settings → Developer → Feature Previews → Crewmates on,
   your first visit to the Crewmates page opens Mate, a first crewmate that
@@ -355,7 +546,8 @@ start on a truncated signing key, and webapp previews run without `unsafe-eval`.
 
 ## [0.9.0] - 2026-10-09
 
-Crewmates become colleagues you can check on at a glance. Opening one greets you
+Crewmates (a working name, final name TBD) become colleagues you can check on
+at a glance. Opening one greets you
 with where its work stands, a profile card holds its permission, model and
 schedules, and in preview each crewmate gets a dashboard page read from its own
 record. The composer warns before a prompt outgrows the model, the sidebar hides
@@ -363,7 +555,7 @@ and tidies what you do not need, remote crews open as live windows onto the
 other machine, and the Usage tab estimates Kiro tokens and the day your credits
 run out.
 
-### Crewmates you can read at a glance
+### Crewmates you can read at a glance (name TBD)
 
 - **A crewmate greets you on open**: opening a crewmate on the Crewmates page
   shows a card with its goal, what is finished, running or waiting on you and
@@ -378,7 +570,7 @@ run out.
   action brings the column back, and the roster lists only crewmates you
   created, chatted with, starred or set as the default.
 
-### A dashboard for every crewmate (Preview)
+### A dashboard for every crewmate (Preview, name TBD)
 
 - **Twelve pages to choose from**: with Settings → Developer → Feature Previews
   → Dynamic Dashboard on, a crewmate's side panel opens a Dashboard tab that
@@ -531,7 +723,8 @@ locally.
 
 **Updates and agents.** The dashboard's Update and `kirocrew update` no longer
 fail with "could not fetch latest-cli.json" when they download a new version. A
-crewmate whose template uses a name the KAS engine reserves, such as `default`,
+crewmate (a working name, final name TBD) whose template uses a name the KAS
+engine reserves, such as `default`,
 now runs on KAS instead of being refused, and a tool that waits no longer holds
 up the other tools of its session.
 
@@ -640,7 +833,7 @@ one bar.
   day's credits used and its share of the plan allowance, and the balance is read
   automatically with no setting to flip.
 
-### Agent templates, and crewmates with names
+### Agent templates, and crewmates with names (name TBD)
 
 - **An Agent templates tab under Agent Capabilities**: see every installed
   template grouped by origin, create, duplicate, edit or delete your own, start a
@@ -684,7 +877,7 @@ one bar.
   conversation takes its crew log with it, the storage screen counts the log with
   the session, and `KIROCREW_CREW_LOG=0` switches the whole thing off.
 
-### Crewmates grow into teams (Preview)
+### Crewmates grow into teams (Preview, name TBD)
 
 - **Group crewmates into teams**: with the Crew Members preview on under
   Settings → Developer → Feature Previews, the roster's plus menu gains New team,
@@ -917,8 +1110,8 @@ this build does not ship, and a server disabled in the shared agent
 configuration stays listed as disabled instead of vanishing. One unreadable
 lesson no longer stops every chat and scheduled job from starting, the bad row is
 skipped and the log names it; reinstalling a skill keeps the copy you had when the
-new one fails to write; a crewmate can be named with spaces, periods or letters
-outside ASCII; a crewmate whose Kiro CLI settings turn off inherited defaults no
+new one fails to write; a crewmate (working name, TBD) can be named with spaces,
+periods or letters outside ASCII; a crewmate whose Kiro CLI settings turn off inherited defaults no
 longer receives your global steering anyway; and a model pin is judged against the
 backend the crewmate actually runs on. An OpenCode session on a machine whose own
 configuration carries a per-tool rule starts, a pi release too old for the adapter

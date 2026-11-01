@@ -56,7 +56,7 @@ async def test_the_token_file_lives_in_the_runtime_scratch_only(tmp_path, monkey
         await AcpRuntime._write_remote_token(runtime)  # a reload sends it again
         [token_file] = list(scratch.iterdir())
         assert token_file.read_bytes() == launch.relay._token
-        if os.name != "nt":  # Windows has no POSIX owner-only bits; its ACL is inherited
+        if os.name != "nt":  # Windows: an owner-only DACL instead (test_remote_git_windows_lending)
             assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
         assert workspace["server"]["args"][-2:] == ["--token-file", str(token_file)]
         assert sorted(p.name for p in tmp_path.iterdir()) == ["scratch"]

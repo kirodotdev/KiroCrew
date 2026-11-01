@@ -29,7 +29,7 @@ from kiro_crew.mcp_tools import build_tool_list, build_tool_names, dispatch
 ISSUE_RADAR_TOOLS = frozenset(
     {"issue_radar_crew_read", "issue_radar_crew_record", "issue_radar_record_investigation"}
 )
-DEV_FLEET_TOOLS = frozenset({"pod_up", "pod_down", "pod_status", "pod_ls"})
+DEV_FLEET_TOOLS = frozenset({"pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls"})
 OPS_MISSION_CONTROL_TOOLS = frozenset({"ops_mission_control_api"})
 DESIGN_TWEAK_TOOLS = frozenset({"design_tweak_update_thread"})
 APP_TOOLS = {

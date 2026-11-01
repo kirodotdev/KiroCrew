@@ -12,6 +12,7 @@ organized for someone browsing the repository.
 | Doc | Covers |
 |---|---|
 | [getting-started.md](getting-started.md) | Install, first run, and background operation. |
+| [coming-from-kiro-cli.md](coming-from-kiro-cli.md) | How Kiro Crew relates to kiro-cli: what carries over, why a chat behaves differently, and how to get CLI-style behaviour. |
 | [configuration.md](configuration.md) | Config file reference, environment variables, and sandbox modes. |
 | [use-cases.md](use-cases.md) | Real-world workflows. |
 | [troubleshooting.md](troubleshooting.md) | Common problems and fixes. |

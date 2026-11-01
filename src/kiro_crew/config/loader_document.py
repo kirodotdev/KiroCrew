@@ -101,6 +101,42 @@ def member_acp_backend_declared() -> bool:
     return _backend_choice_declared("member_acp_backend")
 
 
+def acp_backend_stored_as_kiro() -> bool:
+    """Whether the stored ``agent.acp_backend`` is the Kiro CLI choice (``"kiro"``).
+
+    A load resolves that choice to KAS while kiro-cli offers its v3 engine, so the
+    in-memory field cannot say the user picked Kiro CLI; this reads the documents,
+    with the ``config.local.json`` overlay winning, like
+    :func:`acp_backend_declared`. Read by the gateway's KAS floor (a Kiro CLI pick
+    waits for the probe and keeps the v2 launch on a kiro-cli without v3), by the
+    once-only dashboard notice and by the Agent Harness panel's offer to save KAS.
+    """
+    from kiro_crew.acp_backends import STORED_BACKEND_KIRO
+
+    return _stored_agent_value("acp_backend") == STORED_BACKEND_KIRO
+
+
+def acp_backend_bundle_route() -> bool:
+    """Whether the stored ``agent.kas_bundle`` is on (the bundled KAS engine route).
+
+    Reads the documents (overlay winning) like :func:`acp_backend_stored_as_kiro`.
+    On the bundle route a Kiro CLI pick stays on kiro-cli: KAS there spawns Crew's
+    own bundled engine, which kiro-cli's own v3 support says nothing about, so the
+    gateway floor and the per-process probe both decline to promote the pick.
+    """
+    return bool(_stored_agent_value("kas_bundle") is True)
+
+
+def acp_backend_overlay_owned() -> bool:
+    """Whether the ``config.local.json`` overlay names ``agent.acp_backend``.
+
+    The dashboard writes ``config.json``, and the overlay wins over it, so an
+    overlay-owned choice is one the Agent Harness panel cannot change.
+    """
+    agent = _raw_agent_section(config_local_path())
+    return agent is not None and "acp_backend" in agent
+
+
 def _backend_choice_declared(key: str) -> bool:
     """Whether the stored ``agent.<key>`` holds a value other than absent or ``""``."""
     value = _stored_agent_value(key)
@@ -266,11 +302,25 @@ def _refuse_unpublishable(data: dict, path: Path) -> None:
     through the same function is untouched -- it has neither mapping.
     """
     _refuse_deepseek_env_plaintext(data, path)
+    _refuse_vault_env_plaintext(data, path, "strands_env", "a Strands session")
     _refuse_agent_env_entries(data, path)
 
 
 def _refuse_deepseek_env_plaintext(data: dict, path: Path) -> None:
     """Refuse a plaintext provider key under ``agent.deepseek_env``.
+
+    One of the maps :func:`_refuse_vault_env_plaintext` guards; kept by this name
+    because the loader re-exports it.
+    """
+    _refuse_vault_env_plaintext(data, path, "deepseek_env", "a DeepSeek session")
+
+
+def _refuse_vault_env_plaintext(data: dict, path: Path, key: str, refused_session: str) -> None:
+    """Refuse a plaintext provider key under ``agent.<key>``.
+
+    The rule every ``secret://``-only provider-key map shares
+    (``agent.deepseek_env``, ``agent.strands_env``); *refused_session* names the
+    session the spawn-time validator refuses while a plaintext stands.
 
     That mapping takes ``secret://`` references only, and a plaintext that reaches
     disk is already the defect the spawn-time validator would later name.
@@ -290,23 +340,25 @@ def _refuse_deepseek_env_plaintext(data: dict, path: Path) -> None:
     absent or unparseable file fails closed.
     """
     agent = data.get("agent") if isinstance(data, dict) else None
-    mapping = agent.get("deepseek_env") if isinstance(agent, dict) else None
+    mapping = agent.get(key) if isinstance(agent, dict) else None
     plaintext = _sections.deepseek_env_plaintext_keys(mapping)
     if not plaintext:
         return
-    names = ", ".join(repr(key) for key in plaintext)
-    if _deepseek_env_on_disk(path) == mapping:
+    names = ", ".join(repr(name) for name in plaintext)
+    if _agent_key_on_disk(path, key) == mapping:
         logger.warning(
-            "config.json already holds a literal value under agent.deepseek_env entry %s; "
+            "config.json already holds a literal value under agent.%s entry %s; "
             "this write left that mapping as it found it. That mapping takes a "
-            "'secret://<vault name>' reference only, and a DeepSeek session is refused "
+            "'secret://<vault name>' reference only, and %s is refused "
             "while it stands: save the key under Settings > Secrets, then map it as "
             "'secret://<vault name>'.",
+            key,
             names,
+            refused_session,
         )
         return
     raise ConfigWriteRefused(
-        f"agent.deepseek_env entry {names} holds a literal value, so the config "
+        f"agent.{key} entry {names} holds a literal value, so the config "
         "write was refused: this mapping takes a 'secret://<vault name>' reference "
         "only, and no provider key is ever stored in config.json. Save the key "
         "under Settings > Secrets, then map it as 'secret://<vault name>'."
@@ -677,7 +729,7 @@ def _config_write_lock(p: Path, *, wait: bool = True) -> Iterator[None]:
     """
     lock_path = p.parent / (p.name + ".lock")
     p.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with platform_compat.file_lock(fd, exclusive=True, wait=wait):
             yield

@@ -227,6 +227,12 @@ SESSION_SORT_MODES: tuple[str, ...] = (
     "name-desc",
     "manual",
 )
+# The "Translucent panels" (Liquid Glass) switch as the workspace stores it: a
+# string like ``theme_mode``, with ``""`` for "never chosen here" so the browser's
+# own stored choice keeps holding on a workspace that predates the key. The
+# loader normalizes to this set, ``PUT /api/config/theme`` accepts exactly it, and
+# the frontend's ``liquidGlass.ts`` mirrors the two non-empty values.
+TRANSLUCENT_PANELS_VALUES: tuple[str, ...] = ("", "on", "off")
 SESSION_TIMEOUT_MIN = 0
 SESSION_TIMEOUT_MAX = 86400
 POOL_TTL_SECS_MIN = 0
@@ -244,6 +250,10 @@ EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
 # Also load-only, and a floor only: 0 keeps every turn's copies, so a negative
 # value reads as 0, and any larger count is a real choice.
 FILE_CHANGES_KEEP_TURNS_MIN = 0
+# ``session.kas_delete_delay_secs``: 0 deletes at once, and a hand-edited delay is
+# capped at one day. The cap bounds the delay asked for, not when the delete runs.
+KAS_DELETE_DELAY_SECS_MIN = 0
+KAS_DELETE_DELAY_SECS_MAX = 86400
 # A hand-edited ``session.idle_exempt_keys`` can be any size, and every idle sweep copies it.
 # Each listed key can also keep a whole kiro-cli process and its MCP servers running, the
 # per-entry cost ``POOL_SIZE_MAX`` bounds for the warm pool, so the count shares that ceiling.
@@ -469,10 +479,41 @@ class ResourceLimitsConfig:
         metadata=_meta(
             "Max total processes",
             "cgroup TasksMax for the whole agents SLICE, counting tasks "
-            "(threads) across every agent tree. 0 or unset uses the module "
-            "default; the aggregate ceiling is never left unset where a "
+            "(threads) across every agent tree. 0 or unset sizes it from the "
+            "host: 512 tasks for every 512 MB of the slice's memory ceiling "
+            "plus one scope ceiling, so legitimate load reaches max_total_memory_mb "
+            "first. Capped at half the tightest of kernel.pid_max, "
+            "kernel.threads-max and the user slice's TasksMax, but never below "
+            "32768 unless that tightest limit is itself lower; kirocrew doctor "
+            "shows the value and its inputs. The aggregate ceiling is never left unset where a "
             "systemd user manager is available (Linux); not enforced on "
             "Windows/macOS.",
+            nullable=True,
+        ),
+    )
+    scope_memory_high_pct: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Scope memory soft ceiling (%)",
+            "cgroup MemoryHigh for EACH agent runtime scope, as a percent of "
+            "that scope's own MemoryMax. A runtime that grows past it reclaims "
+            "its own page cache and is throttled alone, before the shared "
+            "slice ceiling slows every runtime. Unset or out of range (1-100) "
+            "uses the default (90); 0 emits no MemoryHigh at all. Linux only.",
+            nullable=True,
+        ),
+    )
+    slice_reclaim_trigger_pct: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Slice page-cache reclaim trigger (%)",
+            "The gateway writes the agents SLICE's memory.reclaim once "
+            "memory.current reaches this percent of the slice memory.high and "
+            "clean page cache is at least half of it, so cached files alone do "
+            "not hold the slice at its ceiling and throttle every agent. Unset "
+            "uses 95, 0 turns it off for this gateway only (the slice is shared "
+            "by every gateway of the user), 50-99 is accepted and anything else "
+            "uses 95. Never runs inside a pod. Linux with cgroup v2 only.",
             nullable=True,
         ),
     )
@@ -512,6 +553,12 @@ class ResourceLimitsConfig:
             ),
             max_total_processes=_limit_int(
                 section.get("max_total_processes"), "max_total_processes", lo=0
+            ),
+            scope_memory_high_pct=_limit_int(
+                section.get("scope_memory_high_pct"), "scope_memory_high_pct", lo=0, hi=100
+            ),
+            slice_reclaim_trigger_pct=_limit_int(
+                section.get("slice_reclaim_trigger_pct"), "slice_reclaim_trigger_pct", lo=0, hi=99
             ),
             xdist_auto_cap=_limit_int(section.get("xdist_auto_cap"), "xdist_auto_cap", lo=-1),
         )

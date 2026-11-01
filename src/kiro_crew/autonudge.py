@@ -1345,6 +1345,7 @@ class AutoNudgeService:
     _cancel_timer = _timers._cancel_timer
     _arm_timer = _timers._arm_timer
     _arm_from_deadline = _timers._arm_from_deadline
+    _arm_and_announce_deadline = _timers._arm_and_announce_deadline
     _reconcile_forever = _timers._reconcile_forever
     _reconcile_once = _timers._reconcile_once
     # autonudge_service.gate

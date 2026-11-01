@@ -57,7 +57,7 @@ cron resume <id>
 
 `cron_expr` uses five fields: `min hour dom month dow`; the MCP schema documents numeric day-of-week values `0=Sun` through `6=Sat`.
 
-A job's `timezone` (CLI `--timezone`) is the zone its wall clock is read in: a `cron_expr`'s hour and minute fields, and a clock time given as `at_time` / `--at` such as `"9am"` or `"tomorrow 17:30"`. Without one, both are read in the global config timezone, falling back to UTC. `cron_add(at_time="9am", timezone="America/Los_Angeles")` therefore fires at 9am in Los Angeles even on a gateway whose config timezone is UTC. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. A relative `at_time` (`"in 2 hours"`), a Unix `at` and a `delay` name an instant already, so the timezone only changes how the job is displayed.
+A job's `timezone` (CLI `--timezone`) is the zone its wall clock is read in: a `cron_expr`'s hour and minute fields, and a clock time given as `at_time` / `--at` such as `"9am"` or `"tomorrow 17:30"`. Without one, both are read in the global config timezone, falling back to UTC. `cron_add(at_time="9am", timezone="America/Los_Angeles")` therefore fires at 9am in Los Angeles even on a gateway whose config timezone is UTC. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. A relative `at_time` in seconds, minutes or hours (`"in 2 hours"`, `"in 90 mins"`), a Unix `at` and a `delay` name an instant already, so the timezone only changes how the job is displayed. A relative day or week count (`"in 3 days"`, `"in 1 week"`, `"in 2d"`) is counted in calendar days in that zone, so it keeps the clock time across a daylight saving change, like `"tomorrow"`.
 
 A zone's rules come from the timezone data the gateway's Python finds: the operating system's zoneinfo where it has one (macOS and most Linux hosts), otherwise the `tzdata` package Kiro Crew installs (Windows, and Linux hosts without the system `tzdata` package). Out-of-date data still resolves every zone name, so a job in a zone whose rules changed runs at the old rule's hour (with data older than IANA tzdb 2026b, a 9am job in `America/Vancouver` runs at 10am from 2026-11-01). `kirocrew doctor` reports such data on its `tz data` row and names the update; restart the gateway afterwards, since it keeps every zone it already loaded.
 
@@ -141,8 +141,8 @@ def run(ctx):
 
 A script can also drive dashboard sessions. Each method raises `RuntimeError` carrying the gateway's reason when the gateway refuses or cannot be reached:
 
-- `ctx.list_session_folders()` returns the dashboard's session folders.
-- `ctx.create_session_folder(name)` creates a folder and returns it.
+- `ctx.list_session_folders()` returns the dashboard's session folders. Each folder carries its `id` and `parent_id` (empty for a top-level folder), so a script can find an existing child folder before creating one.
+- `ctx.create_session_folder(name, parent_id=...)` creates a folder and returns it. With a non-empty `parent_id` the folder is created inside that folder, so a script can build a nested layout such as `Project/<run>`; without it the folder is created at the top level. A name already used under the same parent is refused with `folder_name_exists`, so reuse the existing folder from `list_session_folders()` instead.
 - `ctx.open_session(name, folder_id=..., agent=..., model=...)` opens a session and returns its slot key. Omitted arguments take the gateway's defaults. A non-empty `name` is also the session's title, so the sidebar shows it instead of an auto-generated one. The title is set only when the session is created; reopening the same name keeps its current title, including one you renamed.
 - `ctx.send_to_session(slot, message)` queues the message as that slot's next turn and returns at once: `{"ok": True, "slot": <key>}` when the slot was idle, or `{"ok": True, "queued": True, "queue_id": <id>}` when it was busy.
 - `ctx.set_session_mode(slot, mode)` sets that session's tool approval mode to `trust` or `trust_reads` and returns `{"ok": True, "mode": <mode>}`. Any other mode is refused with `mode_not_allowed` and an unnamed slot with `slot_required`.
@@ -163,7 +163,7 @@ Jobs can override the global tool approval mode. Set `approval_mode` to `"auto"`
 kirocrew cron add "auto-check" "check pipeline" --every 300 --approval-mode auto
 ```
 
-Via MCP: `cron_add(name="auto-check", message="check pipeline", every=300, approval_mode="auto")`
+Or turn it on for a job from the Schedule page. Only the owner can turn `"auto"` on: the MCP tools `cron_add` and `cron_update` refuse `approval_mode="auto"` (they still accept `""`, which turns it off), so an agent creates the job and the user switches it to auto on the Schedule page. If `cron_update` later changes what an auto job does (message, agent, model, schedule, channel or thread), auto-approve turns off and the user turns it back on there; a rename keeps it.
 
 ## Next Run Display
 
@@ -188,7 +188,7 @@ cron_add(
 
 | Mode | Session Key | Context | Use Case |
 |------|-------------|---------|----------|
-| `persistent_session: true` (default) | `cron:{id}` (stable) | Accumulates across runs, `last_result` prepended | Digests, trend tracking |
+| `persistent_session: true` (default) | `cron:{id}` (stable) | Accumulates across runs; `last_result` is carried as fenced reference data ahead of the request | Digests, trend tracking |
 | `persistent_session: false` | `cron:{id}:{uuid}` (fresh each run) | Clean slate, no `last_result` | Polling, scanners, alerting |
 
 The reaper tracks per-run session keys so it can still SIGKILL stuck ephemeral sessions.
@@ -295,4 +295,5 @@ If the key names no recorded session the command still succeeds but warns: a bra
 
 - **Failure alerts** — a failed run delivers its REASON to the dashboard bell and (when Slack is configured) to the job's channel or the owner's DM, not only to the gateway log. Covers all three job kinds and a fire-time policy denial, which is otherwise invisible.
 - **Failure dedup** — a repeat of the same reason withholds the Slack DM and marks the bell as suppressed; a different reason alerts in full, and the DM returns after an hour. A `silent: true` job alerts nowhere. Both still count toward auto-pause: dedup silences the DM, never the evidence. Success clears the failure state, so a relapse alerts fresh.
+- **Alert threshold** — `alert_after_failures` (default 1) is how many failed runs in a row it takes before the failure message is sent; earlier failures only ring the dashboard bell. A policy denial and the run that auto-pauses the job always alert. Set to 2, a 10-minute watcher with a one-off failure pages nobody; `silent` is not the tool for that, since it also hides the job's results.
 - **Zombie reaper** — a periodic sweep (60s interval, 30 min deadline) force-kills cron executions that exceed their deadline. Prevents resource leaks from stuck jobs. When the kill cannot be delivered or confirmed, the run's `last_error` ends `; kill failed: <reason>` and its audit outcome is `failed`. Cancelling a run behaves the same.

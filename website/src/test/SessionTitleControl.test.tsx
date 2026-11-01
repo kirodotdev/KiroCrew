@@ -35,6 +35,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import SessionTitleControl from '../pages/chat/SessionTitleControl'
+import { generateSlotTitle } from '../hooks/slotTitleGeneration'
 import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
 import { api } from '../api/client'
 import { sseSlotTitle, updateSlotPin } from '../store/dashboardSlice'
@@ -167,30 +168,13 @@ describe('SessionTitleControl', () => {
   it.each([
     ['split-view pane header (compact)', true],
     ['single-session header', false],
-  ])('%s: the open editor says which keys save and cancel, and is described by it (#15808)', (_host, compact) => {
+  ])('%s: the open editor has a name and says which keys save and cancel to a screen reader (#15808)', (_host, compact) => {
     renderControl({ compact })
-    // The read-only title shows no key legend.
-    expect(screen.queryByText('Enter saves · Esc cancels')).toBeNull()
     const input = openEditor()
-    const hint = screen.getByText('Enter saves · Esc cancels')
-    expect(hint.id).not.toBe('')
-    expect(input.getAttribute('aria-describedby')).toBe(hint.id)
+    expect(input).toHaveAccessibleName(`${TITLE} (rename session)`)
     expect(input).toHaveAccessibleDescription('Enter saves · Esc cancels')
-    // Beside the box, in the same row, never squeezing the box's own padding.
-    expect(hint.parentElement).toBe(input.parentElement)
-    // Touch-only devices have no Escape key, so the legend is hidden there.
-    expect(classes(hint)).toContain('[@media(hover:none)]:hidden')
-    // In a narrow pane the hint gives way instead of squeezing the box: the
-    // row it sits in is the container it hides against, and above that width
-    // it truncates.
-    // A pane's row fills the pane and is the container; the main header sizes
-    // to its content, so a container there would collapse it, and the hint
-    // keys off the viewport instead.
-    expect(classes(input.parentElement!).includes('@container')).toBe(compact)
-    expect(classes(hint)).toEqual(expect.arrayContaining(['min-w-0', 'truncate', compact ? '@max-[420px]:hidden' : 'md:block']))
-    expect(classes(hint)).not.toContain('shrink-0')
-    act(() => { fireEvent.keyDown(input, { key: 'Escape' }) })
-    expect(screen.queryByText('Enter saves · Esc cancels')).toBeNull()
+    // The instruction is for assistive tech only; nothing is drawn beside the box.
+    expect(classes(screen.getByText('Enter saves · Esc cancels'))).toContain('sr-only')
   })
 
   it.each([
@@ -330,6 +314,8 @@ describe('SessionTitleControl', () => {
     act(() => { fireEvent.change(input, { target: { value: 'Typed by hand' } }) })
     act(() => { fireEvent.blur(input) })
     expect(screen.queryByRole('button', { name: /^Undo/ })).toBeNull()
+    // The confirmed rename is announced once renameSlot resolves.
+    await screen.findByText('Session renamed to Typed by hand')
   })
 
   it('the Undo baseline is the title on screen when the generated one lands, not the one at click time', async () => {
@@ -470,6 +456,51 @@ describe('SessionTitleControl', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: REGEN })) })
     await waitFor(() => expect(screen.getByRole('button', { name: REGEN })).toBeTruthy())
     expect(screen.queryByRole('button', { name: /^Undo/ })).toBeNull()
+  })
+
+  it('one slot open in two panes generates once, and both panes show the spinner', async () => {
+    let resolve!: (v: { title: string }) => void
+    vi.mocked(api.generateTitle).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+    const store = makeStore()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <div className="group/header"><SessionTitleControl slotKey={SLOT} title={TITLE} compact /></div>
+          <div className="group/header"><SessionTitleControl slotKey={SLOT} title={TITLE} compact /></div>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    const [first] = screen.getAllByRole('button', { name: REGEN })
+    await act(async () => { fireEvent.click(first) })
+    // The other pane's button is gone too: it shows the spinner instead.
+    expect(screen.queryAllByRole('button', { name: REGEN })).toHaveLength(0)
+    expect(screen.getAllByText('Generating title…')).toHaveLength(2)
+    expect(api.generateTitle).toHaveBeenCalledTimes(1)
+    await act(async () => { resolve({ title: 'Done' }) })
+    await waitFor(() => expect(screen.queryAllByText('Generating title…')).toHaveLength(0))
+    expect(api.generateTitle).toHaveBeenCalledTimes(1)
+  })
+
+  it('a header press while a menu-started generation runs sends no second request', async () => {
+    let resolve!: (v: { title: string }) => void
+    vi.mocked(api.generateTitle).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+    const store = makeStore()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <div className="group/header"><SessionTitleControl slotKey={SLOT} title={TITLE} compact /></div>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    let menuCall!: Promise<void> | null
+    await act(async () => { menuCall = generateSlotTitle(SLOT, store.dispatch) })
+    // The header shows the menu's generation and offers no second press.
+    expect(screen.queryAllByRole('button', { name: REGEN })).toHaveLength(0)
+    expect(screen.getByText('Generating title…')).toBeTruthy()
+    await act(async () => { resolve({ title: 'Done' }); await menuCall })
+    expect(api.generateTitle).toHaveBeenCalledTimes(1)
   })
 
   it('shows the spinner instead of the button while a title is generating', async () => {
@@ -621,7 +652,8 @@ describe('SessionTitleControl', () => {
   // (e) Closing the editor never leaves focus on document.body.
   const nextFrame = () => act(async () => { await new Promise(requestAnimationFrame) })
   // A real, single Enter press: keydown commits (the input blurs), then the
-  // key is released.
+  // key is released. It returns nothing, so awaiting it waits for nothing: wait
+  // for what the commit changes (the status text, the store) with waitFor/findBy.
   const pressEnter = (input: HTMLElement) => {
     act(() => { fireEvent.keyDown(input, { key: 'Enter' }) })
     act(() => { fireEvent.blur(input) })
@@ -828,17 +860,17 @@ describe('SessionTitleControl', () => {
     renderControl()
     let input = openEditor()
     act(() => { fireEvent.change(input, { target: { value: 'Beta' } }) })
-    await pressEnter(input)
+    pressEnter(input)
     await waitFor(() => expect(status().textContent).toBe('Session renamed to Beta'))
     input = openEditorFor('Beta')
     act(() => { fireEvent.change(input, { target: { value: 'Gamma' } }) })
-    await pressEnter(input)
+    pressEnter(input)
     await waitFor(() => expect(status().textContent).toBe('Session renamed to Gamma'))
     let released: (v: unknown) => void = () => {}
     vi.mocked(api.renameSlot).mockReturnValueOnce(new Promise((r) => { released = r }))
     input = openEditorFor('Gamma')
     act(() => { fireEvent.change(input, { target: { value: 'Beta' } }) })
-    await pressEnter(input)
+    pressEnter(input)
     // Emptied while the write is in flight, so the confirmation is a change.
     await waitFor(() => expect(status().textContent).toBe(''))
     await act(async () => { released({}) })

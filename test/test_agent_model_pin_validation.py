@@ -338,7 +338,12 @@ class TestNoRedundantConfigLoad:
 
         assert _model_rejected_reason(key, ACP_BACKEND_CLAUDE) is None
         reason = _model_rejected_reason(key, ACP_BACKEND_CODEX)
-        assert reason is not None and ACP_BACKEND_CODEX in reason
+        # The harness by its readable name, the one the dashboard shows.
+        assert reason is not None and "the OpenAI Codex harness does not accept" in reason
+        assert _model_rejected_reason(key, "") == (
+            f"{key!r} is a display-only model identifier the Kiro CLI harness "
+            "does not accept; select a listed model or 'auto'."
+        )
 
     def test_live_entitlements_preserve_the_registry_correction(self, monkeypatch):
         """A live advertised set must not replace the actionable spelling hint."""

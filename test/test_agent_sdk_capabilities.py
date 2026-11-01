@@ -362,11 +362,13 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
         "",
         "claude",
         "codex",
+        "copilot",
         "deepseek",
         "goose",
         "kas",
         "opencode",
         "pi",
+        "strands",
     ]
 
 
@@ -739,12 +741,18 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     from kiro_crew.agent_sdk.tool_gate import ENFORCED_ROUTINGS
     from kiro_crew.providers.mirrors.registry import MIRRORS, ProjectionKind, projection_for
 
+    # A fourth fact the three above assume: the harness asks about EVERY call, so
+    # ``_deny_zero_tools`` sees each one. Copilot CLI 1.0.100 reads a file inside the
+    # session's own directory without asking (measured, see the set's comment), so a
+    # total ban cannot be honoured there even though the three facts hold.
+    reads_unasked = {sdk_backends.ACP_BACKEND_COPILOT}
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
         routing = routing_for(backend)
         expected = routing is sdk_backends.Routing.AGENT_SPEC or (
             routing in ENFORCED_ROUTINGS
             and (backend in MIRRORS or projection_for(backend).kind is ProjectionKind.BROKER_ONLY)
             and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
+            and backend not in reads_unasked
         )
         actual = backend in sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
         assert actual == expected, (
@@ -761,6 +769,7 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
         sdk_backends.ACP_BACKEND_GOOSE,
         sdk_backends.ACP_BACKEND_DEEPSEEK,
         sdk_backends.ACP_BACKEND_PI,
+        sdk_backends.ACP_BACKEND_STRANDS,
     }
 
 
@@ -772,7 +781,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     ``AcpWorker`` constructs its ``AcpClient`` with ``acp_backend=``, and
     ``llm_pool._get_acp_backend`` restricts the value to whatever answers both
     ``honors_zero_tool_ban`` and ``acp_client_spawnable`` True -- today
-    kiro/opencode/goose/deepseek/pi. claude is NOT a member: its routing
+    kiro/opencode/goose/deepseek/pi/strands. claude is NOT a member: its routing
     (``Routing.SEEDED_SETTINGS``) is declared but not enforced by this core, so
     an inherited ``~/.claude`` pre-approval can skip the permission request the
     refusal needs to run. Asking the EFFORT capabilities rather than the identity
@@ -788,6 +797,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         ACP_BACKEND_KIRO,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_STRANDS,
         ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
         ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     )
@@ -811,6 +821,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
+        ACP_BACKEND_STRANDS,
     }, (
         "the set of backends this pool trusts changed -- decide the effort "
         "channel for whichever member is new or missing deliberately, then "
@@ -827,6 +838,10 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     # pi carries effort as its ``thought_level`` config option.
     assert capabilities_for(ACP_BACKEND_PI).effort_via_config_option is True
     assert capabilities_for(ACP_BACKEND_PI).effort_via_slash_command is False
+    # Strands takes its model at launch and carries no effort channel at all, so the
+    # pool sends it none: neither the config option nor a slash command.
+    assert capabilities_for(ACP_BACKEND_STRANDS).effort_via_config_option is False
+    assert capabilities_for(ACP_BACKEND_STRANDS).effort_via_slash_command is False
 
 
 def test_effort_via_slash_command_membership_is_the_command_verb_set() -> None:

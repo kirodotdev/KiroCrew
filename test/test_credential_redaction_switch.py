@@ -1,7 +1,6 @@
 """The owner's credential-redaction switch (``security.redaction_switch``).
 
-Credential-shaped material is SYNTHESIZED at runtime, for the reason
-``test_file_delivery_consent.py`` gives: a diff carrying a working token string
+Credential-shaped material is SYNTHESIZED at runtime: a diff carrying a working token string
 reads as an exfiltration recipe to a review provider, while the scanner sees the
 same bytes either way.
 """
@@ -303,7 +302,7 @@ class TestSwitchedOffOutsideOwnerView:
         assert "owner_view" not in watch
 
     def test_file_admission_gates_use_the_unconditional_pass(self):
-        """The outbox flagged-file check and the upload gates decide whether a
+        """The non-owner outbox check and the upload gates decide whether a
         file may LEAVE; they are not owner-view renders."""
         import inspect
 

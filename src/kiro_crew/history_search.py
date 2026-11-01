@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew import _facade_mirror
+from kiro_crew import _facade_mirror, history_listing_memo
 from kiro_crew._sqlite_compat import is_cjk_char, script_runs  # noqa: F401 - facade re-exports
 from kiro_crew.history_cache import _GroupRecencyMemo
 from kiro_crew.history_index import (
@@ -125,6 +125,7 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     tiered_first_hit,
 )
 from kiro_crew.jsonl_util import bounded_records
+from kiro_crew.shared_crew.attribution import public_attribution_from_meta
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
@@ -199,6 +200,20 @@ def _jsonl_stem(name: str) -> str:
 _unreadable_session_files_warned: set[str] = set()
 #: Listings run on executor threads, so the check and the add share one lock.
 _unreadable_session_files_lock = threading.Lock()
+
+
+#: The metadata-line fields a catalog row carries so a reader can tell a Crew Mode
+#: root from a crew member without opening the file: the creator stamp, the agent's
+#: namespace and the Crew Mode stamp (``crew_mode.saved_row_is_root``).
+_CREW_CATALOG_FIELDS: tuple[str, ...] = ("created_by", "agent_kind", "crew_mode_agent")
+
+
+def _project_crew_fields(meta: dict, line: dict) -> None:
+    """Copy the non-empty :data:`_CREW_CATALOG_FIELDS` of metadata *line* onto catalog row *meta*."""
+    for field in _CREW_CATALOG_FIELDS:
+        value = line.get(field)
+        if isinstance(value, str) and value:
+            meta[field] = value
 
 
 def _warn_unreadable_session_file(path: str, error: OSError) -> None:
@@ -344,11 +359,19 @@ class SessionCatalogProjection:
         """
         sessions: list[dict] = []
         try:
-            self._log._dir.stat()
+            dir_stat = self._log._dir.stat()
         except FileNotFoundError:
             return sessions, True
         except OSError:
             return sessions, False
+        memo_dir = os.fspath(self._log._dir)
+        memo_key = (dir_stat.st_mtime_ns, self._log._dir_write_epoch())
+        if keys is None:
+            memoized = history_listing_memo.lookup(memo_dir, memo_key)
+            if memoized is not None:
+                return memoized, True
+        built_at = history_listing_memo.clock()
+        reusable = True
         complete = True
         # Deduplicate stacked dashboard_ prefixes by canonical key, keeping newer
         by_canon: dict[str, dict] = {}
@@ -420,6 +443,8 @@ class SessionCatalogProjection:
                 meta["memory_mode"] = d.get("memory_mode", "persistent")
                 if d.get("folder_id"):
                     meta["folder_id"] = d["folder_id"]
+                _project_crew_fields(meta, d)
+                meta["attribution"] = public_attribution_from_meta(d, key=key)
             else:
                 # Read only the first line for metadata
                 try:
@@ -437,6 +462,8 @@ class SessionCatalogProjection:
                             meta["memory_mode"] = d.get("memory_mode", "persistent")
                             if d.get("folder_id"):
                                 meta["folder_id"] = d["folder_id"]
+                            _project_crew_fields(meta, d)
+                            meta["attribution"] = public_attribution_from_meta(d, key=key)
                             # Guarded publish — discard the fill if a write
                             # invalidated this key inside the stat → read
                             # window (see the generation snapshot above).
@@ -460,9 +487,13 @@ class SessionCatalogProjection:
                                 gen=gen,
                             )
                 except Exception:
-                    pass
+                    reusable = False
             # Ensure memory_mode is always present (old sessions lack it)
             meta.setdefault("memory_mode", "persistent")
+            # A session with no readable metadata line predates attribution: it reads
+            # as the owner's, unless its key is a messaging channel's (Unattributed).
+            if "attribution" not in meta:
+                meta["attribution"] = public_attribution_from_meta(None, key=key)
             # Extract first user message as title fallback
             if "title" not in meta:
                 msg_cached = self._log._msg_cache.get(key)
@@ -486,7 +517,10 @@ class SessionCatalogProjection:
                             meta["title"] = scanned[2]
                     else:
                         found = self._scan_head_title(path)
-                        if found is not _UNREADABLE:
+                        if found is _UNREADABLE:
+                            # A failed head read is retried on the next listing.
+                            reusable = False
+                        else:
                             if found is not None:
                                 meta["title"] = found
                             # Guarded like the metadata fill above.
@@ -506,6 +540,9 @@ class SessionCatalogProjection:
                 by_canon[canon] = meta
         sessions = list(by_canon.values())
         sessions.sort(key=lambda s: s.get("modified", 0), reverse=True)
+        # Only a complete listing that no in-process write raced is reusable.
+        if keys is None and complete and reusable and self._log._dir_write_epoch() == memo_key[1]:
+            history_listing_memo.store(memo_dir, memo_key, built_at, sessions)
         return sessions, complete
 
     def agent_usage(self) -> dict[str, tuple[int, float]]:

@@ -114,8 +114,7 @@ SERVICE_LABELS: dict[str, str] = {
 #: forge it; what it could do is block the owner's REVOKE, leaving consent active
 #: for subsequent billable calls. A consent mechanism whose withdrawal can be
 #: denied by the party the consent constrains is defective in its central
-#: promise, so there is no lock file to hold. Same treatment, and the same
-#: reasoning, as ``file_delivery_consent._STORE_LOCK``.
+#: promise, so there is no lock file to hold.
 #:
 #: One writing PROCESS is what makes this sufficient. Every writer of this store
 #: runs in the gateway process, on its ``asyncio.to_thread`` pool: the
@@ -495,13 +494,12 @@ async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, s
     # surfaces, where it only coalesces repeated panel renders.
     identity = await probe_identity(profile, region, use_cache=False)
     if not identity.ok or not identity.account:
-        # Fail CLOSED. An earlier revision allowed this so a transient STS fault
-        # would not stop voice output, but that let a repointed profile bill an
-        # unconfirmed account, and on a host with boto3 but no `aws` CLI it meant
-        # the account was never verified at all. Denying costs little: a grant
-        # can only exist where the probe once succeeded, because the confirmation
-        # refuses to record without a resolved account -- so this withholds a
-        # paid call during an outage rather than breaking a working setup.
+        # Fail CLOSED. Allowing this so a transient STS fault does not stop voice
+        # output would let a repointed profile bill an unconfirmed account, and on
+        # a host with boto3 but no `aws` CLI the account would never be verified.
+        # Denying costs little: a grant can only exist where the probe once succeeded,
+        # because the confirmation refuses to record without a resolved account -- so this
+        # withholds a paid call during an outage rather than breaking a working setup.
         return False, (
             f"{label} was confirmed for AWS account {grant.account}, but that "
             f"account could not be re-checked just now, so nothing was sent to "

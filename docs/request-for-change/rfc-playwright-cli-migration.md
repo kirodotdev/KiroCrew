@@ -26,6 +26,13 @@ the defects it retires.
 > `dashboard/handlers/messaging.py` imports the command bus, and
 > `test_browser_command_bus.py` pins it. Read the deletion table as a proposal that
 > was not carried out, not as a record of what shipped.
+>
+> **Replacement proposed.**
+> [`rfc-browser-live-harness.md`](rfc-browser-live-harness.md) (`draft`)
+> proposes removing `playwright-cli` and the native-panel command bus outright
+> and replacing them with Browser Harness behind a gateway CDP relay. This
+> document stays `partial` while `playwright-cli` is what main runs; the PR that
+> removes it sets this document to `superseded` and fills `superseded-by`.
 
 ## Why
 

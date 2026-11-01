@@ -821,16 +821,17 @@ class TestDispatchSubagentEvents:
 
     @pytest.mark.asyncio
     async def test_a_long_roster_leaves_the_client_remembering_no_child_id(self):
-        """``AcpClient`` is a PASSTHROUGH for the native-child roster: it yields
-        the full list and retains nothing.
+        """``AcpClient`` is a PASSTHROUGH for kiro-cli's native-child roster: it
+        yields the full list and retains nothing.
 
         The roster cap (``NATIVE_CHILD_ROSTER_CAP``) binds every store that
         REMEMBERS child ids -- the parent handle's counted set, its KAS display
-        roster, and ``AcpRuntime``'s routing recognition set. This asserts the
-        client is not a fourth such store, so the class is closed at three: a
-        store added here would need the same cap, the same overflow count and
-        the same answer for a child past it, and one that arrives without them
-        is the one-of-N shape that makes a cap decision partial.
+        roster, ``AcpRuntime``'s routing recognition set, and this client's
+        Claude child set, which takes the same cap, the same overflow count and
+        the same answer for a child past it
+        (``test_children_past_the_cap_are_counted_and_get_no_row``). This asserts
+        a kiro-cli roster fills none of them here: a store that arrives without
+        the cap is the one-of-N shape that makes a cap decision partial.
         """
         from kiro_crew.acp.types import EVENT_SUBAGENT_LIST, JsonRpcMessage
 

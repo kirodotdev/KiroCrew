@@ -11,8 +11,8 @@ filesystem remains untouched — the broker stubs in these specs are injected
 into each kiro-cli session over ACP ``session/new``, which outranks the
 same-named entry in the agent spec (see ``session_servers.py``).
 
-Servers in :data:`UNPOOLABLE_SERVERS` are left unwrapped. The set is empty, so
-nothing is excluded through it; the first-party servers that bind
+Servers in :data:`UNPOOLABLE_SERVERS` are left unwrapped. The set lists only
+the credential vendors; the first-party servers that bind
 ``KIROCREW_SESSION_KEY`` stay unwrapped only because nothing lists them in the
 stub allowlist.
 
@@ -115,7 +115,10 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # 10: an agent whose spec sets ``includeMcpJson: false`` gets no injected
 # settings stubs. Its inputs are unchanged, so a kept overlay would keep
 # mounting the excluded servers at ``session/new``.
-_FINGERPRINT_SCHEMA = 10
+# 11: credential vendors joined ``UNPOOLABLE_SERVERS``. The denylist is not a
+# fingerprint input, so a kept overlay from before would keep the vendor's stub
+# and its backend would keep running outside every chat sandbox.
+_FINGERPRINT_SCHEMA = 11
 
 # The fingerprint inputs of the latest pass into each overlay directory, kept so
 # a caller can read the settings a pass was built from without a second scan.
@@ -1238,7 +1241,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     # The names the unsplit module imported from the rest of kiro_crew and that only
     # an owner reads now, from their home modules.
     from kiro_crew.config.paths import config_dir  # noqa: F401
-    from kiro_crew.env import spec_path_key  # noqa: F401
+    from kiro_crew.env import saved_command_casing, spec_path_key  # noqa: F401
     from kiro_crew.mcp_cleanup import (  # noqa: F401
         KIROCREW_BIN_MCP_SERVERS,
         mcp_entry_is_muted,
@@ -1306,6 +1309,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _admit_launch,
         _build_stub_entry,
         _hashable_args,
+        is_unpoolable,
     )
     from kiro_crew.mcp_gateway.secret_uri import (  # noqa: F401
         routed_for_secret_reference,

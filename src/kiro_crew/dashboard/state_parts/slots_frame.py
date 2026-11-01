@@ -375,6 +375,7 @@ def _slots_ws_frame(
     folders: object,
     folders_gen: object,
     governance_gen: object,
+    tags_gen: object = None,
     slots_partial: bool = False,
     slots_held_keys: object = (),
     slots_hold_channels: bool = False,
@@ -414,6 +415,10 @@ def _slots_ws_frame(
         # (``social_share_enabled``) follows the ceiling instead of waiting out
         # its stale window. Process-local, like the two counters above.
         "governanceGeneration": governance_gen,
+        # The tag vocabulary / board columns' change signal, the folder
+        # generation's twin: the client invalidates ``['chat-tags']``
+        # and ``['tag-columns']`` when it moves.
+        "tagsGeneration": tags_gen,
     }
     if slots_partial:
         frame["slotsPartial"] = True
@@ -867,9 +872,11 @@ def serialize_slots(
 
     under_construction = getattr(self, "_slots_under_construction", None) or ()
     queued_by_slot = _published_queued_by_slot(subs)
+    saved_creators: dict[str, str] = {}
     for s in self._slots.values():
         if s.key in under_construction:
             continue
+        saved_creators[s.key] = getattr(s, "_saved_created_by", "") or ""
         self._drop_orphaned_mcp_report(s)
         d = self.serialize_slot(
             s,
@@ -886,7 +893,55 @@ def serialize_slots(
     # the nesting and must cost the nesting rather than the whole sidebar.
     # ``getattr`` because a stub state in the suite may not carry the method at all.
     _attach_slot_parents(out, getattr(self, "spend_slot_by_session", None))
+    # After the parents, which the worker walk reads: every row says whether it is a
+    # Crew Mode root, and each session a root dispatched names that root, so the
+    # person's own list can leave workers out and the side panel can list them.
+    from kiro_crew import crew_mode
+
+    try:
+        crew_mode.stamp_rows(
+            out, settled=crew_mode.lineage_is_settled(), saved_creators=saved_creators
+        )
+    except Exception:  # pragma: no cover - a stamp fault must cost the stamp only
+        logger.warning("Crew Mode rows not stamped", exc_info=True)
+    try:
+        _attach_crew_work(self, out)
+    except Exception:  # pragma: no cover - a summary fault must cost the summary only
+        logger.warning("Crew Mode work summaries not attached", exc_info=True)
     return out
+
+
+def _attach_crew_work(self: DashboardState, rows: list[dict]) -> None:
+    """Put each Crew Mode root's open-work summary on its row (``crew_work``).
+
+    Each live root's board is followed (its ``work`` fold kept current, and primed
+    once when nothing is held yet), so a restart does not leave its row on the old
+    reading until its ledger next moves; a root that left the frame is released.
+    The summary reads the held items against this frame's live slots. No I/O.
+    """
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard import crew_work
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.session_ledger_layout import ledger_key
+
+    roots: list[str] = []
+    for row in rows:
+        key = row.get("key")
+        if not isinstance(key, str) or not row.get(crew_mode.ROOT_FIELD):
+            continue
+        slot = self._slots.get(key)
+        if slot is None:
+            continue
+        roots.append(key)
+        # The ledger spelling of the session key first: the identity the board's
+        # entries are recorded under, and the one primed (``chat-7`` for a dashboard
+        # slot, the channel key for a channel one). The raw key is followed too.
+        session_key = effective_session_key(slot)
+        crew_work.follow(key, (ledger_key(session_key), session_key, key))
+        summary = crew_work.summary_for_state(key, self)
+        if summary is not None:
+            row[crew_work.CREW_WORK_FIELD] = summary
+    crew_work.retain(roots)
 
 
 def serialize_slot_views(

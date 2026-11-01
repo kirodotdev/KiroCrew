@@ -37,7 +37,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type ComponentType } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { renderWithProviders, createTestStore } from './helpers'
 import { useAppSelector } from '../store'
@@ -185,7 +185,7 @@ async function openSurfaceOnActiveSession(surface: Surface, field: Field, opts: 
   } else {
     // The mount-time autofocus is not the thing under test: start from "focus
     // somewhere else", as a user who clicked into the transcript would.
-    composer.blur()
+    act(() => { composer.blur() })
     expect(composer).not.toHaveFocus()
   }
 
@@ -340,9 +340,11 @@ describe('opening a session from the Command Bar focuses the composer (#15732)',
     typeWhereFocusIs('lost if routed')
     // The session was deleted between the two reads: the live one 404s and the
     // selection unwinds to the origin.
-    reads[1].refuse404()
-    await newer
+    await act(async () => { reads[1].refuse404(); await newer })
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(ACTIVE))
+    // The unwind is a slot-key transition back to the origin, so the composer's
+    // autofocus takes it on a frame: wait for that instead of racing it.
+    await waitFor(() => expect(composer).toHaveFocus())
     await settleFrames()
     expect(drafts[OTHER] ?? '').toBe('')
     expect(composer).toHaveValue('')
@@ -358,9 +360,9 @@ describe('opening a session from the Command Bar focuses the composer (#15732)',
     // A sidebar click back to the origin while the first switch is still out: its
     // own switch lands at once and the composer's autofocus takes the transition;
     // then the user clicks into the transcript.
-    await store.dispatch(switchSlot({ key: ACTIVE, announceOnMissing: true }))
-    await settleFrames()
-    composer.blur()
+    await act(async () => { await store.dispatch(switchSlot({ key: ACTIVE, announceOnMissing: true })) })
+    await waitFor(() => expect(composer).toHaveFocus())
+    act(() => { composer.blur() })
     expect(composer).not.toHaveFocus()
     // The first switch lands late, for a slot that is not the active one: the
     // fulfilled reducer ignores it, and so does the focus.

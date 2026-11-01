@@ -8,7 +8,7 @@
  * tool rows do; the banner's own default (on) is what every other host keeps.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, within } from '@testing-library/react'
 import React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ChatMessage } from '../types'
@@ -31,6 +31,9 @@ const FAILED_SIGN_IN: ChatMessage = {
   ts: '1',
   meta: { server_name: 'zzq-server', failed: true, error: 'token exchange refused' },
 }
+
+/** The shipped English next step for a failed sign-in with the hand-off off. */
+const NEXT_STEP = 'To sign in again, open Customize → Connections → MCP Servers.'
 
 let queryClient: QueryClient
 
@@ -78,9 +81,42 @@ describe('ChatEmbed failed MCP sign-in row', () => {
     expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
   })
 
+  it('names where to sign in again inside the embed, as text rather than a control', async () => {
+    await act(async () => {
+      render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          <ChatEmbed slotKey="slot-1" />,
+        ),
+      )
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await settleUntil(() => screen.queryByText(/token exchange refused/) !== null)
+
+    const notice = screen.getByRole('alert')
+    expect(notice).toHaveTextContent(NEXT_STEP)
+    // The next step must not itself navigate away from the draft.
+    expect(within(notice).queryByRole('link')).toBeNull()
+    expect(within(notice).queryByRole('button')).toBeNull()
+  })
+
+  it('gives the same next step to every host that turns the hand-off off (ChatPane)', () => {
+    // ChatPane mounts its list with `handOff={false}`; the registry hands that
+    // to this renderer as its third argument.
+    render(<>{renderMcpOAuthMessage(FAILED_SIGN_IN, false, false)}</>)
+    const notice = screen.getByRole('alert')
+    expect(notice).toHaveTextContent(/authentication failed: token exchange refused/i)
+    expect(notice).toHaveTextContent(NEXT_STEP)
+    expect(within(notice).queryByRole('link')).toBeNull()
+    expect(within(notice).queryByRole('button')).toBeNull()
+  })
+
   it('keeps the hand-off on the failed banner for a host that leaves it on', () => {
     render(<>{renderMcpOAuthMessage(FAILED_SIGN_IN)}</>)
     expect(screen.getByText(/authentication failed: token exchange refused/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    // The chat page is unchanged: the hand-off is its next step, so no extra line.
+    expect(screen.queryByText(NEXT_STEP)).toBeNull()
   })
 })

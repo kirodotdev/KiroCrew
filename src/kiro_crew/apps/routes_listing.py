@@ -283,8 +283,12 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
     # fail-closed CPP, same as every other publish surface.
     deploy_denied = None
     if admits_cloud:
+        # The core row's endpoint is ``/api/deploy/deploy``, which checks the
+        # publish lists itself.
         deploy_denied = await asyncio.to_thread(
-            lambda: publish_denied_reason(request, DEPLOY_WEB_PROVIDER_ID)
+            lambda: publish_denied_reason(
+                request, DEPLOY_WEB_PROVIDER_ID, lists_checked_by_caller=True
+            )
         )
 
     if not admits_cloud or deploy_denied:
@@ -306,6 +310,14 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
                 "providers": [p for p in providers if p.get("id") != DEPLOY_WEB_PROVIDER_ID],
             }
         )
+    # An app row under the core id publishes at the app's own endpoint, which does
+    # not check the publish lists, so it is dropped whenever they restrict.
+    if any(p.get("id") == DEPLOY_WEB_PROVIDER_ID for p in providers):
+        squat_denied = await asyncio.to_thread(
+            lambda: publish_denied_reason(request, DEPLOY_WEB_PROVIDER_ID)
+        )
+        if squat_denied:
+            providers = [p for p in providers if p.get("id") != DEPLOY_WEB_PROVIDER_ID]
     try:
         from kiro_crew.deploy import profiles as _deploy_profiles
 

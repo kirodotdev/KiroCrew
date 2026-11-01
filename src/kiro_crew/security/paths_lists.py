@@ -408,6 +408,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``sandbox._CREW_READONLY_LEAVES``, which this entry does not touch: the
     # reader it fences is the AGENT'S OWN FILE TOOLS.
     "member-memory-bindings",
+    "template-mcp-additions",  # approved MCP entries' env/headers; as the bindings above
     "security_events.jsonl",
     # Rotated SEL segments. sel_rotation.py closes the live log at a size cap and renames
     # it into this directory, so a segment holds exactly the same audit records
@@ -509,6 +510,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # is ``sandbox._CREW_HIDDEN_LEAVES``. Deliberately NOT under ``trust/``,
     # which stays sandbox read-write for SEL. Only the gateway opens it.
     "panel-dismissals",
+    # Pending deletes of released engine records (``released_sessions``); also masked.
+    "released-sessions",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),
@@ -626,18 +629,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``/api/decisions/consent`` handler is the only writer and opens the path
     # directly, not through this gate.
     "decisions_consent.json",
-    # Recorded consent to deliver a file whose contents the credential scanner
-    # flagged. Same class of control as ``aws_service_consent.json`` above: the
-    # record is what AUTHORIZES a flagged file past four independent content
-    # gates, so an agent that could write it would consent on the owner's behalf
-    # to shipping the owner's secrets. Reading it is fenced too -- the file says
-    # which delivery destinations the owner has already blessed, which tells an
-    # agent where a flagged file would land unrefused, and that is reconnaissance
-    # it should not get for free from the shared gate. The authenticated,
-    # owner-gated dashboard ``/api/file-delivery/consent`` handler is the ONLY
-    # writer and opens the path directly, not through this gate, so it keeps
-    # working; there is deliberately no CLI verb to fence.
-    "file_delivery_consent.json",
+    # The owner's Shared Crew preview switch. The record is what AUTHORIZES the
+    # Crew to open to other people on the next start, so an agent that could
+    # write it would share the owner's machine on the owner's behalf. The
+    # owner-only ``/api/shared-crew/preview`` handler is the only writer and
+    # opens the path directly, not through this gate.
+    "shared_crew_preview.json",
     "ssh_auth_sock_consent.json",
     # The owner's credential-redaction switch. Same class of control as the
     # consent records above: the record is what AUTHORIZES the credential scrubber
@@ -649,20 +646,6 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``/api/security/credential-redaction`` handler is the only writer and opens
     # the path directly, not through this gate.
     "credential_redaction.json",
-    # The single-use step-up nonce that authorizes RECORDING a flagged-file
-    # delivery grant. A whole DIRECTORY, not a leaf file, because arming writes a
-    # sibling ``.tmp`` and renames it into place. It lives in its OWN top-level
-    # leaf rather than under ``trust/`` on purpose: ``trust/`` is sandbox-VISIBLE
-    # (it holds SEL append targets an in-sandbox MCP server writes), so a
-    # prompt-injected agent could FORGE a nonce there with a runtime-constructed
-    # shell path (the acknowledged evadable tier) and then drive the owner's
-    # loopback browser to POST that chosen nonce -- recording a grant with no
-    # human present. This leaf has NO in-sandbox reader (the gateway writes it on
-    # arm, the host ``kirocrew file-delivery approve`` reads it), so it is also
-    # bind-masked in ``sandbox._CREW_HIDDEN_LEAVES``; masking is what actually
-    # closes the forge path, since the text/argv file gate alone does not stop a
-    # runtime-constructed shell write.
-    "file-delivery-consent-pending",
     "token_signing.key",
     "refresh_chains.json",
     # The staging directory the two leaves above publish through. Both are masked as
@@ -686,6 +669,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens these paths directly rather than through this gate, so publishing keeps
     # working.
     "auth-store-staging",
+    # Mediated-secret owner-signed egress policy: writable, it would let an agent try
+    # to authorize its own origin. Only the gateway and owner CLI open it, directly.
+    "secret-request-policy",
     ".local_secret",
     # Durable channel transport state: Teams' conversation -> serviceUrl and
     # identity -> conversation maps, and Telegram's getUpdates cursor. Two shapes of
@@ -763,6 +749,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # the launcher and read the sealed extension. This floor still keeps the agent's
     # own file tools out; the controls cover different readers rather than cancelling.
     "pi-gate",
+    # KAS MCP launch snapshots hold servers' env values (``acp.kas_env_launch``); the
+    # ``pi-gate`` split: readable in the sandbox for the launcher, fenced from file tools.
+    "kas-mcp-launch",
     # Encrypted secret vault directory — denylists the entire subdirectory so
     # the key file, ciphertext store, lock, and atomic-write temp files are all
     # unreadable to the agent through any Kiro Crew-mediated channel.
@@ -1296,6 +1285,15 @@ _WRITE_PROTECTED_HOME_PATHS += [_KIRO_AGENTS_DIR]
 # specs in the agents-dir format, fenced like it. Only gateway handlers write it, directly.
 _KIRO_MATE_AGENTS_DIR = ".kiro/mates/agents"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_MATE_AGENTS_DIR]
+# Its siblings: who owns each crewmate file, revoked approvals, the tool-access
+# record and the migration ledger. Only gateway handlers write them.
+_KIRO_MATE_STATE_LEAVES: tuple[str, ...] = (
+    ".kiro/mates/owners.json",
+    ".kiro/mates/revoked-approvals.json",
+    ".kiro/mates/tool-access.json",
+    ".kiro/mates/migrated.json",
+)
+_WRITE_PROTECTED_HOME_PATHS += list(_KIRO_MATE_STATE_LEAVES)
 
 
 # ── kiro-cli global MCP registry (~/.kiro/settings/mcp.json) ──
@@ -1345,13 +1343,14 @@ _KIRO_CLI_WRITE_TIER_LEAVES: tuple[str, ...] = (
     _KIRO_AGENTS_DIR,
     _KIRO_SETTINGS_MCP_JSON,
     _KIRO_MATE_AGENTS_DIR,
+    *_KIRO_MATE_STATE_LEAVES,
 )
 
 
 # Other harnesses' own permission files: the same threat, anchored like the leaves above.
 _NATIVE_ALLOW_STORE_LEAVES: tuple[str, ...] = native_allow_stores.home_leaves()
 _WRITE_PROTECTED_HOME_PATHS += list(_NATIVE_ALLOW_STORE_LEAVES)
-_native_store_write = native_allow_stores.matches_store  # a project's claude settings
+_native_store_write = native_allow_stores.matches_store  # a project's own harness config
 
 _WRITE_PROTECTED_HOME_PATHS += [
     # Operator-authored panel templates (agent_panel.py). WRITE-protected rather

@@ -490,3 +490,353 @@ class TestToollessAgentSpecIsTheBoundary:
         agent_module._install_aim_capabilities()
         assert (tmp_path / agent_module._GUEST_AGENT_FILENAME).is_file()
         assert (tmp_path / agent_module._LITE_AGENT_FILENAME).is_file()
+
+
+class TestToollessTurnReadsTheGuestSpecOnDisk:
+    """The guest spec file, not only its template, decides whether a guest turn
+    runs. Another program can rewrite ``~/.kiro/agents/kirocrew-guest.json``, and a
+    tool it lists in ``allowedTools`` runs with no permission request, so the guard
+    reads the file before the spawn and again after it, and refuses the turn, with
+    an SEL row and a session reset, whenever either read finds anything mounted."""
+
+    _KEY = f"weixin:{D.TOOLLESS_TURN_AGENT}:direct:peerB"
+
+    @staticmethod
+    def _guest_path() -> Path:
+        from kiro_crew import agent as agent_module
+
+        agent_module.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+        agent_module._install_guest_agent()
+        return agent_module.kiro_agents_dir_path() / agent_module._GUEST_AGENT_FILENAME
+
+    @classmethod
+    def _tamper(cls, **changes: Any) -> None:
+        import json
+
+        path = cls._guest_path()
+        spec = json.loads(path.read_text())
+        spec.update(changes)
+        path.write_text(json.dumps(spec))
+
+    @classmethod
+    def _provider(cls) -> SimpleNamespace:
+        from kiro_crew.acp.client import AcpClient
+
+        client = AcpClient(
+            agent=D.TOOLLESS_TURN_AGENT, work_dir=D._toolless_turn_work_dir(cls._KEY)
+        )
+        client._native_skill_projection = None
+        return SimpleNamespace(client=client)
+
+    class _Sessions:
+        def __init__(self) -> None:
+            self.resets: list[str] = []
+
+        def get_agent(self, _key: str) -> str:
+            return D.TOOLLESS_TURN_AGENT
+
+        async def reset(self, key: str) -> None:
+            self.resets.append(key)
+
+    @staticmethod
+    def _sel_rows(monkeypatch) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        sink = SimpleNamespace(log_api_access=lambda **kw: rows.append(kw))
+        monkeypatch.setattr(D, "sel", lambda: sink)
+        return rows
+
+    def _guard(self, sessions: Any, *, before: bool) -> None:
+        asyncio.run(
+            D._refuse_unless_toolless(
+                sessions, self._KEY, self._provider(), authored_before_spawn=before
+            )
+        )
+
+    def _assert_refused(self, sessions: Any, rows: list[dict[str, Any]], before: bool) -> None:
+        import pytest
+
+        with pytest.raises(D.ToollessTurnUnavailable):
+            self._guard(sessions, before=before)
+        assert [r["outcome"] for r in rows] == ["denied"]
+        assert "not tool-less" in rows[0]["resources"]
+        assert sessions.resets == [self._KEY], "the process that loaded the spec is reset"
+
+    def test_the_template_spec_runs_the_turn(self, monkeypatch) -> None:
+        rows = self._sel_rows(monkeypatch)
+        self._guest_path()
+        sessions = self._Sessions()
+        assert D._toolless_spec_before_spawn(self._KEY) is True
+        self._guard(sessions, before=True)
+        assert rows == [] and sessions.resets == []
+
+    def test_a_creds_server_granted_in_tools_and_allowed_tools_refuses(self, monkeypatch) -> None:
+        rows = self._sel_rows(monkeypatch)
+        self._tamper(
+            tools=["@creds-agent"],
+            allowedTools=["@creds-agent"],
+            mcpServers={"creds-agent": {"command": "creds", "args": ["serve"]}},
+        )
+        self._assert_refused(self._Sessions(), rows, before=True)
+
+    def test_an_mcp_server_alone_refuses(self, monkeypatch) -> None:
+        """``tools`` still empty: the server is started all the same."""
+        rows = self._sel_rows(monkeypatch)
+        self._tamper(mcpServers={"creds-agent": {"command": "creds"}})
+        self._assert_refused(self._Sessions(), rows, before=True)
+
+    def test_include_mcp_json_true_refuses(self, monkeypatch) -> None:
+        rows = self._sel_rows(monkeypatch)
+        self._tamper(includeMcpJson=True)
+        self._assert_refused(self._Sessions(), rows, before=True)
+
+    def test_a_missing_include_mcp_json_refuses(self, monkeypatch) -> None:
+        """kiro-cli defaults it to True, so absent is not tool-less."""
+        import json
+
+        rows = self._sel_rows(monkeypatch)
+        path = self._guest_path()
+        spec = json.loads(path.read_text())
+        del spec["includeMcpJson"]
+        path.write_text(json.dumps(spec))
+        self._assert_refused(self._Sessions(), rows, before=True)
+
+    def test_a_hook_refuses(self, monkeypatch) -> None:
+        rows = self._sel_rows(monkeypatch)
+        self._tamper(hooks={"agentSpawn": [{"command": "echo hi"}]})
+        self._assert_refused(self._Sessions(), rows, before=True)
+
+    def test_a_failed_pre_spawn_read_refuses_before_any_session(self, monkeypatch) -> None:
+        import pytest
+
+        rows = self._sel_rows(monkeypatch)
+        self._tamper(mcpServers={"creds-agent": {"command": "creds"}})
+        before = D._toolless_spec_before_spawn(self._KEY)
+        with pytest.raises(D.ToollessTurnUnavailable):
+            D._refuse_before_spawn_unless_toolless(self._KEY, before)
+        assert [r["outcome"] for r in rows] == ["denied"]
+        assert "before spawn" in rows[0]["resources"]
+        D._refuse_before_spawn_unless_toolless(self._KEY, True)
+        assert len(rows) == 1
+
+    def test_include_powers_true_refuses(self, monkeypatch) -> None:
+        """KAS forwards ``includePowers``, which widens the visible tool set."""
+        rows = self._sel_rows(monkeypatch)
+        self._tamper(includePowers=True)
+        self._assert_refused(self._Sessions(), rows, before=True)
+
+    def test_an_allowed_tools_grant_alone_refuses(self, monkeypatch) -> None:
+        rows = self._sel_rows(monkeypatch)
+        self._tamper(allowedTools=["@creds-agent"])
+        self._assert_refused(self._Sessions(), rows, before=True)
+
+    def test_a_spec_rewritten_inside_the_spawn_window_refuses(self, monkeypatch) -> None:
+        """The pre-spawn read saw the template; the file was rewritten before the
+        harness read it, so the post-start read refuses."""
+        rows = self._sel_rows(monkeypatch)
+        self._guest_path()
+        before = D._toolless_spec_before_spawn(self._KEY)
+        assert before is True
+        self._tamper(tools=["@creds-agent"], allowedTools=["@creds-agent"])
+        self._assert_refused(self._Sessions(), rows, before=before)
+
+    def test_a_spec_tooled_before_the_spawn_and_restored_after_refuses(self, monkeypatch) -> None:
+        rows = self._sel_rows(monkeypatch)
+        self._tamper(tools=["@creds-agent"])
+        before = D._toolless_spec_before_spawn(self._KEY)
+        assert before is False
+        self._guest_path()  # restored to the template
+        self._assert_refused(self._Sessions(), rows, before=before)
+
+
+class TestBackgroundTurnRefusesATooledLiteSpec:
+    """A ``kirocrew-lite`` turn runs only on a spec that mounts nothing, on every
+    turn; otherwise the session is reset and released and the acquire fails, so
+    the caller reads it as nothing sent."""
+
+    @staticmethod
+    def _install_lite(monkeypatch) -> Path:
+        from kiro_crew import agent as agent_module
+        from kiro_crew.agent_materialization.service_agents import _install_lite_agent_fallback
+
+        monkeypatch.setattr(agent_module, "_background_agent_model", lambda: "auto")
+        monkeypatch.setattr(agent_module, "_background_cc_model", lambda: "auto")
+        monkeypatch.setattr(agent_module.agent_state, "set_cc_model", lambda *_a, **_k: None)
+        agent_module.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+        _install_lite_agent_fallback()
+        return agent_module.kiro_agents_dir_path() / agent_module._LITE_AGENT_FILENAME
+
+    class _Sessions:
+        def __init__(self, provider: Any, *, new: bool) -> None:
+            self.provider = provider
+            self.new = new
+            self.calls: list[str] = []
+
+        async def get_or_create(self, _key: str, **_kw: Any):
+            self.calls.append("get_or_create")
+            return self.provider, self.new, False
+
+        def get_agent(self, _key: str) -> str:
+            return "kirocrew-lite"
+
+        async def reset(self, _key: str, **_kw: Any) -> None:
+            self.calls.append("reset")
+
+        def release(self, _key: str) -> None:
+            self.calls.append("release")
+
+        async def recycle_background(self, **_kw: Any) -> None:
+            self.calls.append("recycle")
+
+    @staticmethod
+    def _provider() -> SimpleNamespace:
+        from kiro_crew.acp.client import AcpClient
+
+        client = AcpClient(agent="kirocrew-lite")
+        client._native_skill_projection = None
+        return SimpleNamespace(client=client, last_prompt_stats=None)
+
+    async def _run(self, sessions: Any) -> bool:
+        from unittest.mock import patch
+
+        from kiro_crew.llm_helpers import background_turn
+
+        with patch("kiro_crew.dashboard.handlers.usage.persist_token_record_async"):
+            async with background_turn(sessions, task="t", agent="kirocrew-lite"):
+                return True
+
+    def _tamper(self, monkeypatch, **changes: Any) -> None:
+        import json
+
+        path = self._install_lite(monkeypatch)
+        spec = json.loads(path.read_text())
+        spec.update(changes)
+        path.write_text(json.dumps(spec))
+
+    def test_the_template_spec_runs(self, monkeypatch) -> None:
+        self._install_lite(monkeypatch)
+        sessions = self._Sessions(self._provider(), new=True)
+        assert asyncio.run(self._run(sessions)) is True
+        assert "reset" not in sessions.calls
+
+    def test_a_tooled_spec_on_a_cold_start_is_refused(self, monkeypatch) -> None:
+        import pytest
+
+        self._tamper(
+            monkeypatch,
+            tools=["@creds-agent"],
+            allowedTools=["@creds-agent"],
+            mcpServers={"creds-agent": {"command": "creds"}},
+        )
+        sessions = self._Sessions(self._provider(), new=True)
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions))
+        assert sessions.calls == [], "refused before the session starts"
+
+    def test_a_tooled_spec_is_refused_when_the_session_reports_not_new(self, monkeypatch) -> None:
+        """``_ensure_background`` starts ``_bg`` and reports ``_new=False``; the
+        check must not lean on that flag."""
+        import pytest
+
+        self._tamper(monkeypatch, tools=["@creds-agent"], allowedTools=["@creds-agent"])
+        sessions = self._Sessions(self._provider(), new=False)
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions))
+        assert sessions.calls == [], "refused before the session starts"
+
+    def test_include_powers_on_the_lite_spec_is_refused(self, monkeypatch) -> None:
+        import pytest
+
+        self._tamper(monkeypatch, includePowers=True)
+        sessions = self._Sessions(self._provider(), new=True)
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions))
+
+    def test_a_lite_spec_the_reader_refuses_is_refused_before_start(self, monkeypatch) -> None:
+        """A hardlinked spec is refused by the hardened reader; the file still
+        exists for the harness, so it is refused before anything starts."""
+        import os
+
+        import pytest
+
+        path = self._install_lite(monkeypatch)
+        os.link(path, path.with_name("lite-hardlink.json.bak"))
+        sessions = self._Sessions(self._provider(), new=True)
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions))
+        assert sessions.calls == []
+
+    def test_two_specs_declaring_the_lite_name_are_refused_before_start(self, monkeypatch) -> None:
+        """No canonical file, two specs claiming the name: the reader answers for
+        neither, and the harness may load either, so nothing starts."""
+        import json
+
+        import pytest
+
+        from kiro_crew import agent as agent_module
+
+        agents = agent_module.kiro_agents_dir_path()
+        agents.mkdir(parents=True, exist_ok=True)
+        tooled = {
+            "name": "kirocrew-lite",
+            "tools": [],
+            "mcpServers": {"creds-agent": {"command": "creds"}},
+            "includeMcpJson": False,
+        }
+        (agents / "lite-a.json").write_text(json.dumps(tooled))
+        (agents / "lite-b.json").write_text(json.dumps(tooled))
+        sessions = self._Sessions(self._provider(), new=True)
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions))
+        assert sessions.calls == []
+
+    def test_a_missing_lite_spec_is_left_to_the_post_start_check(self) -> None:
+        from kiro_crew.agent_sdk.agent_specs import authored_spec_toolless_verdict
+
+        assert authored_spec_toolless_verdict("kirocrew-lite") is None
+
+    def test_a_cancellation_during_the_check_releases_the_permit(self, monkeypatch) -> None:
+        import pytest
+
+        from kiro_crew import llm_helpers
+
+        async def _cancelled(*_a: Any, **_k: Any) -> bool:
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(llm_helpers, "_lite_spec_unconfirmed", _cancelled)
+        self._install_lite(monkeypatch)
+        sessions = self._Sessions(self._provider(), new=True)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(self._run(sessions))
+        assert sessions.calls == ["get_or_create", "release"]
+
+    def test_an_mcp_server_alone_on_a_cold_start_is_refused(self, monkeypatch) -> None:
+        import pytest
+
+        self._tamper(monkeypatch, mcpServers={"creds-agent": {"command": "creds"}})
+        sessions = self._Sessions(self._provider(), new=True)
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions))
+        assert sessions.calls == [], "refused before the session starts"
+
+    def test_a_spec_rewritten_after_the_pre_spawn_read_is_refused_after_start(
+        self, monkeypatch
+    ) -> None:
+        """The pre-spawn read passed; the harness loaded a rewritten file, so the
+        read after the start refuses, resets and releases."""
+        import json
+
+        import pytest
+
+        path = self._install_lite(monkeypatch)
+        sessions = self._Sessions(self._provider(), new=True)
+        clean = json.loads(path.read_text())
+        original = sessions.get_or_create
+
+        async def _rewritten_during_spawn(key: str, **kw: Any):
+            path.write_text(json.dumps({**clean, "mcpServers": {"creds-agent": {"command": "x"}}}))
+            return await original(key, **kw)
+
+        sessions.get_or_create = _rewritten_during_spawn  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions))
+        assert sessions.calls == ["get_or_create", "reset", "release"]

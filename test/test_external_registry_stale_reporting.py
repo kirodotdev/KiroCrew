@@ -18,6 +18,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from apps_registry_helpers import _install_script_runs_on_this_host  # noqa: F401 - fixture
 from external_registry_helpers import _catalog_absent  # noqa: F401
 from external_registry_helpers import _explicit_registry_execution_admission  # noqa: F401
 
@@ -276,7 +277,7 @@ class TestInstallFailureReportsStaleCheckout:
 
     @pytest.mark.asyncio
     async def test_traversing_subdirectory_restores_moved_aside_checkout(self, tmp_path):
-        """Self-review finding: a traversing ``subdirectory`` refused AFTER a
+        """A traversing ``subdirectory`` refused AFTER a
         successful branch-mismatch move-aside + clone + build must restore the
         moved-aside checkout, not strand it.
 

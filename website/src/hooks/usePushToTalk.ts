@@ -84,7 +84,12 @@ type Phase = PttPhase
 type KeyOwner = 'gesture' | 'latch'
 
 export interface UsePushToTalkOpts {
-  /** Disable entirely (e.g. STT off, or a modal owns the keyboard). */
+  /**
+   * Stop the key from starting capture (e.g. STT off, or a modal owns the
+   * keyboard). Turning it on mid-press ends that press at once: a hold
+   * commits, a press still arming is discarded. A press that ENDS a latched
+   * capture still works, so disabling never strands an open mic.
+   */
   disabled?: boolean
   /**
    * Accept Shift plus the binding as the press that stops a running capture
@@ -103,6 +108,19 @@ export interface UsePushToTalkOpts {
 function isTerminalTarget(target: EventTarget | null): boolean {
   const el = target as Element | null
   return !!el && typeof el.closest === 'function' && !!el.closest('.xterm')
+}
+
+/** An open modal dialog (ARIA-marked, or a Radix dialog in its open state)
+ *  owns the keyboard, so the key may not START a capture under it. No composer
+ *  that owns the binding lives inside a dialog, so any open one blocks. A Radix
+ *  Popover also renders `role="dialog"` + `data-state="open"`, but it is
+ *  non-modal and sits in a popper wrapper, so it does not count. */
+function hasBlockingOverlay(): boolean {
+  if (document.querySelector('[aria-modal="true"]')) return true
+  for (const el of document.querySelectorAll('[role="dialog"][data-state="open"]')) {
+    if (!el.closest('[data-radix-popper-content-wrapper]')) return true
+  }
+  return false
 }
 
 export function usePushToTalk(voice: VoiceControls, { disabled, shiftDraftStop = false }: UsePushToTalkOpts = {}) {
@@ -248,12 +266,36 @@ export function usePushToTalk(voice: VoiceControls, { disabled, shiftDraftStop =
   }, [clearTimers, session, setPhase])
   coreSeamsRef.current.disarm = disarm
 
+  // Losing the binding mid-press ends the press here and now, the way a lost
+  // window focus does: a hold commits what was said (never sent, since the
+  // person did not choose to finish) and a press still arming is discarded.
+  // The common case is split view moving the binding to another pane while
+  // the key is down; waiting for the key-up would leave this composer
+  // recording while the person is looking at a different chat. A latch is
+  // not a press in progress, so it keeps running and the key still stops it
+  // (see the `disabled` guard in the keydown handler).
+  useEffect(() => {
+    if (disabled && phaseRef.current !== 'idle') disarm(true)
+  }, [disabled, disarm])
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (disabledRef.current) return
+      // While disabled the key never ARMS a gesture, but it can still END one:
+      // a press that stops a running capture (idle phase, capturing) or the
+      // reconciliation of an armed/held press (non-idle phase). Without this a
+      // latch that was running when the host disabled the hook had no key left
+      // to stop it, and the mic kept recording into a chat the user could not
+      // see. Every path below that would start capture requires an idle phase
+      // with nothing capturing, which this guard still turns away.
+      if (disabledRef.current) {
+        const endable = phaseRef.current !== 'idle'
+          || voiceRef.current.recording
+          || (session.startPending() && session.owner() !== null)
+        if (!endable) return
+      }
       // The user turned the key trigger off in Settings: the mic button is the
-      // only way in, so no keystroke arms or reconciles. Same early-out as the
-      // parent `disabled` opt above — a disabled key is a key that does nothing.
+      // only way in, so no keystroke arms or reconciles. Unlike the `disabled`
+      // opt above, this one turns the key off entirely.
       if (!cfgRef.current.enabled) return
       // Auto-repeat: a held key fires keydown ~30x/sec. Only the first is an arm.
       if (e.repeat) return
@@ -287,6 +329,9 @@ export function usePushToTalk(voice: VoiceControls, { disabled, shiftDraftStop =
         return
       }
       if (isTerminalTarget(e.target)) return
+      // Capture-phase listening runs before a dialog can isolate its keys.
+      // Only a fresh start checks overlays; stops and reconciliation stay live.
+      if (phaseRef.current === 'idle' && !capturing && hasBlockingOverlay()) return
       // A chord binding's primary key would type a character (Space) or scroll;
       // claim it. A bare modifier produces nothing, so leave it alone — calling
       // preventDefault on a lone modifier can suppress legitimate chords the

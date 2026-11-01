@@ -16,13 +16,6 @@ except ImportError:
     Presentation = None  # type: ignore[assignment,misc]
 
 try:
-    from docx import Document  # type: ignore[import-untyped]
-    from docx.oxml.ns import qn  # type: ignore[import-untyped]
-    from docx.text.paragraph import Paragraph  # type: ignore[import-untyped]
-except ImportError:
-    Document = None  # type: ignore[assignment,misc]
-
-try:
     import html2text as _html2text_mod
 except ImportError:
     _html2text_mod = None  # type: ignore[assignment]
@@ -38,7 +31,10 @@ def _decode_text_bytes(raw: bytes) -> str:
     arriving as BOM'd UTF-16 decodes correctly. A BOM that lies (truncated
     copies, binary that happens to start FF FE) degrades to latin-1 rather
     than failing the file's ingest. Everything else keeps the historical
-    utf-8 -> latin-1 chain. Operating on one in-memory buffer (never
+    utf-8 -> latin-1 chain, read as ``utf-8-sig`` so a UTF-8 BOM (Notepad,
+    PowerShell ``-Encoding utf8``) is dropped rather than kept as a U+FEFF
+    that hides a first-line ``# heading`` from the markdown chunker.
+    Operating on one in-memory buffer (never
     reopening the path) keeps the sensitive-path check race-free, and the
     newline translation mirrors text-mode open() so results are unchanged.
     """
@@ -49,7 +45,7 @@ def _decode_text_bytes(raw: bytes) -> str:
             text = raw.decode('latin-1')
     else:
         try:
-            text = raw.decode('utf-8')
+            text = raw.decode('utf-8-sig')
         except UnicodeDecodeError:
             text = raw.decode('latin-1')
     return text.replace('\r\n', '\n').replace('\r', '\n')
@@ -394,7 +390,14 @@ class FileReader:
             return _read_error(e)
 
     def _read_docx(self, path: str) -> tuple[str, dict]:
-        if Document is None:
+        # Imported here, not at module scope: this module is on the gateway's
+        # boot import chain and python-docx (+ lxml) costs ~75 ms to import,
+        # which only a .docx read needs.
+        try:
+            from docx import Document  # type: ignore[import-untyped]
+            from docx.oxml.ns import qn  # type: ignore[import-untyped]
+            from docx.text.paragraph import Paragraph  # type: ignore[import-untyped]
+        except ImportError:
             return _missing_dep('DOCX', 'python-docx')
         try:
             doc = Document(path)

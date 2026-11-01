@@ -97,6 +97,12 @@ except ImportError:  # pragma: no cover
 # they are emitted on the loader's logger channel (see module docstring).
 logger = logging.getLogger("kiro_crew.config.loader")
 
+#: What a present non-string ``agent.acp_backend`` is replaced with in the loaded
+#: data: the Kiro CLI floor for an unusable value, kept apart from a stored Kiro
+#: CLI pick (``"kiro"``). Never written to disk: full-document saves restore the
+#: harness fields from the file (``_restore_stored_harness_fields``).
+MALFORMED_BACKEND_FLOOR = "\x00malformed-acp-backend"
+
 # Deprecated fields survive load and save, so repeated config reads cannot clear
 # their warning. A digest remembers each observed field value for this process
 # without retaining configured credentials in the warning registry.
@@ -139,11 +145,18 @@ def _lookup_schema_node(schema: dict, dot_path: str) -> dict | None:
 
 
 def _is_sensitive_path(schema: dict, dot_path: str) -> bool:
-    """Return True if the field at *dot_path* is marked sensitive."""
-    node = _lookup_schema_node(schema, dot_path)
-    if node is None:
-        return False
-    return node.get("x-meta", {}).get("sensitive", False)
+    """Return True if the field at *dot_path*, or any field holding it, is sensitive.
+
+    A value inside a sensitive container (an entry of ``telemetry.otlp_endpoints``)
+    is as secret as the container, though its generated ``items`` schema carries
+    no ``x-meta`` of its own.
+    """
+    parts = dot_path.split(".")
+    for end in range(len(parts), 0, -1):
+        node = _lookup_schema_node(schema, ".".join(parts[:end]))
+        if node is not None and node.get("x-meta", {}).get("sensitive", False):
+            return True
+    return False
 
 
 def _is_deprecated_path(schema: dict, dot_path: str) -> bool:
@@ -647,6 +660,14 @@ def validate_config_data(data: dict) -> dict:
     agent = data.get("agent")
     if isinstance(agent, dict) and isinstance(agent.get("log_level"), str):
         agent["log_level"] = agent["log_level"].upper()
+    # These two loaders fold case (and, for the heartbeat key, spaces) before
+    # matching, so a stored "Dashboard" or "WAL" is a valid value; spelled the
+    # loader's way here, the enum check keeps it instead of popping it.
+    if isinstance(agent, dict) and isinstance(agent.get("task_store_journal_mode"), str):
+        agent["task_store_journal_mode"] = agent["task_store_journal_mode"].lower()
+    heartbeat = data.get("heartbeat")
+    if isinstance(heartbeat, dict) and isinstance(heartbeat.get("default_deliver"), str):
+        heartbeat["default_deliver"] = heartbeat["default_deliver"].strip().lower()
 
     # 3b. ``auto_update`` decides whether an unattended installer runs, and its
     # two wrong answers are not symmetric, so a type mismatch must not be
@@ -726,7 +747,15 @@ def validate_config_data(data: dict) -> dict:
                     harness_key,
                     agent[harness_key],
                 )
-                agent[harness_key] = backend_to_stored(GOVERNANCE_FLOOR_BACKEND)
+                # ``agent.acp_backend`` gets a marker, not ``"kiro"``: a stored Kiro
+                # CLI pick can run on KAS (``KIRO_SELECTION_BACKEND``), and this is
+                # the floor for an unusable value, not that pick. The loader reads
+                # the marker as the floor (``_read_backend_choice``).
+                agent[harness_key] = (
+                    MALFORMED_BACKEND_FLOOR
+                    if harness_key == "acp_backend"
+                    else backend_to_stored(GOVERNANCE_FLOOR_BACKEND)
+                )
 
     # 4. Preserve numeric values written by older config writers.
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)

@@ -44,6 +44,15 @@ export function AgentStatusBadge({
     return <Badge variant="muted">{i18nT('pages.developer.agentBackendTab.word_not_offered')}</Badge>
   }
   if (probe.installed === 'missing') {
+    // The binary is there, on a release the gateway refuses to start: a fault to
+    // fix, not an absence, so it gets the warning colour and its own word.
+    if (probe.found_version) {
+      return (
+        <Badge variant="warn">
+          <AlertTriangle className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.agent_wrong_version')}
+        </Badge>
+      )
+    }
     return <Badge variant="muted">{i18nT('components.kiroPrerequisiteGate.agent_not_installed')}</Badge>
   }
   if (probe.restart_required) {

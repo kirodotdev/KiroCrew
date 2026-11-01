@@ -5,7 +5,9 @@ const { forceStopPort, isKirocrewCommand } = require("../../gateway-stop");
 const {
   canonicalWindowsPath,
   windowsGatewayExecutablePaths,
+  windowsVenvBaseInterpreterLaunches,
   windowsListenPids,
+  windowsListenPidsRetrying,
   windowsProcessCommand,
   windowsTaskkill,
 } = require("../../windows-port");
@@ -97,6 +99,13 @@ function createPortHolders({
         ...windowsGatewayExecutablePaths(gatewayBin, { realpathSync: windowsRealpath }),
         ...getSpawnedExecutablePaths(),
       ],
+      // A source or pip venv's gateway listens from the venv's base
+      // interpreter, a child of its `Scripts\python.exe` redirector. Trusted
+      // only as a launch of the resolver's own `Scripts\kirocrew.exe`.
+      trustedVenvLaunches: windowsVenvBaseInterpreterLaunches(gatewayBin, {
+        readFileSync: fs.readFileSync,
+        realpathSync: windowsRealpath,
+      }),
       canonicalizePath: (candidate) => canonicalWindowsPath(candidate, windowsRealpath),
     });
   }
@@ -237,7 +246,10 @@ function createPortHolders({
   function forceStopGatewayPort(probePort) {
     if (IS_WIN) {
       return forceStopPort(probePort, {
-        getListenPids: windowsListenPids,
+        // Recovery fails closed on a probe error, so one slow netstat spawn
+        // would strand a gateway whose kill already worked: a busy host pushed
+        // netstat past its bound once and the app stopped at "restart required".
+        getListenPids: (p) => windowsListenPidsRetrying(p, { execFileFn: execFile, log: glog }),
         getCommand: windowsProcessCommand,
         kill: (pid) => windowsTaskkill(pid, {
           isTrustedCommand: isTrustedWindowsGatewayCommand,

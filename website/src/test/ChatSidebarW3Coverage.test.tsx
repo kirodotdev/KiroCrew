@@ -484,6 +484,17 @@ describe('ChatSidebar — list-view folder header', () => {
     expect(notice.textContent).toContain('no longer exists')
   })
 
+  it('names the stale project directory when the create endpoint refuses the folder', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // POST /api/chat/slots answers folder_project_invalid before any slot exists.
+    mocks.createChatSlot.mockRejectedValueOnce(new ApiError(400, 'invalid folder project: Project directory must be an existing directory'))
+    renderSidebar({ folders: [{ ...ALPHA, project_dir: '/renamed-away/proj' }] })
+    fireEvent.click(screen.getByLabelText('New chat in Alpha'))
+    const notice = await screen.findByTestId('folder-create-error-f1')
+    expect(notice.textContent).toContain('/renamed-away/proj')
+    expect(notice.textContent).toContain('no longer exists')
+  })
+
   it('clears the inline notice on the next successful create in the folder', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     mocks.createChatSlot.mockRejectedValueOnce(new Error('no capacity'))

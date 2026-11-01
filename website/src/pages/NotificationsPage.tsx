@@ -64,6 +64,30 @@ export default function NotificationsPage() {
   // detail automatically (no separate selection bookkeeping needed).
   const selected = items.find(n => n.ts === selectedTs) || null
 
+  // Mobile swaps the feed for the detail in place, so the control that had
+  // focus (the row, or Back) is hidden or unmounted and focus falls to
+  // <body>. Move it into the detail (its Back button) when one opens, and back
+  // to the opened row's open control when the feed returns. preventScroll:
+  // the scroll effect above already put each view where it belongs.
+  const backRef = useRef<HTMLButtonElement>(null)
+  const feedRef = useRef<HTMLDivElement>(null)
+  const openedTs = useRef<string | null>(null)
+  const shownDetailTs = isMobile && selected ? selected.ts : null
+  useEffect(() => {
+    if (shownDetailTs) {
+      // Only on the swap itself: a detail that changes note while open keeps
+      // focus where the user put it inside the detail.
+      if (!openedTs.current) backRef.current?.focus({ preventScroll: true })
+      openedTs.current = shownDetailTs
+      return
+    }
+    const ts = openedTs.current
+    openedTs.current = null
+    if (!ts) return
+    const row = feedRef.current?.querySelector<HTMLElement>(`[data-ts="${CSS.escape(ts)}"] [role="button"]`)
+    row?.focus({ preventScroll: true })
+  }, [shownDetailTs])
+
   // Auto-ack on select. Also disarms any still-pending deep link: an explicit
   // user tap outranks the URL, so a deep-link target that shows up later must
   // not yank the selection away from (or auto-ack over) the user's choice.
@@ -131,7 +155,7 @@ export default function NotificationsPage() {
         {/* Split layout: feed + detail */}
         <div className={`flex gap-4 ${isMobile ? '' : 'flex-1 min-h-0'}`}>
           {/* Left: feed */}
-          <div className={`flex flex-col shrink-0 ${isMobile ? 'w-full' : 'min-w-[320px] max-w-[420px] w-[40%]'} ${isMobile && selected ? 'hidden' : ''}`}>
+          <div ref={feedRef} className={`flex flex-col shrink-0 ${isMobile ? 'w-full' : 'min-w-[320px] max-w-[420px] w-[40%]'} ${isMobile && selected ? 'hidden' : ''}`}>
             <Card className="flex flex-col flex-1 min-h-0">
               <CardTitle>{i18nT('pages.notificationsPage.activity_feed')} <InfoTip text={i18nT('pages.notificationsPage.click_a_notification_to_view_details_jump_to_the')} /></CardTitle>
               <NotificationFeed selectedTs={selectedTs} onSelect={handleSelect} revealTs={revealTs} />
@@ -148,7 +172,7 @@ export default function NotificationsPage() {
                   the page scroll container, so it must sit OUTSIDE the Card:
                   .card-glow is overflow-hidden, which disables sticky within. */}
               <div className="sticky top-0 z-10 bg-bg border-b border-border mb-1">
-                <button className="flex items-center gap-1 px-2 py-1.5 text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none" onClick={() => setSelectedTs(null)}>
+                <button ref={backRef} className="flex items-center gap-1 px-2 py-1.5 text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none" onClick={() => setSelectedTs(null)}>
                   <ArrowLeft size={14} /> {i18nT('pages.notificationsPage.back')}
                 </button>
               </div>

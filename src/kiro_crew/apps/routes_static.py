@@ -392,7 +392,14 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                 "Last-Modified": formatdate(st.st_mtime, usegmt=True),
                 "Content-Security-Policy": "default-src 'none'; sandbox",
                 "X-Content-Type-Options": "nosniff",
+                # Read by app frames (apps/app_frame.py): an
+                # opaque-origin sandbox loads the app's module in CORS mode. Only
+                # the "null" origin is answered, never with credentials, and these
+                # bytes are already served to anyone without a token.
+                "Vary": "Origin",
             }
+            if request.headers.get("Origin") == "null":
+                headers["Access-Control-Allow-Origin"] = "null"
             # The shared compare reads aiohttp's parsed accessors, not raw header
             # strings: If-None-Match may carry a list, a weak `W/"..."` form, or
             # `*` (RFC 9110 §13.1.2 weak comparison), and If-Modified-Since is
@@ -492,12 +499,16 @@ async def handle_app_dev_mode(request: web.Request) -> web.Response:
     ``kirocrew app dev <name> --confirm-out-of-install-root``.
     """
     from kiro_crew.apps.dev_mode import set_dev_mode
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
 
     name = request.match_info["name"]
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
         return web.json_response({"error": "enabled must be a boolean"}, status=400)

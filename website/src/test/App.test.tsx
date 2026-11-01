@@ -2,7 +2,7 @@
 // layout contract and the shell. App.topbarAndShortcuts.test.tsx covers the rest
 // with the same mocks: the top bar's readouts, the global shortcuts and two
 // App.tsx source contracts.
-import { afterAll, describe, it, expect, vi } from 'vitest'
+import { afterAll, beforeEach, describe, it, expect, vi } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile'
 import { join } from 'node:path'
@@ -151,6 +151,10 @@ globalThis.ResizeObserver = class {
 } as typeof ResizeObserver
 
 describe('App routing', () => {
+  // Most rows read the expanded rail's labels; the rail starts collapsed, so
+  // a test that needs the fresh-profile default removes this key itself.
+  beforeEach(() => { localStorage.setItem('mc-nav', '0') })
+
   it('reopens the foreign-agent import gate when server onboarding is incomplete', async () => {
     const { api } = await import('../api/client')
     localStorage.setItem('mc-onboarded', '1')
@@ -551,7 +555,7 @@ describe('App routing', () => {
 
     fireEvent.click(trigger)
     expect(await screen.findByText('What happened?')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /create report/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /prepare issue/i })).toBeInTheDocument()
   })
 
   it('renders the registry-derived Artifacts nav item, without a Knowledge rail item', () => {
@@ -801,7 +805,7 @@ describe('App routing', () => {
   })
 
   it('keeps the sub-agent bot and count in the expanded Sessions rail item', async () => {
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     const store = createTestStore()
 
     renderWithProviders(<App />, { route: '/chat', store })
@@ -830,7 +834,7 @@ describe('App routing', () => {
     // count width, and jsdom computes no layout so a geometry check would be
     // vacuous here), AND it must follow the chord in the same flex line, so the
     // fix is not "the chord is the thing pushed off the right edge instead".
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     localStorage.removeItem(SHORTCUTS_ENABLED_KEY)
     const store = createTestStore()
 
@@ -883,7 +887,7 @@ describe('App routing', () => {
     // at count 1. The count is already in the pill, so the title does not repeat
     // it — asserted below, or the grammar defect returns the moment someone
     // "helpfully" switches these back to ariaLabel.
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     const store = createTestStore()
 
     renderWithProviders(<App />, { route: '/chat', store })
@@ -966,7 +970,7 @@ describe('App routing', () => {
   })
 
   it('renders Kiro Crew branding', () => {
-    localStorage.removeItem('mc-nav') // expanded sidebar shows the brand text
+    localStorage.setItem('mc-nav', '0') // expanded sidebar shows the brand text
     renderWithProviders(<App />, { route: '/chat' })
     // Brand (logo + name) moved from the top bar into the sidebar menu row.
     // The wordmark renders as two colored segments ('Kiro ' + 'Crew').
@@ -976,7 +980,7 @@ describe('App routing', () => {
 
   it('uses installed theme branding in the left rail and browser favicon', async () => {
     const { api } = await import('../api/client')
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     localStorage.setItem('mc-color-theme', 'custom-pearce')
     vi.mocked(api.themes).mockResolvedValueOnce({
       themes: [{ slug: 'pearce', name: 'Pearce CRT', emoji: 'PC', source: 'installed' }],
@@ -1291,7 +1295,7 @@ describe('App routing', () => {
   })
 
   it('resizes the sidebar and main body together with a quick shell transition', () => {
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     // Regression (PR #94): the width transition was gated on a 180ms pulse AND
     // the Activity panel being closed, so the sidebar snapped instead of
     // animating whenever Activity was open (or a slow frame ate the pulse).
@@ -1377,8 +1381,23 @@ describe('App routing', () => {
     }
   })
 
-  it('hosts the collapse control in the nav menu row and hides the Main group heading', () => {
+  it('starts the rail collapsed on a fresh profile and keeps a stored expand', () => {
     localStorage.removeItem('mc-nav')
+    const { unmount } = renderWithProviders(<App />, { route: '/chat' })
+    let nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
+    unmount()
+
+    localStorage.setItem('mc-nav', '0')
+    renderWithProviders(<App />, { route: '/chat' })
+    nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    localStorage.removeItem('mc-nav')
+  })
+
+  it('hosts the collapse control in the nav menu row and hides the Main group heading', () => {
+    localStorage.setItem('mc-nav', '0')
     renderWithProviders(<App />, { route: '/chat' })
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
@@ -1399,7 +1418,7 @@ describe('App routing', () => {
   })
 
   it('lets the brand toggle expand the rail while preview expand mode is active', () => {
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     renderWithProviders(<App />, { route: '/chat' })
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
 
@@ -1422,7 +1441,7 @@ describe('App routing', () => {
   })
 
   it('restores the pre-expand rail state when preview expand mode ends untouched', () => {
-    localStorage.removeItem('mc-nav') // start expanded
+    localStorage.setItem('mc-nav', '0') // start expanded
     renderWithProviders(<App />, { route: '/chat' })
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
     expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
@@ -1437,11 +1456,11 @@ describe('App routing', () => {
     })
     expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     // The auto-collapse is transient: it never writes the persisted preference.
-    expect(localStorage.getItem('mc-nav')).toBeNull()
+    expect(localStorage.getItem('mc-nav')).toBe('0')
   })
 
   it('hides the community row when the sidebar is collapsed', () => {
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     renderWithProviders(<App />, { route: '/chat' })
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
     const contact = within(nav).getByText('Star us')

@@ -174,7 +174,6 @@ class TestProperty1SegmentFlushOnInterrupt:
         tool_idx = types.index("tool_call")
         assert seg_idx < tool_idx, "chat_segment must precede tool_call"
 
-        # Verify: assistant_text is reset.
         assert assistant_text == ""
 
         # Verify: both representations of pending chunks were released.
@@ -387,7 +386,6 @@ class TestProperty7PrepareMessagesChunkCollapse:
                 {"role": "assistant", "content": assistant_texts[i], "cls": "msg msg-a"}
             )
 
-        # Add trailing chunks
         for chunk in trailing_chunks:
             messages.append({"role": "chunk", "content": chunk, "cls": "chunk"})
 

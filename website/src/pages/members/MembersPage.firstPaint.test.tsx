@@ -26,7 +26,6 @@ vi.mock('../../api/client', () => ({
       list: vi.fn(() => new Promise((resolve) => { resolveTeams = resolve })),
     },
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
-    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
     memberThread: vi.fn((slug: string) =>
       Promise.resolve({ slot_key: 'member-' + slug, slug, member: slug, created: true }),
     ),

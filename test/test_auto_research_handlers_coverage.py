@@ -45,6 +45,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 from auto_research_handlers_coverage_helpers import _isolate_fixture  # noqa: F401
 from auto_research_handlers_coverage_helpers import _no_autonudge  # noqa: F401
 from auto_research_handlers_coverage_helpers import _no_stray_sse_queues  # noqa: F401
@@ -58,6 +59,7 @@ from auto_research_handlers_coverage_helpers import (
     _status,
     _write_finding,
 )
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
 from kiro_crew.testing.wait import async_wait_until
@@ -241,41 +243,65 @@ class TestLaunchWorkflow:
         assert h._read_workflow_run_id(cid) is None
 
 
+class _WorkflowRuns:
+    """A workflow service holding each run's status, so a cancel leaves state behind."""
+
+    def __init__(self, **runs: str) -> None:
+        self.runs = dict(runs)
+
+    async def cancel(self, run_id: str) -> None:
+        if run_id not in self.runs:
+            raise KeyError(run_id)
+        self.runs[run_id] = "cancelled"
+
+
 class TestStopWorkflow:
     @pytest.mark.asyncio
     async def test_cancels_the_recorded_run(self, _isolate: Path):
         cid = _campaign(execution_mode="workflow")
         h._write_workflow_run_id(cid, "run-9")
-        cancel = AsyncMock()
+        service = _WorkflowRuns(**{"run-9": "running", "run-1": "running"})
         await h._stop_workflow(
-            _mk("PATCH", cid, app=_app(state=_workflow_state(cancel=cancel))), cid
+            _mk("PATCH", cid, app=_app(state=SimpleNamespace(workflow_service=service))), cid
         )
-        cancel.assert_awaited_once_with("run-9")
+        assert service.runs == {"run-9": "cancelled", "run-1": "running"}
 
     @pytest.mark.asyncio
     async def test_no_run_id_means_no_cancel(self, _isolate: Path):
         cid = _campaign(execution_mode="workflow")
-        cancel = AsyncMock()
+        service = _WorkflowRuns(**{"run-1": "running"})
         await h._stop_workflow(
-            _mk("PATCH", cid, app=_app(state=_workflow_state(cancel=cancel))), cid
+            _mk("PATCH", cid, app=_app(state=SimpleNamespace(workflow_service=service))), cid
         )
-        cancel.assert_not_awaited()
+        assert service.runs == {"run-1": "running"}
 
     @pytest.mark.asyncio
-    async def test_cancel_failure_is_swallowed(self, _isolate: Path):
+    async def test_cancel_failure_is_swallowed(
+        self, _isolate: Path, caplog: pytest.LogCaptureFixture
+    ):
+        from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME
+
         cid = _campaign(execution_mode="workflow")
         h._write_workflow_run_id(cid, "run-9")
         cancel = AsyncMock(side_effect=RuntimeError("gone"))
-        await h._stop_workflow(
-            _mk("PATCH", cid, app=_app(state=_workflow_state(cancel=cancel))), cid
-        )
+        with caplog.at_level("ERROR", logger=LOGGER_NAME):
+            await h._stop_workflow(
+                _mk("PATCH", cid, app=_app(state=_workflow_state(cancel=cancel))), cid
+            )
         cancel.assert_awaited_once()
+        failures = [r for r in caplog.records if r.name == LOGGER_NAME]
+        assert [r.getMessage() for r in failures] == [
+            f"auto_research: workflow cancel failed for {cid}"
+        ]
+        assert str(failures[0].exc_info[1]) == "gone"
 
     @pytest.mark.asyncio
     async def test_absent_service_is_a_no_op(self, _isolate: Path):
         cid = _campaign(execution_mode="workflow")
         h._write_workflow_run_id(cid, "run-9")
         await h._stop_workflow(_mk("PATCH", cid, app=_app()), cid)
+        # Nothing was cancelled, so the run id stays recorded for a later stop.
+        assert h._read_workflow_run_id(cid) == "run-9"
 
 
 # --- _poll_workflow_campaign ----------------------------------------------
@@ -523,6 +549,9 @@ class TestWatchdogLoop:
         _running(cid)
         assert await _drive_watchdog({"state": None}, lambda: poll.await_count > 0)
         assert poll.await_args.args[0] == cid
+        # The adapter owns a workflow campaign: no agent-mode bookkeeping touched it.
+        assert _status(cid) == h.CampaignStatus.RUNNING
+        assert (h.get_campaign(cid) or {})["total_cycles"] == 0
 
     @pytest.mark.asyncio
     async def test_expired_trust_forces_reauthorization(self, _isolate: Path, fast_watchdog, sse):
@@ -547,18 +576,24 @@ class TestWatchdogLoop:
     async def test_trust_is_reestablished_and_a_paused_loop_rearmed(
         self, _isolate: Path, fast_watchdog, monkeypatch: pytest.MonkeyPatch
     ):
+        from kiro_crew.autonudge import AutoNudgeService
+
         cid = _campaign()
         _running(cid)
         slot = SimpleNamespace(_trust=False, running=True)
         state = SimpleNamespace(_slots={f"research-{cid}": slot})
-        loop = SimpleNamespace(id="loop-1", active=False)
-        svc = SimpleNamespace(get_by_slot=MagicMock(return_value=loop), update=AsyncMock())
-        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
-        assert await _drive_watchdog(
-            {"state": state}, lambda: slot._trust and svc.update.await_count > 0
-        )
-        assert svc.update.await_args.kwargs == {"active": True}
-        assert svc.update.await_args.args[0] == "loop-1"
+        svc = AutoNudgeService(base_dir=_isolate / "autonudge")
+        await svc.start()
+        try:
+            loop = await svc.add(slot_key=f"research-{cid}", message="run", idle_secs=60)
+            await svc.update(loop.id, active=False)
+            monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+            assert await _drive_watchdog({"state": state}, lambda: slot._trust and loop.active)
+            assert svc.get_by_slot(f"research-{cid}") is loop
+            assert loop.active is True
+            assert slot._trust is True
+        finally:
+            svc.stop()
 
     @pytest.mark.asyncio
     async def test_pending_question_pauses_an_attended_campaign(
@@ -844,7 +879,8 @@ class TestGrillHelpers:
     @pytest.mark.asyncio
     async def test_expand_children_for_an_unknown_node_falls_back_to_the_root(self):
         pool = SimpleNamespace(send=AsyncMock(return_value="[]"))
-        await h._grill_expand_children(pool, "the main question", [], "ghost")
+        nodes = await h._grill_expand_children(pool, "the main question", [], "ghost")
+        assert nodes == []
         assert "root question" in pool.send.await_args.args[0]
 
     @pytest.mark.asyncio
@@ -873,6 +909,29 @@ class TestGrillExpandEndpoint:
         resp = await h._handle_grill_expand(
             _mk("POST", "grill/expand", app=_app(), body={"question": "too short"})
         )
+        assert resp.status == 400
+        assert _body(resp)["error"] == "Question too short"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "question", [12345, ["a long enough question here"], {"q": "x"}, True], ids=repr
+    )
+    async def test_non_string_question_is_a_coded_400(self, question: object):
+        # Served over HTTP, so a `.strip()` crash is the 500 a client sees.
+        app = as_owner(web.Application())
+        app.router.add_post("/grill/expand", h._handle_grill_expand)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/grill/expand", json={"question": question})
+            assert resp.status == 400
+            assert await resp.json() == {
+                "error": "question must be a string",
+                "code": "invalid_field_type",
+            }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [{}, {"question": None}, {"question": ""}])
+    async def test_null_or_missing_question_is_still_too_short(self, body: dict):
+        resp = await h._handle_grill_expand(_mk("POST", "grill/expand", app=_app(), body=body))
         assert resp.status == 400
         assert _body(resp)["error"] == "Question too short"
 

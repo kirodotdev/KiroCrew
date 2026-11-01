@@ -98,8 +98,12 @@ from kiro_crew.apps.proxy_auth import (
     PRINCIPAL_APP_TOKEN,
     PRINCIPAL_NONE,
     PRINCIPAL_OWNER_SESSION,
+    PROXY_NONCE_HEADER,
     PROXY_PRINCIPAL_HEADER,
+    PROXY_V2_HEADER,
+    new_proxy_nonce,
     sign_proxy_principal_claim,
+    sign_proxy_request_v2,
 )
 from kiro_crew.apps.registry import (
     _ART_IMAGE_EXTENSIONS,
@@ -139,6 +143,10 @@ from kiro_crew.apps.registry import (
     resolve_installed_trust_repository,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _git_network_env,
+    _proxy_env_has_credentials,
+)
 from kiro_crew.apps.routes_art import handle_app_art_file, handle_blob_proxy
 from kiro_crew.apps.routes_enable import handle_disable_app, handle_enable_app, handle_open_app
 from kiro_crew.apps.routes_install import (
@@ -250,6 +258,10 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_get("/apps/{name}/art/{path:.*}", handle_app_art_file)
     # Reverse proxy: dashboard app UI → app backend (same-origin, avoids CORS)
     app.router.add_route("*", "/apps/{name}/api/{path:.*}", handle_app_api_proxy)
+    # App frames (every frame-backed point): the sandboxed document, its mint and its fetch.
+    from kiro_crew.apps.app_frame import register_app_frame_routes
+
+    register_app_frame_routes(app)
 
 
 # This module keeps only the route table. It is the facade of the app management route
@@ -290,6 +302,9 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.point_grants import (  # noqa: F401
+        point_grant_families,
+    )
     from kiro_crew.apps.routes_art import (  # noqa: F401
         _BLOB_FETCH_SEMAPHORE,
         _BLOB_FETCH_TIMEOUT,

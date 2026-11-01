@@ -418,6 +418,71 @@ describe('DrivePage sections: error surfaces reach the agent', () => {
     )
   })
 
+  it('a snapshot grant on an account the schedule does not visit says so, next to its own switch', async () => {
+    // The snapshot mirror of the transcript case. set_nightly records the grant
+    // per account while the loop runs for the default one, so switching the
+    // snapshot on while viewing a non-default account is the state where the
+    // toggle reads back on and nothing is ever backed up. Without this the
+    // console shows a running schedule that never visits the account.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      nightly: true,
+      nightlyBlocked: 'other_account',
+    } as never)
+    await renderDrive('backup')
+
+    const row = await screen.findByTestId('backup-nightly')
+    const blocked = await screen.findByTestId('backup-nightly-blocked')
+    expect(blocked.textContent).toContain(
+      i18nT('apps.awsControl.console.backup_nightly_blocked_other_account'),
+    )
+    // The manual run is per-account, so the generic next step is a real one here.
+    expect(blocked.textContent).toContain(
+      i18nT('apps.awsControl.console.backup_nightly_sessions_blocked_next'),
+    )
+    // The switch still reads back as the owner set it.
+    expect(within(row).getByRole('switch').getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('no snapshot blocked notice while the snapshot grant is off', async () => {
+    // Nothing is withheld until the owner asks for it. Paired with the test above
+    // so the notice cannot be one that renders unconditionally.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      nightly: false,
+      nightlyBlocked: 'other_account',
+    } as never)
+    await renderDrive('backup')
+    await screen.findByTestId('backup-nightly')
+    expect(screen.queryByTestId('backup-nightly-blocked')).toBeNull()
+  })
+
+  it('no snapshot blocked notice when the snapshot grant is on and nothing is in the way', async () => {
+    // The healthy install: the grant is on, the schedule reaches this account,
+    // and the console says nothing rather than implying a problem.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      nightly: true,
+      nightlyBlocked: null,
+    } as never)
+    await renderDrive('backup')
+    await screen.findByTestId('backup-nightly')
+    expect(screen.queryByTestId('backup-nightly-blocked')).toBeNull()
+  })
+
+  it('an older backend that omits nightlyBlocked shows no snapshot block', async () => {
+    // The field is absent from a backend before this change; reading it as "not
+    // blocked" is the safe direction -- it never fabricates a notice on an
+    // install whose gateway cannot answer the question.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      nightly: true,
+    } as never)
+    await renderDrive('backup')
+    await screen.findByTestId('backup-nightly')
+    expect(screen.queryByTestId('backup-nightly-blocked')).toBeNull()
+  })
+
   it('a rejected folder name is a notice WITHOUT the hand-off — nothing reached AWS', async () => {
     vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
     await renderDrive('drive')

@@ -228,6 +228,42 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         assert "remains deferred after its grace period" in caplog.text
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("mandatory", [False, True], ids=["routine", "floor"])
+    async def test_unattended_installs_turned_off_mid_build_stop_only_a_routine_swap(
+        self, monkeypatch, mandatory
+    ):
+        """The tree builds, then the policy decides at the swap: a routine install
+        defers (the next cycle only notifies); a floor's mandatory update promotes."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        def engine(**kwargs):
+            kwargs["before_promote"]()
+            return Path("/x/crew-venv-9.9.9")
+
+        wire_wheel_apply(monkeypatch, apply=MagicMock(side_effect=engine))
+        monkeypatch.setattr(
+            "kiro_crew.platform.wheel_apply.snapshot_memory_before_update", lambda: (1, "")
+        )
+        monkeypatch.setattr("kiro_crew.memory_backup.newest_backup", lambda *a: None)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.unattended_apply_allowed", lambda: False
+        )
+        restart = AsyncMock()
+        monkeypatch.setattr(orch, "_retry_pending_update_restart", restart)
+
+        await orch._auto_apply_wheel_update(
+            "stable", "9.9.9", mandatory=mandatory, mandatory_key="k" if mandatory else ""
+        )
+
+        if mandatory:
+            restart.assert_awaited_once()
+        else:
+            restart.assert_not_awaited()
+            assert orch._pending_update_respawn is None
+            assert orch._update_apply_deferred is True, "retried on the short cadence"
+
+    @pytest.mark.asyncio
     async def test_a_held_lock_defers_quietly(self, monkeypatch):
         from kiro_crew.platform.wheel_engine import WheelUpdateBusy
 

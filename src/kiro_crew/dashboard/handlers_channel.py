@@ -270,12 +270,14 @@ async def api_channel_create(request: web.Request) -> web.Response:
 
     ch = _mgr(request).create(topic)
     if not ch:
+        # 409, not 429: the cap clears only when the user closes a channel, so
+        # a client retrying after a delay would get the same refusal.
         return web.json_response(
             {
                 "error": "Channel limit reached. Close an existing channel first.",
                 "code": "channel_limit_reached",
             },
-            status=429,
+            status=409,
         )
 
     state: DashboardState = request.app["state"]
@@ -405,9 +407,13 @@ async def api_channel_add_agent(request: web.Request) -> web.Response:
         approval_policy=approval_policy,
     )
     if not agent:
+        # 409 for the same reason as the channel cap: only a dismissal clears it.
         return web.json_response(
-            {"error": "Agent limit reached. Dismiss an agent first."},
-            status=429,
+            {
+                "error": "Agent limit reached. Dismiss an agent first.",
+                "code": "channel_agent_limit_reached",
+            },
+            status=409,
         )
 
     state: DashboardState = request.app["state"]

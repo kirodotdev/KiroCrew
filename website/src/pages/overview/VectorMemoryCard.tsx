@@ -7,11 +7,19 @@ import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
 import { memoryQueryRetry } from './MemoryStoreCard'
 import { esc } from '../../api/helpers'
-import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
+import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, enableEmbeddingsErrorMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import { fmtDateNumeric, fmtDateTimeNumeric } from '../../i18n/format'
+import { fmtDateNumeric, fmtDateTimeNumeric, fmtNumber } from '../../i18n/format'
+
+/** Catalog key for each text-only button of the view switch. The Inspector
+ * button carries an icon and renders its own label. */
+const VIEW_LABEL_KEYS = {
+  semantic: 'pages.overview.vectorMemoryCard.view_semantic',
+  episodic: 'pages.overview.vectorMemoryCard.view_episodic',
+  audit: 'pages.overview.vectorMemoryCard.view_audit',
+} as const
 
 /** Whether an element with `id` is in the document, read when `watch` turns on.
  *
@@ -396,7 +404,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
       await api.vectorEnableEmbeddings()
       pollEmbeddingStatus()
     } catch (error: unknown) {
-      setEmbeddingStartError(extractError(error))
+      setEmbeddingStartError(enableEmbeddingsErrorMessage(error) || extractError(error))
       setEnabling(false)
     }
   }
@@ -560,9 +568,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             </div>
           </div>
           <div className="flex gap-2 flex-wrap items-center">
-            <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit">
+            <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit" role="group" aria-label={i18nT('pages.overview.vectorMemoryCard.view_switch_label')}>
             {(['semantic','episodic','audit','inspector'] as const).filter(v => !diagnosticsOnly || v === 'audit' || v === 'inspector').map(v => (
-              <button key={v} onClick={() => {
+              <button key={v} type="button" aria-pressed={view === v} onClick={() => {
                 setView(v)
                 if (v === 'episodic') {
                   if (view === v) loadEpisodic()
@@ -572,7 +580,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                 if (v === 'inspector' && view === v) loadPreview(previewQuery)
               }}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${view === v ? 'bg-bg-hover text-accent' : 'bg-transparent text-muted hover:text-text'}`}>{
-                  v === 'inspector' ? <><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.inspector')}</> : v[0].toUpperCase() + v.slice(1)
+                  v === 'inspector' ? <><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.inspector')}</> : i18nT(VIEW_LABEL_KEYS[v])
                 }</button>
             ))}
             </div>
@@ -644,7 +652,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </div>
         {filteredSemantic.length > 0 && (
           <p className="text-muted text-[12px] mt-2">
-            {i18nT('pages.overview.vectorMemoryCard.showing')} {visibleSemantic.length} {i18nT('pages.overview.vectorMemoryCard.of')} {filteredSemantic.length}{filteredSemantic.length !== semantic.length ? ` (filtered from ${semantic.length})` : ''}{filteredSemantic.length > visibleSemantic.length ? <> {i18nT('pages.overview.vectorMemoryCard.refine_your_filter_to_narrow_further')}</> : ''}
+            {filteredSemantic.length !== semantic.length
+              ? i18nT('pages.overview.vectorMemoryCard.showing_semantic_filtered', { count: visibleSemantic.length, shown: fmtNumber(visibleSemantic.length), matched: fmtNumber(filteredSemantic.length), total: fmtNumber(semantic.length) })
+              : i18nT('pages.overview.vectorMemoryCard.showing_semantic', { count: visibleSemantic.length, shown: fmtNumber(visibleSemantic.length), total: fmtNumber(filteredSemantic.length) })}{filteredSemantic.length > visibleSemantic.length ? <> {i18nT('pages.overview.vectorMemoryCard.refine_your_filter_to_narrow_further')}</> : ''}
           </p>
         )}
       </Card>
@@ -707,7 +717,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </tbody></table>
         </div>
         {episodicRead.hasNextPage && <div className="flex justify-center mt-3"><Btn disabled={episodicRead.isFetching} onClick={() => loadEpisodic(undefined, true)}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
-        {episodic.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing')} {episodic.length} {i18nT('pages.overview.vectorMemoryCard.entries')}</p>}
+        {episodic.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing_entries', { count: episodic.length, n: fmtNumber(episodic.length) })}</p>}
       </Card>
     )}
 
@@ -740,7 +750,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </tbody></table>
         </div>
         {audit.hasNextPage && <div className="flex justify-center mt-3"><Btn disabled={audit.isFetching} onClick={() => void audit.fetchNextPage()}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
-        {events.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing')} {filteredEvents.length} {i18nT('pages.overview.vectorMemoryCard.events')}{eventFilter !== 'all' ? ` (${events.length} total)` : ''}</p>}
+        {events.length > 0 && <p className="text-muted text-[12px] mt-2">{eventFilter !== 'all'
+          ? i18nT('pages.overview.vectorMemoryCard.showing_events_filtered', { count: filteredEvents.length, n: fmtNumber(filteredEvents.length), total: fmtNumber(events.length) })
+          : i18nT('pages.overview.vectorMemoryCard.showing_events', { count: filteredEvents.length, n: fmtNumber(filteredEvents.length) })}</p>}
       </Card>
     )}
 

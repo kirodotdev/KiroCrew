@@ -276,14 +276,20 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _drop_live_config_snapshot,
     _ensure_event_loop,
     _fake_computer_use_backend,
+    _forget_enterprise_profile_pin,
+    _forget_legacy_auth_sweep_clean_roots,
+    _forget_sandbox_launch_mark,
     _fresh_reexec_environment,
+    _fresh_released_sessions_warning,
     _history_cleanup_throttle_closed,
     _inline_taskq_pump,
     _isolate_advertised_model_cache,
     _isolate_display_verdicts,
     _isolate_kiro_window_cache,
+    _no_boot_heap_freeze,
     _no_boot_sandbox_sweep,
     _no_carried_auto_update_effect,
+    _no_inherited_git_proxy_env,
     _no_live_catalog_network,
     _no_live_kernel_memory_pressure,
     _no_managed_venv_override,
@@ -294,13 +300,17 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_channel_turn_ceiling,
     _reset_cjk_segmenter,
     _reset_create_rate_limit_buckets,
+    _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,
+    _reset_env_boot_record_and_ownership,
     _reset_live_execution_records,
+    _reset_materialized_agents_snapshot,
     _reset_runtime_ownership_tables,
     _reset_safety_override_between_tests,
     _reset_session_switch_locks,
     _restore_autonudge_singleton,
     _restore_default_child_watcher,
+    _session_memory_scope_sample_unshared,
     _shut_down_shared_pools_in_session,
     _small_default_host,
 )
@@ -523,6 +533,24 @@ def _fresh_update_ownership(_floor_monkeypatch):
     assert not open_steps, f"the test left update steps open: {open_steps}"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_host_unservable_backends(_floor_monkeypatch):
+    """Give every test its own copy of the host's KAS-floor verdicts.
+
+    The gateway's KAS floor records what it learned about this host's kiro-cli as
+    process state: ``mark_backend_unservable`` drops KAS, and
+    ``confirm_kiro_cli_offers_kas`` moves a Kiro CLI pick onto KAS. A test that
+    drives the floor would otherwise leave either verdict to every later test in
+    the worker. Rebound per test, so a verdict made in one test is gone in the next.
+    """
+    from kiro_crew.agent_sdk import backends
+
+    _floor_monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
+    _floor_monkeypatch.setattr(backends, "_host_unservable", dict(backends._host_unservable))
+    _floor_monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+    _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
+
+
 @pytest.fixture
 def fresh_darwin_libc_handles(_floor_monkeypatch):
     """Start the test with both macOS libc handle caches unbuilt, and put them back after.
@@ -640,6 +668,23 @@ def _windows_restrict_to_owner_stub(request, _floor_monkeypatch):
         return
     _floor_monkeypatch.setattr(platform_compat, "restrict_to_owner", lambda p: None)
     _floor_monkeypatch.setattr(platform_compat, "restrict_dir_to_owner", lambda p: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_admission_service(_floor_monkeypatch):
+    """Start every test without a Shared Crew admission service another test built.
+
+    ``admission_gate`` keeps the gateway's service process-wide. A chat send a
+    test drives builds one, and a later test in the same worker would then run
+    every turn through it, config re-reads included. Rebound only when the
+    module is already imported; the inherited value is restored at teardown.
+    """
+    gate = sys.modules.get("kiro_crew.shared_crew.admission_gate")
+    if gate is not None:
+        _floor_monkeypatch.setattr(gate, "_SERVICE", None)
+        _floor_monkeypatch.setattr(gate, "_SERVICE_LOOP", None)
+        _floor_monkeypatch.setattr(gate, "_SERVICE_LOCK", gate.LoopBoundLock())
     yield
 
 
@@ -881,6 +926,31 @@ def _reset_overlay_refresher():
     overlay_refresh.set_overlay_refresher(None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_creator_titles():
+    """Give every test an EMPTY last-known-title registry (``dashboard.creator_titles``).
+
+    Every lineage join remembers the titles of the live rows it sees, process-wide, and
+    a remembered title rides any later ``parent`` that cites that slot as closed. Left
+    over, one test's titles would add a ``title`` key to another test's exact-payload
+    assertion -- and the module that writes them is not the one that misreads them.
+    Read from ``sys.modules`` rather than imported, so a test that pins what a code
+    path imports never sees this fixture load the module for it.
+    """
+    import sys as _sys
+
+    def _reset() -> None:
+        mod = _sys.modules.get("kiro_crew.dashboard.creator_titles")
+        if mod is not None:
+            mod._reset_for_tests()
+
+    _reset()
+    try:
+        yield
+    finally:
+        _reset()
+
+
 #: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
 #: ROOTDIR ``conftest.py``, not here. The data home has to be pinned for every
 #: testpath, including the ~108 test modules that ship inside the package under
@@ -1006,6 +1076,7 @@ def _git_identity(_floor_monkeypatch, _git_global_config) -> None:
 #: deterministic local failure instead of dialling the operator's gateway.
 _REAL_MCP_POST_MODULES = frozenset(
     {
+        "test_artifact_comment_mcp_identity",
         "test_ephemeral_sessions",
         "test_ephemeral_sessions_recognition",
         "test_mcp_api_base_resolution",
@@ -1266,3 +1337,33 @@ def _no_leaked_interleave_hook():
             "earlier test leaked it (this test is the victim, not the cause). "
             "Set it with monkeypatch.setattr so it reverts even on failure."
         )
+
+
+#: Markers Kiro Crew sets on the processes it spawns for an agent, which
+#: ``cloud.aws._in_agent_session`` reads to refuse cloud mutations. When an agent
+#: session runs the suite they are inherited from it, so the guard would read
+#: every "human terminal" test as an agent. CI never has them; hiding them here
+#: makes a local agent-run suite see what CI sees.
+_INHERITED_AGENT_MARKERS = (
+    "KIROCREW_SESSION_KEY",
+    "KIROCREW_RUNTIME_AGENT",
+    "KIROCREW_HOST_PID",
+)
+
+
+@pytest.fixture(autouse=True)
+def _cloud_guard_ignores_the_runners_agent_markers(_floor_monkeypatch):
+    """Hide the runner's own agent markers and confinement from the cloud guard.
+
+    The env markers go through the floor's stack, so a test's own ``setenv`` of
+    one still wins and a mid-test ``monkeypatch.undo()`` does not bring the
+    runner's value back. The confinement half (the remembered sandbox marker,
+    the agents cgroup) is pinned off only for ``cloud.aws`` and only once that
+    module is loaded, so the probes themselves keep their real behaviour
+    everywhere else. A test of the guard re-pins ``aws._agent_confinement``.
+    """
+    for name in _INHERITED_AGENT_MARKERS:
+        _floor_monkeypatch.delenv(name, raising=False)
+    aws_mod = sys.modules.get("kiro_crew.cloud.aws")
+    if aws_mod is not None and hasattr(aws_mod, "_agent_confinement"):
+        _floor_monkeypatch.setattr(aws_mod, "_agent_confinement", lambda: False)

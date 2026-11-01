@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit as _urlsplit
 
 from kiro_crew.config.fields import _meta
@@ -81,7 +82,34 @@ class TelemetryConfig:
             "http://localhost:4318/v1/metrics). EMPTY = no network egress "
             "(default). When set, aggregated metrics are ALSO pushed to this "
             "collector in addition to the local JSONL sink; requires the "
-            "OTLP exporter from the otlp package extra to be installed.",
+            "OTLP exporter from the otlp package extra to be installed. Kept "
+            "for compatibility: when set it is the first entry of the "
+            "OTLP Endpoints list below.",
+            sensitive=True,
+        ),
+    )
+    otlp_endpoints: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata=_meta(
+            "OTLP Endpoints",
+            "Opt-in list of OpenTelemetry OTLP/HTTP metrics collectors, each its "
+            "own destination, sent to IN ADDITION to the local JSONL sink and to "
+            "OTLP Endpoint above. EMPTY = no network egress (default). Each entry "
+            "is {endpoint, name, enabled, headers_env, temporality, allow, "
+            "point_attributes, resource_allow}: endpoint is an http(s) URL; "
+            "headers_env maps a header name to an environment variable that holds "
+            "its value, so no secret is stored here (there is no key for a literal "
+            "header value, and an entry with one is skipped). An entry sends only "
+            "those headers: the OTEL_EXPORTER_OTLP_HEADERS variables apply to "
+            "OTLP Endpoint above, not to these entries. temporality "
+            "is '' (core default), 'cumulative' or 'delta'; allow is a list of "
+            "metric names or the preset 'PRODUCT_METRICS', and without it the "
+            "collector gets every metric; point_attributes adds fixed labels "
+            "from a reviewed key set (ClientType); resource_allow keeps only the "
+            "named resource keys. Set enabled to false to turn an entry off. "
+            "Every entry obeys the 'enabled' switch above and the "
+            "capabilities.telemetry otlp_hosts policy. A malformed entry is "
+            "skipped with a warning. See docs/guides/telemetry-otlp-export.md.",
             sensitive=True,
         ),
     )

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
 import { api } from '../../api/client'
@@ -75,13 +76,11 @@ describe('NewCrewmateDialog', () => {
     await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith({ name: 'Scout', job: '' }), { timeout: 4000 })
   })
 
-  it('Advanced settings offers the built-in agent first, labelled as the default', async () => {
+  it('Advanced settings offers no template to build from: every mate starts as the built-in worker', async () => {
     renderWithProviders(<NewCrewmateDialog open startExpanded {...props} />)
-    const select = await screen.findByRole('combobox', { name: 'Built from' })
-    // The label stays short enough to show "(default)" on a phone; what the
-    // default is goes in the field's helper text instead.
-    expect(select.textContent?.trim()).toBe('kirocrew (default)')
-    expect(fieldHint(select)).toHaveTextContent(/kirocrew/)
+    expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Built from' })).toBeNull()
+    expect(api.agentCatalog).not.toHaveBeenCalled()
   })
 
   it('the Model helper text is a sentence of its own, not a lowercase fragment', async () => {
@@ -124,7 +123,7 @@ describe('NewCrewmateDialog', () => {
       expect(region).not.toHaveTextContent(/kirocrew/i)
     })
 
-    it('unfolding shows Built from = kirocrew and every setting in the same card, under the same heading', async () => {
+    it('unfolding shows every setting in the same card, under the same heading', async () => {
       card()
       const region = await screen.findByRole('dialog')
       fireEvent.click(toggle())
@@ -132,9 +131,8 @@ describe('NewCrewmateDialog', () => {
       const advanced = screen.getByTestId('crewmate-create-advanced')
       expect(toggle()).toHaveAttribute('aria-controls', advanced.id)
       expect(region).toContainElement(advanced)
-      expect(await screen.findByRole('combobox', { name: 'Built from' })).toHaveTextContent('kirocrew')
-      expect(screen.getByRole('textbox', { name: 'What it looks after' })).toBeInTheDocument()
-      expect(advanced).toContainElement(screen.getByRole('combobox', { name: 'Built from' }))
+      expect(advanced).toContainElement(await screen.findByRole('textbox', { name: 'Goal' }))
+      expect(screen.queryByRole('combobox', { name: 'Built from' })).toBeNull()
       expect(within(advanced).getByLabelText('Workspace')).toBeInTheDocument()
       expect(within(advanced).getByLabelText('Edit default model')).toBeInTheDocument()
       // One disclosure, not a second one nested inside it, and no way "back".
@@ -148,11 +146,11 @@ describe('NewCrewmateDialog', () => {
       await screen.findByTestId('crewmate-create-form')
       typeName('Scout')
       fireEvent.click(toggle())
-      fireEvent.change(screen.getByRole('textbox', { name: 'What it looks after' }), { target: { value: 'Watch PRs' } })
+      fireEvent.change(screen.getByRole('textbox', { name: 'Goal' }), { target: { value: 'Watch PRs' } })
       fireEvent.click(toggle())
       await waitFor(() => expect(screen.queryByTestId('crewmate-create-advanced')).toBeNull())
       fireEvent.click(toggle())
-      expect(screen.getByRole('textbox', { name: 'What it looks after' })).toHaveValue('Watch PRs')
+      expect(screen.getByRole('textbox', { name: 'Goal' })).toHaveValue('Watch PRs')
       expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Scout')
       // Folded again: still sent.
       fireEvent.click(toggle())
@@ -321,15 +319,15 @@ describe('NewCrewmateDialog', () => {
 
     it('startExpanded opens with Advanced settings already unfolded, on every open', async () => {
       const { rerender } = card({ startExpanded: true })
-      await screen.findByRole('combobox', { name: 'Built from' })
+      await screen.findByRole('textbox', { name: 'Goal' })
       expect(toggle()).toHaveAttribute('aria-expanded', 'true')
       fireEvent.click(toggle())
       rerender(<NewCrewmateDialog open={false} firstGreeting startExpanded {...props} />)
       rerender(<NewCrewmateDialog open firstGreeting startExpanded {...props} />)
-      expect(await screen.findByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
+      expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     })
 
-    it('reads top to bottom: look, Name label, name, hint, Create, then the Advanced settings toggle last', async () => {
+    it('reads top to bottom: look, Name label, name, the Advanced settings toggle, then the one Create in the footer', async () => {
       card()
       const region = await screen.findByRole('dialog')
       // Document order, read off one walk of the card.
@@ -339,17 +337,32 @@ describe('NewCrewmateDialog', () => {
         screen.getByTestId('crewmate-create-look'),
         screen.getByTestId('crewmate-create-name-label'),
         screen.getByRole('textbox', { name: 'Name' }),
-        screen.getByTestId('crewmate-create-submit'),
         screen.getByTestId('crewmate-create-secondary'),
+        screen.getByTestId('crewmate-create-submit'),
       ]
       for (const el of order) expect(at(el)).toBeGreaterThan(-1)
       for (let i = 1; i < order.length; i++) expect(at(order[i])).toBeGreaterThan(at(order[i - 1]))
-      // No hint line between the name and Create, and the folded card ends
-      // with the secondary line: its toggle is the last control, and no second Create.
       expect(screen.queryByTestId('crewmate-create-quick-hint')).toBeNull()
-      expect(within(region).getAllByRole('button').at(-1)).toBe(toggle())
-      expect(screen.queryByTestId('crewmate-create-submit-end')).toBeNull()
+      expect(within(region).getAllByRole('button').at(-1)).toBe(screen.getByTestId('crewmate-create-submit'))
       expect(screen.getByTestId('crewmate-create-submit')).toHaveClass('w-full')
+    })
+
+    it.each([false, true])('renders exactly one Create, in the sticky footer (advanced unfolded: %s)', async (unfold) => {
+      card()
+      const region = await screen.findByRole('dialog')
+      if (unfold) {
+        fireEvent.click(toggle())
+        await screen.findByTestId('crewmate-create-advanced')
+      }
+      const creates = within(region).getAllByRole('button', { name: 'Create mate' })
+      expect(creates).toHaveLength(1)
+      const footer = screen.getByTestId('crewmate-create-footer')
+      expect(footer).toContainElement(creates[0])
+      expect(footer).toHaveClass('sticky', 'bg-card')
+      // The footer is the form's last child, outside the folding region, so
+      // it is the same button whether Advanced settings is open or not.
+      expect(screen.queryByTestId('crewmate-create-advanced')?.contains(footer) ?? false).toBe(false)
+      expect(footer.closest('form')?.getAttribute('data-testid')).toBe('crewmate-create-form')
     })
 
     it('the secondary line under Create holds only the centred Advanced settings toggle, chevron before its label', async () => {
@@ -378,41 +391,44 @@ describe('NewCrewmateDialog', () => {
       }
     })
 
-    it('Advanced settings unfolds directly under its toggle and ends with a second Create', async () => {
+    it.each([false, true])('Enter in the Name field submits through the footer Create (advanced unfolded: %s)', async (unfold) => {
+      vi.mocked(api.createKirocrewAgent).mockImplementationOnce(() => new Promise(() => {}))
+      const user = userEvent.setup()
+      card()
+      await screen.findByTestId('crewmate-create-form')
+      if (unfold) fireEvent.click(toggle())
+      await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Scout{Enter}')
+      await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+      expect(vi.mocked(api.createKirocrewAgent).mock.calls[0][0]).toMatchObject({ name: 'Scout' })
+    })
+
+    it('Advanced settings unfolds directly under its toggle, above the footer Create', async () => {
       card()
       const region = await screen.findByRole('dialog')
       fireEvent.click(toggle())
       const advanced = screen.getByTestId('crewmate-create-advanced')
       const all = Array.from(region.querySelectorAll('*'))
       const at = (el: Element) => all.indexOf(el)
-      expect(at(advanced)).toBeGreaterThan(at(screen.getByTestId('crewmate-create-secondary')))
-      expect(at(screen.getByTestId('crewmate-create-submit'))).toBeLessThan(at(screen.getByTestId('crewmate-create-secondary')))
       expect(advanced.previousElementSibling).toBe(screen.getByTestId('crewmate-create-secondary'))
-      const end = screen.getByTestId('crewmate-create-submit-end')
-      expect(advanced).toContainElement(end)
-      expect(within(region).getAllByRole('button').at(-1)).toBe(end)
-      expect(end).toHaveClass('w-full', 'min-h-11')
-      expect(end).toHaveTextContent('Create mate')
+      expect(at(screen.getByTestId('crewmate-create-submit'))).toBeGreaterThan(at(advanced))
+      expect(advanced).not.toContainElement(screen.getByTestId('crewmate-create-submit'))
     })
 
-    it('the closing Create submits the same create, once per press', async () => {
+    it('the footer Create submits once per press, and is locked while the create is in flight', async () => {
       vi.mocked(api.createKirocrewAgent).mockImplementationOnce(() => new Promise(() => {}))
       card()
       await screen.findByTestId('crewmate-create-form')
       typeName('Scout')
       fireEvent.click(toggle())
-      fireEvent.click(screen.getByTestId('crewmate-create-submit-end'))
+      fireEvent.click(screen.getByTestId('crewmate-create-submit'))
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
       expect(vi.mocked(api.createKirocrewAgent).mock.calls[0][0]).toMatchObject({ name: 'Scout', kiro_agent: 'kirocrew' })
-      // In flight: both Create buttons are locked, so no second POST leaves.
-      await waitFor(() => expect(screen.getByTestId('crewmate-create-submit-end')).toBeDisabled())
-      expect(screen.getByTestId('crewmate-create-submit')).toBeDisabled()
-      fireEvent.click(screen.getByTestId('crewmate-create-submit-end'))
+      await waitFor(() => expect(screen.getByTestId('crewmate-create-submit')).toBeDisabled())
       fireEvent.click(screen.getByTestId('crewmate-create-submit'))
       expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
     })
 
-    it('the toggle, the look and both Creates are locked with the form while a create is in flight', async () => {
+    it('the toggle, the look and Create are locked with the form while a create is in flight', async () => {
       vi.mocked(api.createKirocrewAgent).mockImplementationOnce(() => new Promise(() => {}))
       card()
       const dialog = await screen.findByRole('dialog')
@@ -452,7 +468,7 @@ describe('NewCrewmateDialog opened from a proposal', () => {
     vi.mocked(api.createKirocrewAgent).mockClear()
   })
   afterEach(() => { vi.restoreAllMocks() })
-  const goalField = () => screen.queryByRole('textbox', { name: 'What it looks after' }) as HTMLTextAreaElement | null
+  const goalField = () => screen.queryByRole('textbox', { name: 'Goal' }) as HTMLTextAreaElement | null
 
   it('fills the name, and the goal with Advanced settings open so the goal is in view', async () => {
     renderWithProviders(<NewCrewmateDialog open initialDraft={{ name: 'Scout', goal: 'Watch CI' }} {...props} />)

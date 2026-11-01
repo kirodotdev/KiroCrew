@@ -75,6 +75,11 @@ logger = logging.getLogger(__name__)
 # the fallback is logged once per backend per process.
 _WARNED_UNSAFE_BACKENDS: set = set()
 
+# Fire-and-forget tasks this module starts. The event loop keeps only a weak
+# reference to a task, so one nothing else holds can be garbage-collected
+# mid-run; each is held here until it finishes.
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
 DEFAULT_POOL_SIZE = 3
 DEFAULT_TIMEOUT = 60.0
 FETCH_TIMEOUT = 120.0
@@ -93,8 +98,7 @@ DEFAULT_IDLE_TTL_SECS = 300.0
 #
 # Pool workers are long-lived sessions, but every prompt they serve is
 # self-contained: ``extractor.EXTRACTION_PROMPT`` inlines the whole chunk between
-# per-call nonce markers, and ``agent_fetch`` inlines the whole URL, so no call
-# depends on anything an earlier call said. The accumulating transcript is
+# per-call nonce markers, so no call depends on anything an earlier call said. The accumulating transcript is
 # therefore pure cost — and once it reaches the backend's own ceiling the backend
 # auto-compacts, which is a BILLED summarization turn over the entire transcript,
 # repeated every few minutes for the rest of a large ingestion.
@@ -211,15 +215,20 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
     data = _read_config() if config is None else config
     selection = backend_from_stored(_section(data, "agent").get("acp_backend"))
     resolved = resolve_selected_backend(selection)
+    # A Kiro CLI pick resolves to KAS while kiro-cli offers v3, and landing back on
+    # Kiro here is landing on what the user picked, so it is not worth a warning.
+    declared = selection is not None
+    if selection == ACP_BACKEND_KIRO:
+        declared = False
     if not capabilities_for(resolved).honors_zero_tool_ban:
         _log_capability_fallback(
             resolved,
-            selection is not None,
+            declared,
             "does not honor a zero-tool spec (honors_zero_tool_ban is False)",
         )
         return ACP_BACKEND_KIRO
     if not capabilities_for(resolved).acp_client_spawnable:
-        _log_capability_fallback(resolved, selection is not None, "is not acp_client_spawnable")
+        _log_capability_fallback(resolved, declared, "is not acp_client_spawnable")
         return ACP_BACKEND_KIRO
     return resolved
 
@@ -1294,7 +1303,9 @@ class LLMPool:
             if self._resize_when_idle:
                 # A width change waiting on a zero-TTL pool: recycle now that
                 # nothing is in flight, so the next acquire spawns the new width.
-                asyncio.get_running_loop().create_task(self._maybe_scale_to_zero(force=True))
+                task = asyncio.get_running_loop().create_task(self._maybe_scale_to_zero(force=True))
+                _BACKGROUND_TASKS.add(task)
+                task.add_done_callback(_BACKGROUND_TASKS.discard)
         self._semaphore.release()
 
     async def _idle_reaper(self) -> None:

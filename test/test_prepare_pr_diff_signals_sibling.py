@@ -27,7 +27,12 @@ SIBLING = ROOT / ".github" / "scripts" / "sibling_list_check.py"
 
 ds = load_skill_script("prepare_pr_diff_signals_sibling_under_test", SCRIPT)
 
-BODY_HEAD = "## What changed\n\nsend.py sends once. .github is weakened.\n\n" "## Tests\n\nx\n\n"
+BODY_HEAD = (
+    "## What changed\n\nsend.py sends once. .github is weakened.\n\n"
+    "## Tests\n\nx\n\n"
+    # A fix body CI's PR Hygiene accepts, so only the sibling check decides the exit.
+    "## Pattern harvest\n\nNot generalizable: test fixture\n\n"
+)
 GOOD_SWEEP = "## Sibling sweep\n\nSibling: src/kiro_crew/chat/other.py -- tracked in #5\n"
 BAD_SWEEP = "## Sibling sweep\n\nSibling: src/kiro_crew/chat/ghost.py -- tracked in #5\n"
 

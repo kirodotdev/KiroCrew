@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 from kiro_crew import cli_help, platform_compat
+from kiro_crew.cli_arg_types import positive_int
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.instances import tunnel_keeper
 from kiro_crew.perf_sampler import gate_refusal_message, profiling_enabled
@@ -98,9 +99,13 @@ def find_metrics_artifact(
     """
     if explicit is not None:
         try:
+            # Expand a leading ``~``/``~user`` the shell left alone (Windows
+            # shells, ``--path=~/x``), as every other caller path in the CLI does.
+            explicit = explicit.expanduser()
             return explicit if explicit.is_file() else None
-        except OSError:
-            # An unreadable or malformed path is "not found" for our purposes.
+        except (OSError, RuntimeError):
+            # An unreadable or malformed path is "not found" for our purposes, and
+            # so is a ``~user`` naming no account (expanduser's RuntimeError).
             return None
     found: list[tuple[float, Path]] = []
     for directory in desktop_log_dirs(env):
@@ -338,7 +343,7 @@ def register_desktop_parser(sub: argparse._SubParsersAction) -> None:
     )
     metrics.add_argument("--json", action="store_true", help="Emit the raw artifact as JSON")
     metrics.add_argument(
-        "--top", type=int, default=5, help="How many processes to list (default: 5)"
+        "--top", type=positive_int, default=5, help="How many processes to list (default: 5)"
     )
 
     tunnel = desktop_sub.add_parser(

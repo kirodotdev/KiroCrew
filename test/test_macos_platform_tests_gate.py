@@ -147,14 +147,14 @@ class TestThePullRequestPathInstantiatesNoMacRunner:
 class TestTheMovedLaneIsTheSameLane:
     """A move that quietly drops shards or canaries is a deletion with a receipt."""
 
-    def test_the_full_suite_still_runs_in_five_shards(self) -> None:
+    def test_the_full_suite_still_runs_in_six_shards(self) -> None:
         job = _load("platform-tests.yml")["jobs"]["backend-test-macos"]
         assert job["runs-on"] == "macos-15", "macos-latest moves under us; pin the label"
-        assert job["strategy"]["matrix"]["group"] == [1, 2, 3, 4, 5]
-        assert job["env"]["SHARD_COUNT"] == 5
-        # 5 shards on a max-parallel of 4: the fifth queues behind the first, and
-        # the cap is per JOB, so the lane spends one more shard of wall time and
-        # no shard gets closer to 40 (test_workflow_matrix_max_parallel.py pins
+        assert job["strategy"]["matrix"]["group"] == [1, 2, 3, 4, 5, 6]
+        assert job["env"]["SHARD_COUNT"] == 6
+        # 6 shards on a max-parallel of 4: two waves, 4 then 2, and the cap is
+        # per JOB, so each shard drops to about 25 minutes while the lane's wall
+        # time stays about the same (test_workflow_matrix_max_parallel.py pins
         # the 4).
         assert job["strategy"]["max-parallel"] == 4
         # 40 is a spend guard as much as a hang guard -- a runaway macOS shard costs
@@ -424,7 +424,7 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         if bash is None:
             pytest.skip("the verdict step is Bash")
         run = _verdict_step()["run"]
-        start = run.index('if [ -n "${BASE_SHA:-}" ]')
+        start = run.index('if added="$(git diff -U0 --no-color HEAD^1 HEAD')
         end = run.index("\nfi\n", run.index("content switch is off")) + len("\nfi\n")
         block = run[start:end]
         repo = tmp_path / "repo"
@@ -473,7 +473,7 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         # The lane is advisory, so a diff it cannot read must not fail
         # `decide` -- but it must say so rather than fall silent.
         run = _verdict_step()["run"]
-        assert 'added="$(git diff -U0 --no-color "${BASE_SHA}...${HEAD_SHA}"' in run
+        assert 'added="$(git diff -U0 --no-color HEAD^1 HEAD' in run
         assert "content switch is off for this run" in run
         assert "grep -qP" not in run
 

@@ -66,6 +66,7 @@ _SUBS = {
     "DMG_SIZE": "222",
     "ARTIFACT_SIZE": "333",
     "FEED_PREFIX": "feed/nightly",
+    "MIN_OS": "22.0.0",
 }
 _CDN_BASE = "https://download.crew.kiro.dev"
 
@@ -115,10 +116,11 @@ def _rendered_feed(run_text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _assert_updater_layout(feed: dict) -> None:
-    assert set(feed.keys()) == {"version", "files", "path", "sha512", "releaseDate"}, (
+def _assert_updater_layout(feed: dict, extra: frozenset[str] = frozenset()) -> None:
+    expected = {"version", "files", "path", "sha512", "releaseDate"} | extra
+    assert set(feed.keys()) == expected, (
         f"feed keys {sorted(feed)} diverge from the electron-updater contract "
-        "(version, files, path, sha512, releaseDate)"
+        f"({', '.join(sorted(expected))})"
     )
     assert feed["version"] == _SUBS["VERSION"], "version must be the raw ${VERSION}, no v-prefix"
     assert isinstance(feed["files"], list) and feed["files"], "files must be a non-empty list"
@@ -137,7 +139,7 @@ def _assert_updater_layout(feed: dict) -> None:
 
 def test_mac_feed_layout_is_electron_updater_metadata() -> None:
     feed = _rendered_feed(_feed_step(MAC_WORKFLOW, "publish")["run"])
-    _assert_updater_layout(feed)
+    _assert_updater_layout(feed, frozenset({"minimumSystemVersion"}))
     urls = [f["url"] for f in feed["files"]]
     # MacUpdater requires a zip entry (findFile(files, "zip", ["pkg","dmg"]))
     # -- the ZIP is what Squirrel.Mac consumes; the DMG stays the human
@@ -827,12 +829,21 @@ def test_mac_universal_leg_flattens_only_its_own_mac_bytes() -> None:
     DMG) to the same run; either would trip the exactly-one-DMG assertion or
     hand the wrong zip to the signer. All three are excluded by artifact name."""
     run = _step(_steps(MAC_WORKFLOW, "sign"), "Flatten artifacts")["run"]
-    for excluded in (
-        "artifacts/unsigned-build-darwin-arm64/*",
-        "artifacts/unsigned-build-darwin-x64/*",
-        "artifacts/KiroCrew-notarized-*/*",
-    ):
-        assert f'-not -path "{excluded}"' in run, f"flatten must exclude {excluded}"
+    assert '-not -path "artifacts/KiroCrew-notarized-*/*"' in run, "flatten must exclude gated zips"
+    # The single-arch build artifacts excluded here are exactly the ones
+    # build-desktop-mac-single-arch uploads -- read from build-desktop.yml, not
+    # retyped, so a rename in either file fails here instead of on the nightly
+    # signing lane.
+    rows = _jobs(BUILD_DESKTOP_WORKFLOW)["build-desktop-mac-single-arch"]["strategy"]["matrix"][
+        "include"
+    ]
+    built = {row["artifact-name"] for row in rows}
+    assert len(built) == len(rows) == len(_MAC_VARIANTS), f"one artifact per arch, got {rows}"
+    excluded = set(re.findall(r'-not -path "artifacts/(unsigned-build-[^"/*]+)/\*"', run))
+    assert excluded == built, (
+        f"flatten excludes {sorted(excluded)} but build-desktop-mac-single-arch "
+        f"uploads {sorted(built)}"
+    )
     attest = _step(_steps(MAC_WORKFLOW, "sign"), "Attest build provenance")
     assert (
         attest.get("if") == "${{ inputs.mac_variant == '' }}"
@@ -931,3 +942,20 @@ def test_installer_rejects_an_unknown_channel_before_hitting_the_cdn() -> None:
         assert (
             channel in src.split("unknown channel", 1)[1][:200]
         ), f"the unknown-channel error must list '{channel}'"
+
+
+def test_mac_feed_declares_the_os_floor_read_from_the_artifact() -> None:
+    """electron-updater declines an update whose feed names a higher OS floor.
+
+    The floor is a STRING Darwin kernel version (semver-compared with
+    ``os.release()``), and it must come from the artifact, computed in the same
+    step before the heredoc, so a build that moves the real floor moves it too.
+    """
+    run = _feed_step(MAC_WORKFLOW, "publish")["run"]
+    feed = _rendered_feed(run)
+    assert feed["minimumSystemVersion"] == _SUBS["MIN_OS"]
+    assert isinstance(feed["minimumSystemVersion"], str)
+    derive = run.index(
+        'MIN_OS=$(python3 scripts/feed_min_system_version.py "work/${NOTARIZED_ZIP}")'
+    )
+    assert derive < run.index("<<EOF"), "the floor must be derived before the feed is written"

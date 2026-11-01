@@ -1300,8 +1300,7 @@ class TestTheInstalledBytesAreTheValidatedBytes:
     validates a path and then hands the path to something that opens it again. The
     inode that was checked and the inode that is used are two separate lookups, and
     a local writer who retargets the unpack tree in the window between them has an
-    arbitrary file installed onto the path papyrus executes. Reviewers found exactly
-    that hole in the by-name-only version of this fix.
+    arbitrary file installed onto the path papyrus executes.
 
     `_open_inside` inverts the order — open first, then ask the kernel where the
     open thing actually is — and `_install_binary` copies from that descriptor. So

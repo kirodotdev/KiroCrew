@@ -74,6 +74,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
+import { expectLoopIcon } from './GoalLoopIconTestUtils'
 
 const WAITING_LABEL = 'Waiting on you'
 
@@ -136,8 +137,10 @@ const structuredMonitor = (overrides: Partial<StructuredMonitor> = {}): Structur
   ...overrides,
 })
 
-beforeEach(() => localStorage.clear())
-afterEach(() => vi.clearAllMocks())
+// The clock the row reads stale moments against, pinned so a case never races it.
+const NOW = 1_800_000_000_000
+beforeEach(() => { localStorage.clear(); vi.spyOn(Date, 'now').mockReturnValue(NOW) })
+afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
 
 describe('chat sidebar — loop waiting-on-you subtitle', () => {
   it('an idle loop whose newest reply carries [OPTIONS:] shows the waiting row, keeping the cycle detail', () => {
@@ -162,15 +165,15 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
     // over an old [OPTIONS:] marker arrives here as has_options=false: the badge
     // clears by construction, never by a dismiss endpoint (#10615).
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, has_options: false }]
-    const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 8, max_cycles: 24 } } })
-    expect(getByText('Loop 8/24')).toBeTruthy()
+    const { container, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 8, max_cycles: 24 } } })
+    expectLoopIcon(container, 8, 24)
     expect(queryByText(WAITING_LABEL)).toBeNull()
   })
 
   it('a RUNNING loop turn is the loop working, not waiting — even with options still on the newest reply', () => {
     const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, has_options: true }]
-    const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 3, max_cycles: 24 } } })
-    expect(getByText('Loop 3/24')).toBeTruthy()
+    const { container, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 3, max_cycles: 24 } } })
+    expectLoopIcon(container, 3, 24)
     expect(queryByText(WAITING_LABEL)).toBeNull()
   })
 
@@ -181,6 +184,117 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
     const { getByText, queryByText } = renderSidebar(slots, {})
     expect(getByText('pick one')).toBeTruthy()
     expect(queryByText(WAITING_LABEL)).toBeNull()
+  })
+
+  it('a conductor loop whose dispatched worker is running stays on the progress row despite [OPTIONS:]', () => {
+    // Between patrol cycles the conductor turn is idle and its reply ends with
+    // a courtesy [OPTIONS:] menu, but the worker it opened is mid-turn: the
+    // loop is moving, so the row must not claim it waits on the person.
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true },
+      { key: 'w', title: 'worker', running: true, messages: 3, created_by: 'k' },
+    ]
+    const { container, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expectLoopIcon(container, 5, 300)
+    expect(queryByText(WAITING_LABEL)).toBeNull()
+    expect(queryByText(/Paused at 5\/300/)).toBeNull()
+  })
+
+  it('a loop whose own sub-agents run stays on the progress row despite [OPTIONS:]', () => {
+    const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, has_options: true, subagents_running: true }]
+    const { container, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } } })
+    expectLoopIcon(container, 7, 24)
+    expect(queryByText(WAITING_LABEL)).toBeNull()
+  })
+
+  it('a loop whose workers are all idle and whose ledger holds no open item still waits on you', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true, crew_work: { open: 0, person: 0, items: [] } },
+      { key: 'w', title: 'worker', running: false, messages: 3, created_by: 'k' },
+      // A running session someone ELSE opened does not count for this loop.
+      { key: 'o', title: 'other', running: true, messages: 3, created_by: 'x' },
+    ]
+    const { getByText, queryByTestId } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(getByText(WAITING_LABEL)).toBeTruthy()
+    expect(getByText(/Paused at 5\/300/)).toBeTruthy()
+    expect(queryByTestId('crew-work-waiting')).toBeNull()
+  })
+
+  it('with no ledger summary (older gateway, board not folded yet) an idle-worker loop keeps the old reading', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true },
+      { key: 'w', title: 'worker', running: false, messages: 3, created_by: 'k' },
+    ]
+    const { getByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(getByText(WAITING_LABEL)).toBeTruthy()
+  })
+
+  it('a loop whose idle worker parked an open item is waiting on its next check, not on you', () => {
+    // The user's report: the worker reported progress and ended its turn, so
+    // nothing runs, while the ledger item is still the worker's to move.
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true,
+        crew_work: { open: 1, person: 0, items: [{ worker: 'w', stale_at_ms: NOW + 14 * 60_000 }] } },
+      { key: 'w', title: 'worker', running: false, messages: 3, created_by: 'k' },
+    ]
+    const { getByTestId, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(queryByText(WAITING_LABEL)).toBeNull()
+    expect(getByTestId('crew-work-waiting').textContent).toBe('Waiting · 1 open')
+  })
+
+  it('a loop whose open item went quiet past the window reads stalled', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true,
+        crew_work: { open: 1, person: 0, items: [{ worker: 'w', stale_at_ms: NOW - 5 * 60_000 }] } },
+      { key: 'w', title: 'worker', running: false, messages: 3, created_by: 'k' },
+    ]
+    const { getByTestId, queryByText, queryByTestId } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(queryByText(WAITING_LABEL)).toBeNull()
+    expect(queryByTestId('crew-work-waiting')).toBeNull()
+    expect(getByTestId('crew-work-stalled').textContent).toBe('Stalled · 1 gone quiet')
+  })
+
+  it('an open item that names a person waits on you even without an [OPTIONS:] line', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: false,
+        crew_work: { open: 2, person: 1, items: [{ worker: 'w', stale_at_ms: NOW + 14 * 60_000 }] } },
+      { key: 'w', title: 'worker', running: false, messages: 3, created_by: 'k' },
+    ]
+    const { getByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(getByText(WAITING_LABEL)).toBeTruthy()
+  })
+
+  it('an item on a person waits on you even while another worker runs', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true,
+        crew_work: { open: 2, person: 1, items: [{ worker: 'w', stale_at_ms: NOW + 60_000 }] } },
+      { key: 'w', title: 'worker', running: true, messages: 3, created_by: 'k' },
+    ]
+    const { getByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(getByText(WAITING_LABEL)).toBeTruthy()
+  })
+
+  it('an item on a person waits on you after its patrol stops', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: false,
+        crew_work: { open: 1, person: 1, items: [] } },
+    ]
+    const { getByText, queryByText } = renderSidebar(slots, {})
+    expect(getByText(WAITING_LABEL)).toBeTruthy()
+    expect(queryByText(/Monitor paused/)).toBeNull()
+  })
+
+  it('a running worker keeps a conductor with open work on the progress row', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true,
+        crew_work: { open: 1, person: 0, items: [{ worker: 'w', stale_at_ms: NOW - 5 * 60_000 }] } },
+      { key: 'w', title: 'worker', running: true, messages: 3, created_by: 'k' },
+    ]
+    const { container, queryByText, queryByTestId } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expectLoopIcon(container, 5, 300)
+    expect(queryByText(WAITING_LABEL)).toBeNull()
+    expect(queryByTestId('crew-work-stalled')).toBeNull()
+    expect(queryByTestId('crew-work-waiting')).toBeNull()
   })
 
   it('an owed approval outranks the waiting row', () => {

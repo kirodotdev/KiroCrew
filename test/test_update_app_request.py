@@ -272,9 +272,14 @@ class TestArmPackagedApp:
 
     async def test_a_different_ask_notifies(self, packaged) -> None:
         await updates.api_update_arm(_request({"version": "0.6.0"}))
+        first_id = packaged.current().request_id
         req = _request({"version": "0.7.0"})
-        await updates.api_update_arm(req)
+        resp = await updates.api_update_arm(req)
         req.app["state"].notify.assert_called_once()
+        # The new ask replaces the stored one rather than riding on it.
+        cur = packaged.current()
+        assert cur.target_version == "0.7.0" and cur.request_id != first_id
+        assert json.loads(resp.body.decode())["request_id"] == cur.request_id
 
     async def test_arm_without_a_version_asks_for_latest(self, packaged) -> None:
         resp = await updates.api_update_arm(_request({}))

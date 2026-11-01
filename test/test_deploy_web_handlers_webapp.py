@@ -572,7 +572,7 @@ def test_pending_confirm_readds_entry_when_deploy_raises(monkeypatch, tmp_path):
         }
     )
 
-    async def boom(_params):
+    async def boom(_params, **_kwargs):
         raise subprocess.TimeoutExpired(cmd="aws s3api create-bucket", timeout=60)
 
     monkeypatch.setattr(handlers, "_do_deploy", boom)

@@ -133,6 +133,9 @@ def _security(args: argparse.Namespace) -> None:
             pass
         else:
             print("✅ No suspicious content in vector memory.")
+        if findings or mem_findings:
+            # Exit non-zero so a script can gate on the scan, like `policy validate`.
+            raise SystemExit(1)
     elif action == "events":
 
         limit = getattr(args, "limit", 20)
@@ -217,6 +220,7 @@ def _security(args: argparse.Namespace) -> None:
                 f"⚠️  Audit history UNVERIFIABLE: {result.reason}. "
                 f"Rotated segments were not checked — {live}."
             )
+            raise SystemExit(1)
         elif result.total == 0:
             print("No security events to verify.")
         elif result.total == result.valid:
@@ -226,6 +230,7 @@ def _security(args: argparse.Namespace) -> None:
                 f"⚠️  HMAC chain COMPROMISED: {result.valid}/{result.total} entries "
                 f"valid, {result.total - result.valid} tampered."
             )
+            raise SystemExit(1)
     else:
         print("Usage: kirocrew security {audit|deny-list|events|verify}")
 
@@ -339,25 +344,39 @@ def _policy(args: argparse.Namespace) -> None:
                     "(enabled true or false) if you meant to decide it."
                 )
         # Force-load every profile; the store records invalid ones as deny-all.
-        from kiro_crew.platform.governance_profiles import _profiles_dir
+        from kiro_crew.platform.governance_profiles import _profiles_dir, fallback_profile_names
 
         pdir = _profiles_dir()
         if pdir.is_dir():
             for f in sorted(pdir.glob("*.json")):
                 prof = get_store_profile(f.stem)
-                status = "OK" if prof and not prof.name.startswith("_deny") else "INVALID→deny-all"
+                # The store keeps the file stem as a fallback's name, so the name alone
+                # cannot tell a broken file apart; the store's own fallback set can.
+                failed = (
+                    prof is None
+                    or prof.name.startswith("_deny")
+                    or f.stem in fallback_profile_names()
+                )
+                status = "INVALID→deny-all" if failed else "OK"
                 if status != "OK":
                     ok = False
                 print(f"   profile {f.name}: {status}")
         else:
             print("   (no profiles directory)")
-        print("✅ valid" if ok else "⚠️  some profiles failed validation (fell back to deny-all)")
+        if not ok:
+            # Exit non-zero so a config-management run can gate on it, like `policy fetch`.
+            print("⚠️  some profiles failed validation (fell back to deny-all)", file=sys.stderr)
+            raise SystemExit(1)
+        print("✅ valid")
 
     elif action == "explain":
         scope = args.scope
         if scope not in SCOPE_CATALOG:
-            print(f"Unknown scope {scope!r}. Known: {', '.join(sorted(SCOPE_CATALOG))}")
-            return
+            print(
+                f"Unknown scope {scope!r}. Known: {', '.join(sorted(SCOPE_CATALOG))}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         profile = resolve_active_scope(args.session_key, agent=args.agent, app=args.app)
         decision = resolve(ceiling, profile, scope, args.item)
         verdict = "ALLOWED" if decision.permitted else "DENIED"
@@ -373,8 +392,8 @@ def _policy(args: argparse.Namespace) -> None:
     elif action == "profile":
         prof = get_store_profile(args.name)
         if prof is None:
-            print(f"No profile named {args.name!r} in ~/.kiro/crew/profiles/.")
-            return
+            print(f"No profile named {args.name!r} in ~/.kiro/crew/profiles/.", file=sys.stderr)
+            raise SystemExit(1)
         bind = f"{prof.bind.type}:{prof.bind.id}" if prof.bind else "(unbound)"
         print(f"📄 Profile {prof.name!r}  bind={bind}  extends={prof.extends or '—'}")
         if not prof.controls:
@@ -413,9 +432,10 @@ def _print_policy_source() -> None:
     if posture.get("error_code"):
         print(
             "⚠️  Central policy distribution is misconfigured; see the gateway log "
-            "for the reason and check the 'distribution' block in your policy."
+            "for the reason and check the 'distribution' block in your policy.",
+            file=sys.stderr,
         )
-        return
+        raise SystemExit(1)
     if not posture.get("configured"):
         print("Central policy distribution: not configured (this host uses a local policy).")
         print(

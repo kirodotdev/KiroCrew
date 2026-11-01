@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { autoOpenRows } from '../../lib/crewMode'
 import { unwrapResult } from '@reduxjs/toolkit'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { NavigateFunction, NavigationType } from 'react-router-dom'
@@ -205,8 +206,10 @@ export function useChatPageSessionController({
     if (opts?.background) return
     if (!connectedRef.current) return
     // Foreground open-in-tab is a user gesture on a session reference: the
-    // announced class.
-    if (key !== activeSlotRef.current) dispatch(switchSlot({ key, announceOnMissing: true, ...(opts?.requestSeq !== undefined ? { requestSeq: opts.requestSeq } : {}) }))
+    // announced class. With `requestSeq` it is a create opening the session it
+    // just made when the server answered, not the user opening a chat, so it
+    // is not a `gesture` (#23564).
+    if (key !== activeSlotRef.current) dispatch(switchSlot({ key, announceOnMissing: true, ...(opts?.requestSeq !== undefined ? { requestSeq: opts.requestSeq } : { gesture: true }) }))
     // Depends on the ONE member it calls, not on `sessionTabs` — that hook
     // returns a fresh object literal every render, so the whole object as a dep
     // makes this callback (and thus ChatSidebar's `onOpenSlotInNewTab`, and thus
@@ -235,7 +238,7 @@ export function useChatPageSessionController({
     if (key === activeSlotRef.current || !connectedRef.current) return
     // Tab-strip select is a user gesture on a session reference: the announced
     // class.
-    dispatch(switchSlot({ key, announceOnMissing: true }))
+    dispatch(switchSlot({ key, announceOnMissing: true, gesture: true }))
   }, [dispatch, activeSlotRef])
   const closeSessionTab = useCallback((key: string) => {
     const next = sessionTabs.closeTab(key)
@@ -885,7 +888,7 @@ export function useChatPageSessionController({
     // resumed since the notice appeared, and an open one is switched to.
     const open = filteredSlotsRef.current.some(s => s.key === match.key)
     if (match.stem && !open) void dispatch(resumeFromHistory({ key: match.stem, title: match.title }))
-    else dispatch(switchSlot({ key: match.key, announceOnMissing: true }))
+    else dispatch(switchSlot({ key: match.key, announceOnMissing: true, gesture: true }))
   }, [dispatch, filteredSlotsRef])
   useEffect(() => {
     if (embedded && !embedMode) return
@@ -1141,14 +1144,24 @@ export function useChatPageSessionController({
   // silently undo the link — clicking a session on the System page landed you
   // in whatever chat you had open before. The sid effect's own switchSlot
   // fetches, so nothing is lost by skipping here.
-  useEffect(() => { if (!deepLinkPendingRef.current && activeSlot && !newSessionRef.current && filteredSlotsRef.current.find(s => s.key === activeSlot)) dispatch(switchSlot(activeSlot)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  //
+  // Also skipped while a switch to that same session is still in flight (an
+  // open from the command palette on another page, which then navigates
+  // here): it already fetches, and a plain re-fetch would supersede it and
+  // drop its gesture flag, so a cron note would never read (#23564).
+  const switchInFlightKey = useAppSelector(s => (s.chat.slotSwitchRequestId !== null ? s.chat.slotSwitchTarget : null))
+  useEffect(() => { if (!deepLinkPendingRef.current && activeSlot && switchInFlightKey !== activeSlot && !newSessionRef.current && filteredSlotsRef.current.find(s => s.key === activeSlot)) dispatch(switchSlot(activeSlot)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A popout's chat the server removed (its `removed` patch) is dropped even
+  // when it was the only slot, so the auto-select effect below can show the
+  // closed-session notice instead of staying bound to a removed chat.
+  const activeSlotRemoved = useAppSelector(s => !!(popout && activeSlot && s.dashboard.durablyRemoved?.[activeSlot]))
   // Clear activeSlot when it belongs to a different mode (page switch)
   useEffect(() => {
-    if (activeSlot && slots.length > 0 && !filteredSlots.find(s => s.key === activeSlot)) {
+    if (activeSlot && (slots.length > 0 || activeSlotRemoved) && !filteredSlots.find(s => s.key === activeSlot)) {
       dispatch(dropActiveSlot())
     }
-  }, [activeSlot, slots.length, filteredSlots, dispatch])
+  }, [activeSlot, activeSlotRemoved, slots.length, filteredSlots, dispatch])
 
   // Auto-select slot after refresh — restore from localStorage or pick first
   // If no slots exist at all, auto-create one so the user lands in a ready chat
@@ -1163,6 +1176,22 @@ export function useChatPageSessionController({
   // as an effect dependency it would re-run the pick it just made.
   const slotHistory = useAppSelector(s => s.chat.slotHistory)
   const slotHistoryRef = useRef(slotHistory); slotHistoryRef.current = slotHistory
+  // The popout's own chat once the server confirmed it was closed or deleted
+  // somewhere else. The empty state shows the closed-session notice for it.
+  const [ownChatClosedElsewhere, setOwnChatClosedElsewhere] = useState<string | null>(null)
+  // Only this window's own `deleteSlot` holds a key in `closingSlots`. A close
+  // started here gets no notice.
+  const closingSlots = useAppSelector(s => s.dashboard.closingSlots)
+  const closingSlotsRef = useRef(closingSlots); closingSlotsRef.current = closingSlots
+  const closedHereRef = useRef<string | null>(null)
+  // An omission alone proves nothing: a stale or reconnect-time frame can drop
+  // a live chat for a while. Only the server's `removed` patch, which
+  // `_close_slot` sends on a real close, confirms it (`durablyRemoved`). A list
+  // read cannot: after a gateway restart the open-tab restore adds tabs to the
+  // list one at a time, and a tab whose restore read failed is open but never
+  // listed, and the reply carries no flag that tells either apart from a
+  // close. Without the patch the popout keeps the plain empty state.
+  const durablyRemoved = useAppSelector(s => s.dashboard.durablyRemoved)
   // The hub's record of this pane's last chat (#16009), used for the first
   // pick only. A soft hint, unlike ?sid=: a chat that is gone falls through.
   const slotHintRef = useRef(embedded ? null : searchParams.get(PANE_SLOT_HINT_PARAM))
@@ -1191,6 +1220,8 @@ export function useChatPageSessionController({
       hadActiveSlotRef.current = true
       lastShownSlotRef.current = activeSlot
       slotHintRef.current = null
+      closedHereRef.current = null
+      setOwnChatClosedElsewhere(null)
       return
     }
     // The user asked for a new chat and it is on its way. Opening another
@@ -1209,25 +1240,38 @@ export function useChatPageSessionController({
     // shows no chat and creates none, also after a reload, and it reopens the
     // chat when a later frame lists it again.
     const bound = popout && hadActiveSlotRef.current ? lastShownSlotRef.current : null
-    if (popout && !(bound && listed.has(bound))) return
+    if (popout && !(bound && listed.has(bound))) {
+      if (bound) {
+        // Latched: the hold leaves `closingSlots` once the close is confirmed,
+        // and a later frame must not relabel this window's own close.
+        if (closingSlotsRef.current?.[bound]) closedHereRef.current = bound
+        const confirmed = closedHereRef.current !== bound && !!durablyRemoved?.[bound]
+        setOwnChatClosedElsewhere(confirmed ? bound : null)
+      }
+      return
+    }
     if (!bound && (searchParams.get('slot') || searchParams.get('sid') || initialSidRef.current)) return
     // A crash-recovery reload opens nothing. The remembered chat -- or the first
     // one, which is often the same busy chat -- may be what froze the renderer,
     // and reopening it would freeze and kill it again (#12907). The user picks.
     // Only the first auto-open is skipped: once the user has opened a chat,
     // closing it moves to a sibling as usual.
-    if (filteredSlots.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
-    if (filteredSlots.length > 0) {
+    // The page's own pick never lands on a crew member (`autoOpenRows`): with only
+    // crew members left, it creates an ordinary chat instead.
+    const eligible = autoOpenRows(filteredSlots)
+    const eligibleKeys = new Set(eligible.map(s => s.key))
+    if (eligible.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
+    if (bound || eligible.length > 0) {
       // The stored key is a refresh memory, read for the first pick only. Every
       // tab and popout rewrites it on each slots frame, so once this window has
       // shown a chat, its own recency stack decides where it lands.
-      const recent = hadActiveSlotRef.current ? (slotHistoryRef.current ?? []).filter(k => listed.has(k)).pop() : undefined
+      const recent = hadActiveSlotRef.current ? (slotHistoryRef.current ?? []).filter(k => eligibleKeys.has(k)).pop() : undefined
       const saved = hadActiveSlotRef.current ? null : localStorage.getItem(slotStorageKey)
       const hint = slotHintRef.current
       slotHintRef.current = null
       const target = bound ? bound
         : hint && listed.has(hint) ? hint
-        : recent ?? (saved && listed.has(saved) ? saved : filteredSlots[0].key)
+        : recent ?? (saved && eligibleKeys.has(saved) ? saved : eligible[0].key)
       dispatch(switchSlot({ key: target, automatic: true }))
     } else if (connected && slotsLoaded && !autoCreatedRef.current) {
       // Connected, slots fetched, and truly empty — auto-create one
@@ -1237,7 +1281,7 @@ export function useChatPageSessionController({
       // which leaves a create or fork the user started free to open.
       dispatch(createSlot({ mode, automatic: true }))
     }
-  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed])
+  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed, durablyRemoved])
 
   // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
   // placement — it force-pins to the bottom (arming follow) or restores a
@@ -1300,5 +1344,6 @@ export function useChatPageSessionController({
     sidMatches,
     setSidMatches,
     openShortNameMatch,
+    ownChatClosedElsewhere,
   }
 }

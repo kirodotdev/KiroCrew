@@ -453,7 +453,7 @@ class TestDiscoverInstall:
             }
             # The translated spec landed in the KiroCrew scope — DISABLED,
             # because required env is unset: enabling after configuration is
-            # the user's informed-consent step (review finding).
+            # the user's informed-consent step.
             written = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))
             assert written["mcpServers"]["weather"] == {
                 "command": "npx",

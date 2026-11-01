@@ -395,7 +395,6 @@ class TestMultiAgentMigrationEdgeCases:
                 assert on_disk["agents"]["default"]["kiro_agent"] == "kirocrew"
         finally:
             tmp.unlink(missing_ok=True)
-            # Clean up backup file
             bak = tmp.with_suffix(".json.bak")
             bak.unlink(missing_ok=True)
 
@@ -437,7 +436,6 @@ class TestMultiAgentMigrationEdgeCases:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_config = Path(tmpdir) / "config.json"
-            # Start with empty config
             tmp_config.write_text("{}", encoding="utf-8")
 
             with (

@@ -144,6 +144,11 @@ _ANSWERS: dict[str, str] = {
         "What this crewmate waits on the person for: its open questions and the cards "
         "still waiting on a button, newest first, with the count"
     ),
+    "custom": (
+        "The latest record per type a script cron bound to this crewmate appended with "
+        "ctx.crew_log_append: the record's data, when it landed, which job wrote it, "
+        "when it goes stale and whether that job's run has failed since"
+    ),
     "workers": (
         "The worker sessions this crewmate created: each one's task, whether it is "
         "running, between turns, done, blocked, failed or closed, and what it last said"

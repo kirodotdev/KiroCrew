@@ -142,13 +142,20 @@ class TerminalCoordinator(ManagerComponent):
         this counter describe a population nobody chose.
 
         The outcome is the runtime's own three-way classification, folded onto a
-        closed enum. Nothing else from the record is published: the ``error``
-        text, the agent name and the task are all free text.
+        closed enum. ``result`` says only whether a completed run's result was
+        empty (``events.SUBAGENT_RESULT_VALUES``). Nothing else from the record is
+        published: the ``error`` text, the result text, the agent name and the
+        task are all free text.
 
         Like every other name in this module's methods, the import is inside the
         body (see :meth:`_record_crew_log_terminal`).
         """
-        from kiro_crew.metrics.events import SUBAGENT_COMPLETED, emit_counter, subagent_outcome
+        from kiro_crew.metrics.events import (
+            SUBAGENT_COMPLETED,
+            emit_counter,
+            subagent_outcome,
+            subagent_result_kind,
+        )
         from kiro_crew.subagent import logger as _logger
 
         try:
@@ -159,7 +166,17 @@ class TerminalCoordinator(ManagerComponent):
             # one the remainder member names.
             _logger.debug("metrics: reading a subagent terminal outcome failed", exc_info=True)
             outcome = subagent_outcome(None)
-        emit_counter(SUBAGENT_COMPLETED, {"outcome": outcome})
+        try:
+            # Only whether the result was empty leaves this method, never its text.
+            result = subagent_result_kind(
+                outcome,
+                getattr(info, "result", ""),
+                getattr(info, "result_truncated", False),
+                returned_reply=getattr(info, "returned_reply", None),
+            )
+        except Exception:
+            result = "none"
+        emit_counter(SUBAGENT_COMPLETED, {"outcome": outcome, "result": result})
 
     def _claim_finalize_impl(self, info: SubagentInfo, *, supersede_recovery: bool = False) -> bool:
         """Claim the exclusive right to report ``info``'s terminal outcome.
@@ -312,11 +329,15 @@ class TerminalCoordinator(ManagerComponent):
         # child's origin pin, which `_record_crew_log_terminal` holds until the
         # closer is handed to the writer. This flip stays ahead of the event for
         # the paths that reach a terminal without the run loop.
+        #
+        # Usage still pending here is settled before the closer reads
+        # `info.credits`, as the reap does before its tombstone, so the crew log,
+        # the tombstone and the WS frame all carry the same figure.
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
         self._record_crew_log_terminal(info)
         self._record_terminal_metric(info)
         info.done = True
-        if info._credit_accounting is not None:
-            info._credit_accounting.settle()
         # Arm the done-but-unreported hold in the same synchronous block as
         # the flip, so the hold and the flip can never be observed apart: from
         # this line until the completion consumer lands the member's
@@ -373,7 +394,7 @@ class TerminalCoordinator(ManagerComponent):
                 "stopped": info.user_stopped,
                 "outcome": info.outcome,
                 "task": _redact(info.task),
-                "agent": _redact(info.agent),
+                "agent": _redact(getattr(info, "run_agent", info.agent)),
                 "label": _redact(info.label),
                 # The sub-agent's own session key (see build_subagent_snapshot):
                 # lets a client fetch this node's own context-trace even after
@@ -395,6 +416,9 @@ class TerminalCoordinator(ManagerComponent):
                 "stop_reason": info.stop_reason,
                 "stop_class": info.stop_class,
                 "partial": info.partial,
+                # A normal end whose final segment leaked a tool call as
+                # text: completed, but that last call never ran.
+                "leaked_tool_call": bool(getattr(info, "leaked_tool_call", False)),
             },
         )
         # A terminal is where the user watches the wave settle, so it
@@ -456,6 +480,8 @@ class TerminalCoordinator(ManagerComponent):
             # Owed only to the parent that ended, so this skip settles it.
             info._report_delivered = True
             return True
+        if info._left_for_next_start:  # reported by the next start's orphan sweep
+            return True
         try:
             await asyncio.wait_for(self._manager._on_done(info), timeout=_ON_DONE_TIMEOUT)
             # The outcome has REACHED the parent. Recorded before any further
@@ -482,6 +508,9 @@ class TerminalCoordinator(ManagerComponent):
             if (
                 mark_delivered_on_success
                 and not info.error
+                # A completed run whose kill failed keeps an empty error, so the
+                # flag sends it to the ``leaked_process`` branch below.
+                and not info._leaked_process
                 and not info._digest_held
                 and not info._delivery_queued
                 # A report the gateway gave up on reached the parent at most as a
@@ -490,12 +519,9 @@ class TerminalCoordinator(ManagerComponent):
                 # settles it.
                 and not info._report_undelivered
             ):
-                # The teardown has decided by now (this report waited for it
-                # before publishing), so an empty error means the reset ended
-                # the process or the kill landed: only then is the run's folder
-                # excluded from orphan reconciliation. A kill the teardown could
-                # not deliver is in ``info.error`` and leaves no ``delivered``
-                # tombstone, so reconciliation still reaches the survivor.
+                # The teardown has decided by now (this report waited for it), so
+                # no error and no leaked process means the process is gone: only
+                # then does a plain ``delivered`` tombstone end reconciliation.
                 #
                 # Retain result.txt for a TTL grace window instead of deleting
                 # it now, so the parent can read the full transcript
@@ -1587,5 +1613,7 @@ class TerminalCoordinator(ManagerComponent):
                     )
                 )
                 _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                self._manager._report_tasks.add(_task)
+                _task.add_done_callback(self._manager._report_tasks.discard)
         except Exception:
             logger.debug("notify_injection_failed failed for %s", info.id, exc_info=True)

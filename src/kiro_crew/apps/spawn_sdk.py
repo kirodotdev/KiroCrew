@@ -25,6 +25,7 @@ from typing import Awaitable, Callable
 from kiro_crew.agent_discovery import is_internal_agent_spec, list_agents
 from kiro_crew.sel import sel
 from kiro_crew.subagent_manager.admission.types import TASK_STORE_UNAVAILABLE_CODE
+from kiro_crew.subagent_wait_reasons import stopped_before_start
 
 logger = logging.getLogger(__name__)
 
@@ -254,11 +255,40 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
         )
         # Event-loop caller: the durable row is written on the store's writer
         # thread (``spawn_async``); a manager double without it spawns inline.
+        # Shared Crew fair admission: the spawn is a child charged to the app's
+        # bounded system principal; a refusal is a host decline.
+        from kiro_crew.shared_crew.admission_entry import admit_app_spawn
+        from kiro_crew.shared_crew.containment import principal_scope
+
+        admission = await admit_app_spawn(subagents, app)
+        if admission.rejected:
+            reason = admission.reason.value if admission.reason is not None else "refused"
+            raise SpawnError(
+                f"fair admission refused the spawn for app {app!r} ({reason})", declined=True
+            )
+        from kiro_crew.shared_crew.admission_link import link_spawn
+
         spawn_async = getattr(subagents, "spawn_async", None)
-        if inspect.iscoroutinefunction(spawn_async):
-            info = await spawn_async(task, **spawn_kwargs)
+        try:
+            run_id = await link_spawn(admission, subagents)
+            if run_id is None:
+                raise SpawnError(
+                    f"fair admission could not record the spawn for app {app!r}", declined=True
+                )
+            if run_id:
+                spawn_kwargs["_preassigned_id"] = run_id
+            with principal_scope(None if admission.work is None else admission.work.budget_key):
+                if inspect.iscoroutinefunction(spawn_async):
+                    info = await spawn_async(task, **spawn_kwargs)
+                else:
+                    info = subagents.spawn(task, **spawn_kwargs)  # type: ignore[attr-defined]
+        except BaseException:
+            await admission.abandon()
+            raise
+        if info is None or bool(info.error) or not info.id:
+            await admission.abandon()
         else:
-            info = subagents.spawn(task, **spawn_kwargs)  # type: ignore[attr-defined]
+            await admission.attach_child(str(info.id), session_key=f"subagent:{info.id}")
         if info is None:
             return ""
         if getattr(info, "error", ""):
@@ -275,6 +305,10 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
             # fault no cooldown fixes, raised undeclined.
             declined = str(getattr(info, "error_code", "")) == TASK_STORE_UNAVAILABLE_CODE
             raise SpawnError(str(info.error), declined=declined)
+        if stopped_before_start(info):
+            # Stopped while it waited: its id never runs or finishes, so handing
+            # it back would leave the app polling a run that does not exist.
+            raise SpawnError("the spawn was stopped before it started; nothing ran")
         return str(getattr(info, "id", "") or "")
 
     # Ride the probe on the impl callable rather than adding a second parameter

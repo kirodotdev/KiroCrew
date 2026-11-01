@@ -143,7 +143,7 @@ class TestUnattendedApprovalWindow:
         """
         from kiro_crew.dashboard import chat_handlers
 
-        src = inspect.getsource(chat_handlers.api_chat)
+        src = inspect.getsource(chat_handlers._api_chat_send)
         writes = [ln for ln in src.splitlines() if "_human_seen = True" in ln]
         assert len(writes) == 1, "attendance must be recorded in exactly one place"
         gate = src.index("request_app = request.get")
@@ -457,7 +457,7 @@ class TestBackgroundTurnCap:
         from kiro_crew.dashboard import chat_handlers
         from kiro_crew.slack import gateway as gw
 
-        assert "run_background_turn" in inspect.getsource(chat_handlers.api_chat)
+        assert "run_background_turn" in inspect.getsource(chat_handlers._api_chat_send)
         assert "run_background_turn" in inspect.getsource(
             gw.GatewayOrchestrator._fire_dashboard_nudge
         )

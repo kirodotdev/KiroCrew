@@ -600,7 +600,7 @@ class TestTheRoutingFlag:
         source = (Path(handlers.__file__).parent / "chat_api" / "slot_model.py").read_text(
             encoding="utf-8"
         )
-        body = source[source.index("async def api_chat_slot_model(") :]
+        body = source[source.index("async def switch_slot_model(") :]
         body = body[: body.index("\nasync def ")]
         writes = [m.start() for m in re.finditer(r"slot\.jev_route = jev_route", body)]
         assert len(writes) == 3, "the flag should be committed on exactly the three success paths"
@@ -1134,13 +1134,17 @@ class TestAHistoryThatWouldNotFit:
 
     @pytest.mark.asyncio
     async def test_a_large_message_over_a_small_history_is_refused(
-        self, tmp_path, answered, windows
+        self, tmp_path, answered, windows, monkeypatch
     ):
         """The meter answers for the history the session ALREADY holds. 100k held is
         50% of the 200k target and clears the threshold on its own; the 200k-character
         message this turn sends is another ~50k tokens, and the turn would end at 75%
         -- the compaction these rules exist to prevent. A fit test taken on the meter
-        alone passes exactly that turn."""
+        alone passes exactly that turn.
+
+        The gate refuses a message longer than its scan bound before any answer, so
+        the bound is raised here: the subject is the fit rule downstream of it."""
+        monkeypatch.setattr("kiro_crew.decisions.gate.MAX_UNCLIPPED_SCAN_CHARS", 300_000)
         answered("simple", 0.95)
         slot = _routed_slot("chat-fit-prompt")
         state, client = _wired(tmp_path, serves="model-c", used=100_000, limit=70.0)

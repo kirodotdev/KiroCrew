@@ -2,11 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, FileText, FolderOpen } from 'lucide-react'
 import { Btn, Badge, ContentSkeleton } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
+import { errMessage } from '../../utils/thunkError'
 import { knowledgeApi } from './api'
 import { ItemCard, FileSubGroup } from './ItemCard'
 import type { KnowledgeItem, Source } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 // Items fetched per expansion. The backend caps page size at 100
 // (dashboard/handlers/knowledge.py list_items), so requesting more would
 // silently truncate and break the in-group pager math.
@@ -64,7 +67,7 @@ export function SourceGroup({
   // mounted (keyed by sourceId), so without this the user sees an empty page.
   useEffect(() => { setPage(1) }, [filters])
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     // Keyed under the shared 'knowledge-items' prefix so every existing
     // invalidateQueries(['knowledge-items']) call site reaches this cache too.
     queryKey: ['knowledge-items', 'source-items', sourceId, page, filters],
@@ -124,6 +127,13 @@ export function SourceGroup({
       </button>
       {open && (
         <div className="space-y-1.5 p-2 pt-1">
+          {/* An open row whose read failed is not an empty source: say why. */}
+          <ErrorNotice
+            askAgent
+            testId="knowledge-source-group-error"
+            title={i18nT('pages.knowledge.sourceGroup.load_failed')}
+            message={error ? (errMessage(error) || i18nT('pages.knowledge.sourceGroup.error_no_reason')) : ''}
+          />
           {isLoading && !items.length ? <ContentSkeleton /> : fileGroups ? (
             Array.from(fileGroups.entries()).map(([filePath, fileItems]) => (
               <FileSubGroup key={filePath} filePath={filePath} items={fileItems}
@@ -140,7 +150,7 @@ export function SourceGroup({
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-3 pt-2 mt-1 border-t border-border">
               <Btn disabled={page <= 1} onClick={() => setPage(p => p - 1)}>{i18nT('pages.knowledge.sourceGroup.prev')}</Btn>
-              <span className="text-[12px] text-text">{i18nT('pages.knowledge.sourceGroup.page')} {page} {i18nT('pages.knowledge.sourceGroup.of')} {totalPages}</span>
+              <span className="text-[12px] text-text">{i18nT('pages.knowledge.sourceGroup.page_of', { page: fmtNumber(page), pages: fmtNumber(totalPages) })}</span>
               <span className="text-[11px] text-muted">{i18nT('pages.knowledge.sourceGroup.items_count', { count: total })}</span>
               <Btn disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>{i18nT('pages.knowledge.sourceGroup.next')}</Btn>
             </div>

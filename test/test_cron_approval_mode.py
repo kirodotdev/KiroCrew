@@ -257,10 +257,10 @@ class TestCronApprovalModeValidation:
                 "cron_add",
                 {"name": "test", "message": "go", "every": 300, "approval_mode": "auto"},
             )
-        assert "v1" in result
-        # #391: approval_mode is folded into add_job's single locked save, not
-        # mutated onto the returned job -- assert it was passed INTO add_job.
-        assert mock_svc.return_value.add_job.call_args.kwargs["approval_mode"] == "auto"
+        # 'auto' is the owner's switch (Schedule page): a tool call is refused
+        # before anything is written.
+        assert result.startswith("Error: approval_mode 'auto' can only be turned on by the owner")
+        mock_svc.return_value.add_job.assert_not_called()
 
     def test_valid_empty(self) -> None:
         with patch("kiro_crew.mcp_cron.CronService") as mock_svc:

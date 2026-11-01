@@ -333,7 +333,6 @@ class TestChatSlotInterrupt:
     @pytest.mark.asyncio
     async def test_empty_queue_returns_400(self, _patch_sel):
         slot = _ChatSlot("test")
-        # Make slot appear running
         mock_task = MagicMock()
         mock_task.done.return_value = False
         slot.task = mock_task
@@ -365,7 +364,6 @@ class TestChatSlotInterrupt:
             data = await resp.json()
             assert data["ok"] is True
             assert data["outcome"] == "soft"
-            # Verify preserve_queue=True was passed
             state.sessions.stop_turn.assert_awaited_once()
             call_kwargs = state.sessions.stop_turn.call_args.kwargs
             assert call_kwargs["preserve_queue"] is True

@@ -274,7 +274,7 @@ def status_snapshot(
         # fail-closed trip, integrity mismatch, or unverified policy this
         # session), or "unknown" (policy not yet loaded).  Pure in-memory read.
         "governance": _governance_status(),
-        # FIX 2: cap / in-flight / queued counts for unattended app-owned
+        # Cap / in-flight / queued counts for unattended app-owned
         # turns. Published so a fleet parked behind the cap is visibly
         # throttled rather than looking like a set of hung workers.
         "background_turns": self.background_turn_stats(),

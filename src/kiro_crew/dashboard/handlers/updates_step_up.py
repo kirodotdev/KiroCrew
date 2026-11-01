@@ -571,6 +571,27 @@ async def api_update_approve(request: web.Request) -> web.Response:
                 status=409,
             )
         )
+    # The request was armed on a channel; a policy pinned since (``updates.channel``)
+    # decides which channel this host may take code from, as the source pin does.
+    # The same check the engine runs under the lock, asked here so the refusal is
+    # audited and named before the apply starts.
+    from kiro_crew.platform.wheel_engine import check_policy_channel
+
+    try:
+        await asyncio.to_thread(check_policy_channel, pending.channel)
+    except WheelUpdateError as exc:
+        error = str(exc)
+        await _audit(
+            "denied",
+            error=error,
+            resources=f"v{pending.version} ({pending.channel})",
+        )
+        return await _refuse(
+            web.json_response(
+                {"error": error, "code": "approve_blocked_by_policy", "governance": True},
+                status=403,
+            )
+        )
     try:
         await _audit("granted", resources=f"v{pending.version} ({pending.channel})", required=True)
     except Exception:

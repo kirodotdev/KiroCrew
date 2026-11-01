@@ -279,12 +279,16 @@ const MarkdownOutlineRail = memo(function MarkdownOutlineRail({ containerRef }: 
         ref={clipRef}
         className={`absolute inset-y-0 right-3 overflow-hidden transition-opacity duration-150 ${expanded ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'}`}
       >
-        <div ref={stripRef} className="flex flex-col items-end gap-[6px] will-change-transform">
+        {/* On a coarse pointer the ticks are the only tap targets (a touch tap
+            never opens the flyout), so each tick's button grows to the whole
+            12px row pitch and 24px wide. Same pitch as the mouse layout, the
+            visible tick stays the 2px bar pinned right, so nothing moves. */}
+        <div ref={stripRef} className="flex flex-col items-end gap-[6px] pointer-coarse:gap-0 will-change-transform">
           {entries.map((entry, i) => (
             <button
               key={entry.index}
               type="button"
-              className="group flex items-center h-[6px] cursor-pointer bg-transparent border-none p-0"
+              className="group flex items-center justify-end h-[6px] pointer-coarse:h-[12px] pointer-coarse:w-[24px] cursor-pointer bg-transparent border-none p-0"
               onClick={() => jumpTo(entry, i)}
               onFocus={() => setFocused(i)}
               title={entry.text}

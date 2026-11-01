@@ -34,6 +34,9 @@ from kiro_crew.hooks import FileTooLargeError
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _no_eager_prune = native_skill_projection_helpers._no_eager_prune
 _prune_on_every_spawn = native_skill_projection_helpers._prune_on_every_spawn
+_end_projections_before_tmp_path_goes = (
+    native_skill_projection_helpers._end_projections_before_tmp_path_goes
+)
 native_tree = native_skill_projection_helpers.native_tree
 
 

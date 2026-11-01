@@ -15,15 +15,19 @@ module, and this module never imports it.
 from __future__ import annotations
 
 import copy
+import io
 import json
 import re
+import tokenize
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
-from kiro_crew.config.sections import MEMBER_APPROVAL_MODES
+from kiro_crew.config.sections import FEATURE_PREVIEW_FLAGS, MEMBER_APPROVAL_MODES
+from kiro_crew.terminal_safe import _is_invisible
 
 KIND_SETTING_CHANGE = "setting.change"
 KIND_SCHEDULE_CREATE = "schedule.create"
@@ -37,6 +41,9 @@ KIND_CREWMATE_CHECK_INS = "crewmate.check_ins"
 #: A crewmate's one offer to write its own Dashboard page (``change_card_dashboard_page``).
 KIND_CREWMATE_DASHBOARD_PAGE = "crewmate.dashboard_page"
 KIND_TEMPLATE_UPDATE = "template.update"
+#: One MCP server added to an agent template's additions record
+#: (:mod:`kiro_crew.template_mcp_additions`), raised only by ``request_server``.
+KIND_TEMPLATE_MCP_SERVER = "template.mcp_server"
 KIND_MCP_INSTALL = "mcp.install"
 KIND_MCP_ADD_CUSTOM = "mcp.add_custom"
 KIND_MCP_TOGGLE = "mcp.toggle"
@@ -45,6 +52,13 @@ KIND_SECRET_SAVE = "secret.save"
 KIND_TRUST_APP = "trust.app"
 KIND_DENIED_COMMAND = "denied_command"
 KIND_FOLDER_STEERING = "folder.steering"
+#: Save a Python workflow script into the global workflow library, or append a
+#: revision to a saved one. The card's Apply is the owner's own call to the
+#: Workflows tab's routes, so nothing reaches ``workflow_library/`` until the
+#: owner presses it; a crewmate never proposes one (``handlers.change_cards``).
+KIND_WORKFLOW_SAVE = "workflow.save"
+KIND_WORKFLOW_UPDATE = "workflow.update"
+WORKFLOW_KINDS = frozenset({KIND_WORKFLOW_SAVE, KIND_WORKFLOW_UPDATE})
 #: One crewmate from a ``.crewmate`` file
 #: (``docs/request-for-change/rfc-crewmate-share.md``). The owner raises it from
 #: the crewmate dropdown (``POST /api/members/import``); an agent never can, so
@@ -57,6 +71,14 @@ APP_ONLY_KINDS = frozenset({KIND_CREWMATE_IMPORT})
 #: Kinds only a crewmate raises about itself (``member_self.SELF_PROPOSALS``), never
 #: through ``propose_change``: :func:`list_kinds` leaves them out.
 SELF_ONLY_KINDS = frozenset({KIND_CREWMATE_DASHBOARD_PAGE})
+#: Kinds whose parameters the GATEWAY resolves (a server entry it built from its own
+#: loaded servers or the official registry plan), so an agent never names them
+#: through ``propose_change``: a caller-supplied entry would be a launch line the
+#: agent wrote. Raised only by ``POST /api/cards/agent/request-server``;
+#: :func:`list_kinds` leaves them out.
+GATEWAY_RESOLVED_KINDS = frozenset({KIND_TEMPLATE_MCP_SERVER})
+#: Where a ``template.mcp_server`` entry came from (``mate_capability_catalog``'s sources).
+TEMPLATE_SERVER_SOURCES = ("gateway", "registry")
 #: The ``.crewmate`` ``formatVersion`` values this version reads. Any added
 #: field bumps the version, so a newer file is refused rather than guessed at.
 CREWMATE_FORMAT_VERSIONS = (1,)
@@ -115,6 +137,21 @@ _PARAMS_MAX_BYTES = 32 * 1024
 #: The folder route's per-entry bound (``chat_folders.MAX_FOLDER_STEERING_DIR_LEN``),
 #: so a canonical path the route accepts is one a stored card keeps.
 FOLDER_STEERING_DIR_MAX = 4096
+#: Largest workflow script a card carries, measured as JSON-encoded text (what the
+#: card store counts: a quote or a line break takes two bytes, a non-ASCII character
+#: six). The card keeps the script three times (its params, its Apply body and the
+#: row that shows it) plus, for an update, a diff bounded the same way, all inside
+#: one record (``change_cards_records.CARD_RECORD_MAX``, 64 KiB); a larger script
+#: is saved from the Workflows tab instead.
+WORKFLOW_SOURCE_MAX = 10_000
+#: The slash-command form the library keeps (``workflows.library._slugify``): words
+#: of ``[a-z0-9]`` joined by single hyphens. Any other spelling would be saved
+#: under a different command than the card shows.
+_WORKFLOW_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+#: Characters ``str.splitlines`` and a browser read as a line end but Python's
+#: compiler does not: a script carrying one would show its next line as code
+#: while running it as part of a comment or string, or the other way round.
+_WORKFLOW_HIDDEN_BREAKS = frozenset("\u2028\u2029\u0085")
 #: The ``template.update`` fields that hold a list, replaced whole, and so the ones
 #: its ``clear`` may name.
 _TEMPLATE_LIST_FIELDS = ("tools", "allowedTools", "skills")
@@ -151,6 +188,11 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, an agent may add documents to the knowledge library
     # (``knowledge_add_document``); off, that tool refuses.
     "knowledge.auto_add_documents": (False, True),
+    # Fair admission on holds each person to their limit; off lets one person
+    # take the whole host.
+    "dashboard.shared_crew.admission_enabled": (True, False),
+    # On, the dashboard also listens on this machine's tailnet addresses.
+    "dashboard.shared_crew.tailnet_direct": (False, True),
     "skills.approval_required": (True, False),
     "telemetry.beacon_enabled": (False, True),
 }
@@ -182,11 +224,16 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "computer_use.screenshot_max_px",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
+        # A feature preview only decides whether the dashboard OFFERS an
+        # unreleased page or menu entry; the feature's own routes and checks
+        # are the same either way.
+        *(f"dashboard.feature_previews.{_name}" for _name in FEATURE_PREVIEW_FLAGS),
         "dashboard.folder_sort",
         "dashboard.mcp_probe_timeout_secs",
         "dashboard.prevent_sleep",
         "dashboard.recent_tint_count",
         "dashboard.session_sort",
+        "dashboard.show_unread_dot",
         # Stored only: the edition's login handler re-checks every flag against
         # its own allowlist before it runs anything.
         "dashboard.sso_login_flags",
@@ -221,11 +268,16 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "knowledge.import_chunk_budget",
         "knowledge.sweep_chunk_budget",
         "monitoring.prefer_structured_arming",
+        "power.on_battery",
         "session.autocompact_pct",
         "session.compact_wait_secs",
         "session.pool_size",
         "session.pool_ttl_secs",
         "session.timeout_secs",
+        # Shutdown only decides how long the operator's own workspaces run; the
+        # default picks among saved profiles.
+        "session_environments.default_profile",
+        "session_environments.stop_on_shutdown",
         "session_summary.enabled",
         # Listed for exactly-one completeness, not because a card can reach it: a card
         # carries no list value (``setting.change.value`` is scalar and ``op``/``item``
@@ -240,6 +292,12 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # Local recording only: the write route refuses the enable on a host
         # where it would start sending data out.
         "telemetry.enabled",
+        # Shared Crew capacity numbers and the typing lock: they size how much
+        # work runs at once and how long a draft holds the composer, never who
+        # may act or what an agent may reach.
+        "dashboard.shared_crew.crew_concurrency",
+        "dashboard.shared_crew.principal_concurrency",
+        "dashboard.shared_crew.typing_idle_seconds",
     }
 )
 
@@ -265,6 +323,21 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         "agent.kas_bundle",
         "dashboard.terminal.shell",
         "session.pool_agent",
+        # The Coder deployment and the template a session's workspace is built
+        # from decide which machine runs that session's commands, and the
+        # gateway proxies credentialed Git requests for it. A Sprites profile also
+        # names the vault secret whose token the gateway sends to the Sprites API,
+        # and a boxd profile the snapshot a session's machine starts from.
+        "session_environments",
+        "session_environments.coder_url",
+        "session_environments.sprites_profiles",
+        "session_environments.boxd_profiles",
+        # Which vault secret the Strands harness is handed, and which provider
+        # address (a LiteLLM proxy, an Ollama host) its conversation is sent to.
+        "agent.strands_env",
+        # The provider and model a Strands session runs: where its conversation goes.
+        "agent.strands_provider",
+        "agent.strands_model",
     }
 )
 
@@ -421,16 +494,20 @@ KINDS: dict[str, KindDef] = {
             "toward. Without `goal_id` the text is added as a new goal; with the id of "
             "one of its goals (goal_read lists them) "
             "it replaces that goal's text. Goals are stored in its goal record, never "
-            "in its rules.",
+            "in its rules. While its Heartbeat is off and was never declined, the card "
+            "carries a Heartbeat checkbox, `heartbeat` (default true): true turns the "
+            "Heartbeat on at its interval with the goal, false sets only the goal and "
+            "no later goal card offers it again.",
             _obj(
                 {
                     "member": _STR,
                     "long_term": {"type": "string", "maxLength": _LONG_TERM_GOAL_MAX},
                     "goal_id": {"type": "string", "maxLength": 9},
+                    "heartbeat": _BOOL,
                 },
                 ["member", "long_term"],
             ),
-            ("long_term",),
+            ("long_term", "heartbeat"),
         ),
         KindDef(
             KIND_CREWMATE_KEY_RESULTS,
@@ -548,6 +625,21 @@ KINDS: dict[str, KindDef] = {
             ("enabled",),
         ),
         KindDef(
+            KIND_TEMPLATE_MCP_SERVER,
+            "Add one MCP server to an agent template, for every session on it. Raised "
+            "only by request_server; the gateway resolves the server entry.",
+            _obj(
+                {
+                    "template": _STR,
+                    "server": _STR,
+                    "entry": {"type": "object"},
+                    "origin": {"type": "object"},
+                },
+                ["template", "server", "entry", "origin"],
+            ),
+            (),
+        ),
+        KindDef(
             KIND_CONNECTION_CONNECT,
             "Connect an account (OAuth) from the Connections registry by slug.",
             _obj({"slug": _STR}, ["slug"]),
@@ -600,6 +692,42 @@ KINDS: dict[str, KindDef] = {
             ("steering_dirs",),
         ),
         KindDef(
+            KIND_WORKFLOW_SAVE,
+            "Save a Python workflow script to the workflow library (Customize -> "
+            "Workflows), so it runs as `/workflow <slug>`. `source` is the whole "
+            "script, validated before the card is shown; `name` is required, "
+            "`description` and `slug` (lowercase words joined by '-', not already "
+            "used) are optional. Nothing is saved until the user presses the card's "
+            "button.",
+            _obj(
+                {
+                    "source": {"type": "string", "maxLength": WORKFLOW_SOURCE_MAX},
+                    "name": _STR,
+                    "description": _STR,
+                    "slug": _STR,
+                },
+                ["source", "name"],
+            ),
+            (),
+        ),
+        KindDef(
+            KIND_WORKFLOW_UPDATE,
+            "Save a new revision of a saved Python workflow. `workflow` is its id or "
+            "slug from workflow_library_list; `source` is the whole new script. "
+            "`name` and `description` are optional. The card shows the change to the "
+            "script; earlier revisions stay in the library.",
+            _obj(
+                {
+                    "workflow": _STR,
+                    "source": {"type": "string", "maxLength": WORKFLOW_SOURCE_MAX},
+                    "name": _STR,
+                    "description": _STR,
+                },
+                ["workflow", "source"],
+            ),
+            (),
+        ),
+        KindDef(
             KIND_CREWMATE_IMPORT,
             "Import one crewmate from a .crewmate file (owner only).",
             _obj(
@@ -638,7 +766,9 @@ def list_kinds() -> list[dict[str, Any]]:
             "editable": list(k.editable),
         }
         for k in KINDS.values()
-        if k.id not in APP_ONLY_KINDS and k.id not in SELF_ONLY_KINDS
+        if k.id not in APP_ONLY_KINDS
+        and k.id not in SELF_ONLY_KINDS
+        and k.id not in GATEWAY_RESOLVED_KINDS
     ]
 
 
@@ -758,6 +888,222 @@ def _clean_at(params: dict[str, Any]) -> str:
     except ValueError:
         raise _fail("invalid_at", "'at' is not a real date and time") from None
     return parsed.isoformat(timespec="minutes" if parsed.second == 0 else "seconds")
+
+
+def escape_hidden_characters(text: str) -> str:
+    """*text* with every character that draws as nothing, or out of place, spelled out.
+
+    Format characters (``Cf``: bidi controls, zero-width characters), line and
+    paragraph separators (``Zl``/``Zp``), control characters but tab (``Cc``,
+    U+0085 among them) and Default_Ignorable_Code_Points read as ``\\uXXXX``
+    (``\\UXXXXXXXX`` past U+FFFF). A card shows a removed diff line this way: that
+    line comes from a revision saved earlier, which never passed the card's own
+    character checks, and drawn raw it could split in two or reorder.
+    """
+
+    def spelled(ch: str) -> str:
+        if (
+            unicodedata.category(ch) in ("Cf", "Zl", "Zp")
+            or (unicodedata.category(ch) == "Cc" and ch != "\t")
+            or _is_invisible(ch)
+        ):
+            cp = ord(ch)
+            return f"\\u{cp:04X}" if cp <= 0xFFFF else f"\\U{cp:08X}"
+        return ch
+
+    return "".join(spelled(ch) for ch in text)
+
+
+#: Longest source line a card accepts, in characters. A longer line scrolls past
+#: the card's edge, and what it does there is read only by scrolling sideways.
+WORKFLOW_LINE_MAX = 160
+#: A run of this many spaces after a line's first non-blank character is refused:
+#: it can push the rest of the line off the card, so ``pass`` + spaces + ``; x()``
+#: reads as ``pass``.
+_WORKFLOW_GAP_MIN = 8
+#: Widest leading indentation a card accepts, in columns (a tab counts to the next
+#: multiple of 8). Deeper indentation can push a whole line off the card's edge.
+WORKFLOW_INDENT_MAX = 40
+#: Most combining marks (``Mn``/``Me``) a comment may stack in a row. A longer run
+#: draws over the lines above and below it and can cover code there.
+_WORKFLOW_MARKS_MAX = 2
+
+
+def _refuse_non_ascii_code(source: str) -> None:
+    """Refuse a non-ASCII character anywhere but inside a comment.
+
+    A card must show exactly what will run, and letters from other scripts can
+    draw like ASCII ones (a Cyrillic ``е`` beside a Latin ``e``, a mathematical
+    ``𝚎``), so two names, keys or compared strings that look the same on the card
+    would run as different ones. Every non-ASCII character must therefore sit
+    inside a comment token; code, names and string literals are ASCII. A script
+    that cannot be read as Python tokens is refused too, since then which text is
+    a comment is unknown. A comment may hold non-ASCII text, but never more than
+    :data:`_WORKFLOW_MARKS_MAX` combining marks in a row.
+    """
+    comments: dict[int, list[tuple[int, int]]] = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.COMMENT:
+                comments.setdefault(tok.start[0], []).append((tok.start[1], tok.end[1]))
+    except (tokenize.TokenError, SyntaxError) as exc:
+        raise _fail(
+            "invalid_param",
+            "'source' cannot be read as Python tokens, so which text is a comment "
+            f"is unknown: {str(exc)[:200]}",
+        ) from None
+    for number, line in enumerate(source.split("\n"), start=1):
+        marks = 0
+        for col, ch in enumerate(line):
+            marks = marks + 1 if unicodedata.category(ch) in ("Mn", "Me") else 0
+            if marks > _WORKFLOW_MARKS_MAX:
+                raise _fail(
+                    "invalid_param",
+                    f"'source' line {number} stacks more than {_WORKFLOW_MARKS_MAX} "
+                    "combining marks in a row, which draw over the lines around it "
+                    "on the card; remove them",
+                )
+            if ch.isascii():
+                continue
+            if any(lo <= col < hi for lo, hi in comments.get(number, ())):
+                continue
+            raise _fail(
+                "invalid_param",
+                f"'source' has U+{ord(ch):04X} on line {number} outside a comment; "
+                "non-ASCII text in code or strings is not accepted on an "
+                "agent-proposed workflow card; save it from the Workflows tab instead",
+            )
+
+
+def _refuse_hidden_line_tails(source: str) -> None:
+    """Refuse a line whose end the card would draw out of sight.
+
+    A line over :data:`WORKFLOW_LINE_MAX` characters, or one with a tab or a run
+    of :data:`_WORKFLOW_GAP_MIN` spaces after its first non-blank character, can
+    hold code past the card's edge. Leading indentation may use either, up to
+    :data:`WORKFLOW_INDENT_MAX` columns on every line.
+    """
+    gap = " " * _WORKFLOW_GAP_MIN
+    for number, line in enumerate(source.split("\n"), start=1):
+        if len(line) > WORKFLOW_LINE_MAX:
+            raise _fail(
+                "invalid_param",
+                f"'source' line {number} is {len(line)} characters long; a card shows "
+                f"lines of at most {WORKFLOW_LINE_MAX} so nothing runs past its edge; "
+                "split the line",
+            )
+        body = line.lstrip(" \t")
+        indent = len(line[: len(line) - len(body)].expandtabs(8))
+        if indent > WORKFLOW_INDENT_MAX:
+            raise _fail(
+                "invalid_param",
+                f"'source' line {number} is indented {indent} columns; a card accepts "
+                f"at most {WORKFLOW_INDENT_MAX} so the line never starts out of sight; "
+                "indent less",
+            )
+        if "\t" in body:
+            raise _fail(
+                "invalid_param",
+                f"'source' line {number} has a tab after its first non-blank character, "
+                "which can push the rest of the line out of sight on the card; use one "
+                "space",
+            )
+        if gap in body:
+            raise _fail(
+                "invalid_param",
+                f"'source' line {number} has a run of {_WORKFLOW_GAP_MIN} or more spaces "
+                "after its first non-blank character, which can push the rest of the "
+                "line out of sight on the card; use one space",
+            )
+
+
+def _workflow_source(params: dict[str, Any]) -> str:
+    """A card's workflow script: Windows line ends read as ``\\n``, then bounded.
+
+    The script is what Apply sends and what the card shows, so it is normalized
+    once here and every later copy is this one.
+    """
+    raw = params.get("source")
+    if isinstance(raw, str):
+        params = {**params, "source": raw.replace("\r\n", "\n")}
+    value = _clean_str(params, "source", max_len=WORKFLOW_SOURCE_MAX)
+    assert value is not None
+    line = 1
+    for ch in value:
+        # The owner approves the script as the card draws it, so every character
+        # must read the way Python runs it.
+        if ch == "\n":
+            line += 1
+            continue
+        where = f"'source' has U+{ord(ch):04X} on line {line}"
+        if ch in _WORKFLOW_HIDDEN_BREAKS:
+            raise _fail(
+                "invalid_param",
+                f"{where}, a line separator Python does not end a line at; use a plain "
+                "line break",
+            )
+        if unicodedata.category(ch) == "Cf":
+            # Bidi controls and zero-width characters reorder or hide what the
+            # card shows ("Trojan Source").
+            raise _fail(
+                "invalid_param",
+                f"{where}, an invisible formatting character (a bidi control or "
+                "zero-width character) that makes the script read differently from "
+                "how it runs; remove it",
+            )
+        if _is_invisible(ch):
+            raise _fail(
+                "invalid_param",
+                f"{where}, a character that draws as nothing or as blank space (a "
+                "variation selector, filler or joiner), so the script reads "
+                "differently from how it runs; remove it",
+            )
+        if unicodedata.category(ch) == "Cc" and ch != "\t":
+            raise _fail(
+                "invalid_param",
+                f"{where}, a control character the card cannot draw; remove it",
+            )
+    if unicodedata.normalize("NFC", value) != value:
+        # A decomposed ``e`` + U+0301 draws like the precomposed ``é`` yet is
+        # other text.
+        number = next(
+            (
+                i
+                for i, text in enumerate(value.split("\n"), start=1)
+                if unicodedata.normalize("NFC", text) != text
+            ),
+            1,
+        )
+        raise _fail(
+            "invalid_param",
+            f"'source' line {number} is not in Unicode NFC form (a letter and its "
+            "accent are stored apart), so it can draw like other text; save it "
+            "composed",
+        )
+    _refuse_non_ascii_code(value)
+    _refuse_hidden_line_tails(value)
+    if len(json.dumps(value)) - 2 > WORKFLOW_SOURCE_MAX:
+        raise _fail(
+            "invalid_param",
+            f"'source' is too large for a card (at most {WORKFLOW_SOURCE_MAX} bytes once "
+            "encoded); save it from Customize -> Workflows",
+        )
+    return value
+
+
+def workflow_save_slug(params: dict[str, Any]) -> str:
+    """The ``/workflow`` slug a ``workflow.save`` card saves under: asked for, else derived.
+
+    A card without a slug still shows and pins one: the slug the library derives
+    from the name, sent with ``exact_slug`` so a taken one is refused rather than
+    suffixed into a command the card never showed.
+    """
+    slug = params.get("slug")
+    if slug:
+        return str(slug)
+    from kiro_crew.workflows.library import derived_slug
+
+    return derived_slug(str(params.get("name") or ""))
 
 
 def _str_list(value: Any, key: str, *, max_len: int = 512) -> list[str]:
@@ -1075,11 +1421,13 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
                 raise _fail("invalid_param", str(exc)) from None
         return out_caps
     if kind == KIND_CREWMATE_GOAL:
-        _only(p, {"member", "long_term", "goal_id"})
+        _only(p, {"member", "long_term", "goal_id", "heartbeat"})
         out_goal: dict[str, Any] = {
             "member": _member_name(p, "member"),
             "long_term": _goal_text(p, "long_term", max_len=_LONG_TERM_GOAL_MAX, multiline=True),
         }
+        if "heartbeat" in p:
+            out_goal["heartbeat"] = _clean_bool(p, "heartbeat")
         if "goal_id" in p:
             if not _goals.is_goal_id(p["goal_id"]):
                 raise _fail("invalid_param", "'goal_id' must be one of the crewmate's goal ids")
@@ -1169,6 +1517,44 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         # Normalized to the plain replacement, so the preview, the apply step, the
         # person's edit and Undo read one shape whichever spelling the agent used.
         return {"template": template, "fields": f}
+    if kind == KIND_TEMPLATE_MCP_SERVER:
+        from kiro_crew import template_mcp_additions as _additions
+
+        _only(p, {"template", "server", "entry", "origin"})
+        out_srv: dict[str, Any] = {
+            "template": _clean_str(p, "template", pattern=_TEMPLATE_NAME_RE),
+            # One path segment of plain characters: the Undo names it in its path.
+            "server": _clean_str(p, "server", pattern=_TEMPLATE_NAME_RE),
+        }
+        entry = p.get("entry")
+        if not isinstance(entry, dict):
+            raise _fail("invalid_param", "'entry' must be an object")
+        try:
+            # The record's own rule, so a card never carries an entry the record
+            # would refuse, and never a trust key (autoApprove, allowedTools).
+            out_srv["entry"] = _additions.validate_entry(entry)
+        except _additions.AdditionError as exc:
+            raise _fail("invalid_param", f"'entry' refused: {exc}") from None
+        origin = p.get("origin")
+        if not isinstance(origin, dict):
+            raise _fail("invalid_param", "'origin' must be an object")
+        _only(origin, {"source", "registry_id"}, "origin")
+        source = origin.get("source")
+        if source not in TEMPLATE_SERVER_SOURCES:
+            raise _fail("invalid_param", "'origin.source' must be gateway or registry")
+        if source == "registry":
+            out_srv["origin"] = {
+                "source": source,
+                "registry_id": _clean_str(origin, "registry_id", max_len=200),
+            }
+        else:
+            if "registry_id" in origin:
+                raise _fail(
+                    "invalid_param",
+                    "'origin.registry_id' is only for a registry server",
+                )
+            out_srv["origin"] = {"source": source}
+        return out_srv
     if kind == KIND_MCP_INSTALL:
         _only(p, {"provider", "id"})
         return {
@@ -1243,6 +1629,35 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
                 p.get("steering_dirs"), "steering_dirs", max_len=FOLDER_STEERING_DIR_MAX
             ),
         }
+    if kind == KIND_WORKFLOW_SAVE:
+        _only(p, {"source", "name", "description", "slug"})
+        out = {
+            "source": _workflow_source(p),
+            "name": _clean_str(p, "name", max_len=_NAME_MAX),
+            "description": _clean_str(
+                p, "description", required=False, max_len=_TEXT_MAX, allow_empty=True
+            )
+            or "",
+        }
+        slug = _clean_str(
+            p, "slug", required=False, max_len=64, pattern=_WORKFLOW_SLUG_RE, allow_empty=True
+        )
+        if slug:
+            out["slug"] = slug
+        return out
+    if kind == KIND_WORKFLOW_UPDATE:
+        _only(p, {"workflow", "source", "name", "description"})
+        out = {
+            "workflow": _clean_str(p, "workflow", max_len=128, pattern=_SLUG_RE),
+            "source": _workflow_source(p),
+        }
+        if "name" in p:
+            out["name"] = _clean_str(p, "name", max_len=_NAME_MAX)
+        if "description" in p:
+            out["description"] = (
+                _clean_str(p, "description", max_len=_TEXT_MAX, allow_empty=True) or ""
+            )
+        return out
     # KIND_DENIED_COMMAND
     action = p.get("action")
     if action == "add":

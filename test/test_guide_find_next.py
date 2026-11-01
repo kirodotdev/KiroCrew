@@ -61,6 +61,19 @@ def test_a_preview_feature_is_answered_in_words_without_offering_to_show_it() ->
         assert "Never say you can show" in nxt and "preview" in nxt
 
 
+def test_a_setting_on_a_preview_gated_settings_tab_is_answered_in_words() -> None:
+    # Session Environments' tab renders only with its preview on, so a guide to
+    # one of its settings would open Settings without the control on it.
+    d = ui_index.find_ui("coder url", "en")
+    hit = next(r for r in d["results"] if r.get("setting_id") == "session-environments.coder-url")
+    assert any(
+        q.get("kind") == "preview_flag" and q.get("setting_id") == "developer.session-environments"
+        for p in hit["placements"]
+        for q in p["requires"]
+    )
+    assert mcp_guide._find_ui_next(d) == mcp_guide._PREVIEW_NOTE
+
+
 def test_a_miss_is_said_plainly_once_the_retry_misses_too() -> None:
     d = ui_index.find_ui("export a skill", "en")
     assert d["status"] == "no_match"

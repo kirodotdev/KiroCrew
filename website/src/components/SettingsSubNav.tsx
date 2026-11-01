@@ -68,8 +68,10 @@ interface SettingsSubNavProps<K extends string> {
   /** Detail pane for the current selection. `null` only in narrow mode while
    *  the list itself is the view. The child is reconciled by POSITION across
    *  width changes (same slot order in both layouts) so a width transition
-   *  never remounts it — remounting would discard unsaved form drafts. */
-  children: (active: K | null) => React.ReactNode
+   *  never remounts it — remounting would discard unsaved form drafts.
+   *  `select` opens another sub-page the same way a rail click does, so a pane
+   *  can point the user at a sibling (a "go there next" link). */
+  children: (active: K | null, select: (key: K) => void) => React.ReactNode
   /** Rail width in the two-pane layout. */
   railWidth?: number
   /** Accessible name for the listbox. */
@@ -422,7 +424,7 @@ export function SettingsSubNav<K extends string>({
           <NavBackBar label={backLabel ?? listLabel} onBack={() => select(null)} className={isMobile ? '-mx-4 -mt-1' : ''} />
         )}
         {!twoPane && effectiveKey && banner}
-        <div className={twoPane ? 'flex-1 min-w-0' : 'w-full'}>{children(effectiveKey)}</div>
+        <div className={twoPane ? 'flex-1 min-w-0' : 'w-full'}>{children(effectiveKey, select)}</div>
       </div>
     </div>
   )

@@ -395,12 +395,17 @@ class TestTryLiveModelSwitch:
 
 
 class TestBroadcastContextReset:
-    def test_no_provider_sends_a_zeroed_reset(self):
+    def test_no_provider_reset_carries_no_counts(self):
+        # No provider on the cold-reset path: no measurement to send, so the
+        # frame carries only {slot, reset}. The reducer keeps its stored `used`
+        # and the meter derives the percentage against the new model's window.
         state = _state()
         ch._broadcast_context_reset(state, "s1", None)
         state.broadcast_context_usage.assert_called_once()
         _, payload = state.broadcast_context_usage.call_args.args
-        assert payload == {"slot": "s1", "pct": 0.0, "reset": True}
+        assert payload == {"slot": "s1", "reset": True}
+        assert "pct" not in payload
+        assert "used_tokens" not in payload
 
     def test_live_provider_payload_carries_rebased_stats(self):
         state = _state()
@@ -415,6 +420,45 @@ class TestBroadcastContextReset:
         assert payload["slot"] == "s1"
         assert payload["pct"] == 7.2
         assert payload["reset"] is True
+        # A rebase that resolved the new window ships it, and the recomputed pct
+        # rides along as a real reading.
+        assert payload["window_tokens"] == 200_000
+
+    def test_live_provider_unknown_window_carries_used_not_pct(self):
+        # A rebase onto a model whose window is NOT yet known: window 0, but the
+        # transcript (and so `used`) is unchanged. The frame carries `used_tokens`
+        # and neither `pct` nor `window_tokens`, so the meter derives the
+        # percentage from `used` against the new model's window instead of
+        # pairing the old percentage with it.
+        state = _state()
+        provider = MagicMock()
+        provider.context_usage_pct = MagicMock(return_value=0.0)
+        provider.context_window_tokens = MagicMock(return_value=0)
+        provider.context_used_tokens = MagicMock(return_value=120_000)
+
+        ch._broadcast_context_reset(state, "s1", provider)
+
+        _, payload = state.broadcast_context_usage.call_args.args
+        assert payload == {"slot": "s1", "reset": True, "used_tokens": 120_000}
+        assert "pct" not in payload
+        assert "window_tokens" not in payload
+
+    def test_live_provider_unknown_window_and_used_clears(self):
+        # A percentage-only backend: neither a known window nor a `used` count.
+        # There is no honest number for the new window, so the frame carries no
+        # counts and the reducer clears the reading rather than guess.
+        state = _state()
+        provider = MagicMock()
+        provider.context_usage_pct = MagicMock(return_value=42.0)
+        provider.context_window_tokens = MagicMock(return_value=0)
+        provider.context_used_tokens = MagicMock(return_value=0)
+
+        ch._broadcast_context_reset(state, "s1", provider)
+
+        _, payload = state.broadcast_context_usage.call_args.args
+        assert payload == {"slot": "s1", "reset": True}
+        assert "pct" not in payload
+        assert "used_tokens" not in payload
 
     def test_broadcast_failure_is_swallowed(self):
         state = _state()

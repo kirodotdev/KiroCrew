@@ -23,6 +23,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from change_cards_helpers import AGENT, Clock, _card_headers
+from named_cases_helpers import named_cases
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_bundle, crewmate_carried, crewmate_stage
@@ -136,26 +137,64 @@ def test_a_whole_file_reads_into_one_card_of_every_part():
 @pytest.mark.parametrize(
     ("entries", "code"),
     [
-        # Paths: only two folders, each one level, each name on the §5.2 pattern.
-        ({"../evil.json": "{}"}, "invalid_path"),
-        ({"skills/../x/SKILL.md": "x"}, "invalid_path"),
-        ({"skills/..": "x"}, "invalid_path"),
-        ({"C:/evil.json": "{}"}, "invalid_path"),
-        ({"skills/C:x/SKILL.md": "x"}, "invalid_path"),
-        # zipfile turns os.sep into "/" when it reads a name, so on Windows this is
-        # the plain path skills/x/SKILL.md, refused because no skill "x" is declared.
-        ({"skills\\x\\SKILL.md": "x"}, "skill_mismatch" if os.sep == "\\" else "invalid_path"),
-        ({"/abs.json": "{}"}, "invalid_path"),
-        ({"skills/a/b/SKILL.md": "x"}, "invalid_path"),
-        ({"crons/sub/x.py": "x"}, "invalid_path"),
-        ({"crons/x.sh": "x"}, "invalid_path"),
-        ({"skills/.hidden/SKILL.md": "x"}, "invalid_path"),
-        ({"page.html": "<script></script>"}, "unknown_entry"),
-        ({"memory.db": b"\0"}, "unknown_entry"),
-        ({".env": "KEY=1"}, "unknown_entry"),
+        *named_cases(
+            "test_an_entry_outside_the_two_folders_is_refused",
+            ("entries", "code"),
+            [
+                # Paths: only two folders, each one level, each name on the §5.2 pattern.
+                ({"../evil.json": "{}"}, "invalid_path"),
+                ({"skills/../x/SKILL.md": "x"}, "invalid_path"),
+                ({"skills/..": "x"}, "invalid_path"),
+                ({"C:/evil.json": "{}"}, "invalid_path"),
+                ({"skills/C:x/SKILL.md": "x"}, "invalid_path"),
+                # zipfile turns os.sep into "/" when it reads a name, so on Windows this is
+                # the plain path skills/x/SKILL.md, refused because no skill "x" is declared.
+                (
+                    {"skills\\x\\SKILL.md": "x"},
+                    "skill_mismatch" if os.sep == "\\" else "invalid_path",
+                ),
+                ({"/abs.json": "{}"}, "invalid_path"),
+                ({"skills/a/b/SKILL.md": "x"}, "invalid_path"),
+                ({"crons/sub/x.py": "x"}, "invalid_path"),
+                ({"crons/x.sh": "x"}, "invalid_path"),
+                ({"skills/.hidden/SKILL.md": "x"}, "invalid_path"),
+                ({"page.html": "<script></script>"}, "unknown_entry"),
+                ({"memory.db": b"\0"}, "unknown_entry"),
+                ({".env": "KEY=1"}, "unknown_entry"),
+            ],
+        ),
+        *named_cases(
+            "test_the_size_caps_refuse_before_the_rest_is_read",
+            ("entries", "code"),
+            [
+                (
+                    {"skills/notes/SKILL.md": b"x" * (crewmate_bundle.CARRIED_FILE_MAX_BYTES + 1)},
+                    "too_large",
+                ),
+                (
+                    {f"skills/notes/f{i}.md": b"x" * 250_000 for i in range(5)}
+                    | {"skills/notes/SKILL.md": "x"},
+                    "too_large",
+                ),
+                ({"avatar.png": b"x" * (crewmate_bundle.AVATAR_MAX_BYTES + 1)}, "too_large"),
+                (
+                    {
+                        "rules.json": json.dumps(
+                            {"rules": "x" * (crewmate_bundle.JSON_MAX_BYTES + 1)}
+                        )
+                    },
+                    "too_large",
+                ),
+                (
+                    {f"skills/s{i}/SKILL.md": "x" for i in range(crewmate_bundle.ENTRY_MAX)},
+                    "too_many_entries",
+                ),
+            ],
+            ids=["file-cap", "skill-folder-cap", "avatar-cap", "json-cap", "entry-cap"],
+        ),
     ],
 )
-def test_an_entry_outside_the_two_folders_is_refused(entries, code):
+def test_a_bad_bundle_is_refused(entries, code):
     assert _refused(_zip({**_bundle(), **entries})) == code
 
 
@@ -285,34 +324,6 @@ def test_an_app_skill_reference_is_shown_not_written():
         "/api/members/{{step0.member_id}}/rules",
         "/api/crons",
     ]
-
-
-@pytest.mark.parametrize(
-    ("entries", "code"),
-    [
-        (
-            {"skills/notes/SKILL.md": b"x" * (crewmate_bundle.CARRIED_FILE_MAX_BYTES + 1)},
-            "too_large",
-        ),
-        (
-            {f"skills/notes/f{i}.md": b"x" * 250_000 for i in range(5)}
-            | {"skills/notes/SKILL.md": "x"},
-            "too_large",
-        ),
-        ({"avatar.png": b"x" * (crewmate_bundle.AVATAR_MAX_BYTES + 1)}, "too_large"),
-        (
-            {"rules.json": json.dumps({"rules": "x" * (crewmate_bundle.JSON_MAX_BYTES + 1)})},
-            "too_large",
-        ),
-        (
-            {f"skills/s{i}/SKILL.md": "x" for i in range(crewmate_bundle.ENTRY_MAX)},
-            "too_many_entries",
-        ),
-    ],
-    ids=["file-cap", "skill-folder-cap", "avatar-cap", "json-cap", "entry-cap"],
-)
-def test_the_size_caps_refuse_before_the_rest_is_read(entries, code):
-    assert _refused(_zip({**_bundle(), **entries})) == code
 
 
 def test_a_file_over_8_mib_or_not_a_zip_is_refused():

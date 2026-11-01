@@ -26,15 +26,22 @@ from kiro_crew.coder.remote_worker import (
     CoderShell,
     RemoteWorkerLaunch,
 )
+from kiro_crew.config.session_environments import PROVIDER_IDS
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.session_environment import (
     SessionEnvironmentUnavailable,
+    report_start_stage,
     session_environments_enabled,
 )
+from kiro_crew.session_environments.routing import prepare_vm_session, profile_provider
 
 logger = logging.getLogger(__name__)
 
 PROVIDER_ID = "coder"
+#: The providers a choice row may record. The profile id still decides the
+#: provider at launch (``session_environments.routing.profile_provider``); the row
+#: says where it ran.
+CHOICE_PROVIDERS = frozenset(PROVIDER_IDS)
 WORKSPACE_PREFIX = "crewenv"
 DEFAULT_STOP_AFTER_MINUTES = 60
 _CHOICES_VERSION = 1
@@ -116,6 +123,12 @@ class SessionEnvironmentChoices:
         """``(profile id, owner key)`` or None for local; the owner is the
         session itself or, for a subagent, the root it inherited from. Always
         None while the developer flag is off."""
+        resolved = self.resolve_choice(session_key)
+        return resolved[:2] if resolved is not None else None
+
+    def resolve_choice(self, session_key: str) -> Optional[tuple[str, str, str]]:
+        """``(profile id, owner session key, recorded provider)``, or None for a
+        local session. Always None while the developer flag is off."""
         if not session_environments_enabled():
             return None
         try:
@@ -132,7 +145,10 @@ class SessionEnvironmentChoices:
             return None
         # Only a remote choice writes a row, so a row this build cannot read refuses
         # rather than reading as "local".
-        if not isinstance(entry, dict) or entry.get("provider") != PROVIDER_ID:
+        if not isinstance(entry, dict):
+            raise SessionEnvironmentUnavailable("session environment choices are invalid")
+        provider = entry.get("provider")
+        if not isinstance(provider, str) or provider not in CHOICE_PROVIDERS:
             raise SessionEnvironmentUnavailable("session environment choices are invalid")
         profile = entry.get("configuration")
         if not isinstance(profile, str) or not _PROFILE_ID_RE.match(profile):
@@ -141,7 +157,7 @@ class SessionEnvironmentChoices:
         if not isinstance(owner, str) or not owner or len(owner) > _MAX_SESSION_KEY:
             # A malformed inheritance row must not fall back to "local".
             raise SessionEnvironmentUnavailable("session environment choices are invalid")
-        return profile, owner
+        return profile, owner, provider
 
     def inherit(self, child_key: str, parent_key: str) -> Optional[str]:
         """Bind ``child_key`` to its parent's root workspace; the profile, or
@@ -159,11 +175,13 @@ class SessionEnvironmentChoices:
             with file_lock(lock_fd.fileno(), exclusive=True, required=True):
                 sessions = self._read()
                 before = set(sessions)
-                parent = self.resolve(parent_key)
-                if parent is None and "parent" in (sessions.get(child_key) or {}):
+                parent = self.resolve_choice(parent_key)
+                prior = sessions.get(child_key)
+                if parent is None and "parent" in (prior or {}):
                     # A continuation whose finished parent's row has aged out keeps
-                    # its own placement; an environment is fixed for a session's life.
-                    parent = self.resolve(child_key)
+                    # its own placement -- profile and provider -- since an
+                    # environment is fixed for a session's life.
+                    parent = self.resolve_choice(child_key)
                 if parent is None:
                     if sessions.pop(child_key, None) is not None:
                         self._write(_pruned(sessions), before)
@@ -172,9 +190,9 @@ class SessionEnvironmentChoices:
                             "this session's environment choice is missing"
                         )
                     return None
-                profile, owner = parent
+                profile, owner, provider = parent
                 sessions[child_key] = {
-                    "provider": PROVIDER_ID,
+                    "provider": provider,
                     "configuration": profile,
                     "parent": owner,
                 }
@@ -218,12 +236,17 @@ class SessionEnvironmentChoices:
         for key in set(before) - set(sessions):
             self._marker(key).unlink(missing_ok=True)
 
-    def set(self, session_key: str, profile_id: Optional[str]) -> None:
-        """Bind a session to a profile, or clear it (None) so it runs locally."""
+    def set(self, session_key: str, profile_id: Optional[str], provider: str = PROVIDER_ID) -> None:
+        """Bind a session to a profile, or clear it (None) so it runs locally.
+
+        ``provider`` is the provider ``profile_id`` resolves to, recorded on the row.
+        """
         if not session_key or len(session_key) > _MAX_SESSION_KEY:
             raise ValueError("session key is invalid")
         if profile_id is not None and not _PROFILE_ID_RE.match(profile_id):
             raise ValueError("profile id is invalid")
+        if provider not in CHOICE_PROVIDERS:
+            raise ValueError("provider is invalid")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.lock_path, "a+b") as lock_fd:
             with file_lock(lock_fd.fileno(), exclusive=True, required=True):
@@ -232,7 +255,7 @@ class SessionEnvironmentChoices:
                 if profile_id is None:
                     sessions.pop(session_key, None)
                 else:
-                    sessions[session_key] = {"provider": PROVIDER_ID, "configuration": profile_id}
+                    sessions[session_key] = {"provider": provider, "configuration": profile_id}
                 self._write(sessions, before)
                 if profile_id is None:
                     # After the row is gone: a crash in between errs toward refusing.
@@ -322,6 +345,8 @@ class CoderSessionEnvironments:
         return url
 
     def profile(self, profile_id: str) -> Any:
+        # Refuses an id that a profile of another provider also uses.
+        profile_provider(self._config, profile_id)
         for profile in getattr(self._config, "profiles", []) or []:
             if profile.id == profile_id:
                 return profile
@@ -337,17 +362,24 @@ class CoderSessionEnvironments:
             return self._client_factory(self._bin(), self.url)
         return CoderClient(self._bin(), self.url, "", self.data_home, runner=_login_runner)
 
-    async def prepare(self, session_key: str, profile_id: str) -> PreparedRemoteSession:
-        """Reserve, find-or-create, start and verify this session's workspace."""
+    async def prepare(
+        self, session_key: str, profile_id: str, *, progress_key: Optional[str] = None
+    ) -> PreparedRemoteSession:
+        """Reserve, find-or-create, start and verify this session's workspace.
+
+        ``progress_key`` is the session whose start is reported: a subagent
+        prepares its root's workspace, but the start, and its cleanup, are its own."""
         from kiro_crew.coder.retention import session_lifecycle
 
         lifecycle = session_lifecycle(session_key)
         # Invalidate queued closes, then wait out an archive's stop/stamp.
         lifecycle.generation += 1
         async with lifecycle.lock:
-            return await self._prepare(session_key, profile_id)
+            return await self._prepare(session_key, profile_id, progress_key or session_key)
 
-    async def _prepare(self, session_key: str, profile_id: str) -> PreparedRemoteSession:
+    async def _prepare(
+        self, session_key: str, profile_id: str, progress_key: str
+    ) -> PreparedRemoteSession:
         profile = self.profile(profile_id)
         # Clear a pending deletion (or refuse mid-delete). Registry calls run
         # off-loop: its lock is single-shot on the loop.
@@ -391,6 +423,8 @@ class CoderSessionEnvironments:
             if workspace is not None:
                 # Names are reusable: verify before start, and again after.
                 verify_workspace(workspace)
+            if workspace is None or workspace.status != _RUNNING:
+                report_start_stage(progress_key, "provisioning")
             if workspace is None:
                 if binding.workspace_uuid:
                     # Had a workspace and it is gone: never recreate silently.
@@ -398,7 +432,7 @@ class CoderSessionEnvironments:
                         "this session's workspace was deleted outside Kiro Crew"
                     )
                 if binding.template != profile.template:
-                    # Never created: record the template browse and the sweep verify.
+                    # Never created: record the template browse, health and the sweep verify.
                     binding = await asyncio.to_thread(
                         self.registry.replace, replace(binding, template=profile.template)
                     )
@@ -464,10 +498,12 @@ async def prepare_for_session(
 
     home = await asyncio.to_thread(data_home)
     choices = SessionEnvironmentChoices(home / "coder" / "session-choices.json")
-    resolved = await asyncio.to_thread(choices.resolve, session_key)
+    resolved = await asyncio.to_thread(choices.resolve_choice, session_key)
     if resolved is None:
         return None
-    profile_id, owner_key = resolved
+    profile_id, owner_key, recorded_provider = resolved
+    # Cleared by the caller when the start ends (providers/acp.py).
+    report_start_stage(session_key, "checking")
     if before_compute is not None:
         # Refuse an unsupported runtime before any workspace starts.
         before_compute()
@@ -475,9 +511,22 @@ async def prepare_for_session(
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
+    # A sprite or boxd session is prepared by its own provider; None is Coder.
+    vm = await prepare_vm_session(
+        section, home, session_key, owner_key, profile_id, recorded_provider
+    )
+    if vm is not None:
+        return vm
     environments = CoderSessionEnvironments(section, home)
-    # Keyed by the owner, so a subagent reuses its root's workspace.
-    return await environments.prepare(owner_key, profile_id)
+    # Keyed by the owner, so a subagent reuses its root's workspace; the start
+    # stage stays on the starting session, which clears it when the start ends.
+    prepared = await environments.prepare(owner_key, profile_id, progress_key=session_key)
+    from kiro_crew.coder.session_browse import session_health
+    from kiro_crew.session_environment import register_remote_health
+
+    # The [RESOURCES] refresh measures this session's workspace through Coder.
+    register_remote_health(session_key, session_health)
+    return prepared
 
 
 async def forget_subagent_environment(child_key: str) -> None:
@@ -485,7 +534,10 @@ async def forget_subagent_environment(child_key: str) -> None:
     if not child_key:
         return
     from kiro_crew.config.paths import data_home
+    from kiro_crew.session_environment import forget_remote_health
 
+    # In memory first: the child's health read must go even when the row cannot.
+    forget_remote_health(child_key)
     try:
         home = await asyncio.to_thread(data_home)
         choices = SessionEnvironmentChoices(home / "coder" / "session-choices.json")

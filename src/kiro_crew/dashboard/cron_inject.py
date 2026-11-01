@@ -406,6 +406,34 @@ def chat_folder_exists(state: DashboardState, folder_id: str) -> bool:
     return any(str(f.get("id")) == folder_id for f in getattr(state, "_folders", None) or ())
 
 
+def chat_folder_refuses_store(state: DashboardState, folder_id: str, memory_store: str) -> bool:
+    """Whether a tab on *memory_store* may NOT be filed in *folder_id*.
+
+    A job's tab runs on the job's memory store, and a mate's home (and every
+    folder inside it) holds only that mate's sessions: a tab on any other store,
+    the person's included, is kept out. The save routes refuse such a folder
+    and the placement below re-checks it at run time.
+    """
+    from kiro_crew.dashboard.mate_folders import mate_principal, refuses_write_into
+
+    folders = getattr(state, "_folders", None) or []
+    return refuses_write_into(folders, folder_id, mate_principal(memory_store))
+
+
+def chat_folder_move_refuses_store(
+    state: DashboardState, current_folder_id: str, new_folder_id: str, memory_store: str
+) -> bool:
+    """Whether a tab on *memory_store* may NOT move from *current_folder_id* to *new_folder_id*.
+
+    :func:`chat_folder_refuses_store` for both ends of a move: a tab in a
+    mate's home leaves it only when the tab runs on that mate's store.
+    """
+    from kiro_crew.dashboard.mate_folders import mate_principal, refuses_refile
+
+    folders = getattr(state, "_folders", None) or []
+    return refuses_refile(folders, current_folder_id, new_folder_id, mate_principal(memory_store))
+
+
 def chat_folder_for_minted_tab(state: DashboardState, job: "CronJob") -> str:
     """The chat folder a JUST-MINTED ``cron-{id}`` tab belongs in, or ``""``.
 
@@ -472,6 +500,23 @@ async def _commit_cron_tab_placement(
     from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock
     from kiro_crew.dashboard.chat_utils import slot_history_key
 
+    # A mate's home holds only that mate's sessions: a job's tab runs on the
+    # job's store, so it is filed there only when that store is the mate's.
+    if chat_folder_refuses_store(state, placed, str(getattr(slot, "memory_store", "") or "")):
+        logger.info("Cron '%s': chat folder %s is a mate's; tab not moved", job.name, placed)
+        try:
+            sel().log_api_access(
+                caller=f"cron:{job.id}",
+                operation="cron.chat_folder_placement",
+                outcome="denied",
+                source="cron",
+                resources=f"job={job.id},slot={slot.key},chat_folder_id={placed}",
+                error="mate_home_locked",
+            )
+        except Exception:
+            logger.debug("SEL logging failed for a refused cron tab placement", exc_info=True)
+        return False
+
     async with _slot_meta_txn_lock(state):
         slot.folder_id = placed
         authorized_history_key = slot_history_key(slot)
@@ -536,6 +581,13 @@ async def move_cron_job_tab(
     slot = state.get_slot(f"cron-{job.id}")
     if slot is None or getattr(slot, "folder_id", "") != previous_folder_id:
         return
+    # The save route refuses a move out of a mate's home; re-checked here
+    # because the tree can change between that check and this move.
+    if chat_folder_refuses_store(
+        state, previous_folder_id, str(getattr(slot, "memory_store", "") or "")
+    ):
+        logger.info("Cron '%s': tab sits in a mate's folder; not moved out", job.name)
+        return
     await _commit_cron_tab_placement(
         state, job, slot, placed=new_folder_id, restore_to=previous_folder_id
     )
@@ -594,6 +646,9 @@ def _bind_cron_slot(
         # practice. It is here so EVERY assignment site reaches the recorder and the
         # derived pin needs no exception for this one.
         note_crew_log_class(state, slot)
+        from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+        bind_transcript(state, slot)
         hydrate_slot_from_history(slot, history or [])
         # The tab's own turn time limit lives on the transcript's metadata line,
         # which this bind does not read. Until restore_cron_turn_timeout reads
@@ -821,10 +876,15 @@ def inject_cron_result_to_dashboard(
             else:
                 header_marker = marker
                 prompt_body = safe_prompt
+            # Admission is loaded only on delivery, not on the gateway boot path.
+            from kiro_crew.shared_crew.admission_gate import AUTOMATION_PRINCIPAL
+            from kiro_crew.shared_crew.attribution import stamp_principal_author
+
             _reflect(
                 "user",
                 f"# Cron Run: {safe_name}{stamp}{header_marker}\n\n{prompt_body}",
                 "msg msg-u",
+                meta=stamp_principal_author({}, AUTOMATION_PRINCIPAL),
             )
         safe_result, _ = redact_exfiltration_urls(result_text)
         safe_result, _ = redact_credentials(safe_result)

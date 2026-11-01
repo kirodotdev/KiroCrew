@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { selectPersonSlots } from '../store/dashboardSlice'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Plus, MessagesSquare } from 'lucide-react'
@@ -56,7 +57,8 @@ const GROUP_ORDER: PageGroup[] = ['pinned', 'today', 'yesterday', 'earlier']
 export default function SessionsPage() {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
-  const slots = useAppSelector(s => s.dashboard.slots)
+  // The person's list: a Crew Mode root's workers are its side panel's to show.
+  const slots = useAppSelector(selectPersonSlots)
   const slotsLoaded = useAppSelector(s => s.dashboard.slotsLoaded)
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   const [query, setQuery] = useState('')
@@ -246,7 +248,6 @@ export default function SessionsPage() {
           <EmptyState
             icon={<MessagesSquare size={40} />}
             title={i18nT('pages.sessionsPage.empty_title')}
-            subtitle={i18nT('pages.sessionsPage.empty_subtitle')}
             action={
               <Btn primary onClick={onNew} disabled={creating} data-testid="sessions-empty-new">
                 <Plus size={15} strokeWidth={2.5} />

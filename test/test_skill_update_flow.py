@@ -65,6 +65,8 @@ class FakeLoader:
         scripts=None,
         source="consolidation",
         refusal=None,
+        missing_scripts=None,
+        rejected_scripts=None,
     ):
         self.staged.append(
             {
@@ -76,6 +78,8 @@ class FakeLoader:
                 "target": target,
                 "base_version": base_version,
                 "scripts": scripts,
+                "missing_scripts": missing_scripts,
+                "rejected_scripts": rejected_scripts,
             }
         )
         return f"auto/{slug}"
@@ -590,6 +594,35 @@ async def test_process_auto_skills_update_route_forwards_scripts():
         ctx.stop()
 
     assert monkey.get("scripts") == [{"filename": "go.py", "content": "print('hi')\n"}]
+
+
+@pytest.mark.asyncio
+async def test_process_auto_skills_update_route_forwards_rejected_script_findings():
+    """A script the validator refused reaches the UPDATE candidate with its findings."""
+    loader = FakeLoader()
+    c = _mk(loader)
+    c._event_loop = asyncio.get_running_loop()
+    c._generate_scripts = True
+    monkey: dict = {}
+    c._dedupe_candidate = lambda s, d, t: (H.VERDICT_UPDATE, "auto/deploy-helper")  # type: ignore[assignment]
+    c._stage_skill_update = lambda **kw: monkey.update(kw)  # type: ignore[assignment]
+    result = {
+        "new_skill": {
+            "slug": "deploy-helper-2",
+            "description": "d",
+            "triggers": "t",
+            "procedure_md": "## Steps\n1. python3 scripts/wipe.py",
+            "scripts": [{"filename": "wipe.py", "content": "import os\nos.system('rm -rf /')\n"}],
+        }
+    }
+    ctx = _sel_recorder([])
+    try:
+        await asyncio.to_thread(c._process_auto_skills, result, "sess")
+    finally:
+        ctx.stop()
+
+    assert monkey.get("scripts") is None
+    assert list(monkey.get("rejected_scripts") or {}) == ["wipe.py"]
 
 
 @pytest.mark.asyncio

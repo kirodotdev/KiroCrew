@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { agentCycleTarget } from '../../lib/crewMode'
+import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore, store } from '../../store'
 import { changeApprovalMode, updateSlot } from '../../store/dashboardSlice'
-import { setAgentSwitchNotice } from '../../store/chatSlice'
+import { requestSlotFolderOpen, setAgentSwitchNotice } from '../../store/chatSlice'
+import { isStaleProjectDirError } from '../../utils/folderAgent'
+import type { ChatFolder } from '../../types'
+import { newChatShortcutArgs } from './newChatArgs'
 import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from '../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
 import { focusComposerElement, queryComposerOrExpand } from '../../pages/chat/composerFocus'
-import { agentSwitchFailureMessage, modelSwitchDeferredMessage } from '../../utils/agentSwitchFeedback'
+import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../../utils/agentSwitchFeedback'
 import { api } from '../../api/client'
 import { newTerminalByChord, toggleTerminalByChord } from '../../lib/terminalChordFocus'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
@@ -17,11 +21,24 @@ import { useInstanceShortcuts } from '../../hooks/useInstanceShortcuts'
 import { useAutoConnectInstances } from '../../hooks/useAutoConnectInstances'
 import { useCommandPalette } from '../../hooks/useCommandPalette'
 import { useProvider } from '../../providers/context'
-import { useAgents } from '../../hooks/useAgents'
+import { modelsQueryKey } from '../../hooks/useAvailableModels'
 import { i18nT } from '../../i18n/t'
+import { modelSupportsEffort } from '../../lib/effort'
+import { useAgents } from '../../hooks/useAgents'
 import { SESSION_FOLDER_UNAVAILABLE_EVENT } from '../../lib/sessionFolderNotice'
 
 const REASONING_EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
+
+/** What an effort cycle steps over on *slot*, which runs *model*: its harness's levels, '' (default)
+ *  first, or the notice saying there are none (see the composer's effort control). */
+function sessionEffortLevels(queryClient: QueryClient, slot: string, model: string): string[] | string {
+  const caps = queryClient.getQueryData<{ effort_supported?: boolean | null; effort_levels?: string[] }>(['slot-selection-capabilities', slot])
+  // An unknown effort verdict leaves the selected model to answer.
+  const supported = caps?.effort_supported ?? (!model || modelSupportsEffort(model))
+  if (!supported) return i18nT('pages.chatPage.effort_cycle_unavailable')
+  const levels = caps?.effort_levels?.filter(l => l && l !== 'default')
+  return levels?.length ? ['', ...levels] : REASONING_EFFORT_LEVELS
+}
 // Approval-mode DISCRIMINANTS in escalating order, cycled by keyboard shortcut.
 // Sent to the backend and compared, never rendered — the picker has its own copy.
 const APPROVAL_MODE_LEVELS = ['normal', 'trust_reads', 'trust', 'yolo']
@@ -41,7 +58,8 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   terminalPoppedOut: boolean
   activeSlotProject: string | undefined
 }) {
-  const navigate = useNavigate()
+  // The new-chat create can take seconds, so its navigate asks when it runs.
+  const navigate = useAskingNavigate()
   const dispatch = useAppDispatch()
   // The Provider's store, so the create is judged against the store it was
   // dispatched to; the module singleton would bypass a test-injected store.
@@ -53,11 +71,25 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   // trigger + open state. Mounted once at the app shell (`shell/appShell.tsx`).
   const commandPalette = useCommandPalette()
   const newChatMutation = useMutation({
-    mutationFn: () => createChatForView(dispatch, appStore.getState, { defaultFolder: true }),
+    // The active chat's folder wins over the default folder (#16041).
+    mutationFn: (args: ReturnType<typeof newChatShortcutArgs>) => createChatForView(dispatch, appStore.getState, args),
+    onError: (err, args) => {
+      // The one failure a folder create adds: the folder's project directory
+      // is gone. The folder "+" says so under the folder header; the shortcut
+      // has no header, so it uses the shell's transient notice.
+      if ('project' in args && args.project && isStaleProjectDirError(err)) {
+        dispatch(setAgentSwitchNotice(i18nT('pages.chatSidebar.folder_project_dir_missing', { path: args.project })))
+      }
+    },
     onSuccess: (view) => {
       // A create the user moved away from (another session, another page)
-      // leaves the user there: no navigate and no composer focus.
+      // leaves the user there: no navigate and no composer focus. So does a
+      // page that refused to be left.
       if (!showCreatedChat(view, navigate)) return
+      // A chat filed into the active chat's folder: open that folder's path in
+      // the sidebar so its row is not hidden (a default-folder create already
+      // asks from createSlot; this is a no-op for an unfiled chat).
+      if (view.slot.folder_id) dispatch(requestSlotFolderOpen({ key: view.slot.key, folder_id: view.slot.folder_id }))
       // Unguarded on purpose: this mutation only fires from the new-chat
       // keyboard shortcut, and a pressed shortcut proves a keyboard exists —
       // focusComposer()'s touch-device skip would wrongly suppress focus on a
@@ -74,9 +106,16 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger)
   const provider = useProvider()
+  // The model a slot runs before it reports: its own pick, else what the composer resolved its crew
+  // to -- the composer's own key (composerChips), app included, so the cache entry it wrote is read.
+  const slotModel = (slot: { model?: string; agent?: string; app?: string | null } | undefined) => slot?.model
+    || queryClient.getQueryData<string>(['resolved-model', slot?.agent || defaultAgent || 'default', provider.id, slot?.app || '']) || ''
   const agentSwitchNotice = useAppSelector(s => s.chat.agentSwitchNotice)
   useEffect(() => {
-    if (!agentSwitchNotice) return
+    // A notice that offers a new chat stays until the user dismisses it or uses
+    // the offer: expiring it would unmount the banner while its create runs and
+    // hide a failed create.
+    if (!agentSwitchNotice || agentSwitchNotice.newChatAgent) return
     const timer = window.setTimeout(() => dispatch(setAgentSwitchNotice(null)), 6000)
     return () => window.clearTimeout(timer)
   }, [agentSwitchNotice, dispatch])
@@ -97,11 +136,15 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       // names ({agent, workspace} as one adjudicated pair; project is left
       // to the rebroadcast).
       await performAgentSlotSwitch(slot, agent, store.dispatch)
+      void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', slot] })
     } catch (error) {
-      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error)))
+      dispatch(setAgentSwitchNotice(agentSwitchFailureNotice(error, agent)))
     }
-  }, [dispatch])
-  useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => newChatMutation.mutate(), disabled: shortcutsOpen,
+  }, [dispatch, queryClient])
+  useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => {
+    const s = appStore.getState()
+    newChatMutation.mutate(newChatShortcutArgs(s.dashboard.slots, s.chat.activeSlot, queryClient.getQueryData<ChatFolder[]>(['chat-folders'])))
+  }, disabled: shortcutsOpen,
     onToggleFocusMode: toggleFocusMode,
     onCycleAgent: () => {
       const slots = store.getState().dashboard.slots
@@ -112,9 +155,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       // onCycleModel below. Agent names are never '', so the ''-falsy
       // accessor is safe here.
       const currentAgent = pendingSlotSwitch('agent', activeSlot) || currentSlot?.agent || defaultAgent
-      const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
-      const nextIdx = (idx + 1) % installedAgents.length
-      void switchActiveSlotAgent(activeSlot, installedAgents[nextIdx].name)
+      // The picker's own conductor-free list (lib/crewMode): a chord never moves a
+      // normal chat onto a conductor, and a conductor chat does not cycle at all.
+      const target = agentCycleTarget(installedAgents, currentAgent, currentSlot?.agent_kind, 1, currentSlot?.crew_mode_agent, !!currentSlot?.crew_mode_root)
+      if (target) void switchActiveSlotAgent(activeSlot, target)
     },
     onCyclePrevAgent: () => {
       const slots = store.getState().dashboard.slots
@@ -123,9 +167,8 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
       // See onCycleAgent above.
       const currentAgent = pendingSlotSwitch('agent', activeSlot) || currentSlot?.agent || defaultAgent
-      const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
-      const prevIdx = (idx - 1 + installedAgents.length) % installedAgents.length
-      void switchActiveSlotAgent(activeSlot, installedAgents[prevIdx].name)
+      const target = agentCycleTarget(installedAgents, currentAgent, currentSlot?.agent_kind, -1, currentSlot?.crew_mode_agent, !!currentSlot?.crew_mode_root)
+      if (target) void switchActiveSlotAgent(activeSlot, target)
     },
     onCycleReasoningEffort: async () => {
       const activeSlot = store.getState().chat.activeSlot
@@ -136,11 +179,14 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       // is a REAL effort target (provider default), so this base uses the
       // null-aware accessor — the ''-falsy one would misread an in-flight
       // "back to default" as "nothing pending" and mis-step the burst.
+      const levels = sessionEffortLevels(queryClient, activeSlot, slotModel(currentSlot))
+      // A shortcut that silently does nothing reads as broken, so say why instead.
+      if (typeof levels === 'string') { store.dispatch(setAgentSwitchNotice(levels)); return }
       const base = pendingSlotSwitchTarget('reasoning_effort', activeSlot)
         ?? (currentSlot?.reasoning_effort || '')
-      const idx = REASONING_EFFORT_LEVELS.indexOf(base)
-      const nextIdx = (idx + 1) % REASONING_EFFORT_LEVELS.length
-      const level = REASONING_EFFORT_LEVELS[nextIdx]
+      const idx = levels.indexOf(base)
+      const nextIdx = (idx + 1) % levels.length
+      const level = levels[nextIdx]
       try {
         await performSlotSwitch('reasoning_effort', activeSlot, level,
           async () => {
@@ -149,7 +195,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
           },
           (value) => store.dispatch(updateSlot({ key: activeSlot, reasoning_effort: value })))
       } catch (e) {
-        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        store.dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
         // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCycleReasoningEffort failed', e)
       }
@@ -160,11 +206,14 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
       // See onCycleReasoningEffort above.
+      const levels = sessionEffortLevels(queryClient, activeSlot, slotModel(currentSlot))
+      // A shortcut that silently does nothing reads as broken, so say why instead.
+      if (typeof levels === 'string') { store.dispatch(setAgentSwitchNotice(levels)); return }
       const base = pendingSlotSwitchTarget('reasoning_effort', activeSlot)
         ?? (currentSlot?.reasoning_effort || '')
-      const idx = REASONING_EFFORT_LEVELS.indexOf(base)
-      const prevIdx = (idx - 1 + REASONING_EFFORT_LEVELS.length) % REASONING_EFFORT_LEVELS.length
-      const level = REASONING_EFFORT_LEVELS[prevIdx]
+      const idx = levels.indexOf(base)
+      const prevIdx = (idx - 1 + levels.length) % levels.length
+      const level = levels[prevIdx]
       try {
         await performSlotSwitch('reasoning_effort', activeSlot, level,
           async () => {
@@ -173,7 +222,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
           },
           (value) => store.dispatch(updateSlot({ key: activeSlot, reasoning_effort: value })))
       } catch (e) {
-        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        store.dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
         // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCyclePrevReasoningEffort failed', e)
       }
@@ -199,7 +248,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onCycleModel: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
-      const models = queryClient.getQueryData<{ name: string }[]>(['available-models', provider.id])
+      // The active session's own list when its harness is not the configured one (see ChatPage).
+      const caps = queryClient.getQueryData<{ models_backend?: string }>(['slot-selection-capabilities', activeSlot])
+      const models = queryClient.getQueryData<{ name: string }[]>(modelsQueryKey(provider.id, caps?.models_backend))
       if (!models || models.length === 0) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
@@ -224,8 +275,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
             return r?.model ?? name
           },
           (value) => store.dispatch(updateSlot({ key: activeSlot, model: value })))
+        // A cold slot's effort answer was judged on its old model; ask again, as the picker does.
+        void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', activeSlot] })
       } catch (e) {
-        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        store.dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
         // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCycleModel failed', e)
       }
@@ -233,7 +286,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onCyclePrevModel: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
-      const models = queryClient.getQueryData<{ name: string }[]>(['available-models', provider.id])
+      // The active session's own list when its harness is not the configured one (see ChatPage).
+      const caps = queryClient.getQueryData<{ models_backend?: string }>(['slot-selection-capabilities', activeSlot])
+      const models = queryClient.getQueryData<{ name: string }[]>(modelsQueryKey(provider.id, caps?.models_backend))
       if (!models || models.length === 0) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
@@ -251,8 +306,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
             return r?.model ?? name
           },
           (value) => store.dispatch(updateSlot({ key: activeSlot, model: value })))
+        void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', activeSlot] })
       } catch (e) {
-        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        store.dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
         // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCyclePrevModel failed', e)
       }

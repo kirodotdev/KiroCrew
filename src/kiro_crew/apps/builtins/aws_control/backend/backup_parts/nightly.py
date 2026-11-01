@@ -637,6 +637,35 @@ def scheduled_sessions_blocked_code(*, scheduled_account: bool = True) -> Option
     return None
 
 
+def scheduled_snapshot_blocked_code(*, scheduled_account: bool) -> Optional[str]:
+    """Which condition stops a nightly snapshot archive here, or ``None``.
+
+    The snapshot mirror of :func:`scheduled_sessions_blocked_code`, and it carries
+    exactly one condition where that one carries three. The snapshot kind has no
+    capability gate -- :func:`kind_unavailable_reason` answers ``None`` for it on
+    every platform -- and no redaction gap, because :func:`run_snapshot_backup`
+    routes its payload through its own redaction seam and so honours the switch
+    rather than standing down. What remains is the account condition: the grant is
+    recorded per account by :func:`set_nightly` while the loop resolves one
+    account, so a snapshot grant switched on while viewing a non-default account is
+    authorized and unreachable at once.
+
+    ``scheduled_account`` is required with no default, unlike the sessions mirror.
+    The sessions default exists because the scheduling loop reads that function
+    through :func:`scheduled_sessions_blocked_reason`; the snapshot loop reads
+    nothing here -- :func:`due_for_nightly` is independent and unchanged -- so the
+    only caller is the per-account status route, which always answers the question
+    explicitly. A default would be an unused generalization, so the caller states
+    the account every time.
+
+    A stable token rather than a sentence, for the same reason as the sessions
+    one: the surface that shows it has to say it in the reader's language.
+    """
+    if not scheduled_account:
+        return BLOCK_OTHER_ACCOUNT
+    return None
+
+
 def scheduled_sessions_blocked_reason() -> Optional[str]:
     """The same answer in prose, for logs, audit subjects and upload refusals.
 

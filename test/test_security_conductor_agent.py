@@ -122,7 +122,7 @@ class TestSecurityConductorInstaller:
         one; without the verb in the tool line the finished session stays open and the
         operator cleans up by hand."""
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
-        assert "`session_close` (close a child once its item is terminal)" in prompt
+        assert "`session_close` (close a child once its item is terminal;" in prompt
 
     def test_prompt_delegates_scope_and_acceptance_to_scripts(self, tmp_path, monkeypatch):
         """Both decisions this agent must NOT make by judgment: whether a target

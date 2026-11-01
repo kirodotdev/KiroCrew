@@ -990,10 +990,6 @@ async def test_stop_sentinel_keeps_the_record_finished(svc, tmp_path, monkeypatc
     wrote it, and nothing announces a stop-short (``expired``)."""
     import kiro_crew.autonudge as _an
 
-    async def _nosleep(_secs):
-        return None
-
-    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
     events: list[str] = []
     svc.subscribe(lambda ev, lp: events.append(ev))
     await svc.start()
@@ -1004,7 +1000,9 @@ async def test_stop_sentinel_keeps_the_record_finished(svc, tmp_path, monkeypatc
     sentinel.write_text("halt")
     svc._cancel_timer(loop.id)
     with caplog.at_level(logging.WARNING, logger="kiro_crew.autonudge"):
-        await svc._timer(loop)
+        # delay=0: the timer's own sleep is a single loop turn, so nothing is
+        # patched and the stdlib asyncio.sleep stays the worker's.
+        await svc._timer(loop, delay=0)
     kept = svc.get_by_slot("chat-1-123")
     assert kept is not None and kept.id == loop.id
     assert kept.active is False

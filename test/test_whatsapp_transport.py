@@ -383,6 +383,130 @@ class TestGroupSenderAllowlist:
         assert seen == []
 
 
+GROUP_B = "120363000000000002@g.us"
+
+
+@pytest.mark.asyncio
+class TestPerGroupAllowlist:
+    """A group's own ``allowed_wa_ids`` replaces the global list for that group.
+
+    The global list admits a number to every configured group at once; a
+    per-group list lets the operator admit a colleague to one group without
+    admitting them to another. A group without its own list keeps the global one.
+    """
+
+    def _group(self, jid: str, **extra) -> dict:
+        return {"jid": jid, "name": "G", "mode": "mention", "cooldown_s": 0, **extra}
+
+    def _mention(self, chat: str, sender: str = FRIEND):
+        return event(chat=chat, sender=sender, is_group=True, mentions=[OWN_JID])
+
+    def _msg(self, user_id: str, chat: str):
+        return InboundMessage(
+            channel_type="whatsapp", user_id=user_id, conversation_id=chat, text="x"
+        )
+
+    async def test_a_number_on_group_a_is_admitted_in_a_and_dropped_in_b(self):
+        h = Harness(
+            groups=[
+                self._group(GROUP, allowed_wa_ids=["447700900111"]),
+                self._group(GROUP_B, allowed_wa_ids=["447700900222"]),
+            ]
+        )
+        await h.transport.receive(self._mention(GROUP))
+        assert len(h.dispatched) == 1
+        await h.transport.receive(self._mention(GROUP_B))
+        assert len(h.dispatched) == 1
+
+    async def test_a_group_without_its_own_list_falls_back_to_the_global_list(self):
+        h = Harness(
+            groups=[self._group(GROUP, allowed_wa_ids=["447700900222"]), self._group(GROUP_B)],
+            allowed_wa_ids=["447700900111"],
+        )
+        await h.transport.receive(self._mention(GROUP_B))
+        assert len(h.dispatched) == 1
+
+    async def test_a_groups_own_list_replaces_the_global_one(self):
+        """Replace, not add: a globally listed number stays out of a group whose
+        own list does not name it."""
+        h = Harness(
+            groups=[self._group(GROUP, allowed_wa_ids=["447700900222"])],
+            allowed_wa_ids=["447700900111"],
+        )
+        await h.transport.receive(self._mention(GROUP))
+        assert h.dispatched == []
+
+    async def test_an_empty_own_list_admits_only_the_operator(self):
+        h = Harness(
+            groups=[self._group(GROUP, allowed_wa_ids=[])],
+            allowed_wa_ids=["447700900111"],
+        )
+        await h.transport.receive(self._mention(GROUP))
+        assert h.dispatched == []
+        await h.transport.receive(
+            event(chat=GROUP, sender=OWN_JID, from_me=True, is_group=True, text="status?")
+        )
+        assert len(h.dispatched) == 1
+
+    async def test_a_malformed_own_list_fails_closed(self):
+        """A per-group value that is not a list admits nobody there; it never
+        widens to the global list."""
+        h = Harness(
+            groups=[self._group(GROUP, allowed_wa_ids="447700900111")],
+            allowed_wa_ids=["447700900111"],
+        )
+        await h.transport.receive(self._mention(GROUP))
+        assert h.dispatched == []
+
+    async def test_non_digit_entries_are_ignored(self):
+        h = Harness(groups=[self._group(GROUP, allowed_wa_ids=["+447700900111", "abc"])])
+        await h.transport.receive(self._mention(GROUP))
+        assert h.dispatched == []
+
+    async def test_media_fetch_follows_the_per_group_answer(self):
+        h = Harness(
+            groups=[
+                self._group(GROUP, allowed_wa_ids=["447700900111"]),
+                self._group(GROUP_B, allowed_wa_ids=[]),
+            ],
+            allowed_wa_ids=["447700900111"],
+        )
+        assert h.transport._may_fetch_media(self._msg("447700900111", GROUP), is_group=True)
+        assert not h.transport._may_fetch_media(self._msg("447700900111", GROUP_B), is_group=True)
+
+    async def test_the_group_jid_is_matched_the_way_the_gate_matches_it(self):
+        """The entry is keyed through ``normalize_jid``, so an uppercase server in
+        config selects the same group's list the gate selects."""
+        h = Harness(groups=[self._group(GROUP.upper(), allowed_wa_ids=["447700900111"])])
+        assert h.transport._may_fetch_media(self._msg("447700900111", GROUP), is_group=True)
+
+    async def test_coercion_keeps_the_key_only_when_the_entry_has_it(self):
+        from kiro_crew.config.sections import _coerce_whatsapp_groups
+
+        absent, listed, malformed = _coerce_whatsapp_groups(
+            [
+                {"jid": GROUP},
+                {"jid": GROUP_B, "allowed_wa_ids": [" 447700900111 ", "x", 447700900222]},
+                {"jid": "c@g.us", "allowed_wa_ids": None},
+            ]
+        )
+        assert "allowed_wa_ids" not in absent
+        assert listed["allowed_wa_ids"] == ["447700900111", "447700900222"]
+        assert malformed["allowed_wa_ids"] == []
+
+    async def test_reconfigure_adopts_a_new_per_group_list(self):
+        h = Harness(groups=[self._group(GROUP)], allowed_wa_ids=["447700900111"])
+        h.transport.reconfigure(
+            SimpleNamespace(
+                dm_policy="self",
+                allowed_wa_ids=["447700900111"],
+                groups=[self._group(GROUP, allowed_wa_ids=["447700900222"])],
+            )
+        )
+        await h.transport.receive(self._mention(GROUP))
+        assert h.dispatched == []
+
+
 @pytest.mark.asyncio
 class TestOutboundAndTargets:
     async def test_send_message_tracks_every_chunk_id(self, harness):
@@ -682,3 +806,70 @@ class TestPreIngestionOriginalIsCapturedForTheSpool:
         )
 
         assert seen == [("just words", 0)]
+
+
+@pytest.mark.asyncio
+class TestAttachmentCleanupRunsOffTheLoop:
+    """The post-dispatch unlink of ingested media must not run on the gateway loop.
+
+    TMPDIR is not guaranteed to be local disk, so each ``os.unlink`` can be a
+    round trip; every other channel hands the same cleanup to a worker thread.
+    """
+
+    async def test_cleanup_runs_in_a_worker_thread(self, harness, monkeypatch, tmp_path):
+        import threading
+
+        import kiro_crew.whatsapp.transport as mod
+        from kiro_crew.messaging.attachments import IngestResult
+        from kiro_crew.messaging.attachments import cleanup as real_cleanup
+
+        image = tmp_path / "kc-att" / "img-1.jpg"
+        image.parent.mkdir()
+        image.write_bytes(b"jpg")
+
+        async def fake_ingest(*a, **kw):
+            return IngestResult(image_paths=[str(image)])
+
+        cleanup_threads: list[int] = []
+
+        def recording_cleanup(paths):
+            cleanup_threads.append(threading.get_ident())
+            real_cleanup(paths)
+
+        monkeypatch.setattr(mod, "ingest_media", fake_ingest)
+        monkeypatch.setattr(mod, "cleanup", recording_cleanup)
+        loop_thread = threading.get_ident()
+
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, text="look", image=True)
+        )
+
+        assert len(harness.dispatched) == 1
+        assert len(cleanup_threads) == 1, "receive did not clean up the ingested media"
+        assert cleanup_threads[0] != loop_thread, "attachment cleanup ran on the event loop"
+        assert not image.exists()
+        assert harness.transport.pending_original == {}
+
+    async def test_a_refused_offload_still_deletes_inline(self, harness, monkeypatch, tmp_path):
+        """A loop whose executor is gone must not leave decrypted media on disk."""
+        import kiro_crew.whatsapp.transport as mod
+        from kiro_crew.messaging.attachments import IngestResult
+
+        image = tmp_path / "kc-att" / "img-1.jpg"
+        image.parent.mkdir()
+        image.write_bytes(b"jpg")
+
+        async def fake_ingest(*a, **kw):
+            return IngestResult(image_paths=[str(image)])
+
+        async def refused(*a, **kw):
+            raise RuntimeError("cannot schedule new futures after shutdown")
+
+        monkeypatch.setattr(mod, "ingest_media", fake_ingest)
+        monkeypatch.setattr(mod.asyncio, "to_thread", refused)
+
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, text="look", image=True)
+        )
+
+        assert not image.exists(), "a refused offload left the temp file behind"

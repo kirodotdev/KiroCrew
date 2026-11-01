@@ -41,7 +41,7 @@ VETTED: frozenset[tuple[str, str]] = frozenset(
     {
         ("emit_runtime.py", "_reap_child_origin"),
         ("holders.py", "holders"),
-        ("read.py", "dispatch_view"),
+        ("read.py", "_scanned_view"),
         ("session_tree.py", "reading"),
         ("session_tree.py", "chain"),
         # The projection is a pure in-memory fold over records another writer already

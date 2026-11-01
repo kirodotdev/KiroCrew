@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -58,10 +59,11 @@ MAX_DURABLE_QUEUE_SCAN = 4 * MAX_DURABLE_QUEUE_ENTRIES
 #: process-local plumbing (retry callbacks, synthetic payloads) or is
 #: deliberately excluded — see :func:`durable_queue_entries`.
 #:
-#: ``_directive_user_origin`` and ``_directive_channel_origin`` are NOT here, and
+#: ``_directive_user_origin``, ``_directive_channel_origin`` and
+#: ``_directive_owner_origin`` are NOT here, and
 #: their absence is a security property rather than an omission. They record that
-#: an entry's words arrived from an authenticated human, and the drain turns that
-#: into real authority: ``chat_runner`` reduces the consumed entries' flags into
+#: an entry's words arrived from an authenticated human (the owner, for the third),
+#: and the drain turns that into real authority: ``chat_runner`` reduces the consumed entries' flags into
 #: ``producer_is_user_facing``, which admits user-surface and self-arming
 #: directives and exempts them from the LINKED containment constraint. The
 #: transcript this value is written to is an ordinary readable-writable file in
@@ -285,7 +287,8 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     callback key, because each of those changes what the drain DOES with it.
 
     Provenance is dropped for the same reason and matters most:
-    ``_directive_user_origin``, ``_directive_channel_origin`` and the entry's
+    ``_directive_user_origin``, ``_directive_channel_origin``,
+    ``_directive_owner_origin`` and the entry's
     ``meta`` turn actor are never restored, so a restored entry is non-directive
     and actor-less by construction. The drain
     reduces the consumed entries' flags into the authenticated-human authority a
@@ -453,6 +456,89 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             len(entries),
         )
     return entries
+
+
+async def drain_restored_parked_sends(state: Any) -> None:
+    """Resume accepted parked sends after slot restore, through the ordinary drain.
+
+    Ordinary restored cards still wait for a person. A durable parked work row
+    proves this card was accepted for dispatch; it grants no authority to its
+    restored metadata. The drain revalidates containment and admits it afresh.
+    """
+    from kiro_crew.dashboard.chat_runner import _drain_parked_queues
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.shared_crew import admission_gate, host_hooks
+    from kiro_crew.shared_crew.admission import OperationState, ReasonCode
+    from kiro_crew.shared_crew.admission_entry import queued_work_ids
+
+    service = admission_gate.installed_service()
+    if service is None or not service.enabled:
+        return
+    await service.ensure_ready()
+    await host_hooks.deliver_owed_notes(state)
+    accepted: dict[str, frozenset[str]] = {}
+    for slot in list(state._slots.values()):
+        queue_ids: set[str] = set()
+        for entry in list(slot._queue):
+            if not entry.get(RESTORED_QUEUE_KEY):
+                continue
+            for work_id in queued_work_ids([entry]):
+                work = await service.current_work(work_id)
+                if (
+                    work is not None
+                    and work.session_key == effective_session_key(slot)
+                    and work.extra.get(admission_gate.PARKED_KEY)
+                    and work.runtime is None
+                    and work.state is OperationState.CANCELLED
+                    and work.reason in (None, ReasonCode.CANCELLED_BY_USER)
+                ):
+                    queue_ids.add(entry["id"])
+                    break
+        if queue_ids:
+            accepted[slot.key] = frozenset(queue_ids)
+    from kiro_crew.dashboard.chat_runner import _RESTORED_DRAIN_IDS
+    from kiro_crew.memory_startup import memory_startup_preparing
+
+    token = _RESTORED_DRAIN_IDS.set(accepted)
+    try:
+        keys = list(accepted)
+        memory_task = state.memory_startup_task
+        if keys and (
+            (memory_task is None and memory_startup_preparing())
+            or (memory_task is not None and not memory_task.done())
+        ):
+            task = asyncio.create_task(_drain_after_memory_task_publication(state, keys))
+            state._background_tasks.add(task)
+            task.add_done_callback(state._background_tasks.discard)
+        else:
+            await _drain_parked_queues(state, keys)
+    finally:
+        _RESTORED_DRAIN_IDS.reset(token)
+
+
+# Startup publishes the memory task after restoring slots; there is no event for that assignment.
+_MEMORY_TASK_POLL_SECONDS = 0.1
+
+
+async def _drain_after_memory_task_publication(state: Any, keys: list[str]) -> None:
+    """Hand restored sends to the ordinary memory wait once startup publishes its task."""
+    from kiro_crew import shutdown_event
+    from kiro_crew.dashboard.chat_runner import _drain_parked_queues
+    from kiro_crew.memory_startup import memory_startup_preparing
+
+    while state.memory_startup_task is None and memory_startup_preparing():
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=_MEMORY_TASK_POLL_SECONDS)
+            return
+        except asyncio.TimeoutError:
+            pass
+    if state.memory_startup_task is not None:
+        try:
+            await asyncio.shield(state.memory_startup_task)
+        except Exception:
+            logger.warning("Memory preparation failed; restored sends remain queued", exc_info=True)
+            return
+    await _drain_parked_queues(state, keys)
 
 
 def _delivery_key(content: str) -> str:
@@ -623,6 +709,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        directive_owner_origin: bool = False,
     ) -> str:
         """Append an entry and return its process-local queue ID."""
         queue_id = self._id_provider()
@@ -639,6 +726,8 @@ class SlotQueueRepository:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
             item["_directive_channel_origin"] = True
+        if directive_owner_origin:
+            item["_directive_owner_origin"] = True
         owner._queue.append(item)
         owner._note_enqueue()
         return queue_id
@@ -661,6 +750,7 @@ class SlotQueueRepository:
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        directive_owner_origin: bool = False,
     ) -> str:
         """Insert one entry while preserving retry callbacks and provenance."""
         queue_id = self._id_provider()
@@ -682,6 +772,8 @@ class SlotQueueRepository:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
             item["_directive_channel_origin"] = True
+        if directive_owner_origin:
+            item["_directive_owner_origin"] = True
         owner._queue.insert(index, item)
         owner._note_enqueue()
         return queue_id
@@ -743,6 +835,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        directive_owner_origin: bool = False,
     ) -> bool:
         """Edit a user-owned entry without changing its identity or position."""
         for item in owner._queue:
@@ -801,6 +894,13 @@ class SlotQueueRepository:
                 item["_directive_channel_origin"] = True
             else:
                 item.pop("_directive_channel_origin", None)
+            # The replacement words are the EDITOR's, so the owner mark follows
+            # the editor too: an owner's queued entry rewritten by another
+            # dashboard user drains without it.
+            if directive_owner_origin:
+                item["_directive_owner_origin"] = True
+            else:
+                item.pop("_directive_owner_origin", None)
             return True
         return False
 

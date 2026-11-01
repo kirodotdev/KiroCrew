@@ -353,9 +353,8 @@ def restore_download(
                 # key without proof, so under it there is no refusal to rescue --
                 # and reaching past the current object would hand back different
                 # bytes than that caller asked for, labelled a proven self archive
-                # instead of the unverified one it accepted. The override keeps the
-                # meaning it has today and this change is confined to the outcome it
-                # exists to change.
+                # instead of the unverified one it accepted. The override keeps its
+                # meaning; only this outcome changes.
                 recovered = (
                     None
                     if foreign_ok
