@@ -1,0 +1,284 @@
+{
+  "schema_version": 4,
+  "id": "dyna",
+  "enabled": true,
+  "display_name": "Dyna Policy Pack",
+  "short_name": "Dyna",
+  "localized_name": "戴拿",
+  "description": "Dyna 全能模式：Miracle 灵活专长协作、Flash 均衡协调、Strong 深度攻坚；三形态共用安全执行核心。",
+  "default_policy": "flash",
+  "policies": [
+    {
+      "id": "miracle",
+      "semantics": {
+        "display_name": "Miracle Type",
+        "localized_name": "奇迹型",
+        "description": "灵活专长协作：根据任务复杂度积极调整权重；优先把可并行的只读调查分给合格 Worker，主 Agent 保持唯一写入者，并按风险选择定向复核。",
+        "short_description": "灵活专长 · 动态分工 · 有界协作"
+      },
+      "execution": {
+        "reasoning_intent": "inherit",
+        "routing": {
+          "quality": 0.35,
+          "speed": 0.45,
+          "economy": 0.2,
+          "tier_pool": "any",
+          "tier_fallback": "capability",
+          "tool_bias": 0.07,
+          "context_bias": 0.05,
+          "complexity_shift": {
+            "mode": "adaptive",
+            "strength": 0.3,
+            "center": 0.5,
+            "speed_share": 0.6,
+            "economy_share": 0.4
+          },
+          "adaptive": {
+            "enabled": true,
+            "history_limit": 500,
+            "half_life_days": 3.0,
+            "reliability_prior": 0.94,
+            "reliability_prior_weight": 6.0,
+            "sample_full": 24,
+            "task_sample_full": 16,
+            "confidence_medium": 8,
+            "confidence_high": 30
+          },
+          "fit": {
+            "code_tool_bonus": 0.04,
+            "image_unknown_penalty": 0.08,
+            "tool_unknown_penalty": 0.06
+          }
+        },
+        "reasoning": {
+          "thinking_auto": "adaptive_per_call",
+          "effort_auto": "adaptive_per_call"
+        },
+        "secondary": {
+          "role": "verify",
+          "objective": "value",
+          "reviewer": "not_weaker",
+          "trigger": {
+            "risk_gte": 0.75,
+            "verification_value_gte": 0.7,
+            "complexity_gte": 0.9
+          },
+          "reason": "Dyna miracle risk-aware independent verification",
+          "self_reason": "No equally capable independent reviewer; use bounded self-review",
+          "rationale": "Review is selected by declared risk and expected verification benefit",
+          "single_mode": "dyna_miracle_single",
+          "multi_mode": "dyna_miracle_reviewed",
+          "reasoning_intent": "balanced",
+          "requires_substantive_work": true,
+          "scoring": {
+            "quality": 0.52,
+            "speed": 0.22,
+            "economy": 0.16,
+            "reliability": 0.1
+          },
+          "prefer_different_provider": true
+        },
+        "orchestration": {
+          "objective": "capability",
+          "topology": "adaptive",
+          "max_agents": 6,
+          "max_parallel": 4,
+          "max_depth": 2,
+          "worker_mode": "adaptive",
+          "worker_tier_pool": "any",
+          "worker_reasoning_intent": "balanced",
+          "worker_breadth_gte": 0.32,
+          "worker_parallelizability_gte": 0.3,
+          "worker_tool_intensity_gte": 0.48,
+          "worker_write_intensity_lte": 0.28,
+          "single_writer": true
+        }
+      }
+    },
+    {
+      "id": "flash",
+      "semantics": {
+        "display_name": "Flash Type",
+        "localized_name": "闪亮型",
+        "description": "全能协调：均衡完成任务，简单任务由主 Agent 处理；确有并行收益时使用只读 Worker，高风险结果按需复核。",
+        "short_description": "全能协调 · 默认 · 按需协作"
+      },
+      "execution": {
+        "reasoning_intent": "balanced",
+        "routing": {
+          "quality": 0.45,
+          "speed": 0.3,
+          "economy": 0.25,
+          "tier_pool": "any",
+          "tier_fallback": "capability",
+          "tool_bias": 0.035,
+          "context_bias": 0.02,
+          "complexity_shift": {
+            "mode": "adaptive",
+            "strength": 0.15,
+            "center": 0.5,
+            "speed_share": 0.6,
+            "economy_share": 0.4
+          },
+          "adaptive": {
+            "enabled": true,
+            "history_limit": 500,
+            "half_life_days": 3.0,
+            "reliability_prior": 0.94,
+            "reliability_prior_weight": 6.0,
+            "sample_full": 24,
+            "task_sample_full": 16,
+            "confidence_medium": 8,
+            "confidence_high": 30
+          },
+          "fit": {
+            "code_tool_bonus": 0.04,
+            "image_unknown_penalty": 0.08,
+            "tool_unknown_penalty": 0.06
+          }
+        },
+        "reasoning": {
+          "thinking_auto": "adaptive",
+          "effort_auto": "adaptive"
+        },
+        "secondary": {
+          "role": "verify",
+          "objective": "value",
+          "reviewer": "not_weaker",
+          "trigger": {
+            "complexity_gte": 0.85,
+            "risk_gte": 0.82,
+            "verification_value_gte": 0.72,
+            "reasoning_any": [
+              "xhigh",
+              "max"
+            ]
+          },
+          "reason": "Dyna flash risk-aware independent verification",
+          "self_reason": "No equally capable independent reviewer; use bounded self-review",
+          "rationale": "Review is selected by declared risk and expected verification benefit",
+          "single_mode": "dyna_flash_single",
+          "multi_mode": "dyna_flash_reviewed",
+          "reasoning_intent": "balanced",
+          "requires_substantive_work": true,
+          "scoring": {
+            "quality": 0.48,
+            "speed": 0.2,
+            "economy": 0.2,
+            "reliability": 0.12
+          },
+          "prefer_different_provider": true
+        },
+        "orchestration": {
+          "objective": "value",
+          "topology": "adaptive",
+          "max_agents": 4,
+          "max_parallel": 2,
+          "max_depth": 2,
+          "worker_mode": "adaptive",
+          "worker_tier_pool": "any",
+          "worker_reasoning_intent": "balanced",
+          "worker_breadth_gte": 0.52,
+          "worker_parallelizability_gte": 0.46,
+          "worker_tool_intensity_gte": 0.55,
+          "worker_write_intensity_lte": 0.25,
+          "single_writer": true
+        }
+      }
+    },
+    {
+      "id": "strong",
+      "semantics": {
+        "display_name": "Strong Type",
+        "localized_name": "强壮型",
+        "description": "深度攻坚：强模型主导，聚焦根因、证据与反例验证；对中高风险和代码任务进行独立复核，Worker 默认只读。强模型池不满足要求时拒绝降级。",
+        "short_description": "深度攻坚 · 高质量 · 严谨复核"
+      },
+      "execution": {
+        "reasoning_intent": "high",
+        "routing": {
+          "quality": 0.8,
+          "speed": 0.12,
+          "economy": 0.08,
+          "tier_pool": "strong",
+          "tier_fallback": "strict",
+          "tool_bias": 0.08,
+          "context_bias": 0.07,
+          "complexity_shift": {
+            "mode": "adaptive",
+            "strength": 0.1,
+            "center": 0.5,
+            "speed_share": 0.6,
+            "economy_share": 0.4
+          },
+          "adaptive": {
+            "enabled": true,
+            "history_limit": 500,
+            "half_life_days": 3.0,
+            "reliability_prior": 0.94,
+            "reliability_prior_weight": 6.0,
+            "sample_full": 24,
+            "task_sample_full": 16,
+            "confidence_medium": 8,
+            "confidence_high": 30
+          },
+          "fit": {
+            "code_tool_bonus": 0.04,
+            "image_unknown_penalty": 0.08,
+            "tool_unknown_penalty": 0.06
+          }
+        },
+        "reasoning": {
+          "thinking_auto": "prefer_on",
+          "effort_auto": "highest"
+        },
+        "secondary": {
+          "role": "review",
+          "objective": "quality",
+          "reviewer": "not_weaker",
+          "trigger": {
+            "complexity_gte": 0.55,
+            "risk_gte": 0.55,
+            "verification_value_gte": 0.55,
+            "code": true,
+            "reasoning_any": [
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "reason": "Dyna strong risk-aware independent verification",
+          "self_reason": "No equally capable independent reviewer; use bounded self-review",
+          "rationale": "Review is selected by declared risk and expected verification benefit",
+          "single_mode": "dyna_strong_single",
+          "multi_mode": "dyna_strong_reviewed",
+          "reasoning_intent": "high",
+          "requires_substantive_work": true,
+          "scoring": {
+            "quality": 0.81,
+            "speed": 0.0,
+            "economy": 0.0,
+            "reliability": 0.19
+          },
+          "prefer_different_provider": true
+        },
+        "orchestration": {
+          "objective": "quality",
+          "topology": "adaptive",
+          "max_agents": 5,
+          "max_parallel": 3,
+          "max_depth": 2,
+          "worker_mode": "adaptive",
+          "worker_tier_pool": "strong",
+          "worker_reasoning_intent": "high",
+          "worker_breadth_gte": 0.45,
+          "worker_parallelizability_gte": 0.38,
+          "worker_tool_intensity_gte": 0.5,
+          "worker_write_intensity_lte": 0.32,
+          "single_writer": true
+        }
+      }
+    }
+  ],
+  "plugin_version": "0.3.0"
+}

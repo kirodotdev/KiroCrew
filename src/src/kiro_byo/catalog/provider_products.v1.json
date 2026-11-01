@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "platform_groups": {
+    "xiaomi-tokenplan": "xiaomi"
+  },
+  "product_ids": {
+    "xiaomi": "api",
+    "xiaomi-tokenplan": "token-plan",
+    "custom": "compatible-endpoint"
+  },
+  "platform_display_names": {
+    "xiaomi": "小米 MiMo / Xiaomi"
+  },
+  "account_handlers": {
+    "deepseek": "deepseek-balance",
+    "moonshot": "moonshot-balance"
+  },
+  "credential_rejections": {
+    "xiaomi-tokenplan": [
+      {
+        "prefix": "sk-",
+        "message": "检测到小米按量付费 API Key（sk-）。请使用“小米 MiMo / Xiaomi”统一入口。"
+      }
+    ]
+  },
+  "special_profiles": {
+    "xiaomi": {
+      "default_profile_id": "payg",
+      "profiles": [
+        {
+          "id": "payg",
+          "display_name": "按量 API",
+          "base_url": "https://api.xiaomimimo.com/v1",
+          "entitlement": "usage",
+          "discovery_url": "https://api.xiaomimimo.com/v1/models",
+          "catalog_policy": "live"
+        }
+      ]
+    },
+    "xiaomi-tokenplan": {
+      "default_profile_id": "cn",
+      "credential_prefixes": ["tp-", "ttp-"],
+      "profiles": [
+        {
+          "id": "cn",
+          "display_name": "Token Plan · 中国",
+          "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+          "entitlement": "subscription",
+          "region": "cn",
+          "static_model_ids_from_preset": true,
+          "catalog_policy": "live-with-fallback"
+        },
+        {
+          "id": "sgp",
+          "display_name": "Token Plan · 新加坡",
+          "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+          "entitlement": "subscription",
+          "region": "sgp",
+          "static_model_ids_from_preset": true,
+          "catalog_policy": "live-with-fallback"
+        },
+        {
+          "id": "ams",
+          "display_name": "Token Plan · 欧洲",
+          "base_url": "https://token-plan-ams.xiaomimimo.com/v1",
+          "entitlement": "subscription",
+          "region": "ams",
+          "static_model_ids_from_preset": true,
+          "catalog_policy": "live-with-fallback"
+        }
+      ]
+    },
+    "minimax": {
+      "default_profile_id": "global",
+      "profiles": [
+        {
+          "id": "global",
+          "display_name": "Global",
+          "base_url": "https://api.minimax.io/anthropic/v1",
+          "entitlement": "usage",
+          "region": "global",
+          "discovery_auth": "x-api-key",
+          "catalog_policy": "live"
+        },
+        {
+          "id": "cn",
+          "display_name": "中国大陆",
+          "base_url": "https://api.minimax.cn/anthropic/v1",
+          "entitlement": "usage",
+          "region": "cn",
+          "discovery_auth": "x-api-key",
+          "catalog_policy": "live"
+        }
+      ],
+      "extra_products": [
+        {
+          "id": "token-plan",
+          "display_name": "MiniMax Token Plan",
+          "default_profile_id": "global",
+          "entitlement_override": "subscription",
+          "account_capabilities": ["quota"],
+          "account_handler": "minimax-token-plan",
+          "credential_prefixes": ["sk-cp"]
+        }
+      ]
+    }
+  }
+}

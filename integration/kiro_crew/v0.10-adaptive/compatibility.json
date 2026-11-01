@@ -1,0 +1,117 @@
+{
+  "family_regex": "^\\d+\\.\\d+\\.\\d+(?:(?:-[0-9A-Za-z][0-9A-Za-z._-]*)|(?:rc\\d+))?(?:\\+[A-Za-z0-9._-]+)?$",
+  "transformer": "adaptive10",
+  "generated_files": [
+    "src/kiro_crew/agent_sdk/backends.py",
+    "src/kiro_crew/acp_backends.py",
+    "src/kiro_crew/acp/types.py",
+    "src/kiro_crew/agent_sdk/host_auth.py",
+    "src/kiro_crew/agent_sdk/tool_gate.py",
+    "src/kiro_crew/acp/harness/__init__.py",
+    "src/kiro_crew/acp/runtime.py",
+    "src/kiro_crew/providers/mirrors/registry.py",
+    "src/kiro_crew/members.py",
+    "src/kiro_crew/dashboard/handlers/agents.py",
+    "src/kiro_crew/dashboard/chat_api/slot_effort.py",
+    "src/kiro_crew/dashboard/chat_handlers.py",
+    "src/kiro_crew/dashboard/chat_title.py",
+    "src/kiro_crew/dashboard/chat_runner.py"
+  ],
+  "baseline": "0.10.0 adaptive registry/capabilities (composed chat API owners)",
+  "hash_mode": "normalized_utf8_lf",
+  "mode": "adaptive_semantic",
+  "base_sha256": {},
+  "accepted_prior_overlay_sha256": {},
+  "created_files": [
+    "src/kiro_crew/acp/harness/kiro_byo.py"
+  ],
+  "verified_through": "0.10.0-insider.4",
+  "verified_commit": "e9bfada",
+  "verified_at": "2026-10-17",
+  "required_contract_symbols": {
+    "src/kiro_crew/agent.py": [
+      "require_fork_governance",
+      "ensure_agent_materialized",
+      "_MEMBER_DASHBOARD_GRANTS",
+      "_MEMBER_PANEL_GRANTS",
+      "_EXPORTS_BY_OWNER",
+      "__getattr__"
+    ],
+    "src/kiro_crew/acp/kas_agents.py": [
+      "pre_tool_hook_matchers",
+      "load_agent_spec",
+      "resolve_prompt"
+    ],
+    "src/kiro_crew/acp/kas_permissions.py": [
+      "allowed_tools_to_permissions",
+      "withhold_hook_gated_auto_approval",
+      "auto_approved_capabilities"
+    ],
+    "src/kiro_crew/acp/launch.py": [
+      "resolve_self_served_launch"
+    ],
+    "src/kiro_crew/acp/harness/_common.py": [
+      "MembershipHarness"
+    ],
+    "src/kiro_crew/acp/harness/base.py": [
+      "NotificationAliases",
+      "SessionExtras",
+      "SpawnContext",
+      "SpawnPlan",
+      "TeardownPolicy"
+    ],
+    "src/kiro_crew/acp/session_handle.py": [
+      "AcpRuntimeError"
+    ],
+    "src/kiro_crew/acp/session_mcp.py": [
+      "IDENTITY_BOUND_SERVERS",
+      "acp_server_element",
+      "session_mcp_projection"
+    ],
+    "src/kiro_crew/apps/manager.py": [
+      "app_data_dir"
+    ],
+    "src/kiro_crew/config/paths.py": [
+      "kiro_agents_dir"
+    ],
+    "src/kiro_crew/platform/governance.py": [
+      "may_skip_gate_now"
+    ],
+    "src/kiro_crew/providers/mirrors/base.py": [
+      "Concern",
+      "Disposition",
+      "Ruling",
+      "SessionProjection"
+    ],
+    "src/kiro_crew/providers/mirrors/identity.py": [
+      "control_plane_identity_env",
+      "with_env"
+    ],
+    "src/kiro_crew/agent_materialization/worker_agent.py": [
+      "require_fresh_derived_spec",
+      "DerivedSpecStale"
+    ],
+    "src/kiro_crew/agent_materialization/managed_mcp.py": [
+      "managed_mcp_spec_entry"
+    ]
+  },
+  "required_contract_exports": {
+    "src/kiro_crew/agent.py": {
+      "_EXPORTS_BY_OWNER": [
+        "require_fresh_derived_spec",
+        "DerivedSpecStale",
+        "managed_mcp_spec_entry"
+      ]
+    }
+  },
+  "verified_family_regex": "^0\\.10\\.0(?:(?:-insider\\.[0-9]+)|(?:rc[0-9]+)|(?:-rc\\.[0-9]+))?(?:\\+[A-Za-z0-9._-]+)?$",
+  "min_version": "0.10.0",
+  "required_contract_markers": {
+    "src/kiro_crew/dashboard/chat_api/__init__.py": [
+      "def compose(namespace:",
+      "new = FunctionType(fn.__code__, namespace",
+      "for holder in [namespace, *(vars(owner) for owner in owners)]"
+    ]
+  },
+  "max_version_exclusive": "0.11.0"
+}
