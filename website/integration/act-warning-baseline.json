@@ -88,7 +88,6 @@
   "src/test/ProjectsPage.test.tsx",
   "src/test/ProjectsPageWorkspaceShell.test.tsx",
   "src/test/RemoteCrewPanel.test.tsx",
-  "src/test/SessionGridViewCoverage.test.tsx",
   "src/test/SettingsChatPanelCoverage.test.tsx",
   "src/test/SettingsVoicePanelCoverage.test.tsx",
   "src/test/SideChat.imeEnter.test.tsx",
