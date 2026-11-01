@@ -80,7 +80,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import rewrite_in_place
 from kiro_crew.config.loader import ssh_auth_sock_consent_path
 
 logger = logging.getLogger(__name__)
@@ -165,11 +165,12 @@ def _read_for_write() -> dict[str, Any]:
 
 
 def _write_all(data: dict[str, Any]) -> None:
-    # Fail-loud lockdown BEFORE any content lands, same as the sibling keystone
-    # stores: restrict_to_owner=True applies the owner-only mode to the temp file
-    # before the payload reaches it, and the default restrict_on_error="raise"
-    # refuses to write a record it cannot protect.
-    atomic_write(
+    # Rewritten in place, keeping the inode: a running Linux sandbox seals this leaf
+    # with a read-only bind, and a rename over it would detach that bind there and
+    # leave the new file writable from inside the sandbox. restrict_to_owner=True
+    # is the same fail-loud lockdown the sibling keystone stores use. The callers
+    # hold _STORE_LOCK.
+    rewrite_in_place(
         ssh_auth_sock_consent_path(),
         json.dumps(data, indent=2, sort_keys=True),
         restrict_to_owner=True,

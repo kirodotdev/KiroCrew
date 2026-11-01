@@ -20878,6 +20878,7 @@
         "ssh_agent_since": "Seit {{time}}",
         "ssh_agent_save_failed": "Die SSH-Agent-Einstellung konnte nicht gespeichert werden.",
         "ssh_agent_load_failed": "Konnte nicht lesen, ob Sitzungen deinen SSH-Agenten verwenden dürfen.",
+        "ssh_agent_owner_only": "Nur der Dashboard-Eigentümer kann sehen oder ändern, ob Sitzungen den SSH-Agenten verwenden dürfen.",
         "safetySwitches": {
           "section_title": "Sicherheitsschalter",
           "intro": "Diese Schalter legen fest, was der Agent tun darf, ohne dich vorher zu fragen.",

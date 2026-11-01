@@ -20337,6 +20337,7 @@
         "ssh_agent_since": "自 {{time}} 起",
         "ssh_agent_save_failed": "无法保存 SSH 代理设置。",
         "ssh_agent_load_failed": "无法读取会话是否可以使用你的 SSH 代理。",
+        "ssh_agent_owner_only": "只有仪表板所有者才能查看或更改会话是否可以使用 SSH 代理。",
         "safetySwitches": {
           "section_title": "安全开关",
           "intro": "这些开关决定智能体可以不经询问就做哪些事。",

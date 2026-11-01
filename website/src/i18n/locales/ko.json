@@ -20337,6 +20337,7 @@
         "ssh_agent_since": "{{time}}부터",
         "ssh_agent_save_failed": "SSH 에이전트 설정을 저장하지 못했습니다.",
         "ssh_agent_load_failed": "세션이 내 SSH 에이전트를 사용할 수 있는지 읽을 수 없습니다.",
+        "ssh_agent_owner_only": "세션이 SSH 에이전트를 사용할 수 있는지 확인하거나 변경할 수 있는 사람은 대시보드 소유자뿐입니다.",
         "safetySwitches": {
           "section_title": "안전 스위치",
           "intro": "이 스위치는 에이전트가 먼저 묻지 않고 할 수 있는 일을 정합니다.",

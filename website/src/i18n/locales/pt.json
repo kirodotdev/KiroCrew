@@ -21419,6 +21419,7 @@
         "ssh_agent_since": "Desde {{time}}",
         "ssh_agent_save_failed": "Não foi possível salvar a configuração do agente SSH.",
         "ssh_agent_load_failed": "Não foi possível ler se as sessões podem usar seu agente SSH.",
+        "ssh_agent_owner_only": "Só o proprietário do painel pode ver ou alterar se as sessões podem usar o agente SSH.",
         "safetySwitches": {
           "section_title": "Chaves de segurança",
           "intro": "Estas chaves decidem o que o agente pode fazer sem perguntar a você antes.",

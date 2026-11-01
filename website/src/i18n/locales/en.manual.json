@@ -10229,6 +10229,7 @@
         "ssh_agent_since": "Since {{time}}",
         "ssh_agent_save_failed": "Could not save the SSH agent setting.",
         "ssh_agent_load_failed": "Could not read whether sessions can use your SSH agent.",
+        "ssh_agent_owner_only": "Only the dashboard owner can see or change whether sessions can use the SSH agent.",
         "safetySwitches": {
           "section_title": "Safety switches",
           "intro": "These switches control what the agent can do without asking you first.",

@@ -21419,6 +21419,7 @@
         "ssh_agent_since": "Depuis {{time}}",
         "ssh_agent_save_failed": "Impossible d’enregistrer le réglage de l’agent SSH.",
         "ssh_agent_load_failed": "Impossible de lire si les sessions peuvent utiliser ton agent SSH.",
+        "ssh_agent_owner_only": "Seul le propriétaire du tableau de bord peut voir ou modifier si les sessions peuvent utiliser l'agent SSH.",
         "safetySwitches": {
           "section_title": "Interrupteurs de sécurité",
           "intro": "Ces interrupteurs décident de ce que l'agent peut faire sans te demander d'abord.",

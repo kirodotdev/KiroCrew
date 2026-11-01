@@ -20337,6 +20337,7 @@
         "ssh_agent_since": "{{time}} から",
         "ssh_agent_save_failed": "SSH エージェントの設定を保存できませんでした。",
         "ssh_agent_load_failed": "セッションが SSH エージェントを使えるかどうかを読み取れませんでした。",
+        "ssh_agent_owner_only": "セッションが SSH エージェントを使えるかどうかを確認・変更できるのは、ダッシュボードの所有者だけです。",
         "safetySwitches": {
           "section_title": "安全スイッチ",
           "intro": "これらのスイッチは、エージェントがあなたに確認せずにできることを決めます。",
