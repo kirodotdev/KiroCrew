@@ -374,7 +374,6 @@
   "src/test/WorldsPage.test.tsx",
   "src/test/WorldsPopout.test.tsx",
   "src/test/agentSessionConcludedNoRerun.test.ts",
-  "src/test/agentSessionSeedReceipt.test.ts",
   "src/test/approvalFocusShortcut.test.tsx",
   "src/test/backNavLeaveGuard.test.tsx",
   "src/test/chatCards.sessionLink.test.tsx",
