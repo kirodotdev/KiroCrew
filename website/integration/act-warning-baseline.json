@@ -227,7 +227,6 @@
   "src/test/SttSettings.transcribe.test.tsx",
   "src/test/SubagentProgressBar.stalledRow.i18n.test.tsx",
   "src/test/SystemPage.test.tsx",
-  "src/test/TerminalRegistryCoverage.test.tsx",
   "src/test/ToolCallLine.test.tsx",
   "src/test/ToolCallLine.truncationMarker.test.tsx",
   "src/test/ToolCallLine.wait.test.tsx",
