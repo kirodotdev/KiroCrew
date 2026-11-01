@@ -94,7 +94,7 @@ const idleSlot = { ...base, key: 'chat-idle', title: 'Quiet', running: false }
 
 const ALL = [approvalSlot, questionSlot, optionsSlot, interruptedSlot, workingSlot, subagentSlot, idleSlot]
 
-function renderSidebar(slots = ALL, prepare?: (store: ReturnType<typeof createTestStore>) => void) {
+async function renderSidebar(slots = ALL, prepare?: (store: ReturnType<typeof createTestStore>) => void) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: false, slots, approvalMode: 'normal',
@@ -109,8 +109,11 @@ function renderSidebar(slots = ALL, prepare?: (store: ReturnType<typeof createTe
   qc.setQueryData(['chat-tags'], [])
   qc.setQueryData(['tag-columns'], columns)
   qc.setQueryData(['chat-folders'], [])
-  return {
-    ...render(
+  let rendered!: ReturnType<typeof render>
+  // ThemeProvider sets state in a mount effect that runs after a synchronous
+  // render, so the render is awaited inside act to let that update settle.
+  await act(async () => {
+    rendered = render(
       <QueryClientProvider client={qc}>
         <Provider store={store}>
           <ThemeProvider>
@@ -123,10 +126,9 @@ function renderSidebar(slots = ALL, prepare?: (store: ReturnType<typeof createTe
           </ThemeProvider>
         </Provider>
       </QueryClientProvider>,
-    ),
-    qc,
-    store,
-  }
+    )
+  })
+  return { ...rendered, qc, store }
 }
 
 function slotKeysIn(container: HTMLElement, columnId: string): string[] {
@@ -147,8 +149,8 @@ beforeEach(() => { localStorage.clear(); createTagColumn.mockClear(); deleteTagC
 afterEach(() => vi.clearAllMocks())
 
 describe('board state lanes', () => {
-  it('files each session into the lane matching its live state', () => {
-    const { container } = renderSidebar()
+  it('files each session into the lane matching its live state', async () => {
+    const { container } = await renderSidebar()
     expect(slotKeysIn(container, 'lane-approval')).toEqual(['chat-approval'])
     expect(new Set(slotKeysIn(container, 'lane-waiting')))
       .toEqual(new Set(['chat-question', 'chat-options', 'chat-interrupted']))
@@ -157,38 +159,38 @@ describe('board state lanes', () => {
     expect(slotKeysIn(container, 'lane-idle')).toEqual(['chat-idle'])
   })
 
-  it('places every session in exactly one lane', () => {
+  it('places every session in exactly one lane', async () => {
     // The two failures this rules out: a match-all column showing the whole
     // list in every lane, and a session that matches nothing disappearing.
-    const { container } = renderSidebar()
+    const { container } = await renderSidebar()
     const placed = columns.flatMap(c => slotKeysIn(container, c.id))
     expect(placed.slice().sort()).toEqual(ALL.map(s => s.key).sort())
     expect(new Set(placed).size).toBe(placed.length)
   })
 
-  it('does not offer a tag editor on a lane', () => {
+  it('does not offer a tag editor on a lane', async () => {
     // A lane has no filter to edit; the tag popover trigger must be absent
     // rather than open onto an empty picker.
-    const { container } = renderSidebar()
+    const { container } = await renderSidebar()
     expect(container.querySelector('[data-testid="column-edit-lane-working"]')).toBeNull()
   })
 
-  it('refuses a card drop onto a lane', () => {
+  it('refuses a card drop onto a lane', async () => {
     // Only reaching the state moves a card there, so the drop must not fire a
     // mutation. `preventDefault` staying unset is what tells the browser this
     // is not a drop target.
-    const { container } = renderSidebar()
+    const { container } = await renderSidebar()
     const lane = container.querySelector('[data-testid="column-lane-working"]') as HTMLElement
     const dragOver = new Event('dragover', { bubbles: true, cancelable: true }) as Event & { dataTransfer: unknown }
     Object.defineProperty(dragOver, 'dataTransfer', { value: { types: ['text/plain'] } })
-    lane.dispatchEvent(dragOver)
+    act(() => { lane.dispatchEvent(dragOver) })
     expect(dragOver.defaultPrevented).toBe(false)
   })
 
-  it('says why a lane refuses the card while one is dragged over it', () => {
+  it('says why a lane refuses the card while one is dragged over it', async () => {
     // The header's hover title is out of sight mid-drag, so the lane shows the
     // reason in a live line -- and the drop must still stay refused.
-    const { container } = renderSidebar()
+    const { container } = await renderSidebar()
     const lane = container.querySelector('[data-testid="column-lane-working"]') as HTMLElement
     const hint = () => lane.querySelector('[data-testid="column-derived-hint-lane-working"]')
     expect(hint()).toBeNull()
@@ -203,9 +205,9 @@ describe('board state lanes', () => {
     expect(hint()).toBeNull()
   })
 
-  it('hides the lane hint when the drag ends anywhere', () => {
+  it('hides the lane hint when the drag ends anywhere', async () => {
     // A refused drop fires no drop event, so the window's dragend is the end.
-    const { container } = renderSidebar()
+    const { container } = await renderSidebar()
     const lane = container.querySelector('[data-testid="column-lane-idle"]') as HTMLElement
     const hint = () => lane.querySelector('[data-testid="column-derived-hint-lane-idle"]')
     startCardDrag(container, 'chat-working')
@@ -222,7 +224,7 @@ describe('board state lanes', () => {
     // A folder block inside the lane accepts the card and stops the dragover,
     // so the lane must not keep saying it refuses the card.
     const filed = { ...idleSlot, key: 'chat-filed', title: 'Filed', folder_id: 'f-1' }
-    const { container, qc } = renderSidebar([idleSlot, filed])
+    const { container, qc } = await renderSidebar([idleSlot, filed])
     const folderSel = '[data-testid="col-lane-idle-folder-f-1"]'
     await waitFor(async () => {
       await act(async () => { qc.setQueryData(['chat-folders'], [{ id: 'f-1', name: 'Folder', collapsed: false, order: 0 }]) })
@@ -238,18 +240,18 @@ describe('board state lanes', () => {
     expect(hint()).toBeNull()
   })
 
-  it('shows no lane hint for a column reorder drag', () => {
-    const { container } = renderSidebar()
+  it('shows no lane hint for a column reorder drag', async () => {
+    const { container } = await renderSidebar()
     const lane = container.querySelector('[data-testid="column-lane-working"]') as HTMLElement
     startCardDrag(container, 'chat-idle')
     fireEvent.dragOver(lane, { dataTransfer: { types: ['application/mc-column'] } })
     expect(lane.querySelector('[data-testid="column-derived-hint-lane-working"]')).toBeNull()
   })
 
-  it('labels each lane by its state, not by a tag or a fallback name', () => {
+  it('labels each lane by its state, not by a tag or a fallback name', async () => {
     // The reported board showed one unnamed "All sessions" column; a lane must
     // name the state it holds.
-    const { container } = renderSidebar()
+    const { container } = await renderSidebar()
     const working = container.querySelector('[data-testid="column-lane-working"]') as HTMLElement
     expect(working.textContent).toContain('Working')
     expect(working.textContent).not.toContain('All sessions')
@@ -264,7 +266,7 @@ describe('board state lanes', () => {
     // first render the callback closes over current state either way -- so the
     // workflow is dispatched into the SAME store after mounting.
     const slots = [{ ...base, key: 'chat-wf', title: 'Workflow', running: false }]
-    const { container, store } = renderSidebar(slots)
+    const { container, store } = await renderSidebar(slots)
     expect(slotKeysIn(container, 'lane-idle')).toEqual(['chat-wf'])
 
     await act(async () => {
@@ -287,16 +289,16 @@ describe('board state lanes', () => {
 describe('board state lanes: queued children', () => {
   const queuedOnly = { ...base, key: 'chat-queued', title: 'Queued only', running: false }
 
-  it('never files a session as Working on its queued count alone', () => {
-    const { container } = renderSidebar([queuedOnly], store => {
+  it('never files a session as Working on its queued count alone', async () => {
+    const { container } = await renderSidebar([queuedOnly], store => {
       store.dispatch(sseSubagentQueued({ slot: 'chat-queued', queued: 1, reason: 'low_memory', available_gb: 1.2, required_gb: 2.5 }))
     })
     expect(slotKeysIn(container, 'lane-working')).toEqual([])
     expect(slotKeysIn(container, 'lane-idle')).toEqual(['chat-queued'])
   })
 
-  it('shows the queued children as a Waiting for free RAM badge, not the running pulse', () => {
-    const { container } = renderSidebar([queuedOnly], store => {
+  it('shows the queued children as a Waiting for free RAM badge, not the running pulse', async () => {
+    const { container } = await renderSidebar([queuedOnly], store => {
       store.dispatch(sseSubagentQueued({ slot: 'chat-queued', queued: 2, reason: 'low_memory', available_gb: 1.2, required_gb: 2.5 }))
     })
     const badge = container.querySelector('[data-testid="session-subagents-waiting"]') as HTMLElement
@@ -307,8 +309,8 @@ describe('board state lanes: queued children', () => {
     expect(badge.querySelector('.animate-pulse, .animate-spin')).toBeNull()
   })
 
-  it('reads the macOS memory-pressure hold as Waiting for free RAM too', () => {
-    const { container } = renderSidebar([queuedOnly], store => {
+  it('reads the macOS memory-pressure hold as Waiting for free RAM too', async () => {
+    const { container } = await renderSidebar([queuedOnly], store => {
       store.dispatch(sseSubagentQueued({ slot: 'chat-queued', queued: 1, reason: 'memory_pressure' }))
     })
     const badge = container.querySelector('[data-testid="session-subagents-waiting"]') as HTMLElement
@@ -316,8 +318,8 @@ describe('board state lanes: queued children', () => {
     expect(slotKeysIn(container, 'lane-idle')).toEqual(['chat-queued'])
   })
 
-  it('keeps a cap wait counted, still without the running pulse', () => {
-    const { container } = renderSidebar([queuedOnly], store => {
+  it('keeps a cap wait counted, still without the running pulse', async () => {
+    const { container } = await renderSidebar([queuedOnly], store => {
       store.dispatch(sseSubagentQueued({ slot: 'chat-queued', queued: 3 }))
     })
     const badge = container.querySelector('[data-testid="session-subagents-waiting"]') as HTMLElement
@@ -325,17 +327,17 @@ describe('board state lanes: queued children', () => {
     expect(slotKeysIn(container, 'lane-idle')).toEqual(['chat-queued'])
   })
 
-  it('keeps a parent whose own turn is waiting on queued children in Working', () => {
+  it('keeps a parent whose own turn is waiting on queued children in Working', async () => {
     // The turn is blocked in spawn_sub_agents: that turn is the work.
     const blocked = { ...queuedOnly, running: true }
-    const { container } = renderSidebar([blocked], store => {
+    const { container } = await renderSidebar([blocked], store => {
       store.dispatch(sseSubagentQueued({ slot: 'chat-queued', queued: 1 }))
     })
     expect(slotKeysIn(container, 'lane-working')).toEqual(['chat-queued'])
   })
 
-  it('keeps a session with a started child in Working while more are queued', () => {
-    const { container } = renderSidebar([queuedOnly], store => {
+  it('keeps a session with a started child in Working while more are queued', async () => {
+    const { container } = await renderSidebar([queuedOnly], store => {
       store.dispatch(sseSubagentSpawn({ slot: 'chat-queued', id: 'a1', task: 't', agent: 'kirocrew' }))
       store.dispatch(sseSubagentQueued({ slot: 'chat-queued', queued: 2 }))
     })
@@ -343,11 +345,11 @@ describe('board state lanes: queued children', () => {
     expect(container.querySelector('[data-testid="session-subagents-waiting"]')).toBeNull()
   })
 
-  it('still shows an interrupted turn when its only children are queued', () => {
+  it('still shows an interrupted turn when its only children are queued', async () => {
     // A queued child has not started, so it is no live work that supersedes
     // the interruption: the row keeps its Resume handoff.
     const stalled = { ...queuedOnly, interrupted: true }
-    const { container } = renderSidebar([stalled], store => {
+    const { container } = await renderSidebar([stalled], store => {
       store.dispatch(sseSubagentQueued({ slot: 'chat-queued', queued: 1 }))
     })
     const row = container.querySelector('[data-slot-key="chat-queued"]')
@@ -358,7 +360,7 @@ describe('board state lanes: queued children', () => {
     // The ghost: the client kept "1 queued" after the gateway published 0 (a
     // missed frame). The next slots push carries the published depth for EVERY
     // row, so the background session is corrected without being opened.
-    const { container, store } = renderSidebar([queuedOnly], st => {
+    const { container, store } = await renderSidebar([queuedOnly], st => {
       st.dispatch(sseSubagentQueued({ slot: 'chat-queued', queued: 1 }))
     })
     expect(container.querySelector('[data-testid="session-subagents-waiting"]')).toBeTruthy()
@@ -388,15 +390,15 @@ describe('board column reorder feedback', () => {
   const overColumn = (el: HTMLElement) =>
     fireEvent.dragOver(el, { dataTransfer: { types: ['application/mc-column'] } })
 
-  it('dims the dragged column', () => {
-    const { container } = renderSidebar()
+  it('dims the dragged column', async () => {
+    const { container } = await renderSidebar()
     startColumnDrag(container, 'lane-waiting')
     expect(column(container, 'lane-waiting').dataset.colDrag).toBe('source')
     expect(column(container, 'lane-idle').dataset.colDrag).toBeUndefined()
   })
 
-  it('marks the side a release would land on, toward either end', () => {
-    const { container } = renderSidebar()
+  it('marks the side a release would land on, toward either end', async () => {
+    const { container } = await renderSidebar()
     startColumnDrag(container, 'lane-waiting')
     overColumn(column(container, 'lane-idle'))
     expect(columnDropMark(column(container, 'lane-idle'))).toBe('after')
@@ -404,15 +406,15 @@ describe('board column reorder feedback', () => {
     expect(columnDropMark(column(container, 'lane-approval'))).toBe('before')
   })
 
-  it('marks nothing over the dragged column itself', () => {
-    const { container } = renderSidebar()
+  it('marks nothing over the dragged column itself', async () => {
+    const { container } = await renderSidebar()
     startColumnDrag(container, 'lane-working')
     overColumn(column(container, 'lane-working'))
     expect(columnDropMark(column(container, 'lane-working'))).toBeNull()
   })
 
-  it('drops the mark when the pointer leaves the column', () => {
-    const { container } = renderSidebar()
+  it('drops the mark when the pointer leaves the column', async () => {
+    const { container } = await renderSidebar()
     startColumnDrag(container, 'lane-approval')
     const idle = column(container, 'lane-idle')
     overColumn(idle)
@@ -420,8 +422,8 @@ describe('board column reorder feedback', () => {
     expect(columnDropMark(idle)).toBeNull()
   })
 
-  it('clears every mark when the drag ends without a drop', () => {
-    const { container } = renderSidebar()
+  it('clears every mark when the drag ends without a drop', async () => {
+    const { container } = await renderSidebar()
     const grip = startColumnDrag(container, 'lane-approval')
     overColumn(column(container, 'lane-working'))
     fireEvent.dragEnd(grip)
@@ -432,7 +434,7 @@ describe('board column reorder feedback', () => {
     // A folder block stops a column drag's dragover and drop, so a release
     // there reorders nothing and the column must not promise a landing side.
     const filed = { ...idleSlot, key: 'chat-filed', title: 'Filed', folder_id: 'f-1' }
-    const { container, qc } = renderSidebar([idleSlot, filed])
+    const { container, qc } = await renderSidebar([idleSlot, filed])
     const folderSel = '[data-testid="col-lane-idle-folder-f-1"]'
     await waitFor(async () => {
       await act(async () => { qc.setQueryData(['chat-folders'], [{ id: 'f-1', name: 'Folder', collapsed: false, order: 0 }]) })
@@ -448,8 +450,8 @@ describe('board column reorder feedback', () => {
     expect(columnDropMark(idle)).not.toBeNull()
   })
 
-  it('shows no column marks while a session card is dragged', () => {
-    const { container } = renderSidebar()
+  it('shows no column marks while a session card is dragged', async () => {
+    const { container } = await renderSidebar()
     startCardDrag(container, 'chat-idle')
     overColumn(column(container, 'lane-working'))
     expect(columnDropMark(column(container, 'lane-working'))).toBeNull()

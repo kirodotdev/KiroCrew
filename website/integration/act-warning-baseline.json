@@ -70,7 +70,6 @@
   "src/test/ChatPageW3Coverage.test.tsx",
   "src/test/ChatPane.dirSend.test.tsx",
   "src/test/ChatPane.stopEscalation.test.tsx",
-  "src/test/ChatSidebar.boardStateLanes.test.tsx",
   "src/test/ChatSidebar.bulkModelRosterError.test.tsx",
   "src/test/ChatSidebar.createMenu.test.tsx",
   "src/test/ChatSidebar.folderSortMode.test.tsx",
