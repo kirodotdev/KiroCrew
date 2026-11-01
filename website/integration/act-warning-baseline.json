@@ -142,7 +142,6 @@
   "src/test/ChatSidebar.statusMarker.test.tsx",
   "src/test/ChatSidebar.subagentApproval.test.tsx",
   "src/test/ChatSidebar.subagentRunning.test.tsx",
-  "src/test/ChatSidebar.tagFilter.test.tsx",
   "src/test/ChatSidebar.toolStatusSetting.test.tsx",
   "src/test/ChatSidebar.touchHitArea.test.tsx",
   "src/test/ChatSidebar.unreadDrainFilter.test.tsx",
