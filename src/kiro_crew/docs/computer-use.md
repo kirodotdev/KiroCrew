@@ -31,9 +31,23 @@ because your pointer will jump out from under your hand.
 
 ## Linux
 
-Linux has no computer-use driver yet. Every computer-use tool returns a "not
-supported on this platform" refusal, and **Settings → Computer Use** shows the
-reason instead of a switch, so it cannot be turned on there.
+Linux reads windows through AT-SPI, the desktop accessibility bus, so it works
+with GTK, Qt, LibreOffice and Chromium-based apps. What the agent can do depends
+on the display server:
+
+- **X11** (XFCE, MATE, Cinnamon, and virtual desktops such as DCV, VNC or xrdp)
+  supports the full tool set. Clicking or typing by element index does not move
+  your pointer. Keystrokes and coordinate clicks go through XTest and act on your
+  real keyboard focus and cursor, as on Windows, so the agent has to tell you.
+- **Wayland** (GNOME and KDE Plasma by default) gets a tree-only subset: reading
+  the outline and acting on a control by its index. Screenshots, coordinate
+  clicks, drags and key presses are refused with the reason, because Wayland only
+  allows them through a consent portal the driver does not use yet.
+
+Accessibility has to be on in the app. GTK, Qt and LibreOffice turn it on when
+the desktop announces an assistive technology, which computer use does when it
+connects. An app you started before that may need a restart before its controls
+show up, and Chrome needs the `--force-renderer-accessibility` flag.
 
 ## What is off limits
 

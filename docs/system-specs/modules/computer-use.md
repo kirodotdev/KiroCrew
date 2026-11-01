@@ -6,8 +6,9 @@ into an indexed accessibility tree, then act on an element by index (press,
 type, set a value, scroll, perform a named action) or — for UI that exposes no
 addressable element — on a screen point (click, drag). macOS and Windows both drive the
 full tool set, differing in how input is delivered rather than in what is
-supported (see [The Windows driver](#the-windows-driver)); Linux reports a typed
-refusal.
+supported (see [The Windows driver](#the-windows-driver)). Linux drives the same set
+on an X11 session through AT-SPI, and a tree-only subset on Wayland (see
+[The Linux driver](#the-linux-driver)).
 
 Two things this module is NOT, stated up front because both are load-bearing
 product decisions rather than implementation gaps:
@@ -308,8 +309,8 @@ the chokepoint only builds after both permits cleared — a driver must never
 upgrade a method on its own), set `ElementRec.secure` from BOTH role and subrole,
 stamp `Snapshot.captured_at` from `time.monotonic()`, be thread-safe. `UnsupportedBackend` is a concrete shared base whose every method
 returns the same typed refusal, so a new unsupported platform is ~10 lines and
-cannot accidentally implement half a driver (`windows_driver.py`,
-`linux_driver.py`).
+cannot accidentally implement half a driver (`windows_driver.py` falls back to it
+when its import fails, and so does the Linux branch).
 
 `kiro_crew/testing/fake_computer_use.py` ships a `FakeComputerUseBackend` in the
 runtime wheel (alongside `fake_acp_backend.py`), so a downstream suite can drive
@@ -1858,7 +1859,7 @@ values.**
 |---|---|
 | macOS | Supported. ApplicationServices AX + CoreGraphics + ImageIO via ctypes. |
 | Windows | **Full tool set.** UIAutomationCore over raw ctypes COM (no `comtypes`) + `PrintWindow`/GDI+. Element-addressed actions go through UIA control patterns and move neither the pointer nor focus; the pointer and keyboard routes exist but are opt-in by name, because Windows has no per-process input delivery. See [The Windows driver](#the-windows-driver). |
-| Linux | `LinuxBackend(UnsupportedBackend)` — typed refusal. The plan is AT-SPI over D-Bus; Wayland has no unprivileged window capture (it needs xdg-desktop-portal), so a first cut may be tree-only, which `SnapshotRequest.want_image` already accommodates. |
+| Linux | **Full tool set on X11.** AT-SPI 2 over D-Bus through pure-Python `jeepney`, XTest + `XGetImage` through ctypes. Element-addressed actions go through AT-SPI and move neither pointer nor focus; keyboard and pointer routes are global, as on Windows. **Wayland runs tree-only**: tree and element actions work, capture and synthetic input refuse with the reason. See [The Linux driver](#the-linux-driver). |
 
 Every unimplemented path **refuses rather than raises**, mirroring how
 `dashboard/handlers/terminal.py` handles the Windows PTY, and names what is
@@ -2385,6 +2386,47 @@ dead button that only reproduces in a packaged build.
 
 ---
 
+### The Linux driver
+
+`LinuxBackend` covers an X11 session fully and a Wayland session tree-only. It needs no compiled
+dependency: the accessibility tree is AT-SPI 2 spoken directly over D-Bus with the
+pure-Python `jeepney` (PyGObject would need system typelibs a pipx venv cannot see),
+and libX11/libXtst are reached through ctypes.
+
+| Concern | Mechanism |
+|---|---|
+| Tree | AT-SPI over the accessibility bus found through `org.a11y.Bus`. Calls for one tree level are pipelined in one batch with a shared deadline. A container is asked for its child COUNT first; a huge or self-managing one (a spreadsheet's cell table answers `GetChildren` with every cell and stalls the app for minutes) is read through `GetChildAtIndex` for the first 64 children only, and the snapshot is marked truncated. |
+| Text and values | Text is read with `GetText(0, CharacterCount)`: LibreOffice returns an empty string for an end offset past the text, where GTK and Chromium clamp. A numeric `Value` is shown only on range roles (scrollbar, slider, spin button, progress bar); LibreOffice exposes `Value` on every toolbar button, always 0. |
+| Secure floor | Role `password text` (matched by role number as well as name) sets `ElementRec.secure`: never read, never written, and its window gets no screenshot. The floor fails closed: a node whose role name could not be read counts as secure (and the failure is not cached), and a node or child list that failed to read marks the walk truncated. A truncated tree suppresses the screenshot, because it cannot rule a secure field out. |
+| Element actions | `Action.DoAction`, `EditableText.InsertText`/`SetTextContents` and `Value.SetCurrentValue`. None moves the pointer or focus. Chromium reports empty names from `GetActions`, so names are re-read with `GetName` per index to keep action indices aligned. |
+| Keyboard | XTest, which is global. Focus is moved with `_NET_ACTIVE_WINDOW` plus `Component.GrabFocus` and VERIFIED (focused state on the element, active window is the app's) before a keystroke is sent; an unverified focus refuses. Because focus is checked once, typed text may not contain a control character (Tab, newline, Escape) that could move it mid-string; navigation goes through `computer_press_key`. Characters are resolved in the active XKB group, and typing cased letters with Caps Lock on refuses rather than flipping their case. A character the keyboard map cannot produce is bound to a spare keycode for the press and unbound afterwards. |
+| Pointer | XTest, only with `click_method: "global"`. Every point is checked against the stacking order so it lands on the app's own window. `app_post` and `sky_click` refuse by name: X11 has no per-process input route applications honour. |
+| Capture | `XGetImage` on the window. With a compositor the window's own pixels are read; without one the capture refuses whenever another window overlaps. |
+| Launch | Only `.desktop` entries in root-owned system data dirs, so the agent cannot plant an `Exec=` line for itself; field codes are stripped and the argv gets no extra argument. A bare `Exec` name resolves through `trusted_system_bin_quiet`, never `PATH` (which can lead with an agent-writable `~/.local/bin`), every component of its canonical path must be unwritable by the agent, and that canonical path is what gets executed. No toolkit accessibility switch is forced; a launched app gets the session's display, D-Bus and runtime-dir variables and, when unset, an `XDG_CURRENT_DESKTOP` detected from the user's session processes. |
+| Session | `KIROCREW_CU_DISPLAY` or `DISPLAY`, else `:1` then `:0`; `XAUTHORITY`, else the Amazon DCV cookie, else `~/.Xauthority`. Lets a gateway running as a service find the desktop. Connecting to the accessibility bus sets `org.a11y.Status.IsEnabled` for the whole desktop session, the documented way an assistive technology announces itself. |
+| Lost X server | libX11 calls `exit()` after an IO error unless an exit handler returns, so the driver installs `XSetIOErrorExitHandler` on its connection; a logout or server restart then drops the connection and the next call reopens it. libX11 older than 1.7 has no such hook, and the driver refuses to open a display there rather than risk the gateway. |
+
+Toolkits have to opt into accessibility. GTK 3, Qt and LibreOffice follow
+`org.a11y.Status.IsEnabled` (verified for LibreOffice Calc 24.2 with every toolkit
+switch unset); Chromium and Electron need `--force-renderer-accessibility`. An app reads the switch at startup, so one
+started before the bus was enabled may need a restart. Tested on Ubuntu 24.04 with
+XFCE: Thunar, a GCR password prompt, LibreOffice Calc 24.2 and Google Chrome.
+
+**Wayland runs tree-only.** AT-SPI is a D-Bus protocol and works the same there, so
+the window list (top-level frames from the accessibility registry, with synthetic
+window ids), snapshots and every element-addressed action work. What Wayland gives an
+unprivileged client no route for is refused with that reason: screenshots (the
+snapshot simply carries no image, which `want_image` allows), coordinate clicks,
+drags, `computer_press_key`, and keystroke typing into an element that is not
+editable text. Extents are requested in window space, because a Wayland client does
+not know where its window sits, so `window_bounds` reports an origin of 0,0. The
+session counts as Wayland from `XDG_SESSION_TYPE`, else `WAYLAND_DISPLAY`, else a live
+`wayland-*` socket in the user's runtime dir (a service-started gateway inherits
+none of the variables); Xwayland's `DISPLAY` does not make it X11, since through it
+only the few X clients would be visible. `KIROCREW_CU_DISPLAY` pins the X11 route.
+Capture and input through the ScreenCast and RemoteDesktop portals, which need one
+consent per app and keep it with a restore token, are a follow-up.
+
 ## The CLI (`kirocrew computer`) — and what is deliberately not ported
 
 `computer_use/cli.py`. Three verbs, hand-rolled dispatch rather than argparse
@@ -2646,7 +2688,11 @@ computer use.
 | `computer_use/capture_windows.py` | `PW_RENDERFULLCONTENT` into a 32bpp DIB sized to what the window renders + GDI+ JPEG encode, with pixel validation because a blank capture reports success. No `BitBlt` fallback: it reads the screen |
 | `computer_use/launch_windows.py` | `computer_launch_app`'s Windows resolver: the `App Paths` catalog (read including the writable hive) verified against protected install roots + a basename match, the shell-target refusal, and the no-arguments spawn |
 | `computer_use/launch_macos.py` | The macOS resolver: `.app` bundles under the conventional roots, handed to `/usr/bin/open -a` (pinned absolute) with no document and no arguments |
-| `computer_use/linux_driver.py` | Typed refusal + the implementation plan |
+| `computer_use/linux_driver.py` | `LinuxBackend`: snapshot assembly from AT-SPI nodes, the secure-field floor, the focus-verified keyboard route, confinement of pointer gestures to the app's own window |
+| `computer_use/linux_atspi.py` | The `jeepney` AT-SPI client: bus discovery through `org.a11y.Bus`, batched pipelined calls with per-call deadlines, bounded child enumeration |
+| `computer_use/linux_x11.py` | libX11 over ctypes: EWMH client list, geometry, stacking and ownership hit test, compositor detection, `XGetImage` capture |
+| `computer_use/linux_input.py` | XTest over ctypes: key chords, Unicode typing through a temporarily bound spare keycode, clicks, drags, `_NET_ACTIVE_WINDOW` activation |
+| `computer_use/linux_launch.py` | `computer_launch_app`'s Linux resolver: `.desktop` entries in root-owned system data dirs only, field codes stripped, spawned detached with no extra argument |
 | `computer_use/macos_skylight.py` | The quarantined private SkyLight ABI behind `click_method: "sky_click"` (a click on a window behind others, without raising it or moving the pointer); the only module allowed to touch undocumented Apple ABI, never reached from `auto`, and reported unavailable (`available()`) when a symbol is missing |
 | `computer_use/macos_ffi.py` | The in-gateway macOS ctypes surface's import path and patch surface (a `_facade_mirror` facade over the four owners below), and key/scroll/mouse event synthesis |
 | `computer_use/macos_ffi_bind.py` | ABI constants, structs, `_FN_SPECS` and the one bind pass, the cached framework handles, type ids and private event source |

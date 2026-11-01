@@ -712,6 +712,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # computer-use.md § Known limitations) — not a new plane.
         "computer_use/launch_windows.py::spawn_detached",
         "computer_use/launch_macos.py::spawn_detached",
+        # Linux: the argv is the parsed ``Exec=`` of a .desktop entry that sits in a
+        # system data dir the gateway user cannot write (linux_launch._root_owned),
+        # field codes stripped, so no agent-supplied argument reaches it either.
+        "computer_use/linux_launch.py::spawn_detached",
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run``
         # (attribute ``run`` on base ``asyncio``). Both sites drive an in-process
         # coroutine from the loop-less CLI entry point; the network I/O is

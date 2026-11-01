@@ -125,3 +125,4 @@ test_macos_pool_ceiling_posix.py   # executes bash + needs a real exec bit
 # Executes ci.yml's fork Windows scope step under bash inside a throwaway git repo;
 # on Windows `bash` resolves the WSL launcher, which cannot see the tmp repo.
 test_ci_fork_windows_scope_posix.py   # executes bash + needs a POSIX git checkout
+test_computer_use_linux_driver.py  # Linux AT-SPI/X11 driver: getuid, /proc, root-owned paths

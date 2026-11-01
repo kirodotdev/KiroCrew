@@ -77,10 +77,6 @@ logger = logging.getLogger(__name__)
 #: client will not build, so this is the fallback for a failed driver IMPORT —
 #: a partial install, not a missing implementation.
 WINDOWS_REASON = "the Windows UI Automation driver could not be loaded on this host"
-LINUX_REASON = (
-    "the Linux AT-SPI driver is not implemented yet; computer use is macOS-only "
-    "in this release (Wayland has no unprivileged window capture)"
-)
 UNKNOWN_PLATFORM_REASON = "this operating system has no computer-use driver"
 DRIVER_IMPORT_REASON = "the native computer-use driver could not be loaded ({detail})"
 
@@ -601,7 +597,9 @@ def reset_shared_backend() -> None:
 #: Platform ids with a real driver. Kept beside :func:`select_default_backend`, whose
 #: branches are what make it true, so adding a driver is one edit rather than two that
 #: can disagree. ``test_computer_use_backend.py`` pins the two together.
-_SUPPORTED_PLATFORM_IDS: frozenset[str] = frozenset({PLATFORM_MACOS, PLATFORM_WINDOWS})
+_SUPPORTED_PLATFORM_IDS: frozenset[str] = frozenset(
+    {PLATFORM_MACOS, PLATFORM_WINDOWS, PLATFORM_LINUX}
+)
 
 
 def select_default_backend() -> ComputerUseBackend:
@@ -645,10 +643,16 @@ def select_default_backend() -> ComputerUseBackend:
             logger.warning("Windows computer-use driver unavailable: %s", exc)
             return UnsupportedBackend(PLATFORM_WINDOWS, WINDOWS_REASON)
     if platform_compat.IS_LINUX:
-        # Deferred + circular: linux_driver subclasses UnsupportedBackend.
-        from kiro_crew.computer_use.linux_driver import LinuxBackend
+        try:
+            # Deferred + circular: linux_driver subclasses ComputerUseBackend.
+            from kiro_crew.computer_use.linux_driver import LinuxBackend
 
-        return LinuxBackend()
+            return LinuxBackend()
+        except Exception as exc:
+            # Same degradation as macOS: a missing jeepney or libX11 disables one
+            # capability rather than crashing the process that asked about it.
+            logger.warning("Linux computer-use driver unavailable: %s", exc)
+            return UnsupportedBackend(PLATFORM_LINUX, DRIVER_IMPORT_REASON.format(detail=exc))
     return UnsupportedBackend(PLATFORM_UNSUPPORTED, UNKNOWN_PLATFORM_REASON)
 
 
