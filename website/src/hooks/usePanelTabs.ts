@@ -960,10 +960,17 @@ export function usePanelTabs(
      *  for not being a stored tab. Pass a module constant: the array is a
      *  dependency of the strip callbacks. */
     leadingIds?: readonly string[]
+    /** An Ultra Mode chat (a crew root or one of its workers): the Board leads
+     *  the strip and only a person moves the focus. An `automatic` open (a PR
+     *  or issue link found, Pin Summary's landing, an app render opening on its
+     *  own, the Git tab) adds or updates its tab and leaves the focus where it
+     *  is: on the Board, or on the tab the person last clicked. */
+    boardFirst?: boolean
   },
 ) {
   const key = bucketKey(slotKey)
   const leadingIds = opts?.leadingIds
+  const boardFirst = !!opts?.boardFirst
   const defaultLeadingId = leadingIds?.[0] ?? null
   const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   const { tabs: storedTabs, activeId } = bySlot[key] ?? EMPTY_BUCKET
@@ -1038,9 +1045,9 @@ export function usePanelTabs(
       const keepSummary = automatic && stoppedAt.get(key) === 'landed'
         && b.activeId === 'summary' && b.tabs[0]?.id === 'summary'
       const keepHeld = automatic && b.activeId !== null && heldViews.get(key) === b.activeId
-      return keepSummary || keepHeld ? { ...next, activeId: b.activeId } : next
+      return keepSummary || keepHeld || (automatic && boardFirst) ? { ...next, activeId: b.activeId } : next
     }, { choice: !automatic })
-  }, [key, update])
+  }, [key, update, boardFirst])
 
   /** Open an app-contributed body-owning tab (one instance per kind, like a
    *  view). Persists the metadata (`appName`/`appTabId`) needed to re-mount the
@@ -1217,15 +1224,17 @@ export function usePanelTabs(
    *  render, so two same-tick opens would both read a stale pre-insert `tabs` and
    *  each conclude there was room. The currently-focused tab is never a candidate
    *  (belt-and-braces: focus stamping already sorts it last). */
-  const openApp = useCallback((toolCallId: string, title: string, slot: string | null = null) => {
+  const openApp = useCallback((toolCallId: string, title: string, slot: string | null = null, opts?: { automatic?: boolean }) => {
     const id = `app:${toolCallId}`
+    // An Ultra Mode chat keeps its focus when a render opens on its own (see `boardFirst`).
+    const keepFocus = !!opts?.automatic && boardFirst
     update(b => {
       const now = Date.now()
       const i = b.tabs.findIndex(t => t.id === id)
       if (i !== -1) {
         const next = b.tabs.slice()
         next[i] = { ...next[i], title, appToolCallId: toolCallId, slot, appActiveAt: now }
-        return { tabs: next, activeId: id }
+        return { tabs: next, activeId: keepFocus ? b.activeId : id }
       }
       let kept = b.tabs
       // Count EVERY app tab toward the budget (including the focused one), but
@@ -1257,9 +1266,9 @@ export function usePanelTabs(
         kept = kept.filter(t => !doomed.has(t.id))
       }
       const tab: PanelTab = { id, kind: 'app', title, appToolCallId: toolCallId, slot, appActiveAt: now }
-      return { tabs: [...kept, tab], activeId: id }
-    }, { choice: true })
-  }, [update])
+      return { tabs: [...kept, tab], activeId: keepFocus ? b.activeId : id }
+    }, { choice: !keepFocus })
+  }, [update, boardFirst])
 
   const openArtifact = useCallback((art: { slug: string; kind: Artifact['kind']; title?: string }, content: string, slot: string | null = null) => {
     upsert({ id: `artifact:${art.slug}`, kind: 'artifact', title: art.title ?? art.slug, artifactSlug: art.slug, artifactKind: art.kind, content, slot })
@@ -1376,5 +1385,6 @@ export function usePanelTabs(
     openView, openPanelTab, openTerminal, openFile, openWorkingTreeDiff, openDiff, openArtifact, openFolder, openApp,
     patchTab, closeTab, closeAll, setActive, setOrder, syncPinned,
     hasTabs: tabs.length > 0,
-  }), [tabs, effectiveActiveId, activeTab, openView, openPanelTab, openTerminal, openFile, openWorkingTreeDiff, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
+    boardFirst,
+  }), [boardFirst, tabs, effectiveActiveId, activeTab, openView, openPanelTab, openTerminal, openFile, openWorkingTreeDiff, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
 }

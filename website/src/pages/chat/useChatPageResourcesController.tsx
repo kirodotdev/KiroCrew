@@ -100,6 +100,9 @@ interface UseChatPageResourcesControllerOptions {
   showActionError: (message: string, title?: string) => void
   composer: ChatPageResourcesComposerPorts
   capture: ChatPageResourcesCapturePorts
+  /** The active chat is an Ultra Mode chat (a crew root or one of its
+   *  workers): only a person moves its panel focus (`usePanelTabs` boardFirst). */
+  boardFirst?: boolean
 }
 
 /**
@@ -120,6 +123,7 @@ export function useChatPageResourcesController({
   showActionError,
   composer,
   capture,
+  boardFirst = false,
 }: UseChatPageResourcesControllerOptions) {
   const {
     inputRef,
@@ -143,7 +147,7 @@ export function useChatPageResourcesController({
   // `usePanelTabs` stays provider-free so every other consumer of it does not
   // inherit a `QueryClientProvider` requirement.
   const panelTabDescriptors = usePanelTabDescriptors()
-  const tabsCtl = usePanelTabs(activeSlot, panelTabDescriptors)
+  const tabsCtl = usePanelTabs(activeSlot, panelTabDescriptors, { boardFirst })
   // An MCP App tab hosts a null-origin iframe with no storage: unmounting it
   // reloads the app and destroys whatever the user has drawn (see
   // docs/architecture/dashboard-iframe-hosts.md). The whole SidePanel subtree is normally
