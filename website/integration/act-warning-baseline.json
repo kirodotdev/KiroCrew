@@ -438,7 +438,6 @@
   "src/test/composerTreeDrop.test.ts",
   "src/test/dynamicDashboardCard.test.tsx",
   "src/test/issueRadarPolling.test.tsx",
-  "src/test/nativeNotificationAwayGate.test.ts",
   "src/test/notificationConstructorGuard.test.ts",
   "src/test/notificationSilentOptions.test.ts",
   "src/test/paletteOpenSessionFocusesComposer.test.tsx",
