@@ -239,7 +239,6 @@
   "src/test/ConnectionsPage.coverage.test.tsx",
   "src/test/CrewChatWindow.test.tsx",
   "src/test/CrewCompanionEditReminder.test.tsx",
-  "src/test/CrewCompanionPageState.test.tsx",
   "src/test/CrewCompanionPanelCoverage.test.tsx",
   "src/test/CrewCompanionPanelViewsCoverage.test.tsx",
   "src/test/CrewCompanionPet.coverage.test.tsx",
