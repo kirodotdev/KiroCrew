@@ -161,7 +161,6 @@
   "src/test/ChatSidebarMoreCoverage.test.tsx",
   "src/test/ChatSidebarW3Coverage.test.tsx",
   "src/test/CodeReviewSageLabelFilter.test.tsx",
-  "src/test/ComposerSendDuringUpload.test.tsx",
   "src/test/ConnectionsPage.coverage.test.tsx",
   "src/test/CrewChatWindow.test.tsx",
   "src/test/CrewCompanionEditReminder.test.tsx",
