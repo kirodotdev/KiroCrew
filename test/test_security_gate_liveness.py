@@ -669,11 +669,12 @@ def _url_payload_command(n: int) -> str:
 #: fixed bytes in place), and no piece of the link, cut also at each ``%XX`` escape and
 #: decoded per escaped segment, may be a whole key. No pass widened and no threshold
 #: moved.
-#: Raised by 24 more, from 34,312, for ``exfil._exfil_blob_hit``: the base64-blob
+#: Raised by 40 more, from 34,312, for ``exfil_git_object._exfil_blob_hit``: the base64-blob
 #: heuristic judged through one helper that skips a maximal match which is exactly
 #: a SHA-1 git object name (40 lowercase hex digits), so a commit permalink with
-#: the hash in its query renders. Data and one narrowing helper; no pattern moved.
-_PACKAGE_LINE_BUDGET = 34_336
+#: the hash in its query renders. Data and one narrowing helper in their own owner
+#: module beside ``exfil.py``, with its header; no pattern moved.
+_PACKAGE_LINE_BUDGET = 34_352
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
