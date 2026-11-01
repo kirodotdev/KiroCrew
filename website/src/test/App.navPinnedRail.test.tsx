@@ -25,7 +25,7 @@
  * so App mounts without real page trees.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, act } from '@testing-library/react'
+import { render, act, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -38,6 +38,7 @@ import App from '../App'
 import { ThemeProvider } from '../hooks/useTheme'
 import { NAV_PINNED_KEY, NAV_PINNED_CHANGED_EVENT } from '../lib/navPinned'
 import { getPinnableSurfaces } from '../surfaces/registry'
+import { namedCeiling } from './namedCeiling'
 import '../surfaces/builtins'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page" /> }))
@@ -102,7 +103,7 @@ globalThis.ResizeObserver = class {
   disconnect() {}
 } as unknown as typeof ResizeObserver
 
-function renderApp(url = '/chat') {
+async function renderApp(url = '/chat') {
   const store = configureStore({
     reducer: {
       dashboard: dashboardReducer,
@@ -122,6 +123,14 @@ function renderApp(url = '/chat') {
         </ThemeProvider>
       </QueryClientProvider>
     </Provider>,
+  )
+  // Chain: App's shell issues its mount-time queries (apps, instances, system-metrics, kiro-usage,
+  // global-approvals, ...) and each answer updates App. Wait until all of them have answered, so none
+  // lands after the test's last barrier. ThemeProvider's `custom-themes-catalog` is left out: the api
+  // mock above has no `themes`, so that query retries for the rest of the test and never goes idle.
+  await waitFor(
+    () => expect(qc.isFetching({ predicate: q => q.queryKey[0] !== 'custom-themes-catalog' })).toBe(0),
+    namedCeiling('SHELL_QUERIES_SETTLED', 5000),
   )
   return qc
 }
@@ -149,15 +158,15 @@ describe('promoted sub-items on the nav rail', () => {
     expect(ids).toContain('capabilities-steering')
   })
 
-  it('shows NO promoted row when nothing is pinned', () => {
-    renderApp()
+  it('shows NO promoted row when nothing is pinned', async () => {
+    await renderApp()
     const leaked = getPinnableSurfaces().map(s => s.navId).filter(id => row(id) !== null)
     expect(leaked, `pinnable surfaces leaked onto the rail unpinned: ${leaked.join(', ')}`).toEqual([])
   })
 
-  it('shows a pinned sub-item and leaves an unpinned sibling off the rail', () => {
+  it('shows a pinned sub-item and leaves an unpinned sibling off the rail', async () => {
     localStorage.setItem(NAV_PINNED_KEY, JSON.stringify(['capabilities-steering']))
-    renderApp()
+    await renderApp()
     expect(row('capabilities-steering')).not.toBeNull()
     // Complement: the pin is per row, so a sibling of the SAME host panel must
     // still be absent. Without this, a filter that showed the whole group once
@@ -165,8 +174,8 @@ describe('promoted sub-items on the nav rail', () => {
     expect(row('capabilities-skills')).toBeNull()
   })
 
-  it('adds the row live on a same-tab write, with no remount', () => {
-    renderApp()
+  it('adds the row live on a same-tab write, with no remount', async () => {
+    await renderApp()
     expect(row('capabilities-steering')).toBeNull()
     writePinnedAndNotify(['capabilities-steering'])
     expect(row('capabilities-steering')).not.toBeNull()
@@ -176,8 +185,8 @@ describe('promoted sub-items on the nav rail', () => {
     expect(row('capabilities-steering')).toBeNull()
   })
 
-  it('leaves the ordinary rail rows exactly as they were when a pin is added', () => {
-    renderApp()
+  it('leaves the ordinary rail rows exactly as they were when a pin is added', async () => {
+    await renderApp()
     const pinnableIds = new Set(getPinnableSurfaces().map(s => s.navId))
     // The whole ordinary rail, not a sampled row: this is what says the change
     // is additive. (`settings` and `capabilities` are hand-rendered in the
@@ -205,42 +214,42 @@ describe('a promoted row paints as the current row', () => {
   // (`is-lit`); rail rows carry no aria-current, so this is the one observable.
   const isActive = (navId: string) => row(navId)?.querySelector('.is-lit') != null
 
-  it('is active while its own tab is showing', () => {
+  it('is active while its own tab is showing', async () => {
     // The regression this guards: every other row compares a PATHNAME, and a
     // promoted row's path carries `?tab=`, so a pathname-only comparison can
     // never match and the row would never light up while you stood on it.
     localStorage.setItem(NAV_PINNED_KEY, JSON.stringify(['capabilities-steering']))
-    renderApp('/capabilities?tab=steering')
+    await renderApp('/capabilities?tab=steering')
     expect(row('capabilities-steering')).not.toBeNull()
     expect(isActive('capabilities-steering')).toBe(true)
   })
 
-  it('is NOT active while a SIBLING tab of the same panel is showing', () => {
+  it('is NOT active while a SIBLING tab of the same panel is showing', async () => {
     // Complement, and the case that fails if the tab param is dropped from the
     // comparison and only the pathname is matched: both rows share
     // /capabilities, so pathname alone would light the wrong one.
     localStorage.setItem(NAV_PINNED_KEY, JSON.stringify(['capabilities-steering', 'capabilities-skills']))
-    renderApp('/capabilities?tab=skills')
+    await renderApp('/capabilities?tab=skills')
     expect(isActive('capabilities-skills')).toBe(true)
     expect(isActive('capabilities-steering')).toBe(false)
   })
-  it('lights EXACTLY ONE rail row while a promoted tab is showing', () => {
+  it('lights EXACTLY ONE rail row while a promoted tab is showing', async () => {
     // The host row's active test is a prefix match on /capabilities and the
     // promoted row's an exact ?tab= match, so both passed and the rail painted
     // two rows as "where I am" -- caught by screenshot, not by this suite,
     // because the tests above assert only that the promoted row IS lit. Counting
     // is what turns that into a guard.
     localStorage.setItem(NAV_PINNED_KEY, JSON.stringify(['capabilities-steering']))
-    renderApp('/capabilities?tab=steering')
+    await renderApp('/capabilities?tab=steering')
 
     expect(document.querySelectorAll('[data-onboarding-nav] .is-lit')).toHaveLength(1)
     expect(isActive('capabilities-steering')).toBe(true)
   })
 
-  it('still lights the host row when the tab it hosts is NOT promoted', () => {
+  it('still lights the host row when the tab it hosts is NOT promoted', async () => {
     // The falsifying direction: with nothing pinned the host must keep its own
     // active paint, or the fix has merely switched the host row off for good.
-    renderApp('/capabilities?tab=steering')
+    await renderApp('/capabilities?tab=steering')
 
     expect(row('capabilities-steering')).toBeNull()
     expect(document.querySelectorAll('[data-onboarding-nav] .is-lit')).toHaveLength(1)
