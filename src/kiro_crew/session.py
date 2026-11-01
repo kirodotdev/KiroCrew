@@ -798,6 +798,11 @@ class SessionManager:
     _has_attached_subagents = _sweeps._has_attached_subagents
     set_injection_probe = _sweeps.set_injection_probe
     _has_pending_injection = _sweeps._has_pending_injection
+    set_live_slot_resolver = _sweeps.set_live_slot_resolver
+    set_conversation_log = _sweeps.set_conversation_log
+    _unanswered_turn_age = _sweeps._unanswered_turn_age
+    _mark_turn_failed = _sweeps._mark_turn_failed
+    _get_conversation_log = _sweeps._get_conversation_log
     _expire_idle_hook = _sweeps._expire_idle_hook
     _bg_drain_reap_hook = _sweeps._bg_drain_reap_hook
     _released_sessions_hook = _sweeps._released_sessions_hook
@@ -831,6 +836,7 @@ class SessionManager:
         self,
         cfg: KiroCrewConfig,
         provider_factory: ProviderFactory | None = None,
+        conversation_log: Any | None = None,
     ):
         self._cfg = cfg
         # Baseline for adopt-on-change (see _sync_autocompact_pct). Captured here
@@ -855,6 +861,11 @@ class SessionManager:
         # Installed by the gateway once it owns this manager (set_injection_probe);
         # None means "no gateway, so no completion injection can be in flight".
         self._injection_probe: "Callable[[str], bool] | None" = None
+        # Installed by the dashboard once its state exists (set_live_slot_resolver);
+        # None means "no dashboard, inspect tail on disk".
+        self._live_slot_resolver: "Callable[[str], Any | None] | None" = None
+        # Installed by the dashboard or creator; None falls back to ConversationLog().
+        self._conversation_log: Any | None = conversation_log
         # Both cold-start widths are restart settings. Built on the gateway boot
         # path and the event loop, so "auto" is sized from the cached host
         # reading only (the floors until it exists); widen_cold_start_queues

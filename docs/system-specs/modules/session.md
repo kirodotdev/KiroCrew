@@ -1882,7 +1882,12 @@ against sweep completeness, and are torn down at `close_all`.
   keys (`_bg`, `_hb`). Dashboard per-tab sessions
   (`dashboard:{slot_key}`) idle-expire like any other session. A crewmate's worker
   session is one of them: its process is released, its conversation resumes on
-  the next send, and `session_status` reports it as `process: released`.
+  the next send, and `session_status` reports it as `process: released`. When an
+  idle or orphaned session expires, the sweep inspects whether its newest
+  conversational message was an unanswered real user prompt (`CleanupDeps.unanswered_turn_age`).
+  If so, after reset succeeds it logs an ERROR and marks the turn failed via
+  `CleanupDeps.mark_turn_failed` (appending a `turn_failed` error row to the
+  live slot or to the transcript file off-loop) so unanswered user turns are not silently discarded.
   A key listed in `session.idle_exempt_keys` never expires on the idle clock,
   for a chat that automation wakes hours apart and that would otherwise pay a
   cold start on every wake. `SessionCleanup._idle_exempt_keys()` reads the list
