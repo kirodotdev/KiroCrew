@@ -28,7 +28,7 @@ from kiro_crew.acp import session_handle_steering as _sh_steering
 from kiro_crew.acp import session_handle_turn as _sh_turn
 from kiro_crew.acp import session_handle_updates as _sh_updates
 from kiro_crew.acp import session_handle_watchdog as _sh_watchdog
-from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS
+from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS, NativeCompactionStates
 from kiro_crew.acp.elicitation import ElicitationRequest
 from kiro_crew.acp.liveness import (
     InFlightToolTracker,
@@ -409,6 +409,9 @@ class AcpSessionHandle:
         # never resolves, so the ``session/prompt`` request goes unanswered, which
         # leaves this armed for ``_settle_codex_compaction`` at the turn's terminal.
         self._codex_compaction_pending: bool | str = False
+        # Native ``compaction_update`` lifecycle per id: duplicate terminals and
+        # late starts are dropped against it. Lives as long as the handle.
+        self._native_compaction_states = NativeCompactionStates()
         self._cancelled = False
         # Unresponsive-cancel tracking (mirrors AcpClient._cancel_ts /
         # _cancel_grace_secs). Set by cancel(); the dispatch loop uses them to
