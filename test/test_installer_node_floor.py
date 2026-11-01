@@ -77,6 +77,7 @@ def _run_with_node(tmp_path: Path, version: str | None) -> int:
         env={"PATH": f"{binbox}:{tools}"},
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     ).returncode
 
@@ -115,6 +116,7 @@ class TestNodeFloorIsAuthoritative:
             env={"PATH": str(binbox) + ":" + os.environ.get("PATH", "")},
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
         )
         assert out.returncode != 0, "a broken node binary was treated as supported"

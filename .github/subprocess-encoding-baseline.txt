@@ -20,7 +20,6 @@
 2 test/test_cli_manifest_signature.py
 2 test/test_config_baseline.py
 1 test/test_connections_tool_aliases.py
-2 test/test_installer_node_floor.py
 6 test/test_ios_simulator_preview_skill.py
 2 test/test_kiro_prerequisite.py
 5 test/test_papyrus_gitops.py
