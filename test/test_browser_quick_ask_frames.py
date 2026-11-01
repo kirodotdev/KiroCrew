@@ -792,3 +792,54 @@ async def test_the_relay_swallows_late_detaches_of_a_dropped_parents_children() 
         json.dumps({"method": "Target.detachedFromTarget", "params": {"sessionId": "C"}})
     )
     assert relay.forwarded_down == 0 and "C" not in relay._closing
+
+
+class _ChildCountRelay:
+    """A child-session frame whose PAGE world was patched to report no secret field."""
+
+    def __init__(self, world: bool = True) -> None:
+        self.world = world
+        self.evaluated: list[dict[str, Any]] = []
+
+    async def send(self, method: str, params: dict[str, Any], sid: str) -> dict[str, Any]:
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"frame": {"id": "C1"}}}
+        if method == "Page.createIsolatedWorld":
+            assert sid == "CHILD" and params["frameId"] == "C1"
+            return {"executionContextId": 41} if self.world else {}
+        if method == "Runtime.evaluate":
+            self.evaluated.append(dict(params))
+            # The page world answers 0 (patched querySelectorAll); the isolated one 1.
+            return {"result": {"value": 1 if params.get("contextId") == 41 else 0}}
+        raise AssertionError(f"unexpected {method} {params}")
+
+
+async def test_a_child_frame_counts_its_secret_fields_in_an_isolated_world() -> None:
+    relay = _ChildCountRelay()
+    reg = fr.FrameRegistry()
+    reg.parent = SESSION
+    reg.handle(
+        {
+            "method": "Target.attachedToTarget",
+            "sessionId": SESSION,
+            "params": {"sessionId": "CHILD", "targetInfo": {"targetId": "F9", "type": "iframe"}},
+        }
+    )
+    fo = fr.FrameOps(relay, SESSION, reg, "WALKER")
+    assert await fo.count("askedValues") == 1
+    assert all(p.get("contextId") == 41 for p in relay.evaluated)
+
+
+async def test_a_child_frame_with_no_isolated_world_counts_as_one() -> None:
+    relay = _ChildCountRelay(world=False)
+    reg = fr.FrameRegistry()
+    reg.parent = SESSION
+    reg.handle(
+        {
+            "method": "Target.attachedToTarget",
+            "sessionId": SESSION,
+            "params": {"sessionId": "CHILD", "targetInfo": {"targetId": "F9", "type": "iframe"}},
+        }
+    )
+    fo = fr.FrameOps(relay, SESSION, reg, "WALKER")
+    assert await fo.count("askedValues") == 1 and relay.evaluated == []

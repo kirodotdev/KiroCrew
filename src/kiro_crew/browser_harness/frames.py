@@ -355,13 +355,30 @@ class FrameOps:
             return None  # nothing focused there, or deeper than we read
         return active
 
+    async def _isolated(self, sid: str) -> int | None:
+        """An isolated world on the root frame of child session *sid*, or ``None``."""
+        tree = await self._send("Page.getFrameTree", {}, sid)
+        frame_id = str(((tree.get("frameTree") or {}).get("frame") or {}).get("id") or "")
+        if not frame_id:
+            return None
+        made = await self._send(
+            "Page.createIsolatedWorld",
+            {"frameId": frame_id, "worldName": WALKER_WORLD, "grantUniveralAccess": False},
+            sid,
+        )
+        ctx = made.get("executionContextId")
+        return ctx if isinstance(ctx, int) else None
+
     async def count(self, method: str) -> int:
         """Sum of ``askedValues``/``passwordBoxes`` over the child frames; one that
         cannot be read counts as one, so a guard fails closed."""
         total = 0
         for _frame_id, sid in self.registry.frames():
             try:
-                n = await self._walker((sid, None), method)
+                # In an isolated world of the child's own frame: a frame script that
+                # patches its DOM functions cannot make the count read zero there.
+                ctx = await self._isolated(sid)
+                n = await self._walker((sid, ctx), method) if ctx is not None else None
             except Exception:  # noqa: BLE001
                 n = None
             total += n if isinstance(n, int) and not isinstance(n, bool) else 1
