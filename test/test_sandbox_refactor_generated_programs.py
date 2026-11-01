@@ -130,6 +130,10 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     monkeypatch.setattr(os, "getuid", lambda: _UID, raising=False)
     monkeypatch.setattr(os, "getgid", lambda: _GID, raising=False)
     monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+    # Pin a present per-user systemd manager so the golden's stand-in-root order is the
+    # machine-independent one (the volatile /run/user/$UID leads where it is coherent);
+    # test_sandbox_plan covers the no-manager order.
+    monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", lambda: True)
     for name, table in _PINNED_TABLES.items():
         monkeypatch.setattr(sandbox, name, table)
     assert type(sandbox._sandbox_policy()).__name__ == "DefaultSandboxPolicy"

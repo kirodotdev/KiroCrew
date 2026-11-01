@@ -200,6 +200,12 @@ class PlanHost:
     gid: int = 0
     #: Whether the host's ssh accepts ``StrictHostKeyChecking=accept-new``.
     ssh_accept_new: bool = False
+    #: Whether a per-user systemd manager keeps ``/run/user/$UID`` coherent across
+    #: session churn. False steers the launcher's bind-source stand-in root to the
+    #: durable host-wide ``/dev/shm`` ahead of the volatile ``/run/user/$UID``; see
+    #: :func:`namespace_payload`. Default False so a host built from literals, and
+    #: every non-namespace backend, takes the durable order.
+    runtime_dir_durable: bool = False
 
 
 @dataclass(frozen=True)
@@ -331,6 +337,7 @@ class ConfinementPlan:
     env_scrub_prefixes: tuple[str, ...]
     unreadable_mask_leaves: tuple[str, ...]
     ssh_accept_new: bool
+    runtime_dir_durable: bool
     uid: int
     gid: int
     identities: NamespaceIdentities
@@ -930,6 +937,7 @@ def _namespace_plan(
         env_scrub_prefixes=tuple(env_prefixes),
         unreadable_mask_leaves=tuple(sorted(host.unreadable_mask_leaves)),
         ssh_accept_new=host.ssh_accept_new,
+        runtime_dir_durable=host.runtime_dir_durable,
         uid=host.uid,
         gid=host.gid,
         identities=identities,
@@ -1083,6 +1091,7 @@ def _seatbelt_plan(
         env_scrub_prefixes=(),
         unreadable_mask_leaves=(),
         ssh_accept_new=False,
+        runtime_dir_durable=False,
         uid=host.uid,
         gid=host.gid,
         identities=NamespaceIdentities(),
@@ -1145,5 +1154,23 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "strict_host_key_opt": (
             " -o StrictHostKeyChecking=accept-new" if plan.ssh_accept_new else ""
         ),
-        "stand_in_roots": [f"/run/user/{plan.uid}", "/dev/shm"],
+        # Both roots are cross-fs tmpfs, which is what keeps a bind source from
+        # corrupting its target's host directory entry on namespace teardown (see
+        # ``pick_stand_in_root``). They differ in DURABILITY: ``/run/user/$UID`` is the
+        # login session's runtime dir, which only a per-user systemd manager keeps
+        # coherent -- without one, logind tears it down and remakes it across session
+        # churn, and a bind source pinned inside it when that happens leaves the host
+        # leaf (``.env``, a credential home, ``live_target.json``) a bind of a
+        # now-empty inode, i.e. truncated. ``/dev/shm`` is a host-wide tmpfs no user
+        # manager owns, so it survives that churn. So the volatile root leads only when
+        # a manager is keeping it coherent; otherwise the durable one does. The
+        # launcher still verifies cross-fs and still moves to the next candidate if the
+        # chosen root is torn out mid-create -- this only decides which it reaches for
+        # first. ``/run/user/$UID`` stays in the list either way: where it IS coherent
+        # it is the better pick (login-scoped, auto-reclaimed at logout).
+        "stand_in_roots": (
+            [f"/run/user/{plan.uid}", "/dev/shm"]
+            if plan.runtime_dir_durable
+            else ["/dev/shm", f"/run/user/{plan.uid}"]
+        ),
     }

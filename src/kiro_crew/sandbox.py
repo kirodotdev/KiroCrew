@@ -300,6 +300,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _pinned_env_bin,
         _plan_cwd,
         _resolve_agent_executable,
+        _runtime_dir_is_durable,
         _sandbox_env_scrub_keys,
         _sandbox_env_unset_args,
         _spawn_plan,
