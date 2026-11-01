@@ -1989,13 +1989,10 @@ def _raise_acp_error(
     if _error_kind_from_frame(error) == "cloud_credential_error":
         err.credential_reload = True
         err.transient = False
-    # Tag a credential expiry so cron's auth-expiry exemption can detect it
-    # without relying on the formatted prose, which rewrites the raw exception
-    # names. Uses prose-only sign-out patterns (``is_sign_out_wording``) so a
-    # bare HTTP 403 permanent denial is NOT tagged — that match requires the raw
-    # frame to carry session-expiry or sign-out wording, not just a 403 status.
-    # Covers Bedrock token expiry (``ExpiredToken``), bearer rejection, and any
-    # JSON-RPC session-expiry description ("session expired", "not logged in").
+    # Tag a credential expiry for cron's auth-expiry exemption, read from the raw
+    # frame because the formatted prose rewrites exception names. Sign-out wording
+    # only (``is_sign_out_wording``: ``ExpiredToken``, bearer rejection, "session
+    # expired", "not logged in"), so a bare HTTP 403 permanent denial is NOT tagged.
     if is_sign_out_wording(raw_data) and not is_credential_propagation_delay(raw_data):
         err.credential_expired = True
     raise err
