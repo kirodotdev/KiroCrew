@@ -262,8 +262,11 @@ async def logo(request: web.Request) -> web.StreamResponse:
         if _h.is_sensitive_path(cfg.dashboard.avatar):
             return web.Response(status=404)
         validated = validate_file_path(cfg.dashboard.avatar)
-        if validated and Path(validated).is_file():
-            return web.FileResponse(validated)
+        # Two ifs, not `validated and await ...`: mypy infers the right operand of
+        # `and` in the left operand's type (str | None), which rejects is_file's bool.
+        if validated:
+            if await asyncio.to_thread(Path(validated).is_file):
+                return web.FileResponse(validated)
     # The DEFAULT logo is channel-aware: nightly builds serve the night-sky
     # variant so the whole in-app surface -- sidebar logo, browser favicon,
     # and native-notification avatar all resolve through /logo.png -- matches
@@ -277,7 +280,7 @@ async def logo(request: web.Request) -> web.StreamResponse:
         names.insert(0, "kirocrew-logo-nightly.png")
     for name in names:
         path = _h._STATIC_DIR / name
-        if path.is_file():
+        if await asyncio.to_thread(path.is_file):
             return web.FileResponse(path)
     return web.Response(status=404)
 
@@ -616,7 +619,11 @@ async def pwa_file(request: web.Request) -> web.StreamResponse:
     path = _DIST_DIR / name
     # Resolve both sides so a symlinked _DIST_DIR (dev-backend.sh points it
     # at KiroCrewWebsite/dist) still passes the traversal guard.
-    if path.is_file() and _DIST_DIR.resolve() in path.resolve().parents:
+    if (
+        await asyncio.to_thread(path.is_file)
+        and await asyncio.to_thread(_DIST_DIR.resolve)
+        in (await asyncio.to_thread(path.resolve)).parents
+    ):
         return web.FileResponse(path)
     raise web.HTTPNotFound()
 
