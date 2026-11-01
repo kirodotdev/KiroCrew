@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ApprovalModePicker from '../components/ApprovalModePicker'
 import { ApiError } from '../api/apiError'
@@ -58,19 +58,19 @@ describe('ApprovalModePicker policy-refusal hand-off', () => {
     mount()
 
     await user.click(screen.getByLabelText('Approval mode: Normal'))
-    const reads = screen.getByRole('menuitem', { name: /Reads/i })
-    reads.focus()
+    const reads = await screen.findByRole('menuitem', { name: /Reads/i })
+    act(() => { reads.focus() })
     await user.keyboard('{Enter}')
     const alert = await screen.findByRole('alert')
     expect(api.chatMode).toHaveBeenCalledTimes(1)
 
-    reads.focus()
+    act(() => { reads.focus() })
     await user.keyboard('{Enter}')
     await waitFor(() => expect(api.chatMode).toHaveBeenCalledTimes(2))
     await screen.findByRole('alert')
 
     const yolo = screen.getByRole('menuitem', { name: /YOLO/i })
-    yolo.focus()
+    act(() => { yolo.focus() })
     await user.keyboard('{ArrowDown}')
     const handoff = screen.getByRole('menuitem', { name: /^Ask the agent$/i })
     expect(handoff).toHaveFocus()
