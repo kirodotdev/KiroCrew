@@ -58,7 +58,6 @@
   "src/test/ChatInput.approvalNudge.test.tsx",
   "src/test/ChatInput.busyAndUndo.test.tsx",
   "src/test/ChatInput.collapse.test.tsx",
-  "src/test/ChatInput.composerProbe.test.tsx",
   "src/test/ChatInput.drainCancelAffordance.test.tsx",
   "src/test/ChatInput.listContinuation.test.tsx",
   "src/test/ChatInput.optimizeSlotContext.test.tsx",
