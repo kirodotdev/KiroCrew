@@ -117,7 +117,8 @@ _BASE_IMPORTS = frozenset("""
     is_markdown_spec is_registered_agent_name is_sensitive_path isolated_agents_dir
     iter_agent_spec_files Iterator json kiro_agents_dir kiro_hooks Literal loads_user_json
     logging managed_mcp mcp_aliases mcp_search_path mcp_sources mkdirs_owner_only ModuleType
-    MutableMapping os OWNED_KIRO_AGENT_FILES Path platform_compat project_agent_files
+    MutableMapping os OWNED_KIRO_AGENT_FILES Path platform_compat PlatformCompositionError
+    project_agent_files
     project_agent_name project_agent_names read_json_or redact redact_log replace_with_retry
     REQUIRED_KIRO_AGENT_FILES resolved_command_casing safe_context_call
     safe_read_file_bytes_nolink SecurityEvent sel service_agents shared_kiro_agents_writable
