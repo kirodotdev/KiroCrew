@@ -23,7 +23,7 @@
  * requires it to be stopped.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { useState, useRef } from 'react'
 import { renderWithProviders } from './helpers'
 import Modal from '../components/Modal'
@@ -167,6 +167,27 @@ describe('ProjectPicker above a Modal — keyboard isolation (#6833)', () => {
     const { onClose, onPickerClosed } = await renderHarness()
     const path = await openBrowseTab()
     fireEvent.keyDown(path, { key: 'Escape' })
+    expect(onPickerClosed).toHaveBeenCalledTimes(1)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('keeps Escape after the New folder toggle closed its field dismissing only the picker', async () => {
+    // The toggle is a plain button: an Escape pressed while it holds focus has no
+    // handler of its own, passes `isolateKeys` untouched (Escape is its one
+    // exception) and reaches Modal's window listener. So closing the field by the
+    // toggle must hand focus back to the path field, whose Escape the picker
+    // consumes, or the second press closes the dialog under the picker.
+    const { onClose, onPickerClosed } = await renderHarness()
+    const path = await openBrowseTab()
+    const toggle = await screen.findByTestId('pp-new-folder-toggle')
+    fireEvent.click(toggle)
+    await screen.findByTestId('pp-new-folder-name')
+    toggle.focus()
+    fireEvent.click(toggle)
+    expect(screen.queryByTestId('pp-new-folder-name')).toBeNull()
+    await waitFor(() => expect(document.activeElement).toBe(path))
+
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
     expect(onPickerClosed).toHaveBeenCalledTimes(1)
     expect(onClose).not.toHaveBeenCalled()
   })

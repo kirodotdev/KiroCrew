@@ -118,6 +118,12 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     browseDirs: (path?: string) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
     /** Windows only: the mounted drive roots, as the virtual level above every `X:\`. `path` is `""`: this listing is not a directory. */
     browseDrives: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs?drives=1', { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
+    /** Make folder `name` inside `parent`, the directory the project picker's Browse pane shows.
+     *  Resolves with the new folder's canonical path; rejects with the journaled `ApiError` whose
+     *  `code` names the refusal (`invalid_name`, `name_too_long`, `already_exists`, `access_denied`,
+     *  `permission_denied`, `not_a_directory`, `not_found`, `parent_changed`). Unbounded, like the
+     *  other writes here: re-sending a create is not the harmless retry re-asking a listing is. */
+    createBrowseDir: (parent: string, name: string) => post('/api/browse-dirs/create', { parent, name }).then(j) as Promise<{ path: string; parent: string }>,
     browseFiles: (path?: string, signal?: AbortSignal) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, signal, '/api/browse-files', s => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
     projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; isRepoRoot?: boolean; branch?: string; detached?: boolean; head?: string }>,
     projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
