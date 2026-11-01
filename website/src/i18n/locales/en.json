@@ -9068,7 +9068,14 @@
         "view_audit": "Audit",
         "view_episodic": "Episodic",
         "view_semantic": "Semantic",
-        "view_switch_label": "Memory view"
+        "view_switch_label": "Memory view",
+        "column_key": "Key",
+        "column_value": "Value",
+        "column_confidence": "Confidence",
+        "column_source": "Source",
+        "column_event": "Event",
+        "column_key_type": "Key/Type",
+        "column_details": "Details"
       },
       "wakatimeTab": {
         "active_projects": "Projects you worked on",

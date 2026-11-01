@@ -15572,7 +15572,14 @@
         "view_audit": "审计",
         "view_episodic": "情景",
         "view_semantic": "语义",
-        "view_switch_label": "记忆视图"
+        "view_switch_label": "记忆视图",
+        "column_key": "键",
+        "column_value": "值",
+        "column_confidence": "置信度",
+        "column_source": "来源",
+        "column_event": "事件",
+        "column_key_type": "键/类型",
+        "column_details": "详情"
       },
       "wakatimeTab": {
         "active_projects": "你参与的项目",

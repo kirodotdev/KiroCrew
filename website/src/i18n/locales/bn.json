@@ -15873,7 +15873,14 @@
         "view_audit": "অডিট",
         "view_episodic": "এপিসোডিক",
         "view_semantic": "সিমান্টিক",
-        "view_switch_label": "মেমরি ভিউ"
+        "view_switch_label": "মেমরি ভিউ",
+        "column_key": "কী",
+        "column_value": "মান",
+        "column_confidence": "আস্থা",
+        "column_source": "উৎস",
+        "column_event": "ইভেন্ট",
+        "column_key_type": "কী/ধরন",
+        "column_details": "বিবরণ"
       },
       "wakatimeTab": {
         "active_projects": "আপনি যে প্রকল্পগুলোতে কাজ করেছেন",
