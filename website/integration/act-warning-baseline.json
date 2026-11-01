@@ -156,7 +156,6 @@
   "src/test/ChatPane.scrollChrome.test.tsx",
   "src/test/ChatPane.stopEscalation.test.tsx",
   "src/test/ChatPane.workingLoader.test.tsx",
-  "src/test/ChatPanel.optimisticPickers.test.tsx",
   "src/test/ChatSidebar.boardColumnTagFilter.test.tsx",
   "src/test/ChatSidebar.boardDuplicate.test.tsx",
   "src/test/ChatSidebar.boardFolderCollapse.test.tsx",
