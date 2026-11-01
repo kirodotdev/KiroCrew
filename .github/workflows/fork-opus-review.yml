@@ -518,7 +518,7 @@ jobs:
       - name: Opus 5.5 discovery
         if: steps.human_override.outputs.active != 'true' && (steps.pr.outputs.obsolete != 'true')
         id: discover
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1.0.247
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -762,7 +762,7 @@ jobs:
         if: steps.human_override.outputs.active != 'true' && (steps.pr.outputs.obsolete != 'true')
         id: review
         continue-on-error: true
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1.0.247
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -926,7 +926,7 @@ jobs:
       - name: Opus 5.5 validation (retry after the rate-limit reset)
         if: steps.human_override.outputs.active != 'true' && (steps.rate_limit.outputs.retry == 'true' && steps.pr.outputs.obsolete != 'true')
         id: review_retry
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1.0.247
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
         with:
           # Every input below is the first attempt's, including the actor
           # allow-list and the /proc and /sys read fence.

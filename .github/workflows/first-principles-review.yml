@@ -325,7 +325,7 @@ jobs:
           && steps.contract.outputs.available == 'true'
           && steps.human_override.outputs.active != 'true'
           )
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1.0.247
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
         with:
           # Inference via Amazon Bedrock. Model id form (bare, regional `us.`
           # inference profile, no `[1m]` tag) is load-bearing -- see the
