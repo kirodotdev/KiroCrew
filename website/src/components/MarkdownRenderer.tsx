@@ -86,6 +86,7 @@ import {
 } from './markdown/contexts'
 import { artifactSlugFromHref, classifySessionLink, soleLinkInParagraph, useSessionChip, useUnfurlHref } from './markdown/linkTargets'
 import { dashboardPreviewRef, dashboardPreviewTargetFromHref } from '../utils/dashboardPreview'
+import { openInternalLink } from '../utils/internalNav'
 import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
 import { activatePath, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
@@ -1152,8 +1153,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   const textPatternGen = useSyncExternalStore(scanText ? subscribeTextPatterns : noSubscribe, textPatternGeneration, textPatternGeneration)
 
   /** Chip activation lives on the chip itself (see InlineCode); this handler is
-   *  only link delegation: `#heading` jumps, `/artifacts/<slug>` links and
-   *  staged-dashboard links. */
+   *  only link delegation: `#heading` jumps, `/artifacts/<slug>` links,
+   *  staged-dashboard links and in-app dashboard links. */
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = e.target as HTMLElement
     // `#heading` links scroll within THIS message, never the whole document:
@@ -1189,7 +1190,17 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       if (previewTarget) {
         e.preventDefault()
         onArtifactOpen(dashboardPreviewRef(previewTarget))
+        return
       }
+    }
+    // A link to a page of this dashboard opens in place, through the router and
+    // the page's leave check, rather than in a new tab. Last, and only when no
+    // handler above or on the anchor (a session link, a file path) took the
+    // click. A plain click only: a modified or middle click keeps the anchor's
+    // own new-tab target, and a link `openInternalLink` refuses keeps it too.
+    if (!e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      const anchor = el.closest('a[href]')
+      if (anchor && openInternalLink(anchor.getAttribute('href'))) e.preventDefault()
     }
   }, [onArtifactOpen])
 

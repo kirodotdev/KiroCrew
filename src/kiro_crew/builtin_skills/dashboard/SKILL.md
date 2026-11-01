@@ -353,7 +353,8 @@ in both schemes while preserving the intended design.
 A page fits from 320px through an expanded view, with wrapping or disclosure
 for dense detail. A banner has space without covering data. A link to a web
 page or a dashboard path (`/chat?sid=...`) uses `target="_blank"
-rel="noopener noreferrer"`; the host opens it after the person's click.
+rel="noopener noreferrer"`; the host opens it after the person's click, a web
+page in a new tab and a dashboard page in place.
 Data-driven changes stay readable
 while ambient layers give the page continuity. When a bound value moves or a
 new item lands, the `living-ui` skill says how that motion should feel. Skip
