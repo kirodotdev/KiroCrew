@@ -68,7 +68,7 @@ const BASE = {
   items: [
     item({ item_id: 'a', title: 'first', state: 'accepted', status: 'done' }),
     item({ item_id: 'b', title: 'running' }),
-    item({ item_id: 'c', title: 'asking', status: 'question' }),
+    item({ item_id: 'c', title: 'asking', status: 'question', reason: 'needs_human' }),
   ],
 }
 
@@ -101,7 +101,7 @@ describe('goal-board page refill', () => {
   })
 
   it('keeps the asking band and its focus when an unrelated running item is accepted', () => {
-    const asking = item({ item_id: 'a', title: 'asking', status: 'question' })
+    const asking = item({ item_id: 'a', title: 'asking', status: 'question', reason: 'needs_human' })
     const running = item({ item_id: 'b', title: 'running' })
     mount({ items: [asking, running] })
     const you = document.getElementById('you') as HTMLElement
@@ -117,7 +117,7 @@ describe('goal-board page refill', () => {
     expect(you.querySelector('.band')).toBe(band)
     expect(changes.filter((r) => r.target === you || you.contains(r.target))).toEqual([])
     expect(document.activeElement).toBe(reply)
-    expect(document.getElementById('done')?.textContent).toBe('1 of 2 accepted0 in progress \u00b7 1 need you')
+    expect(document.getElementById('done')?.textContent).toBe('1 of 2 accepted0 in progress \u00b7 0 waiting \u00b7 0 stalled \u00b7 1 need you')
   })
 
   it('changes nothing on a repeated push of the same values', () => {
@@ -203,5 +203,63 @@ describe('goal-board page refill', () => {
       vi.runOnlyPendingTimers()
     })).toEqual([])
     expect(RAW).not.toContain("window.addEventListener('message'")
+  })
+})
+
+describe('goal-board item states', () => {
+  const pill = (card: Element) => card.querySelector('.chip.pill')?.textContent ?? ''
+  const tally = () => document.getElementById('tally')?.textContent ?? ''
+
+  it('draws needs you, working, waiting, stalled and done from the host facts', () => {
+    mount({
+      items: [
+        item({ item_id: 'y', status: 'blocked', reason: 'approval', worker: 'idle', stale: false }),
+        item({ item_id: 'w', worker: 'running', stale: false }),
+        item({ item_id: 'p', worker: 'idle', stale: false }),
+        item({ item_id: 'q', status: 'question', worker: 'idle', stale: false }),
+        item({ item_id: 's', worker: 'closed', stale: true }),
+        item({ item_id: 'd', state: 'accepted', status: 'done', worker: 'closed', stale: false }),
+      ],
+    })
+    const cards = all('#items .item')
+    expect(cards.map(pill)).toEqual(['needs you', 'working', 'waiting', 'waiting on conductor', 'stalled', 'accepted'])
+    // The worker's chip is its last report, so it never contradicts the pill.
+    expect(cards[2].textContent).toContain('last report: progress')
+    expect(cards[2].textContent).not.toContain('worker working')
+    // Only the worker that is mid-turn pulses.
+    expect(cards.map((c) => c.classList.contains('live'))).toEqual([false, true, false, false, false, false])
+    expect(cards.map((c) => !!c.querySelector('.dot'))).toEqual([false, true, false, false, false, false])
+    expect(cards[0].classList.contains('you')).toBe(true)
+    expect(tally()).toContain('needs you 1')
+    expect(tally()).toContain('working 1')
+    expect(tally()).toContain('waiting 2')
+    expect(tally()).toContain('stalled 1')
+    expect(tally()).toContain('accepted 1')
+    expect(document.getElementById('done')?.textContent).toBe(
+      '1 of 6 accepted1 in progress \u00b7 2 waiting \u00b7 1 stalled \u00b7 1 need you',
+    )
+  })
+
+  it('keeps a plain question with the conductor, out of the needs-you band', () => {
+    mount({ items: [item({ status: 'question', worker: 'idle', stale: false })] })
+    expect(document.querySelector('#you .band')).toBeNull()
+    expect(document.querySelector('#you .calm')).not.toBeNull()
+    mount({ items: [item({ status: 'question', reason: 'needs_human', worker: 'idle', stale: false })] })
+    expect(document.querySelector('#you .band')?.textContent).toContain('needs a person')
+  })
+
+  it('stops the pulse when an idle worker reported progress and ended its turn', () => {
+    mount({ items: [item({ worker: 'running', stale: false })] })
+    expect(document.querySelector('#items .item.live')).not.toBeNull()
+    refill({ items: [item({ worker: 'idle', stale: false })] })
+    expect(document.querySelector('#items .item.live')).toBeNull()
+    expect(pill(all('#items .item')[0])).toBe('waiting')
+  })
+
+  it('falls back to the progress rule for a value without the host facts', () => {
+    mount({ items: [item(), item({ item_id: 'b', status: 'question' })] })
+    const cards = all('#items .item')
+    expect(cards.map(pill)).toEqual(['working', 'waiting on conductor'])
+    expect(cards[0].classList.contains('live')).toBe(true)
   })
 })
