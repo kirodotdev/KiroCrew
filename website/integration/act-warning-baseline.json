@@ -5,7 +5,6 @@
   "src/pages/members/MembersPage.newCrewmate.test.tsx",
   "src/pages/settings/decisionsCard.test.tsx",
   "src/test/AboutPanel.inAppApply.test.tsx",
-  "src/test/App.offlinePill.test.tsx",
   "src/test/App.terminalHydrateReconcile.test.tsx",
   "src/test/App.test.tsx",
   "src/test/AppDetailPageCoverage.test.tsx",
