@@ -14,7 +14,6 @@
   "src/apps/command-bar/CommandBarOverlay.test.tsx",
   "src/apps/issue-radar/pipeline/views/PipelineView.render.test.tsx",
   "src/apps/mochi/test/mochiCopyMarkdown.test.tsx",
-  "src/apps/mochi/test/mochiWindowEntriesCov80.test.tsx",
   "src/apps/ops-mission-control/HandoverPanel.test.tsx",
   "src/apps/ops-mission-control/OpsMissionControlPage.test.tsx",
   "src/apps/papyrus/CoAuthorPanel.cov80.test.tsx",
