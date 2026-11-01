@@ -166,7 +166,6 @@
   "src/test/IssueRadarConnectFlow.test.tsx",
   "src/test/IssueRadarConnectHosts.test.tsx",
   "src/test/IssueRadarPrActions.test.tsx",
-  "src/test/IssueRadarSessionTitle.test.ts",
   "src/test/KiroAccountModal.test.tsx",
   "src/test/KiroCrewAgentsPage.schedDraftGuard.test.tsx",
   "src/test/KnowledgeGraphCoverage.test.tsx",
