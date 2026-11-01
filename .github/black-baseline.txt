@@ -516,7 +516,6 @@ test/test_lifecycle_hooks.py
 test/test_local_gate.py
 test/test_manifest_hooks.py
 test/test_mark_permission_resolved.py
-test/test_mcp_api_port_resolution.py
 test/test_mcp_app_panel_config.py
 test/test_mcp_apps_e2e.py
 test/test_mcp_artifact_folders.py

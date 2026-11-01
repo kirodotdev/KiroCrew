@@ -197,9 +197,7 @@ class TestApiBaseResolution:
         with _cfg("http://my.host.example"), _markers([6776]), _owned([6776]):
             assert mcp_core._api_unix_socket().endswith("dashboard-6776.sock")
 
-    def test_bound_port_beats_marker_and_config_default(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_bound_port_beats_marker_and_config_default(self, monkeypatch: pytest.MonkeyPatch):
         """The parent gateway's exported bound port is observed truth."""
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "7891")
         with _cfg("http://my.host.example"), _markers([6776]), _owned([6776]):
@@ -262,9 +260,7 @@ class TestPortResolutionStaysLeaf:
     see it loaded.
     """
 
-    @pytest.mark.parametrize(
-        "module", ["kiro_crew.port_resolution", "kiro_crew.mcp_core"]
-    )
+    @pytest.mark.parametrize("module", ["kiro_crew.port_resolution", "kiro_crew.mcp_core"])
     def test_import_does_not_pull_cli_server(self, module: str) -> None:
         code = (
             "import importlib, sys; "
