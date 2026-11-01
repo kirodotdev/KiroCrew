@@ -87,6 +87,29 @@ class TestStripMarkdown:
     def test_removes_emoji_shortcodes(self) -> None:
         assert strip_markdown("hello :wave: world") == "hello world"
 
+    @pytest.mark.parametrize(
+        ("text", "spoken"),
+        [
+            # Content that is spoken as written, or with word breaks kept.
+            ("meet at 10:30:45 today", "meet at 10:30:45 today"),
+            ("aspect 16:9:1 frame", "aspect 16:9:1 frame"),
+            ("set max_retry_count to 3", "set max retry count to 3"),
+            ("call __init__ first", "call init first"),
+            ("open ~/x now", "open ~/x now"),
+            ("see https://example.com/a_b~c now", "see (link) now"),
+            # Markers that are removed.
+            ("_italic_ and __bold__", "italic and bold"),
+            ("**bold** and *italic*", "bold and italic"),
+            ("~struck~ and ~~gone~~", "struck and gone"),
+            ("~~/tmp/old~~ gone", "/tmp/old gone"),
+            ("pick one\n[OPTIONS: Open https://example.com]", "pick one"),
+            ("done :white_check_mark: ok", "done ok"),
+            ("yes :+1: :100: ok", "yes ok"),
+        ],
+    )
+    def test_read_aloud_cleanup_keeps_content(self, text: str, spoken: str) -> None:
+        assert strip_markdown(text) == spoken
+
     def test_preserves_plain_text(self) -> None:
         assert strip_markdown("hello world") == "hello world"
 
@@ -145,10 +168,17 @@ class TestStripMarkdown:
 
     def test_credential_rejoined_by_emphasis_strip_is_redacted(self) -> None:
         # Same class, different strip: `**` emphasis markers inside a key id
-        # are removed by the [*_~]+ pass. The invariant covers every strip,
+        # are removed by the emphasis pass. The invariant covers every strip,
         # not just the control-tag one.
         out = strip_markdown("key AKIAIOSF**ODNN7EXAMPLE** end")
         assert "AKIAIOSFODNN7EXAMPLE" not in out
+
+    def test_credential_with_an_identifier_underscore_is_redacted_whole(self) -> None:
+        # The token pattern includes "_", so the re-scan sees the underscore
+        # before identifier underscores turn into spoken word breaks.
+        out = strip_markdown("bot 110201543:AA**HdqTcvCH1v_GWJxfSeofSAs0K5PALDsaw end")
+        assert "HdqTcvCH1v" not in out
+        assert "GWJxfSeofSAs0K5PALDsaw" not in out
 
     def test_contiguous_credential_still_redacted_after_strip(self) -> None:
         # Idempotence: a credential the pre-strip scan would catch is also
