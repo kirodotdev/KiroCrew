@@ -635,7 +635,12 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#: Raised by 108, from 33,723 for the ssh-to-self floor's glob program words: a glob
+#: that can name several ssh-family verbs is walked once per verb at its token
+#: (``_ssh_family_verbs``, ``_frame_verb_choices``), and nested payload, operand and
+#: hosts-file verdicts are shared for one outer call (``_shares_nested_verdicts``),
+#: plus nine manifest lines. The verdict stops depending on the hash seed.
+_PACKAGE_LINE_BUDGET = 33_831
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

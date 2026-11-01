@@ -18,15 +18,18 @@ in ``argv_floor_self`` and the host verdicts in ``argv_floor_hosts``, both below
 
 from __future__ import annotations
 
+import contextvars
 import fnmatch
+import functools
 import re
+from collections.abc import Callable, Iterator, Mapping
 
 # The reader names a test instruments on the facade are reached as attributes of
 # the reader module rather than bound here at import: the facade mirrors a patch
 # onto the owning module's namespace, so a name bound into THIS namespace would
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import shell_normalizer as _shell_normalizer
-from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
+from .argv_floor_hosts import _GLOB_CHARS, _HOSTS_FILE_VERDICTS, _host_is_self
 from .argv_floor_self import _self_token_frames, _static_substitution_output
 from .shell_normalizer import (
     _argv_programs,
@@ -102,7 +105,7 @@ def _glob_can_name_ssh_verb(probe: str) -> bool:
         if not _GLOB_CHARS.intersection(word):
             continue
         base = word.rsplit("/", 1)[-1]
-        for verb in _SSH_FAMILY_VERBS:
+        for verb in _SSH_FAMILY_VERBS_ORDERED:
             if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
                 return True
     return False
@@ -117,6 +120,8 @@ _EXPANSION_DEFAULT_RE = re.compile(r"\$\{[^{}:]*:[-=+?]([^{}]+)\}")
 
 
 _SSH_FAMILY_VERBS: frozenset[str] = frozenset({"ssh", "scp", "sftp", "rsync"})
+# Fixed order for loops: frozenset order follows PYTHONHASHSEED.
+_SSH_FAMILY_VERBS_ORDERED: tuple[str, ...] = tuple(sorted(_SSH_FAMILY_VERBS))
 
 
 # Verbs that place a copy (or a link) of their SOURCE operand at their
@@ -168,6 +173,7 @@ _QUOTED_SEP_SENTINELS = {
     "(": "\x05",
     "{": "\x06",
 }
+_SEP_SENTINEL_RE = re.compile("[" + "".join(_QUOTED_SEP_SENTINELS.values()) + "]")
 
 
 def _mask_quoted_separators(text: str) -> str:
@@ -249,6 +255,8 @@ def _mask_quoted_separators(text: str) -> str:
 
 def _unmask_separators(text: str) -> str:
     """Reverse :func:`_mask_quoted_separators` -- restore the boundary chars."""
+    if _SEP_SENTINEL_RE.search(text) is None:
+        return text
     for sep, sentinel in _QUOTED_SEP_SENTINELS.items():
         text = text.replace(sentinel, sep)
     return text
@@ -397,7 +405,26 @@ def _brace_expansions(token: str) -> "list[str] | None":
     return words
 
 
+# Operand verdicts for ONE outer ``_is_ssh_to_self`` call, keyed on the exact
+# operand and position: a glob read as scp walks every later operand once per
+# token, so the same few spellings repeat.  ``_shares_nested_verdicts`` scopes it.
+_OPERAND_VERDICTS: "contextvars.ContextVar[dict[tuple[str, bool], bool] | None]" = (
+    contextvars.ContextVar("_OPERAND_VERDICTS", default=None)
+)
+
+
 def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
+    """Memoized ``_judge_operand`` within one outer call; see ``_OPERAND_VERDICTS``."""
+    memo = _OPERAND_VERDICTS.get()
+    if memo is None:
+        return _judge_operand(operand, host_position=host_position)
+    key = (operand, host_position)
+    if key not in memo:
+        memo[key] = _judge_operand(operand, host_position=host_position)
+    return memo[key]
+
+
+def _judge_operand(operand: str, *, host_position: bool = True) -> bool:
     """True if *operand* names THIS machine as a connection target.
 
     Resolves the host part the way the ssh family reads an operand: an
@@ -548,23 +575,52 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     return _host_is_self(host, dns_fallback=host_position or scheme_seen or host != t)
 
 
-def _ssh_family_verb(token: str) -> "str | None":
-    """The ssh-family verb *token* invokes, or None.
+def _ssh_family_verbs(token: str) -> "tuple[str, ...]":
+    """Every ssh-family verb *token* can invoke, in sorted order; empty if none.
 
     Path-qualified (``/usr/bin/ssh``) and Windows (``ssh.exe``) spellings
-    resolve to the bare verb.  A glob basename that CAN expand to one
-    (``s?h``, see ``_GLOB_CHARS``) resolves to the verb it can name.
+    resolve to the bare verb.  A glob basename (``s?h``, see ``_GLOB_CHARS``)
+    resolves to every verb it can name: ``s??`` is both ``scp`` and ``ssh``.
     """
     base = _program_basename(_strip_redirect(token.strip("\"'")))
     if base.endswith(".exe"):
         base = base[: -len(".exe")]
     if base in _SSH_FAMILY_VERBS:
-        return base
+        return (base,)
     if _GLOB_CHARS.intersection(base):
-        for verb in _SSH_FAMILY_VERBS:
-            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
-                return verb
-    return None
+        return tuple(
+            verb
+            for verb in _SSH_FAMILY_VERBS_ORDERED
+            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base)
+        )
+    return ()
+
+
+def _ssh_family_verb(token: str) -> "str | None":
+    """The first of ``_ssh_family_verbs(token)`` in sorted order, or None."""
+    verbs = _ssh_family_verbs(token)
+    return verbs[0] if verbs else None
+
+
+def _frame_verb_choices(
+    tokens: "list[str]", bound_program_verbs: "Mapping[str, tuple[str, ...]]"
+) -> "Iterator[tuple[int, str, str | None]]":
+    """``(index, token, verb)`` per token, once per verb it can be (else ``None``).
+
+    Lazy: a copy binding recorded at one token applies to the tokens after it.
+
+    A word ending in ``)`` is judged like any other, case pattern or program: a
+    case pattern ``*)`` and the ``r*)`` of ``$(which r*)`` split the same way.
+    """
+    for i, token in enumerate(tokens):
+        verbs = _ssh_family_verbs(token)
+        if not verbs and bound_program_verbs:
+            stripped_prog = token.strip("\"'")
+            verbs = bound_program_verbs.get(stripped_prog, ()) or bound_program_verbs.get(
+                _program_basename(stripped_prog), ()
+            )
+        for verb in verbs or (None,):
+            yield i, token, verb
 
 
 # ssh_config keywords that SET the destination.  ``-o hostname=…`` rewrites
@@ -895,6 +951,38 @@ def _function_call_binds_self(text: str) -> bool:
     return False
 
 
+# Nested payload verdicts for ONE outer ``_is_ssh_to_self`` call.  Every
+# per-verb walk of a glob reaches the same nested ``-e`` / proxycommand /
+# ``RSYNC_RSH`` value, so without this the cost is a power of the depth.
+_SSH_SELF_VERDICTS: "contextvars.ContextVar[dict[str, bool] | None]" = contextvars.ContextVar(
+    "_SSH_SELF_VERDICTS", default=None
+)
+
+
+def _shares_nested_verdicts(walk: "Callable[[str], bool]") -> "Callable[[str], bool]":
+    """Answer a repeat of the same text from ``_SSH_SELF_VERDICTS``; keep nothing after."""
+
+    @functools.wraps(walk)
+    def judged(text_lower: str) -> bool:
+        verdicts = _SSH_SELF_VERDICTS.get()
+        if verdicts is None:
+            scope = _SSH_SELF_VERDICTS.set({})
+            hosts_scope = _HOSTS_FILE_VERDICTS.set({})
+            operand_scope = _OPERAND_VERDICTS.set({})
+            try:
+                return walk(text_lower)
+            finally:
+                _OPERAND_VERDICTS.reset(operand_scope)
+                _HOSTS_FILE_VERDICTS.reset(hosts_scope)
+                _SSH_SELF_VERDICTS.reset(scope)
+        if text_lower not in verdicts:
+            verdicts[text_lower] = walk(text_lower)
+        return verdicts[text_lower]
+
+    return judged
+
+
+@_shares_nested_verdicts
 def _is_ssh_to_self(text_lower: str) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
@@ -1010,7 +1098,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # an ssh-family binary, bound to the verb they now carry.  Shared across
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
-    bound_program_verbs: "dict[str, str]" = {}
+    bound_program_verbs: "dict[str, tuple[str, ...]]" = {}
     for tokens in _self_token_frames(text_lower):
         programs = _argv_programs(tokens)
         # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
@@ -1047,13 +1135,9 @@ def _is_ssh_to_self(text_lower: str) -> bool:
         xargs_prefix_index: "int | None" = None  # a bare ``xargs`` in this simple command
         # Once per FRAME, not once per verb token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
-        for i, token in enumerate(tokens):
-            verb = _ssh_family_verb(token)
-            if verb is None and bound_program_verbs:
-                stripped_prog = token.strip("\"'")
-                verb = bound_program_verbs.get(stripped_prog) or bound_program_verbs.get(
-                    _program_basename(stripped_prog)
-                )
+        # A multi-verb token is walked once per verb; the verb branch only
+        # reads frame state, so the repeat is safe.
+        for i, token, verb in _frame_verb_choices(tokens, bound_program_verbs):
             if verb is None:
                 stripped_tok = token.strip("\"'")
                 assign = _RSYNC_RSH_ASSIGN_RE.match(stripped_tok)
@@ -1120,11 +1204,11 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         operands.append(peeked)
                     if len(operands) >= 2:
                         for source in operands[:-1]:
-                            bound_verb = _ssh_family_verb(source)
-                            if bound_verb is not None:
+                            bound_verbs = _ssh_family_verbs(source)
+                            if bound_verbs:
                                 dest = operands[-1]
-                                bound_program_verbs[dest] = bound_verb
-                                bound_program_verbs[_program_basename(dest)] = bound_verb
+                                bound_program_verbs[dest] = bound_verbs
+                                bound_program_verbs[_program_basename(dest)] = bound_verbs
                                 break
                 cmd_start = _ends_argv(token) or (
                     cmd_start and _ENV_ASSIGN_PREFIX_RE.match(stripped_tok) is not None
