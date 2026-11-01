@@ -36,6 +36,7 @@ import ElicitationCard from '../pages/chat/ElicitationCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
 import { replyShowsFooter } from '../pages/chat/replyFooter'
+import { toolRailColor } from '../utils/toolRailColor'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
@@ -305,9 +306,10 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
       ? rawLabel + '\n\n' + (message.content || '')
       : (message.content || '')
   const detailsId = React.useId()
-  // Rail colour mirrors the pill's status tone, at the main chat's 70% mix.
+  // Rail colour mirrors the pill's status tone, through the mapping the main
+  // chat's tool row uses too.
   const detailsRail = {
-    color: `color-mix(in srgb, ${isRejected ? 'var(--danger)' : isAutoDenied ? 'var(--warn)' : isDone ? 'var(--ok)' : hasPendingPerm ? 'var(--warn)' : 'var(--accent)'} 70%, transparent)`,
+    color: toolRailColor({ isRejected: !!isRejected, isAutoDenied, isDone: !!isDone, hasPendingPerm: !!hasPendingPerm }),
   }
   // The two budgets above are width-blind, so the collapsed box is also measured
   // once it is on screen: a real browser then detects the wrap case exactly,

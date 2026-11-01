@@ -44,6 +44,7 @@ import { useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { PILL_TIP_OPEN_CLASS, ToolCommandTip } from './ToolCommandTip'
 import { useReportRowActive } from './rowActivity'
+import { toolRailColor } from '../../utils/toolRailColor'
 import { useSecondClock } from '../../hooks/useSecondClock'
 
 // Lazy so the rarely-shown answers card stays out of the App chunk.
@@ -860,13 +861,15 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // Match the panel's left rail to the pill's status — keeps the visual chain
   // (icon → bar → content) coherent across auto-denied (amber), user-rejected
   // (red), done (green), pending-approval (yellow), and running (accent) states.
-  // Inline style with color-mix() rather than Tailwind opacity classes — the
-  // project's Tailwind config doesn't compile `border-{color}/N` opacity
-  // variants for theme colors.
-  const barColor = isDone
-    ? (isRejected ? 'var(--danger)' : isAutoDenied ? 'var(--warn)' : 'var(--ok)')
-    : hasPendingPerm ? 'var(--warn)' : 'var(--accent)'
-  const barStyle = `color-mix(in srgb, ${barColor} 70%, transparent)`
+  // The mapping is shared with the SDK's ToolCallPill (utils/toolRailColor.ts). This
+  // row only counts rejected / auto-denied once the whole run is done, like the
+  // icon above, so it passes those flags gated on `isDone`.
+  const barStyle = toolRailColor({
+    isRejected: isDone && !!isRejected,
+    isAutoDenied: isDone && !!isAutoDenied,
+    isDone: !!isDone,
+    hasPendingPerm: !!hasPendingPerm,
+  })
   // A blocked call's Output leads with the LOCALIZED sentence and follows with
   // the rule that fired. Leading with the rule would hand every non-English
   // reader untranslated English (and a bare regex is not an explanation in any
