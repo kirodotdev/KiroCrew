@@ -352,6 +352,7 @@ async def _fire_slack_inner_nudge(
             surface="monitor",
             agent_fallback=lambda: _get_agent_for_session(key),
             t0=_turn_t0,
+            trigger="monitor",
             usage=_turn_usage,
         )
     except SessionBusyError:
@@ -410,6 +411,7 @@ async def _fire_slack_inner_nudge(
             surface="monitor",
             agent_fallback=lambda: _get_agent_for_session(key),
             t0=_turn_t0,
+            trigger="monitor",
             usage=_turn_usage,
         )
         if wake_message is None:

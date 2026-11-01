@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react'
 import { GitBranch, Lightbulb, MessageSquarePlus, Plus, X } from 'lucide-react'
 import type { FollowupItem } from '../store/chatSlice'
 import ErrorNotice from './ErrorNotice'
+import { reportUiControlClick } from '../lib/uiControlTelemetry'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -110,6 +111,7 @@ function FollowUpCard({
       delete next[index]
       return next
     })
+    reportUiControlClick(canWorktree ? 'followup_start_worktree' : 'followup_start_chat')
     try {
       await (canWorktree ? onStartInWorktree(item, index) : onStartInNewChat(item, index))
     } catch (err) {
@@ -181,7 +183,7 @@ function FollowUpCard({
                 </button>
               )}
               <button
-                onClick={() => onAddToSession(item, index)}
+                onClick={() => { reportUiControlClick('followup_add_session'); onAddToSession(item, index) }}
                 disabled={busyIndex !== null}
                 title={i18nT('components.followUpCard.pre_fill_this_session_s_composer_with_the_expand')}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-border text-muted bg-bg hover:text-text hover:border-accent/40"
@@ -189,7 +191,7 @@ function FollowUpCard({
                 <Plus size={13} aria-hidden="true" /> {i18nT('components.followUpCard.add_to_this_session')}
               </button>
               <button
-                onClick={() => onSkip(index)}
+                onClick={() => { reportUiControlClick('followup_skip'); onSkip(index) }}
                 disabled={busyIndex !== null}
                 title={i18nT('components.followUpCard.dismiss_this_suggestion')}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-transparent text-muted hover:text-text bg-transparent"

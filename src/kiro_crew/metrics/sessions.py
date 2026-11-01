@@ -201,6 +201,13 @@ _MAX_LIVE_SESSIONS = 4096
 _live_lock = threading.Lock()
 _live_starts: dict[str, float] = {}
 
+# Who caused each key's most recent session start (``trigger_source``). Kept past
+# the session's end, unlike ``_live_starts``, because a compaction that fails to
+# start a successor re-records the OLD session's start, and that session's opener
+# has not changed. Bounded the same way as ``_live_starts``. Read only by
+# :func:`started_trigger_of`.
+_start_triggers: dict[str, str] = {}
+
 # Orders the two WORKER-THREAD paths that touch crumb files: the writer, and the
 # backfill's read-decide-unlink. Both run off the loop, so a hold across
 # filesystem latency costs a worker and never the gateway's responsiveness --
@@ -261,8 +268,18 @@ def _session_source(session_key: str) -> str:
     return telemetry_channel_of(session_key)
 
 
-async def record_session_started(session_key: str, provider: object = None) -> None:
+async def record_session_started(
+    session_key: str, provider: object = None, *, trigger: str | None = None
+) -> None:
     """Record one session start; never raises.
+
+    The counter carries ``session_kind`` (a rollup of ``session_source``, so it
+    adds no series) and ``trigger_source``, who caused the session to open. A key
+    whose kind fixes the opener (cron, sub-agent, workflow, task runner,
+    heartbeat, background) uses that. Otherwise *trigger* is used when the caller
+    states one, else the trigger the running turn declared
+    (``usage_attrs.current_trigger``), else ``other`` -- never ``user`` by
+    default. See :func:`kiro_crew.metrics.usage_attrs.session_start_trigger`.
 
     *provider* is the provider the registry entry was just built around. It
     labels the counter with that session's EFFECTIVE ``harness``
@@ -344,16 +361,44 @@ async def record_session_started(session_key: str, provider: object = None) -> N
     try:
         from kiro_crew.metrics.events import emit_counter
         from kiro_crew.metrics.harness import ATTR_HARNESS, harness_of
+        from kiro_crew.metrics.usage_attrs import (
+            ATTR_SESSION_KIND,
+            ATTR_TRIGGER_SOURCE,
+            current_trigger,
+            session_kind_of_source,
+            session_start_trigger,
+        )
 
+        source = _session_source(session_key)
+        kind = session_kind_of_source(source)
+        trig = session_start_trigger(kind, explicit=trigger or current_trigger())
+        with _live_lock:
+            _start_triggers[session_key] = trig
+            if len(_start_triggers) > _MAX_LIVE_SESSIONS:
+                for stale in list(_start_triggers)[: len(_start_triggers) // 2]:
+                    _start_triggers.pop(stale, None)
         emit_counter(
             SESSION_STARTED_COUNTER,
             {
-                "session_source": _session_source(session_key),
+                "session_source": source,
                 ATTR_HARNESS: harness_of(provider),
+                ATTR_SESSION_KIND: kind,
+                ATTR_TRIGGER_SOURCE: trig,
             },
         )
     except Exception:
         logger.debug("session started counter failed", exc_info=True)
+
+
+def started_trigger_of(session_key: str) -> str | None:
+    """The ``trigger_source`` the most recent start of *session_key* recorded.
+
+    For a caller that re-records a start of the SAME session (a compaction
+    recycle that kept the old session), so it keeps its original opener. ``None``
+    when this process recorded no start for the key.
+    """
+    with _live_lock:
+        return _start_triggers.get(session_key)
 
 
 async def discard_session_start(session_key: str) -> None:

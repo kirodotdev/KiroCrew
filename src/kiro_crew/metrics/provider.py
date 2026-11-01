@@ -395,6 +395,9 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     "kirocrew.mcp.lazy_load.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.gateway.boot.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.turn.duration": _TURN_BUCKETS_MS,
+    # The exportable twin of kirocrew.turn.duration (metrics/turns.py): the same
+    # turns, so the same buckets.
+    "kirocrew.turn.completed.duration": _TURN_BUCKETS_MS,
     "kirocrew.tool.call.duration": _TOOL_CALL_BUCKETS_MS,
     "kirocrew.session.duration": _SESSION_BUCKETS_MS,
     "kirocrew.watchdog.idle.duration": _WATCHDOG_IDLE_BUCKETS_MS,

@@ -50,6 +50,7 @@ from kiro_crew.metrics.turns import (
     emit_turn_usage,
     turn_outcome,
 )
+from kiro_crew.metrics.usage_attrs import TRIGGER_OTHER
 from kiro_crew.owner_only_files import owner_only_opener_for
 
 logger = logging.getLogger(__name__)
@@ -555,8 +556,17 @@ async def persist_token_record_async(
     app: str = "",
     model_source: object = None,
     emit_metric: bool = True,
+    trigger: str = TRIGGER_OTHER,
+    origin: str | None = None,
 ) -> None:
     """Async variant: builds the record on-loop, offloads the file write.
+
+    ``trigger`` is who started the turn, from the closed list in
+    :mod:`kiro_crew.metrics.usage_attrs`. Each surface states its own, and
+    ``test_turn_trigger_source.py`` holds every call site to passing one; a
+    caller that passes nothing records ``other``, never ``user``. ``origin``
+    overrides the origin derived from ``slot_key`` for a surface whose key does
+    not say where the input came from (a webhook). Neither is written to the row.
 
     Called per agent turn (EVENT_COMPLETE) from the chat runner, which runs on
     the aiohttp event loop, where a synchronous open/append would block all
@@ -615,7 +625,14 @@ async def persist_token_record_async(
             # surface already hands in to name the model that ran: it is the one
             # object here that knows the session's EFFECTIVE backend, overrides
             # included. Not written to the row; it labels the latency sample only.
-            _emit_turn_histogram(record, slot_key, event, harness=harness_of(model_source))
+            _emit_turn_histogram(
+                record,
+                slot_key,
+                event,
+                harness=harness_of(model_source),
+                trigger=trigger,
+                origin=origin,
+            )
         await asyncio.to_thread(_write_token_record, record, now)
     except Exception:
         logger.debug("Failed to persist token record for slot %s", slot_key, exc_info=True)
@@ -627,6 +644,8 @@ def _emit_turn_histogram(
     event: object,
     *,
     harness: str = HARNESS_UNKNOWN,
+    trigger: str = TRIGGER_OTHER,
+    origin: str | None = None,
 ) -> None:
     """Emit this turn's OTEL samples from a built record.
 
@@ -668,6 +687,8 @@ def _emit_turn_histogram(
         model=model,
         provider=provider,
         harness=harness,
+        trigger=trigger,
+        origin=origin,
     )
     emit_turn_usage(
         input_tokens=record.get("input"),

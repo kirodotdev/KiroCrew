@@ -142,13 +142,20 @@ class TerminalCoordinator(ManagerComponent):
         this counter describe a population nobody chose.
 
         The outcome is the runtime's own three-way classification, folded onto a
-        closed enum. Nothing else from the record is published: the ``error``
-        text, the agent name and the task are all free text.
+        closed enum. ``result`` says only whether a completed run's result was
+        empty (``events.SUBAGENT_RESULT_VALUES``). Nothing else from the record is
+        published: the ``error`` text, the result text, the agent name and the
+        task are all free text.
 
         Like every other name in this module's methods, the import is inside the
         body (see :meth:`_record_crew_log_terminal`).
         """
-        from kiro_crew.metrics.events import SUBAGENT_COMPLETED, emit_counter, subagent_outcome
+        from kiro_crew.metrics.events import (
+            SUBAGENT_COMPLETED,
+            emit_counter,
+            subagent_outcome,
+            subagent_result_kind,
+        )
         from kiro_crew.subagent import logger as _logger
 
         try:
@@ -159,7 +166,17 @@ class TerminalCoordinator(ManagerComponent):
             # one the remainder member names.
             _logger.debug("metrics: reading a subagent terminal outcome failed", exc_info=True)
             outcome = subagent_outcome(None)
-        emit_counter(SUBAGENT_COMPLETED, {"outcome": outcome})
+        try:
+            # Only whether the result was empty leaves this method, never its text.
+            result = subagent_result_kind(
+                outcome,
+                getattr(info, "result", ""),
+                getattr(info, "result_truncated", False),
+                returned_reply=getattr(info, "returned_reply", None),
+            )
+        except Exception:
+            result = "none"
+        emit_counter(SUBAGENT_COMPLETED, {"outcome": outcome, "result": result})
 
     def _claim_finalize_impl(self, info: SubagentInfo, *, supersede_recovery: bool = False) -> bool:
         """Claim the exclusive right to report ``info``'s terminal outcome.

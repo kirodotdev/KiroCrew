@@ -254,6 +254,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.messaging.link import (  # noqa: F401
         canonical_key,
     )
+    from kiro_crew.metrics.usage_attrs import (  # noqa: F401
+        TRIGGER_SYSTEM,
+    )
     from kiro_crew.permission_floor import (  # noqa: F401
         OUTCOME_REJECTED_TRANSPORT_FLOOR,
     )

@@ -34,6 +34,7 @@ from kiro_crew.metrics.sessions import (
     END_REASON_RECYCLED,
     record_session_ended,
     record_session_started,
+    started_trigger_of,
 )
 from kiro_crew.session_lifecycle import allocation_identity, clear_stop_declined
 
@@ -1053,7 +1054,10 @@ class CompactionCoordinator:
                     owner._recycling.pop(key, None)
                 self._keep_resume_sid(key, session, dropped_sid)
                 if owner._sessions.get(key) is session:
-                    await record_session_started(key, session.provider)  # it lives on
+                    # It lives on, so it keeps the opener its first start recorded.
+                    await record_session_started(
+                        key, session.provider, trigger=started_trigger_of(key)
+                    )
         try:
             successor = owner._sessions.get(key)
             live = [e for e in session.queue if e[0] not in session.cancelled]

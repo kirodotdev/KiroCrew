@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
 from kiro_crew.llm_helpers import _NO_PRIOR_STATS
+from kiro_crew.metrics.usage_attrs import set_current_trigger, trigger_for_dashboard_turn
 from kiro_crew.security import StreamRedactor
 from kiro_crew.start_priority import person_priority
 
@@ -297,6 +298,17 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # message, which the user writes.
     _crew_log_actor = _turn_actor or ("autonudge" if _directive_self_wake else "user")
     turn._crew_log_actor = _crew_log_actor
+    # Who started this turn, for a backend session the turn opens: the session
+    # start reads it (metrics.sessions.record_session_started). Same mapping the
+    # turn's own completion sample uses, so the two cannot disagree.
+    set_current_trigger(
+        trigger_for_dashboard_turn(
+            _crew_log_actor,
+            user_origin=bool(_directive_user_origin),
+            channel_origin=bool(turn._directive_channel_origin),
+            provenance_restored=bool(_turn_provenance_restored),
+        )
+    )
     # Local to this invocation, including failures before provider dispatch.
     _recovery_turn_id = uuid.uuid4().hex
     turn._recovery_turn_id = _recovery_turn_id

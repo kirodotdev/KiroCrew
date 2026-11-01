@@ -490,7 +490,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_persist_turn_row",
             "async function",
-            "(client: 'Any', session_key: 'str', *, provider: 'str', surface: 'str', agent_fallback: 'Callable[[], str]', t0: 'float', usage: 'AgentTurnUsage | None' = None) -> 'None'",
+            "(client: 'Any', session_key: 'str', *, provider: 'str', surface: 'str', agent_fallback: 'Callable[[], str]', t0: 'float', trigger: 'str' = 'other', usage: 'AgentTurnUsage | None' = None) -> 'None'",
         ),
         ("_HEARTBEAT_KEEP_INJECTION", "value", "'str'"),
     ),

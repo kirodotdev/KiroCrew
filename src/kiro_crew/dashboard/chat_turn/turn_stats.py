@@ -22,6 +22,7 @@ from kiro_crew.llm_helpers import (
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.harness import HARNESS_UNKNOWN, harness_of
 from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
+from kiro_crew.metrics.usage_attrs import TRIGGER_OTHER, trigger_for_dashboard_turn
 from kiro_crew.monitoring.completion import (
     disposition_for_stop_reason,
     is_monitor_completion_evidence,
@@ -317,8 +318,11 @@ def _emit_turn_metric(
     model: str = "",
     provider: str = "",
     harness: str = HARNESS_UNKNOWN,
+    trigger: str = TRIGGER_OTHER,
 ) -> None:
     """Emit this turn's OTEL samples (best-effort).
+
+    ``trigger`` is who started the turn (:func:`_dashboard_turn_trigger`).
 
     ``harness`` labels the duration sample only (see
     :func:`kiro_crew.metrics.turns.emit_turn_duration`); the caller resolves it
@@ -355,6 +359,7 @@ def _emit_turn_metric(
         model=model,
         provider=provider,
         harness=harness,
+        trigger=trigger,
     )
     emit_turn_usage(
         input_tokens=getattr(usage, "input_tokens", 0),
@@ -364,6 +369,26 @@ def _emit_turn_metric(
         model=model,
         provider=provider,
     )
+
+
+def _dashboard_turn_trigger(turn: object) -> str:
+    """``trigger_source`` for a dashboard turn; never raises.
+
+    Read from the actor the turn entry bound (``turn._crew_log_actor``). A
+    ``user`` actor is the entry's fallback for a turn no dispatch claimed, so it
+    counts as ``user`` only when the turn also carries a person's send -- the
+    authenticated-human or channel-origin directive -- and is not a queue row
+    restored after a restart, whose provenance is gone. Otherwise ``other``.
+    """
+    try:
+        return trigger_for_dashboard_turn(
+            getattr(turn, "_crew_log_actor", None),
+            user_origin=bool(getattr(turn, "_directive_user_origin", False)),
+            channel_origin=bool(getattr(turn, "_directive_channel_origin", False)),
+            provenance_restored=bool(getattr(turn, "_turn_provenance_restored", False)),
+        )
+    except Exception:
+        return TRIGGER_OTHER
 
 
 def _emit_recovery_outcome(mechanism: str, outcome: str, attempts: int) -> None:
@@ -786,6 +811,7 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
         # The EFFECTIVE harness, read off the client that ran the
         # turn (a per-session acp_backend override included).
         harness=harness_of(client),
+        trigger=_dashboard_turn_trigger(turn),
     )
     if usage_has_billing(_u):
         # Claim the turn's single usage row BEFORE the persist await

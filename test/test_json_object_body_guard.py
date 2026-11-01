@@ -183,6 +183,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
+    # A control click is one short closed name, so 256 bytes is far above any
+    # legitimate body.
+    "handlers/telemetry_ui_control.py::api_ui_control_clicked": (
+        "_MAX_BODY_BYTES",
+        _BOUNDED_BY_DEFAULT,
+    ),
     "messaging_api/agent_push.py::api_notification_agent_push": (
         "<default>",
         _BOUNDED_BY_DEFAULT,

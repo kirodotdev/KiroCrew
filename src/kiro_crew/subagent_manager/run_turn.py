@@ -1378,6 +1378,7 @@ async def _run_inner_impl(
     cleaned, _ = extract_options(result_text) if result_text else (result_text, [])
     # Read before the fallback annotation, which is not a reply.
     _no_reply = not cleaned.strip()
+    info.returned_reply = not _no_reply
     if cleaned:
         from kiro_crew.security import (
             redact_credentials,

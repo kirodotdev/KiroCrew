@@ -89,6 +89,11 @@ class SubagentInfo:
     result: str = ""
     result_path: str = ""
     result_truncated: bool = False  # completion-event copy dropped content → summary+path
+    # Whether the run's own reply text was non-empty, read before any notice or
+    # annotation is added to ``result``. None until the runner decides it (a
+    # record that never reached that point); the usage metric then reads
+    # ``result`` instead.
+    returned_reply: bool | None = None
     error: str = ""
     # Machine-readable identifier for ``error``, forwarded by ``POST /api/spawn``
     # as the response's ``code`` so a client can switch on the decision instead of

@@ -283,6 +283,7 @@ def build_agent_fn(
                         context_window=_window,
                         elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
                         model_source=provider,
+                        trigger="workflow",
                     )
                 except Exception:
                     logger.debug("workflow usage row persist failed", exc_info=True)

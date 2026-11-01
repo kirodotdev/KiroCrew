@@ -1024,6 +1024,7 @@ async def execute_task(
                     context_window=_window,
                     elapsed_ms=int((_time.monotonic() - _turn_t0) * 1000),
                     model_source=client,
+                    trigger="workflow",
                 )
             except Exception:
                 logger.debug("usage row (taskrunner) persist failed", exc_info=True)
@@ -1687,6 +1688,7 @@ async def self_review(
                 context_window=_window,
                 elapsed_ms=int((_time.monotonic() - _review_t0) * 1000),
                 model_source=client,
+                trigger="workflow",
             )
         except Exception:
             logger.debug("usage row (self_review) persist failed", exc_info=True)

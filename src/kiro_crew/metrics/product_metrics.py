@@ -37,7 +37,11 @@ _SESSIONS = frozenset(
         "kirocrew.session.started",
         "kirocrew.session.idle_expired",
         "kirocrew.subagent.spawned",
+        "kirocrew.subagent.completed",
         "kirocrew.context.compactions",
+        # Finished turns (metrics/turn_completed.py): closed outcome,
+        # trigger_source, origin and harness only.
+        "kirocrew.turn.completed",
     }
 )
 
@@ -48,6 +52,14 @@ _FEATURES = frozenset(
         "kirocrew.artifact.created",
         "kirocrew.workflow.runs",
         "kirocrew.approval.decisions",
+        "kirocrew.autonudge.loops.stopped",
+        # Feature-use counters (metrics/feature_usage.py).
+        "kirocrew.memory.recalled",
+        "kirocrew.lesson.injected",
+        "kirocrew.skill.lazy_load.count",
+        "kirocrew.app.task.completed",
+        "kirocrew.channel.message.received",
+        "kirocrew.ui.control.clicked",
     }
 )
 
@@ -84,6 +96,12 @@ PRODUCT_METRICS: "frozenset[str]" = _SESSIONS | _FEATURES | _INVENTORY
 #     negative guard in test_product_metrics.py keeps it out, so putting it back
 #     is a deliberate change rather than an edit nobody reads.
 #
+# Held on the instrument KIND:
+#   kirocrew.turn.completed.duration -- every attribute is closed, but it is a
+#     histogram, and this allowlist takes counters and gauges only. It joins
+#     when the export path carries native histograms; until then the outcome
+#     mix is read from kirocrew.turn.completed.
+#
 # Held on a missing instrument -- a name here with no instrument would export
 # nothing while reading as if it did:
 #
@@ -91,12 +109,9 @@ PRODUCT_METRICS: "frozenset[str]" = _SESSIONS | _FEATURES | _INVENTORY
 #   kirocrew.crew.session.started, kirocrew.crew.turn.started,
 #   kirocrew.crew.session.tree.depth, kirocrew.crew.session.tree.child,
 #   kirocrew.crew.session.tree.roots, kirocrew.crew.session_control.calls
-# Sessions and subagents (proposed):
-#   kirocrew.subagent.completed
-
 # Features (proposed):
 #   kirocrew.autonudge.loops.started, kirocrew.autonudge.ticks,
-#   kirocrew.autonudge.loops.stopped, kirocrew.monitor.decisions,
+#   kirocrew.monitor.decisions, kirocrew.knowledge.searched,
 #   kirocrew.webhook.requests, kirocrew.work.created,
 #   kirocrew.work.item_closed, kirocrew.work.dispatches, kirocrew.work.reports
 # Inventory (proposed):
