@@ -2,7 +2,7 @@
 // `Disconnect from X` while output flows there, `Connect to X` otherwise.
 // The role/offline badges, reminder and release items were deliberately
 // removed; these tests exercise the current contract only.
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from '../test/helpers'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { addSlotOptimistic, sseSlots } from '../store/dashboardSlice'
@@ -126,6 +126,9 @@ const notifications = (store: ReturnType<typeof createTestStore>) =>
 
 const slotOf = (store: ReturnType<typeof createTestStore>) =>
   store.getState().dashboard.slots.find(s => s.key === SLOT)!
+
+/** The Unlink item of a row: it spins (aria-busy) while its mutation is in flight. */
+const unlinkItem = (label: string) => screen.getByText(L('unlink_from', { label })).closest('button')
 
 describe('LinkedSurfacesSection', () => {
   beforeEach(() => {
@@ -295,6 +298,8 @@ describe('LinkedSurfacesSection', () => {
       fireEvent.click(row)
       expect(pauseMirror).toHaveBeenCalledTimes(1)
       release({ ok: true })
+      // The completion paints the paused row: its Resume verb is the first frame that shows the mutation settled.
+      expect(await screen.findByText(L('resume_replies_to', { label: 'zzq-guild' }))).toBeInTheDocument()
     })
   })
 
@@ -769,6 +774,8 @@ describe('LinkedSurfacesSection', () => {
       fireEvent.click(row)
       expect(unlinkMirror).toHaveBeenCalledTimes(1)
       release({ ok: true, was_linked: true })
+      // The completion drops the link and its Unlink item with it.
+      await waitFor(() => expect(screen.queryByText(L('unlink_from', { label: 'zzq-guild' }))).not.toBeInTheDocument())
     })
 
     it('a PAUSED stale row falls back to the plain Connect verb while its notice shows', async () => {
@@ -810,17 +817,19 @@ describe('LinkedSurfacesSection', () => {
       const { store } = mount({ links: [link({ direction: 'both', binding: 'b-1' })] })
       fireEvent.click(await screen.findByText(L('unlink_from', { label: 'zzq-guild' })))
       await waitFor(() => expect(unlinkMirror).toHaveBeenCalledWith(SLOT, { channel_type: 'discord', binding: 'b-1' }))
-      store.dispatch(sseSlots([{
+      act(() => { store.dispatch(sseSlots([{
         key: SLOT, messages: 0, running: false,
         links: [link({ direction: 'both', binding: 'b-2', target: 't-2' })],
-      } as ChatSlot]))
+      } as ChatSlot])) })
       expect(slotOf(store).links?.map(l => l.binding)).toEqual(['b-2'])
+      await waitFor(() => expect(unlinkItem('zzq-guild')).toHaveAttribute('aria-busy', 'true'))
       release({ ok: true, was_linked: true })
-      // Give the completion its turn, then assert B is still there — a wait
-      // for its absence would pass on the broken code, so the presence is what
-      // is awaited and the menu still offers B's own controls.
+      // Give the completion its turn (the Unlink item stops spinning once it has
+      // run), then assert B is still there — a wait for its absence would pass on
+      // the broken code, so the presence is what is awaited and the menu still
+      // offers B's own controls.
       await waitFor(() => expect(unlinkMirror).toHaveBeenCalledTimes(1))
-      await new Promise(r => setTimeout(r, 20))
+      await waitFor(() => expect(unlinkItem('zzq-guild')).not.toHaveAttribute('aria-busy'))
       expect(slotOf(store).links?.map(l => l.binding)).toEqual(['b-2'])
       expect(screen.getByText(L('disconnect_from', { label: 'zzq-guild' }))).toBeInTheDocument()
       expect(screen.getByText(L('unlink_from', { label: 'zzq-guild' }))).toBeInTheDocument()
@@ -838,13 +847,15 @@ describe('LinkedSurfacesSection', () => {
       })
       fireEvent.click(await screen.findByText(L('unlink_from', { label: 'zzq-slack' })))
       await waitFor(() => expect(unlinkMirror).toHaveBeenCalledWith(SLOT, { channel_type: 'slack', binding: 'b-1' }))
-      store.dispatch(sseSlots([{
+      act(() => { store.dispatch(sseSlots([{
         key: SLOT, messages: 0, running: false,
         slack_linked: true, slack_channel: 'C-zzq', slack_thread_ts: '3.4',
         links: [link({ channel: 'slack', label: 'zzq-slack', direction: 'out', binding: 'b-2', target: 't-2' })],
-      } as ChatSlot]))
+      } as ChatSlot])) })
+      await waitFor(() => expect(unlinkItem('zzq-slack')).toHaveAttribute('aria-busy', 'true'))
       release({ ok: true, was_linked: true })
-      await new Promise(r => setTimeout(r, 20))
+      // The Unlink item stops spinning once the completion has run.
+      await waitFor(() => expect(unlinkItem('zzq-slack')).not.toHaveAttribute('aria-busy'))
       expect(slotOf(store).links?.map(l => l.binding)).toEqual(['b-2'])
       expect(slotOf(store).slack_linked).toBe(true)
       expect(slotOf(store).slack_channel).toBe('C-zzq')

@@ -5,7 +5,6 @@
   "src/apps/command-bar/CommandBarOverlay.test.tsx",
   "src/apps/papyrus/CoAuthorPanel.cov80.test.tsx",
   "src/components/FilePickerMenu.cov80.test.tsx",
-  "src/components/LinkedSurfacesSection.cov80.test.tsx",
   "src/components/LinkedSurfacesSection.menuKeyboard.test.tsx",
   "src/components/SketchDialog.test.tsx",
   "src/pages/members/DeployMyCrew.test.tsx",
