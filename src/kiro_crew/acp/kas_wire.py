@@ -356,10 +356,10 @@ def normalize_script_hook(hook: Any) -> NormalizedHook | None:
         command=command,
         matcher=matcher,
         timeout=timeout,
-        # The literal boolean, not truthiness. The store persists this field
-        # uncoerced -- ``ScriptHook.from_dict`` takes ``data.get("enabled", True)``
-        # as written -- so a hand-edited ``"enabled": "false"`` arrives as that
-        # string, and a truthiness test would read the operator's "off" as "on".
+        # The literal boolean, not truthiness. ``ScriptHook.from_dict`` coerces a
+        # hand-edited value on load (``"false"`` loads off, an unrecognised value
+        # loads on with a warning), so a loaded hook holds a real bool; the
+        # identity test stays as a guard for any hook object built another way.
         # Anything that is not ``True`` is treated as off, which is the direction
         # that cannot list a hook its owner switched off.
         enabled=getattr(hook, "enabled", True) is True,

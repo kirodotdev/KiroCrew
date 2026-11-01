@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import platform
 import sys
@@ -88,6 +89,118 @@ class TestScriptHook:
         assert hook.timeout == 10
         assert hook.enabled is False
         assert hook.matcher == "fs_*"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # A hand-edited "off" must turn the hook off (bool("false") is True).
+            ("false", False),
+            ("FALSE", False),
+            ("0", False),
+            ("no", False),
+            ("off", False),
+            (0, False),
+            # Recognised "on" values keep it on.
+            (True, True),
+            ("true", True),
+            ("1", True),
+            (1, True),
+            (2, True),
+            (-1, True),
+            (" On ", True),
+            ("YES", True),
+            (False, False),
+            # null and "" were falsy before and still load off.
+            (None, False),
+            ("", False),
+            ("   ", False),
+        ],
+    )
+    def test_from_dict_coerces_enabled(self, raw, expected):
+        hook = ScriptHook.from_dict({"id": "e1", "command": "echo hi", "enabled": raw})
+        assert hook.enabled is expected
+
+    @pytest.mark.parametrize(
+        "raw", ["ture", "y", "n", "junk", "enabled", [1], ["x"], [], {}, 1.0, 0.0]
+    )
+    def test_from_dict_loads_unrecognised_enabled_on_with_warning(self, raw, caplog):
+        """An unrecognised value is not guessed off: off would silently drop a
+        PreToolUse deny gate. It loads on, and the load says so."""
+        with caplog.at_level("WARNING", logger="kiro_crew.hooks"):
+            hook = ScriptHook.from_dict({"id": "e1", "command": "echo hi", "enabled": raw})
+        assert hook.enabled is True
+        assert "unrecognised 'enabled'" in caplog.text
+        assert "'e1'" in caplog.text
+
+    @pytest.mark.parametrize("raw", [True, False, "false", "on", 0, 1, None, ""])
+    def test_from_dict_recognised_enabled_does_not_warn(self, raw, caplog):
+        with caplog.at_level("WARNING", logger="kiro_crew.hooks"):
+            ScriptHook.from_dict({"id": "e1", "command": "echo hi", "enabled": raw})
+        assert "unrecognised 'enabled'" not in caplog.text
+
+    def test_from_dict_absent_enabled_defaults_on(self):
+        assert ScriptHook.from_dict({"id": "e1", "command": "echo hi"}).enabled is True
+
+    @staticmethod
+    def _hand_edit_gate(tmp_path: Path, raw: object) -> str:
+        """Save a PreToolUse deny hook, then hand-edit its ``enabled`` to *raw*."""
+        gate = ScriptHookStore(tmp_path).create(
+            {"name": "gate", "event": HOOK_EVENT_PRE_TOOL_USE, "command": "exit 2"}
+        )
+        path = tmp_path / "hooks.json"
+        doc = json.loads(path.read_text())
+        doc["hooks"][0]["enabled"] = raw
+        path.write_text(json.dumps(doc))
+        return gate.id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["junk", "ture", [1]])
+    async def test_registered_store_still_blocks_with_junk_enabled_gate(
+        self, tmp_path: Path, monkeypatch, raw
+    ):
+        """The gateway path: a registered store loaded from a hooks.json whose
+        deny hook holds a typo in ``enabled`` still runs the gate and blocks."""
+        import kiro_crew.hooks as hooks_mod
+
+        # As TestScriptHookStoreFire: run the hook unsandboxed so CI hosts
+        # without the sandbox still reach its real exit code.
+        monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+        gate_id = self._hand_edit_gate(tmp_path, raw)
+        store = ScriptHookStore(tmp_path)
+        monkeypatch.setattr(hooks_mod, "get_global_hook_store", lambda: store)
+        assert hooks_mod.persisted_hook_store() is store
+        gate = store.get(gate_id)
+        assert gate is not None and gate.enabled is True
+        results = await store.fire(HOOK_EVENT_PRE_TOOL_USE, "test", tool_name="fs_write")
+        assert [r.exit_code for r in results] == [2]
+
+    def test_persisted_store_loads_junk_enabled_gate_on(self, tmp_path: Path, monkeypatch):
+        """The standalone path (no registered store) reads the same gate as on."""
+        import kiro_crew.hooks as hooks_mod
+        from kiro_crew.config import loader
+
+        monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(hooks_mod, "_global_script_hook_store", None)
+        monkeypatch.setattr(hooks_mod, "get_global_hook_store", lambda: None)
+        gate_id = self._hand_edit_gate(tmp_path, "ture")
+        gate = hooks_mod.persisted_hook_store().get(gate_id)
+        assert gate is not None and gate.enabled is True
+
+    @pytest.mark.parametrize("raw", ["false", 0, None])
+    def test_store_load_keeps_hand_disabled_hook_off(self, tmp_path: Path, raw):
+        """A hooks.json entry hand-set to an "off" spelling loads disabled."""
+        hook = ScriptHookStore(tmp_path).create(
+            {"name": "hand-off", "event": HOOK_EVENT_PRE_TOOL_USE, "command": "echo hi"}
+        )
+        path = tmp_path / "hooks.json"
+        doc = json.loads(path.read_text())
+        for entry in doc["hooks"]:
+            if entry["id"] == hook.id:
+                entry["enabled"] = raw
+        path.write_text(json.dumps(doc))
+        reloaded = ScriptHookStore(tmp_path).get(hook.id)
+        assert reloaded is not None
+        assert reloaded.enabled is False
 
 
 class TestScriptHookStore:
