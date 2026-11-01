@@ -691,6 +691,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/slot_persistence/metadata_values.py",
         "dashboard/chat_regenerate.py",
         "dashboard/chat_title.py",
+        "dashboard/chat_title_bulk.py",
         "dashboard/chat_utils.py",
         # The display-redaction owner served by the ``dashboard/chat_utils.py`` facade:
         # the same redactor calls, moved verbatim, under the facade's classification.
