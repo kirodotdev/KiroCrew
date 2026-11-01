@@ -120,7 +120,6 @@
   "src/test/MemberMemoryPanel.test.tsx",
   "src/test/MemoryStorePicker.test.tsx",
   "src/test/MochiSettingsPanel.coverage.test.tsx",
-  "src/test/ModelEffortDropdown.defaultLink.test.tsx",
   "src/test/NavHistoryArrows.test.tsx",
   "src/test/NotificationFeed.phase4.test.tsx",
   "src/test/PendingQuestionCard.test.tsx",
