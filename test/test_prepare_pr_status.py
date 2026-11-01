@@ -66,7 +66,11 @@ def test_bare_json_flag_is_not_read_as_the_pr_number() -> None:
         if args[:2] == ["gh", "api"] and "/issues/" in args[2] and "/comments" in args[2]:
             return 0, "[]", ""
         if args[:2] == ["gh", "api"] and "/actions/runs" in args[2]:
-            return 0, json.dumps({"total_count": 1, "workflow_runs": [{"event": "pull_request"}]}), ""
+            return (
+                0,
+                json.dumps({"total_count": 1, "workflow_runs": [{"event": "pull_request"}]}),
+                "",
+            )
         raise AssertionError("unexpected command: {}".format(args))
 
     module.run = fake_run
@@ -159,6 +163,7 @@ def test_same_check_name_in_two_workflows_does_not_collide_in_the_key(capsys) ->
     that change and a stall streak would run through a PR whose blocking check
     actually moved.
     """
+
     def payload(ci_fails: bool) -> str:
         return _pr_payload(
             [
