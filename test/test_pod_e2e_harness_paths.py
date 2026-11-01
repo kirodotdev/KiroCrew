@@ -985,6 +985,8 @@ def test_bad_live_port_falls_back_to_the_default_and_warns(tmp_path, bad):
         " 5476 ",
         "\uff19\uff11\uff12\uff13",
         "\u0669\u0661\u0662\u0663",
+        "\u00b2",
+        "-1",
     ],
 )
 def test_the_refused_set_follows_the_producers_own_parse_of_the_variable(tmp_path, raw):
