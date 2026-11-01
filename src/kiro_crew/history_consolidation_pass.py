@@ -616,6 +616,7 @@ async def _consolidate(
         semantic_scores: list[float] | None = None
         rotation_after: str | None = None
         rotation_last: str | None = None
+        semantic_snapshot: dict[str, dict] = {}
         if has_vector and vector_store is not None:
             private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
             # Offload: each page of the fetch serializes on the store's _db_lock,
@@ -765,11 +766,8 @@ async def _consolidate(
                         "Consolidation relevance signal unavailable for %s", key, exc_info=True
                     )
                     semantic_scores = None
-            # The PROMPT's copy of the table is bounded; ``current_semantic``
-            # itself stays whole, because the writers below read it as the
-            # snapshot that decides update-versus-create and the revision a
-            # correction is checked against. The keys the bounded copy shows
-            # travel with it: a row the model never read is not its to delete.
+            # The PROMPT's copy of the table is bounded. The keys it shows travel
+            # with it: a row the model never read is not its to delete.
             semantic_json, _, semantic_visible, rotation_last = await asyncio.to_thread(
                 _bounded_semantic_table,
                 current_semantic,
@@ -778,6 +776,23 @@ async def _consolidate(
                 scores=semantic_scores,
                 rotation_after=rotation_after,
             )
+            # The writers below read the table as it was before the model call. On
+            # the private path a correction is verified against a row's value_json,
+            # updated_at and record_revision; the V1 writer reads only value_json,
+            # to retire it, and keeps updated_at so both paths hold one shape. A key
+            # the block did not show can still be corrected, so every key is kept
+            # with those fields alone; the rows, their stored vectors and the
+            # prompt's copy are dropped here (a scorer that overran its wait above
+            # still holds the rows until its thread ends).
+            semantic_snapshot = {
+                row["key"]: {
+                    field: row[field]
+                    for field in ("value_json", "updated_at", "record_revision")
+                    if field in row
+                }
+                for row in current_semantic
+            }
+            del current_semantic, semantic_entries
             semantic_fields = (
                 '"delete": false, "metadata": {"category": "contact", "subject": "user", '
                 '"predicate": "work_email", "scope": "", "source_ref": "brief evidence", '
@@ -1105,7 +1120,7 @@ async def _consolidate(
                         session_key=key,
                         source_total=member_source_total,
                         result=consolidation,
-                        snapshot={row["key"]: row for row in current_semantic},
+                        snapshot=semantic_snapshot,
                         messages=receipt_messages,
                         facets=facets,
                         kind_routing=kind_routing,
@@ -1166,7 +1181,7 @@ async def _consolidate(
                 key,
                 vector_store,
                 facets=facets,
-                snapshot={row["key"]: row for row in current_semantic},
+                snapshot=semantic_snapshot,
                 visible_keys=semantic_visible,
                 messages=unconsolidated,
                 commit_state=commit_state,

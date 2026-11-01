@@ -690,8 +690,19 @@ finds another still running takes no signal, and scorers that passes gave up on
 hold at most one of the two, leaving the other to every later pass's work on
 that pool.
 
-The cap bounds the prompt copy only: the whole table stays the `snapshot` the
-writers read for update-versus-create and the revision check, and the keys the
+The cap bounds the prompt copy only. Every active key stays in the `snapshot`
+the writers read for a correction's check on the private path and for the V1
+retirement, but once the block is built the pass keeps of each row only its
+`value_json`, its `updated_at` and, on the private path, its `record_revision`,
+all as read before the model call: a correction is verified against all three,
+and the V1 writer reads only the `value_json` it retires (a V1 row keeps its
+`updated_at` so both paths hold one shape). The pass releases the full rows,
+their stored vectors and the prompt's copy before the turn starts; only a
+relevance scorer that overran its wait and is still running holds the rows
+until its thread ends. A correction is therefore checked against the pre-call
+revision, so a write that lands while the model runs, even one that restores
+the value, still refuses it, and the V1 writer retires against the pre-call
+value. The keys the
 block rendered -- exactly those, whichever pool kept them -- travel with the
 model's answer as `visible_keys`: a `delete` of a key the model never saw is
 withheld (logged once per key) on both write paths, the V1 writer and the

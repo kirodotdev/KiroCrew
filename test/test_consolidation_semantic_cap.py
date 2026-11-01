@@ -9,8 +9,8 @@ next pass failed as too large to send. The chat path caps the same data at
 ``semantic_cap``; this pins the consolidation-side cap, its notice included.
 
 The cap bounds the PROMPT only. The write-side snapshot the consolidator hands
-its writers still carries the whole table, so update-versus-create and the
-revision checks keep seeing every row. Over the cap the block is picked by
+its writers carries every key of the table, so the correction checks and the V1
+retirement keep seeing every key. Over the cap the block is picked by
 relevance, recency and a rotating slice (``test_consolidation_semantic_selection``
 pins the packer); here the pass is driven end to end: every row the block shows
 may be deleted, whichever pool showed it, a row it does not show may not, and
@@ -186,7 +186,7 @@ async def test_oversized_table_is_bounded_and_says_so(include_history: bool) -> 
     assert [entry["key"] for entry in kept] == sorted(entry["key"] for entry in kept)
     kept_keys = {entry["key"] for entry in kept}
 
-    # The cap is a prompt bound only: the writers still see the whole table,
+    # The cap is a prompt bound only: the writers still see every key of the table,
     # and are told exactly which keys the model saw so the rest stay untouched.
     assert len(write_kwargs["snapshot"]) == len(rows)
     assert write_kwargs["visible_keys"] == kept_keys
