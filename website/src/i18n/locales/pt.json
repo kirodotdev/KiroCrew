@@ -7208,7 +7208,9 @@
       "slides_rendering": "Renderizando slides…",
       "slides_rendering_hint": "Na primeira vez que uma apresentação é exibida, a máquina em que o {{productName}} está em execução a converte; isso normalmente leva dezenas de segundos e é interrompido após 3 minutos. As exibições seguintes são instantâneas.",
       "slides_thumbstrip": "Slides",
-      "slides_truncated": "Limite de slides atingido em {{n}}; o restante da apresentação não é exibido."
+      "slides_truncated": "Limite de slides atingido em {{n}}; o restante da apresentação não é exibido.",
+      "light_background": "Fundo claro",
+      "dark_background": "Fundo escuro"
     },
     "folderColorNames": {
       "amber": "Âmbar",

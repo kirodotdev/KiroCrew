@@ -2471,7 +2471,9 @@
       "slides_rendering": "Rendering slides…",
       "slides_rendering_hint": "The first time a deck is viewed, the machine {{productName}} runs on converts it; this usually takes tens of seconds and stops after 3 minutes. Later views are instant.",
       "slides_thumbstrip": "Slides",
-      "slides_truncated": "Slide limit reached at {{n}}; the rest of the deck is not shown."
+      "slides_truncated": "Slide limit reached at {{n}}; the rest of the deck is not shown.",
+      "light_background": "Light background",
+      "dark_background": "Dark background"
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (not installed)",

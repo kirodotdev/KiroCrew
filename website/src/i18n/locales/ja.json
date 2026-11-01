@@ -6950,7 +6950,9 @@
       "slides_rendering": "スライドを描画中…",
       "slides_rendering_hint": "プレゼンテーションを初めて表示するとき、{{productName}} が動作しているマシンで変換が行われます。通常は数十秒かかり、3 分経つと停止します。以降の表示は瞬時です。",
       "slides_thumbstrip": "スライド",
-      "slides_truncated": "スライドは {{n}} 枚目で上限に達しました。それ以降は表示されません。"
+      "slides_truncated": "スライドは {{n}} 枚目で上限に達しました。それ以降は表示されません。",
+      "light_background": "明るい背景",
+      "dark_background": "暗い背景"
     },
     "folderColorNames": {
       "amber": "琥珀色",

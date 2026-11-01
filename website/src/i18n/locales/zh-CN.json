@@ -6950,7 +6950,9 @@
       "slides_rendering": "正在呈现幻灯片…",
       "slides_rendering_hint": "首次查看演示文稿时，运行 {{productName}} 的机器会对其进行转换，通常需要几十秒，3 分钟后停止；之后的查看会立即显示。",
       "slides_thumbstrip": "幻灯片",
-      "slides_truncated": "幻灯片数量在第 {{n}} 页达到上限，其余部分不显示。"
+      "slides_truncated": "幻灯片数量在第 {{n}} 页达到上限，其余部分不显示。",
+      "light_background": "浅色背景",
+      "dark_background": "深色背景"
     },
     "folderColorNames": {
       "amber": "琥珀色",

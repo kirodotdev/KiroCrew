@@ -7208,7 +7208,9 @@
       "slides_rendering": "Rendu des diapositives…",
       "slides_rendering_hint": "La première fois qu’une présentation est affichée, la machine où s’exécute {{productName}} la convertit ; cela prend généralement quelques dizaines de secondes et s’arrête au bout de 3 minutes. Les affichages suivants sont instantanés.",
       "slides_thumbstrip": "Diapositives",
-      "slides_truncated": "Limite de diapositives atteinte à {{n}} ; le reste de la présentation n'est pas affiché."
+      "slides_truncated": "Limite de diapositives atteinte à {{n}} ; le reste de la présentation n'est pas affiché.",
+      "light_background": "Fond clair",
+      "dark_background": "Fond sombre"
     },
     "folderColorNames": {
       "amber": "Ambre",
