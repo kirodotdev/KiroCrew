@@ -7,6 +7,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import type { Blocked, StagedItem } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import { useImeGuard } from '../../hooks/useImeGuard'
 interface Props {
   staged: StagedItem[]
@@ -60,8 +61,8 @@ export default function Composer(p: Props) {
         {staged.map((s, i) => (
           <div key={s.id} style={S.stagedItem}>
             <div style={S.stagedThumb}><img src={s.url} style={S.stagedImg} alt={s.file.name} /></div>
-            <span style={S.stepChip}>{staged.length > 1 ? 'Step ' + (i + 1) : '1'}</span>
-            <button style={S.killBtn} onClick={() => p.dropStaged(i)} title={i18nT('apps.designCritique.composer.remove')} aria-label={'Remove ' + s.file.name}><X size={13} /></button>
+            <span style={S.stepChip}>{staged.length > 1 ? i18nT('apps.designCritique.composer.step_n', { n: fmtNumber(i + 1) }) : fmtNumber(1)}</span>
+            <button style={S.killBtn} onClick={() => p.dropStaged(i)} title={i18nT('apps.designCritique.composer.remove')} aria-label={i18nT('apps.designCritique.composer.remove_name', { name: s.file.name })}><X size={13} /></button>
             <div style={S.stagedFoot}>
               {staged.length > 1 ? <button style={{ ...S.iconBtn, opacity: i === 0 ? 0.35 : 1 }} disabled={i === 0} onClick={() => p.moveStaged(i, -1)} title={i18nT('apps.designCritique.composer.move_earlier')} aria-label={i18nT('apps.designCritique.composer.move_earlier')}><ChevronLeft size={13} /></button> : null}
               {staged.length > 1 ? <button style={{ ...S.iconBtn, opacity: i === staged.length - 1 ? 0.35 : 1 }} disabled={i === staged.length - 1} onClick={() => p.moveStaged(i, 1)} title={i18nT('apps.designCritique.composer.move_later')} aria-label={i18nT('apps.designCritique.composer.move_later')}><ChevronRight size={13} /></button> : null}
@@ -111,7 +112,7 @@ export default function Composer(p: Props) {
             <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
               {blocked.fix === 'local' ? <button style={S.linkBtn} onClick={() => { p.setBlocked(null); p.setRefText('/') }}>{i18nT('apps.designCritique.composer.use_a_local_folder_instead')}</button> : null}
               {(blocked.fix === 'shots' || blocked.fix === 'local') ? <button style={S.linkBtn} onClick={() => { p.setBlocked(null); setTimeout(() => inputRef.current && inputRef.current.click(), 0) }}><Upload size={13} />{i18nT('apps.designCritique.composer.send_screenshots')}</button> : null}
-              {blocked.auth ? <button style={S.linkBtn} onClick={() => p.setShowAuth(v => !v)}>{showAuth ? 'Hide access steps' : 'Fix my access'}</button> : null}
+              {blocked.auth ? <button style={S.linkBtn} onClick={() => p.setShowAuth(v => !v)}>{showAuth ? i18nT('apps.designCritique.composer.hide_access_steps') : i18nT('apps.designCritique.composer.fix_my_access')}</button> : null}
               {(blocked.fix === 'retry' || blocked.auth) ? <button style={S.linkBtn} onClick={() => { p.setBlocked(null); p.setShowAuth(() => false); p.onTryAgain() }}>{i18nT('apps.designCritique.composer.try_again')}</button> : null}
               {blocked.fix === 'retype' ? <button style={S.linkBtn} onClick={() => p.setBlocked(null)}>{i18nT('apps.designCritique.composer.fix_the_link')}</button> : null}
             </div>
@@ -147,7 +148,7 @@ export default function Composer(p: Props) {
         />
         <button
           style={{ ...S.bigStart, ...(canStart ? {} : S.startOff) }} disabled={!canStart} onClick={p.start}
-          title={canStart ? 'Start the critique' : 'Add screenshots or paste a link first'}
+          title={canStart ? i18nT('apps.designCritique.composer.start_the_critique') : i18nT('apps.designCritique.composer.add_screenshots_or_paste_a_link_first')}
         >
           <PencilRuler size={16} />{startLabel}
         </button>
