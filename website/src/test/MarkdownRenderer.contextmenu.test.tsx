@@ -168,6 +168,7 @@ describe('MarkdownRenderer path chips — context menu (FilePathMenu)', () => {
   })
 
   it('"Copy path" calls copyToClipboard with the chip path', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(true)
     stubKind('file')
     const { container } = render(
       <MarkdownRenderer content={`\`${TEST_PATH}\``} />,
@@ -191,6 +192,8 @@ describe('MarkdownRenderer path chips — context menu (FilePathMenu)', () => {
     fireEvent.click(copyItem!)
 
     expect(copyToClipboard).toHaveBeenCalledWith(TEST_PATH)
+    // The write settles after the click (the menu stays open); wait for the row to confirm it.
+    await waitFor(() => expect(document.querySelector('[role="menu"]')?.textContent).toContain('Path copied'))
   })
 
   it('hides open/reveal when directLocal is false (remote session)', async () => {
