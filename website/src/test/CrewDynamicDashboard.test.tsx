@@ -415,6 +415,17 @@ describe('CrewDynamicDashboard', () => {
     expect(screen.queryByTestId('crew-dashboard-suggestions-prompts')).toBeNull()
   })
 
+  it('never mounts the default template when a re-read of an unadopted mate fails', async () => {
+    const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(unadopted())
+    const { queryClient } = mount()
+    expect(await screen.findByTestId('crew-dashboard-suggestions')).toBeInTheDocument()
+    read.mockRejectedValue(new ApiError(503, 'the gateway is restarting', '{}'))
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['member-dashboard'] }) })
+    await waitFor(() => expect(screen.queryByTestId('crew-dashboard-suggestions')).toBeNull())
+    expect(screen.queryByTestId('crew-dashboard-frame')).toBeNull()
+    expect(mints.some((m) => m.includes('default report'))).toBe(false)
+  })
+
   it('keeps drawing an ADOPTED page, never the suggestions page', async () => {
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ state: 'live' }))
     mount()
