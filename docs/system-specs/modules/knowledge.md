@@ -889,9 +889,111 @@ citation format — is
 #### Entities → Nodes
 
 Each extracted entity becomes a node in the graph:
-- Deduplication: exact name matching + case-insensitive alias lookup
+- Deduplication: **conservative lexical resolution** (3-tier, described below)
 - If "DynamoDB" appears in chunk 1 and chunk 5, both map to the same node
+- Multilingual KB: "뮤직뱅크" and "Music Bank" resolve to the same node when a
+  lexical bridge exists (the alias of one matches the canonical name of the other)
 - Stored in SQLite `entities` table + in-memory `SimpleDiGraph`
+
+##### Entity Deduplication: Conservative Lexical Resolution
+
+Retrieval and identity have different contracts. `find_entity` retains broad
+canonical and alias lookup, including abbreviations. Ingestion uses
+`entity_identity_candidates` and `entity_resolution.resolve_entity` instead:
+
+1. **Canonical priority.** Exact name, then SQLite `LOWER(name)`, reuses the
+   existing canonical node without a type guard, retaining canonical matching
+   semantics. Extracted non-string, empty and non-UTF-8 names are dropped before
+   a SQLite lookup. No new Unicode canonical index or matching rule is added.
+2. **Direct alias bridges.** After a canonical miss, consider both incoming
+   name → persisted alias and extracted alias → stored canonical together.
+   The indexed alias route exposes every candidate, and the canonical alias
+   route uses one bounded `LOWER(name)` query. Before the alias index exists,
+   the first route reads the authoritative aliases column. Alias-to-alias
+   matches alone never supply a target.
+3. **Eligibility.** Both canonical names and the actual bridge spelling must
+   pass the same conservative spelling policy, and entity types must agree
+   (missing/empty types become `concept`). Names must have supported, disjoint
+   letter-script profiles. NFKC is used for this decision only; stored spellings
+   and lookup keys are unchanged. Supported scripts are Latin, Hangul, Han,
+   Hiragana, Katakana, Greek, Cyrillic, Arabic, Hebrew and Devanagari. Han with
+   kana is a supported Japanese mixed profile; other mixed profiles abstain.
+   A shared script, including Han shared by Chinese/Japanese names, abstains.
+   The Japanese prolonged sound mark is neutral only after Japanese letters;
+   it cannot establish a meaningful letter profile by itself.
+   Decimal digits, punctuation and spaces are neutral; combining marks follow
+   letters. Controls, format characters, symbols and unknown letters abstain.
+4. **Short abbreviations are lookup-only.** A Latin-only profile with at most
+   four letters/digits after decision normalization and separator removal
+   cannot trigger alias-based reuse, on either canonical endpoint or the bridge.
+   This rejects `CR`, `cr`, `ＣＲ`, `C.R.`, `C R`, `BTS`, `KBS` and `NASA`.
+   It deliberately also rejects genuine short names such as `Go`: a spelling
+   heuristic cannot establish whether a short name is an acronym. Longer
+   abbreviations and non-Latin abbreviations are not perfectly detectable.
+5. **Unique target.** Reuse only when exactly one eligible entity ID remains
+   across both routes. Multiple paths to the same ID are allowed; different
+   IDs abstain and create a new node. An ineligible early candidate cannot hide
+   a later eligible one. No truncated candidate set is treated as complete.
+   Ingestion probes one alias beyond `MAX_ENTITY_ALIASES`. Overflow disables
+   both alias-based routes, including an otherwise unique stored-alias hit;
+   canonical priority remains available and storage keeps its existing cap.
+   A bridge reaching `MAX_ENTITY_ALIAS_LEN` is also lookup-only: it may be
+   a truncated spelling of a different name, and stored aliases carry no
+   truncation provenance. Exact-length legitimate names lose automatic reuse
+   conservatively; the stored/searchable spelling is retained.
+
+| Evidence after a canonical miss | Automatic reuse |
+|---|---|
+| `뮤직뱅크` ↔ `Music Bank`, direct bridge, matching types, one target | yes, either direction |
+| `Code Review` / `Change Request` sharing `CR` | no |
+| A same-script service claiming `Kubernetes` as an alias | no |
+| `방탄소년단` ↔ `BTS`, even with matching types | no; abbreviation stays searchable |
+| Two eligible targets, type conflict, alias-to-alias only, unknown/mixed scripts | no |
+
+**Enrichment is scoped.** Canonical reuse adds incoming aliases. A name matching
+an existing alias adds none. An extracted alias matching a canonical adds only
+its incoming name; its other aliases are not propagated through the bridge.
+When both routes reach the same ID, no enrichment is needed.
+
+These rules reject currently known ambiguity and the forbidden merge classes;
+they do not prove semantic identity or fully prevent poisoning by a fabricated
+cross-script translation. Results are deterministic for the current candidate
+set, not globally independent of ingestion order: a future competing entity
+cannot be anticipated by an online resolver. Canonical enrichment and retained
+aliases can also expose future bridges. Historical splitting, provenance-based
+identity and a backfill sweep are separate work.
+
+`KnowledgeStore.add_entity_aliases` is the only write path for alias enrichment.
+It runs in `BEGIN IMMEDIATE` and enforces the structural invariants the store
+alone can check: casefold dedupe against canonical + existing + accepted →
+cap (MAX_ENTITY_ALIASES).  Length truncation (MAX_ENTITY_ALIAS_LEN), redaction
+of credentials/URLs and whitespace stripping are the caller's responsibility
+(`_coerce_aliases` in ingestion) before calling.  Aliases past the cap are
+discarded and counted, and the call logs ONE warning naming the count when any
+were discarded — including when the entity was already full, so saturation is
+never silent.  The row is written only when an alias was accepted.
+
+**Alias lookup is indexed.**  `entity_aliases(alias_key, entity_id)` holds one
+row per `str.casefold()`ed alias per entity.  SQL cannot compute that key, so
+every writer of `entities.aliases` — `add_entity`, `add_entity_aliases`,
+`import_bundle` — writes the rows through `index_entity_aliases` in the same
+transaction as the entity row; a delete trigger on `entities` drops them with
+the entity, so merges and the orphan sweep need nothing.  `find_entity`'s alias
+leg is then one probe of `idx_entity_aliases_key` that folds Unicode case
+(`MÜNCHEN`, `STRASSE`/`Straße`), instead of a `json.loads` per aliased entity
+on every query term.  A library that predates the table gets it filled by the
+post-bind one-time build (`ensure_search_indexes` → `_ensure_entity_alias_index`),
+which creates the key index in the same transaction as the fill; until that
+index exists `find_entity` keeps the old scan, so results never depend on the build.
+
+**Downgrade limitation.** Index existence proves that the initial fill completed,
+not that a later older binary kept it current. A downgrade can write
+`entities.aliases` without updating `entity_aliases`, leaving incomplete or stale
+lookup rows after re-upgrade. A version marker alone cannot detect those later
+writes. Durable repair requires an initial reconciliation plus per-entity dirty
+tracking maintained by SQL triggers; that migration is separate from the merge
+policy. No automatic downgrade/re-upgrade repair is claimed here.
+
 
 #### Relations → Edges
 
