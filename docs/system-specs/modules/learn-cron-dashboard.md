@@ -225,6 +225,8 @@ The `learn_add` MCP tool (backed by `POST /api/lessons`) is subject to session-s
 
 0. Before any write proceeds, the global persistence switch is checked: `memory.persistence_enabled: false` refuses every create with HTTP 403 and an SEL `persistence_disabled` audit record, regardless of session mode. Enforced on the route so every transport that posts here (MCP tool, dashboard, direct HTTP) is covered by the one check; `GET /api/lessons` and `DELETE /api/lessons` are unaffected — reads and the right to forget survive the switch.
 
+   After those switches the route asks the calling app's own `capabilities.memory_writes` grant. The `learn_add` tool's vet (`mcp_core._vet_memory_writes_governance`) runs in `kirocrew-core`, which knows no app, so a per-app profile that forbids durable memory writes never reaches it; the route resolves the app with `effective_request_app` (the attested token's claim, or the owner of the calling session) and asks `vet_and_audit("capabilities.memory_writes", "", tool_name="learn_add", app=...)`. A refusal answers HTTP 403 `memory_writes_denied` (`Lesson was NOT saved: ...`) with an SEL `app_memory_writes_denied` record, and nothing is written. A caller no app owns is the person, whose surface profile the tool already vets, so it is not re-asked. The posture is the tool's: an evaluation error degrades to permit (audited as `governance_degraded`) rather than refusing.
+
 1. `X-Session-Key` header is required; missing → HTTP 400 `missing X-Session-Key`.
 2. `dashboard:ui` (browser UI's static key) is always allowed.
 3. Otherwise the slot name (portion after the `:` prefix, or the whole key) must satisfy at least one of:

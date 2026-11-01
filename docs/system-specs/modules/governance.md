@@ -2374,7 +2374,8 @@ read-your-writes should add it deliberately, with its own tests.
   deny must DROP that client, not just skip a start call, so nothing can reconnect
   it later);
   durable memory writes in
-  `mcp_core._vet_memory_writes_governance` (at `learn_add`); script-hook
+  `mcp_core._vet_memory_writes_governance` (at `learn_add`), re-asked with the
+  calling app at `POST /api/lessons` (`cron_lessons.api_lessons_create`); script-hook
   execution in `hooks._script_hooks_capability_denied` (at `run_script_hook`,
   asking `events:<event>` so the row's inner `events` list can name the trigger
   events a hook may fire on; an unnamed list permits every event); inbound
