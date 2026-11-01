@@ -692,7 +692,9 @@ describe('MarkdownRenderer path chips — stat gate', () => {
     expect(fireEvent.click(anchor!)).toBe(false)
     expect(onFileOpen).not.toHaveBeenCalled()
 
-    resolveProbe?.(kindsResponse(kindsRequestPaths(probeInit), () => 'file'))
+    await act(async () => {
+      resolveProbe?.(kindsResponse(kindsRequestPaths(probeInit), () => 'file'))
+    })
   })
 
   it('does not probe a decoded root-relative UNC path', async () => {
@@ -1345,7 +1347,7 @@ describe('MarkdownRenderer path chips — forgery resistance', () => {
     // The component must not let an inbound data-path* reach the DOM.
     expect(code.dataset.path).toBeUndefined()
     expect(code.dataset.pathKind).toBeUndefined()
-    fireEvent.click(code)
+    await act(async () => { fireEvent.click(code) })
     expect(onFileOpen).not.toHaveBeenCalled()
     expect(reveal).not.toHaveBeenCalled()
   })
