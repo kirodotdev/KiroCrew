@@ -68,9 +68,7 @@ class TestIsDueSkipDates:
         tz = ZoneInfo("Pacific/Auckland")  # UTC+12/+13
         local_today = datetime.now(tz).strftime("%Y-%m-%d")
 
-        job = self._make_cron_job(
-            skip_dates=[local_today], timezone="Pacific/Auckland"
-        )
+        job = self._make_cron_job(skip_dates=[local_today], timezone="Pacific/Auckland")
         now = time.time()
         # Should be skipped because we're checking in Auckland's timezone
         assert not CronService._is_due(job, now)
@@ -93,7 +91,8 @@ class TestIsDueSkipDates:
         # Synthetic now, fixed by the timegm tuple below.
         synthetic_now = timegm((2026, 4, 6, 12, 0, 0, 0, 0, 0))
         job = self._make_cron_job(
-            skip_dates=["2026-04-06"], timezone="UTC",
+            skip_dates=["2026-04-06"],
+            timezone="UTC",
             created_ts=synthetic_now - 3600,
         )
         assert not CronService._is_due(job, synthetic_now)
