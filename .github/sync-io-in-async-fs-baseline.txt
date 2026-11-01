@@ -32,7 +32,6 @@
 1 src/kiro_crew/dashboard/handlers/prompts_skill_catalog.py
 3 src/kiro_crew/dashboard/handlers/sessions_parts/history_reads.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
-1 src/kiro_crew/dashboard/messaging_api/discord_settings.py
 1 src/kiro_crew/dashboard/messaging_api/run_views.py
 1 src/kiro_crew/dashboard/messaging_api/teams_settings.py
 1 src/kiro_crew/dashboard/messaging_api/webex_settings.py
