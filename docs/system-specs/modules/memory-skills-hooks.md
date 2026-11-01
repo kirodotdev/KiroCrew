@@ -5435,6 +5435,28 @@ frontmatter names the app in `app:`. A builtin app's skill shipped in
 `builtin_skills/` relies on the second form, because the builtin sync copies those
 skills rather than linking them. A confined project skill's frontmatter is not
 read for this.
+
+**On-disk provenance markers.** A tool outside the gateway (a backup or sync
+script, say) can tell where a skill in the skills root came from from the on-disk
+state alone. The supported markers are, in one place:
+
+| Marker | Where | Means |
+|---|---|---|
+| `.builtin-skill-provenance` | dotfile inside the skill directory | a shipped built-in skill the builtin sync copied in (a hidden `.<name>.superseded` copy carries it too, so it is skipped separately) |
+| `.kirocrew-managed` | dotfile inside the skill directory | a managed deploy skill (`artifact-deploy`, `deploy-web`) |
+| `.app-skill-links.json` | one dotfile in the skills root | names the owning app of each app-skill *link* — an app skill is a symlink (a junction on non-admin Windows) into the app's own tree, so it has no directory of its own to carry a dotfile |
+| `app:` frontmatter line | inside a skill's `SKILL.md` | an app skill shipped through `builtin_skills/`, which the sync copies rather than links, so neither shape above applies — a script checks this too |
+
+`.app-skill-links.json` is written by `apps.bridges._register_skills` (atomically,
+via `atomic_write`), its entries dropped by `_deregister_skills` and the stale-link
+cleanup in `reconcile_app_skills`, and the whole file rebuilt from the links on disk
+by `reconcile_app_skills` at gateway start so it survives an upgrade, a crash
+mid-write, or a hand edit. A flat link repointed to a second app takes that app as
+its owner. The format is a version plus, per link path relative to the skills root,
+the owning app: `{"format": 1, "links": {"<app>/<skill>": {"app": "<app>"}, "<skill>": {"app": "<app>"}}}`.
+It is additive provenance — nothing reads it to load, list or show a skill, and a
+missing, unreadable or unknown-format file is logged and never blocks registration.
+
 Internal plumbing helpers (`load_skill`, `_served_key_by_realpath`,
 `resolve_ledger_aliases`, `_resolve_path_and_root`) remain ungated so
 reconciliation and pinned paths function without modification.

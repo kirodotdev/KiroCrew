@@ -171,7 +171,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.bridges_skills import (  # noqa: F401
         _RESERVED_SKILL_DIRS,
         _deregister_skills,
+        _rebuild_app_skill_links,
         _register_skills,
+        _scan_app_skill_owners,
         reconcile_app_skills,
     )
     from kiro_crew.apps.bridges_sources import (  # noqa: F401
@@ -228,6 +230,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         pinned_fs,
         platform_compat,
     )
+    from kiro_crew.apps import app_skill_links  # noqa: F401
     from kiro_crew.apps import deps_boot as _deps_boot_module  # noqa: F401
     from kiro_crew.apps.cron_sdk import (  # noqa: F401
         CronSDK,

@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.apps import app_skill_links
 from kiro_crew.apps.bridges_sources import (
     _namespace,
     _registration_denied,
@@ -63,6 +64,8 @@ def _register_skills(
     Returns list of registered skill names (namespaced).
     """
     registered: list[str] = []
+    # relative-to-skills-root link path -> owning app, for the provenance sidecar.
+    new_owners: dict[str, str] = {}
     if not manifest.skills:
         # Nothing to link. Creating the namespaced dir anyway leaves an EMPTY
         # ``skills/<app_name>/`` behind, and when a PACKAGED builtin skill shares
@@ -133,13 +136,21 @@ def _register_skills(
             # os.symlink there raises WinError 1314 and would silently drop every
             # app skill for the ordinary user).
             platform_compat.symlink_or_junction(str(skill_path), str(link_path))
+            new_owners[f"{app_name}/{skill_name}"] = app_name
             if flat_link is not None:
                 platform_compat.symlink_or_junction(str(skill_path), str(flat_link))
+                # A flat link repointed from another app takes this app as owner.
+                new_owners[skill_name] = app_name
             namespaced = _namespace(app_name, skill_name)
             registered.append(namespaced)
             logger.info("Registered skill: %s -> %s", namespaced, skill_path)
         except OSError as exc:
             logger.warning("Failed to link skill %s: %s", skill_name, exc)
+
+    # Provenance sidecar: record who owns each link we just created. Additive and
+    # best effort — app_skill_links swallows its own write errors, so a sidecar that
+    # cannot be written never blocks registration.
+    app_skill_links.set_owners(skills_root, new_owners)
 
     if registered:
         sel().log_tool_invocation(
@@ -199,6 +210,12 @@ def _deregister_skills(app_name: str) -> int:
                 if platform_compat.is_link_or_junction(flat_link) and flat_link.resolve() == target:
                     platform_compat.unlink_link_or_junction(flat_link)
                 platform_compat.unlink_link_or_junction(item)
+        # Rebuild the sidecar from the links NOW on disk rather than dropping the
+        # names this app removed: a targeted drop would race a concurrent
+        # register of another app that took over a shared flat link (it would
+        # delete the entry whose link is now live). A from-disk rebuild keeps any
+        # entry whose link still exists, so it cannot erase the live owner.
+        _rebuild_app_skill_links()
         # Only prune the directory if registration is all that was ever in it.
         # Any surviving real file means this path belongs to something else.
         if any(app_skills_dir.iterdir()):
@@ -270,11 +287,13 @@ def reconcile_app_skills(app_name: str) -> list[str]:
         # A policy tightened after a prior registration must revoke stale links,
         # not merely decline to create new ones.
         _deregister_skills(app_name)
+        _rebuild_app_skill_links()
         return []
 
     if not manifest or not manifest.skills:
         # No skills declared — remove any stale symlinks left from a prior version
         _deregister_skills(app_name)
+        _rebuild_app_skill_links()
         return []
 
     # _register_skills is already idempotent (overwrites existing symlinks)
@@ -308,4 +327,93 @@ def reconcile_app_skills(app_name: str) -> list[str]:
                     app_name,
                 )
 
+    # Rebuild the provenance sidecar from the links now on disk, so it stays
+    # correct after an upgrade, a crash mid-write, or a hand edit.
+    _rebuild_app_skill_links()
+
     return registered
+
+
+def _scan_app_skill_owners(skills_root: Path) -> dict[str, str]:
+    """Owning app of each app-skill link found under *skills_root*, from disk.
+
+    The source of truth for the sidecar rebuild. A namespaced link
+    ``<app>/<skill>`` names its owner in its own path: the directory one level
+    under the skills root IS the registered app directory. A flat link
+    ``<skill>`` names no app, so its owner is the app whose namespaced link
+    resolves to the same target; a flat link that resolves to no namespaced link
+    (a user-placed link, or one left by a prior layout) is not recorded.
+
+    Only links are considered: a real directory with the same name as an app or a
+    skill (a packaged built-in under ``skills/<app>/``) is never an app-skill
+    link and is skipped, matching ``_register_skills`` / ``_deregister_skills``.
+
+    A top-level directory is taken as an app namespace ONLY when an app of that
+    name is actually installed (``get_app``). Without that check a user's own
+    folder of links (``skills/personal/`` pointing at their drafts) would be
+    recorded as owned by an app ``personal`` that does not exist — labelling the
+    user's own skills as app-installed, which is exactly what a backup script
+    reading this file must not be told.
+    """
+    owners: dict[str, str] = {}
+    # target realpath -> owning app, learned from namespaced links, so a flat
+    # link can be attributed by what it points at.
+    target_owner: dict[str, str] = {}
+    flat_targets: dict[str, str] = {}
+    # A FileNotFoundError on the skills root is a genuine "nothing linked" state
+    # (empty map); any other enumeration error means the scan would be PARTIAL,
+    # so it propagates and the rebuild abandons the write rather than publish a
+    # map missing apps whose links are still on disk (see app_skill_links.rebuild).
+    try:
+        top_entries = list(skills_root.iterdir())
+    except FileNotFoundError:
+        return owners
+    for top in top_entries:
+        if top.name.startswith("."):
+            continue
+        if platform_compat.is_link_or_junction(top):
+            # A flat link; attribute it once the namespaced owners are known. A
+            # link that will not resolve just goes unattributed — that is one
+            # missing flat entry, not a partial map, so it is swallowed.
+            try:
+                flat_targets[top.name] = str(top.resolve())
+            except OSError:
+                pass
+            continue
+        if not top.is_dir():
+            continue
+        # A directory named like an app, but only an installed app's directory is
+        # an app namespace: a user's own link folder with the same shape is not.
+        app_name = top.name
+        if not get_app(app_name):
+            continue
+        # A failure listing an installed app's namespace would drop that app's
+        # entries from the rebuilt map while its links remain on disk, so it is
+        # NOT swallowed: it propagates and the rebuild is abandoned.
+        inner_entries = list(top.iterdir())
+        for inner in inner_entries:
+            # No reserved-name skip here: registration reserves a name like
+            # ``auto`` only for the FLAT link, and always creates the namespaced
+            # ``<app>/<skill>`` link, so skipping it here would silently drop a
+            # real entry on every rebuild.
+            if not platform_compat.is_link_or_junction(inner):
+                continue
+            owners[f"{app_name}/{inner.name}"] = app_name
+            try:
+                target_owner[str(inner.resolve())] = app_name
+            except OSError:
+                pass
+    for flat_name, target in flat_targets.items():
+        owner = target_owner.get(target)
+        if owner is not None:
+            owners[flat_name] = owner
+    return owners
+
+
+def _rebuild_app_skill_links() -> None:
+    """Rewrite the provenance sidecar from the links currently on disk.
+
+    The disk scan runs inside ``app_skill_links.rebuild``'s lock, so it and the
+    write it feeds cannot interleave with a concurrent register / deregister.
+    """
+    app_skill_links.rebuild(_skills_dir(), _scan_app_skill_owners)
