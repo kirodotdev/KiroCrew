@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew.crew_log import crew_log_path, emit, resolve
 
@@ -164,7 +165,7 @@ def test_an_approval_is_requested_before_it_is_decided():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_approval_requested(SESSION, 1, approval_id="r1", tool="shell", reason="rm -rf build")
     emit.on_approval_decided(SESSION, 1, approval_id="r1", decision="approved")
-    assert emit.flush()
+    assert_drained()
     kinds = [e["type"] for e in _body()]
     assert kinds.index("approval/requested") < kinds.index("approval/decided")
 
@@ -182,7 +183,7 @@ def test_a_host_decline_names_the_host_and_its_cause_and_a_human_one_names_neith
         SESSION, 1, approval_id="r1", decision="rejected", by="host", cause="approval_timeout"
     )
     emit.on_approval_decided(SESSION, 1, approval_id="r2", decision="approved")
-    assert emit.flush()
+    assert_drained()
     host, human = _of("approval/decided")
     assert host["by"] == "host" and host["cause"] == "approval_timeout"
     assert host["decision"] == "rejected", "the cause must not displace the decision"
@@ -200,7 +201,7 @@ def test_an_approval_whose_tool_the_frame_did_not_name_omits_the_field():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_approval_requested(SESSION, 1, approval_id="r1", tool="", reason="")
     emit.on_approval_requested(SESSION, 1, approval_id="r2", tool="shell", reason="ls")
-    assert emit.flush()
+    assert_drained()
     unnamed, named = _of("approval/requested")
     assert "tool" not in unnamed and "reason" not in unnamed
     assert unnamed["approval_id"] == "r1", "the request is still recorded"
@@ -212,7 +213,7 @@ def test_a_long_approval_reason_is_clipped_rather_than_losing_the_entry():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_approval_requested(SESSION, 1, approval_id="r1", tool="shell", reason="x" * 5000)
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("approval/requested")
     assert len(data["reason"]) == emit._MAX_SHORT_TEXT
     assert data["reason"].endswith("\u2026"), "a clipped value must say it was cut"
@@ -228,7 +229,7 @@ def test_an_approval_reason_is_redacted_at_the_emitter_not_trusted_from_the_site
         tool="shell",
         reason="curl -H 'Authorization: Bearer sk-live-ABCDEF1234567890abcdef'",
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("approval/requested")
     assert "sk-live-ABCDEF1234567890abcdef" not in data["reason"]
 
@@ -248,7 +249,7 @@ def test_a_plan_records_only_the_two_states_the_stream_carries():
             {"id": "b", "text": "write the test", "completed": False},
         ],
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("plan/updated")
     assert [row["state"] for row in data["items"]] == ["done", "open"]
     assert {row["state"] for row in data["items"]} <= {"done", "open"}
@@ -259,10 +260,10 @@ def test_no_task_list_writes_nothing_but_an_empty_one_records_a_cleared_plan():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_plan_updated(SESSION, 1, items=None)
-    assert emit.flush()
+    assert_drained()
     assert _of("plan/updated") == []
     emit.on_plan_updated(SESSION, 1, items=[])
-    assert emit.flush()
+    assert_drained()
     assert _of("plan/updated") == [{"turn": 1, "items": []}]
 
 
@@ -306,7 +307,7 @@ def test_a_plan_of_emoji_is_bounded_by_bytes_and_still_lands():
         1,
         items=[{"id": str(n), "text": "\U0001f600" * 500, "completed": False} for n in range(40)],
     )
-    assert emit.flush()
+    assert_drained()
     written = _of("plan/updated")
     assert written, "the entry must land rather than be refused whole"
     (data,) = written
@@ -327,7 +328,7 @@ def test_one_oversize_plan_row_does_not_suppress_the_whole_entry():
     emit.on_plan_updated(
         SESSION, 1, items=[{"id": "a", "text": "\U0001f600" * 500, "completed": True}]
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("plan/updated")
     assert len(data["items"]) == 1
     assert data["items"][0]["state"] == "done"
@@ -341,7 +342,7 @@ def test_a_runaway_plan_is_clipped_and_still_reports_its_real_size():
         1,
         items=[{"id": str(n), "text": f"t{n}", "completed": False} for n in range(500)],
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("plan/updated")
     assert len(data["items"]) == emit._MAX_PLAN_ITEMS
     assert data["total"] == 500
@@ -351,7 +352,7 @@ def test_a_plan_entry_is_ignorable_because_nothing_later_depends_on_reading_it()
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_plan_updated(SESSION, 1, items=[{"id": "a", "text": "t", "completed": False}])
-    assert emit.flush()
+    assert_drained()
     (entry,) = [e for e in _body() if e["type"] == "plan/updated"]
     assert entry.get("ignorable") is True
 
@@ -381,7 +382,7 @@ def test_a_background_call_records_the_dimensions_that_were_billed_and_omits_the
         output_tokens=12,
         duration_ms=430,
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("background/completed")
     assert data["tokens"] == {"input": 900, "output": 12}
     assert "credits" not in data, "an unbilled dimension must be absent, not zero"
@@ -394,7 +395,7 @@ def test_a_background_call_names_no_turn():
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
     emit.on_background_completed(SESSION, kind="summary", model="m", credits=0.4)
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("background/completed")
     assert "turn" not in data
     assert data["credits"] == pytest.approx(0.4)
@@ -434,7 +435,7 @@ def test_a_background_owner_is_resolved_before_the_call_not_after_it():
     _record_background_crew_log(
         owner, "title", _Usage(credits=1.0), model="m", provider="acp", elapsed_ms=1
     )
-    assert emit.flush()
+    assert_drained()
     assert _entries(SESSION), "the spend stayed with the session that incurred it"
     assert _of("background/completed")[0]["kind"] == "title"
     assert _entries("successor-sid") == [], "and did not follow the successor"
@@ -499,7 +500,7 @@ def test_a_named_background_call_lands_in_the_owner_s_log():
         provider="acp",
         elapsed_ms=77,
     )
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("background/completed")
     assert data["kind"] == "memory_consolidation"
     assert data["credits"] == pytest.approx(2.5)
@@ -521,7 +522,7 @@ def test_a_child_is_spawned_then_closed_and_the_spawn_carries_its_scope():
         scope={"memory": False, "lessons": True, "project": True},
     )
     emit.on_subagent_completed(SESSION, agent_id="ab12", duration_ms=9100)
-    assert emit.flush()
+    assert_drained()
     kinds = [e["type"] for e in _body()]
     assert kinds.index("subagent/spawned") < kinds.index("subagent/completed")
     (spawned,) = _of("subagent/spawned")
@@ -541,7 +542,7 @@ def test_a_spawn_carries_no_ref_because_the_child_has_no_log_to_cite():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_subagent_spawned(SESSION, 1, agent_id="ab12", agent="kirocrew")
-    assert emit.flush()
+    assert_drained()
     (entry,) = [e for e in _body() if e["type"] == "subagent/spawned"]
     assert "ref" not in entry
     assert "ref" not in entry["data"]
@@ -557,7 +558,7 @@ def test_a_spawn_with_no_asking_turn_omits_the_field_rather_than_writing_zero():
     """
     _open_session()
     emit.on_subagent_spawned(SESSION, 0, agent_id="ab12", agent="kirocrew")
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("subagent/spawned")
     assert "turn" not in data
     assert data["agent_id"] == "ab12", "the child is still recorded"
@@ -567,7 +568,7 @@ def test_a_completed_child_reports_no_tokens_and_no_credits():
     """Nothing in the subagent runtime measures either; zeros would be a claim."""
     _open_session()
     emit.on_subagent_completed(SESSION, agent_id="ab12", duration_ms=5)
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("subagent/completed")
     assert "tokens" not in data and "credits" not in data
 
@@ -581,7 +582,7 @@ def test_a_stopped_child_is_not_recorded_as_a_completion():
     _open_session()
     emit.on_subagent_failed(SESSION, agent_id="ab12", reason="", outcome="stopped", duration_ms=12)
     emit.on_subagent_failed(SESSION, agent_id="cd34", reason="provider refused", outcome="failed")
-    assert emit.flush()
+    assert_drained()
     assert _of("subagent/completed") == []
     stopped, failed = _of("subagent/failed")
     assert stopped["outcome"] == "stopped" and "reason" not in stopped
@@ -685,7 +686,7 @@ def test_a_child_of_a_rerun_turn_names_the_attempt_that_asked(monkeypatch):
     stub = SimpleNamespace(_manager=SimpleNamespace(_sessions=None))
     _open_session()
     emit.on_turn_started(SESSION, 4, "user", attempt=2)
-    assert emit.flush()
+    assert_drained()
     assert emit.asking_turn(SESSION) == (4, 2)
 
     info = SimpleNamespace(
@@ -700,7 +701,7 @@ def test_a_child_of_a_rerun_turn_names_the_attempt_that_asked(monkeypatch):
     )
     _GateMixin._record_crew_log_dispatch(stub, info, from_queue=False)
     _GateMixin._record_crew_log_spawn_started(stub, info)
-    assert emit.flush()
+    assert_drained()
     (spawned,) = _of("subagent/spawned")
     assert (spawned["turn"], spawned["attempt"]) == (4, 2)
 
@@ -818,7 +819,7 @@ def test_a_spawn_whose_attempt_was_not_observed_omits_it():
     _open_session()
     emit.on_subagent_spawned(SESSION, 4, agent_id="ab12")
     emit.on_subagent_spawned(SESSION, 0, agent_id="cd34", attempt=3)
-    assert emit.flush()
+    assert_drained()
     first, second = _of("subagent/spawned")
     assert "attempt" not in first
     assert "attempt" not in second and "turn" not in second, "no attempt without a turn"
@@ -915,7 +916,7 @@ async def test_a_run_whose_memory_binding_cannot_be_persisted_records_no_spawn(m
     try:
         mgr._log_spawned(failed)
         assert failed.error.startswith("memory_unavailable:"), failed.error
-        assert emit.flush()
+        assert_drained()
         assert _of("subagent/spawned") == [], "a run that never started has no opener"
 
         # The prerequisite met: the same call does write it.
@@ -923,7 +924,7 @@ async def test_a_run_whose_memory_binding_cannot_be_persisted_records_no_spawn(m
         started = SubagentInfo(id="folder-ok-1", task="t", agent="", parent_session_key="web-1")
         emit.remember_child_origin(started.id, SESSION, 4)
         mgr._log_spawned(started)
-        assert emit.flush()
+        assert_drained()
         assert [e["agent_id"] for e in _of("subagent/spawned")] == ["folder-ok-1"]
     finally:
         await mgr.cancel_all()
@@ -948,7 +949,7 @@ def test_a_plan_id_is_redacted_like_every_other_field_the_agent_authored(monkeyp
             {"id": "task-7", "text": "keep going", "completed": True},
         ],
     )
-    assert emit.flush()
+    assert_drained()
     (plan,) = _of("plan/updated")
     leaked, ordinary = plan["items"]
     assert "ghp_" not in leaked["id"] and "REDACTED" in leaked["id"], leaked
@@ -972,7 +973,8 @@ def test_a_child_whose_closer_is_not_yet_handed_over_is_not_reported_gone():
     _open_session()
     emit.remember_child_origin("ab12", SESSION, 3)
     assert emit.open_child_origin("ab12") == (SESSION, 3)
-    assert emit.flush(timeout=20.0), "the session must owe nothing, or debt would mask the pin"
+    # The session must owe nothing, or debt would mask the pin.
+    assert_drained()
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(emit, "_child_liveness", lambda _agent_id: False)
@@ -1005,7 +1007,7 @@ def test_a_repair_is_not_blocked_by_its_own_job_being_the_one_in_flight(monkeypa
         emit._submit(_ask_from_inside_the_batch, "repair asking", SESSION)
 
     asyncio.run(_submit())
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     assert answers == [True], "the asking job was counted as debt against itself"
 
 
@@ -1066,7 +1068,7 @@ def test_the_closer_is_handed_over_before_its_child_s_origin_pin_is_released():
         TerminalCoordinator._record_crew_log_terminal(SimpleNamespace(), info)
     assert held == [True], "the pin was released before the closer was handed over"
     assert emit.child_origin("ab12")[0] == "", "the pin was not released afterwards"
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     assert [d["agent_id"] for d in _of("subagent/completed")] == ["ab12"]
 
 
@@ -1125,7 +1127,7 @@ def test_a_turn_still_pending_at_the_terminal_is_billed_in_the_closer():
         )
     )
     assert info.credits == pytest.approx(1.5)
-    assert emit.flush()
+    assert_drained()
     (data,) = _of("subagent/completed")
     assert data["credits"] == pytest.approx(
         1.5
@@ -1149,7 +1151,7 @@ def test_a_plan_the_line_cannot_hold_records_a_prefix_not_a_subsequence():
     items = [{"id": f"w{n}", "text": wide, "completed": False} for n in range(12)]
     items.append({"id": "tail", "text": "short enough to fit alone", "completed": False})
     emit.on_plan_updated(SESSION, 3, items=items)
-    assert emit.flush()
+    assert_drained()
     (plan,) = _of("plan/updated")
     ids = [row["id"] for row in plan["items"]]
     assert ids, "no row was admitted at all, so this proves nothing about the order"
@@ -1223,7 +1225,7 @@ def test_an_unrecorded_dispatch_produces_no_closer():
     sid, _turn = emit.forget_child_origin("never-seen")
     assert sid == ""
     emit.on_subagent_completed(sid, agent_id="never-seen", duration_ms=5)
-    assert emit.flush()
+    assert_drained()
     assert _of("subagent/completed") == []
 
 
