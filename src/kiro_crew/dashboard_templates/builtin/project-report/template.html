@@ -3462,7 +3462,6 @@
   //: On load AND on every push: the order of the host's first fill against this script
   //: is not the page's to assume, and a refill carries new values for the same page.
   render();
-  window.addEventListener('message', function () { render(); });
   //: AND AGAIN ONCE THE DOCUMENT IS PARSED, because the host's FIRST fill is deferred
   //: to `DOMContentLoaded` while this script runs during parsing. The host writes every
   //: bound element from the raw value -- an array as `JSON.stringify` -- so without

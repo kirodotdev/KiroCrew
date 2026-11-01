@@ -305,7 +305,7 @@ Values arrive in three ways:
 2. `window.kirocrew.fields` holds the same declared values, with `agentic`,
    `seq` and `missing` beside them.
 3. `window.kirocrew.subscribe(name, cb)` calls `cb(value, name, meta)`
-   immediately and on each push. Its returned function unsubscribes. A chart or
+   immediately and on each push that changes the field. Its returned function unsubscribes. A chart or
    script-only field needs no extra text binding or hidden sink. `meta` is
    `{missing}`; read the agentic marks from `window.kirocrew.agentic` and
    the write times from `window.kirocrew.written_at`. When a field you drew
@@ -319,7 +319,10 @@ Values arrive in three ways:
 Subscribe during parse. The subscription survives a replaced fields object;
 zero is a present value and still reaches the callback. A failing callback
 leaves the others running. The `kirocrew-dashboard` event is also available,
-but only announces a refill rather than naming the field.
+but only announces a refill rather than naming the field. It fires only when the
+read changed, and at most once a minute on a read that changed nothing, so a
+page drawing elapsed time from the clock stays current.
+Redraw on this event, not on every `message`.
 
 Use `createElement` and `textContent` for recorded text. Inserting recorded
 strings as `innerHTML` would turn somebody's data into page markup. Numerical

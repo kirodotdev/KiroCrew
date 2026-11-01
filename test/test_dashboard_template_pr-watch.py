@@ -381,4 +381,4 @@ class TestItDrawsFromTheHost:
         """The order of the host's first fill against the script is not the page's to
         assume, and a later fold write arrives as a message."""
         assert "window.addEventListener('load', render)" in html
-        assert "addEventListener('message'" in html
+        assert "addEventListener('kirocrew-dashboard'" in html
