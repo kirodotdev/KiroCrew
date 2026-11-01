@@ -48,7 +48,6 @@
   "src/pages/settings/SecurityPanel.test.tsx",
   "src/pages/settings/SecurityPanel.yoloDurationRefresh.test.tsx",
   "src/pages/settings/decisionsCard.test.tsx",
-  "src/test/AboutPanel.autoDownloadToggle.test.tsx",
   "src/test/AboutPanel.gatewayChannelRestart.test.tsx",
   "src/test/AboutPanel.inAppApply.test.tsx",
   "src/test/App.creditPillError.test.tsx",
