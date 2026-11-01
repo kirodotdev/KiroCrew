@@ -247,8 +247,11 @@ def _drive(page: dict[str, Any], fields: dict[str, Any], scenario: str, **data: 
             "console.log(JSON.stringify(out));",
         )
     )
+    # On stdin, not `-e`: the program carries the whole bootstrap and page, and
+    # Windows caps a command line at 32767 characters.
     done = subprocess.run(
-        [node, "--input-type=module", "-e", program],
+        [node, "--input-type=module"],
+        input=program,
         capture_output=True,
         text=True,
         encoding="utf-8",

@@ -18,7 +18,7 @@ Three ways a value reaches the page, and the page chooses per element
    crewmate wrote rather than the gateway folded), ``seq`` (the fold watermark),
    and ``missing`` (the cells whose value this read did not produce).
 3. ``window.kirocrew.subscribe(name, cb)``: ``cb(value, name, meta)`` on first load
-   and again on every push that carries that field, returning a disposer. ``meta`` is
+   and again on every push that changes that field, returning a disposer. ``meta`` is
    ``{missing}``; when a field the page drew stops resolving the
    callback is called again with the value it already drew and ``missing: true``, so
    a chart can mark it rather than freeze on it at full strength. For a page
@@ -645,6 +645,28 @@ _BOOTSTRAP_JS: Final[str] = f"""
     return !!object && typeof object === 'object' &&
       Object.prototype.hasOwnProperty.call(object, key);
   }}
+  function same(a, b) {{
+    return JSON.stringify(a) === JSON.stringify(b);
+  }}
+  function sameMap(a, b) {{
+    a = a || {{}};
+    b = b || {{}};
+    var keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    for (var key of keys) if (!own(b, key) || !same(a[key], b[key])) return false;
+    return true;
+  }}
+  // Whether two reads show the same page: every key a page can draw from, leaving
+  // out only the push bookkeeping (and `subscribe`, which `publish` adds).
+  function sameRead(a, b) {{
+    var skip = {{ version: 1, seq: 1, generation: 1, subscribe: 1 }};
+    for (var key of Object.keys(a).concat(Object.keys(b))) {{
+      if (skip[key] === 1) continue;
+      var map = key === 'fields' || key === 'written_at';
+      if (map ? !sameMap(a[key], b[key]) : !same(a[key], b[key])) return false;
+    }}
+    return true;
+  }}
   function deliver(entry, source, whole) {{
     if (!entry.live) return;
     var fields = source && source.fields;
@@ -679,6 +701,9 @@ _BOOTSTRAP_JS: Final[str] = f"""
     }} else {{
       return;
     }}
+    // UNMOVED, so silent: a full read carries every field, and redrawing a field
+    // for the value it already drew is what made the page feel reloaded.
+    if (!gone && entry.held && !entry.stale && same(entry.last, value)) return;
     entry.held = true;
     entry.last = value;
     entry.stale = gone;
@@ -724,6 +749,8 @@ _BOOTSTRAP_JS: Final[str] = f"""
   // page that began at zero would accept the first patch whatever its version and
   // apply a frame computed against a read it never saw.
   var held = typeof read.version === 'number' ? read.version : 0;
+  // When the page event last fired; first paint counts as one.
+  var lastEvent = Date.now();
   // WHOSE COUNTER `held` BELONGS TO. Versions are only comparable inside one armed
   // page: a page the host re-arms starts its counter again, so a lower number can
   // belong to a newer read. The generation says which counter a number came from, and
@@ -755,6 +782,11 @@ _BOOTSTRAP_JS: Final[str] = f"""
       version: typeof patch.version === 'number' ? patch.version : 0,
       generation:
         typeof patch.generation === 'string' ? patch.generation : (base || {{}}).generation,
+      // KEPT FROM THE HELD READ, never the patch's: the host builds a patch with the
+      // builder's defaults for these two (`subject: 'crewmate'`, `last_user_at: ''`),
+      // so taking them would blank the stamp and mislabel a session page.
+      subject: (base || {{}}).subject,
+      last_user_at: (base || {{}}).last_user_at,
     }};
   }}
   function publish(value) {{
@@ -883,11 +915,27 @@ _BOOTSTRAP_JS: Final[str] = f"""
     }}
     held = version;
     generation = arrivedGeneration;
+    var moved = !sameRead(read, arrived);
     // The FROZEN global is replaced wholesale rather than mutated, for the reason
     // it is frozen: a page holding a reference to the old object keeps reading
     // consistent numbers from it, and nothing half-updates.
     read = arrived;
     publish(read);
+    // NOTHING MOVED, so nothing redraws. Most reads repeat what the page shows (a
+    // reconnect, the fallback, a full read after a patch), and refilling, calling
+    // back and firing the event for them rebuilt the page as if it had reloaded.
+    // THE CLOCK STILL TICKS: a page that draws "idle for 20 min" from `Date.now()`
+    // redraws on this event, so an unchanged read still fires it once a minute.
+    // Filled first, because a page's redraw may reformat the text the fill wrote
+    // (a shortened timestamp) and must start again from the recorded value.
+    if (!moved) {{
+      if (Date.now() - lastEvent < 60000) return;
+      lastEvent = Date.now();
+      fill();
+      window.dispatchEvent(new Event({'"kirocrew-dashboard"'}));
+      return;
+    }}
+    lastEvent = Date.now();
     fill();
     // AFTER the fill, so a callback that reads its own bound element finds the text
     // the host wrote for this push rather than the previous one's. Before the

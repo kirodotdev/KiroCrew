@@ -269,7 +269,9 @@ A tab tells the gateway which boards it shows:
 ```
 
 It is sent after `fold_hello` and again whenever the set changes. The set is the roots of
-the mounted `['command-center', root, 'work']` queries. It replaces the previous set. An
+the mounted `['command-center', root, 'work']` queries, plus the slot of every mounted
+root session page (`['session-dashboard', slot, ...]`), which re-reads on its slot's
+frames. It replaces the previous set. An
 older gateway ignores it: the message chain in dashboard/ws.py (1366-1819) is an
 `if`/`elif` list with no `else`, so an unknown type is dropped silently.
 

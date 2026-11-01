@@ -689,7 +689,7 @@ class TestItDrawsFromTheHost:
 
     def test_it_renders_on_load_and_on_every_message(self, html: str) -> None:
         assert "window.addEventListener('load', render)" in html
-        assert "addEventListener('message'" in html
+        assert "addEventListener('kirocrew-dashboard'" in html
 
     def test_every_colour_falls_back_to_the_products_own(self, html: str) -> None:
         """The frame injects the theme variables, and the accent differs per theme (it is
