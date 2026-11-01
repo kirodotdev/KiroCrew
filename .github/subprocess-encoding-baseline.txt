@@ -29,7 +29,6 @@
 2 test/test_acp_backend_kas.py
 1 test/test_agent_home_isolation.py
 3 test/test_brand_name_gate.py
-2 test/test_browser_recording_skill.py
 1 test/test_build_desktop_launcher_symlink.py
 2 test/test_cli_lazy_imports.py
 2 test/test_cli_manifest_signature.py
