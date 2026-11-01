@@ -165,6 +165,89 @@ def test_open_task_predicate_accepts_the_marker_styles_a_model_writes(body):
     assert routes._has_open_task(body) is True
 
 
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("- [x] done\n\n```markdown\n- [ ] example\n```\n", False),
+        ("- [x] done\n\n~~~\n1. [ ] example\n~~~\n", False),
+        ("- [x] done\n\n```\n- [ ] example\n", False),
+        ("- [x] done\n  - [x] step\n\n    ```\n    - [ ] example\n    ```\n", False),
+        ("- [x] done\r\n\r\n```\r\n- [ ] example\r\n```\r\n", False),
+        ("```\n- [x] example\n```\n- [ ] real task\n", True),
+    ],
+    ids=[
+        "backtick-fence",
+        "tilde-fence",
+        "unclosed-fence",
+        "fence-nested-in-a-list",
+        "crlf-fence",
+        "task-after-fence",
+    ],
+)
+def test_open_task_predicate_ignores_checklists_inside_code_fences(body, expected):
+    """A finished plan that shows a checklist example in a code block has no open
+    task: the fenced line renders as code, and an unclosed fence runs to the end
+    of the file. A real task after a closed fence still counts."""
+    assert routes._has_open_task(body) is expected
+
+
+def test_an_oversized_tasks_file_skips_the_commonmark_parse(monkeypatch):
+    """The CommonMark parse costs microseconds per line, so a crafted file at the
+    1 MiB read cap would cost seconds of CPU per version. Past the bound the
+    shared linear scanner decides, and still skips a top-level fence."""
+    from kiro_crew.apps.builtins.spec_builder.backend import parsers
+
+    def refuse(_text):
+        raise AssertionError("the CommonMark parse ran on an oversized file")
+
+    monkeypatch.setattr(parsers, "_commonmark_fenced_spans", refuse)
+    padding = "a\n" * (parsers._MAX_COMMONMARK_CHARS // 2)
+    body = "- [x] done\n\n```\n- [ ] example\n```\n" + padding
+    assert len(body) > parsers._MAX_COMMONMARK_CHARS
+    assert parsers._has_open_task(body) is False
+
+
+def test_the_fence_parse_of_a_run_of_brackets_runs_no_inline_pass(monkeypatch):
+    """A few hundred KB of "[" costs seconds through the inline pass and
+    milliseconds without it. Fences are block tokens, so the parser that finds
+    them never enters the inline parser. This counts that work rather than
+    timing it: the parse is called directly, past the size cap, and any call
+    into the inline parser is recorded."""
+    from kiro_crew.apps.builtins.spec_builder.backend import parsers
+
+    calls = []
+    md = parsers._markdown_parser()
+    monkeypatch.setattr(md.inline, "parse", lambda *args, **kwargs: calls.append(args))
+    parsers._commonmark_fenced_spans.cache_clear()
+
+    text = "[" * 300_000 + "\n~~~\n"
+    spans = parsers._commonmark_fenced_spans(text)
+    parsers._commonmark_fenced_spans.cache_clear()
+
+    assert spans == ((300_001, len(text)),)
+    assert calls == []
+
+
+def test_parse_tasks_skips_checklist_lines_inside_code_fences():
+    """A checklist inside a fenced code block is example text, not a task: it
+    renders as code, so counting it would hold a finished plan open and shift
+    the index the run endpoint addresses."""
+    text = (
+        "- [x] first\n"
+        "\n"
+        "```markdown\n"
+        "- [ ] shown as an example\n"
+        "```\n"
+        "\n"
+        "- [ ] second\n"
+    )
+    tasks = routes._parse_tasks(text)
+    assert [(t["index"], t["text"], t["done"]) for t in tasks] == [
+        (0, "first", True),
+        (1, "second", False),
+    ]
+
+
 def test_prepare_handoff_refuses_a_tasks_file_with_no_open_task(tmp_path):
     """The reported gap: the gate stat-ed tasks.md and accepted it on existence
     alone, so a zero-byte or all-checked plan armed an autonomous loop that had
