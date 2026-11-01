@@ -150,6 +150,7 @@ vi.mock('../components/CrewAvatarBuilder', () => ({
 import CrewEditorModal from '../components/crew/CrewEditorModal'
 import { useCrewEditor } from '../components/crew/useCrewEditor'
 import type { KiroCrewAgent } from '../api/types'
+import { acpBackendName } from '../api/acpBackend'
 
 const DEFAULT_CREW = { name: 'kirocrew', kiro_agent: 'kirocrew', workspace: 'core-ws', memory_store: 'core-mem' }
 const OTHER_CREW = { name: 'oncall', kiro_agent: 'oncall-agent', workspace: 'oncall', memory_store: 'oncall-mem' }
@@ -886,10 +887,31 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
       models_backend: 'codex', pin_served_as: '',
     })
     const dialog = await openNew()
-    const readout = await within(dialog).findByText(/Using openai\.gpt-5\.6-terra/)
+    const readout = await within(dialog).findByTestId('next-model-runs-instead')
     expect(within(dialog).queryByTestId('next-model-pin-unserved')).toBeNull()
-    expect(readout.parentElement).toHaveTextContent('taken from the custom agent it is built from.')
-    expect(readout.parentElement).not.toHaveTextContent('chosen for this mate.')
+    // It says why the pick is not the model in use: which harness lacks it.
+    expect(readout).toHaveTextContent(
+      `${acpBackendName({ id: 'codex' })} doesn't offer claude-fable-5, so this mate runs on openai.gpt-5.6-terra.`,
+    )
+    expect(within(dialog).queryByTestId('next-model-uses-line')).toBeNull()
+  })
+
+  it('says the model is picked automatically when a foreign pin resolves to nothing', async () => {
+    // The mate's saved model is in another harness's namespace, every lower
+    // tier defers, and no session has advertised a list yet: the resolver
+    // answers pinned with an empty model and no pin_served_as. The picker
+    // still shows the saved model, so the readout must not stay silent.
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [DEFAULT_CREW, { ...OTHER_CREW, model: 'claude-fable-5' }], default_agent: 'kirocrew',
+    })
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: '', pinned: true, kiro_agent: 'oncall-agent', reasoning_effort: '', effort_pinned: false,
+      models_backend: 'codex',
+    })
+    const dialog = await openNew()
+    const line = await within(dialog).findByTestId('next-model-uses-line')
+    expect(line).toHaveTextContent('Picked automatically.')
+    expect(within(dialog).queryByTestId('next-model-runs-instead')).toBeNull()
   })
 
   it('does not claim a stored pin is in use when its harness serves it under no id', async () => {
@@ -904,7 +926,7 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     const readout = await within(dialog).findByTestId('next-model-pin-unserved')
     // The session leaves the pin unsent and stays on the harness's default model.
     expect(readout.textContent).toMatch(/doesn't offer claude-opus-5\.5, so this mate's sessions run on .+'s default model instead/)
-    expect(within(dialog).queryByText(/Using claude-opus-5\.5/)).toBeNull()
+    expect(within(dialog).queryByTestId('next-model-runs-instead')).toBeNull()
   })
 })
 
