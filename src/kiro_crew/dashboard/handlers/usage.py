@@ -14,7 +14,7 @@
 #   ``usage_context`` -- context-window occupancy and a session's context trace
 #   ``usage_cost`` -- the Telemetry panel's spend breakdown
 #   ``usage_history`` -- the Usage page's per-day token history
-#   ``usage_sessions`` -- the Usage page's kiro-cli session activity and its cached parse
+#   ``usage_sessions`` -- the Usage page's kiro-cli and KAS session activity and its cached parse
 
 from __future__ import annotations
 

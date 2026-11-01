@@ -1,5 +1,5 @@
-"""The Usage page's session activity: the kiro-cli sessions on disk, the parse cached and
-run off the event loop, and the snapshot a request waits for only briefly.
+"""The Usage page's session activity: the kiro-cli and KAS sessions on disk, the parse
+cached and run off the event loop, and the snapshot a request waits for only briefly.
 
 An owner of :mod:`kiro_crew.dashboard.handlers.usage`: callers and tests import and
 patch these names through that facade, which mirrors a patch into every module of the
@@ -53,6 +53,87 @@ _SESSIONS_CACHE_TS: float = 0.0
 _SESSIONS_CACHE_LOCK = LoopBoundLock()
 
 
+# Per-transcript counts from the last parse, keyed on the resolved path and
+# checked against ``(st_mtime_ns, st_size)``: a refresh reads again only the
+# transcripts that changed since. Each parse replaces the whole map with the
+# entries it saw, so a deleted transcript leaves it on the next parse.
+_TRANSCRIPT_COUNTS: dict[str, tuple[int, int, str | None, int, int]] = {}
+
+
+def _kas_transcripts(kas_root: Path, cli_dir: Path) -> list[Path]:
+    """The ``messages.jsonl`` path of every KAS session record under ``kas_root``.
+
+    The KAS harness writes one record per session as
+    ``<kas_root>/<id>/sess_<uuid>/messages.jsonl``, beside kiro-cli's flat ``cli``
+    directory, and deletes the record when it tears the session down. A directory
+    that disappears during the listing, or cannot be listed for another reason, is
+    skipped.
+    """
+    try:
+        children = list(kas_root.iterdir())
+    except OSError:
+        return []
+    found: list[Path] = []
+    for child in children:
+        if child == cli_dir:
+            continue
+        try:
+            records = list(child.iterdir())
+        except OSError:
+            continue
+        found.extend(r / "messages.jsonl" for r in records if r.name.startswith("sess_"))
+    return found
+
+
+def _count_row(obj: dict, kas: bool) -> tuple[int, int]:
+    """The (messages, tool calls) counts that a transcript row adds.
+
+    A kiro-cli row states its kind in a top-level ``kind`` field, and a KAS row
+    states it in ``payload.type``. KAS assistant rows include reasoning steps, and of
+    those rows a message is one whose ``operationType`` is ``Say``.
+    """
+    if not kas:
+        kind = obj.get("kind", "")
+        if kind in ("Prompt", "AssistantMessage"):
+            return 1, 0
+        return (0, 1) if kind == "ToolResults" else (0, 0)
+    payload = obj.get("payload")
+    if not isinstance(payload, dict):
+        return 0, 0
+    row_type = payload.get("type")
+    if row_type == "user" or (row_type == "assistant" and payload.get("operationType") == "Say"):
+        return 1, 0
+    return (0, 1) if row_type == "tool_call" else (0, 0)
+
+
+def _count_transcript(path: Path, kas: bool) -> tuple[str | None, int, int] | None:
+    """A transcript's (day, messages, tool calls), or ``None`` when it cannot be read.
+
+    The day is the local day of the first row that carries a timestamp, or ``None``
+    when no row carries one.
+    """
+    day = None
+    msgs = 0
+    tools = 0
+    try:
+        with path.open("rb") as fh:
+            for line in bounded_records(fh, path, label="usage.sessions"):
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if day is None:
+                    day = _parse_row_day(obj.get("timestamp"))
+                row_msgs, row_tools = _count_row(obj, kas)
+                msgs += row_msgs
+                tools += row_tools
+    except (OSError, UnicodeDecodeError):
+        return None
+    return day, msgs, tools
+
+
 def _parse_sessions() -> dict:
     """Parse local kiro session files for usage analytics."""
     sessions_dir = _sessions_dir()
@@ -94,9 +175,14 @@ def _parse_sessions() -> dict:
             "code": "sessions_dir_unreadable",
         }
 
-    for f in entries:
-        if f.suffix != ".jsonl":
-            continue
+    transcripts = [(f, False) for f in entries if f.suffix == ".jsonl"]
+    transcripts += [(f, True) for f in _kas_transcripts(sessions_dir.parent, sessions_dir)]
+
+    global _TRANSCRIPT_COUNTS
+    previous_counts = _TRANSCRIPT_COUNTS
+    seen_counts: dict[str, tuple[int, int, str | None, int, int]] = {}
+
+    for f, kas in transcripts:
         # Validate path through hooks.py (resolves symlinks, checks sensitive)
         resolved_str = validate_file_path(str(f))
         if resolved_str is None:
@@ -113,7 +199,15 @@ def _parse_sessions() -> dict:
             continue
         resolved = Path(resolved_str)
         try:
-            mtime = resolved.stat().st_mtime
+            st = resolved.stat()
+        except FileNotFoundError:
+            if kas:
+                # A KAS record without a messages file is not a failed load: the
+                # record holds only its session.json, or the harness deleted it at
+                # teardown after the listing.
+                continue
+            refused_transcripts += 1
+            continue
         except OSError:
             # A transcript that validated but cannot be stat'd did not load, so
             # it is dropped from the counts exactly like a refusal. Count
@@ -121,35 +215,26 @@ def _parse_sessions() -> dict:
             # so every did-not-load branch must feed it, not just the UNC refusal.
             refused_transcripts += 1
             continue
+        mtime = st.st_mtime
         all_time_sessions += 1
         if mtime < cutoff:
             continue
 
-        day = None  # derive from first JSONL entry's timestamp
-        msgs = 0
-        tools = 0
-        try:
-            with resolved.open("rb") as fh:
-                for line in bounded_records(fh, resolved, label="usage.sessions"):
-                    try:
-                        obj = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(obj, dict):
-                        continue
-                    if day is None:
-                        day = _parse_row_day(obj.get("timestamp"))
-                    kind = obj.get("kind", "")
-                    if kind in ("Prompt", "AssistantMessage"):
-                        msgs += 1
-                    elif kind == "ToolResults":
-                        tools += 1
-        except (OSError, UnicodeDecodeError):
-            # Same as the stat branch above: a transcript that could not be read
-            # did not load, so it counts toward the incomplete-data warning
-            # rather than vanishing from the totals.
-            refused_transcripts += 1
-            continue
+        key = str(resolved)
+        cached = previous_counts.get(key)
+        if cached is not None and cached[:2] == (st.st_mtime_ns, st.st_size):
+            seen_counts[key] = cached
+            day, msgs, tools = cached[2], cached[3], cached[4]
+        else:
+            parsed = _count_transcript(resolved, kas)
+            if parsed is None:
+                # Same as the stat branch above: a transcript that could not be
+                # read did not load, so it counts toward the incomplete-data
+                # warning rather than vanishing from the totals.
+                refused_transcripts += 1
+                continue
+            day, msgs, tools = parsed
+            seen_counts[key] = (st.st_mtime_ns, st.st_size, day, msgs, tools)
 
         if day is None:
             day = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
@@ -160,6 +245,8 @@ def _parse_sessions() -> dict:
         daily_tools[day] += tools
         total_msgs += msgs
         total_tools += tools
+
+    _TRANSCRIPT_COUNTS = seen_counts
 
     if refused_transcripts:
         # Server-side only: %s of a Path is a filesystem path, which the
