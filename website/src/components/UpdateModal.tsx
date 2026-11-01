@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Download, Loader2, X } from 'lucide-react'
 
@@ -6,8 +6,53 @@ import { i18nT } from '../i18n/t'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
 import { gatewayStopCommand } from '../hooks/useUpdateSubscription'
 import { useInstallDispatch } from '../hooks/useInstallDispatch'
+import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { CopyCommand } from './agentHarness/CopyCommand'
 import ErrorNotice from './ErrorNotice'
+
+// Escape stays on this modal's own window listener (below), so the trap is
+// wired with Escape off and a stable no-op in its place.
+const NO_ESCAPE = () => {}
+
+/**
+ * Keep keystrokes inside the dialog away from the page's global shortcuts, as
+ * `Modal` does: one of those would open a second overlay whose own trap then
+ * fights this one for focus. Escape is left to travel to the window listener.
+ */
+function isolateKeys(e: ReactKeyboardEvent) {
+  if (e.key !== 'Escape') e.stopPropagation()
+}
+
+/**
+ * The "update ready" dialog node. Mounted only while the dialog is open, so the
+ * focus trap's focus-in and focus-restore run on the dialog's own open and close.
+ */
+function UpdateReadyDialog({ label, children }: { label: string; children: ReactNode }) {
+  // Tab stays inside and focus returns on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
+  // Focus lands on the dialog node rather than its first control: the dialog
+  // can open by itself mid-typing, and a Space or Enter meant for the composer
+  // must not press its dismiss button. Declared after the trap, so it runs
+  // after the trap's focus-in and the trap still holds the element to restore.
+  useEffect(() => {
+    dialogRef.current?.focus({ preventScroll: true })
+  }, [])
+  return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts; it performs no action, so there is nothing for a keyboard user to reach
+    <div
+      ref={dialogRef}
+      tabIndex={-1}
+      className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden outline-hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      onKeyDown={isolateKeys}
+    >
+      {children}
+    </div>
+  )
+}
 /**
  * In-app "update ready" modal for the packaged desktop app.
  *
@@ -98,10 +143,20 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
     </div>
   ) : null
   const showsWindowsInstaller = update?.installHandoff === 'windows-installer'
-  if ((update?.state === 'installing' || installFailed) && !dismissed) {
+  const takeover = (update?.state === 'installing' || installFailed) && !dismissed
+  // The takeover takes focus when it appears. The "update ready" dialog it
+  // replaces gives focus back to its opener as it unmounts, and that opener now
+  // sits hidden under this screen. This effect runs after that restore.
+  const takeoverRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (takeover) takeoverRef.current?.focus({ preventScroll: true })
+  }, [takeover])
+  if (takeover) {
     return (
       <div
-        className="fixed inset-0 z-[100] bg-bg/95 backdrop-blur-md flex flex-col items-center justify-center gap-3 animate-rise"
+        ref={takeoverRef}
+        tabIndex={-1}
+        className="fixed inset-0 z-[100] bg-bg/95 backdrop-blur-md flex flex-col items-center justify-center gap-3 animate-rise outline-hidden"
         role="alert"
         aria-busy={!installFailed}
         aria-label={i18nT(installFailed
@@ -180,12 +235,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
       onClick={e => { if (e.target === e.currentTarget) dismiss() }}
       onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); dismiss() } }}
     >
-      <div
-        className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden"
-        role="dialog"
-        aria-modal="true"
-        aria-label={header}
-      >
+      <UpdateReadyDialog label={header}>
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-bg-elevated">
           <div className="flex items-center gap-2">
             <Download className="lucide-inline text-accent" size={16} />
@@ -259,7 +309,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
                 : i18nT('components.updateModal.restart_update')}
           </button>
         </div>
-      </div>
+      </UpdateReadyDialog>
     </div>
   )
 }
