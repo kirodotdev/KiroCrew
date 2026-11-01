@@ -393,6 +393,14 @@ class CronJob:
     secret_env_pending: dict[str, str] = field(default_factory=dict)
     secret_env_pending_pin: str = ""
     secret_env_pending_ts: float = 0.0
+    # The pending pin of the last re-approval request the SCHEDULER filed for
+    # a stale active grant (see cron_service.grant_resurface). It lets the
+    # scheduler raise that request once per code revision: an operator who
+    # denies it is not asked again on every refused run, while a further code
+    # change mints a different pin and asks again. Agent-writable like every
+    # stored field, which costs nothing: it only ever suppresses or permits a
+    # REQUEST, and nothing is granted without the operator's approval.
+    secret_env_resurfaced_pin: str = ""
 
     def set_run_result(self, value: str) -> None:
         """Record a result produced by the CURRENT run.

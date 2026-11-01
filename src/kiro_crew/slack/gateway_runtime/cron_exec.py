@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         logger,
         redact,
         rehydrate_slot_from_history_async,
+        resurface_stale_grant,
         run_command_sandboxed,
         run_in_cron_pool,
         run_script_sandboxed,
@@ -597,6 +598,12 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
         # runs inside the worker, after the wait, so the decision
         # holds at the moment of use.  It shares the backstop below,
         # which is why it must stay short.
+        #
+        # The pin is read ONCE: the job object is shared with the store, so an
+        # approval landing during the run rewrites job.secret_env_pin in place,
+        # and the stale-grant resurfacer must compare against the pin this run
+        # actually verified, not the one that replaced it.
+        run_pin = job.secret_env_pin
         result = await run_in_cron_pool(
             _vet_at_claim_then,
             handoff,
@@ -607,7 +614,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
             job.message,
             script_timeout,
             job.secret_env,
-            job.secret_env_pin,
+            run_pin,
             delivery_fingerprint(
                 job.session_key,
                 job.silent,
@@ -733,6 +740,12 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
             return script_msg or "report"
         else:
             err = result.get("error", "unknown error")
+            if result.get("grant_stale") is True and self.cron_svc is not None:
+                # The run failed closed on a grant pinned to older code. File
+                # the re-approval request the operator needs to heal it, so the
+                # Schedule page shows something to approve; the run itself is
+                # still recorded as the failure below.
+                await resurface_stale_grant(self.cron_svc, job.id, run_pin)
             raise RuntimeError(err)
     except CronQueueTimeout as exc:
         # Pool starvation, not a broken script: every worker was

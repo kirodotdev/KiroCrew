@@ -32,7 +32,7 @@ import sys as _sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import _facade_mirror, platform_compat
 from kiro_crew.config.loader import config_dir
@@ -48,6 +48,7 @@ from kiro_crew.cron_script_child_env import (
     _resolve_dial_port,
 )
 from kiro_crew.cron_script_grants import (
+    GRANT_REAPPROVAL_ERRORS,
     _filter_grant_env,
     _read_script_body,
     _scrub_grant_values,
@@ -169,7 +170,12 @@ def run_script_sandboxed(
             delivery=delivery,
         )
         if secret_err:
-            return {"status": "error", "error": f"❌ {secret_err}"}
+            failure: dict[str, Any] = {"status": "error", "error": f"❌ {secret_err}"}
+            if secret_err in GRANT_REAPPROVAL_ERRORS:
+                # Healed only by re-approving the grant over the current code;
+                # the scheduler resurfaces a pending request for exactly that.
+                failure["grant_stale"] = True
+            return failure
         # Granted scripts get an EMPTY private dir as sys.path[0] (sibling
         # imports from the agent-writeable live crons/ dir fail instead of
         # running with the secrets). The verified body itself travels over
@@ -1155,6 +1161,8 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         _SECRET_ENV_MAX_ENTRIES,
         _SECRET_ENV_NAME_RE,
         _SECRET_ENV_VAULT_NAME_RE,
+        GRANT_PIN_MISSING_ERROR,
+        GRANT_PIN_STALE_ERROR,
         _grant_epoch,
         _grant_epochs_guard,
         _grant_epochs_path,
