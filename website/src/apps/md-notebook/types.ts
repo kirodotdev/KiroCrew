@@ -49,6 +49,8 @@ export interface NoteDoc {
   content: string
   /** Snapshot token for the save guard. */
   mtime: number
+  /** SHA-256 of the bytes `content` came from; the precise save-guard token. */
+  contentHash?: string
   meta: NoteMeta
   backlinks: Backlink[]
 }

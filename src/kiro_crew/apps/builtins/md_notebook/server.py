@@ -60,7 +60,7 @@ from kiro_crew.apps.builtins.md_notebook.server_paths import (
     _discard_staged_sync,
     _make_note_dirs_checked,
     _new_staged_note_path,
-    _observed_note_mtime,
+    _observed_note_state,
     _publish_note_once,
     _read_note_text_sync,
     _reject_unportable_new_components,
@@ -69,6 +69,8 @@ from kiro_crew.apps.builtins.md_notebook.server_paths import (
     content_root,
     list_note_files,
     mutation_path_checked,
+    note_content_hash,
+    read_note_snapshot,
     read_note_text,
     reject_linked_trash,
     require_folder_path,
@@ -849,9 +851,10 @@ async def api_note_read(request: web.Request) -> web.Response:
         # about what the vault itself contains: a vault can be attached to any
         # folder the user picks, so containment alone would happily serve a
         # private key that lives under it. The gate is what refuses that.
-        content = await read_note_text(abs_path)
-        if content is None:
+        snap = await read_note_snapshot(abs_path)
+        if snap is None:
             raise ApiError(f"no such note: {rel}", 404, code="no_such_note")
+        content, content_hash = snap
     except FileNotFoundError as exc:
         raise ApiError(f"no such note: {rel}", 404, code="no_such_note") from exc
     cache = await get_cache(vault)
@@ -862,6 +865,9 @@ async def api_note_read(request: web.Request) -> web.Response:
             # Snapshot token for the save guard: a PUT is refused if the file
             # changed on disk since this read.
             "mtime": st.st_mtime * 1000,
+            # The precise token: the hash of exactly the bytes `content` came
+            # from, which a same-mtime external write still changes.
+            "contentHash": content_hash,
             "meta": notes_mod.parse_note(rel, content),
             "backlinks": cache["backlinks"].get(rel, []),
         }
@@ -869,7 +875,12 @@ async def api_note_read(request: web.Request) -> web.Response:
 
 
 async def _save_note_contents(
-    vault: dict[str, Any], abs_path: Path, rel: str, content: str, base_mtime: object
+    vault: dict[str, Any],
+    abs_path: Path,
+    rel: str,
+    content: str,
+    base_mtime: object,
+    base_hash: object = None,
 ) -> None:
     """Publish *content*, retrying a contended rename without losing a write.
 
@@ -884,15 +895,16 @@ async def _save_note_contents(
     silently overwritten by the next attempt -- exactly what the `baseMtime`
     guard exists to prevent.
 
-    **The lock policy depends on whether this save carries a freshness token**,
-    because that is what decides whether a writer in the gap can be DETECTED:
+    **The lock policy depends on whether this save carries a freshness token**
+    (``baseMtime`` or ``baseHash``), because that is what decides whether a
+    writer in the gap can be DETECTED:
 
-    * ``baseMtime`` supplied -- the lock is released across the backoff. Another
+    * a token supplied -- the lock is released across the backoff. Another
       writer landing in the gap is not a problem to exclude: the next attempt
       re-runs the check, sees it, and answers 409. Releasing keeps a contended
       save from blocking an external-conflict resolution behind it.
 
-    * no ``baseMtime`` (the API allows it, and the editor omits it when it has
+    * no token (the API allows it, and the editor omits it when it has
       not read an mtime) -- ``_assert_note_is_fresh`` is a no-op, so a writer in
       the gap is INVISIBLE to every later attempt. Releasing the lock there let a
       contended save resurrect itself over a later save that had already been
@@ -905,7 +917,7 @@ async def _save_note_contents(
       answer. An editor writing the file directly -- Obsidian, ``git pull``, a
       script -- never takes it, and republishing over that edit is undetectable
       after the fact. So the tokenless path derives its OWN baseline
-      (``_observed_note_mtime`` before the first attempt) and revalidates
+      (``_observed_note_state`` before the first attempt) and revalidates
       against it before every RETRY: the same 409 ESTALE the guarded path
       answers, from a baseline the server sampled instead of one the client
       supplied. The first attempt never consults it -- overwriting the sampled
@@ -923,7 +935,7 @@ async def _save_note_contents(
     # running during the backoff cannot stage it.
     #
     # WHERE it is staged differs, because the two paths serialize differently.
-    if isinstance(base_mtime, (int, float)):
+    if isinstance(base_mtime, (int, float)) or isinstance(base_hash, str):
         # Guarded: the freshness check is what orders these saves, so staging
         # outside the lock cannot reorder anything -- every attempt revalidates
         # under the lock before it may publish.
@@ -935,7 +947,7 @@ async def _save_note_contents(
         # This costs one extra stat on the happy path and weakens nothing -- the
         # per-attempt check under the lock is still the one that authorizes a
         # publish.
-        await _assert_note_is_fresh(abs_path, rel, base_mtime)
+        await _assert_note_is_fresh(abs_path, rel, base_mtime, base_hash)
         async with vault_write_lock(vault["localPath"]):
             await asyncio.to_thread(_make_note_dirs_checked, vault, rel)
         tmp = _new_staged_note_path(abs_path)
@@ -954,7 +966,7 @@ async def _save_note_contents(
                     # replaced by the publish with a 200. Same order as
                     # everywhere else: the per-note lock first.
                     async with _save_lock(str(abs_path)), vault_write_lock(vault["localPath"]):
-                        await _assert_note_is_fresh(abs_path, rel, base_mtime)
+                        await _assert_note_is_fresh(abs_path, rel, base_mtime, base_hash)
                         if await _publish_note_once(abs_path, tmp, attempt):
                             return
                     # Outside both locks: a writer arriving here -- an API save,
@@ -998,7 +1010,7 @@ async def _save_note_contents(
                 # Sampled after staging (which writes the temp, never the note)
                 # and before the first attempt, so it describes exactly what
                 # attempt 1 would replace.
-                observed = await _observed_note_mtime(abs_path)
+                observed = await _observed_note_state(abs_path)
                 for attempt in range(_SAVE_MAX_ATTEMPTS):
                     if attempt:
                         # A RETRY, so the backoff has already elapsed. The lock
@@ -1046,8 +1058,9 @@ async def api_note_save(request: web.Request) -> web.Response:
     # Components this save would CREATE are held to the portability rule on
     # every platform; existing ones stay saveable (the rename escape hatch).
     await asyncio.to_thread(_reject_unportable_new_components, root, rel)
-    base_mtime = body.get("baseMtime")
-    await _save_note_contents(vault, abs_path, rel, content, base_mtime)
+    await _save_note_contents(
+        vault, abs_path, rel, content, body.get("baseMtime"), body.get("baseHash")
+    )
     mark_self_write(abs_path)
     cache = await get_cache(vault)
     cache["index"].update(
@@ -1061,7 +1074,13 @@ async def api_note_save(request: web.Request) -> web.Response:
             contents[p] = text
     cache["backlinks"] = notes_mod.build_backlinks(contents)
     st = await asyncio.to_thread(os.stat, abs_path)
-    return web.json_response({"ok": True, "mtime": st.st_mtime * 1000})
+    return web.json_response(
+        {
+            "ok": True,
+            "mtime": st.st_mtime * 1000,
+            "contentHash": note_content_hash(content.encode("utf-8")),
+        }
+    )
 
 
 async def api_note_delete(request: web.Request) -> web.Response:
@@ -1543,10 +1562,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _RECREATE_SENTINEL,
         _UNPORTABLE_CHARS,
         MTIME_TOLERANCE_MS,
+        NoteState,
+        _assert_note_hash_matches,
         _atomic_write_text_sync,
+        _decode_note_bytes,
         _list_note_files_sync,
         _publish_staged_sync,
+        _raise_note_changed,
+        _read_note_bytes_sync,
+        _read_note_snapshot_sync,
         _reject_unportable_component,
+        _same_note_state,
         _stage_note_text_sync,
         linked_folder_component,
         note_folder,

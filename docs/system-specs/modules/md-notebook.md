@@ -209,7 +209,7 @@ UI calls. All vault-scoped routes accept `?vault=<id>` and fall back to the firs
 | `/api/vaults` | `{vaults[], hasPat, hasGhAuth}` |
 | `/api/settings` | `{settings: {autoSync, autoSyncMins, lastSync}}` — the backend-owned sync schedule |
 | `/api/notes` | `{notes[]}` with title, `modifiedAt`, `createdAt`, `syncStatus` |
-| `/api/note?path=` | `{path, content, mtime, meta, backlinks[]}` |
+| `/api/note?path=` | `{path, content, mtime, contentHash, meta, backlinks[]}` |
 | `/api/search?q=` | `{results[]}`; an empty query returns nothing, not everything |
 | `/api/changes?since=` | `{rev, changed[], watching}` — external-edit poll; also where a pull made outside the app is counted as a sync |
 
@@ -223,7 +223,7 @@ UI calls. All vault-scoped routes accept `?vault=<id>` and fall back to the firs
 | `PUT /api/vaults/knowledge` | Persist the knowledge flag and source id |
 | `PUT /api/settings` | Persist the complete auto-sync choice and interval |
 | `PUT /api/pat` | Store or clear the token |
-| `PUT /api/note` | Save, guarded by `baseMtime` |
+| `PUT /api/note` | Save, guarded by `baseHash` or `baseMtime`; returns `{ok, mtime, contentHash}` |
 | `DELETE /api/note?path=` | Move a note into the vault's local `.trash` (never unlinked) |
 | `POST /api/note/new` | Create a uniquely named note |
 | `POST /api/note/duplicate` | Copy a note beside itself as `<name> copy[.n].md` |
@@ -351,10 +351,25 @@ their behalf.
 
 `PUT /api/note` accepts the `baseMtime` the client received from its read. If the file's
 current mtime differs by more than 1ms, the write is refused with 409 and
-`{code: "ESTALE", mtime, disk}` — the response carries what is actually on disk so the UI
-can offer a merge. This exists because an attached vault is a folder the user also edits
-with Obsidian, an editor, or the git CLI, and a blind write would silently clobber that
-work. The 1ms tolerance absorbs filesystem mtime rounding.
+`{code: "ESTALE", mtime, disk, contentHash}` — the response carries what is actually on
+disk so the UI can offer a merge. This exists because an attached vault is a folder the
+user also edits with Obsidian, an editor, or the git CLI, and a blind write would silently
+clobber that work. The 1ms tolerance absorbs filesystem mtime rounding.
+
+An mtime alone misses an external write that keeps it: `os.utime`, `rsync -t`, a
+coarse-timestamp filesystem, two writes in one millisecond. So the read also returns
+`contentHash`, the SHA-256 of the exact bytes the returned content came from, and a save
+may send it back as `baseHash`. When `baseHash` is sent, the hash alone decides: a
+different hash is a 409, and a moved mtime over identical bytes is not a conflict. The
+check runs wherever the mtime check runs, including before each contended-rename retry.
+Without `baseHash` the guard is mtime-only, so an older client is unaffected. A successful
+save returns the hash of what it wrote, and a 409 the hash of the disk version, which is
+what "Keep my version" retries against. A note deleted on disk is a 409 with `mtime: -1`
+on either path, and `baseMtime: -1` confirms the recreate. A save with no token samples
+its own mtime and hash before the first attempt and revalidates both before every retry.
+
+The external-change poll (below) still compares mtimes only, so a same-mtime edit to a
+clean open note is not refreshed until the next read; a dirty one is caught by the save.
 
 ## External Change Detection
 

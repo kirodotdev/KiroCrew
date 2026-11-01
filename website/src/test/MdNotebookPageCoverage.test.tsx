@@ -122,6 +122,7 @@ function doc(over: { path?: string; content?: string; mtime?: number } = {}) {
     path: 'One.md',
     content: BODY,
     mtime: 4,
+    contentHash: 'hash-4',
     meta: { frontmatter: {}, tags: [], links: [] },
     backlinks: [],
     ...over,
@@ -500,6 +501,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
       'One.md',
       '# Hello\n\nedited in the buffer',
       4,
+      'hash-4',
     )
     await waitFor(() => expect(api.forgetVault).toHaveBeenCalledWith('v1'))
   })
@@ -1010,7 +1012,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     fireEvent.change(rawEditor(), { target: { value: 'unsaved work' } })
 
     view.unmount()
-    expect(api.saveNote).toHaveBeenCalledWith('v1', 'One.md', 'unsaved work', 4)
+    expect(api.saveNote).toHaveBeenCalledWith('v1', 'One.md', 'unsaved work', 4, 'hash-4')
     expect(api.saveNote).toHaveBeenCalledTimes(1)
 
     await act(async () => {
@@ -1022,9 +1024,9 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   })
 
   it('waits for an active autosave before flushing the final edit on unmount', async () => {
-    const first = deferred<{ ok: boolean; mtime: number }>()
-    const second = deferred<{ ok: boolean; mtime: number }>()
-    const third = deferred<{ ok: boolean; mtime: number }>()
+    const first = deferred<{ ok: boolean; mtime: number; contentHash: string }>()
+    const second = deferred<{ ok: boolean; mtime: number; contentHash: string }>()
+    const third = deferred<{ ok: boolean; mtime: number; contentHash: string }>()
     api.saveNote
       .mockImplementationOnce(() => first.promise)
       .mockImplementationOnce(() => second.promise)
@@ -1038,12 +1040,12 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     })
 
     fireEvent.change(rawEditor(), { target: { value: 'second edit' } })
-    await act(async () => first.settle({ ok: true, mtime: 5 }))
-    expect(api.saveNote).toHaveBeenNthCalledWith(2, 'v1', 'One.md', 'second edit', 5)
+    await act(async () => first.settle({ ok: true, mtime: 5, contentHash: 'hash-5' }))
+    expect(api.saveNote).toHaveBeenNthCalledWith(2, 'v1', 'One.md', 'second edit', 5, 'hash-5')
 
     fireEvent.change(rawEditor(), { target: { value: 'third edit' } })
-    await act(async () => second.settle({ ok: true, mtime: 6 }))
-    expect(api.saveNote).toHaveBeenNthCalledWith(3, 'v1', 'One.md', 'third edit', 6)
+    await act(async () => second.settle({ ok: true, mtime: 6, contentHash: 'hash-6' }))
+    expect(api.saveNote).toHaveBeenNthCalledWith(3, 'v1', 'One.md', 'third edit', 6, 'hash-6')
 
     // Change the buffer during the final bounded retry. Teardown must not race
     // that request with the old mtime; it waits, then saves the latest snapshot.
@@ -1051,8 +1053,8 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     view.unmount()
     expect(api.saveNote).toHaveBeenCalledTimes(3)
 
-    await act(async () => third.settle({ ok: true, mtime: 7 }))
-    expect(api.saveNote).toHaveBeenNthCalledWith(4, 'v1', 'One.md', 'final edit', 7)
+    await act(async () => third.settle({ ok: true, mtime: 7, contentHash: 'hash-7' }))
+    expect(api.saveNote).toHaveBeenNthCalledWith(4, 'v1', 'One.md', 'final edit', 7, 'hash-7')
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS)
@@ -1103,7 +1105,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     expect(api.saveNote).toHaveBeenCalledTimes(1)
 
     view.unmount()
-    expect(api.saveNote).toHaveBeenNthCalledWith(2, 'v1', 'One.md', 'survives a failed save', 4)
+    expect(api.saveNote).toHaveBeenNthCalledWith(2, 'v1', 'One.md', 'survives a failed save', 4, 'hash-4')
   })
 
   it('waits for an in-flight move before flushing, so the edit lands on the new path', async () => {
@@ -1137,7 +1139,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     // it carries the same bytes to the same path and the backend refuses it on
     // mtime. What matters, and what regressed before this fix, is that NEITHER
     // of them is addressed to the path the move vacated.
-    expect(api.saveNote).toHaveBeenCalledWith('v1', 'Renamed.md', 'typed during the move', 4)
+    expect(api.saveNote).toHaveBeenCalledWith('v1', 'Renamed.md', 'typed during the move', 4, 'hash-4')
     expect(api.saveNote).toHaveBeenCalledTimes(2)
     expect(api.saveNote.mock.calls.every(c => c[1] === 'Renamed.md')).toBe(true)
   })
@@ -1306,7 +1308,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
       await vi.advanceTimersByTimeAsync(5 * 60_000)
     })
     // The commit records what is on disk, so the buffer has to get there first.
-    expect(api.saveNote).toHaveBeenCalledWith('v1', 'One.md', '# Hello\n\nlate edit', 4)
+    expect(api.saveNote).toHaveBeenCalledWith('v1', 'One.md', '# Hello\n\nlate edit', 4, 'hash-4')
     expect(api.commit).toHaveBeenCalledWith('v1')
   })
 
