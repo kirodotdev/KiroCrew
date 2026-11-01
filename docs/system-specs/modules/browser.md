@@ -396,7 +396,10 @@ session, walking open shadow roots to the same depth the snapshot walker does),
 scaled from CSS to frame pixels; a failed query keeps the last boxes rather than
 unmasking. The query runs in an isolated world made on the frame it reads
 (`screencast.MASK_WORLD`), so a page script cannot replace those functions to
-report no secret field; no world means a failed query. The boxes are kept in CSS pixels and scaled per frame, so a frame at
+report no secret field; no world means a failed query. The world is made when
+the stream starts; a query that has to make it again (a navigation destroyed it,
+as a submitted one-time code does between the capture and the query) read a
+document the frame may not show, so the recorder never keeps that frame. The boxes are kept in CSS pixels and scaled per frame, so a frame at
 another width (a picture change, the settle frame) is masked at its own scale.
 Every clock read and sleep is injected, so the ladder and the settle frame are
 tested on a fake clock.
