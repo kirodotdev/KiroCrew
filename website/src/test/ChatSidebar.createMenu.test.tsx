@@ -147,6 +147,12 @@ function findCreateMenuItem(label: string | RegExp) {
   return screen.findByRole('menuitem', { name: label })
 }
 
+/** Move focus onto a menu row inside act(): Radix flips the row's highlight
+ *  state on focus and blur, so a bare `.focus()` lands after the last barrier. */
+function focusRow(row: HTMLElement) {
+  act(() => { row.focus() })
+}
+
 beforeEach(() => {
   localStorage.clear()
   sessionStorage.clear()
@@ -324,10 +330,10 @@ describe('create-button caret menu', () => {
     fireEvent.click(await screen.findByTestId('new-chat-on-crew-i-nobita'))
     await waitFor(() => expect(mocks.crewPeerPost).toHaveBeenCalled())
     // The user opens another crew session while the create is in flight.
-    openCrewWindow({ instanceId: 'i-other', key: 'elsewhere' })
+    act(() => { openCrewWindow({ instanceId: 'i-other', key: 'elsewhere' }) })
     await act(async () => { finish({ key: 'peer-new-1' }) })
     expect(JSON.parse(sessionStorage.getItem('kirocrew.crewWindow') || 'null')).toEqual({ instanceId: 'i-other', key: 'elsewhere' })
-    closeCrewWindow()
+    act(() => { closeCrewWindow() })
   })
 
   it('refuses a crew create across a version mismatch before minting anything', async () => {
@@ -360,19 +366,19 @@ describe('create-button caret menu', () => {
       fireEvent.keyDown(trigger, { key: 'ArrowRight' })
     }
     let row = await screen.findByTestId('new-chat-on-crew-i-nobita')
-    row.focus()
+    focusRow(row)
     await user.keyboard('{Enter}')
     const alert = await screen.findByTestId('new-chat-on-crew-error')
     expect(mocks.crewPeerPost).toHaveBeenCalledTimes(1)
 
     row = await screen.findByTestId('new-chat-on-crew-i-nobita')
-    row.focus()
+    focusRow(row)
     await user.keyboard('{Enter}')
     await waitFor(() => expect(mocks.crewPeerPost).toHaveBeenCalledTimes(2))
     await screen.findByTestId('new-chat-on-crew-error')
 
     row = await screen.findByTestId('new-chat-on-crew-i-nobita')
-    row.focus()
+    focusRow(row)
     await user.keyboard('{ArrowDown}')
     const handoff = screen.getByRole('menuitem', { name: /^Ask the agent$/i })
     expect(handoff).toHaveFocus()
