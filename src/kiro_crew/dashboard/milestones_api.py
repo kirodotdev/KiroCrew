@@ -25,7 +25,15 @@ logger = logging.getLogger(__name__)
 
 SCOPE = "capabilities.milestones"
 
-_ACTIONS = ("starter_clicked", "skipped", "video_seen", "notice_shown", "panel_opened")
+_ACTIONS = (
+    "starter_clicked",
+    "starter_arrived",
+    "skipped",
+    "video_seen",
+    "notice_shown",
+    "panel_opened",
+)
+_FEATURE_ACTIONS = ("starter_clicked", "starter_arrived", "skipped", "video_seen")
 _SURFACES = ("empty_state", "panel")
 
 
@@ -84,7 +92,11 @@ async def _body(request: web.Request, allow_absent: bool = False):
 
 
 async def api_milestones_event(request: web.Request) -> web.Response:
-    """POST /api/milestones/event -- ``{"id", "action", "surface"?}``."""
+    """POST /api/milestones/event -- ``{"id", "action", "surface"?}``.
+
+    ``starter_arrived`` completes a feature row when a "Try it" landed on its
+    page; see ``milestones.op_starter_arrived`` for what makes it count.
+    """
     state: DashboardState = request.app["state"]
     body, err = await _body(request)
     if err is not None:
@@ -98,9 +110,7 @@ async def api_milestones_event(request: web.Request) -> web.Response:
         return _bad("unknown action", "invalid_action")
     if surface not in _SURFACES:
         return _bad("unknown surface", "invalid_surface")
-    if action in ("starter_clicked", "skipped", "video_seen") and not milestones.is_feature_id(
-        milestone_id
-    ):
+    if action in _FEATURE_ACTIONS and not milestones.is_feature_id(milestone_id):
         return _bad("not a feature milestone", "not_a_feature")
     if _is_restricted_session(state, request):
         return web.json_response({"ok": True})
@@ -111,6 +121,10 @@ async def api_milestones_event(request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
     if action == "starter_clicked":
         return await _write(milestones.op_starter_clicked(milestone_id, surface))
+    if action == "starter_arrived":
+        # The server reads today and the click time itself; the client sends neither.
+        today = await asyncio.to_thread(milestones.local_today)
+        return await _write(milestones.op_starter_arrived(milestone_id, today))
     if action == "skipped":
         return await _write(milestones.op_skip(milestone_id, surface))
     if action == "notice_shown":

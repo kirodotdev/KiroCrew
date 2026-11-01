@@ -17,7 +17,7 @@ import { FEATURE_COPY, GETTING_STARTED_TITLE, QUICK_ROWS, USAGE_COPY } from './c
 import ExploreIntroVideo from './ExploreIntroVideo'
 import {
   closeMilestonesPanel, earnedBadges, featureItems, gettingStarted, milestonesLoadFailed, refreshMilestones, tryToday, useMilestoneActions,
-  useMilestones, useMilestonesPanel, useRunStarter, usageItem, type EarnedBadge,
+  useFailedArrival, useMilestones, useMilestonesPanel, useRunStarter, useTryTodayArrival, usageItem, type EarnedBadge,
 } from './useMilestones'
 
 const CARD = 'notif-material glass-shadow block rounded-2xl px-3 py-2.5'
@@ -85,7 +85,13 @@ function AchievementRow({ item, focused = false }: { item: MilestoneUsageItem; f
   )
 }
 
-function FeatureRow({ item, focused, onError, title }: { item: MilestoneFeatureItem; focused: boolean; onError: (m: string) => void; title?: string }) {
+/**
+ * One feature row. In Try today (`completesOnArrival`) "Try it" is the whole
+ * action: getting where it leads marks the row done, so the row has no "Mark
+ * as done". Elsewhere the row is done when the feature really happens, and
+ * "Mark as done" stays for a user who already knows it.
+ */
+function FeatureRow({ item, focused, onError, title, completesOnArrival = false }: { item: MilestoneFeatureItem; focused: boolean; onError: (m: string) => void; title?: string; completesOnArrival?: boolean }) {
   const copy = FEATURE_COPY[item.id]
   const runStarter = useRunStarter()
   const { markDone } = useMilestoneActions()
@@ -107,11 +113,13 @@ function FeatureRow({ item, focused, onError, title }: { item: MilestoneFeatureI
         <div className="text-[12px] text-muted">{i18nT(copy.blurb)}</div>
       </div>
       {!done && <div className="shrink-0 flex items-center gap-2" data-testid="milestone-row-actions">
-        <button type="button" className="text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer" onClick={() => { markDone(item.id).catch(e => onError(errMessage(e))) }}>
-          {i18nT('milestones.mark_as_done')}
-        </button>
+        {!(completesOnArrival && item.starter) && (
+          <button type="button" className="text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer" onClick={() => { markDone(item.id).catch(e => onError(errMessage(e))) }}>
+            {i18nT('milestones.mark_as_done')}
+          </button>
+        )}
         {item.starter && (
-          <Btn className="text-[12px] px-2 py-0.5" onClick={() => { onError(''); runStarter(item).then(closeMilestonesPanel, e => onError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))) }}>
+          <Btn className="text-[12px] px-2 py-0.5" onClick={() => { onError(''); runStarter(item, { completeOnArrival: completesOnArrival }).then(closeMilestonesPanel, e => onError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))) }}>
             {i18nT('milestones.try_it')}
           </Btn>
         )}
@@ -142,6 +150,9 @@ export default function MilestonesSheet() {
   const sheetRef = useRef<HTMLDivElement>(null)
   const location = useLocation()
   const lastPath = useRef(location.pathname)
+  // Mounted with the panel, open or not: a Try it closes Explore as it leaves.
+  useTryTodayArrival()
+  const { failed: failedArrival, retry: retryArrival, dismiss: dismissArrival } = useFailedArrival()
 
   useCloseWhenCrewHidden(open, closeMilestonesPanel)
   useEffect(() => {
@@ -209,6 +220,14 @@ export default function MilestonesSheet() {
             onDismiss={() => { if (error) setError(''); else setLoadDismissed(true) }}
           />
 
+          {failedArrival && (
+            <ErrorNotice
+              message={i18nT('milestones.arrival_failed')}
+              askAgent
+              onDismiss={dismissArrival}
+              footer={<Btn className="text-[12px] px-2 py-0.5" data-testid="milestones-arrival-retry" onClick={() => { void retryArrival() }}>{i18nT('milestones.retry')}</Btn>}
+            />
+          )}
           {data?.enabled && (<>
           <ExploreIntroVideo className={CARD} />
           {/* A notice for a finished feature opens here at that row: read-only,
@@ -223,11 +242,12 @@ export default function MilestonesSheet() {
           )}
           <Glass variant="panel" radius={16} className={CARD}>
             <div className="text-[12px] font-semibold text-muted">{i18nT('milestones.try_today')}</div>
-            {today.length > 0 ? (
+            {today.length > 0 ? (<>
+              <div className="text-[12px] text-muted" data-testid="milestones-try-today-hint">{i18nT('milestones.try_today_hint')}</div>
               <ul className="list-none m-0 p-0" data-testid="milestones-try-today">
-                {today.map(item => <FeatureRow key={item.id} item={item} focused={focusId === item.id} onError={setError} />)}
+                {today.map(item => <FeatureRow key={item.id} item={item} focused={focusId === item.id} onError={setError} completesOnArrival />)}
               </ul>
-            ) : more.length > 0 ? (
+            </>) : more.length > 0 ? (
               // No quick row is left, but a longer one is (PR watch, Ultra
               // Mode): never a Try today pick (RFC 8.3), still listed here.
               <div data-testid="milestones-more">
