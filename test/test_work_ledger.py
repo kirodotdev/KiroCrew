@@ -1470,6 +1470,11 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # dashboard OWNER (cookie, owner-gated), the member is a live session of the
         # root's own tree the route resolved itself, and no key reaches a payload.
         "dashboard/handlers/crew_workers.py",
+        # The conductor row's open-work summary (``crew_work``) reads the ledger's
+        # pure rules only -- ``WorkItem``, ``is_stale``, ``quiet_since`` -- over the
+        # ``work`` fold the crew log already published. It opens no store file,
+        # resolves no caller, and its only reader is the owner's own slot frame.
+        "dashboard/crew_work.py",
         # The operator-run cleanup sweep behind ``kirocrew ledger-sweep``.
         # It is a seam deliberately, and it does not weaken the rule the
         # allowlist exists for: it resolves NO caller identity — there is no

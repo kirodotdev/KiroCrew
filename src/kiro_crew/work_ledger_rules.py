@@ -375,8 +375,7 @@ def is_stale(
         # and now it is not. With no report the two are indistinguishable, so the window
         # decides as it did before, which is the behaviour that gap always had.
         return True
-    handed_back = _decided_after_report(item) if item.status in WAITING_STATUSES else None
-    reference = handed_back or item.last_report_at or item.created_at
+    reference = quiet_since(item)
     if not reference:
         return True
     # Through ``parse_stamp``, whose UTC fallback covers a stamp at either end of
@@ -389,6 +388,16 @@ def is_stale(
     if moment.tzinfo is None:
         moment = moment.astimezone()
     return moment - stamped > timedelta(seconds=max(window_secs, 0.0))
+
+
+def quiet_since(item: WorkItem) -> str:
+    """The stamp :func:`is_stale` measures *item*'s quiet window from, ``""`` for none.
+
+    The conductor's ``decide`` when it answered a ``blocked`` / ``question`` report,
+    else the last report, else the item's creation.
+    """
+    handed_back = _decided_after_report(item) if item.status in WAITING_STATUSES else None
+    return handed_back or item.last_report_at or item.created_at or ""
 
 
 def _worker_owns_next_move(item: WorkItem) -> bool:

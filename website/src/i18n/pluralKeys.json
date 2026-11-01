@@ -350,5 +350,9 @@
   "milestones.streak_days",
   "milestones.notice_count",
   "milestones.try_today_entry",
-  "milestones.streak_short"
+  "milestones.streak_short",
+  "pages.chatSidebar.crew_work_waiting",
+  "pages.chatSidebar.crew_work_waiting_title",
+  "pages.chatSidebar.crew_work_stalled",
+  "pages.chatSidebar.crew_work_stalled_title"
 ]
