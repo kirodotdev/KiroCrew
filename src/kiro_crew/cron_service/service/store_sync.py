@@ -37,6 +37,7 @@ from kiro_crew.cron_service.store import (
     cron_store_lock,
     decode_store,
     encode_store,
+    quarantine_skipped_records,
 )
 
 if TYPE_CHECKING:
@@ -246,10 +247,12 @@ def _record_fingerprint(self: CronService) -> None:
 
 
 def _keep_store_document(self: CronService, document: StoreDocument) -> None:
-    """Hold what a newer build added to the store just loaded, for :meth:`_save`."""
+    """Hold what a newer build added to the store just loaded, and the records it
+    could not build, for :meth:`_save` to write back."""
     self._store_version = document.version
     self._store_extra = MappingProxyType(dict(document.extra))
     self._unknown_fields = MappingProxyType(dict(document.unknown_fields))
+    self._skipped_records = tuple(document.skipped)
 
 
 def _forget_store_document(self: CronService) -> None:
@@ -257,6 +260,7 @@ def _forget_store_document(self: CronService) -> None:
     self._store_version = _STORE_VERSION
     self._store_extra = MappingProxyType({})
     self._unknown_fields = MappingProxyType({})
+    self._skipped_records = ()
 
 
 def _reset_fingerprint(self: CronService) -> None:
@@ -431,9 +435,20 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
             self._load_failed = True
             return
         # One malformed or legacy record is warned about and skipped by
-        # decode_jobs; every well-formed job survives, and the whole-store
+        # decode_store; every well-formed job survives, and the whole-store
         # reset below is reserved for a file that yields nothing parseable
-        # at all, where there is nothing to salvage.
+        # at all, where there is nothing to salvage. The skipped records are
+        # KEPT: _keep_store_document holds them and _save writes them back
+        # verbatim (encode_store), so no save drops a record this build could
+        # not read. They are also copied to a quarantine sidecar as a BACKUP
+        # only -- a sandboxed writer's cron-history is masked and a sidecar
+        # write can fail, and neither may cost the record, which is why the
+        # store, not the sidecar, is what keeps it. Dedup keeps one copy per
+        # bad record across the repeated reloads _sync drives on every
+        # external change; a sidecar failure is logged and swallowed so a
+        # schedule that otherwise loaded keeps running.
+        if document.skipped:
+            quarantine_skipped_records(self._path, document.skipped)
         # Fingerprint from the stat taken BEFORE the read: if a writer
         # replaced the file between our stat and read we may have loaded the
         # newer content under an older fingerprint, which only costs one
@@ -615,6 +630,7 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
         version=self._store_version,
         extra=self._store_extra,
         unknown_fields=self._unknown_fields,
+        skipped=self._skipped_records,
     )
     # Atomic write: unique tmp → fsync → rename, then sync the directory so
     # the rename itself survives a sudden host restart. Without both syncs a
