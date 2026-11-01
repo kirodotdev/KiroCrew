@@ -181,6 +181,18 @@ _PERMANENT_EXCEPTIONS = {
     # apply: a workflow_dispatch does carry an actor, which is why pages.yml can
     # route one to the fleet through the same actor predicate.
     ("test-durations.yml", "refresh"),
+    # Release and publish carve off the shared standard pool for latency, not
+    # for an isolation contract: they are human-blocking and low-volume, and a
+    # release cannot wait on a pool nobody here can expedite. Every one is
+    # workflow_call, a v* tag push, workflow_dispatch, or (publish-installer) a
+    # path-filtered push to main, so none adds pull-request volume to the group.
+    ("publish-cli.yml", "publish-cli"),
+    ("publish-docker.yml", "publish-docker"),
+    ("publish-installer.yml", "publish-installer"),
+    ("publish-linux.yml", "publish-linux"),
+    ("publish-windows.yml", "publish-windows"),
+    ("release.yml", "release-candidate-tests"),
+    ("release.yml", "record-stable-promotion"),
 }
 
 # A permanent exception stays OFF the CodeBuild fleet; it does not have to stay
@@ -220,6 +232,15 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("ci-runner-watchdog.yml", "watchdog"): {"group": "kirocrew-runners"},
     ("merge-queue-ruleset.yml", "check"): {"group": "kirocrew-runners"},
     ("scheduled-failure-watch.yml", "surface"): _GROUP_LABEL_EXPR,
+    # The two nightly publish callees a fork can start take the LABEL spelling,
+    # for the fork-fallback reason given above; the rest are repository-only.
+    ("publish-cli.yml", "publish-cli"): _GROUP_LABEL_EXPR,
+    ("publish-docker.yml", "publish-docker"): _GROUP_LABEL_EXPR,
+    ("publish-installer.yml", "publish-installer"): {"group": "kirocrew-runners"},
+    ("publish-linux.yml", "publish-linux"): {"group": "kirocrew-runners"},
+    ("publish-windows.yml", "publish-windows"): {"group": "kirocrew-runners"},
+    ("release.yml", "release-candidate-tests"): {"group": "kirocrew-runners"},
+    ("release.yml", "record-stable-promotion"): {"group": "kirocrew-runners"},
     # These dispatchable jobs use the group label upstream, but a personal
     # fork cannot reach the org group and must retain the hosted fallback.
     ("memory-benchmark.yml", "accept"): (
