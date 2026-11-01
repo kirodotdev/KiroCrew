@@ -12502,7 +12502,8 @@
         "agent_switch_blocked_crew_mode": "Le passage à {{agent}} a été bloqué — ce chat est en Crew Mode, qui reste sur son chef d’orchestre. Le prochain tour redémarre sur le chef d’orchestre.",
         "crew_name_undispatchable": "Le nom de crew de ce fil ne peut pas être utilisé. Renomme ou recrée le membre de la crew.",
         "remote_crew_read_only": "Ce chat s’est exécuté sur une crew distante et il est maintenant en lecture seule. Ouvre la session de la crew pour continuer.",
-        "archive_failed_turn_cancelled": "L’archivage de cet onglet a échoué après l’annulation de son tour en cours. L’onglet a été conservé, mais ce tour ne s’est pas terminé — renvoie ton message pour continuer."
+        "archive_failed_turn_cancelled": "L’archivage de cet onglet a échoué après l’annulation de son tour en cours. L’onglet a été conservé, mais ce tour ne s’est pas terminé — renvoie ton message pour continuer.",
+        "resource_wake_budget_paused": "L’abonnement à la ressource {{subscription}} sur {{server}} a atteint ses {{limit}} réveils pour le {{day}} (UTC) et reste en pause jusqu’au jour UTC suivant. Les mises à jour d’ici là sont regroupées en un seul réveil après la pause."
       },
       "turnBlock": {
         "earlier_step_many": "{{count}} étapes précédentes",

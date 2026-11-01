@@ -386,6 +386,16 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     // A notice wording on an error row is not ours.
     expect(resolveGatewayNotice(legacy('error', 'ℹ Auto-continue cancelled — your message takes over.'), [], 0)).toBeNull()
   })
+
+  it('localizes the resource-subscription budget pause from its token or its pre-token wording', () => {
+    const args = { subscription: 'rsub_7', server: 'crux (fake)', limit: 48, day: '2026-11-01' }
+    const text =
+      'Resource subscription rsub_7 on crux (fake) reached its 48 wakes for 2026-11-01 (UTC) and is paused until the next UTC day. ' +
+      'Updates meanwhile are folded into one wake after the pause.'
+    expect(resolveGatewayNotice(row('notice', 'resource_wake_budget_paused', args), [], 0)).toEqual({ card: 'notice', text, tone: 'info' })
+    const legacy = msg('notice', { content: `⏸ ${text}` })
+    expect(resolveGatewayNotice(legacy, [], 0)).toEqual({ card: 'notice', text, tone: 'info' })
+  })
 })
 
 describe('wire parity with the gateway constants', () => {
@@ -401,7 +411,7 @@ describe('wire parity with the gateway constants', () => {
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(61)
+    expect(backend).toHaveLength(62)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 

@@ -12078,7 +12078,8 @@
         "agent_switch_blocked_crew_mode": "‘{{agent}}’(으)로 전환하는 것이 차단되었습니다 — 이 채팅은 Crew Mode이며 지휘자에 고정됩니다. 다음 턴은 지휘자에서 다시 시작합니다.",
         "crew_name_undispatchable": "이 스레드의 크루 이름은 사용할 수 없습니다. 크루 멤버의 이름을 바꾸거나 다시 만드세요.",
         "remote_crew_read_only": "이 채팅은 원격 크루에서 실행되어 이제 읽기 전용입니다. 계속하려면 크루의 자체 세션을 여세요.",
-        "archive_failed_turn_cancelled": "실행 중인 턴을 취소한 뒤 이 탭을 보관하지 못했습니다. 탭은 유지되었지만 그 턴은 끝나지 않았습니다 — 계속하려면 메시지를 다시 보내세요."
+        "archive_failed_turn_cancelled": "실행 중인 턴을 취소한 뒤 이 탭을 보관하지 못했습니다. 탭은 유지되었지만 그 턴은 끝나지 않았습니다 — 계속하려면 메시지를 다시 보내세요.",
+        "resource_wake_budget_paused": "{{server}}의 리소스 구독 {{subscription}}이(가) {{day}}(UTC) 깨우기 한도 {{limit}}회에 도달해 다음 UTC 날짜까지 일시 중지되었습니다. 그동안의 업데이트는 일시 중지가 끝난 뒤 한 번의 깨우기로 합쳐집니다."
       },
       "turnBlock": {
         "earlier_step_other": "이전 단계 {{count}}개",

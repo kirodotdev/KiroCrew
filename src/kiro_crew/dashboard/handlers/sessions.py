@@ -125,6 +125,9 @@ if TYPE_CHECKING:
         _live_session_units,
         _remove_session_crew_logs,
         _remove_slot_for_history_key,
+        _retire_deleted_subscriptions,
+        runtime_owns_session,
+        slot_owns_session,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.delete_routes import (  # noqa: F401
         _claim_history_delete,

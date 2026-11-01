@@ -192,10 +192,10 @@ def _legacy_token(text: str) -> str | None:
 
 
 def test_token_tables_have_the_pinned_size() -> None:
-    # 3 transient-5xx tokens and 58 gateway tokens; a new row family moves both.
-    assert len(_backend_tokens()) == 61
-    assert len(_frontend_families()) == 61
-    assert len(_legacy_entries()) == 63
+    # 3 transient-5xx tokens and 59 gateway tokens; a new row family moves both.
+    assert len(_backend_tokens()) == 62
+    assert len(_frontend_families()) == 62
+    assert len(_legacy_entries()) == 64
 
 
 def _tokenized_literal_sites() -> list[tuple[str, int, str, str]]:
@@ -289,6 +289,15 @@ def test_run_time_chosen_tokens_match_their_wording() -> None:
         )
         == "capacity_retry_cancelled_stopped"
     )
+    # The resource-wake budget row composes its sentence at run time.
+    assert (
+        _legacy_token(
+            "⏸ Resource subscription rsub_0000000000000007 on crux (fake) reached its 48 "
+            "wakes for 2026-11-01 (UTC) and is paused until the next UTC day. Updates "
+            "meanwhile are folded into one wake after the pause."
+        )
+        == "resource_wake_budget_paused"
+    )
 
 
 def test_every_cancelled_replay_wording_has_its_own_token() -> None:
@@ -323,7 +332,7 @@ def test_every_cancelled_replay_wording_has_its_own_token() -> None:
 def test_localized_copy_avoids_internal_vocabulary() -> None:
     catalog = json.loads(_EN_CATALOG.read_text(encoding="utf-8"))
     copy = catalog["pages"]["chat"]["gatewayNotice"]
-    assert len(copy) == 60
+    assert len(copy) == 61
     for key, text in copy.items():
         lowered = text.lower()
         assert "hiccup" not in lowered and "backend" not in lowered, (key, text)

@@ -432,7 +432,7 @@ stop-before-dispatch gates. A `turn/started` therefore always means the turn ran
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
 | `turn` | int | required | Message-boundary ordinal identifying the turn. | |
-| `actor` | string | required | Who caused the turn. An unrecognized value is folded to `other`. | `user`, `app`, `crew`, `cron`, `autonudge`, `subagent`, `gateway`, `other` |
+| `actor` | string | required | Who caused the turn. An unrecognized value is folded to `other`. | `user`, `app`, `crew`, `cron`, `autonudge`, `subagent`, `resource`, `gateway`, `other` |
 | `depth` | int | required | Prompt depth. | |
 | `message_seq` | int | optional | `seq` of the causing message entry. Omitted when 0 or unknown. | |
 | `attempt` | int | optional | Which try at this ordinal. Omitted at 1; present and greater than 1 on a rerun of the same ordinal. | |
@@ -464,7 +464,7 @@ attracts a repair closer.
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
 | `turn` | int | required | Turn ordinal. | |
-| `actor` | string | required | Who caused the turn. Same folding as `turn/started`. | `user`, `app`, `crew`, `cron`, `autonudge`, `subagent`, `gateway`, `other` |
+| `actor` | string | required | Who caused the turn. Same folding as `turn/started`. | `user`, `app`, `crew`, `cron`, `autonudge`, `subagent`, `resource`, `gateway`, `other` |
 | `reason` | string | required | Which gate refused. The writer records the caller's value without constraining it. | `not_authorized`, `gateway_closing`, `stopped_before_dispatch`, `replay_superseded_before_dispatch`, `blocked`, `too_large` |
 | `depth` | int | required | Prompt depth. | |
 

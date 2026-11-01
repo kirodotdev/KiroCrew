@@ -27,7 +27,7 @@ from kiro_crew.mcp_gateway.backend import (
     BackendGone,
     has_recyclable_in_flight,
 )
-from kiro_crew.mcp_gateway.daemon import logger
+from kiro_crew.mcp_gateway.daemon import logger, session_describe
 from kiro_crew.mcp_gateway.daemon.admission_protocol import (
     _LEGACY_SPAWN_WAIT_SECS,
     _await_answering_pings,
@@ -369,6 +369,9 @@ async def _handle_connection(
     # below drains it and it cannot run while a wait is being served.
     pending: deque[bytes] = deque()
     try:
+        # Inside the ``try``: whatever tracking raises, the teardown below
+        # still clears the claim index and the keepalive probe table.
+        session_describe.track_live_conn(conn, register, private_backend=bool(exclusive_stub_uuid))
         while True:
             try:
                 line = pending.popleft() if pending else await reader.readuntil(b"\n")
@@ -560,6 +563,7 @@ async def _handle_connection(
             # a fresh backend without kiro-cli re-sending initialize.
             if msg.get("method") == "initialize":
                 captured_init = dict(msg)
+                session_describe.track_initialize(conn, captured_init)
 
             # ``caller`` itself stays tokenless for the life of the connection:
             # the token is attached to a per-forward copy, decided against the
@@ -650,6 +654,7 @@ async def _teardown_connection(
     writer stops last.
     """
     _conn_index_discard(conn)
+    session_describe.forget_live_conn(conn)
     if probe is not None:
         _stub_probe_discard(probe)
     if backend is not None:

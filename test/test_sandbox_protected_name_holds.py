@@ -429,7 +429,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #: * ``shared_crew_preview.json`` -- the owner's Shared Crew switch, a file at
     #:   the data-home root beside writable siblings, so leaf-only is the only
     #:   hold available, as for ``decisions_consent.json``.
-    EXPECTED: dict[str, int] = {"standard": 306, "cc": 313, "strict": 314}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``mcp-resource-subscriptions`` -- the holder's durable Register,
+    #:   initialize and server-defined URIs. A URI may be a credential and a forged
+    #:   record chooses which session gets an unsandboxed holder at startup. The
+    #:   directory is at the data-home root so its own mask is the only available hold.
+    EXPECTED: dict[str, int] = {"standard": 309, "cc": 316, "strict": 317}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

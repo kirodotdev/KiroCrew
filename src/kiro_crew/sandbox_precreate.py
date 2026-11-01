@@ -528,6 +528,10 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # the spool's own ``restrict_to_owner=True`` writes already require of it; its
     # readers open the leaf inside, so an empty root reads exactly as an absent one.
     "inbound-spool",
+    # The resource-subscription store has the same lazy first-write shape. Its
+    # empty directory is absent-equivalent because readers key on subscriptions.json;
+    # precreation gives the hidden mask a target before an agent can plant records.
+    "mcp-resource-subscriptions",
     # The secret vault: the vault key and every stored secret. ``SecretVault`` creates
     # this directory on the owner's FIRST stored secret, so on a home with none yet the
     # ``isdir``-guarded ``sensitive_dirs`` loop skips the name, and the key and ciphertext

@@ -7046,7 +7046,8 @@
         "agent_switch_blocked_crew_mode": "Switching to {{agent}} was blocked — this chat is in Crew Mode, which stays on its conductor. The next turn restarts on the conductor.",
         "crew_name_undispatchable": "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.",
         "remote_crew_read_only": "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.",
-        "archive_failed_turn_cancelled": "Archiving this tab failed after its running turn was cancelled. The tab was kept, but that turn did not finish — send your message again to continue."
+        "archive_failed_turn_cancelled": "Archiving this tab failed after its running turn was cancelled. The tab was kept, but that turn did not finish — send your message again to continue.",
+        "resource_wake_budget_paused": "Resource subscription {{subscription}} on {{server}} reached its {{limit}} wakes for {{day}} (UTC) and is paused until the next UTC day. Updates meanwhile are folded into one wake after the pause."
       },
       "userMessage": {
         "cancel": "Cancel",

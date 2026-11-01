@@ -155,6 +155,12 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # cookie auth and are refused before the handler's own session
         # recognition can run.
         "/api/session-ledger",
+        # MCP-only (the three resource-subscription tools) and the
+        # `kirocrew resource-subs` CLI; no browser caller. Prefix matching covers
+        # "/remove" and "/operator". Without this entry the internal-secret calls
+        # fall through to cookie auth and are refused before the handler's own
+        # session recognition can run.
+        "/api/resource-subscriptions",
         # MCP-only (the four kirocrew-work tools); no browser caller. Prefix
         # matching covers "/record", "/brief" and "/report". Without this entry
         # the tools' internal-secret calls fall through to cookie auth and are

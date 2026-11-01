@@ -48,7 +48,8 @@ _BASE_IMPORTS = frozenset("""
     DEFAULT_ACP_BACKEND DEFAULT_AUTO_INGEST_ARTIFACT_KINDS DEFAULT_MAX_PARALLEL_STEPS DEFAULT_RUNTIME_CEILING_SECS
     DEGRADED_TAILSCALE EFFORT_LEVELS ExternalRegistryConfig FORWARD_DECLARED_ENV_DEFAULT
     HeartbeatConfig InstancesConfig Iterable KnowledgeConfig MANAGED_STUB_FOLLOWERS
-    MAX_RUNTIME_CEILING_SECS Mapping McpConfig McpGatewayConfig MemoryConfig MemoryStoreConfig
+    MAX_RUNTIME_CEILING_SECS Mapping McpConfig McpGatewayConfig McpResourceSubscriptionsConfig
+    MemoryConfig MemoryStoreConfig
     MessagingConfig MonitoringConfig Path PowerConfig PublishConfig SECRET_URI_PREFIX SessionSummaryConfig
     SkillsConfig TaskRunnerConfig TunnelConfig TypeVar WatchdogConfig WorkLedgerConfig _COLOR_HEX_RE
     _CONNECT_TIMEOUT_CEILING _CU_DEFAULT_ATTACH_SCREENSHOT _CU_DEFAULT_MAX_TREE_DEPTH
