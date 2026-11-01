@@ -3495,8 +3495,11 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
   survives a save, though only a ghost plays it.
 - `{"kind": "icon", "pose": "pose-N", "bg": "#rrggbb"}` — the crew wears a
   shipped ghost POSE over a solid background. This is the PRIMARY tier new crews
-  are built with (the ghost "捏脸" builder and the pack library stay for crews
-  already wearing them). The whole override is `pose` + `bg`: `pose` names one of
+  are built with. The ghost "捏脸" builder and its Reactions tab are gone from
+  every flow (#18616): a stored `ghost` record is still accepted, validated and
+  rendered unchanged, but the builder only offers Icon, Picture and Library. A
+  ghost crew's builder opens on Icon, and Apply with no pick returns the stored
+  ghost as-is. The pack library stays. The whole override is `pose` + `bg`: `pose` names one of
   the hand-drawn silhouettes in `website/src/lib/avatarPoses.ts` (`POSE_IDS`),
   `bg` is the colour painted behind it. The
   silhouette stays white and the eyes stay black — the background is the whole

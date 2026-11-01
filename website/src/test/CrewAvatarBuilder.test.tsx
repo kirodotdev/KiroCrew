@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
 import type { CrewAvatarOverride } from '../components/CrewAvatar'
-import { ACCESSORIES, BROWS, BRAND_PURPLE, EYES, MOUTHS, PROPS, TILES } from '../lib/kiroGhostAvatar'
+import { BRAND_PURPLE } from '../lib/kiroGhostAvatar'
 import { POSE_IDS, seedIconPose } from '../lib/avatarPoses'
 
 vi.mock('framer-motion', async () => {
@@ -60,40 +60,9 @@ function mount(value: CrewAvatarOverride | null = null) {
 const apply = () => fireEvent.click(screen.getByTestId('avatar-builder-save'))
 const lastSaved = (onSave: ReturnType<typeof vi.fn>) => onSave.mock.calls.at(-1)?.[0] as CrewAvatarOverride | null
 
-/** The axis strip measures 0px wide in the test DOM and collapses to a
- *  dropdown, so an axis is reached through the trigger + menu item. */
-async function pickAxis(label: string) {
-  // The trigger shows the ACTIVE axis label; it is a plain button. Every other
-  // axis is a radio in the dropdown's radiogroup.
-  const triggers = screen.getAllByRole('button').filter(b => b.textContent?.trim() === 'Eyes' || b.querySelector('svg.lucide-chevron-down'))
-  fireEvent.click(triggers[0])
-  const item = await screen.findByRole('radio', { name: label })
-  fireEvent.click(item)
-}
-
 async function switchToPicture() {
   fireEvent.click(screen.getByRole('radio', { name: 'Picture' }))
   await screen.findByTestId('avatar-upload-pane')
-}
-
-/** The builder no longer offers the Ghost face tab for a non-ghost crew — a
- *  new or edited crew cannot author a ghost (issue #18616). An EXISTING ghost
- *  crew still opens straight on the "捏脸" face pane, so a ghost-tier test mounts
- *  FROM a stored ghost record rather than switching to a tab that is gone. */
-async function switchToFace() {
-  await screen.findByTestId('avatar-builder-preview')
-}
-
-/** A minimal stored ghost override — "this crew already wears a ghost face" —
- *  so the builder opens on the face pane for the pre-existing-ghost edit tests. */
-const EXISTING_GHOST: Ghost = { kind: 'ghost', traits: {} }
-
-/** Mount already on the Ghost face pane via a stored ghost record — the only
- *  way the face pane is reached now that a new ghost cannot be authored. */
-async function mountFace(value: CrewAvatarOverride | null = EXISTING_GHOST) {
-  const utils = mount(value)
-  await switchToFace()
-  return utils
 }
 
 /* ────────────── canvas + image doubles for the picture tier ────────────── */
@@ -167,55 +136,106 @@ afterEach(() => {
   ;(globalThis as unknown as { Image: unknown }).Image = RealImage
 })
 
-/* ──────────────────────────── ghost tier ──────────────────────────── */
+/* ───────────────── ghost-face picker removed (issue #18616) ───────────────── */
 
-describe('CrewAvatarBuilder — ghost tier', () => {
-  it('randomize draws every axis from the shipped vocabulary and Apply hands it over', async () => {
-    const { onSave } = await mountFace()
-    fireEvent.click(screen.getByTestId('avatar-builder-randomize'))
-    apply()
-    const saved = lastSaved(onSave) as Ghost
-    expect(saved.kind).toBe('ghost')
-    expect(Object.keys(EYES)).toContain(saved.traits.eyes)
-    expect(Object.keys(BROWS)).toContain(saved.traits.brows)
-    expect(Object.keys(MOUTHS)).toContain(saved.traits.mouth)
-    // Headwear and items each have an explicit "none" option beyond the art keys.
-    expect([...Object.keys(ACCESSORIES), 'none']).toContain(saved.traits.accessory)
-    expect([...Object.keys(PROPS), 'none']).toContain(saved.traits.prop)
-    expect(typeof saved.traits.blush).toBe('boolean')
-    expect(typeof saved.traits.flip).toBe('boolean')
-    expect([BRAND_PURPLE, ...TILES]).toContain(saved.traits.tile)
+describe('CrewAvatarBuilder — ghost-face picker removed (#18616)', () => {
+  // A fully-configured stored ghost, so "the record is untouched" is a visible
+  // claim: every trait is pinned and would be lost if Apply overwrote it.
+  const STORED_GHOST: Ghost = {
+    kind: 'ghost',
+    traits: { eyes: 'wink', brows: 'none', mouth: 'smile', accessory: 'none', prop: 'none', blush: false, flip: false, tile: BRAND_PURPLE },
+  }
+
+  it('create mode offers no Ghost face or Reactions tab and starts on Icon', () => {
+    mount(null)
+    // The builder opens on the Icon tier for a brand-new crew.
+    expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument()
+    // The ghost-face selection UI is gone from the tier strip entirely.
+    expect(screen.queryByRole('radio', { name: 'Ghost face' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Reactions' })).not.toBeInTheDocument()
+    // The authorable tiers remain.
+    expect(screen.getByRole('radio', { name: 'Icon' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Picture' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Library' })).toBeInTheDocument()
   })
 
-  it('the Blush axis is a two-option tab: off first, then on', async () => {
-    const { onSave } = await mountFace()
-    await pickAxis('Blush')
-    fireEvent.click(screen.getByTestId('avatar-opt-blush'))
-    apply()
-    expect((lastSaved(onSave) as Ghost).traits.blush).toBe(true)
-    fireEvent.click(screen.getByTestId('avatar-opt-none'))
-    apply()
-    expect((lastSaved(onSave) as Ghost).traits.blush).toBe(false)
+  it('a crew already wearing a ghost also sees no Ghost face or Reactions tab', () => {
+    // #18616 removes the picker in BOTH flows: a ghost-config crew can no
+    // longer re-enter the 捏脸 builder either.
+    mount(STORED_GHOST)
+    expect(screen.queryByRole('radio', { name: 'Ghost face' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Reactions' })).not.toBeInTheDocument()
   })
 
-  it('the Background axis pins the tile and labels swatches with color names, not hex', async () => {
-    const { onSave } = await mountFace()
-    await pickAxis('Background')
-    const steel = screen.getByTestId('avatar-opt-25679d')
-    expect(steel).toHaveAttribute('aria-label', 'Steel blue')
-    fireEvent.click(steel)
-    apply()
-    expect((lastSaved(onSave) as Ghost).traits.tile).toBe('#25679d')
+  it('editing a stored ghost crew opens on the Icon tier', () => {
+    mount(STORED_GHOST)
+    expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument()
+    // The ghost-authoring pane is not what the dialog lands on.
+    expect(screen.queryByTestId('avatar-builder-preview')).not.toBeInTheDocument()
   })
 
-  it('the mirror toggle flips the face relative to the seeded default', async () => {
-    const { onSave } = await mountFace()
-    const sw = screen.getByRole('switch', { name: 'Flip direction' })
-    const before = sw.getAttribute('aria-checked') === 'true'
-    fireEvent.click(sw)
-    expect(sw.getAttribute('aria-checked')).toBe(String(!before))
+  it('applying without a pick keeps the stored ghost face unchanged', () => {
+    // The edge case: a stored ghost opens on Icon, and Apply with no SVG
+    // pose/colour pick must hand the stored ghost BACK verbatim — not overwrite
+    // it with a name-seeded icon, and not reset it.
+    const { onSave } = mount(STORED_GHOST)
     apply()
-    expect((lastSaved(onSave) as Ghost).traits.flip).toBe(!before)
+    expect(lastSaved(onSave)).toEqual(STORED_GHOST)
+  })
+
+  it('a stored ghost crew that DOES pick an SVG pose saves an icon override', () => {
+    // Once the user actively picks a pose, the ghost is intentionally replaced.
+    const { onSave } = mount(STORED_GHOST)
+    fireEvent.click(screen.getByTestId('avatar-icon-pose-pose-3'))
+    apply()
+    expect(lastSaved(onSave)).toMatchObject({ kind: 'icon', pose: 'pose-3' })
+  })
+
+  it('the Icon pane previews the stored ghost and selects no pose, so preview matches Apply', () => {
+    // Review blocker (Opus/UX): the pane must not show a seeded pose as selected
+    // while Apply keeps the ghost. For a stored ghost it previews the current
+    // avatar through the real renderer (so NOT the seeded-pose img) and
+    // highlights no pose until the user picks.
+    mount(STORED_GHOST)
+    expect(screen.queryByTestId('avatar-icon-preview')).not.toBeInTheDocument()
+    for (const pose of POSE_IDS) {
+      expect(screen.getByTestId(`avatar-icon-pose-${pose}`)).toHaveAttribute('aria-selected', 'false')
+    }
+  })
+
+  it('Reset survives a tab detour: the stored ghost is NOT resurrected on Apply', () => {
+    // Review blocker (Opus): Reset → switch tiers → back to Icon → Apply must
+    // commit the reset (null = name-derived default), not the ghost the reset
+    // cleared, even though the tab change clears resetToDefault.
+    const { onSave } = mount(STORED_GHOST)
+    fireEvent.click(screen.getByTestId('avatar-builder-reset'))
+    fireEvent.click(screen.getByRole('radio', { name: 'Picture' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Icon' }))
+    apply()
+    expect(lastSaved(onSave)).toBeNull()
+  })
+
+  it('after Reset the Icon preview matches the null that Apply saves, not a pose img', () => {
+    // Review blocker (Opus/GPT): post-reset, a ghost crew still previews through
+    // the real renderer (what `null` draws — the name-derived face), never the
+    // name-seeded pose img, which Apply would never save here.
+    mount(STORED_GHOST)
+    fireEvent.click(screen.getByTestId('avatar-builder-reset'))
+    expect(screen.queryByTestId('avatar-icon-preview')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('avatar-icon-preview-current')).not.toBeInTheDocument()
+  })
+
+  it('pick-then-Reset still matches: preview is the reset face and Apply saves null', () => {
+    // Review blocker (Opus/GPT): picking a pose sets iconTouched; Reset must
+    // clear it, or the pane would preview the seeded pose while Apply saves null
+    // (the name-derived ghost). After Reset the preview is the real renderer and
+    // Apply commits null.
+    const { onSave } = mount(STORED_GHOST)
+    fireEvent.click(screen.getByTestId('avatar-icon-pose-pose-3'))
+    fireEvent.click(screen.getByTestId('avatar-builder-reset'))
+    expect(screen.queryByTestId('avatar-icon-preview')).not.toBeInTheDocument()
+    apply()
+    expect(lastSaved(onSave)).toBeNull()
   })
 
   it('Cancel reports back without saving', () => {
@@ -235,10 +255,10 @@ describe('CrewAvatarBuilder — icon tier', () => {
     expect(screen.getByTestId('avatar-icon-preview')).toBeInTheDocument()
   })
 
-  it('a stored ghost crew still opens on the Ghost face pane', () => {
+  it('a stored ghost crew now opens on the Icon pane (#18616)', () => {
     mount({ kind: 'ghost', traits: { eyes: 'wink', brows: 'none', mouth: 'smile', accessory: 'none', prop: 'none', blush: false, flip: false, tile: BRAND_PURPLE } })
-    expect(screen.getByTestId('avatar-builder-preview')).toBeInTheDocument()
-    expect(screen.queryByTestId('avatar-icon-pane')).not.toBeInTheDocument()
+    expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument()
+    expect(screen.queryByTestId('avatar-builder-preview')).not.toBeInTheDocument()
   })
 
   it('offers no Ghost face tab for a non-ghost crew (new ghosts are not authorable)', () => {
@@ -249,9 +269,9 @@ describe('CrewAvatarBuilder — icon tier', () => {
     expect(screen.getByRole('radio', { name: 'Picture' })).toBeInTheDocument()
   })
 
-  it('still offers the Ghost face tab for a crew that already wears one', () => {
+  it('offers no Ghost face tab even for a crew that already wears one (#18616)', () => {
     mount({ kind: 'ghost', traits: {} })
-    expect(screen.getByRole('radio', { name: 'Ghost face' })).toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Ghost face' })).not.toBeInTheDocument()
   })
 
   it('picking a pose and Apply hands over an icon override', () => {

@@ -35,36 +35,13 @@ import { useTranslation } from 'react-i18next'
 // for the decode, and a bare import of the icon binds that identifier at
 // module scope — the constructor would then build a React component and every
 // picture upload would throw.
-import { Coffee, Crown, Dices, Eye, Ghost, Heart, Image as ImageIcon, ImageUp, LayoutGrid, LibraryBig, Meh, Palette, Play, Smile, Sparkles } from 'lucide-react'
+import { Image as ImageIcon, ImageUp, LayoutGrid, LibraryBig } from 'lucide-react'
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
-import { Btn, Toggle } from './ui'
+import { Btn } from './ui'
 import SegmentedControl from './SegmentedControl'
-import SimpleSelect from './SimpleSelect'
 import { useIsMobile } from '../hooks/useIsMobile'
-import {
-  ACCESSORIES,
-  BROWS,
-  BRAND_PURPLE,
-  EYES,
-  MOTION_NAMES,
-  MOTION_STATES,
-  MOUTHS,
-  PROPS,
-  TILES,
-  ghostDataUri,
-  type KiroGhostTraits,
-  type MotionState,
-} from '../lib/kiroGhostAvatar'
-import {
-  AVATAR_STATES,
-  MOTION_DEFAULTS,
-  type AvatarMotions,
-  type AvatarSounds,
-  type AvatarState,
-  type RetiredCue,
-} from '../lib/crewAvatarState'
-import { SOUND_PRESETS, loadSoundSettings, playPreset, type SoundPreset } from '../hooks/useNotificationSound'
-import CrewAvatar, { seededTraits, type CrewAvatarOverride } from './CrewAvatar'
+import { type AvatarState, type RetiredCue } from '../lib/crewAvatarState'
+import CrewAvatar, { type CrewAvatarOverride } from './CrewAvatar'
 import {
   DEFAULT_POSE_BG,
   POSE_BG_RE,
@@ -78,124 +55,15 @@ import {
 import CrewAvatarLibraryTab from './CrewAvatarLibraryTab'
 import ErrorNotice from './ErrorNotice'
 
-/** Trait axes shown as category tabs, in mockup order. `blush` is a two-option
- *  axis (off/on) and `tile` is the color — both special-cased below. */
-type Axis = 'eyes' | 'brows' | 'mouth' | 'accessory' | 'prop' | 'blush' | 'tile'
-
-/**
- * Options per pickable axis, read off the style module. `accessory` has no
- * 'none' key in its map (absence is a probability there, not an entry), but
- * `compose` resolves an unknown key to nothing — so a literal 'none' option
- * is both honest and renderable.
- */
-const AXIS_OPTIONS: Record<Exclude<Axis, 'tile' | 'blush'>, string[]> = {
-  eyes: Object.keys(EYES),
-  brows: Object.keys(BROWS),
-  mouth: Object.keys(MOUTHS),
-  accessory: ['none', ...Object.keys(ACCESSORIES)],
-  prop: Object.keys(PROPS),
-}
-
-const AXES: Axis[] = ['eyes', 'brows', 'mouth', 'accessory', 'prop', 'blush', 'tile']
-
-/** The states that HAVE a motion, as a lookup the row builder can narrow with.
- *  `working` is not one of them: the ghost's working animation is its own, and a
- *  reaction fires on the transition out of it. */
-const MOTION_ROW_STATES: ReadonlySet<string> = new Set<string>(MOTION_STATES)
-const motionStateOf = (state: AvatarState): MotionState | null =>
-  MOTION_ROW_STATES.has(state) ? (state as MotionState) : null
-
 /**
  * Literal catalog keys, indexed rather than assembled: a key built at runtime
- * (`t(\`…opt_${k}\`)`) is invisible to the extractor and the dead-key gate
- * (see dynamicKeys.test.ts — AboutPanel's UPDATE_ERROR_KEYS is the pattern).
+ * is invisible to the extractor and the dead-key gate (see dynamicKeys.test.ts).
  */
-const AXIS_LABEL_KEYS: Record<Axis, string> = {
-  eyes: 'components.avatarBuilder.axis_eyes',
-  brows: 'components.avatarBuilder.axis_brows',
-  mouth: 'components.avatarBuilder.axis_mouth',
-  accessory: 'components.avatarBuilder.axis_accessory',
-  prop: 'components.avatarBuilder.axis_prop',
-  blush: 'components.avatarBuilder.axis_blush',
-  tile: 'components.avatarBuilder.axis_tile',
-}
-
-/** Same indexed-literal rule as AXIS_LABEL_KEYS. */
 const STATE_LABEL_KEYS: Record<AvatarState, string> = {
   working: 'components.avatarBuilder.state_working',
   done: 'components.avatarBuilder.state_done',
   error: 'components.avatarBuilder.state_error',
 }
-
-/** Motion names, labelled. Same indexed-literal rule as AXIS_LABEL_KEYS — the
- *  key is written out rather than assembled from the motion name, so the
- *  extractor and the dead-key gate can both see it. */
-const MOTION_LABEL_KEYS: Record<string, string> = {
-  none: 'components.avatarBuilder.motion_none',
-  bounce: 'components.avatarBuilder.motion_bounce',
-  nod: 'components.avatarBuilder.motion_nod',
-  sparkle: 'components.avatarBuilder.motion_sparkle',
-  shake: 'components.avatarBuilder.motion_shake',
-  'cross-eyes': 'components.avatarBuilder.motion_cross_eyes',
-  droop: 'components.avatarBuilder.motion_droop',
-}
-
-const SOUND_LABEL_KEYS: Record<Exclude<SoundPreset, 'none'>, string> = {
-  chime: 'components.avatarBuilder.sound_chime',
-  ding: 'components.avatarBuilder.sound_ding',
-  blip: 'components.avatarBuilder.sound_blip',
-  pop: 'components.avatarBuilder.sound_pop',
-  pulse: 'components.avatarBuilder.sound_pulse',
-}
-
-const OPT_LABEL_KEYS: Record<string, string> = {
-  none: 'components.avatarBuilder.opt_none',
-  blush: 'components.avatarBuilder.opt_blush',
-  canon: 'components.avatarBuilder.opt_canon',
-  closed: 'components.avatarBuilder.opt_closed',
-  sleepy: 'components.avatarBuilder.opt_sleepy',
-  wink: 'components.avatarBuilder.opt_wink',
-  wide: 'components.avatarBuilder.opt_wide',
-  sparkle: 'components.avatarBuilder.opt_sparkle',
-  visor: 'components.avatarBuilder.opt_visor',
-  glasses: 'components.avatarBuilder.opt_glasses',
-  cross: 'components.avatarBuilder.opt_cross',
-  squint: 'components.avatarBuilder.opt_squint',
-  swirl: 'components.avatarBuilder.opt_swirl',
-  heart: 'components.avatarBuilder.opt_heart',
-  cyclops: 'components.avatarBuilder.opt_cyclops',
-  raised: 'components.avatarBuilder.opt_raised',
-  angry: 'components.avatarBuilder.opt_angry',
-  flat: 'components.avatarBuilder.opt_flat',
-  smile: 'components.avatarBuilder.opt_smile',
-  open: 'components.avatarBuilder.opt_open',
-  cat: 'components.avatarBuilder.opt_cat',
-  oh: 'components.avatarBuilder.opt_oh',
-  grin: 'components.avatarBuilder.opt_grin',
-  tongue: 'components.avatarBuilder.opt_tongue',
-  wobble: 'components.avatarBuilder.opt_wobble',
-  smirk: 'components.avatarBuilder.opt_smirk',
-  antenna: 'components.avatarBuilder.opt_antenna',
-  halo: 'components.avatarBuilder.opt_halo',
-  cap: 'components.avatarBuilder.opt_cap',
-  phones: 'components.avatarBuilder.opt_phones',
-  bow: 'components.avatarBuilder.opt_bow',
-  crown: 'components.avatarBuilder.opt_crown',
-  beanie: 'components.avatarBuilder.opt_beanie',
-  party: 'components.avatarBuilder.opt_party',
-  flower: 'components.avatarBuilder.opt_flower',
-  bandana: 'components.avatarBuilder.opt_bandana',
-  hardhat: 'components.avatarBuilder.opt_hardhat',
-  mug: 'components.avatarBuilder.opt_mug',
-  glass: 'components.avatarBuilder.opt_glass',
-  wrench: 'components.avatarBuilder.opt_wrench',
-  bolt: 'components.avatarBuilder.opt_bolt',
-  star: 'components.avatarBuilder.opt_star',
-  term: 'components.avatarBuilder.opt_term',
-}
-
-/** Every pickable tile, brand purple first — the "no hue" spelling. */
-const TILE_OPTIONS = [BRAND_PURPLE, ...TILES]
 
 /**
  * Human color names for the tile swatches, keyed by hex. Screen readers get
@@ -222,8 +90,6 @@ const TILE_LABEL_KEYS: Record<string, string> = {
   '#21d4de': 'components.avatarBuilder.tile_cyan',
   '#ee7e4f': 'components.avatarBuilder.tile_coral',
 }
-
-const pickRandom = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)]
 
 /**
  * The theme's own accent colour as `#rrggbb`, or null when it cannot be read as
@@ -266,9 +132,6 @@ const MAX_SOURCE_BYTES = 20 * 1024 * 1024
 const OUTPUT_PX = 512
 /** Client-side output budget, under the server's 1 MB cap with headroom. */
 const MAX_OUTPUT_BYTES = 900 * 1024
-/** Volume for an explicitly requested preview when the user's own is muted —
- *  a preview button that does nothing reads as broken. */
-const PREVIEW_FALLBACK_VOLUME = 0.35
 
 /** Approximate byte size of a data URI's payload (base64 → bytes). */
 const dataUriBytes = (uri: string) => Math.floor(((uri.length - uri.indexOf(',') - 1) * 3) / 4)
@@ -343,10 +206,12 @@ type Pane = Tier | 'reactions'
 
 /** The tier a stored override selects when the dialog opens.
  *
- * A crew with NO override (a brand-new crew, or one still on its name-derived
- * face) opens on `icon` — the primary tier new avatars are built with. A crew
- * that pinned a ghost face opens on `face` so its existing art is what it lands
- * on; the discriminator is a real ghost RECORD, not the absence of one. */
+ * Every crew opens on a tier reachable from the strip. A crew with NO override
+ * (brand-new, or still on its name-derived face) opens on `icon` — the primary
+ * tier new avatars are built with. A crew that pinned a ghost face ALSO opens
+ * on `icon` now that the ghost-face picker is gone (issue #18616): its stored
+ * ghost is kept and keeps rendering, but the dialog lands on an authorable
+ * tier rather than a pane the user can no longer reach. */
 const tierOf = (value: CrewAvatarOverride | null): Tier =>
   value?.kind === 'icon'
     ? 'icon'
@@ -354,21 +219,13 @@ const tierOf = (value: CrewAvatarOverride | null): Tier =>
       ? 'picture'
       : value?.kind === 'pack'
         ? 'pack'
-        : value?.kind === 'ghost'
-          ? 'face'
-          : 'icon'
-
-/** Only the states the user actually configured are stored, so an untouched
- *  reaction layer stays absent from the record rather than shipping three
- *  empty objects. */
-const isSet = (map: object): boolean => Object.keys(map).length > 0
+        : 'icon'
 
 export default function CrewAvatarBuilder({
   open,
   name,
   value,
   retiredCue = null,
-  savedReactions,
   iconOnly = false,
   onCancel,
   onSave,
@@ -400,18 +257,6 @@ export default function CrewAvatarBuilder({
    * explanation is only true there.
    */
   retiredCue?: RetiredCue | null
-  /**
-   * Which reaction keys the crew's SAVED record carries a non-empty map for.
-   *
-   * `buildResult` names an emptied map on the wire so the backend's carry does
-   * not restore what the user cleared — and the question "is there anything to
-   * restore" is about the STORED record, not the draft. `value` is the draft, and
-   * it stops carrying the original after the first Apply lands an empty map: a
-   * later reopen re-inits from `{}`, the draft-only test reads "never had one",
-   * the key is omitted, and the carry brings the cleared motion back. Read from
-   * the record by the editor, the same way `retiredCue` is.
-   */
-  savedReactions?: { motions?: boolean; sounds?: boolean }
   onCancel: () => void
   /** null = reset to the name-derived face. */
   onSave: (next: CrewAvatarOverride | null) => void
@@ -421,23 +266,15 @@ export default function CrewAvatarBuilder({
   // labels run 229px (English) to 290px (Russian) into 214px of dialog, so a
   // phone cannot show all three as words.
   const isMobile = useIsMobile()
-  /** Name-derived traits — the pre-fill when nothing is pinned, and the face
-   *  the reset link previews. */
-  const defaults = useMemo(() => seededTraits(name), [name])
-  /** null draft = "no override": preview the default face; the first pick
-   *  branches the draft off it. */
-  const [draft, setDraft] = useState<KiroGhostTraits | null>(
-    value?.kind === 'ghost' ? (value.traits ?? null) : null,
-  )
-  const [axis, setAxis] = useState<Axis>('eyes')
   const [tier, setTier] = useState<Tier>(tierOf(value))
   const [pane, setPane] = useState<Pane>(tierOf(value))
-  // Whether the crew ALREADY wears a ghost face when the editor opens. New ghost
-  // authoring is removed (issue #18616), so the Ghost face / Reactions tabs are
-  // offered only for such a pre-existing crew — and keyed off the STORED
-  // record, not the live tier, so visiting another tier and coming back does
-  // not strand an existing ghost crew away from its own face.
-  const wearsGhost = useMemo(() => tierOf(value) === 'face', [value])
+  // Whether the crew ALREADY wears a ghost face when the editor opens. The
+  // ghost-face picker is gone (issue #18616), so this no longer gates any tab —
+  // it marks the stored record that must be KEPT verbatim: a ghost crew opens
+  // on the Icon tier and its stored ghost is handed back unchanged unless the
+  // user actively picks an SVG pose or colour. Keyed off the STORED record, not
+  // the live tier, so a trip through another tier never loses the ghost.
+  const wearsGhost = useMemo(() => value?.kind === 'ghost', [value])
   /** The pack the draft wears, or null. A pack override is nothing BUT this id,
    *  so the Library pane needs no draft of its own. */
   const [packId, setPackId] = useState<string | null>(value?.kind === 'pack' ? value.id : null)
@@ -462,15 +299,13 @@ export default function CrewAvatarBuilder({
   // a name-seeded icon instead of clearing the override. Any real pick, a tab
   // change, or a reopen clears it.
   const [resetToDefault, setResetToDefault] = useState(false)
-  /** Per-state reactions. Held flat (not nested under the tier) so a trip
-   *  through the Picture tab and back never discards them — the pane is hidden
-   *  there, not reset. Only a ghost result carries them out. */
-  const [motions, setMotions] = useState<AvatarMotions>(
-    value?.kind === 'ghost' ? (value.motions ?? {}) : {},
-  )
-  const [sounds, setSounds] = useState<AvatarSounds>(
-    value?.kind === 'ghost' ? (value.sounds ?? {}) : {},
-  )
+  // Whether the user hit Reset this opening, kept SEPARATELY from
+  // `resetToDefault` because a tab change clears that one (it re-seeds the icon
+  // draft) but must NOT un-say a reset. Without this, a ghost crew's Reset
+  // followed by a tab detour and back to Icon would let the keep-the-stored-
+  // ghost shortcut in buildResult resurrect the very ghost the reset cleared
+  // (#18616 review). Cleared only by a real pick or a reopen.
+  const [didReset, setDidReset] = useState(false)
   /** The cropped-and-scaled picture chosen THIS opening (data URI), not yet
    *  uploaded — upload happens on the editor's Save, keeping Apply free of
    *  side effects for pictures exactly as it is for traits. */
@@ -494,8 +329,6 @@ export default function CrewAvatarBuilder({
   // the previous opening.
   useEffect(() => {
     if (open) {
-      setDraft(value?.kind === 'ghost' ? (value.traits ?? null) : null)
-      setAxis('eyes')
       setTier(tierOf(value))
       setPane(tierOf(value))
       setPackId(value?.kind === 'pack' ? value.id : null)
@@ -505,8 +338,7 @@ export default function CrewAvatarBuilder({
       )
       setIconTouched(false)
       setResetToDefault(false)
-      setMotions(value?.kind === 'ghost' ? (value.motions ?? {}) : {})
-      setSounds(value?.kind === 'ghost' ? (value.sounds ?? {}) : {})
+      setDidReset(false)
       setPending(value?.kind === 'image' ? (value.pendingData ?? null) : null)
       setPickError('')
       setDragOver(false)
@@ -531,96 +363,6 @@ export default function CrewAvatarBuilder({
       window.removeEventListener('drop', swallow)
     }
   }, [open, pane])
-
-  const shown = draft ?? defaults
-
-  const setTrait = (patch: Partial<KiroGhostTraits>) => { setResetToDefault(false); setDraft({ ...shown, ...patch }) }
-
-  const randomize = () => {
-    setResetToDefault(false)
-    setDraft({
-      eyes: pickRandom(AXIS_OPTIONS.eyes),
-      brows: pickRandom(AXIS_OPTIONS.brows),
-      mouth: pickRandom(AXIS_OPTIONS.mouth),
-      accessory: pickRandom(AXIS_OPTIONS.accessory),
-      prop: pickRandom(AXIS_OPTIONS.prop),
-      blush: Math.random() < 0.5,
-      flip: Math.random() < 0.5,
-      tile: pickRandom(TILE_OPTIONS),
-    })
-  }
-
-  /** Thumbnails for the active axis: the draft face with one axis varied. */
-  const thumbs = useMemo(() => {
-    if (axis === 'tile') {
-      return TILE_OPTIONS.map(tile => ({ key: tile, uri: ghostDataUri({ ...shown, tile }) }))
-    }
-    if (axis === 'blush') {
-      // A two-option axis: off first (parallel to every other tab's "None").
-      return [
-        { key: 'none', uri: ghostDataUri({ ...shown, blush: false }) },
-        { key: 'blush', uri: ghostDataUri({ ...shown, blush: true }) },
-      ]
-    }
-    return AXIS_OPTIONS[axis].map(key => ({
-      key,
-      uri: ghostDataUri({ ...shown, [axis]: key }),
-    }))
-  }, [axis, shown])
-
-  const optLabel = (key: string) => { const k = OPT_LABEL_KEYS[key]; return k ? t(k) : key }
-
-  /** Store one state's motion. Written even when it equals the default: the
-   *  select shows the default as the current choice, so a user who opens the
-   *  list and picks that same entry has made a decision, and a record that
-   *  omitted it would silently follow a future change of default. */
-  const setStateMotion = (state: MotionState, name: string) => {
-    setResetToDefault(false)
-    setMotions(prev => ({ ...prev, [state]: name }))
-  }
-
-  const setStateSound = (state: AvatarState, preset: string) => {
-    setResetToDefault(false)
-    setSounds(prev => {
-      const out = { ...prev }
-      if (preset) out[state] = preset as SoundPreset
-      else delete out[state]
-      return out
-    })
-  }
-
-  const resetState = (state: AvatarState) => {
-    setResetToDefault(false)
-    const ms = motionStateOf(state)
-    if (ms) setMotions(prev => { const out = { ...prev }; delete out[ms]; return out })
-    setSounds(prev => { const out = { ...prev }; delete out[state]; return out })
-  }
-
-  /** Accessible name of one state's sound control — the state alone would
-   *  repeat three times on the pane. */
-  const soundLabel = (state: AvatarState) =>
-    `${t(STATE_LABEL_KEYS[state])} — ${t('components.avatarBuilder.react_sound')}`
-
-  const previewSound = (preset: SoundPreset) => {
-    // An explicit preview ignores the global on/off — the user just asked to
-    // hear it — but still uses their volume, falling back only if muted.
-    const settings = loadSoundSettings()
-    playPreset(preset, settings.volume > 0 ? settings.volume : PREVIEW_FALLBACK_VOLUME)
-  }
-
-  /** Icons keep every axis visible when the strip collapses to its compact
-   *  form on narrow widths — an icon-less segment there renders as an empty
-   *  button, hiding the axis entirely. */
-  const AXIS_ICONS: Record<Axis, React.ReactNode> = {
-    eyes: <Eye size={13} aria-hidden="true" />,
-    brows: <Meh size={13} aria-hidden="true" />,
-    mouth: <Smile size={13} aria-hidden="true" />,
-    accessory: <Crown size={13} aria-hidden="true" />,
-    prop: <Coffee size={13} aria-hidden="true" />,
-    blush: <Heart size={13} aria-hidden="true" />,
-    tile: <Palette size={13} aria-hidden="true" />,
-  }
-  const segments = AXES.map(a => ({ key: a, label: t(AXIS_LABEL_KEYS[a]), icon: AXIS_ICONS[a] }))
 
   const pickFile = async (file: File | undefined | null) => {
     setPickError('')
@@ -654,6 +396,21 @@ export default function CrewAvatarBuilder({
   // card's own face and Apply waits, so opening the editor never swaps the
   // crewmate's face for a plain ghost the user never chose.
   const iconUntouched = iconOnly && value === null && !iconTouched
+  // The Icon pane is showing the crew's CURRENT avatar rather than a chosen
+  // icon, so it must highlight no pose/colour: the create-mode door (above),
+  // AND a crew that already wears a ghost and has not picked yet (#18616) — its
+  // stored ghost is what Apply keeps, so nothing in the grid is "selected"
+  // until the user actually picks. Unlike `iconUntouched`, this does NOT
+  // disable Apply: for a ghost crew, Apply with no pick is the valid
+  // "keep my ghost" outcome.
+  const iconShowsCurrent = iconUntouched || (wearsGhost && !iconTouched)
+  // A ghost crew that has not picked previews through the REAL renderer, so the
+  // preview always matches what Apply saves (preview-matches-Apply, #18616
+  // review). Before a reset that is the stored ghost (`value`); after a reset it
+  // is `undefined` — what the committed `null` renders, the name-derived face —
+  // NOT the name-seeded pose img, which Apply would never save here.
+  const iconPreviewsGhost = wearsGhost && !iconTouched
+  const iconGhostPreviewAvatar = didReset ? undefined : (value ?? undefined)
   const applyDisabled =
     (tier === 'picture' && pictureResult === null) || (tier === 'pack' && packId === null)
     || iconUntouched
@@ -682,6 +439,18 @@ export default function CrewAvatarBuilder({
     //     and is never a path to a ghost the crew never chose.
     if (resetToDefault && wearsGhost) return null
     if (tier === 'icon') {
+      // A ghost crew that RESET this opening undresses to its name-derived face
+      // (`null`), even after a tab detour cleared `resetToDefault` — `didReset`
+      // outlives that, so the keep-the-stored-ghost shortcut below cannot bring
+      // back the ghost the reset cleared (#18616 review).
+      if (wearsGhost && didReset) return null
+      // Edge case (#18616): a crew that already wears a ghost opens on the Icon
+      // tier, but its stored ghost is KEPT until the user actively picks an SVG
+      // pose or colour. Until that first pick (`iconTouched`) — and provided
+      // they did not reset — Apply hands the stored ghost back verbatim rather
+      // than overwriting it with the name-seeded icon; stored ghosts are never
+      // migrated.
+      if (wearsGhost && !iconTouched && !didReset) return value
       // The whole override is the pose + background; no reactions ride on it
       // (an icon is static, like a picture). `bg` is normalized through the same
       // resolver the record reader uses, so a draft and its reload compare equal.
@@ -696,155 +465,7 @@ export default function CrewAvatarBuilder({
       return { kind: 'pack', id: packId }
     }
     if (tier === 'picture') return pictureResult
-    // An emptied map is a STATEMENT, not an absence, and the wire cannot tell
-    // the two apart unless this says so: `_carry_motions_through_motionless_save`
-    // keeps a ghost's stored `motions` when a save says NOTHING about the key,
-    // because the shipped editor could not author them and a save from a client
-    // that cannot see a value is not a decision about it. This builder can see
-    // them, so clearing the last one has to name the key — omitting it reads as
-    // that older client and the backend restores what the user just cleared.
-    // Both keys go through one rule rather than only the one that has a carry
-    // today, so a second carry cannot quietly resurrect a cleared cue.
-    //
-    // Judged on the SAVED record first: that is what the backend would restore.
-    // The draft is consulted too, for the window between an Apply that set a
-    // reaction and the Save that persists it — clearing inside that window has
-    // nothing stored to restore, so naming the key there costs nothing and
-    // keeps the rule one sentence. What the draft alone cannot answer is the
-    // reopen after a clear was applied: it re-inits from `{}` and would read
-    // "never had one" while the record still has it.
-    const cleared = (key: 'motions' | 'sounds'): boolean =>
-      !!savedReactions?.[key] || (value?.kind === 'ghost' && isSet(value[key] ?? {}))
-    const reactions = {
-      ...(isSet(motions) ? { motions } : cleared('motions') ? { motions: {} } : {}),
-      ...(isSet(sounds) ? { sounds } : cleared('sounds') ? { sounds: {} } : {}),
-    }
-    if (draft) return { kind: 'ghost', traits: draft, ...reactions }
-    const anyReaction = isSet(motions) || isSet(sounds)
-    // A faceless ghost is "the name-derived face, plus these reactions" on every
-    // stored tier: over a pack or a picture it is the tier change to that ghost.
-    // Judged on what is actually SET, never on `reactions`: a record whose only
-    // content is two empty maps is not an override, and sending it as one would
-    // reach the validator's all-empty collapse and be refused as junk. With
-    // nothing set and no face pinned, the honest answer is the reset — which
-    // deletes the whole record, cleared maps included.
-    return anyReaction ? { kind: 'ghost', ...reactions } : null
-  }
-
-  /** One state's row on the Reactions tab. */
-  const stateRow = (state: AvatarState) => {
-    const ms = motionStateOf(state)
-    // The default IS the current choice until the user overrides it, so the
-    // select shows it rather than an empty trigger. A name from a newer
-    // vocabulary has no option row, and falls back to itself in the trigger.
-    const motion = ms ? (motions[ms] ?? MOTION_DEFAULTS[ms]) : ''
-    const storedSound = sounds[state]
-    // A stored `'none'` and an absent key are both silence, and the select
-    // offers one option for that — so `'none'` shows as (and, on the next
-    // Apply, normalizes to) the unset spelling.
-    const selectedSound = storedSound && storedSound !== 'none' ? storedSound : ''
-    return (
-      <section
-        key={state}
-        className="rounded-lg border border-border p-3"
-        aria-labelledby={`avatar-state-${state}-label`}
-        data-testid={`avatar-state-row-${state}`}
-      >
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <span id={`avatar-state-${state}-label`} className="text-[12.5px] font-medium">
-            {t(STATE_LABEL_KEYS[state])}
-          </span>
-          <button
-            type="button"
-            onClick={() => resetState(state)}
-            className="text-[11px] text-muted underline underline-offset-2 hover:text-text"
-            data-testid={`avatar-state-reset-${state}`}
-          >
-            {/* Named after the row it clears: the pane also carries the
-                footer's whole-avatar reset, and two unscoped "Reset" controls on
-                one surface read as one control nobody can predict. */}
-            {t('components.avatarBuilder.react_reset_state', { state: t(STATE_LABEL_KEYS[state]) })}
-          </button>
-        </div>
-        {/* Narrow-first: ONE column on a phone, where a 72px preview beside
-            the selects leaves about 64px of trigger and every motion name
-            truncates — the preview stacks above the controls instead, and both
-            get the row's full width. The two-column shape starts at `sm`, and
-            there the preview column is RESERVED on the working row (which has no
-            preview) so all three rows' controls share one left edge instead of
-            the working one starting 72px further in. */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[72px_minmax(0,1fr)]">
-          {/* The preview goes through `CrewAvatar` rather than composing a URI
-              here, so what the row shows is drawn by the same resolution the
-              roster uses — including the default this select is displaying. */}
-          {ms && (
-            <div className="sm:col-start-1" data-testid={`avatar-state-preview-${state}`}>
-              <CrewAvatar
-                seed={name}
-                avatar={{ kind: 'ghost', traits: shown, motions }}
-                state={state}
-                size={72}
-              />
-            </div>
-          )}
-          {/* Nested grid for the same reason one level down: the play button
-              lives in column two of the SOUND row only, and both selects sit in
-              column one — so they are exactly as wide as each other rather than
-              the sound one being short by a button. */}
-          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2 sm:col-start-2">
-            {ms && (
-              <div
-                className="col-start-1 flex min-w-0 flex-col gap-1"
-                data-testid={`avatar-state-motion-${state}`}
-              >
-                <span className="text-[11px] text-muted">
-                  {t('components.avatarBuilder.react_motion')}
-                </span>
-                <SimpleSelect
-                  options={[...MOTION_NAMES[ms]]}
-                  optionLabels={MOTION_NAMES[ms].map(nm => t(MOTION_LABEL_KEYS[nm]))}
-                  value={motion}
-                  triggerFallback={motion}
-                  onChange={next => setStateMotion(ms, next)}
-                  aria-label={`${t(STATE_LABEL_KEYS[state])} — ${t('components.avatarBuilder.react_motion')}`}
-                  className="w-full"
-                />
-              </div>
-            )}
-            <>
-              <div
-                className="col-start-1 flex min-w-0 flex-col gap-1"
-                data-testid={`avatar-state-sound-${state}`}
-              >
-                <span className="text-[11px] text-muted">{t('components.avatarBuilder.react_sound')}</span>
-                {/* `clearLabel` IS the unset row: selecting it clears to '' and
-                    the state's key is dropped, which is the same silence a
-                    stored `'none'` means. */}
-                <SimpleSelect
-                  options={[...SOUND_PRESETS]}
-                  optionLabels={SOUND_PRESETS.map(preset => t(SOUND_LABEL_KEYS[preset]))}
-                  value={selectedSound}
-                  onChange={next => setStateSound(state, next)}
-                  clearLabel={t('components.avatarBuilder.sound_silent')}
-                  aria-label={soundLabel(state)}
-                  className="w-full"
-                />
-              </div>
-              <Btn
-                className="col-start-2"
-                onClick={() => selectedSound && previewSound(selectedSound)}
-                disabled={!selectedSound}
-                aria-label={t('components.avatarBuilder.sound_preview')}
-                title={t('components.avatarBuilder.sound_preview')}
-                data-testid={`avatar-state-sound-preview-${state}`}
-              >
-                <Play size={13} aria-hidden="true" />
-              </Btn>
-            </>
-          </div>
-        </div>
-      </section>
-    )
+    return null
   }
 
   return (
@@ -857,12 +478,12 @@ export default function CrewAvatarBuilder({
           <DialogTitle>{t('components.avatarBuilder.title_named', { name })}</DialogTitle>
         </DialogHeader>
         <DialogBody>
-          {/* Tier switch: hand-picked ghost vs uploaded picture, plus the
-              reaction layer. Above every pane so switching never loses any
-              side's in-progress state — the ghost draft, the pending picture
-              and the per-state reactions live in separate state. Picking an
-              identity tier also SETS the tier; the Reactions pane decorates the
-              ghost, and is offered only while the ghost is the selected tier. */}
+          {/* Tier switch: icon pose, uploaded picture, or a library pack. Above
+              every pane so switching never loses the other side's in-progress
+              state — the pending picture and the pack id live in separate state.
+              The ghost-face tier and its Reactions sub-tab were removed with the
+              ghost-face picker (issue #18616): a ghost can no longer be authored
+              or edited here, though stored ghosts are kept and keep rendering. */}
           {/* overflow-x-auto is the floor under `compact` below: compact clears
               every shipped locale at 320px, but the strip must stay reachable
               rather than clipped if a longer one ever lands. It shows no
@@ -875,22 +496,6 @@ export default function CrewAvatarBuilder({
                   label: t('components.avatarBuilder.mode_icon'),
                   icon: <LayoutGrid size={13} aria-hidden="true" />,
                 },
-                // Ghost face is NO LONGER authorable: a new, icon, picture or
-                // pack avatar cannot switch TO the 捏脸 builder (issue #18616).
-                // It is shown ONLY when the crew already wears a ghost face, so
-                // an existing ghost mate can still see and tweak its own face —
-                // the record, its readers and rendering are untouched, so every
-                // ghost avatar keeps working; only the entry point for NEW ghost
-                // authoring is gone.
-                ...(wearsGhost
-                  ? [
-                      {
-                        key: 'face',
-                        label: t('components.avatarBuilder.mode_face'),
-                        icon: <Ghost size={13} aria-hidden="true" />,
-                      },
-                    ]
-                  : []),
                 {
                   key: 'picture',
                   label: t('components.avatarBuilder.mode_picture'),
@@ -903,17 +508,6 @@ export default function CrewAvatarBuilder({
                   // width, so the icon has to say the same word as the label.
                   icon: <LibraryBig size={13} aria-hidden="true" />,
                 },
-                // Ghost-only: a picture cannot move and a pack moves from its
-                // own files, so on those tiers there is nothing to author here.
-                ...(tier === 'face'
-                  ? [
-                      {
-                        key: 'reactions',
-                        label: t('components.avatarBuilder.mode_reactions'),
-                        icon: <Sparkles size={13} aria-hidden="true" />,
-                      },
-                    ]
-                  : []),
               ]}
               value={pane}
               onChange={next => {
@@ -944,16 +538,23 @@ export default function CrewAvatarBuilder({
                 {/* The icon-only door previews the seeded ICON (pose over the
                     seeded colour) the card shows, both before and after a pick,
                     so opening the editor never shows the trait ghost the icon
-                    tier replaced. */}
-                <img
-                  src={poseDataUri(iconPose, iconBg)}
-                  alt=""
-                  aria-hidden="true"
-                  width={176}
-                  height={176}
-                  className="rounded-full border border-border"
-                  data-testid={iconUntouched ? 'avatar-icon-preview-current' : 'avatar-icon-preview'}
-                />
+                    tier replaced. A crew that already wears a ghost is the one
+                    exception (#18616): until it picks, the pane previews that
+                    stored ghost through the real renderer — the face Apply
+                    would keep — so the preview matches what Apply saves. */}
+                {iconPreviewsGhost ? (
+                  <CrewAvatar seed={name} avatar={iconGhostPreviewAvatar} size={176} />
+                ) : (
+                  <img
+                    src={poseDataUri(iconPose, iconBg)}
+                    alt=""
+                    aria-hidden="true"
+                    width={176}
+                    height={176}
+                    className="rounded-full border border-border"
+                    data-testid={iconShowsCurrent ? 'avatar-icon-preview-current' : 'avatar-icon-preview'}
+                  />
+                )}
                 {/* Background colour. Swatches first (a curated set that reads
                     well behind the white ghost), plus a native picker for a free
                     choice — the swatch is the fast path, the picker the escape
@@ -969,7 +570,7 @@ export default function CrewAvatarBuilder({
                     aria-label={t('components.avatarBuilder.icon_background')}
                   >
                     {ICON_BG_PALETTE.map(colour => {
-                      const selected = iconBg.toLowerCase() === colour.toLowerCase()
+                      const selected = !iconShowsCurrent && iconBg.toLowerCase() === colour.toLowerCase()
                       return (
                         <button
                           key={colour}
@@ -979,7 +580,7 @@ export default function CrewAvatarBuilder({
                           aria-label={
                             TILE_LABEL_KEYS[colour] ? t(TILE_LABEL_KEYS[colour]) : colour
                           }
-                          onClick={() => { setIconBg(colour); setIconTouched(true); setResetToDefault(false) }}
+                          onClick={() => { setIconBg(colour); setIconTouched(true); setResetToDefault(false); setDidReset(false) }}
                           className={`aspect-square rounded-md border-2 transition-colors ${
                             selected ? 'border-ring' : 'border-transparent hover:border-border-strong'
                           }`}
@@ -994,7 +595,7 @@ export default function CrewAvatarBuilder({
                     <input
                       type="color"
                       value={iconBg}
-                      onChange={e => { setIconBg(e.target.value); setIconTouched(true); setResetToDefault(false) }}
+                      onChange={e => { setIconBg(e.target.value); setIconTouched(true); setResetToDefault(false); setDidReset(false) }}
                       className="h-7 w-10 cursor-pointer rounded border border-border bg-transparent"
                       aria-label={t('components.avatarBuilder.icon_custom_color')}
                       data-testid="avatar-icon-bg-custom"
@@ -1012,7 +613,7 @@ export default function CrewAvatarBuilder({
                   aria-label={t('components.avatarBuilder.mode_icon')}
                 >
                   {POSE_IDS.map(pose => {
-                    const selected = !iconUntouched && iconPose === pose
+                    const selected = !iconShowsCurrent && iconPose === pose
                     return (
                       <button
                         key={pose}
@@ -1022,7 +623,7 @@ export default function CrewAvatarBuilder({
                         aria-label={t('components.avatarBuilder.icon_pose_label', {
                           n: pose.replace('pose-', ''),
                         })}
-                        onClick={() => { setIconPose(pose); setIconTouched(true); setResetToDefault(false) }}
+                        onClick={() => { setIconPose(pose); setIconTouched(true); setResetToDefault(false); setDidReset(false) }}
                         className={`flex items-center justify-center rounded-lg border-2 p-1.5 transition-colors ${
                           selected ? 'border-ring bg-accent-subtle' : 'border-transparent hover:bg-bg-hover'
                         }`}
@@ -1040,19 +641,6 @@ export default function CrewAvatarBuilder({
                     )
                   })}
                 </div>
-              </div>
-            </div>
-          ) : pane === 'reactions' ? (
-            <div className="flex flex-col gap-3" data-testid="avatar-reactions-pane">
-              <p className="text-[11.5px] text-muted">{t('components.avatarBuilder.react_hint')}</p>
-              {/* No inner scroller: the list is exactly three rows, and a
-                  height cap on it cut the last row in half with no affordance to
-                  say so. `DialogBody` already scrolls (`min-h-0 flex-1
-                  overflow-y-auto`), so on a short window the whole pane scrolls
-                  with a real scrollbar instead. The face pane keeps its own cap
-                  because its grid is dozens of thumbnails, not three rows. */}
-              <div className="flex flex-col gap-3">
-                {AVATAR_STATES.map(stateRow)}
               </div>
             </div>
           ) : pane === 'pack' ? (
@@ -1174,92 +762,7 @@ export default function CrewAvatarBuilder({
                 </p>
               )}
             </div>
-          ) : (
-          <div className="flex flex-col gap-4 md:flex-row">
-            {/* Left: live preview + the whole-face view switch. Flip stays a
-                toggle rather than a tab: it is a view transform of the same
-                face, not a trait with its own vocabulary. Narrow-first: the
-                columns stack below md so a phone gets the full width for the
-                tab strip and the thumbnail grid. */}
-            <div className="flex w-full flex-col items-center gap-3 md:w-[200px] md:flex-none">
-              <img
-                src={ghostDataUri(shown)}
-                alt=""
-                aria-hidden="true"
-                width={176}
-                height={176}
-                className="rounded-full border border-border"
-                data-testid="avatar-builder-preview"
-              />
-              <div className="flex w-full flex-col gap-2 text-[12px]">
-                <div className="flex items-center justify-between">
-                  <span>{t('components.avatarBuilder.mirror')}</span>
-                  <Toggle
-                    checked={shown.flip}
-                    onChange={v => setTrait({ flip: v })}
-                    label={t('components.avatarBuilder.mirror')}
-                  />
-                </div>
-              </div>
-              <Btn onClick={randomize} className="w-full" data-testid="avatar-builder-randomize">
-                <Dices className="lucide-inline" aria-hidden="true" />
-                {t('components.avatarBuilder.randomize')}
-              </Btn>
-            </div>
-            {/* Right: category tabs + the thumbnail grid. */}
-            <div className="flex min-w-0 flex-1 flex-col gap-3">
-              {/* Adaptive collapse stays ON (a phone width cannot fit seven
-                  labeled tabs without clipping); the icons above are what
-                  keep every axis visible in the collapsed compact form. */}
-              <SegmentedControl segments={segments} value={axis} onChange={setAxis} layoutId="avatar-builder-axis" />
-              <div className="grid max-h-[380px] grid-cols-[repeat(auto-fill,minmax(84px,1fr))] gap-2 overflow-y-auto pr-1" role="listbox" aria-label={t(AXIS_LABEL_KEYS[axis])}>
-                {thumbs.map(({ key, uri }) => {
-                  const selected =
-                    axis === 'tile'
-                      ? shown.tile === key
-                      : axis === 'blush'
-                        ? shown.blush === (key === 'blush')
-                        : shown[axis] === key
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      role="option"
-                      aria-selected={selected}
-                      aria-label={
-                        axis === 'tile'
-                          ? (TILE_LABEL_KEYS[key] ? t(TILE_LABEL_KEYS[key]) : key)
-                          : optLabel(key)
-                      }
-                      onClick={() =>
-                        setTrait(
-                          axis === 'tile'
-                            ? { tile: key }
-                            : axis === 'blush'
-                              ? { blush: key === 'blush' }
-                              : { [axis]: key },
-                        )
-                      }
-                      className={`flex flex-col items-center gap-1 rounded-lg border-2 p-1.5 pb-1 transition-colors ${
-                        selected ? 'border-ring bg-accent-subtle' : 'border-transparent hover:bg-bg-hover'
-                      }`}
-                      data-testid={`avatar-opt-${key.replace('#', '')}`}
-                    >
-                      <img src={uri} alt="" aria-hidden="true" width={72} height={72} className="rounded-full" />
-                      <span className={`text-[10.5px] leading-tight ${selected ? 'text-text-strong' : 'text-muted'}`}>
-                        {/* Tile options carry no text label: the swatch IS the
-                            meaning, and a raw hex code is noise to a person
-                            (first-run review, Medium #7). The hex still reaches
-                            AT users via the aria-label. */}
-                        {axis === 'tile' ? '\u00a0' : optLabel(key)}
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          </div>
-          )}
+          ) : null}
         </DialogBody>
         {/* flex-wrap: at phone width the reset link + hint block and the
             action buttons cannot share one row; wrapping keeps Apply on
@@ -1292,13 +795,23 @@ export default function CrewAvatarBuilder({
               type="button"
               onClick={() => {
                 pickGen.current += 1
-                setDraft(null)
                 setPending(null)
                 setPackId(null)
                 // The user asked to undress: Apply commits `null` whatever
                 // tier this lands on. Cleared by any pick (icon pose/colour,
                 // a trait, a pack, a picture) below.
                 setResetToDefault(true)
+                // Persisted across a tab change (which clears resetToDefault):
+                // a ghost crew's reset must keep winning over the keep-the-
+                // stored-ghost shortcut in buildResult, even after a detour
+                // (#18616 review).
+                setDidReset(true)
+                // Clear any earlier pose/colour pick so the preview and
+                // selection reflect the reset, not a pick the reset discarded
+                // (#18616 review — pick-then-reset mismatch). A ghost crew then
+                // previews the name-derived face `null` renders; a non-ghost
+                // crew re-seeds its icon below and previews that.
+                setIconTouched(false)
                 // Reset the icon draft to the fresh-crew defaults too, so a
                 // later switch to the Icon tier starts clean rather than on a
                 // half-edited pose from before the reset.
@@ -1309,16 +822,14 @@ export default function CrewAvatarBuilder({
                 // the label says both halves out loud, because a link promising
                 // only the face while also erasing two motions and three sounds
                 // is a control the user cannot predict.
-                setMotions({})
-                setSounds({})
-                // A ghost crew's Reset returns to its own face; a non-ghost
-                // crew returns to the icon tier, never the ghost trait builder
-                // — Reset must not become a path to author a new ghost on a
-                // crew that does not already wear one (issue #18616). Mirrors
-                // the on-open tier (tierOf(value)) so Reset and a fresh open
-                // land the same place.
-                setTier(wearsGhost ? 'face' : 'icon')
-                setPane(wearsGhost ? 'face' : 'icon')
+                // Reset always lands on the Icon tier now that the ghost-face
+                // tier is unreachable (issue #18616). For a ghost crew the
+                // `resetToDefault && wearsGhost` branch in buildResult still
+                // commits `null` (the undress the backend reads as "the name's
+                // face"), so Reset returns it to its name-derived default rather
+                // than a name-seeded icon; a non-ghost crew commits that icon.
+                setTier('icon')
+                setPane('icon')
               }}
               className="self-start text-[12px] text-muted underline underline-offset-2 hover:text-text"
               data-testid="avatar-builder-reset"
