@@ -314,7 +314,11 @@ def _project_tree_walk(base: str, cap: int, scan_limit: int) -> dict:
 
 
 def _project_tree_walk_pinned(
-    base: str, cap: int, scan_limit: int, root_identity: tuple[int, int] | None
+    base: str,
+    cap: int,
+    scan_limit: int,
+    root_identity: tuple[int, int] | None,
+    ignored: frozenset[str] = frozenset(),
 ) -> dict:
     """The non-git listing of *base*: one bounded breadth-first pass.
 
@@ -353,6 +357,11 @@ def _project_tree_walk_pinned(
     *base* is the native path, and each folder carries its own native path
     alongside its project-relative row: an extended-length ``\\\\?\\`` root on
     Windows does not convert a ``/`` inside a joined path.
+
+    *ignored* holds the ``os.path.normcase``-d native paths git reports as
+    ignored (:func:`_project_tree_nested_ignored`); an entry among them is
+    dropped like a fenced one. It only removes entries this walk read, so it
+    can never add a row or point the walk at another folder.
     """
     # Directory rows in discovery (breadth-first) order. A folder is a row as
     # soon as its parent's read names it, so a folder the walk then cannot
@@ -443,6 +452,13 @@ def _project_tree_walk_pinned(
                         except OSError:
                             is_dir = False
                         had_entries = True
+                        # A path git itself reports as ignored is dropped like
+                        # a fenced one (only for a nested repository's listing).
+                        if (
+                            ignored
+                            and os.path.normcase(os.path.join(native, entry.name)) in ignored
+                        ):
+                            continue
                         if not is_dir:
                             if not fenced(entry.name):
                                 names.append(entry.name)
@@ -812,6 +828,68 @@ def _project_tree_in_nested_repo(base: str, subdir: str) -> bool:
     )
 
 
+def _project_tree_nested_ignored(base: str, segments: tuple[str, ...]) -> frozenset[str] | None:
+    """What git ignores under folder *segments* of a nested repository.
+
+    The ``os.path.normcase``-d native paths of the untracked files and folders
+    the innermost nested repository (the deepest folder along *segments*
+    holding a ``.git``) ignores under that folder, or ``None`` when git cannot
+    say. Git decides everything: its ``.gitignore`` files, ``info/exclude``,
+    the global excludes file, negation, and that a tracked path is never
+    ignored -- the same answer the project's own listing gets from
+    ``ls-files --exclude-standard``.
+
+    It is the project listing's own git run (:func:`_project_tree_listing`):
+    ``core.fsmonitor=``, a literal pathspec, the 15 s timeout and the output
+    cap, from the nested repository's top. ``--directory`` names a folder that
+    is ignored whole as one entry. The names only drop entries the pinned walk
+    itself read, so a run redirected by a folder swapped for a link can hide
+    rows but never add one. A failed run (nonzero exit, timeout, cap) gives
+    ``None`` and the listing hides nothing, as the project listing falls back
+    to the plain walk when its git fails.
+    """
+    top = max(
+        (
+            depth
+            for depth in range(1, len(segments) + 1)
+            if os.path.lexists(os.path.join(base, *segments[:depth], ".git"))
+        ),
+        default=0,
+    )
+    if top == 0:
+        return None
+    root = os.path.join(base, *segments[:top])
+    below = posixpath.join(*segments[top:]) if top < len(segments) else ""
+    rc, out, _ = _run_git_bounded(
+        [
+            "git",
+            "-c",
+            "core.fsmonitor=",
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            *(["--", below] if below else []),
+        ],
+        cwd=root,
+        env={**os.environ, "GIT_LITERAL_PATHSPECS": "1"},
+        timeout=15,
+        decode_errors="surrogateescape",
+    )
+    if rc != 0:
+        return None
+    return frozenset(
+        # git names every path with `/`, whatever the platform.
+        os.path.normcase(
+            os.path.join(root, *[part for part in listed.split(posixpath.sep) if part])
+        )
+        for listed in out.split("\0")
+        if listed.strip(posixpath.sep)
+    )
+
+
 def _project_tree_listing(
     base: str,
     subdir: str = "",
@@ -931,8 +1009,15 @@ def _project_tree_listing(
 
     # Fallback: one bounded breadth-first walk (``_project_tree_walk``).
     if subdir:
+        # A nested repository hides what its own git ignores, as the project's
+        # git listing does for the project; when git cannot say, nothing.
+        ignored = _project_tree_nested_ignored(base, PurePath(subdir).parts) if in_nested else None
         walked = _project_tree_walk_pinned(
-            native, _PROJECT_TREE_MAX_ENTRIES, _PROJECT_TREE_SCAN_LIMIT, identity
+            native,
+            _PROJECT_TREE_MAX_ENTRIES,
+            _PROJECT_TREE_SCAN_LIMIT,
+            identity,
+            ignored or frozenset(),
         )
         if in_nested:
             # A nested repository's `.git` (a pointer file in a submodule) is
