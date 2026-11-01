@@ -31,7 +31,6 @@
   "src/test/McpAppFrame.test.tsx",
   "src/test/RemoteCrewPanel.test.tsx",
   "src/test/SettingsChatPanelCoverage.test.tsx",
-  "src/test/TranscriptRowGeometry.test.tsx",
   "src/test/WidgetFrame.test.tsx",
   "src/test/chatPins.test.tsx",
   "src/test/toolDisclosureKey.renderSite.test.tsx",
