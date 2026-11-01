@@ -66,7 +66,6 @@
   "src/test/ChatInput.optimizeWriteback.test.tsx",
   "src/test/ChatInput.paste.test.tsx",
   "src/test/ChatInput.projectBranch.test.tsx",
-  "src/test/ChatInput.resizeBadge.test.tsx",
   "src/test/ChatInput.skillsPrefetchDeadline.test.tsx",
   "src/test/ChatInput.terminalCommand.test.tsx",
   "src/test/ChatInput.test.tsx",
