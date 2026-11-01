@@ -166,14 +166,47 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
                     },
                     status=403,
                 )
+        from kiro_crew.shared_crew import decisions as shared_decisions
+
+        try:
+            raw_target_body = await request.json() if request.can_read_body is True else {}
+        except ValueError:
+            raw_target_body = {}
+        target_response_id, target_response_id_ok = shared_decisions.read_response_id(
+            raw_target_body if isinstance(raw_target_body, dict) else {}
+        )
+        if not target_response_id_ok:
+            return web.json_response(
+                {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
+            )
         pending = state._pending_approvals.get(approval_id)
-        # No await between checking the record and resolving its state-only future.
-        ok = bool(
+        # No await between checking the record and resolving its state-only
+        # future. The registry records the verified responder, as the by-id
+        # path below does.
+        # A settled future whose record the wait has not popped yet is a lost
+        # race: resolving again would reopen the decision the winner settled.
+        future = state._approval_futures.get(approval_id)
+        if (
             pending
             and (pending.get("slot") or "") == slot
             and pending.get("instance") == instance
-            and state.resolve_state_approval(approval_id, action == "approve")
-        )
+            and future is not None
+            and not future.done()
+        ):
+            outcome = {"approve": "approved", "reject_once": "rejected_once"}.get(
+                action, "rejected"
+            )
+            target_reply = shared_decisions.resolve_state_approval(
+                state,
+                request,
+                approval_id,
+                action == "approve",
+                outcome,
+                target_response_id,
+            )
+            if target_reply is not None:
+                return shared_decisions.respond(target_reply)
+        ok = False
     else:
         # Imported here: chat_handlers imports this package at module scope.
         from kiro_crew.dashboard.chat_handlers import bare_approval_decide_allowed

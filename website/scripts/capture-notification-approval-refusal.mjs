@@ -52,11 +52,11 @@
  *                             the row leaves, no DELETE sent
  *   24-feed-expiry-during-503  Approve pressed, the expiry frame lands while the
  *                             decide is in flight, then a 503: the row stays
- *                             retired, buttons withdrawn, the failure then "no
- *                             longer pending" as error notices, focus on its X
+ *                             retired, buttons withdrawn, "no longer pending"
+ *                             alone with no failure hedge, focus on its X
  *   25-detail-expiry-during-503  that row opened: the detail panel shows the
- *                             same two notices in the same order, no Dismiss
- *                             of its own, and the row does not repeat them
+ *                             same "no longer pending" alone, no Dismiss
+ *                             of its own, and the row does not repeat it
  *
  * Usage: npm run build && node scripts/capture-notification-approval-refusal.mjs [outDir]
  */
@@ -77,14 +77,15 @@ const REASON = 'gateway busy, try again'
 // It hedges in the approval card's `decision_failed` sentence, and the row
 // keeps Approve and Reject, since pressing again is safe.
 const HEDGED = 'This decision may not have been recorded — the request failed.'
-// The same failure on a request that ended meanwhile shows the same
-// sentence, with no Approve or Reject beside it: nothing is left to press.
+// The same unquoted failure on a request that ended meanwhile adds nothing:
+// nothing is left to press, so the row says "no longer pending" alone.
 const ENDED_FAILED = 'This decision may not have been recorded'
 // The failed clean-up after a decision that landed. Its retry is the row's
-// dismiss control in the feed, so the sentence names it by its accessible name.
-const DISMISS_FAILED = "This notification couldn't be dismissed. Press Dismiss notification on it in the feed to try again."
-// Both views lead with the failure, then "no longer pending".
-const failureFirst = text => text.includes(ENDED_FAILED) && text.indexOf(ENDED_FAILED) < text.indexOf(REFUSED)
+// close control in the list, so the sentence names it by the ✕ it shows and
+// by its accessible name.
+const DISMISS_FAILED = "This notification couldn't be removed. Press ✕ (Dismiss notification) on it in the list to try again."
+// Both views show "no longer pending" with no failure hedge beside it.
+const endedAlone = text => text.includes(REFUSED) && !text.includes(ENDED_FAILED)
 // A Dismiss control outside the feed rows: the detail panel has none of its
 // own, so a row leaves only through its close X in the feed.
 const panelDismissCount = page => page.evaluate(() => [...document.querySelectorAll('button')]
@@ -478,7 +479,7 @@ await decidedDismissFailedFrame('17b-detail-decided-dismiss-failed-light', 'ligh
     focusedOnDismiss: await page.evaluate(() => !!document.activeElement?.hasAttribute('data-notif-dismiss')),
     deletes: counts.deletes,
   }
-  const feedOk = feed.held && feed.listedMidFlight === 1 && feed.rows === 1 && failureFirst(feed.alert)
+  const feedOk = feed.held && feed.listedMidFlight === 1 && feed.rows === 1 && endedAlone(feed.alert)
     && !feed.alert.includes(REASON) && !feed.alert.includes('Try again') && feed.buttons === 0 && feed.focusedOnDismiss && feed.deletes === 0
   console.log(`24-feed-expiry-during-503: ${feedOk ? 'OK' : 'MISMATCH'} ${JSON.stringify(feed)}`)
   if (feedOk) await page.screenshot({ path: `${OUT}/24-feed-expiry-during-503.png` })
@@ -494,7 +495,7 @@ await decidedDismissFailedFrame('17b-detail-decided-dismiss-failed-light', 'ligh
     rowRepeats: await row.getByRole('alert').count(),
   }
   await shot(page, '25-detail-expiry-during-503',
-    failureFirst(panel.alert) && panel.buttons === 0 && panel.dismiss === 0 && panel.rowRepeats === 0,
+    endedAlone(panel.alert) && panel.buttons === 0 && panel.dismiss === 0 && panel.rowRepeats === 0,
     JSON.stringify(panel))
 }
 

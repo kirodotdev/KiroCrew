@@ -105,8 +105,9 @@ describe('NotificationDetailPanel approval decisions', () => {
     // row leaves through its close X in the feed.
     expect(screen.getByTestId('notif-detail-close')).toHaveTextContent(i18nT('components.notifications.notificationDetailPanel.close'))
     expect(screen.queryByRole('button', { name: i18nT('components.notifications.notificationFeed.dismiss_notification') })).toBeNull()
-    // So the notice names the control that retries, the row's dismiss control
-    // in the feed, by its accessible name; the panel's Close only closes.
+    // So the notice names the control that retries, the row's close control,
+    // by the ✕ a sighted reader sees on it; the panel's Close only closes.
+    expect(failed).toHaveTextContent('✕')
     expect(failed).toHaveTextContent(i18nT('components.notifications.notificationFeed.dismiss_notification'))
     expect(failed.textContent).not.toContain(i18nT('components.notifications.notificationDetailPanel.close'))
     expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()
@@ -137,12 +138,10 @@ describe('NotificationDetailPanel approval decisions', () => {
       await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
       act(() => { store.dispatch(endApprovalRow(approvalNote.ts)) })
       await act(async () => { reject(failure()) })
-      const notice = await screen.findByTestId('notif-approval-refusal')
-      expect(notice).toHaveAttribute('role', 'alert')
-      expect(notice).toHaveTextContent(i18nT('components.approvalCard.decision_failed'))
-      expect(screen.getByTestId('notif-approval-retired')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
-      // The failure leads, then "no longer pending", as on the feed row.
-      expect(notice.compareDocumentPosition(screen.getByTestId('notif-approval-retired')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      // The request has ended, so there is nothing to retry: the panel says
+      // "no longer pending" alone, as the feed row does.
+      expect(await screen.findByTestId('notif-approval-retired')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
+      expect(screen.queryByTestId('notif-approval-refusal')).toBeNull()
       expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()
       expect(screen.queryByRole('button', { name: /Reject/ })).toBeNull()
       expect(store.getState().notifications.items.map(n => n.ts)).toEqual([approvalNote.ts])
@@ -225,6 +224,20 @@ describe('NotificationDetailPanel approval decisions', () => {
     expect(store.getState().notifications.retiredApprovals ?? {}).toEqual({})
     // The panel stays open, so the notice and the retry stay in view.
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('a 503 on a row that names its request says pressing again is safe', async () => {
+    const targeted: Notification = { ...approvalNote, approval_instance: 'inst-1', slot: 'dashboard:s1' }
+    vi.mocked(api.resolveApproval).mockRejectedValue(new ApiError(503, 'upstream proxy overloaded'))
+    const store = createTestStore({ notifications: { items: [targeted] } as RootState['notifications'] })
+    renderWithProviders(<NotificationDetailPanel n={targeted} onClose={vi.fn()} />, { store })
+    await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
+    const notice = await screen.findByTestId('notif-approval-refusal')
+    expect(notice).toHaveTextContent(i18nT('components.notifications.notificationFeed.decision_failed_retry'))
+    expect(notice.textContent).not.toContain(i18nT('components.approvalCard.decision_failed'))
+    // The safe-retry copy rides only on a decide that named its request.
+    expect(vi.mocked(api.resolveApproval).mock.calls.at(-1)?.slice(0, 3)).toEqual(
+      ['apr-gone', 'approve', { origin: 'coordinator', slot: 'dashboard:s1', instance: 'inst-1' }])
   })
 
   it.each([503, 502])('a %i keeps the buttons and says it in plain words, never the layer\'s own text', async (status) => {

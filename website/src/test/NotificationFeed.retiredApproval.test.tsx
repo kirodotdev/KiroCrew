@@ -157,6 +157,31 @@ describe('NotificationFeed retired approvals', () => {
     expect(store.getState().notifications.retiredApprovals ?? {}).toEqual({})
   })
 
+  it('a retryable failure on a row that names its request says pressing again is safe; a row decided by id keeps the plain hedge', async () => {
+    const targeted: Notification = { ...approval, approval_instance: 'inst-1', slot: 'dashboard:s1' }
+    for (const [row, key] of [
+      [targeted, 'components.notifications.notificationFeed.decision_failed_retry'],
+      [approval, 'components.approvalCard.decision_failed'],
+    ] as const) {
+      mockResolveApproval.mockRejectedValueOnce(new ApiError(503, 'gateway busy, try again'))
+      const views = renderBoth([row])
+      fireEvent.click(views.page.getByRole('button', { name: /^Approve$/ }))
+      expect(await views.page.findByTestId('notif-approval-notice')).toHaveTextContent(i18nT(key))
+      // The safe-retry copy rides only on a decide that named its request.
+      const sent = mockResolveApproval.mock.calls.at(-1) ?? []
+      if (row === targeted) {
+        expect(sent.slice(0, 3)).toEqual(['apr-1', 'approve', { origin: 'coordinator', slot: 'dashboard:s1', instance: 'inst-1' }])
+      } else {
+        expect(sent[2]).toBeUndefined()
+      }
+      const other = key === 'components.approvalCard.decision_failed'
+        ? 'components.notifications.notificationFeed.decision_failed_retry'
+        : 'components.approvalCard.decision_failed'
+      expect(views.page.queryByText(i18nT(other))).toBeNull()
+      views.unmount()
+    }
+  })
+
   it('a retryable failure renders below the still-live Approve/Reject in both variants', async () => {
     mockResolveApproval.mockRejectedValue(new ApiError(500, 'boom'))
     const { page, popover } = renderBoth([approval])
@@ -317,12 +342,11 @@ describe('NotificationFeed retired approvals', () => {
       act(() => { store.dispatch(endApprovalRow('1')) })
       await act(async () => { d.reject(failure()) })
       for (const view of [page, popover]) {
-        const notice = await view.findByTestId('notif-approval-notice')
-        expect(notice).toHaveAttribute('role', 'alert')
-        expect(notice).toHaveTextContent(i18nT('components.approvalCard.decision_failed'))
-        expect(view.getByTestId('notif-approval-retired')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
-        // The failure leads, then "no longer pending", as in the detail panel.
-        expect(notice.compareDocumentPosition(view.getByTestId('notif-approval-retired')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+        // The request has ended, so there is nothing to retry: the row says
+        // "no longer pending" alone, with no "try again" hedge beside it.
+        expect(await view.findByTestId('notif-approval-retired')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
+        expect(view.queryByTestId('notif-approval-notice')).toBeNull()
+        expect(view.queryByText(i18nT('components.notifications.notificationFeed.decision_failed_retry'))).toBeNull()
         expect(view.queryByRole('button', { name: /^Approve$/ })).toBeNull()
         expect(view.queryByRole('button', { name: /^Reject$/ })).toBeNull()
       }
@@ -344,7 +368,7 @@ describe('NotificationFeed retired approvals', () => {
     fireEvent.click(approve)
     act(() => { store.dispatch(endApprovalRow('1')) })
     await act(async () => { d.reject(new ApiError(503, 'gateway busy, try again')) })
-    const row = (await page.findByTestId('notif-approval-notice')).closest('[data-notif-row]') as HTMLElement
+    const row = (await page.findByTestId('notif-approval-retired')).closest('[data-notif-row]') as HTMLElement
     await waitFor(() => { expect(document.activeElement).toBe(row.querySelector('[data-notif-dismiss]')) })
   })
   it('a quoted reason after the expiry frame is shown on the row', async () => {
@@ -374,10 +398,12 @@ describe('NotificationFeed retired approvals', () => {
     const failed = screen.getByTestId('notif-dismiss-failed')
     expect(failed).toHaveAttribute('role', 'alert')
     expect(failed).toHaveTextContent(decidedClearFailedCopy())
-    // The retry is the row's own dismiss control, so the sentence names it by
-    // the accessible name a screen reader announces for it.
+    // The retry is the row's own close control. The sentence names it both by
+    // the ✕ a sighted reader sees and by the accessible name a screen reader
+    // announces for it.
     const retry = screen.getByRole('button', { name: DISMISS() })
     expect(retry.closest('[data-notif-row]')?.getAttribute('data-ts')).toBe('8')
+    expect(failed).toHaveTextContent('✕')
     expect(failed).toHaveTextContent(retry.getAttribute('aria-label') ?? '')
     // Boxed (the block variant's <div>) to pair with the boxed status above it.
     expect(failed.tagName).toBe('DIV')
