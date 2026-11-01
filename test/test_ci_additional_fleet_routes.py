@@ -337,6 +337,7 @@ def test_parity_detector_rejects_corrupted_routes(tmp_path, monkeypatch, shape):
         ("build-wheel.yml", "build-wheel"),
         ("dependency-vulnerability.yml", "audit-production-dependencies"),
         ("pr-readiness.yml", "readiness"),
+        ("codeql.yml", "analyze"),
     ],
 )
 def test_additional_routes_have_no_container_or_cloud_credential_steps(filename, job_id):

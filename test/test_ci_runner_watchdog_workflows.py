@@ -140,6 +140,14 @@ def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
             # Publishes the required commit status and the readiness label. The
             # sweep's hosted recompute republishes it, so no heal is needed.
             "pr-readiness.yml",
+            # Neither declared set can hold it, so exemption is derived rather
+            # than chosen. Its group, `codeql-${{ pull_request.number ||
+            # run_id }}`, is PR-keyed on a pull request -- which the ref-keyed
+            # set rejects -- and degenerates to a per-run key on its `push`,
+            # `schedule` and `workflow_dispatch` runs, where no successor check
+            # protects a re-run; those same triggers keep it out of the
+            # pull-request-only set, which admits one trigger.
+            "codeql.yml",
         }
     )
     assert wd.HEAL_SAFE_WORKFLOWS == heal_safe

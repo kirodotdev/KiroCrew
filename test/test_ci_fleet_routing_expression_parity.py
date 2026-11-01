@@ -279,6 +279,9 @@ _EXPECTED_ROUTED_JOBS = {
     ("code-review.yml", "inclusive-language"),
     ("code-review.yml", "pr-hygiene"),
     ("code-review.yml", "sast"),
+    # The repository's second static-analysis scan, listed beside `sast` rather
+    # than appended: both read the whole tree and neither builds it.
+    ("codeql.yml", "analyze"),
     ("pr-merge-conflict-label.yml", "label"),
     ("build-wheel.yml", "build-wheel"),
     ("dependency-vulnerability.yml", "audit-production-dependencies"),

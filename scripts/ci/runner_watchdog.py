@@ -239,6 +239,7 @@ WATCHED_WORKFLOWS: tuple[str, ...] = (
     "build.yml",
     "ci.yml",
     "code-review.yml",
+    "codeql.yml",
     "dependency-review.yml",
     "dependency-vulnerability.yml",
     "fast-gate.yml",
