@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         ValidationError,
         _redact,
+        _remote_run_operation_refusal,
         _spawn_scope_refusal,
         body_int,
         body_not_object_error,
@@ -78,6 +79,92 @@ async def _spawn_request_memory_mode(
         parent_mode if caller == parent else await resolve_session_memory_mode(state, caller)
     )
     return strictest((parent_mode, caller_mode)) or "persistent"
+
+
+# Caller-chosen run ids between their freshness check and their registration
+# with the manager (``_client_run_id_refusal``). The handler runs on the event
+# loop, so a plain set checked and filled without an await in between is atomic.
+# ``handlers/messaging.py`` imports this same object: ``compose`` rebinds this
+# module's functions onto that module's globals, where the name must resolve.
+_RESERVED_RUN_IDS: set[str] = set()
+
+
+def _floored_caller_refusal(state: DashboardState, request: web.Request, parent: str) -> Any:
+    """Refuse a start or continuation asked for by a run that carries the floor.
+
+    The new run would take this gateway's approval posture, so a yolo crew
+    would auto-approve every one of its tools and none would reach the hub.
+    Both the claimed parent and the caller's own session are checked, the same
+    pair the memory mode is read from.
+    """
+    from kiro_crew.subagent_manager.hub_approvals import floored_session
+
+    caller = request.headers.get("X-Session-Key", "")
+    subagents = getattr(state, "subagents", None)
+    if not any(floored_session(subagents, key) for key in {parent, caller} if key):
+        return None
+    return web.json_response(
+        {
+            "error": "a run under an approval floor cannot start or continue another run",
+            "code": "approval_floor_nested_spawn",
+        },
+        status=409,
+    )
+
+
+async def _client_run_id_refusal(state: DashboardState, run_id: object) -> web.Response | None:
+    """The refusal for a caller-chosen ``run_id``, or ``None`` when it may be used.
+
+    ``None`` also RESERVES the id in ``_RESERVED_RUN_IDS``; the caller must
+    release it (``_RESERVED_RUN_IDS.discard``) once the run is registered with
+    the manager or refused.
+
+    The id has the exact shape this gateway mints itself (16 hex characters,
+    ``SubagentManager._mint_agent_id``), so every reader of run ids accepts it.
+    A remote hub names the run before it sends it, and records that name first,
+    so a hub that dies between this answer and its own record still finds the run
+    again under the name it wrote (``GET /api/spawn/{id}``). The id must be fresh
+    here: one the manager knows, or one with a run folder on disk, is refused
+    with ``409 run_id_taken`` rather than reused, so no caller can land on, or
+    read through, another run's identity.
+    """
+    import re
+
+    from kiro_crew.subagent_persistence import _agent_dir
+
+    if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{16}", run_id):
+        return web.json_response(
+            {"error": "run_id must be 16 lowercase hex characters", "code": "invalid_run_id"},
+            status=400,
+        )
+    subagents = state.subagents
+    known = (
+        run_id in _RESERVED_RUN_IDS
+        or subagents is not None
+        and (
+            subagents.get(run_id) is not None
+            or bool(getattr(subagents, "is_queued", lambda _id: False)(run_id))
+        )
+    )
+    taken = web.json_response(
+        {"error": "run_id is already in use on this gateway", "code": "run_id_taken"},
+        status=409,
+    )
+    if known:
+        return taken
+    # Reserved before the first await: two concurrent requests naming one fresh
+    # id would otherwise both pass the disk check below and register under the
+    # same id. The caller releases it once the run is registered or refused.
+    _RESERVED_RUN_IDS.add(run_id)
+    try:
+        on_disk = await asyncio.to_thread(lambda: _agent_dir(run_id).exists())
+    except BaseException:
+        _RESERVED_RUN_IDS.discard(run_id)
+        raise
+    if on_disk:
+        _RESERVED_RUN_IDS.discard(run_id)
+        return taken
+    return None
 
 
 def _slot_for_parent(state: DashboardState, parent: str) -> Any | None:
@@ -247,6 +334,37 @@ async def api_spawn(request: web.Request) -> web.Response:
     # a non-string parent is refused below and reads no scope here.
     asked_parent = body.get("parent_session", "")
     parent_dirs = list(parent_project_dirs(asked_parent)) if isinstance(asked_parent, str) else []
+    # A caller-named run (a remote hub forwarding a spawn) is reserved before
+    # the first admission await, and held until this request ends. A hub whose
+    # connection dropped withdraws the run with DELETE; while admission is still
+    # awaiting (the member scope, the parent's records) that DELETE must answer
+    # ``409 spawn_admission_pending``, not ``404``. A 404 tells the hub the run
+    # never started, so it forgets it, and this handler would then start a run
+    # nobody monitors or can stop.
+    run_id = body.get("run_id", "") if isinstance(body, dict) else ""
+    if run_id:
+        refusal = await _client_run_id_refusal(state, run_id)
+        if refusal is not None:
+            return refusal
+    try:
+        return await _admit_spawn(request, state, body, run_id, parent_dirs)
+    finally:
+        if run_id:
+            _RESERVED_RUN_IDS.discard(run_id)
+
+
+async def _admit_spawn(
+    request: web.Request,
+    state: DashboardState,
+    body: Any,
+    run_id: str,
+    parent_dirs: list[str],
+) -> web.Response:
+    """The admission and placement half of ``api_spawn``; *run_id* is already reserved.
+
+    *parent_dirs* is the parent's project scope, read by ``api_spawn`` before
+    its first await so a parent that ends meanwhile cannot shrink it.
+    """
     try:
         cleaned = validate_tool_args(
             {
@@ -259,6 +377,8 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "include_memory": body.get("include_memory", True),
                 "include_lessons": body.get("include_lessons", True),
                 "include_project": body.get("include_project", True),
+                "executor": body.get("executor", "local"),
+                "instance_id": body.get("instance_id", ""),
                 # The dict is CLOSED -- validate_tool_args only sees what is
                 # listed here -- so omitting a schema field silently disables it
                 # rather than failing. That is what made the crew delegation
@@ -290,11 +410,34 @@ async def api_spawn(request: web.Request) -> web.Response:
             {"error": "parent_session must be a string", "code": "invalid_parent_session"},
             status=400,
         )
+    executor = str(cleaned.get("executor") or "local")
+    instance_id = str(cleaned.get("instance_id") or "")
+    if executor == "local" and instance_id:
+        return web.json_response(
+            {
+                "error": "instance_id requires executor='remote'",
+                "code": "remote_instance_without_executor",
+            },
+            status=400,
+        )
+    if executor == "remote" and cleaned.get("backend"):
+        # The peer runs the child on its own harness and is not sent a backend,
+        # so accepting one here would report a placement that ignored it.
+        return web.json_response(
+            {
+                "error": "backend cannot be chosen for a remote run; the crew uses its own",
+                "code": "remote_backend_unsupported",
+            },
+            status=400,
+        )
     _, refusal = await internal_memory_scope(
         request, "spawn.create", claimed_session=spawn_parent_claim(request, parent_session)
     )
     if refusal is not None:
         return refusal
+    nested_refusal = _floored_caller_refusal(state, request, parent_session)
+    if nested_refusal is not None:
+        return nested_refusal
     try:
         admitted_mode = await _spawn_request_memory_mode(state, request, parent_session)
     except (OSError, ValueError):
@@ -305,6 +448,15 @@ async def api_spawn(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    requested_memory_mode = body.get("memory_mode", "")
+    if requested_memory_mode:
+        if requested_memory_mode not in ("persistent", "incognito", "temporary"):
+            return web.json_response(
+                {"error": "invalid memory_mode", "code": "invalid_memory_mode"}, status=400
+            )
+        from kiro_crew.messaging.privacy_mode import strictest
+
+        admitted_mode = strictest((admitted_mode, requested_memory_mode)) or "persistent"
     # approval_mode and silent are HTTP API parameters passed by the SDK,
     # NOT MCP tool arguments from the LLM.  The LLM's spawn_run tool
     # (mcp_core.py) does not expose these params — they are added by the
@@ -317,6 +469,41 @@ async def api_spawn(request: web.Request) -> web.Response:
     approval_mode = body.get("approval_mode", "")
     if approval_mode not in ("", "auto"):
         return web.json_response({"error": "approval_mode must be '' or 'auto'"}, status=400)
+    # A remote hub forwards its parent's approval posture as a floor: with
+    # "interactive" this run's tools are never auto-approved here, whatever
+    # this gateway's own yolo or config fallbacks say. Same transport-layer
+    # rule as approval_mode: not an LLM tool argument.
+    approval_floor = body.get("approval_floor", "")
+    if approval_floor not in ("", "interactive"):
+        return web.json_response(
+            {
+                "error": "approval_floor must be '' or 'interactive'",
+                "code": "invalid_approval_floor",
+            },
+            status=400,
+        )
+    if approval_floor and approval_mode:
+        return web.json_response(
+            {
+                "error": "approval_floor and approval_mode=auto contradict",
+                "code": "approval_floor_conflict",
+            },
+            status=400,
+        )
+    if approval_floor:
+        from kiro_crew.subagent_manager.hub_approvals import floor_enforceable
+
+        if not await asyncio.to_thread(floor_enforceable, backend):
+            # This harness pre-approves through a surface the floor cannot
+            # reach, so accepting the run would drop the floor silently. The
+            # run's own backend is checked, not only the gateway default.
+            return web.json_response(
+                {
+                    "error": "this gateway's agent backend cannot enforce an approval floor",
+                    "code": "approval_floor_unenforceable",
+                },
+                status=409,
+            )
     silent = body.get("silent", False)
     if not isinstance(silent, bool):
         silent = str(silent).lower() in ("true", "1", "yes")
@@ -413,44 +600,245 @@ async def api_spawn(request: web.Request) -> web.Response:
     from kiro_crew.shared_crew.admission_gate import Admission
     from kiro_crew.shared_crew.admission_link import link_spawn
 
-    run_id = await link_spawn(child_admission, state.subagents)
-    if run_id is None:
+    # A caller-reserved ``run_id`` (a hub placing this run) is the id linked;
+    # otherwise the admission mints one. ``""`` from the link keeps the caller's.
+    linked_id = await link_spawn(child_admission, state.subagents, preferred=run_id)
+    if linked_id is None:
         await child_admission.abandon()
         return Admission(None, "rejected", store_unavailable=True).refusal_response()
-    # The async moment preceding the synchronous spawn(): warm here so the
-    # on-loop, cache-only agent validation inside spawn() is a hit.
-    if agent:
-        await warm_project_agents_for_spawn(state, cwd)
-    from kiro_crew.shared_crew.admission_entry import admitted_scope
+    run_id = linked_id or run_id
+    if executor == "remote":
+        from kiro_crew.sel import sel
 
-    with admitted_scope(child_admission):
-        info = await _spawn_on_loop(
-            state,
-            task,
-            parent_session_key=parent_session,
-            agent=agent,
-            max_turns=max_turns,
-            cwd=cwd,
-            model=model or None,
-            reasoning_effort=reasoning_effort,
-            backend=backend,
-            label=str(cleaned.get("label") or ""),
-            approval_mode=approval_mode or None,
-            silent=silent,
-            batch_id=batch_id,
-            batch_total=batch_total,
-            keep=keep,
-            include_memory=cleaned.get("include_memory", True) is not False,
-            include_lessons=cleaned.get("include_lessons", True) is not False,
-            include_project=cleaned.get("include_project", True) is not False,
-            memory_store=child_memory_store,
-            crew=crew,
-            _memory_mode=admitted_mode,
-            _execution_context=admitted_execution.to_record(),
-            _parent_spawn_policy=parent_spawn_policy,
-            _parent_project_dirs=parent_dirs,
-            **({"_preassigned_id": run_id} if run_id else {}),
+        if request.get("app", ""):
+            sel().log_tool_invocation(
+                session_key=parent_session or "",
+                source="app_isolation",
+                tool_name="spawn_run",
+                outcome="denied",
+                error="app tokens cannot spend a remote crew",
+                metadata={"executor": "remote"},
+            )
+            return web.json_response(
+                {"error": "app tokens cannot spend a remote crew", "code": "app_token_forbidden"},
+                status=403,
+            )
+        # The admitted execution, not only an explicit ``crew``: a parent that is
+        # itself member-bound (or on a named store) passes that binding on, and
+        # the peer, which receives no store identity, would build a default-store
+        # execution and read its own Global memory instead.
+        if (
+            crew
+            or admitted_execution.member_id is not None
+            or admitted_execution.store.store_id != "default"
+        ):
+            return web.json_response(
+                {
+                    "error": "remote runs cannot inherit a local Crew Member memory binding",
+                    "code": "remote_crew_binding_unsupported",
+                },
+                status=400,
+            )
+        if keep:
+            return web.json_response(
+                {
+                    "error": "remote continuable conversations are not supported yet",
+                    "code": "remote_keep_unsupported",
+                },
+                status=400,
+            )
+        # Remote placement must not loosen this gateway's ceiling. Two gates:
+        # 1. the operator opts in (instances.remote_subagents): the peer applies
+        #    its OWN tool-approval policy, which this gateway cannot verify, so
+        #    the model alone may not choose to leave the local approval ceiling;
+        # 2. the same spawn governance (capabilities.spawn and its agent scope)
+        #    and parent-spec availableAgents allowlist the local path enforces in
+        #    admission, checked against the effective child template.
+        from kiro_crew.subagent import (
+            _validate_app_agent_ownership,
+            _vet_parent_available_agents,
+            _vet_remote_placement_governance,
+            _vet_spawn_governance,
         )
+
+        remote_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if not getattr(remote_cfg.instances, "remote_subagents", False):
+            sel().log_tool_invocation(
+                session_key=parent_session or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="denied",
+                error="remote subagent placement is turned off on this gateway",
+                metadata={"executor": "remote"},
+            )
+            return web.json_response(
+                {
+                    "error": "remote subagent placement is turned off on this gateway "
+                    "(instances.remote_subagents)",
+                    "code": "remote_subagents_disabled",
+                },
+                status=403,
+            )
+        # The child's template: the explicit agent, else the one it inherits.
+        # Checked by both gates and sent to the peer, so a parent cannot pass
+        # the allowlist on its own name and then run a different agent remotely.
+        effective_agent = agent or admitted_execution.template_id
+        # An app-owned member session reaches here over the loopback MCP secret,
+        # not an app token, so its app identity comes from the execution record.
+        # Without it the PROFILE half of POLICY ∩ PROFILE is skipped, as the
+        # local admission gate (``app = execution.app``) does not do.
+        child_app = admitted_execution.app
+        # The agent the PARENT runs as, not the requested child: a profile bound
+        # to it narrows the parent's own tool gate, so it narrows placement and
+        # the project snapshot too. It comes from the parent's execution record,
+        # which a channel or cron parent has as well as a dashboard tab. A named
+        # parent whose agent cannot be read is refused: with no agent, the
+        # profile bound to it would be skipped.
+        parent_agent = parent_spawn_policy[0]
+        if parent_session and not parent_agent:
+            sel().log_tool_invocation(
+                session_key=parent_session,
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="denied",
+                error="the parent session's agent could not be resolved",
+                metadata={"executor": "remote"},
+            )
+            return web.json_response(
+                {
+                    "error": "spawn refused: the parent session's agent could not be resolved",
+                    "code": "remote_parent_agent_unresolved",
+                },
+                status=403,
+            )
+        denial = await asyncio.to_thread(
+            _vet_remote_placement_governance, parent_session, child_app, agent=parent_agent
+        )
+        if not denial:
+            denial = await asyncio.to_thread(
+                _vet_spawn_governance,
+                parent_session,
+                effective_agent,
+                child_app,
+                parent_agent=parent_agent,
+            )
+        if not denial:
+            denial = _vet_parent_available_agents(
+                parent_spawn_policy, effective_agent, app=child_app
+            )
+        if not denial and agent and child_app:
+            # As the local admission gate: an app may only name its OWN agents,
+            # or remote placement would run the host default or another app's.
+            denial = await asyncio.to_thread(_validate_app_agent_ownership, agent, child_app)
+        if denial:
+            sel().log_tool_invocation(
+                session_key=parent_session or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="denied",
+                error="remote spawn denied by governance",
+                metadata={"executor": "remote"},
+            )
+            return web.json_response(
+                {"error": f"spawn refused: {denial}", "code": "remote_spawn_denied"},
+                status=403,
+            )
+        from kiro_crew.dashboard.remote_subagents import (
+            RemoteSubagentError,
+            auto_approve_sources,
+            get_remote_subagent_service,
+        )
+
+        try:
+            remote_info = await get_remote_subagent_service(state).spawn(
+                task=task,
+                parent_session=parent_session,
+                agent=effective_agent,
+                max_turns=max_turns,
+                cwd=cwd,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                include_memory=cleaned.get("include_memory", True) is not False,
+                include_lessons=cleaned.get("include_lessons", True) is not False,
+                include_project=cleaned.get("include_project", True) is not False,
+                memory_mode=admitted_mode,
+                batch_id=batch_id,
+                batch_total=batch_total,
+                instance_id=instance_id,
+                approval_mode=approval_mode,
+                auto_approve_sources=auto_approve_sources(remote_cfg),
+                app=child_app,
+                parent_agent=parent_agent,
+                silent=bool(silent),
+            )
+        except RemoteSubagentError as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=exc.status)
+        return web.json_response(
+            {
+                "id": remote_info.id,
+                # The placement's own copy: it already carries both redaction passes.
+                "task": remote_info.task,
+                "status": "spawned",
+                "parent_work_supported": can_work,
+                "executor": "remote",
+                "instance_id": remote_info.instance_id,
+                "remote_id": remote_info.remote_id,
+            }
+        )
+    # The async moment preceding the synchronous spawn(): warm here so the
+    # on-loop, cache-only agent validation inside spawn() is a hit. A
+    # caller-named ``run_id`` was reserved by ``api_spawn`` before admission.
+    try:
+        if cwd:
+            from kiro_crew.dashboard.remote_workspaces import claim_workspace
+
+            if not await asyncio.to_thread(claim_workspace, cwd):
+                await child_admission.abandon()
+                return web.json_response(
+                    {
+                        "error": "the run's workspace snapshot is gone; upload it again",
+                        "code": "remote_workspace_gone",
+                    },
+                    status=409,
+                )
+        if agent:
+            await warm_project_agents_for_spawn(state, cwd)
+        from kiro_crew.shared_crew.admission_entry import admitted_scope
+
+        with admitted_scope(child_admission):
+            info = await _spawn_on_loop(
+                state,
+                task,
+                parent_session_key=parent_session,
+                agent=agent,
+                max_turns=max_turns,
+                cwd=cwd,
+                model=model or None,
+                reasoning_effort=reasoning_effort,
+                backend=backend,
+                label=str(cleaned.get("label") or ""),
+                approval_mode=approval_mode or None,
+                approval_floor=approval_floor,
+                silent=silent,
+                batch_id=batch_id,
+                batch_total=batch_total,
+                keep=keep,
+                include_memory=cleaned.get("include_memory", True) is not False,
+                include_lessons=cleaned.get("include_lessons", True) is not False,
+                include_project=cleaned.get("include_project", True) is not False,
+                memory_store=child_memory_store,
+                crew=crew,
+                _memory_mode=admitted_mode,
+                _execution_context=admitted_execution.to_record(),
+                _parent_spawn_policy=parent_spawn_policy,
+                _parent_project_dirs=parent_dirs,
+                **({"_preassigned_id": run_id} if run_id else {}),
+            )
+    finally:
+        # Registered with the manager (or refused): the manager's own record
+        # now answers the freshness check, so the reservation is released.
+        if run_id:
+            _RESERVED_RUN_IDS.discard(run_id)
     if not info or (info.done and info.error):
         await child_admission.abandon()
     else:
@@ -460,8 +848,9 @@ async def api_spawn(request: web.Request) -> web.Response:
         # refused for capacity — tell the client so it does NOT reconcile
         # this member as a lost submission (double-count would close the
         # wave early).
+        cap = getattr(state.subagents, "max_concurrent", "?")
         return web.json_response(
-            {"error": f"capacity reached ({state.subagents.max_concurrent})", "counted": True},
+            {"error": f"capacity reached ({cap})", "counted": True},
             status=429,
         )
     if info.done and info.error:
@@ -666,6 +1055,12 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
+    nested_refusal = _floored_caller_refusal(state, request, parent_session)
+    if nested_refusal is not None:
+        return nested_refusal
+    remote_refusal = await _remote_run_operation_refusal(state, conv_id, "continuation")
+    if remote_refusal is not None:
+        return remote_refusal
     try:
         admitted_mode = await _spawn_request_memory_mode(state, request, parent_session)
     except (OSError, ValueError):

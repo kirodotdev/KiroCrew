@@ -68,6 +68,10 @@ from kiro_crew.dashboard.ws_subagent_send import (  # noqa: F401 (re-exported)
     _subagent_replay_has_owner,
     send_subagent_replay_done,
 )
+from kiro_crew.dashboard.ws_subagent_snapshot import (
+    build_subagent_snapshot,
+    live_remote_snapshot_frames,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.shared_crew import presence as shared_presence
 from kiro_crew.shared_crew.collab import FRAME_ACTIVITY
@@ -484,66 +488,6 @@ def read_fold_subagent_records(
     # order on a different platform for identical logs.
     ordered = sorted(newest, key=lambda item: item[:3], reverse=True)
     return [item[3] for item in ordered], overflow
-
-
-def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
-    """Build the ``subagent_snapshot`` replay frame's ``data`` for one agent.
-
-    Separate from the reconnect handler so the frame's CONTENTS can be asserted
-    directly — the handler around it needs a live aiohttp WS, so a missing field
-    there is easy to miss.
-
-    ``idle_secs`` is the span that justifies the stall badge. The live
-    ``subagent_stalled`` event carries it and this replay frame must too:
-    without it ANY reconnect during an active stall degrades the row to the
-    plain "no activity" wording, which is only meant for a gateway too old to
-    send the field.
-
-    It is computed at replay time rather than replaying the original transition
-    value: by reconnect the agent has usually been idle longer than it was when
-    flagged, and ``last_activity`` is already the field the reaper itself
-    measures. Clamped at 0 so a clock adjustment cannot produce a negative span.
-
-    The key is OMITTED entirely when the agent is not stalled, so a client
-    cannot attach an idle span to a healthy row — the reducer pairs the span
-    with the flag and would otherwise have to defend against the mismatch.
-    """
-    ts = time.time() if now is None else now
-
-    def _r(t: str) -> str:
-        t, _ = redact_exfiltration_urls(t)
-        t, _ = redact_credentials(t)
-        return t
-
-    data: dict = {
-        "id": a.id,
-        "slot": subagent_event_slot(a.parent_session_key),
-        # The sub-agent's OWN session key (where it writes its ctx_blocks /
-        # token rows), so a client can fetch this node's own context-trace and
-        # render its window composition. Mirrors the run key derived in
-        # SubagentManager._run: `conversation_key or subagent:<id>`.
-        "child_session": getattr(a, "conversation_key", "") or f"subagent:{a.id}",
-        "task": _r(a.task),
-        "agent": _r(getattr(a, "run_agent", a.agent)),
-        "label": _r(getattr(a, "label", "") or ""),
-        "model": a.resolved_model,
-        "requested_model": _r(a.requested_model),
-        "streaming": _r(a.streaming_text),
-        "last_tool": _r(a.last_tool),
-        "last_tool_call_id": _r(getattr(a, "last_tool_call_id", "") or ""),
-        "tool_count": a.tool_count,
-        "stalled": a.stalled,
-    }
-    # The wave this agent belongs to, when it is part of one. Mirrors the live
-    # ``_subagent_event`` stamp so a reconnect replay keeps the panel's batch
-    # chip; omitted for a solo spawn so the client reads "no wave", not "".
-    _bid = getattr(a, "batch_id", "")
-    if isinstance(_bid, str) and _bid:
-        data["batch_id"] = _bid
-    if a.stalled:
-        data["idle_secs"] = max(0, int(ts - a.last_activity))
-    data["started"] = a.started
-    return data
 
 
 def _audit_grant_quietly(app: str, event: str) -> None:
@@ -1362,6 +1306,10 @@ async def _serve_ws(
                                     )
                                 except Exception:
                                     pass
+                            # Live remote runs: ``running`` is this host's own
+                            # runs only (it sizes local capacity), and the done
+                            # loop below skips unfinished records.
+                            _replay.extend(live_remote_snapshot_frames(state.subagents))
                             # Done events for completed subagents so
                             # reconnecting clients can transition stale cards.
                             for a in state.subagents.all_agents:

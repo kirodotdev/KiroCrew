@@ -108,6 +108,18 @@ def _collapse_effort_verdicts(
     return [(", ".join(ids), text) for text, ids in grouped.items()]
 
 
+def _placement_suffix(placements: dict[str, str], aid: str) -> str:
+    """Trailing ``[remote:<instance>]`` marker for a confirmed remote run.
+
+    Local runs get no marker so their line stays identical to the
+    pre-placement shape. The marker goes AFTER the task on purpose: the
+    dashboard run card parses ``  <id> (<agent>): `` and a suffix before
+    the colon would stop it recognising the member.
+    """
+    placement = placements.get(aid, "local")
+    return "" if placement == "local" else f" [{placement}]"
+
+
 class _SpawnRunStep(DeferredTool):
     """Submit one task per pool step, then return the background-run receipt."""
 
@@ -244,6 +256,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     agents_list = args.get("agents") or []
     max_turns = args.get("max_turns") or 0
     cwd = args.get("cwd") or ""
+    executor = args.get("executor") or "local"
+    instance_id = args.get("instance_id") or ""
     model = args.get("model") or ""
     reasoning_effort = args.get("reasoning_effort") or ""
     backend = args.get("backend") or ""
@@ -279,6 +293,10 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     # subagent id -> the gate's reason, for members the gateway accepted but
     # answered ``status: "queued"`` (deferred, not started).
     queued_reasons: dict[str, str] = {}
+    # subagent id -> where the gateway CONFIRMED it placed the run
+    # (``local`` or ``remote:<instance_id>``). Keyed by id, not a parallel
+    # list, because started and deferred members are listed separately.
+    agent_placements: dict[str, str] = {}
     errors: list[str] = []
     transport_errors: list[str] = []
     # Forward this session's own approval_mode (set as an env var at
@@ -362,6 +380,10 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             body["max_turns"] = max_turns
         if cwd:
             body["cwd"] = cwd
+        if executor != "local":
+            body["executor"] = executor
+        if instance_id:
+            body["instance_id"] = instance_id
         if t_model:
             body["model"] = t_model
         if t_effort:
@@ -413,6 +435,11 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
         agent_names.append(a)
         agent_tasks.append(t)
         agent_labels.append(t_label)
+        confirmed_executor = str(d.get("executor") or "local")
+        confirmed_instance = str(d.get("instance_id") or "")
+        agent_placements[str(d.get("id", "?"))] = (
+            f"remote:{confirmed_instance}" if confirmed_executor == "remote" else "local"
+        )
         if d.get("status") == "queued":
             # Accepted but DEFERRED by the gate (memory floor, critical posture,
             # adaptive cap at 0): keyed and counted like a started member, but
@@ -444,6 +471,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             effort_pendings=effort_pendings,
             runtime_notes=runtime_notes,
             queued_reasons=queued_reasons,
+            agent_placements=agent_placements,
             errors=errors,
             transport_errors=transport_errors,
             parent_session=parent_session,
@@ -477,8 +505,14 @@ def _spawn_run_receipt(
     keep: bool,
     agent_labels: list[str] | None = None,
     runtime_notes: list[tuple[str, tuple[str, str]]] | None = None,
+    agent_placements: dict[str, str] | None = None,
 ) -> str:
-    """Render the accumulated background-run receipt without gateway requests."""
+    """Render the accumulated background-run receipt without gateway requests.
+
+    *agent_placements* maps a run id to its remote placement label; a receipt
+    with no remote run passes nothing.
+    """
+    agent_placements = agent_placements or {}
     spawn_lines: list[str] = []
     # Server-computed effort verdicts (never a rejection — gated on agent_ids
     # so a total-failure result keeps its "Error:" first line, which SEL and
@@ -538,7 +572,7 @@ def _spawn_run_receipt(
                 )
             for aid, a, t in started:
                 label = f"{aid} ({a})" if a else aid
-                spawn_lines.append(f"  {label}: {t[:80]}")
+                spawn_lines.append(f"  {label}: {t[:80]}{_placement_suffix(agent_placements, aid)}")
         if deferred:
             # One gate verdict covers the wave (memory is host-wide), so the
             # first member's reason heads the block; a member whose reason
@@ -557,7 +591,9 @@ def _spawn_run_receipt(
             for aid, a, t in deferred:
                 label = f"{aid} ({a})" if a else aid
                 note = "" if queued_reasons[aid] == head_reason else f" [{queued_reasons[aid]}]"
-                spawn_lines.append(f"  {label}: {t[:80]}{note}")
+                spawn_lines.append(
+                    f"  {label}: {t[:80]}{note}{_placement_suffix(agent_placements, aid)}"
+                )
         if keep:
             spawn_lines.append(
                 "These conversations have GUARANTEED continuability: after "

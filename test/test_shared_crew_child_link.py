@@ -276,6 +276,22 @@ async def test_nothing_is_linked_when_admission_is_off_or_the_work_ended(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_a_reserved_run_id_is_linked_instead_of_a_minted_one(tmp_path, clock):
+    """A hub placing a run names its id; the crew links THAT id, so the hub's
+    record and the crew's admitted row agree on which run they hold."""
+    store = _open(tmp_path / "t.db", clock)
+    svc = _service(store, clock)
+    child = await _child(svc)
+    minter = _Minter("run-minted")
+    assert await link.link_spawn(child, minter, preferred="0123456789abcdef") == "0123456789abcdef"
+    assert store.get_sync(child.work.work_id).extra["execution_id"] == "0123456789abcdef"
+    assert minter._ids == ["run-minted"]  # nothing was minted
+    # Admission off: nothing to link, so the caller keeps its own id.
+    off = ag.Admission(None, "passthrough")
+    assert await link.link_spawn(off, minter, preferred="0123456789abcdef") == ""
+
+
+@pytest.mark.asyncio
 async def test_an_app_spawn_runs_under_the_run_id_it_linked(service, monkeypatch):
     from kiro_crew.apps import spawn_sdk
 

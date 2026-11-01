@@ -302,6 +302,10 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # Called by MCP (loopback + secret) AND browser polling
         # (DCV/SSH-forwarded cookie auth).  See token_auth.py.
         "/api/spawn",
+        # Owner-authenticated source snapshots sent hub→crew over the existing
+        # tunnel. The handler independently requires the dashboard owner and
+        # refuses internal/app callers.
+        "/api/remote-workspaces",
         # The update step-up's arm record: POST (arm), GET (status), DELETE
         # (decline). Two callers, two credentials: the About panel polls it with
         # a cookie, and an agent asking for an app update presents

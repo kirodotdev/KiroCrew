@@ -72,6 +72,7 @@ __all__ = [
     "narrowed_agent_permissions",
     "provider_error_client",
     "provider_label",
+    "relayed_permission_request",
     "resolve_pin_spelling",
     "resolve_pin_spelling_on",
     "resolve_usable_model",
@@ -407,6 +408,34 @@ def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dic
 
     derived = allowed_tools_to_permissions(allowed_tools, agent_id=Path(agent_filename).stem)
     return derived if derived is not None else {"rules": []}
+
+
+def relayed_permission_request(
+    *, request_id: str, title: str, tool_input: str, tool_purpose: str, approval_floor: str
+) -> object:
+    """A tool-permission request raised on another gateway, as this one's approvers read it.
+
+    A remote run's request reaches the hub as plain data, but the gateway's
+    tool-approval callback (the one a local run of the same parent is answered
+    through) takes the backend's own permission event. This builds that event
+    from the relayed fields only, so the callback sees what the peer showed and
+    nothing it would have to trust beyond it; ``approval_floor`` is carried so
+    the callback skips its non-human shortcuts. Returned as ``object``: the
+    caller only hands it on. The event is made by the permission builder module,
+    the one place an ACP permission event is constructed. Function-local import
+    for the boot-path reason every function here gives.
+    """
+    from kiro_crew.acp._dispatch_parts.permission_requests import (
+        build_relayed_permission_event as _impl,
+    )
+
+    return _impl(
+        request_id=request_id,
+        title=title,
+        tool_input=tool_input,
+        tool_purpose=tool_purpose,
+        approval_floor=approval_floor,
+    )
 
 
 def _rule_label(rule: dict) -> str:
