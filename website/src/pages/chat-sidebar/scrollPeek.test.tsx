@@ -1,7 +1,7 @@
 import { act, render } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ScrollPeekLayer from './ScrollPeekLayer'
+import ScrollPeekLayer, { PEEK_FADE_MS } from './ScrollPeekLayer'
 import {
   PEEK_COLLAPSE_DELAY_MS,
   PEEK_IDLE_MAX_MS,
@@ -411,12 +411,62 @@ describe('ScrollPeekLayer', () => {
     r.unmount()
   })
 
-  it('removes the layer on the render the peek ends', () => {
+  describe('fade', () => {
     const t: PeekTitle = { key: 'a', text: 'Full title', left: 20, top: 40, height: 20, width: 600, maxWidth: 300 }
-    const r = render(<ScrollPeekLayer titles={[t]} />)
-    expect(document.querySelector('[data-testid="scroll-peek-layer"]')).not.toBeNull()
-    r.rerender(<ScrollPeekLayer titles={[]} />)
-    expect(document.querySelector('[data-testid="scroll-peek-layer"]')).toBeNull()
-    r.unmount()
+    const layer = () => document.querySelector<HTMLElement>('[data-testid="scroll-peek-layer"]')
+    const mockReducedMotion = (reduce: boolean) => vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: reduce && q.includes('prefers-reduced-motion'), media: q,
+      addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+    }))
+    beforeEach(() => { vi.useFakeTimers() })
+    afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+    it('fades each chip in and the layer out with opacity transitions', () => {
+      const r = render(<ScrollPeekLayer titles={[t]} />)
+      const chip = document.querySelector<HTMLElement>('[data-scroll-peek-title]')
+      expect(chip?.className).toMatch(/\banimate-in\b/)
+      expect(chip?.className).toMatch(/\bfade-in-0\b/)
+      expect(layer()?.className).toMatch(/\btransition-opacity\b/)
+      expect(layer()?.className).toContain(`duration-[${PEEK_FADE_MS}ms]`)
+      expect(layer()?.className).toMatch(/\bopacity-100\b/)
+      r.unmount()
+    })
+
+    it('keeps the last chips at opacity 0 for one fade after the peek ends, then removes the layer', () => {
+      mockReducedMotion(false)
+      const r = render(<ScrollPeekLayer titles={[t]} />)
+      r.rerender(<ScrollPeekLayer titles={[]} />)
+      expect(layer()).not.toBeNull()
+      expect(layer()?.className).toMatch(/\bopacity-0\b/)
+      expect(layer()?.className).toContain('pointer-events-none')
+      expect(layer()?.querySelector('[data-scroll-peek-title]')?.textContent).toBe('Full title')
+      act(() => { vi.advanceTimersByTime(PEEK_FADE_MS - 1) })
+      expect(layer()).not.toBeNull()
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(layer()).toBeNull()
+      r.unmount()
+    })
+
+    it('takes the layer back at once when a peek starts during the fade', () => {
+      mockReducedMotion(false)
+      const r = render(<ScrollPeekLayer titles={[t]} />)
+      r.rerender(<ScrollPeekLayer titles={[]} />)
+      act(() => { vi.advanceTimersByTime(PEEK_FADE_MS / 2) })
+      r.rerender(<ScrollPeekLayer titles={[{ ...t, top: 60 }]} />)
+      expect(layer()?.className).toMatch(/\bopacity-100\b/)
+      act(() => { vi.advanceTimersByTime(PEEK_FADE_MS * 2) })
+      expect(layer()).not.toBeNull()
+      expect(layer()?.querySelector<HTMLElement>('[data-scroll-peek-title]')?.style.top).toBe('60px')
+      r.unmount()
+    })
+
+    it('removes the layer on the render the peek ends under reduced motion', () => {
+      mockReducedMotion(true)
+      const r = render(<ScrollPeekLayer titles={[t]} />)
+      expect(layer()).not.toBeNull()
+      r.rerender(<ScrollPeekLayer titles={[]} />)
+      expect(layer()).toBeNull()
+      r.unmount()
+    })
   })
 })
