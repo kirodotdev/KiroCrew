@@ -24,12 +24,16 @@ import time
 from typing import Any, Coroutine
 
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.platform_compat_identity import _windows_process_handle_identity
+from kiro_crew.platform_compat_identity import (
+    _windows_process_handle_identity,
+    get_process_start_id,
+)
 from kiro_crew.platform_compat_liveness import pgroup_of, pid_exists
 from kiro_crew.platform_compat_native import (
     _OWN_PGID,
     _SUBPROCESS_NO_WINDOW,
     _WINDOWS_PID_MAX,
+    IS_LINUX,
     IS_POSIX,
     IS_WINDOWS,
     SIGKILL,
@@ -297,6 +301,97 @@ def kill_pid_pinned(pid: int, expected_start_time: str, sig: int = SIGTERM) -> b
         return kill_pid(pid, sig)
     finally:
         _close_process_handle(handle)
+
+
+def terminate_pids_pinned(
+    targets: list[tuple[int, str]],
+    *,
+    protected_pids: tuple[int, ...] = (),
+    grace_secs: float = 3.0,
+    poll_secs: float = 0.05,
+) -> int:
+    """Terminate identity-bound *targets* in their supplied order.
+
+    The caller supplies leaf-first ``(pid, start_id)`` pairs. Each signal pins
+    the process object before re-identifying it: Linux uses pidfds, through the
+    raw ``pidfd_open`` and ``pidfd_send_signal`` syscalls when the interpreter
+    lacks the ``os`` and ``signal`` wrappers; Windows retains its open-handle
+    path; every other POSIX host signals nothing. A target that cannot be
+    pinned is never signalled by PID. ``protected_pids`` is defense in depth
+    for a shared runtime or another process the caller must never end. A call
+    that delivered no SIGTERM returns 0 at once, with no grace wait and no
+    SIGKILL. Otherwise it returns the number of distinct identities that either
+    disappeared after SIGTERM or accepted SIGKILL; a survivor for which
+    escalation is refused is not reported as terminated.
+    """
+    protected = {pid for pid in protected_pids if type(pid) is int and pid > 0}
+    protected.add(os.getpid())
+    ordered: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for pid, start_id in targets:
+        if (
+            type(pid) is not int
+            or pid <= 1
+            or pid in protected
+            or pid in seen
+            or not isinstance(start_id, str)
+            or not start_id
+        ):
+            continue
+        seen.add(pid)
+        ordered.append((pid, start_id))
+
+    term_sent: set[tuple[int, str]] = set()
+    terminated: set[tuple[int, str]] = set()
+
+    def signal_matching(pid: int, start_id: str, sig: int) -> bool:
+        if IS_WINDOWS:
+            try:
+                return kill_pid_pinned(pid, start_id, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                return False
+        if not IS_LINUX:
+            return False
+        # Imported here: a module-level binding would become a name the facade serves.
+        from kiro_crew import _process_group_supervisor
+
+        try:
+            fd = _process_group_supervisor._pidfd_open(pid)
+        except OSError:
+            return False
+        try:
+            if get_process_start_id(pid) != start_id:
+                return False
+            try:
+                _process_group_supervisor._pidfd_send_signal(fd, sig)
+            except OSError:
+                return False
+            return True
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+    for pid, start_id in ordered:
+        if signal_matching(pid, start_id, SIGTERM):
+            term_sent.add((pid, start_id))
+    if not term_sent:
+        return 0
+
+    deadline = time.monotonic() + max(0.0, grace_secs)
+    while time.monotonic() < deadline:
+        if not any(get_process_start_id(pid) == start_id for pid, start_id in ordered):
+            break
+        time.sleep(min(max(0.001, poll_secs), max(0.0, deadline - time.monotonic())))
+
+    for pid, start_id in ordered:
+        identity = (pid, start_id)
+        if get_process_start_id(pid) != start_id:
+            if identity in term_sent:
+                terminated.add(identity)
+            continue
+        if signal_matching(pid, start_id, SIGKILL):
+            terminated.add(identity)
+    return len(terminated)
 
 
 async def kill_pid_async(pid: int, sig: int = SIGTERM) -> bool:

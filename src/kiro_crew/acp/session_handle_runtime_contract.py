@@ -171,6 +171,16 @@ class AcpRuntimeProtocol(Protocol):
         ...
 
     @property
+    def sandbox_wrapped_by_crew(self) -> bool:
+        """Whether Kiro Crew's own sandbox wrapped the harness this runtime spawned.
+
+        Only the Linux namespace sandbox leaves its launcher at ``pid``, with the
+        harness as that launcher's sole child. macOS Seatbelt execs the harness in
+        place, so ``pid`` is the harness there even when this is True.
+        """
+        ...
+
+    @property
     def spawn_monotonic(self) -> float | None:
         """Monotonic time the process was spawned, or ``None`` before spawn.
 
@@ -263,6 +273,11 @@ class AcpRuntimeProtocol(Protocol):
     async def send_error(self, request_id: str | int, code: int, message: str) -> None: ...
 
     def mark_turn_active(self, session_id: str, active: bool) -> None: ...
+
+    def session_tenancy(self, session_id: str) -> int | None:
+        """Count only when *session_id* is registered, no start is pending and no
+        native backend subagent is announced."""
+        ...
 
     def begin_mcp_sign_in(self, session_id: str, server_name: str) -> bool: ...
 

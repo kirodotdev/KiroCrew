@@ -160,6 +160,8 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
 
         _idle_m = re.search(r"idle_secs=(\d+)", _stall_evidence or "")
         _idle_secs = int(_idle_m.group(1)) if _idle_m else 0
+        _terminated_m = re.search(r"processes_terminated=(\d+)", _stall_evidence or "")
+        _terminated = int(_terminated_m.group(1)) if _terminated_m else 0
         # Typed first: an execution-layer / oracle ``waiting_input`` status
         # is the verdict; the evidence-text marker stays as the fallback for
         # a provider that forwards no status object.
@@ -173,6 +175,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 _idle_secs,
                 command=_stall_command,
                 stuck_input=_stuck,
+                processes_terminated=_terminated,
             )
             _queue_recovery(
                 turn,

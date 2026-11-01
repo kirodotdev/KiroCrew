@@ -287,7 +287,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         """.split()),
     "kiro_crew.platform_compat_kill": tuple("""
         pgroup_exists _raise_taskkill_error kill_pid kill_process_group kill_process_tree
-        kill_process_tree_pinned kill_pid_pinned kill_pid_async kill_process_tree_async
+        kill_process_tree_pinned kill_pid_pinned terminate_pids_pinned kill_pid_async
+        kill_process_tree_async
         REAP_TIMEOUT_SECS _shares_own_process_group kill_popen_tree kill_and_reap
         _run_cleanup_shielded _isolated_group_of_live_child _discard_output_until_exit
         terminate_and_reap terminate_and_reap_sync
