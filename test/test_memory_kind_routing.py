@@ -249,6 +249,11 @@ def test_v1_shadow_writes_exactly_what_off_writes(tmp_path, monkeypatch) -> None
         else:
             counts = log[mkr.COUNTS_PREFIX + "2026-10-01"]
             assert counts == {"shadow": {"event": 1, "fact": 2, "state": 1}}
+            assert log[mkr.RESERVOIR_KEY] == {
+                "day": "2026-10-01",
+                "rules": mkr.RULES_VERSION,
+                "seen": 4,
+            }
     assert written["shadow"] == written["off"]
     assert "project.app.ci_status" in written["shadow"][0]
 
@@ -395,33 +400,37 @@ def _samples(store) -> dict[str, list]:
     return {k: v for k, v in _kind_log(store).items() if k.startswith(mkr.SAMPLES_PREFIX)}
 
 
-def test_samples_cap_at_fifty_a_day_and_each_value_at_200_chars(tmp_path) -> None:
+def test_samples_cap_at_150_a_day_and_each_value_at_200_chars(tmp_path) -> None:
     store = _v1(tmp_path, "day")
     try:
-        mkr.record_kind_routing(store, _routing(30, value="x" * 500), "src", now=_T0)
-        mkr.record_kind_routing(store, _routing(30), "src", now=_T0 + timedelta(hours=1))
+        mkr.record_kind_routing(store, _routing(100, value="x" * 500), "src", now=_T0)
+        mkr.record_kind_routing(store, _routing(100), "src", now=_T0 + timedelta(hours=1))
         rows = _samples(store)
         assert list(rows) == [mkr.SAMPLES_PREFIX + "2026-10-01"]
         today = rows[mkr.SAMPLES_PREFIX + "2026-10-01"]
-        assert len(today) == mkr.SAMPLES_PER_DAY == 50
-        assert {len(s["value"]) for s in today[:30]} == {200}
-        assert set(today[0]) == {"key", "kind", "value", "store", "ts"}
+        assert len(today) == mkr.SAMPLES_PER_DAY == 150
+        assert {len(s["value"]) for s in today if s["value"] != "v"} == {200}
+        assert set(today[0]) == {"key", "kind", "value", "store", "ts", "rules"}
+        assert {s["rules"] for s in today} == {mkr.RULES_VERSION}
         counts = _kind_log(store)[mkr.COUNTS_PREFIX + "2026-10-01"]
-        assert counts == {"shadow": {"state": 60}}, "counters count every item"
+        assert counts["shadow"] == {"state": 200}, "counters count every item"
+        assert counts == {"shadow": {"state": 200}}, "the counts row keeps its shape"
+        assert _kind_log(store)[mkr.RESERVOIR_KEY]["seen"] == 200
     finally:
         store.close()
 
 
-def test_samples_stop_seven_days_after_shadow_first_ran(tmp_path) -> None:
+def test_samples_stop_fourteen_days_after_shadow_first_ran(tmp_path) -> None:
+    assert mkr.SHADOW_SAMPLE_WINDOW_SECS == 14 * 86_400
     store = _v1(tmp_path, "window")
     try:
         mkr.record_kind_routing(store, _routing(3), "src", now=_T0)
-        mkr.record_kind_routing(store, _routing(3), "src", now=_T0 + timedelta(days=6, hours=23))
-        mkr.record_kind_routing(store, _routing(3), "src", now=_T0 + timedelta(days=7))
+        mkr.record_kind_routing(store, _routing(3), "src", now=_T0 + timedelta(days=13, hours=23))
+        mkr.record_kind_routing(store, _routing(3), "src", now=_T0 + timedelta(days=14))
         mkr.record_kind_routing(store, _routing(3), "src", now=_T0 + timedelta(days=30))
         assert sorted(_samples(store)) == [
             mkr.SAMPLES_PREFIX + "2026-10-01",
-            mkr.SAMPLES_PREFIX + "2026-10-08",
+            mkr.SAMPLES_PREFIX + "2026-10-15",
         ]
         log = _kind_log(store)
         assert log[mkr.COUNTS_PREFIX + "2026-10-31"] == {"shadow": {"state": 3}}
@@ -431,15 +440,17 @@ def test_samples_stop_seven_days_after_shadow_first_ran(tmp_path) -> None:
 
 
 def test_samples_ring_holds_two_thousand_and_drops_the_oldest(tmp_path, monkeypatch) -> None:
-    # Lift the 7-day stop so the ring itself is what bounds the rows.
+    # Lift the 14-day stop so the ring itself is what bounds the rows.
     monkeypatch.setattr(mkr, "SHADOW_SAMPLE_WINDOW_SECS", 10**9)
     store = _v1(tmp_path, "ring")
     try:
         for day in range(45):
-            mkr.record_kind_routing(store, _routing(50), "src", now=_T0 + timedelta(days=day))
+            mkr.record_kind_routing(store, _routing(150), "src", now=_T0 + timedelta(days=day))
         rows = _samples(store)
         assert sum(len(v) for v in rows.values()) == mkr.SAMPLES_TOTAL == 2_000
-        assert min(rows) == mkr.SAMPLES_PREFIX + (_T0 + timedelta(days=5)).date().isoformat()
+        # 2,000 = 13 whole days of 150 plus 50 left of the oldest day kept.
+        assert len(rows[min(rows)]) == 50
+        assert min(rows) == mkr.SAMPLES_PREFIX + (_T0 + timedelta(days=31)).date().isoformat()
         assert max(rows) == mkr.SAMPLES_PREFIX + (_T0 + timedelta(days=44)).date().isoformat()
     finally:
         store.close()
@@ -452,7 +463,7 @@ def test_samples_never_pass_one_megabyte(tmp_path, monkeypatch) -> None:
     try:
         for day in range(45):
             mkr.record_kind_routing(
-                store, _routing(50, value=wide), "src", now=_T0 + timedelta(days=day)
+                store, _routing(150, value=wide), "src", now=_T0 + timedelta(days=day)
             )
         with store._db_lock:
             size = store.db.execute(
@@ -464,7 +475,7 @@ def test_samples_never_pass_one_megabyte(tmp_path, monkeypatch) -> None:
         assert sum(len(v) for v in rows.values()) < mkr.SAMPLES_TOTAL, "bytes bound first here"
         assert max(rows) == mkr.SAMPLES_PREFIX + (_T0 + timedelta(days=44)).date().isoformat()
         newest = rows[max(rows)]
-        assert len(newest) == 50, "the newest day survives whole"
+        assert len(newest) == 150, "the newest day survives whole"
     finally:
         store.close()
 
@@ -498,7 +509,345 @@ def test_a_corrupt_log_row_is_replaced_not_fatal(tmp_path) -> None:
         store._write_meta(mkr.SAMPLES_PREFIX + "2026-10-01", json.dumps({"x": 1}))
         mkr.record_kind_routing(store, _routing(2), "src", now=_T0)
         log = _kind_log(store)
-        assert log[mkr.COUNTS_PREFIX + "2026-10-01"] == {"shadow": {"state": 2}}
+        assert log[mkr.COUNTS_PREFIX + "2026-10-01"]["shadow"] == {"state": 2}
         assert len(log[mkr.SAMPLES_PREFIX + "2026-10-01"]) == 2
     finally:
         store.close()
+
+
+# --- the reservoir ----------------------------------------------------------------------
+
+
+def _numbered(start: int, count: int) -> mkr.KindRouting:
+    decisions = tuple(
+        mkr.KindDecision(f"project.k{i}", "fact", str(i)) for i in range(start, start + count)
+    )
+    return mkr.KindRouting({}, "shadow", decisions)
+
+
+def test_the_reservoir_spans_the_whole_day_and_never_passes_the_cap(tmp_path, monkeypatch) -> None:
+    import random
+
+    monkeypatch.setattr(mkr, "_RNG", random.Random(1234))
+    store = _v1(tmp_path, "reservoir")
+    per_pass, passes = 20, 150  # 3,000 items in one UTC day
+    try:
+        for n in range(passes):
+            now = _T0 - timedelta(hours=11) + timedelta(minutes=4 * n)
+            mkr.record_kind_routing(store, _numbered(n * per_pass, per_pass), "src", now=now)
+            today = _samples(store)[mkr.SAMPLES_PREFIX + "2026-10-01"]
+            assert len(today) <= mkr.SAMPLES_PER_DAY
+        kept = sorted(int(s["value"]) for s in today)
+        assert len(kept) == len(set(kept)) == mkr.SAMPLES_PER_DAY
+        total = per_pass * passes
+        tenths = [
+            sum(1 for i in kept if t * total // 10 <= i < (t + 1) * total // 10) for t in range(10)
+        ]
+        # 15 expected in each tenth of the day; first-N sampling would put all 150 in the first.
+        assert all(5 <= n <= 28 for n in tenths), tenths
+        counts = _kind_log(store)[mkr.COUNTS_PREFIX + "2026-10-01"]
+        assert counts["shadow"] == {"fact": total}
+        assert _kind_log(store)[mkr.RESERVOIR_KEY]["seen"] == total
+    finally:
+        store.close()
+
+
+def test_a_window_restarted_mid_day_samples_its_own_stream_evenly(tmp_path, monkeypatch) -> None:
+    """Items counted before the restart do not number the new reservoir's stream."""
+    import random
+
+    monkeypatch.setattr(mkr, "_RNG", random.Random(99))
+    store = _v1(tmp_path, "restart")
+    legacy = [
+        {"key": f"project.old{i}", "kind": "fact", "value": "x", "store": "default", "ts": "t"}
+        for i in range(50)
+    ]
+    try:
+        # Shadow under the old rules: its window long closed, 1,000 items counted today.
+        store._write_meta(mkr.SHADOW_STARTED_KEY, (_T0 - timedelta(days=30)).isoformat())
+        store._write_meta(mkr.COUNTS_PREFIX + "2026-10-01", json.dumps({"shadow": {"fact": 1000}}))
+        store._write_meta(mkr.SAMPLES_PREFIX + "2026-10-01", json.dumps(legacy))
+        per_pass, passes = 20, 100  # 2,000 items after the restart
+        for n in range(passes):
+            mkr.record_kind_routing(
+                store, _numbered(n * per_pass, per_pass), "src", now=_T0 + timedelta(minutes=n)
+            )
+        today = _samples(store)[mkr.SAMPLES_PREFIX + "2026-10-01"]
+        assert today[:50] == legacy, "old-rules samples are kept as they were"
+        assert len(today) == mkr.SAMPLES_PER_DAY
+        kept = sorted(int(s["value"]) for s in today[50:])
+        assert len(kept) == 100
+        total = per_pass * passes
+        tenths = [
+            sum(1 for i in kept if t * total // 10 <= i < (t + 1) * total // 10) for t in range(10)
+        ]
+        # 10 expected in each tenth; numbering from the day's 1,000 would crowd the first.
+        assert all(2 <= n <= 20 for n in tenths), tenths
+        counts = _kind_log(store)[mkr.COUNTS_PREFIX + "2026-10-01"]
+        assert counts["shadow"] == {"fact": 1000 + total}, "counters keep going"
+        assert _kind_log(store)[mkr.RESERVOIR_KEY]["seen"] == total
+    finally:
+        store.close()
+
+
+def test_enforce_never_restarts_the_sample_window(tmp_path) -> None:
+    store = _v1(tmp_path, "enforce-window")
+    long_ago = (_T0 - timedelta(days=20)).isoformat()
+    try:
+        store._write_meta(mkr.SHADOW_STARTED_KEY, long_ago)
+        mkr.record_kind_routing(store, _routing(2, mode="enforce"), "src", now=_T0)
+        log = _kind_log(store)
+        assert log[mkr.SHADOW_STARTED_KEY] == long_ago
+        assert mkr.RULES_VERSION_KEY not in log
+        assert log[mkr.COUNTS_PREFIX + "2026-10-01"] == {"enforce": {"state": 2}}
+    finally:
+        store.close()
+
+
+def test_old_format_rows_still_read(tmp_path) -> None:
+    store = _v1(tmp_path, "old")
+    old_sample = {"key": "project.a", "kind": "fact", "value": "x", "store": "default", "ts": "t"}
+    try:
+        store._write_meta(mkr.COUNTS_PREFIX + "2026-10-01", json.dumps({"shadow": {"fact": 1}}))
+        store._write_meta(mkr.SAMPLES_PREFIX + "2026-10-01", json.dumps([old_sample]))
+        store._write_meta(mkr.SHADOW_STARTED_KEY, _T0.isoformat())
+        store._write_meta(mkr.RULES_VERSION_KEY, str(mkr.RULES_VERSION))
+        assert mkr.record_kind_routing(store, _routing(2), "src", now=_T0)
+        log = _kind_log(store)
+        assert log[mkr.COUNTS_PREFIX + "2026-10-01"]["shadow"] == {"fact": 1, "state": 2}
+        today = log[mkr.SAMPLES_PREFIX + "2026-10-01"]
+        assert today[0] == old_sample
+        assert len(today) == 3
+    finally:
+        store.close()
+
+
+# --- the rules version ----------------------------------------------------------------
+
+
+def test_a_new_rules_version_restarts_the_sample_window(tmp_path) -> None:
+    store = _v1(tmp_path, "rules")
+    long_ago = _T0 - timedelta(days=20)
+    try:
+        # A log from before the version existed, its window long since closed.
+        store._write_meta(mkr.SHADOW_STARTED_KEY, long_ago.isoformat())
+        store._write_meta(mkr.COUNTS_PREFIX + long_ago.date().isoformat(), "{}")
+        mkr.record_kind_routing(store, _routing(2), "src", now=_T0)
+        log = _kind_log(store)
+        assert log[mkr.RULES_VERSION_KEY] == mkr.RULES_VERSION == 2
+        assert log[mkr.RULES_CHANGED_KEY] == _T0.isoformat()
+        assert log[mkr.SHADOW_STARTED_KEY] == _T0.isoformat()
+        assert len(log[mkr.SAMPLES_PREFIX + "2026-10-01"]) == 2
+        # The same version later does not restart it again.
+        later = _T0 + timedelta(days=15)
+        mkr.record_kind_routing(store, _routing(2), "src", now=later)
+        log = _kind_log(store)
+        assert log[mkr.SHADOW_STARTED_KEY] == _T0.isoformat()
+        assert log[mkr.RULES_CHANGED_KEY] == _T0.isoformat()
+        assert mkr.SAMPLES_PREFIX + later.date().isoformat() not in log
+        assert log[mkr.COUNTS_PREFIX + later.date().isoformat()] == {"shadow": {"state": 2}}
+    finally:
+        store.close()
+
+
+def test_a_fresh_store_starts_its_window_at_the_first_log(tmp_path) -> None:
+    store = _v1(tmp_path, "fresh")
+    try:
+        mkr.record_kind_routing(store, _routing(1), "src", now=_T0)
+        log = _kind_log(store)
+        assert log[mkr.SHADOW_STARTED_KEY] == _T0.isoformat()
+        assert log[mkr.RULES_VERSION_KEY] == mkr.RULES_VERSION
+    finally:
+        store.close()
+
+
+# --- what the store held before the pass ---------------------------------------------
+
+
+def _seed(store: VectorMemoryStore, facts: dict) -> None:
+    for key, value in facts.items():
+        assert store.set_semantic(key=key, value=value, confidence=0.9, source="seed") is None
+
+
+def test_v1_samples_say_whether_the_key_existed_and_kept_its_value(tmp_path, monkeypatch) -> None:
+    _with_mode(monkeypatch, "shadow")
+    store = _v1(tmp_path, "prior")
+    try:
+        _seed(store, {"project.app.ci_status": "green", "project.app.auth_design": "older text"})
+        _consolidator(store)._write_structured_memory(_answer(), key="s1")
+        samples = {s["key"]: s for s in _samples(store)[mkr.SAMPLES_PREFIX + "2026-10-01"]}
+        assert (
+            samples["project.app.ci_status"]["existed"],
+            samples["project.app.ci_status"]["same_value"],
+        ) == (True, True)
+        assert (
+            samples["project.app.auth_design"]["existed"],
+            samples["project.app.auth_design"]["same_value"],
+        ) == (True, False)
+        assert (
+            samples["project.app.untagged"]["existed"],
+            samples["project.app.untagged"]["same_value"],
+        ) == (False, False)
+    finally:
+        store.close()
+
+
+def test_member_samples_read_the_store_before_the_span_writes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(mkr, "_utcnow", lambda: _T0)
+    store = _member(tmp_path, monkeypatch)
+    try:
+        _apply(store, "shadow")
+        first = {s["key"]: s["existed"] for s in _samples(store)[mkr.SAMPLES_PREFIX + "2026-10-01"]}
+        assert set(first.values()) == {False}
+        _apply(store, "shadow", source_id="src-2")
+        rows = _samples(store)[mkr.SAMPLES_PREFIX + "2026-10-01"]
+        second = [s for s in rows[len(first) :]]
+        assert second and all(s["existed"] and s["same_value"] for s in second)
+    finally:
+        store.close()
+
+
+def test_a_sample_without_a_prior_read_leaves_the_fields_out(tmp_path) -> None:
+    store = _v1(tmp_path, "noprior")
+    try:
+        mkr.record_kind_routing(store, _routing(1), "src", now=_T0)
+        (sample,) = _samples(store)[mkr.SAMPLES_PREFIX + "2026-10-01"]
+        assert "existed" not in sample and "same_value" not in sample
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "stored, key, counted",
+    [
+        ({"project.app.plan": "a"}, "project.app.plan_final", True),
+        ({"project.app.plan_latest": "a"}, "project.app.plan_final", True),
+        ({"project.app.plan_v2": "a"}, "project.app.plan_v12", True),
+        ({"project.app.plan_final": "a"}, "project.app.plan_final", False),
+        ({}, "project.app.plan_final", False),
+        ({"project.app.plan": "a"}, "project.app.plan_finally", False),
+        ({"project.app.plan": "a"}, "project.app.plan_v1", False),
+        ({"project.app.plan_extra": "a"}, "project.app.plan_new", False),
+    ],
+)
+def test_a_sibling_suffix_key_is_counted_and_written_as_before(
+    tmp_path, monkeypatch, stored, key, counted
+) -> None:
+    _with_mode(monkeypatch, "shadow")
+    store = _v1(tmp_path, "sibling")
+    try:
+        _seed(store, stored)
+        answer = {"semantic": [{"key": key, "value": "b", "confidence": 0.9, "kind": "fact"}]}
+        _consolidator(store)._write_structured_memory(answer, key="s1")
+        counts = _kind_log(store)[mkr.COUNTS_PREFIX + "2026-10-01"]
+        assert counts.get(mkr.SIBLING_SUFFIX_COUNT) == ({"shadow": 1} if counted else None)
+        assert counts["shadow"] == {"fact": 1}
+        assert _facts(store)[key][0] == '"b"'
+        assert set(_facts(store)) == set(stored) | {key}
+    finally:
+        store.close()
+
+
+def test_capture_never_changes_what_enforce_writes(tmp_path) -> None:
+    store = _v1(tmp_path, "enforce-prior")
+    try:
+        _seed(store, {"project.app.ci_status": "green", "project.app.release": "x"})
+        routing = mkr.route_semantic_by_kind(_answer(), "enforce")
+        captured = mkr.capture_prior(store, routing)
+        assert captured.result is routing.result
+        assert captured.decisions == routing.decisions
+        assert captured.refused == routing.refused
+        assert captured.prior is not None
+        assert set(captured.prior.values) == {"project.app.ci_status"}
+    finally:
+        store.close()
+
+
+def test_capture_on_an_unreadable_store_hands_the_routing_back() -> None:
+    routing = mkr.route_semantic_by_kind(_answer(), "shadow")
+    broken = MagicMock()
+    broken.db.execute.side_effect = RuntimeError("no table")
+    broken._db_lock = __import__("threading").RLock()
+    assert mkr.capture_prior(broken, routing) is routing
+    assert mkr.capture_prior(broken, mkr.route_semantic_by_kind(_answer(), "off")).prior is None
+
+
+# --- the prompt -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_off_prompt_carries_no_kind_text(monkeypatch) -> None:
+    from test_consolidation_semantic_cap import _prompt_for
+
+    prompts = {}
+    for mode in ("off", "shadow"):
+        monkeypatch.setattr(mkr, "configured_kind_routing_mode", lambda m=mode: m)
+        prompts[mode], _ = await _prompt_for([], include_history=False)
+    assert mkr.SHADOW_KIND_RULES in prompts["shadow"]
+    # Off is shadow with exactly the two kind segments taken out, and nothing else.
+    stripped = prompts["shadow"].replace('"kind": "fact" | "event" | "state", ', "", 1)
+    assert stripped.replace(mkr.SHADOW_KIND_RULES, "", 1) == prompts["off"]
+    for phrase in ("Tag every item with kind", "pending action"):
+        assert phrase not in prompts["off"]
+
+
+#: The ``kind`` rules the enforce prompt carried before shadow trialled a
+#: candidate, copied byte for byte. Changing them is a promotion: its own change.
+_ADOPTED_KIND_RULES = (
+    "Tag every item with kind. Ask two questions: Will this still be true in a month? "
+    "Can this be looked up somewhere else? "
+    'kind "fact" = still true in a month and not looked up elsewhere '
+    "(a decision, a root cause, how something works). "
+    'kind "event" = something that happened, worth a dated record. '
+    'kind "state" = the current status of a PR, issue, CI run, branch, round or SHA, '
+    "which GitHub, git or the work ledger already holds. "
+    "pref.* and user.* items are always facts. "
+)
+
+
+@pytest.mark.asyncio
+async def test_the_enforce_prompt_keeps_the_adopted_rules(monkeypatch) -> None:
+    from test_consolidation_semantic_cap import _prompt_for
+
+    assert mkr.ENFORCE_KIND_RULES == _ADOPTED_KIND_RULES
+    prompts = {}
+    for mode in ("shadow", "enforce"):
+        monkeypatch.setattr(mkr, "configured_kind_routing_mode", lambda m=mode: m)
+        prompts[mode], _ = await _prompt_for([], include_history=False)
+    assert _ADOPTED_KIND_RULES in prompts["enforce"]
+    assert mkr.CANDIDATE_STATE_RULES not in prompts["enforce"]
+    # Enforce is shadow with the candidate taken out and only the key-naming rule added.
+    key_naming = "Name keys by topic, never by PR, issue or round number. "
+    expected = prompts["shadow"].replace(mkr.SHADOW_KIND_RULES, key_naming + _ADOPTED_KIND_RULES, 1)
+    assert prompts["enforce"] == expected
+
+
+def test_the_wider_state_rules_name_what_shadow_found_mistagged() -> None:
+    rules = mkr.CANDIDATE_STATE_RULES
+    assert rules in mkr.SHADOW_KIND_RULES and rules not in mkr.ENFORCE_KIND_RULES
+    for phrase in (
+        "a next step",
+        "a pending action",
+        "what something is blocked on",
+        "a count (tests, cycles, budgets)",
+        "the local path of a worktree or scratch folder",
+        "a value marked final or latest that will change again",
+    ):
+        assert phrase in rules
+
+
+@pytest.mark.parametrize(
+    "stored, new, same",
+    [
+        ('"x"', "x", True),
+        ("1", 1, True),
+        ("1", True, False),
+        ("1", 1.0, False),
+        ('{"enabled": 0}', {"enabled": False}, False),
+        ("[1, 2]", [1, True], False),
+        ('{"a": [1]}', {"a": [1]}, True),
+        ("not json", "not json", True),
+    ],
+)
+def test_same_value_is_type_strict_all_the_way_down(stored, new, same) -> None:
+    assert mkr._same_value(stored, new) is same

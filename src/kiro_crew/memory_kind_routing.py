@@ -35,13 +35,23 @@ The log lives in the store's own ``memory_meta`` table, which every lineage has
 no new file. It is bounded by construction:
 
 * one counter row per UTC day (``memory_kind_log:counts:<day>``), counts by mode
-  and kind; rows older than :data:`COUNTER_DAYS_KEPT` days are pruned;
-* sample rows (``memory_kind_log:samples:<day>``), shadow mode only: at most
-  :data:`SAMPLES_PER_DAY` a day and :data:`SAMPLES_TOTAL` in all, oldest dropped
-  first, never more than :data:`SAMPLE_BYTES_CAP` bytes together, each value cut
-  to :data:`SAMPLE_VALUE_CHARS` characters;
+  and kind, plus ``sibling_suffix`` by mode on a day that saw one (see
+  :func:`capture_prior`); rows older than :data:`COUNTER_DAYS_KEPT` days are pruned;
+* sample rows (``memory_kind_log:samples:<day>``), shadow mode only: a uniform
+  reservoir of at most :data:`SAMPLES_PER_DAY` over the whole UTC day, and
+  :data:`SAMPLES_TOTAL` in all, oldest day dropped first, never more than
+  :data:`SAMPLE_BYTES_CAP` bytes together, each value cut to
+  :data:`SAMPLE_VALUE_CHARS` characters;
 * samples stop :data:`SHADOW_SAMPLE_WINDOW_SECS` after shadow mode first logged
-  in the store (``memory_kind_log:shadow_started_at``); counters keep going.
+  in the store (``memory_kind_log:shadow_started_at``); counters keep going;
+* ``memory_kind_log:rules_version`` names the :data:`RULES_VERSION` of the
+  candidate rules shadow trialled while the log was collected. When the code's version differs, the
+  sample window restarts, so samples under the new rules are collected too and
+  each sample's ``rules`` field tells the two apart.
+
+A sample may also carry ``existed`` (the key was active before the pass) and
+``same_value`` (its stored value equals the new one); a reader must accept a
+sample without them, as every sample written before they existed is.
 
 The samples exist so a small local classifier can be trained on them later.
 """
@@ -50,8 +60,10 @@ from __future__ import annotations
 
 import json
 import logging
+import random
+import re
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Final, NamedTuple
+from typing import TYPE_CHECKING, Final, Mapping, NamedTuple
 
 from kiro_crew.config.memory_sections import kind_routing_mode_from
 from kiro_crew.vector_memory_constants import _MAX_SEMANTIC_PER_CONSOLIDATION
@@ -75,17 +87,73 @@ MODE_ENFORCE: Final = "enforce"
 #: The only key family routing reads.
 ROUTED_PREFIX: Final = "project."
 
-SAMPLES_PER_DAY: Final = 50
+SAMPLES_PER_DAY: Final = 150
 SAMPLES_TOTAL: Final = 2_000
 SAMPLE_BYTES_CAP: Final = 1_000_000
 SAMPLE_VALUE_CHARS: Final = 200
-SHADOW_SAMPLE_WINDOW_SECS: Final = 7 * 86_400
+SHADOW_SAMPLE_WINDOW_SECS: Final = 14 * 86_400
 COUNTER_DAYS_KEPT: Final = 400
+
+#: The version of :data:`SHADOW_KIND_RULES`, the rules shadow mode trials. Bump
+#: it whenever their wording changes, so the log can tell samples taken under the
+#: old rules from the new ones.
+RULES_VERSION: Final = 2
 
 _META_PREFIX: Final = "memory_kind_log:"
 SHADOW_STARTED_KEY: Final = _META_PREFIX + "shadow_started_at"
+RULES_VERSION_KEY: Final = _META_PREFIX + "rules_version"
+RULES_CHANGED_KEY: Final = _META_PREFIX + "rules_changed_at"
 COUNTS_PREFIX: Final = _META_PREFIX + "counts:"
+#: ``{"day": <UTC day>, "rules": <version>, "seen": n}``: how many items today's
+#: reservoir has been offered under those rules, which is its stream length.
+#: One row, overwritten each day, so it needs no pruning.
+RESERVOIR_KEY: Final = _META_PREFIX + "reservoir"
 SAMPLES_PREFIX: Final = _META_PREFIX + "samples:"
+#: The counts-row entry, ``{mode: n}``, beside the ``{mode: {kind: n}}`` entries.
+SIBLING_SUFFIX_COUNT: Final = "sibling_suffix"
+
+_KIND_RULES_HEAD: Final = (
+    "Tag every item with kind. Ask two questions: Will this still be true in a month? "
+    "Can this be looked up somewhere else? "
+    'kind "fact" = still true in a month and not looked up elsewhere '
+    "(a decision, a root cause, how something works). "
+    'kind "event" = something that happened, worth a dated record. '
+    'kind "state" = the current status of a PR, issue, CI run, branch, round or SHA, '
+    "which GitHub, git or the work ledger already holds. "
+)
+_KIND_RULES_TAIL: Final = "pref.* and user.* items are always facts. "
+
+#: The candidate widening of ``state`` that shadow mode trials (version
+#: :data:`RULES_VERSION`). ``enforce`` drops what is tagged ``state``, so it does
+#: not ask this until a separate promotion change adopts it, once the shadow
+#: samples back it; until then ``enforce`` writes exactly what it wrote before.
+CANDIDATE_STATE_RULES: Final = (
+    'kind "state" also covers a next step, a pending action, what something is blocked on, '
+    "a count (tests, cycles, budgets), the local path of a worktree or scratch folder, "
+    "and a value marked final or latest that will change again. "
+)
+
+#: The ``kind`` rules ``enforce`` asks: the adopted rules, unchanged.
+ENFORCE_KIND_RULES: Final = _KIND_RULES_HEAD + _KIND_RULES_TAIL
+#: The ``kind`` rules ``shadow`` asks: the adopted rules plus the candidate.
+SHADOW_KIND_RULES: Final = _KIND_RULES_HEAD + CANDIDATE_STATE_RULES + _KIND_RULES_TAIL
+
+
+def kind_rules_for(mode: str) -> str:
+    """The prompt's ``kind`` rules under *mode*; ``off`` asks none of this text."""
+    mode = kind_routing_mode_from(mode)
+    if mode == MODE_SHADOW:
+        return SHADOW_KIND_RULES
+    if mode == MODE_ENFORCE:
+        return ENFORCE_KIND_RULES
+    return ""
+
+
+#: A key suffix that marks one more copy of a topic rather than a topic of its own.
+_SIBLING_SUFFIX = re.compile(r"^(?P<base>.+?)_(?:final|latest|new|updated|v[2-9]|v[1-9][0-9]+)$")
+
+#: The reservoir's random source. Measurement only, never security; tests seed it.
+_RNG = random.Random()  # nosec B311
 
 
 def _utcnow() -> datetime:
@@ -147,12 +215,25 @@ class KindDecision(NamedTuple):
     value: object
 
 
+class PriorState(NamedTuple):
+    """What the store held for the routed keys before the pass wrote anything.
+
+    *values* maps each routed key that was active to its stored ``value_json``;
+    *siblings* names each routed key with a sibling-suffix copy already active.
+    """
+
+    values: Mapping[str, str]
+    siblings: tuple[str, ...]
+
+
 class KindRouting(NamedTuple):
     """The result the writers should apply, and what routing decided on the way."""
 
     result: dict
     mode: str
     decisions: tuple[KindDecision, ...]
+    #: Set by :func:`capture_prior`; ``None`` when it did not run or could not read.
+    prior: PriorState | None = None
 
     @property
     def refused(self) -> tuple[KindDecision, ...]:
@@ -216,6 +297,69 @@ def route_consolidation_by_kind(result: dict, log: logging.Logger) -> KindRoutin
     return routing
 
 
+def _sibling_base(key: str) -> str | None:
+    match = _SIBLING_SUFFIX.match(key)
+    return match.group("base") if match else None
+
+
+def capture_prior_in_transaction(db: "sqlite3.Connection", routing: KindRouting) -> KindRouting:
+    """*routing* with :class:`PriorState` read from *db*, before the pass writes.
+
+    Each read is under the key the model named, which is what the samples
+    describe; a writer that files the value under another key (the member
+    store's identity match) does not change it.
+
+    The caller holds the store's lock. Read-only and indexed on the key: one
+    read for the routed keys, and one prefix read per key carrying a sibling
+    suffix. Never raises; on a failed read the routing comes back unchanged,
+    and the log then leaves those fields out.
+    """
+    if routing.mode == MODE_OFF or not routing.decisions:
+        return routing
+    keys = sorted({d.key for d in routing.decisions})
+    try:
+        marks = ",".join("?" * len(keys))
+        values = {
+            str(key): str(raw)
+            for key, raw in db.execute(
+                f"SELECT key, value_json FROM semantic_memory "  # nosec B608: placeholders only
+                f"WHERE is_deleted = 0 AND key IN ({marks})",
+                keys,
+            ).fetchall()
+        }
+        siblings = []
+        for decision in routing.decisions:
+            base = _sibling_base(decision.key)
+            if base is None:
+                continue
+            # Keys are [a-z0-9_.] only (_KEY_PATTERN), so the GLOB has no wildcard but its own.
+            active = {
+                str(row[0])
+                for row in db.execute(
+                    "SELECT key FROM semantic_memory WHERE is_deleted = 0 AND (key = ? OR key GLOB ?)",
+                    (base, base + "_*"),
+                ).fetchall()
+            }
+            if any(k == base or (k != decision.key and _sibling_base(k) == base) for k in active):
+                siblings.append(decision.key)
+    except Exception:
+        logger.debug("Could not read the prior state for kind routing", exc_info=True)
+        return routing
+    return routing._replace(prior=PriorState(values, tuple(siblings)))
+
+
+def capture_prior(store: "VectorMemoryStore", routing: KindRouting) -> KindRouting:
+    """:func:`capture_prior_in_transaction` under the store's own lock."""
+    if routing.mode == MODE_OFF or not routing.decisions:
+        return routing
+    try:
+        with store._db_lock:
+            return capture_prior_in_transaction(store.db, routing)
+    except Exception:
+        logger.debug("Could not read the prior state for kind routing", exc_info=True)
+        return routing
+
+
 # ── The bounded log ─────────────────────────────────────────────────────────
 
 
@@ -259,7 +403,12 @@ def _parse_instant(raw: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _count(raw: object) -> int:
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+
+
 def _bump_counts(db: "sqlite3.Connection", routing: KindRouting, now: datetime) -> None:
+    """Count *routing*'s items in today's row."""
     day = now.date().isoformat()
     key = COUNTS_PREFIX + day
     counts = _loads_dict(_read(db, key))
@@ -270,6 +419,13 @@ def _bump_counts(db: "sqlite3.Connection", routing: KindRouting, now: datetime) 
         current = by_kind.get(decision.kind)
         by_kind[decision.kind] = (current if isinstance(current, int) else 0) + 1
     counts[routing.mode] = by_kind
+    siblings = len(routing.prior.siblings) if routing.prior is not None else 0
+    if siblings:
+        by_mode = counts.get(SIBLING_SUFFIX_COUNT)
+        if not isinstance(by_mode, dict):
+            by_mode = {}
+        by_mode[routing.mode] = _count(by_mode.get(routing.mode)) + siblings
+        counts[SIBLING_SUFFIX_COUNT] = by_mode
     _upsert(db, key, json.dumps(counts, sort_keys=True), now.isoformat())
     cutoff = (now - timedelta(days=COUNTER_DAYS_KEPT)).date().isoformat()
     db.execute(
@@ -278,39 +434,109 @@ def _bump_counts(db: "sqlite3.Connection", routing: KindRouting, now: datetime) 
     )
 
 
-def _sample(decision: KindDecision, store_name: str, now: datetime) -> dict:
-    return {
+def _same_value(stored: str, value: object) -> bool:
+    try:
+        decoded = json.loads(stored)
+    except ValueError:
+        return stored == _value_text(value)
+    from kiro_crew.user_json import strict_json_equal
+
+    return strict_json_equal(decoded, value)
+
+
+def _sample(
+    decision: KindDecision, store_name: str, now: datetime, prior: PriorState | None
+) -> dict:
+    sample: dict = {
         "key": decision.key,
         "kind": decision.kind,
         "value": _utf8_clean(_value_text(decision.value)[:SAMPLE_VALUE_CHARS]),
         "store": store_name,
         "ts": now.isoformat(),
+        "rules": RULES_VERSION,
     }
+    if prior is not None:
+        stored = prior.values.get(decision.key)
+        sample["existed"] = stored is not None
+        sample["same_value"] = stored is not None and _same_value(stored, decision.value)
+    return sample
+
+
+def _sync_rules_version(db: "sqlite3.Connection", now: datetime) -> None:
+    """Record :data:`RULES_VERSION`; on a change, restart the sample window.
+
+    Shadow mode only, so a pass under ``enforce`` cannot spend the restarted
+    window while nothing is being sampled.
+    """
+    stored = _read(db, RULES_VERSION_KEY)
+    if stored == str(RULES_VERSION):
+        return
+    stamp = now.isoformat()
+    _upsert(db, RULES_VERSION_KEY, str(RULES_VERSION), stamp)
+    _upsert(db, RULES_CHANGED_KEY, stamp, stamp)
+    if _read(db, SHADOW_STARTED_KEY) is not None:
+        _upsert(db, SHADOW_STARTED_KEY, stamp, stamp)
 
 
 def _row_bytes(samples: list) -> int:
     return len(json.dumps(samples).encode("utf-8"))
 
 
+def _reservoir_seen(db: "sqlite3.Connection", day: str) -> int:
+    """The length of today's reservoir stream under these rules; 0 for a new stream."""
+    entry = _loads_dict(_read(db, RESERVOIR_KEY))
+    if entry.get("day") == day and entry.get("rules") == RULES_VERSION:
+        return _count(entry.get("seen"))
+    return 0
+
+
 def _add_samples(
     db: "sqlite3.Connection", routing: KindRouting, store_name: str, now: datetime
 ) -> None:
-    """Append today's shadow samples, then trim every sample row to the caps."""
+    """Fold this pass into today's reservoir, then trim every sample row to the caps.
+
+    Reservoir sampling (Algorithm R) over the day's stream: the item numbered
+    *t* replaces a random kept sample with probability ``k / t``, so every item
+    the day offers is equally likely to be kept, not only the first. The stream
+    is counted in :data:`RESERVOIR_KEY` per day and rules version, so a window that restarts mid-day starts a fresh stream rather
+    than one numbered by the items counted before it. Samples of other rules
+    already in today's row stay as they are and take their share of
+    :data:`SAMPLES_PER_DAY`; *k* is what is left.
+    """
     started = _parse_instant(_read(db, SHADOW_STARTED_KEY))
     if started is None:
         started = now
         _upsert(db, SHADOW_STARTED_KEY, now.isoformat(), now.isoformat())
     if (now - started).total_seconds() >= SHADOW_SAMPLE_WINDOW_SECS:
         return
-    today_key = SAMPLES_PREFIX + now.date().isoformat()
-    today = _loads_list(_read(db, today_key))
-    room = SAMPLES_PER_DAY - len(today)
-    if room <= 0:
+    day = now.date().isoformat()
+    today_key = SAMPLES_PREFIX + day
+    other: list = []
+    current: list = []
+    for sample in _loads_list(_read(db, today_key)):
+        is_current = isinstance(sample, dict) and sample.get("rules") == RULES_VERSION
+        (current if is_current else other).append(sample)
+    other = other[:SAMPLES_PER_DAY]
+    room = SAMPLES_PER_DAY - len(other)
+    current = current[:room]
+    seen = _reservoir_seen(db, day)
+    seen = max(seen, len(current))
+    changed = False
+    for decision in routing.decisions:
+        seen += 1
+        if len(current) < room:
+            current.append(_sample(decision, store_name, now, routing.prior))
+            changed = True
+            continue
+        slot = _RNG.randrange(seen)
+        if slot < room:
+            current[slot] = _sample(decision, store_name, now, routing.prior)
+            changed = True
+    entry = {"day": day, "rules": RULES_VERSION, "seen": seen}
+    _upsert(db, RESERVOIR_KEY, json.dumps(entry, sort_keys=True), now.isoformat())
+    if not changed:
         return
-    added = [_sample(d, store_name, now) for d in routing.decisions[:room]]
-    if not added:
-        return
-    today.extend(added)
+    today = other + current
     rows: dict[str, list] = {}
     for key, raw in db.execute(
         "SELECT key, value FROM memory_meta WHERE key GLOB ? ORDER BY key",
@@ -391,6 +617,7 @@ def record_kind_routing_in_transaction(
     try:
         _bump_counts(db, routing, instant)
         if routing.mode == MODE_SHADOW:
+            _sync_rules_version(db, instant)
             store_name = getattr(store, "_memory_store_name", None) or "default"
             _add_samples(db, routing, str(store_name), instant)
         _audit_refusals(db, routing, source)
