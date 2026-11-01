@@ -1,10 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createElement, type ReactNode } from 'react'
-import { renderHook, waitFor } from '@testing-library/react'
+import { createElement, useState, type ReactNode } from 'react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import type { Result, ResourceProvider } from '../../components/commandPalette/types'
 import { useCommandBarOverlaySlots } from './useCommandBarOverlaySlots'
+import type { RankedRow } from './rootIndex'
 
 /**
  * Issue #21290: the typed Sessions search ranks open sessions first, so the cached
@@ -97,6 +98,72 @@ describe('useCommandBarOverlaySlots — open sessions re-rank cached search rows
 
     release(1)
     await waitFor(() => expect(titles()).toEqual(['target', 'history']))
+  })
+
+  it('keeps the keyboard selection on the same row when a re-rank moves it', async () => {
+    const answers = [['history', 'target', 'other'], ['target', 'history', 'other']]
+    let call = 0
+    const search = vi.fn(async (): Promise<Result[]> => answers[Math.min(call++, 1)].map(row))
+    const sessions = provider(search)
+    const idle = provider(async () => [])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children)
+    const view = renderHook(
+      ({ q, openSessionsKey }: { q: string; openSessionsKey: string }) => {
+        const [selected, setSelected] = useState(0)
+        const out = useCommandBarOverlaySlots({
+          scope: 'sessions', debounced: q, query: q, sessions, openSessionsKey,
+          recentSessions: idle, artifacts: idle, folderSortMode: 'manual', folders: idle,
+          runningMates: new Set<string>(), mates: idle, argCommand: null, ranked: [],
+          selected, setSelected,
+        } as Parameters<typeof useCommandBarOverlaySlots>[0])
+        return { ...out, selected, setSelected }
+      },
+      { wrapper, initialProps: { q: 'grid', openSessionsKey: '' } },
+    )
+    const selectedTitle = () => {
+      const slot = view.result.current.slots[view.result.current.selected]
+      return slot?.tag === 'result' ? slot.row.title : undefined
+    }
+    await waitFor(() => expect(view.result.current.slots).toHaveLength(3))
+    // The reader arrows down to `target`.
+    act(() => view.result.current.setSelected(1))
+    expect(selectedTitle()).toBe('target')
+
+    // `target` opens in the background and moves to row 0: the highlight follows it.
+    view.rerender({ q: 'grid', openSessionsKey: 'target' })
+    await waitFor(() => expect(view.result.current.slots[0]?.key).toBe('target'))
+    expect(selectedTitle()).toBe('target')
+    expect(view.result.current.selected).toBe(0)
+  })
+
+  it('lets a keystroke at the root reset the selection, before the debounce lands', () => {
+    const idle = provider(async () => [])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children)
+    const rootRow = (id: string) => ({ id, title: id }) as unknown as RankedRow
+    const view = renderHook(
+      ({ query, ranked }: { query: string; ranked: RankedRow[] }) => {
+        const [selected, setSelected] = useState(0)
+        const out = useCommandBarOverlaySlots({
+          scope: null, debounced: 'g', query, sessions: idle, openSessionsKey: '',
+          recentSessions: idle, artifacts: idle, folderSortMode: 'manual', folders: idle,
+          runningMates: new Set<string>(), mates: idle, argCommand: null, ranked,
+          selected, setSelected,
+        } as unknown as Parameters<typeof useCommandBarOverlaySlots>[0])
+        return { ...out, selected, setSelected }
+      },
+      { wrapper, initialProps: { query: 'g', ranked: [rootRow('alpha'), rootRow('grid')] } },
+    )
+    act(() => view.result.current.setSelected(1))
+    // The reader types `r`: the input resets the selection and the live ranking
+    // moves `grid` to the top. The debounced query has not caught up yet.
+    act(() => view.result.current.setSelected(0))
+    view.rerender({ query: 'gr', ranked: [rootRow('grid'), rootRow('alpha')] })
+    expect(view.result.current.selected).toBe(0)
+    expect(view.result.current.slots[0]?.key).toBe('grid')
   })
 
   it('still drops the rows when the query itself changes', async () => {

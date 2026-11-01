@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
@@ -435,6 +435,35 @@ export function useCommandBarOverlaySlots({
     (scope === 'artifacts' && artifactsFetching) ||
     (scope === 'folders' && foldersFetching) ||
     (scope === 'mates' && matesFetching)
+
+  /**
+   * Keep the selection on the same row when the rows re-rank under an unchanged
+   * query: a tab opening or closing re-orders the sessions hits, and a crew
+   * member starting or stopping re-orders the crewmates rows. Without this the
+   * highlight keeps its row NUMBER and lands on a different row. A new query or
+   * view is left alone; its own handlers reset the selection.
+   */
+  // Compared by the ORDER of row keys, not by array identity: the list is rebuilt
+  // on renders that move nothing, and an arrow key must not be undone by one.
+  const order = slots.map(slot => slot.key).join('\u0000')
+  // Only the two views whose rows re-rank on their own. Both rank from the
+  // debounced query, so a keystroke changes nothing here until it lands, and
+  // then `asked` changes and the follow is skipped.
+  const follows = scope === 'sessions' || scope === 'mates'
+  const asked = debounced.trim()
+  const followRef = useRef({ order, scope, asked, key: '' })
+  useEffect(() => {
+    const prev = followRef.current
+    let next = selected
+    if (follows && prev.order !== order && prev.scope === scope && prev.asked === asked && prev.key) {
+      const i = slots.findIndex(slot => slot.key === prev.key)
+      if (i >= 0 && i !== selected) {
+        next = i
+        setSelected(i)
+      }
+    }
+    followRef.current = { order, scope, asked, key: slots[next]?.key ?? '' }
+  }, [slots, order, scope, asked, follows, selected, setSelected])
 
   useEffect(() => {
     if (selected >= rowCount) setSelected(Math.max(0, rowCount - 1))
