@@ -40,6 +40,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
+from .exfil_git_object import _GIT_OBJECT_NAME_RE, _exfil_blob_hit  # noqa: F401
 from .exfil_oauth import (  # noqa: F401
     _OAUTH_EXTENSION_HOST_RE,
     _OAUTH_QUERY_PARAMS,
@@ -74,32 +75,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
-
-
-# A SHA-1 git object name -- 40 lowercase hex digits -- is a 40+ char run of the
-# base64 class in ``_EXFIL_PATTERNS``, so a commit permalink that carries one in
-# its QUERY (``?commit=<sha>``, ``?changes=pkg/main:<sha>``) trips the blob
-# branch. It is not a base64 blob: hex is a 16-symbol alphabet, the reasoning
-# ``redaction.py``'s bare-secret detector already applies to all-hex runs. The
-# carve-out is that exact length, lowercase as git prints it, judged on the
-# MAXIMAL match: 41+ digits, mixed case, ``=`` padding, or a hash glued to any
-# other base64 character is a longer or wider run and keeps firing. 64 hex
-# (SHA-256) is NOT carved out: it is the shape of this product's own secrets
-# (``token_hex(32)``, e.g. ``generate_app_secret()``). Residual, stated: a 40-hex
-# token in a query passes THIS heuristic; the fixed credential markers key on
-# provider prefixes, and the length gate still bounds the query.
-_GIT_OBJECT_NAME_RE = re.compile(r"[0-9a-f]{40}")
-
-
-def _exfil_blob_hit(value: str) -> bool:
-    """True when ``_EXFIL_PATTERNS`` matches ``value`` on anything but a bare git
-    object name. Every other alternative (AWS key id, SSH/PEM header, Slack
-    token, heavy percent encoding) is reported unchanged."""
-    for match in _EXFIL_PATTERNS.finditer(value):
-        if _GIT_OBJECT_NAME_RE.fullmatch(match.group(0)):
-            continue
-        return True
-    return False
 
 
 def _exempt_exact_hosts() -> frozenset[str]:
@@ -1921,6 +1896,7 @@ def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = N
 # owner names ``display_safety`` reads here.
 # Owners never import this module. New work goes to the owner of its responsibility:
 #   ``exfil_url_rules`` -- the URL and query patterns and the presigned-URL validator
+#   ``exfil_git_object`` -- the git object name carve-out from the base64-blob test
 #   ``exfil_scan_span`` -- which span of a URL match is judged and replaced
 #   ``exfil_oauth`` -- the OAuth endpoint set, its audit events and the shape diagnostics
 #   ``exfil_bash`` -- the data-egress and reverse-shell command gate
@@ -1929,6 +1905,7 @@ from kiro_crew import _facade_mirror  # noqa: E402
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.security.exfil_url_rules",
+    "kiro_crew.security.exfil_git_object",
     "kiro_crew.security.exfil_scan_span",
     "kiro_crew.security.exfil_oauth",
     "kiro_crew.security.exfil_bash",

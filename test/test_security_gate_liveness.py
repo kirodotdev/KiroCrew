@@ -635,11 +635,12 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-#: Raised by 24, from 33,723 for ``exfil._exfil_blob_hit``: the base64-blob
+#: Raised by 40, from 33,723 for ``exfil_git_object._exfil_blob_hit``: the base64-blob
 #: heuristic judged through one helper that skips a maximal match which is exactly
 #: a SHA-1 git object name (40 lowercase hex digits), so a commit permalink with
-#: the hash in its query renders. Data and one narrowing helper; no pattern moved.
-_PACKAGE_LINE_BUDGET = 33_747
+#: the hash in its query renders. Data and one narrowing helper in their own owner
+#: module beside ``exfil.py``, with its header; no pattern moved.
+_PACKAGE_LINE_BUDGET = 33_763
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

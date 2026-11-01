@@ -52,6 +52,7 @@ RULE_SOURCES: tuple[str, ...] = (
     "security/exfil_url_rules.py",
     "security/exfil_scan_span.py",
     "security/exfil_oauth.py",
+    "security/exfil_git_object.py",
 )
 
 _PKG_ROOT = Path(__file__).resolve().parent.parent

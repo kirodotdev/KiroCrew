@@ -197,7 +197,7 @@ class TestGitObjectNameCarveOutMirror:
     SHAPE = r"[0-9a-f]{40}"
 
     def test_backend_carries_the_shape(self) -> None:
-        text = BACKEND_EXFIL.read_text(encoding="utf-8")
+        text = (BACKEND_PKG / "exfil_git_object.py").read_text(encoding="utf-8")
         assert f'_GIT_OBJECT_NAME_RE = re.compile(r"{self.SHAPE}")' in text
 
     def test_frontend_carries_the_shape(self) -> None:
