@@ -229,7 +229,6 @@
   "src/test/chatPins.test.tsx",
   "src/test/composerTreeDrop.test.ts",
   "src/test/notificationConstructorGuard.test.ts",
-  "src/test/paletteOpenSessionFocusesComposer.test.tsx",
   "src/test/shortcutsPanelSkipShell.test.tsx",
   "src/test/sidePanelLeadingTab.test.tsx",
   "src/test/toolDisclosureKey.renderSite.test.tsx",
