@@ -901,14 +901,16 @@ class CancellationCoordinator(ManagerComponent):
                 # registered yet: reaping it here is the same act the store just refused,
                 # reached through a different door. So the live path is taken only for a
                 # row that is actually executing, and a claimed one is left to the
-                # incarnation that owns it.
+                # incarnation that owns it. That claimer reads the mark set above
+                # before and after its start write, and cancels the row instead of
+                # starting it (``claim_and_start``).
                 claimed_unstarted = (
                     await self._manager._admission.taskq_row_is_claimed_unstarted_async(agent_id)
                 )
                 if claimed_unstarted:
                     logger.info(
                         "Teardown: leaving %s to its claimer -- the row is claimed and "
-                        "not started, so stopping it here would strand a registration",
+                        "not started; the claimer reads the teardown mark and cancels it",
                         agent_id,
                     )
                 elif (late := self._manager._agents.get(agent_id)) is not None and not late.done:
