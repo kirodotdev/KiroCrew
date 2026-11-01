@@ -22,9 +22,13 @@ export function CrewGhostBadge({ size = 28 }: { size?: number }) {
 /** "CREW MODE" in the crew gradient, the root row's first line. Tracked a whole
  *  pixel: an em fraction at this size lands letters on fractional pixels, which
  *  renders one gap wider than the rest.
- *  `active` (the crew is working) slides the gradient slowly; it stops the
- *  moment the work ends, and never moves under reduced motion, so the flow is a
- *  live-state signal rather than an always-on loop. */
+ *  `active` (the crew is working) slides the gradient one tile per
+ *  `ULTRA_FLOW_SECONDS`; it stops the moment the work ends, and never moves
+ *  under reduced motion, so the flow is a live-state signal rather than an
+ *  always-on loop. The pace is quick enough to tell a working row from an idle
+ *  one at a glance (at 5s the drift read as still). */
+export const ULTRA_FLOW_SECONDS = 2
+
 export function CrewEyebrow({ active = false }: { active?: boolean } = {}) {
   const reduceMotion = useLiveReducedMotion()
   // The row list mounts under `AnimatePresence initial={false}`, which lands a
@@ -40,7 +44,7 @@ export function CrewEyebrow({ active = false }: { active?: boolean } = {}) {
       className="crew-eyebrow-text font-bold uppercase tracking-[1px] truncate"
       initial={{ backgroundPositionX: '0%' }}
       animate={{ backgroundPositionX: flowing ? ['0%', '-200%'] : '0%' }}
-      transition={flowing ? { duration: 5, ease: 'linear', repeat: Infinity } : { duration: 0 }}
+      transition={flowing ? { duration: ULTRA_FLOW_SECONDS, ease: 'linear', repeat: Infinity } : { duration: 0 }}
     >
       {i18nT('components.crewMode.eyebrow')}
     </motion.span>

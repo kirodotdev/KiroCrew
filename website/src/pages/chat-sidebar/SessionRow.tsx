@@ -52,6 +52,7 @@ import { SessionSourceChips } from './SessionSourceChips'
 import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
 import { summarizeCrewWorkers, crewRowCounts } from '../../lib/crewWorkers'
 import { CrewRowCounts } from './CrewRowCounts'
+import { CrewStateWord, crewStateWord, type CrewStateKind } from './CrewRowState'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 import { crewWaitingApprovals, openedSessionRunning } from '../chat/command-center/model'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -280,22 +281,26 @@ interface SessionRowProps {
  *  that won: what the person owes reads "Needs you", live work "Running", an
  *  interrupted turn "Paused", queued work "Waiting". The branch's own line
  *  stays in the tooltip. */
-export interface CrewRowOwnState { word: string; tone: string; title: string }
+export interface CrewRowOwnState { kind: CrewStateKind; word: string; title: string }
 
 const CREW_NEEDS_YOU_KEYS = new Set(['pending_approval', 'subagent_awaiting', 'crew_approval', 'needs_input', 'loop_waiting'])
 const CREW_RUNNING_KEYS = new Set(['running', 'goal_loop', 'subagents', 'snapshot_live_work', 'workflow', 'structured_monitor_action'])
 const CREW_WAITING_KEYS = new Set(['subagents_waiting', 'structured_monitor_passive'])
 
-export function crewRowOwnState(key: string | undefined, title: string, loopStalled = false): CrewRowOwnState | null {
-  if (!key) return null
+function crewRowOwnKind(key: string, loopStalled: boolean): CrewStateKind | null {
   // A stalled goal loop is a failure, not live work.
-  if (key === 'goal_loop' && loopStalled) return { word: i18nT('components.crewMode.ultra_paused'), tone: 'text-danger font-medium', title }
-  if (CREW_NEEDS_YOU_KEYS.has(key)) return { word: i18nT('components.crewMode.ultra_needs_you'), tone: 'crew-tone-warn font-medium', title }
-  if (CREW_RUNNING_KEYS.has(key)) return { word: i18nT('commandCenter.running'), tone: 'text-text', title }
-  if (key === 'interrupted') return { word: i18nT('components.crewMode.ultra_paused'), tone: 'crew-tone-warn', title }
+  if (key === 'goal_loop' && loopStalled) return 'stalled'
+  if (CREW_NEEDS_YOU_KEYS.has(key)) return 'needs_you'
+  if (CREW_RUNNING_KEYS.has(key)) return 'running'
+  if (key === 'interrupted') return 'paused'
   // Queued children and a passive monitor are unfinished, never "Done".
-  if (CREW_WAITING_KEYS.has(key)) return { word: i18nT('commandCenter.worker_group_waiting'), tone: 'text-muted', title }
+  if (CREW_WAITING_KEYS.has(key)) return 'waiting'
   return null
+}
+
+export function crewRowOwnState(key: string | undefined, title: string, loopStalled = false): CrewRowOwnState | null {
+  const kind = key ? crewRowOwnKind(key, loopStalled) : null
+  return kind ? { kind, word: crewStateWord(kind), title } : null
 }
 
 function CrewRootSummaryLine({ root, fallback, own = null }: { root: string; fallback: ReactNode; own?: CrewRowOwnState | null }) {
@@ -315,19 +320,19 @@ function CrewRootSummaryLine({ root, fallback, own = null }: { root: string; fal
   // No crew yet: the row's own state still reads as one word; with none, the fallback line.
   if (total === 0 && !failed && !own) return <>{fallback}</>
   const counts = i18nT('pages.chatSidebar.session', { count: total })
-  const [word, tone] = own ? [own.word, own.tone]
-    : approval > 0 ? [i18nT('components.crewMode.ultra_needs_you'), 'crew-tone-warn font-medium']
-    : running > 0 ? [i18nT('commandCenter.running'), 'text-text']
-      : done === total ? [i18nT('commandCenter.worker_group_done'), 'crew-tone-ok']
-        : [i18nT('commandCenter.worker_group_waiting'), 'text-muted']
+  const kind: CrewStateKind = own ? own.kind
+    : approval > 0 ? 'needs_you'
+    : running > 0 ? 'running'
+      : done === total ? 'done'
+        : 'waiting'
   return (
     <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">
       {/* The row's own state outranks a failed crew read: it is said first. */}
-      {failed && own && <span className={`shrink-0 whitespace-nowrap text-[12px] ${own.tone}`} data-testid="crew-root-state" title={own.title || undefined}>{own.word}</span>}
+      {failed && own && <CrewStateWord kind={own.kind} title={own.title} />}
       {failed ? (
         <ErrorNotice variant="inline" askAgent className="min-w-0" messageClassName="truncate" message={i18nT('commandCenter.workers_error')} />
       ) : (
-        <span className={`shrink-0 whitespace-nowrap text-[12px] ${tone}`} data-testid="crew-root-state" title={own?.title || undefined}>{word}</span>
+        <CrewStateWord kind={kind} title={own?.title} />
       )}
       <CrewRowCounts counts={rowCounts} />
       {total > 0 && (
