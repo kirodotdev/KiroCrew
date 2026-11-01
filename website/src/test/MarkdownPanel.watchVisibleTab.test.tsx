@@ -1100,6 +1100,12 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
       unreadable.add('/tmp/b.md')
       render(<LastCopyTab content={bodyOf('/tmp/b.md')} />, { wrapper })
       await screen.findByTestId('markdown-panel-missing-file')
+      // The breadcrumb must not offer a second Download that fetches the gone path.
+      fireEvent.contextMenu(screen.getByRole('group', { name: '/tmp/b.md' }))
+      expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeTruthy()
+      expect(screen.queryByRole('menuitem', { name: i18nT('components.markdownPanel.download') })).toBeNull()
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
       fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
       fireEvent.click(screen.getByRole('menuitem', { name: i18nT('components.markdownPanel.download') }))
       expect(blobs).toHaveLength(1)

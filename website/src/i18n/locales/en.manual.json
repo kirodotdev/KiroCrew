@@ -1600,7 +1600,8 @@
     },
     "filePathMenu": {
       "open_in_side_panel": "Open in side panel",
-      "show_folder_in_side_panel": "Show folder in side panel"
+      "show_folder_in_side_panel": "Show folder in side panel",
+      "download_current_file": "Download current file on disk: {{path}}"
     },
     "fileChangeChips": {
       "diff_unavailable_file_exceeds_snapshot_limit": "Diff unavailable: file is too large to compare (over {{limit}} characters).",
@@ -2390,10 +2391,8 @@
       "now_executable": "now executable",
       "open_in_side_panel": "Open {{path}} in side panel",
       "plain_view": "No highlighting — plain view",
-      "split_view": "Split view",
       "switch_to_split_view": "Switch to split view",
-      "switch_to_unified_view": "Switch to unified view",
-      "unified_view": "Unified view"
+      "switch_to_unified_view": "Switch to unified view"
     },
     "discoverySearchBar": {
       "found_for_query": "found for “{{query}}”",
@@ -2884,6 +2883,7 @@
       "copy_url_of": "Copy URL of {{name}}"
     },
     "markdownPanel": {
+      "downloading": "Downloading…",
       "add_to_artifact_library": "Add to artifact library",
       "adding": "Adding…",
       "adding_2": "Adding...",
@@ -2897,6 +2897,7 @@
       "discard_comment_button": "Discard comment",
       "discard_unsaved_comment": "Discard your unsaved comment?",
       "download_failed": "Download failed",
+      "download_blocked_credential_scan": "Download blocked: a credential scan flagged this file",
       "edit": "Edit",
       "read_only": "Read-only",
       "failed_to_add_source": "Failed to add source",
@@ -7799,6 +7800,7 @@
         "automatic_updates_unavailable_translocated": "Automatic updates are unavailable because macOS is running this app from a temporary read-only copy. Move it to your Applications folder and reopen it.",
         "automatic_updates_unavailable_volume": "Automatic updates are unavailable because this app is running from a read-only disk image. Move it to your Applications folder and reopen it.",
         "download_failed": "Download failed",
+      "download_blocked_credential_scan": "Download blocked: a credential scan flagged this file",
         "download_the_latest_version": "download the latest version",
         "install_failed": "Couldn’t install the update",
         "install_update_restart_app": "Install Update & Restart App",

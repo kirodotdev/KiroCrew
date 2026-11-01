@@ -104,9 +104,10 @@ describe('DropdownMenu closes when a file drag enters the window', () => {
 })
 
 describe('ContextMenu closes when a file drag enters the window', () => {
-  function Harness({ onOpenChange }: { onOpenChange: (open: boolean) => void }) {
+  function Harness({ onOpenChange, controlled = false }: { onOpenChange: (open: boolean) => void; controlled?: boolean }) {
+    const [open, setOpen] = useState(false)
     return (
-      <ContextMenu onOpenChange={onOpenChange}>
+      <ContextMenu open={controlled ? open : undefined} onOpenChange={next => { setOpen(next); onOpenChange(next) }}>
         <ContextMenuTrigger data-testid="row">row</ContextMenuTrigger>
         <ContextMenuContent data-testid="content">
           <ContextMenuItem>Close session</ContextMenuItem>
@@ -115,9 +116,9 @@ describe('ContextMenu closes when a file drag enters the window', () => {
     )
   }
 
-  it('dismisses a right-click menu and reports it through onOpenChange', async () => {
+  it.each([false, true])('dismisses a right-click menu and reports it through onOpenChange (controlled: %s)', async controlled => {
     const onOpenChange = vi.fn()
-    render(<Harness onOpenChange={onOpenChange} />)
+    render(<Harness onOpenChange={onOpenChange} controlled={controlled} />)
     fireEvent.contextMenu(screen.getByTestId('row'))
     expect(screen.getByTestId('content')).toBeInTheDocument()
     expect(onOpenChange).toHaveBeenCalledWith(true)
