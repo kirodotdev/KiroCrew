@@ -670,6 +670,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async function",
             "(manager: 'Any', batch_id: 'str') -> 'bool'",
         ),
+        (
+            "_subagent_nested_live",
+            "async function",
+            "(manager: 'Any', batch_id: 'str') -> 'bool'",
+        ),
         ("_WORKFLOW_STEP_PREFIXES", "value", "'tuple'"),
         ("_spawn_parent_slot", "function", "(parent_key: 'str', workflow_service: 'Any') -> 'str'"),
         ("_subagent_coalescer", "method", "(self) -> \"'SubagentEventCoalescer'\""),
@@ -688,7 +693,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_subagent_wave_digest",
             "method",
-            "(self, info: 'SubagentInfo', *, report: '_SubagentReport', _flush_only: 'bool', _batch_id: 'str', _batch_total: 'int', _no_batch_pending: 'bool', _injection_slot_name: 'str') -> '_WaveDigest | None'",
+            "(self, info: 'SubagentInfo', *, report: '_SubagentReport', _flush_only: 'bool', _batch_id: 'str', _batch_total: 'int', _no_batch_pending: 'bool', _injection_slot_name: 'str', _nested_live: 'bool' = False) -> '_WaveDigest | None'",
         ),
     ),
     "subagent_injection": (

@@ -1004,6 +1004,7 @@ class SubagentManager:
     consume_report_hold = _terminal_surface.consume_report_hold
     batch_members_pending_async = _terminal_surface.batch_members_pending_async
     wave_has_live_nested_spawns = _terminal_surface.wave_has_live_nested_spawns
+    wave_has_live_nested_spawns_async = _terminal_surface.wave_has_live_nested_spawns_async
     finalize_batch = _terminal_surface.finalize_batch
     record_lost_submission = _terminal_surface.record_lost_submission
     _sweep_stuck_waves = _terminal_surface._sweep_stuck_waves
