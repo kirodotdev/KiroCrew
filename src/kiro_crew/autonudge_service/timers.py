@@ -38,11 +38,14 @@ from kiro_crew.autonudge_service.model import (
     NudgeAdmissionRefused,
     NudgeLoop,
     _MutationAdmission,
+    _positive_number,
     _TransactionSubmissions,
+    cap_reached,
     credit_held_runtime,
     hold_span,
     is_structured_monitor_loop,
     note_hold_start,
+    runtime_elapsed,
 )
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorDispatchResult
 
@@ -1219,6 +1222,21 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
         delay = float(seams._OVERDUE_REARM_SECS)
     else:
         delay = min(remaining, float(loop.idle_secs))
+    if not is_structured_monitor_loop(loop):
+        # The cycle cap and the runtime budget are enforced only when the timer
+        # wakes (``_timer``), so a bound that ends before the deadline must wake it
+        # then. Otherwise a spent loop sits active for the rest of its interval --
+        # up to a day -- emitting no ``expired`` and refusing a create-only arm on
+        # its slot. A structured monitor's tick re-arms from its ``finally``, so it
+        # keeps its own deadline.
+        # The bounds are read defensively, as ``cap_reached`` reads them: a stored
+        # value that is not a number means no bound here, never a raise.
+        budget = _positive_number(loop.max_runtime_secs)
+        anchor = _positive_number(loop.created_ts)
+        if cap_reached(loop):
+            delay = 0.0
+        elif budget and anchor:
+            delay = min(delay, max(budget - runtime_elapsed(loop, anchor), 0.0))
     self._arm_timer(loop, delay=delay)
 
 
