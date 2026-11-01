@@ -15,9 +15,9 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders } from '../../test/helpers'
 
-import DevFleetPage, { __resetDevFleetNoticesForTests } from '../pages/DevFleetPage'
+import DevFleetPage, { __resetDevFleetNoticesForTests } from './DevFleetPage'
 
 const FLEET_UNKNOWN = {
   live_state_known: false,

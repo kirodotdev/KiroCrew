@@ -6,15 +6,15 @@
 import {
   useState, useRef, useEffect, type CSSProperties, type ReactNode, type Dispatch, type SetStateAction,
 } from 'react'
-import { Btn, Badge } from '../components/ui'
-import Clickable from '../components/Clickable'
-import ErrorNotice from '../components/ErrorNotice'
+import { Btn, Badge } from '../../components/ui'
+import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import {
   RefreshCw, Play, Square, ExternalLink, Trash2, LoaderCircle, Check, Video, X, RotateCw, FileText, GitCommit,
   Rocket,
 } from 'lucide-react'
-import { i18nT } from '../i18n/t'
-import { fmtBytes, fmtPercent } from '../i18n/format'
+import { i18nT } from '../../i18n/t'
+import { fmtBytes, fmtPercent } from '../../i18n/format'
 import {
   filterStepMarkers, syncFailureTail, lastLine, provPhase, fmtElapsed, memColor, type PodResources,
   type IssueRef, type TicketRef, type Worktree, type UndoTarget, type FleetData, type SyncRun, type ProvRun,

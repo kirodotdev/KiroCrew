@@ -10,9 +10,9 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders } from '../../test/helpers'
 
-import DevFleetPage, { __resetDevFleetNoticesForTests } from '../pages/DevFleetPage'
+import DevFleetPage, { __resetDevFleetNoticesForTests } from './DevFleetPage'
 
 // A fixed instant: the badge does not depend on row age.
 const now = 1_760_000_000

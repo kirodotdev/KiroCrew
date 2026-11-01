@@ -121,8 +121,12 @@ honestly:
   so this is a cost-and-coverage decision, not an integrity one: shipping it
   would mean a partial, platform-asymmetric installer for a tool the user can get
   in one command. `/deps` therefore returns a per-OS `hints` command and the user
-  runs it. macOS and Windows each name their one conventional manager. On Linux the
-  command is built from what the host has, by the rule the browser installer uses
+  runs it. The command, and where `soffice` is looked for (`PATH`, then the fixed
+  Windows install roots), come from the core's `kiro_crew.soffice_discovery`
+  (`soffice_install_hint`, `windows_install_path`, `which_within`), which the
+  file panel's slide previews also use; this app carries no copy of either. macOS
+  and Windows each name their one conventional manager. On Linux the command is built
+  from what the host has, by the rule the browser installer uses
   (`browser_cli/os_deps.py`, [browser](browser.md)): the apt family by os-release
   lineage, the Fedora/RHEL family with the first of `dnf`, `yum` and `microdnf` that
   `os_deps.rpm_package_manager` finds on `PATH`. Every other host gets no command
@@ -146,7 +150,8 @@ reaches a child that never rasterizes anything. The managed dir therefore has to
 be on the `PATH` declared in `mcpServers.sdpm.env` of the four `agents/*.json`
 templates, rendered from the `{TOOLS_PATH}` placeholder by **both** renderers
 (`provision._render_agents` and the gateway's `bridges._placeholder_values`, which
-compute it identically via `provision.mcp_tools_path()`).
+reads this app's `agent_placeholders.placeholder_values()` — both compute it
+identically via `provision.mcp_tools_path()`).
 
 **A user's own install always wins**, which takes two things pointing the same way:
 
@@ -913,7 +918,9 @@ its refuse-rather-than-mis-render behavior, and the launcher's install —
 executable, not group-writable, idempotent, refused before the engine venv exists,
 and runnable from a data-home path containing `$`/backtick/quote/space, which
 plain double-quoting would corrupt). Package-local tests additionally pin Windows/POSIX
-venv paths and Windows LibreOffice discovery plus rendered-`PATH` precedence. No
+venv paths and how a Windows LibreOffice install ranks against `PATH` and the managed
+launcher plus rendered-`PATH` precedence; the lookup and the hint table themselves are
+pinned by the core's `test/test_soffice_discovery.py`. No
 real subprocess is ever spawned against the engine and no test reaches the network.
 
 Frontend (also not exhaustive: `PptxDeckViewerCov80.test.tsx` and

@@ -86,7 +86,10 @@ deadlock removal against a live cutover.
 
 ## Frontend component boundaries
 
-`website/src/pages/DevFleetPage.tsx` is the page and its only import path. It keeps
+`website/src/apps/dev-fleet/DevFleetPage.tsx` is the page and its only import path; the
+app's whole UI (the page, the owners below, `devFleetApi.ts` and their tests) lives in
+that directory beside the other built-in apps' UIs, and the core SPA reaches it only
+through the `/dev-fleet` row of `apps/builtinRegistry.ts`. It keeps
 the page's state, effects and actions (the sync and provision poll loops, the row
 actions, prune, restart and Make Live), the notification bus the page writes to,
 the log-window merge and the relative-time label. The owners beside it take new
@@ -102,6 +105,28 @@ work for their part:
 - `DevFleetPageNotices.tsx` owns the notices between the header and the table.
 
 Every other module imports the page, never an owner.
+
+## Host grants
+
+The core names no Dev Fleet symbol. What the app asks of the host is data in
+`apps/builtins/dev_fleet/host_grants.py`, read through the core's
+`kiro_crew.apps.builtin_host_grants` seam (only packages in `BUILTIN_NAMES` are read,
+a row may grant only its own app, and every path it claims must sit under that app's
+own `/api/apps/<app>/` or `/apps/<app>/` namespace):
+
+| Grant | Value | Applied by |
+|---|---|---|
+| `build_rlimit` | yes | `apps/backend.py` spawns the backend with `RLIMIT_PROFILE_BUILD` |
+| `bound_port` | yes | `apps/backend.py` hands it `KIROCREW_BOUND_PORT`; `backend_runtime/startup.py` defers its spawn to `start_deferred_app_backends` |
+| `backend_env_names` | `KIROCREW_DEVFLEET_REPO` | forwarded to every app backend by `apps/backend.py` |
+| `backend_env_prefixes` | `KIROCREW_DEVFLEET_BIN_` | as above, by prefix |
+| `config_top_keys` | `dev_fleet` | `config/validation.py`'s unrecognized-key warning skips it |
+| `strict_internal_paths` | the five `/api/apps/dev-fleet/pod/*` verbs | folded into `server._STRICT_INTERNAL_API_PATHS` |
+| `relay_credential_paths` | `/api/apps/dev-fleet/pod-token`, `/apps/dev-fleet/api/pod/token` | refused to every relayed caller by `kiro_relay/limits.py` |
+
+`host_grants.py` is a data module, and the package `__init__` imports its two route
+modules inside `register_routes` only: the seam is read in the MCP servers and the
+config loader, which must not pay for the gateway route graph.
 
 ## Main Checkout Discovery
 
@@ -346,7 +371,8 @@ Contract:
   bus, these routes are the one path from an agent-writable worktree to code running
   unsandboxed as the user, so enabling Dev Fleet on such a host now carries that
   surface. App admission policy can deny the app outright where that is unwanted.
-- **Named one by one in `server._STRICT_INTERNAL_API_PATHS`**, never as a
+- **Named one by one in `server._STRICT_INTERNAL_API_PATHS`** (declared as the app's
+  `strict_internal_paths` host grant, see *Host grants*), never as a
   `/api/apps/dev-fleet/pod` prefix. That table is exact-or-prefix
   (`path == entry or path.startswith(entry + "/")`), and this app's neighbourhood
   includes worktree prune and the Make Live cutover, which must not become reachable
@@ -1584,7 +1610,8 @@ choose the gateway's next image. Instead:
   (`dashboard.server._reserve_dashboard_port`, before any backend spawns;
   `_export_bound_port` republishes it once the site serves), and
   `dashboard.server.start_dashboard` spawns this backend in a second wave
-  (`apps.backend.DEV_FLEET_APP_NAME`; the main wave still runs before
+  (the app's `bound_port` host grant, `apps.builtin_host_grants.bound_port_apps()`;
+  the main wave still runs before
   `runner.setup()` so every other app's startup hooks find their backend up). A
   backend spawned before the bind would have no port for its whole lifetime;
   `test_bound_port_backends_start_only_after_the_export_and_the_rest_before_setup`

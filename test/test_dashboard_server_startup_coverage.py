@@ -1200,9 +1200,9 @@ class TestStartDashboardWiring:
                 "main_wave_before_setup": True,
                 "deferred_wave_before_setup": False,
             }
-            import kiro_crew.apps.backend as backend_mod
+            from kiro_crew.apps import builtin_host_grants
 
-            assert backend_mod.DEV_FLEET_APP_NAME == "dev-fleet"
+            assert builtin_host_grants.bound_port_apps() == frozenset({"dev-fleet"})
             assert spies["start_deferred_app_backends"].called
 
     @pytest.mark.asyncio

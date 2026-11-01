@@ -22,7 +22,6 @@ from unittest import mock
 import pytest
 
 from kiro_crew.apps.builtins.pptx_maker.backend import pdftoppm_shim, preview_tools
-from kiro_crew.browser_cli import os_deps
 
 pdfium = pytest.importorskip(
     "pypdfium2",
@@ -262,21 +261,8 @@ class TestLauncherInstall:
 
 class TestSofficeIsReportedNotInstalled:
     """LibreOffice has no unpack-and-run build and no publishable digest pin, so it
-    stays a user action — the app reports the command instead of running it."""
-
-    def test_hint_is_platform_specific_and_non_empty(self) -> None:
-        # A Debian os-release, so the Linux leg never reads the developer's own host
-        # (Amazon Linux has no package and answers None by design).
-        preview_tools._linux_soffice_hint.cache_clear()
-        try:
-            with mock.patch.object(
-                os_deps.platform, "freedesktop_os_release", return_value={"ID": "debian"}
-            ):
-                for platform_name in ("darwin", "linux", "win32"):
-                    with mock.patch.object(preview_tools.sys, "platform", platform_name):
-                        assert (preview_tools.soffice_hint() or "").strip()
-        finally:
-            preview_tools._linux_soffice_hint.cache_clear()
+    stays a user action — the app reports the command instead of running it (the
+    command itself is pinned by ``test/test_soffice_discovery.py``)."""
 
     def test_no_install_function_exists_for_soffice(self) -> None:
         """Guards the product decision: nothing here may install a system package."""

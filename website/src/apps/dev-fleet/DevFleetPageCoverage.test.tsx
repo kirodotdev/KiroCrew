@@ -10,9 +10,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders } from '../../test/helpers'
 
-import DevFleetPage, { __resetDevFleetNoticesForTests } from '../pages/DevFleetPage'
+import DevFleetPage, { __resetDevFleetNoticesForTests } from './DevFleetPage'
 
 type Body = Record<string, unknown> | unknown[] | null
 type RouteHandler = (u: string, opts?: RequestInit) => Response | Promise<Response> | null
