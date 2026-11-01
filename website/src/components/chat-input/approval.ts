@@ -223,6 +223,14 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     setApprovalNoticeKind('error')
     setApprovalNotice(message)
   }, [])
+  // A gone spawn approval (expired, decided elsewhere, replaced) is status, not
+  // a failure — the same split the tool path's 404 branch makes with
+  // `setApprovalNoticeKind('status')` — so the banner reads it in the status
+  // register rather than the error one. #18203.
+  const showApprovalStatus = useCallback((message: string) => {
+    setApprovalNoticeKind('status')
+    setApprovalNotice(message)
+  }, [])
   const showInChat = useCallback(() => {
     if (approvalToolCallId) dispatch(openActivityToTool(approvalToolCallId))
   }, [approvalToolCallId, dispatch])
@@ -320,18 +328,19 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   return {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
   }
 }
 
-export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError }: {
+export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError, showApprovalStatus }: {
   slotId: string | null
   slotApprovalChrome: boolean
   dispatch: AppDispatch
   showApprovalError: (message: string) => void
+  showApprovalStatus: (message: string) => void
 }) {
   // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
   // Surfaced as a top-level banner with inline Approve/Reject so the user can
@@ -393,10 +402,11 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
       // instead of leaving buttons that can only re-send it.
       if (isTerminalApprovalRefusal(err) && a.approval_id) {
         dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id }))
-        // A rejected request, so an error surface, and the only one: the
-        // refusal is reported once, by the surface that sent it. The chip and
-        // the activity card show this id's liveness as neutral status.
-        showApprovalError(i18nT('components.approvalCard.approval_no_longer_pending'))
+        // A gone approval (expired, decided elsewhere, replaced) is status, not
+        // a failure — nothing on the user's side went wrong. Reported once, by
+        // the surface that sent it; the chip and the activity card show this
+        // id's liveness as neutral status too. #18203.
+        showApprovalStatus(i18nT('components.approvalCard.approval_no_longer_pending'))
         // The liveness read that settles the card. A refusal leaves it
         // unresolved (the chip's poll retries) and is reported, not swallowed,
         // on its own notice so the refusal above stays on screen: until the
@@ -417,7 +427,7 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
         ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
         : i18nT('components.approvalCard.decision_failed'))
     })
-  }, [dispatch, slotId, showApprovalError])
+  }, [dispatch, slotId, showApprovalError, showApprovalStatus])
   const resolveSpawnApprovals = useCallback((action: 'approve' | 'reject') => {
     for (const a of pendingSpawnApprovals) resolveOneSpawn(a, action)
   }, [pendingSpawnApprovals, resolveOneSpawn])

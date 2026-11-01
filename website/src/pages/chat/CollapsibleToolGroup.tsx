@@ -5,6 +5,7 @@ import { purposeFromToolArgs } from '../../utils/toolPurpose'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
 import { ToolInputText } from '../../components/ToolInputText'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import { ApiError } from '../../api/client'
 import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { useRowDisclosure } from './rowDisclosure'
@@ -313,18 +314,20 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
         </div>
       )}
 
-      {failure !== null && (
+      {failure !== null && (failure.terminal ? (
+        // A gone approval is status, not a failure: a muted status row, not the
+        // red hand-off error below.
+        <StatusNotice variant="inline" className="mt-1 ml-4 pl-3" message={i18nT('components.approvalCard.approval_no_longer_pending')} />
+      ) : (
         // Hand-off on by default. The approval buttons hold no draft of their
         // own, and the main chat's composer draft is persisted per slot (ChatPage
         // saves it on slot switch) while the hand-off opens a FRESH slot.
         // No hand-off when the host passes `askAgent={false}`: ChatEmbed's
         // composer draft is unsaved local state the navigation would drop.
-        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent={askAgent} message={failure.terminal
-          ? i18nT('components.approvalCard.approval_no_longer_pending')
-          : failure.message
-            ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
-            : i18nT('components.approvalCard.decision_failed')} />
-      )}
+        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent={askAgent} message={failure.message
+          ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
+          : i18nT('components.approvalCard.decision_failed')} />
+      ))}
 
       {expanded && <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_var(--border)] forced-colors:border-l-2 flex flex-col gap-1">
         {children}
