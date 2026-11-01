@@ -848,3 +848,26 @@ def test_a_stalled_gate_probe_is_todays_op(seam, tmp_path, monkeypatch):
     finally:
         release.set()
     assert seam.provider.calls == []
+
+
+# -- the frame file ------------------------------------------------------------
+
+
+def test_a_screenshot_file_swapped_for_a_link_is_not_read(tmp_path):
+    """The screenshot directory is agent-writable and the gateway is not sandboxed:
+    a link to another file in the screenshot's place is no frame."""
+    import os
+
+    secret = tmp_path / "credentials"
+    secret.write_bytes(b"\x89PNG\r\n\x1a\n" + b"aws_secret_access_key=x")
+    shot = tmp_path / "shot.png"
+    os.symlink(secret, shot)
+    assert decide_mod._read_png(shot) is None
+
+
+def test_a_screenshot_that_is_not_a_png_is_not_read(tmp_path):
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"[default]\naws_secret_access_key=x\n")
+    assert decide_mod._read_png(shot) is None
+    shot.write_bytes(_png())
+    assert decide_mod._read_png(shot) == _png()

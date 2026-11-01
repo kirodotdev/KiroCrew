@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import stat
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -421,7 +423,7 @@ async def _capture(ctx: _ops.OpContext) -> bytes | None:
     try:
         path = await asyncio.to_thread(_ops._screenshot_path, ctx)
         await ctx.helper("screenshot", path=str(path), max_dim=IMAGE_MAX_DIM)
-        data = await asyncio.to_thread(path.read_bytes)
+        data = await asyncio.to_thread(_read_png, path)
     except Exception:  # noqa: BLE001 - no frame is the text path, never a failed op
         logger.debug("browser decisions: frame capture failed", exc_info=True)
         return None
@@ -433,6 +435,45 @@ async def _capture(ctx: _ops.OpContext) -> bytes | None:
     if not await _may_capture(ctx):
         return None
     return data or None
+
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+#: Larger than any frame the helper writes at ``IMAGE_MAX_DIM``; a file past it is
+#: not one of ours.
+_PNG_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _read_png(path: Any) -> bytes | None:
+    """The screenshot's bytes, only if *path* is still a plain PNG file. Blocking.
+
+    The screenshot directory is one a sandboxed agent can write, and the gateway
+    reading it is not sandboxed: a link swapped in for the file would hand the
+    gateway another file, which would then leave the machine as an image. So the
+    file is opened without following a link, must be a regular file of bounded
+    size, and must start with the PNG signature; anything else is no frame.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    if os.path.islink(path):
+        return None
+    fd = os.open(path, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _PNG_MAX_BYTES:
+            return None
+        chunks: list[bytes] = []
+        left = _PNG_MAX_BYTES + 1
+        while left > 0:
+            chunk = os.read(fd, min(left, 1 << 20))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+    finally:
+        os.close(fd)
+    data = b"".join(chunks)
+    if len(data) > _PNG_MAX_BYTES or not data.startswith(_PNG_MAGIC):
+        return None
+    return data
 
 
 async def _may_capture(ctx: _ops.OpContext) -> bool:
