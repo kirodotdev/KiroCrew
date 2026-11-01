@@ -946,11 +946,14 @@ always-on body.
 
 ### Managed-source root checks
 
-Each `_refuse_managed_source` call loads configuration anew and resolves each
-unique declared admin/workspace root once through `_comparable_root`. The local
-results serve only that call's overlap and containment checks. Later calls
-revalidate configuration and link targets; no authorization is cached across
-requests or turns. Candidate paths remain lexical until the existing path gate
+The root table is read once per `documents_for_member` call: that call loads
+configuration and resolves each unique declared admin/workspace root once
+through `_comparable_root`, and every `_refuse_managed_source` check inside it
+(the `_read` pre- and post-validation checks and the walk checks) reuses that
+table. A `_refuse_managed_source` call outside such a read builds its own. The
+next `documents_for_member` call, and so the next turn, revalidates
+configuration and link targets; no authorization is cached across requests or
+turns. Candidate paths remain lexical until the existing path gate
 admits them, and rejected UNC roots are never resolved. Every admin-overlap and
 managed-memory exclusion remains in force.
 
