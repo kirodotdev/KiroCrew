@@ -446,7 +446,6 @@
   "src/test/pointerOnlyPath.a11y.test.tsx",
   "src/test/settingsShortcut.test.tsx",
   "src/test/shortcutsPanelSkipShell.test.tsx",
-  "src/test/sidePanelBrowserTabs.test.tsx",
   "src/test/sidePanelLeadingTab.test.tsx",
   "src/test/terminalExitClosesTab.test.ts",
   "src/test/toolDiff.test.tsx",
