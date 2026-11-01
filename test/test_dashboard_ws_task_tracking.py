@@ -9,6 +9,7 @@ reference in ``_background_tasks`` (the existing pattern in this module) until t
 completes. These tests assert the structural contract (the task is tracked), not the
 GC race itself, so they are deterministic.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -63,9 +64,9 @@ async def test_send_ws_all_retains_task(tmp_path) -> None:
     state._send_ws_all("ping", {}, '{"type": "ping"}')
 
     # The in-flight send task must be retained (strong ref) while pending.
-    assert len(state._background_tasks) == 1, (
-        "WS send task was not retained — it can be GC'd mid-send and drop the message"
-    )
+    assert (
+        len(state._background_tasks) == 1
+    ), "WS send task was not retained — it can be GC'd mid-send and drop the message"
 
     # Release the gate; the task completes and is discarded via done-callback.
     ws._gate.set()
