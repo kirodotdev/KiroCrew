@@ -424,7 +424,6 @@
   "src/test/WorldsPage.test.tsx",
   "src/test/WorldsPopout.test.tsx",
   "src/test/agentSessionConcludedNoRerun.test.ts",
-  "src/test/agentSessionFolderResolve.test.ts",
   "src/test/agentSessionResumeMissingSlot.test.ts",
   "src/test/agentSessionSeedReceipt.test.ts",
   "src/test/approvalFocusShortcut.test.tsx",
