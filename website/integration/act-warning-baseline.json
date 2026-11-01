@@ -277,7 +277,6 @@
   "src/test/MarkdownRenderer.mermaidConfig.test.tsx",
   "src/test/MarkdownRenderer.mermaidEnlarge.test.tsx",
   "src/test/MarkdownRenderer.mermaidSource.test.tsx",
-  "src/test/MarkdownRenderer.streamingReclassify.test.tsx",
   "src/test/McpAppFrame.test.tsx",
   "src/test/McpBrowserModal.test.tsx",
   "src/test/McpManagement.resolveOnce.test.tsx",
