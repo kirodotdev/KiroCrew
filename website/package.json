@@ -23,6 +23,7 @@
     "test:integration": "vitest run integration/",
     "test:playwright": "playwright test --headed --workers=1",
     "test:playwright:headless": "playwright test",
+    "test:layout": "node scripts/verify-schedule-error-surface-layout.mjs",
     "storybook": "storybook dev -p 6006 --host 127.0.0.1 --no-open",
     "build-storybook": "storybook build -o storybook-static",
     "lint": "eslint src --ext .ts,.tsx",
