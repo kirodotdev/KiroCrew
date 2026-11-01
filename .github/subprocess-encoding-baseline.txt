@@ -13,7 +13,6 @@
 1 conftest.py
 1 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/deps.py
-1 src/kiro_crew/apps/builtins/md_notebook/server.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 test/test_agent_home_isolation.py
 1 test/test_build_desktop_launcher_symlink.py
