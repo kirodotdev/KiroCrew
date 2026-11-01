@@ -74,6 +74,8 @@ interface UserMessageProps {
   onTogglePin?: () => void
 }
 let userMsgProps: UserMessageProps | null = null
+/** Each mounted row's latest props by content, for a test that needs a row other than the last one rendered. */
+const userMsgByContent = new Map<string, UserMessageProps>()
 
 interface ChatInputProps {
   value?: string
@@ -124,6 +126,7 @@ vi.mock('../pages/chat', async () => {
     PinnedPrompt: () => null,
     UserMessage: (props: UserMessageProps) => {
       userMsgProps = props
+      userMsgByContent.set(props.content, props)
       return React.createElement('div', { 'data-testid': 'user-msg' }, props.content)
     },
     // The two props the memoized renderMessage derives from the paging cursor, so a
@@ -389,6 +392,7 @@ beforeEach(() => {
   queueProps = null
   pinsProps = null
   userMsgProps = null
+  userMsgByContent.clear()
   chatInputProps = null
   agentDropdownProps = null
   defaultAgentRowProps = null
@@ -986,11 +990,13 @@ describe('ChatPage pinned-messages panel', () => {
   const UNAVAILABLE = 'This pinned message is no longer available in the loaded history.'
 
   it('jumping to a loaded pin highlights that message and clears the highlight later', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
     await openPins([
       msg('user', 'the pinned one', { ts: 'u1', meta: { mid: 'm-1' } }),
       msg('assistant', 'reply', { ts: 'a1' }),
     ])
+    // Fake timers from here on: the highlight's clear timer starts with the jump below,
+    // and the page's mount-time work has settled on real timers by now.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
 
     act(() => pinsProps!.onJumpToPin('u1', 'm-1'))
     await waitFor(() => expect(highlighted()).not.toBeNull())
@@ -1015,9 +1021,11 @@ describe('ChatPage pinned-messages panel', () => {
   })
 
   it('surfaces an unpin failure that stays until dismissed', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
     pinsRemoveMock.mockRejectedValue(new Error('nope'))
     await openPins([msg('user', 'pinned', { ts: 'u1', meta: { mid: 'm-1' } })])
+    // Fake timers from here on: the status-clear timer starts with the unpin below,
+    // and the page's mount-time work has settled on real timers by now.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
 
     act(() => pinsProps!.onUnpin('pin-1'))
     expect(await screen.findByText('Could not unpin the message. Try again.')).toBeInTheDocument()
@@ -1099,9 +1107,11 @@ describe('ChatPage per-message pin toggle', () => {
       msg('user', 'already pinned', { ts: 'u1', meta: { mid: 'm-1' } }),
       msg('user', 'pin me too', { ts: 'u2', meta: { mid: 'm-2' } }),
     ])
-    await waitFor(() => expect(userMsgProps?.onTogglePin).toBeInstanceOf(Function))
+    // The already-pinned row is what makes this pin a LATER one, so wait until the
+    // pins list has reached it before pinning the other.
+    await waitFor(() => expect(userMsgByContent.get('already pinned')?.pinned).toBe(true))
 
-    await act(async () => { userMsgProps!.onTogglePin!() })
+    await act(async () => { userMsgByContent.get('pin me too')!.onTogglePin!() })
     await waitFor(() => expect(pinsCreateMock).toHaveBeenCalled())
     expect(store.getState().chat.activityOpen).toBe(false)
   })
