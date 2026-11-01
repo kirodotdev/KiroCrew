@@ -9,7 +9,7 @@
  * must not be asked either.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { configureStore } from '@reduxjs/toolkit'
@@ -77,8 +77,8 @@ describe('CrewStateAvatar — which cue the crew gets', () => {
       sounds: { done: true, error: true },
     })
     const { rerender } = mount({ kind: 'pack', id: 'aurora' })
-    await vi.waitFor(() => expect(detail).toHaveBeenCalledWith('aurora'))
-    await vi.waitFor(() => expect(lastOptions().packCue).not.toBeNull())
+    await waitFor(() => expect(detail).toHaveBeenCalledWith('aurora'))
+    await waitFor(() => expect(lastOptions().packCue).not.toBeNull())
     expect(lastOptions().packCue).toEqual({ id: 'aurora', states: { done: true, error: true } })
     void rerender
   })
@@ -109,7 +109,7 @@ describe('CrewStateAvatar — which cue the crew gets', () => {
       sounds: { done: true },
     })
     mount({ kind: 'pack', id: 'aurora' })
-    await vi.waitFor(() => expect(lastOptions().packCue).not.toBeNull())
+    await waitFor(() => expect(lastOptions().packCue).not.toBeNull())
     expect(lastOptions().packPending).toBe(false)
   })
 
@@ -121,14 +121,14 @@ describe('CrewStateAvatar — which cue the crew gets', () => {
     // suppressed cue is indistinguishable from a pack that declares none.
     detail.mockRejectedValue(new Error('gateway down'))
     mount({ kind: 'pack', id: 'aurora' })
-    await vi.waitFor(() => expect(lastOptions().packPending).toBe(false))
+    await waitFor(() => expect(lastOptions().packPending).toBe(false))
     expect(lastOptions().packCue).toBeNull()
   })
 
   it('leaves the cue null for a pack that declares none', async () => {
     detail.mockResolvedValue({ animations: { idle: { content: '<svg/>', format: 'svg' } } })
     mount({ kind: 'pack', id: 'aurora' })
-    await vi.waitFor(() => expect(detail).toHaveBeenCalled())
+    await waitFor(() => expect(detail).toHaveBeenCalled())
     expect(lastOptions().packCue).toBeNull()
   })
 
