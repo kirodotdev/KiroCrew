@@ -347,16 +347,24 @@ async def api_spawn(request: web.Request) -> web.Response:
         if refusal is not None:
             return refusal
     try:
-        return await _admit_spawn(request, state, body, run_id)
+        return await _admit_spawn(request, state, body, run_id, parent_dirs)
     finally:
         if run_id:
             _RESERVED_RUN_IDS.discard(run_id)
 
 
 async def _admit_spawn(
-    request: web.Request, state: DashboardState, body: Any, run_id: str
+    request: web.Request,
+    state: DashboardState,
+    body: Any,
+    run_id: str,
+    parent_dirs: list[str],
 ) -> web.Response:
-    """The admission and placement half of ``api_spawn``; *run_id* is already reserved."""
+    """The admission and placement half of ``api_spawn``; *run_id* is already reserved.
+
+    *parent_dirs* is the parent's project scope, read by ``api_spawn`` before
+    its first await so a parent that ends meanwhile cannot shrink it.
+    """
     try:
         cleaned = validate_tool_args(
             {
