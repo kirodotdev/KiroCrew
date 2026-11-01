@@ -113,13 +113,33 @@ cannot reach the hardcoded shadow value.
 
 ## Install Pipeline
 
-1. **Source** — a local directory (read in place, then copied into staging) or an https `github.com` repo
+1. **Source** — a local directory (read in place, then copied into staging), an
+   uploaded `.zip`, or an https `github.com` repo
    shallow-cloned server-side (`_clone_github`, `--depth 1`, 30s timeout, host
    allowlist). The clone spawns through the sandbox chokepoint, which fails
    **closed** where no OS sandbox backend exists: that refusal answers `503`
    with `code: "theme_install_sandbox_unavailable"`, never an unsandboxed
    retry — the URL is user-influenced and `git clone` executes remote content.
    A **local** source spawns nothing, so it stays available on such a host.
+   A **`.zip`** upload (`POST /api/themes/install-zip`, the archive as the body)
+   is how a browser that is not on the gateway host installs a pack: a folder
+   path names the gateway's filesystem, which a phone cannot reach.
+   `dashboard/theme_zip.py` unpacks it into a private temporary directory and
+   refuses what only an archive can express — a name that leaves the directory
+   (absolute, `:` in any component, `..`, backslash, or a target that does not
+   resolve under the directory), a symlink or other non-regular entry, a file
+   and a folder sharing one name, a path over six parts (even metadata),
+   an unreadable member, a member compressed
+   with anything but stored or deflate (`zipfile` decompresses a whole BZIP2 or
+   LZMA buffer at once, before any byte count sees it), more entries than the
+   largest tier allows (vetted by `zip_vet.vet_zip_inventory_bytes` before
+   `zipfile` parses the directory), or more unpacked bytes than it allows
+   (counted on the bytes written, not only the headers). Refusals answer `400`
+   with `code: "theme_zip_invalid"`; an empty body is `400` `theme_zip_empty`,
+   an oversized one `413` `theme_zip_too_large`. macOS metadata
+   (`__MACOSX/`, `._*`, `.DS_Store`) is skipped, and a pack wrapped in one
+   top-level folder is found inside it. The unpacked directory then goes through
+   the same local-source steps below; the governance gate is the same one.
 2. **Stage** — the source is copied into a private staging snapshot
    (`.install-staging-<token>`) via a per-file, symlink-rejecting,
    byte-bounded loop (`_copy_installed_theme`). The source dir remains
@@ -148,6 +168,7 @@ Registered by `dashboard/routes/themes.py` (`register`), except `GET /api/theme/
 | Method | Route | Purpose |
 |---|---|---|
 | `POST` | `/api/themes/install` | Install from local dir or GitHub (overwrite on re-install) |
+| `POST` | `/api/themes/install-zip` | Install from an uploaded `.zip` body (overwrite on re-install) |
 | `DELETE` | `/api/themes/{slug}` | Remove an installed theme |
 | `GET` | `/api/themes` | List custom + installed themes (the frontend adds built-ins) |
 | `GET` | `/api/themes/{slug}` | Theme detail + resolved `level` |
@@ -244,17 +265,39 @@ dashboard load into header-only round trips.
   hash-match the value the request supplies). The consent flow itself is a
   **client-side UX affordance**, not server-enforced authorization — see below.
 
-  **Consent gate (what it actually guarantees — and what it does not).** For an
-  INSTALLED pack, the consent modal shows the persona text **verbatim** and the
-  user's grant is keyed to `sha256(persona_text)`, stored in the browser's
-  localStorage. On every first-turn chat the frontend threads that hash as
+  **Parts and the consent dialog.** An installed Level-2 pack has up to three
+  parts, each on or off on its own: **Sounds** (audio and the mute button),
+  **Overlays** (overlays and the topbar strip) and **Persona**. The palette,
+  branding and `overrides.css` always apply while the pack is selected. A pack
+  that ships sounds or a persona shows a dialog on first activation with one
+  checkbox per part it ships, all checked, and the persona text verbatim under
+  the Persona checkbox. **Save** applies the checked parts; **Keep colors only**
+  (also Escape) turns every part off on this first answer. A pack that ships only overlays shows them
+  without asking. The answer is one record per slug in the browser's
+  localStorage, `mc-theme-experience-<slug>` = `{sounds, overlays, persona}`
+  (`website/src/utils/themeConsent.ts`); while it exists the dialog does not
+  return. A part the record does not list is off, so a part a re-install adds
+  stays off until the user turns it on. The record is stored before the
+  grant, so no grant is ever left without a record. When localStorage refuses
+  the record (full or disabled), the answer is kept for that tab only with the
+  persona off and no grant; when it refuses the grant, the persona is saved as
+  off, since chat sends only a stored grant.
+
+  **Consent gate (what it actually guarantees — and what it does not).** The
+  persona grant is a separate key, `mc-theme-consent-<slug>`, holding
+  `sha256(persona_text)` of the text the user saw and checked. It is written only
+  while the Persona part is on and revoked whenever it is off; Sounds and
+  Overlays never read or write it, so a pack without a persona never holds one.
+  On every first-turn chat the frontend threads the stored grant as
   `theme_consent_sha`; `_maybe_inject_persona` (`chat_utils_slots.py`)
   injects the pack's persona **only when `theme_consent_sha` equals sha256 of
   the persona text it reads from disk at that moment** (constant-time compare).
   A missing hash, or a stale one after a reinstall rewrote `persona.md`, **fails
-  closed** — the new, never-consented text is not injected and the user is
-  re-prompted. This is **surprise-prevention**: *what you saw and consented to
-  is exactly what can be injected*. It is **not** server-enforced consent: the
+  closed**: the new, never-consented text is not injected. The layer revokes the
+  stale grant before the user answers and asks again about the persona only;
+  Sounds and Overlays keep their answer. This is **surprise-prevention**: *what is
+  injected is exactly the persona text the user saw and checked*. It is **not**
+  server-enforced consent: the
   server never records a grant, `GET /api/themes/{slug}` returns
   `personaInfo.sha256` (and the text) to any authenticated caller, so an
   authenticated API client can synthesize a valid `theme_consent_sha` without a
@@ -264,6 +307,29 @@ dashboard load into header-only round trips.
   NOT build on a server-side-consent invariant — it does not exist. The legacy
   boolean `theme_consent` request field is still parsed for backward-compatible
   bodies/logging but **grants no injection on its own**.
+
+  **"Keep colors only" and changing the answer later.** On a first answer, Keep
+  colors only stores every part off and revokes any grant, so nothing reaches `theme_consent_sha`,
+  and no sounds, overlays, topbar or mute button run. No change to the pack clears
+  it. The parts of the active pack are changed in Settings > Display > Theme >
+  Experience (`ThemeExperienceSettings.tsx`), which lists only the parts the pack
+  ships. Sounds and Overlays apply when toggled. Turning Persona on stores the
+  persona as wanted without a grant, which opens the consent dialog asking about
+  the persona only, with its text; the grant is written when Save is pressed
+  there. That dialog's decline button reads **Keep persona off**; it (or Escape)
+  turns only the persona off and leaves Sounds and Overlays as they were.
+  Turning Persona off revokes the grant at once. When Save in the dialog cannot
+  store the choice, the dialog closes and the choice applies for that tab. When
+  it cannot store the persona grant, the dialog stays open on the persona alone
+  and shows an error without the agent hand-off, since the persona pick is not
+  saved yet. When
+  a toggle in the Experience section cannot be stored, the choice still applies
+  for that tab and an error with the agent hand-off shows under the section
+  until the next toggle is stored. The layer and the section re-read on the
+  `mc-theme-experience-changed` event and the `storage` event. Picking a theme in
+  the picker or restoring it at boot changes no record, so a pack with a record
+  never asks again and one without a record asks. A grant from an older build
+  that matches the pack migrates once to an all-on record.
 
   **All personas come from installed packs** and are content-bound
   consent-gated by the mechanism above — there is **no built-in / unconditional
@@ -291,7 +357,7 @@ dashboard load into header-only round trips.
 | Loader | `website/src/hooks/useTheme.tsx` | Applies CSS vars; `applyThemeOverrides` → `scopeOverridesCss` + `rewriteOverridesUrls` (`themeCss.ts`); `injectThemeFonts`; pre-apply self-repair; `themeSwitching` state |
 | Render cache | `website/src/hooks/themeRenderCache.ts` | Persists the active pack's detail under `localStorage["mc-theme-data"]` and reads it back synchronously at `ThemeProvider` mount so the first paint is themed |
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
-| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-local/GitHub + remove + "Applying…" status indicator; the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
+| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona) as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
 | Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
 
 ### Boot sequence: themed first paint

@@ -56,7 +56,7 @@ from kiro_crew.config.sections import (  # noqa: F401 -- read by chat_api.slot_s
     parse_autocompact_pct,
 )
 from kiro_crew.dashboard import display_verdicts  # noqa: F401 -- read by chat_api.slot_detail
-from kiro_crew.dashboard.approval_posture import trust_carries  # noqa: F401
+from kiro_crew.dashboard.approval_posture import trust_reaches_subagents  # noqa: F401
 from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed  # noqa: F401
 from kiro_crew.dashboard.chat_api import agent_switch as _owner_agent_switch

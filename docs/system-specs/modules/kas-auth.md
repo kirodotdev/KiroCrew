@@ -506,9 +506,13 @@ engine instead ([aws-control.md](aws-control.md)).
   card, and the agent's "not signed in" error row with its sign-in deep link),
   never silently handed back to whatever `kiro-cli login` holds. Automatic
   demotion to cli-owned after a persistent refresh failure is therefore not a
-  gap to close but a behaviour deliberately not built (see #9772); the
-  pre-existing "expired access token with no refresh token" case, which the probe
-  already treats as no usable identity, is left as it is and not extended.
+  gap to close but a behaviour deliberately not built (see #9772). The spawn
+  owner is the shared sign-in resolver's pick (RFC crew-enterprise-edition D4,
+  `oss` order, amended 2026-10-30; delivered by #26841): any stored vault entry, including one whose access token has
+  expired with no refresh token, and a vault that cannot be read, keeps the spawn
+  Crew-owned and reports "not signed in"; only an empty vault hands it to
+  kiro-cli. Removing the Crew sign-in (`kirocrew kas logout`) is how a user goes
+  back to kiro-cli's.
 - The product entry point for the flow is the **Kiro sign-in** section on Settings >
   Agent Harness (`website/src/pages/developer/KiroSignInCard.tsx`, `compact`
   form), rendered by `AgentBackendTab` INSIDE the KAS row's detail and only while

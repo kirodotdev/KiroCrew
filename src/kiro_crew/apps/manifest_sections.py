@@ -13,12 +13,15 @@ this module never imports it.
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from kiro_crew.apps.manifest_names import KEBAB_RE
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -630,6 +633,86 @@ class Permissions:
         )
 
 
+#: Seconds an ``onEnable`` / ``onDisable`` script gets when the manifest names none.
+LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT = 30
+#: Most seconds a manifest may give ``onEnable`` / ``onDisable``: the same 300s the
+#: install transaction gives ``onInstall`` (``registry_pipeline/install.py``). Both
+#: scripts run while the app's lifecycle lock is held, so a larger value would let a
+#: manifest hold the enable or disable request and every same-app operation behind it.
+LIFECYCLE_SCRIPT_TIMEOUT_MAX = 300
+
+
+def lifecycle_timeout_error(field_name: str, value: Any) -> str:
+    """Return why ``value`` can never be a ``setup.<field_name>``, or ``""``.
+
+    Compatibility rule: everything the old bare ``int()`` accepted still parses, so
+    a manifest that installs today keeps installing. The only values refused are the
+    ones ``int()`` raised on, which already failed the install with a parse error:
+    a string that is not an integer (``"abc"``, ``"1.5"``), an explicit ``null``,
+    a list or object, and a NaN or infinite number. A value that parses but is out
+    of range, a bool or a fraction is clamped instead (:func:`clamp_lifecycle_timeout`).
+    """
+    try:
+        int(value)
+    except (TypeError, ValueError, OverflowError):
+        return (
+            f"setup.{field_name} must be a number of seconds "
+            f"(1-{LIFECYCLE_SCRIPT_TIMEOUT_MAX}), got {value!r}"
+        )
+    return ""
+
+
+def clamp_lifecycle_timeout(value: Any) -> tuple[int, str]:
+    """The seconds a lifecycle script gets for a manifest ``value``, and why it moved.
+
+    The reason is ``""`` when ``value`` is used as written (``60``, ``"60"``,
+    ``60.0``). Otherwise the seconds are clamped and the reason says how:
+
+    - ``int()`` refuses it (see :func:`lifecycle_timeout_error`): the default.
+    - a bool: the default, since ``int(True)`` is a 1-second timeout nobody meant.
+    - below 1 after ``int()``: the default, since a zero or negative timeout ends the
+      script before it starts.
+    - above ``LIFECYCLE_SCRIPT_TIMEOUT_MAX``: the cap.
+    - a fractional float: truncated, as ``int()`` always did, then the rules above.
+    """
+    if lifecycle_timeout_error("", value):
+        return LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT, "not a number"
+    if isinstance(value, bool):
+        return LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT, "a bool is not a duration"
+    seconds = int(value)
+    fraction = isinstance(value, float) and value != seconds
+    if seconds < 1:
+        return LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT, "below 1 second"
+    if seconds > LIFECYCLE_SCRIPT_TIMEOUT_MAX:
+        return LIFECYCLE_SCRIPT_TIMEOUT_MAX, f"above the {LIFECYCLE_SCRIPT_TIMEOUT_MAX}s cap"
+    return seconds, ("fraction dropped" if fraction else "")
+
+
+def lifecycle_timeout_seconds(value: Any, *, app_name: str = "", field_name: str = "") -> int:
+    """:func:`clamp_lifecycle_timeout` where a script is about to run, logging a clamp.
+
+    This is the only place the bound is applied. ``SetupConfig`` keeps the value as
+    ``int()`` read it, because ``setup`` is part of ``AppManifest.signing_payload``:
+    clamping it there would change the signed bytes of a manifest published with,
+    say, ``600``, and its signature would stop verifying. The enable route and the
+    disable teardown call this once per script run, so the warning is not repeated
+    by listings. ``None`` (the key is absent) is the default with no warning.
+    """
+    if value is None:
+        return LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT
+    seconds, reason = clamp_lifecycle_timeout(value)
+    if reason:
+        logger.warning(
+            "app %r setup.%s=%r: %s, running the script with a %ss timeout",
+            app_name,
+            field_name,
+            value,
+            reason,
+            seconds,
+        )
+    return seconds
+
+
 @dataclass
 class SetupConfig:
     """Installation and setup configuration for an app."""
@@ -651,9 +734,20 @@ class SetupConfig:
     # unsupported-platform reason before any spawn. (`onInstall` runs in the
     # separate install transaction and is not covered by that refusal.) See
     # docs/app-kit/manifest-reference.md ("setup — Lifecycle Scripts").
-    onEnableTimeout: int = 30  # seconds; configurable per-app  # noqa: N815
-    onDisableTimeout: int = 30  # seconds; configurable per-app  # noqa: N815
+    # Seconds as `int()` reads the manifest value, NOT clamped: `setup` is signed
+    # (AppManifest.signing_payload), so the parsed value must stay what the publisher
+    # signed. lifecycle_timeout_seconds clamps it to 1..LIFECYCLE_SCRIPT_TIMEOUT_MAX
+    # where the script runs.
+    onEnableTimeout: int = LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT  # noqa: N815
+    onDisableTimeout: int = LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT  # noqa: N815
     configSchema: dict[str, Any] = field(default_factory=dict)  # noqa: N815
+    # One error per timeout `int()` cannot read. Parsing keeps the default in its
+    # place so nothing raises, and validate() refuses the manifest. Never serialized.
+    timeout_errors: list[str] = field(default_factory=list, compare=False, repr=False)
+
+    def validate(self) -> list[str]:
+        """Return an error for each lifecycle-script timeout that is not a number."""
+        return list(self.timeout_errors)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -667,9 +761,9 @@ class SetupConfig:
             d["onEnable"] = self.onEnable
         if self.onDisable:
             d["onDisable"] = self.onDisable
-        if self.onEnableTimeout != 30:
+        if self.onEnableTimeout != LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT:
             d["onEnableTimeout"] = self.onEnableTimeout
-        if self.onDisableTimeout != 30:
+        if self.onDisableTimeout != LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT:
             d["onDisableTimeout"] = self.onDisableTimeout
         if self.configSchema:
             d["configSchema"] = self.configSchema
@@ -677,15 +771,26 @@ class SetupConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SetupConfig:
+        timeouts: dict[str, int] = {}
+        timeout_errors: list[str] = []
+        for key in ("onEnableTimeout", "onDisableTimeout"):
+            raw = data.get(key, LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT)
+            error = lifecycle_timeout_error(key, raw)
+            if error:
+                timeout_errors.append(error)
+                timeouts[key] = LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT
+            else:
+                timeouts[key] = int(raw)
         return cls(
             onInstall=str(data.get("onInstall", "")),  # noqa: N815
             onUpdate=str(data.get("onUpdate", "")),  # noqa: N815
             onUninstall=str(data.get("onUninstall", "")),  # noqa: N815
             onEnable=str(data.get("onEnable", "")),  # noqa: N815
             onDisable=str(data.get("onDisable", "")),  # noqa: N815
-            onEnableTimeout=int(data.get("onEnableTimeout", 30)),  # noqa: N815
-            onDisableTimeout=int(data.get("onDisableTimeout", 30)),  # noqa: N815
+            onEnableTimeout=timeouts["onEnableTimeout"],  # noqa: N815
+            onDisableTimeout=timeouts["onDisableTimeout"],  # noqa: N815
             configSchema=dict(data.get("configSchema", {})),  # noqa: N815
+            timeout_errors=timeout_errors,
         )
 
 

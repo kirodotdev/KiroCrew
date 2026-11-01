@@ -693,7 +693,10 @@
         "header_addressing_review": "РЕВЬЮ",
         "header_awaiting_merge": "ЖДЁТ СЛИЯНИЯ",
         "header_resolved": "РЕШЕНО",
-        "page_label": "Конвейер авто-триажа"
+        "page_label": "Конвейер авто-триажа",
+        "load_failed": "Не удалось загрузить конвейер",
+        "load_failed_unknown": "Чтение не удалось, причина не указана.",
+        "retry": "Повторить"
       },
       "global": {
         "unattributed_label": "СОБЫТИЯ БЕЗ РЕПОЗИТОРИЯ",
@@ -2970,9 +2973,6 @@
             "no_members_found_for_this_repo": "Для этого репозитория участники не найдены.",
             "notifications": "Уведомления",
             "notify_me_when_a": "Уведомлять меня, когда",
-            "of": "из",
-            "open_issues_are_marked_first_issue_friendly": "открытых задач помечены как подходящие для первого вклада",
-            "open_issues_currently_need_triage": "открытых задач сейчас требуют разбора",
             "open_on": "Открыть на",
             "open_tagging": "Открыть разметку",
             "organises_its_issues_and_are_never_written_back": "организует свои задачи, и никогда не записываются обратно в",
@@ -3001,7 +3001,12 @@
             "without_push_access_to": "Без прав на запись в",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Ваши правки остаются здесь, но не сохранятся. Если вы только что обновили Issue Radar, перезапустите бэкенд, чтобы стал доступен API настроек.",
             "notify_me_when_ci_fails_on_my_pull_request": "Уведомлять, когда CI падает в одном из моих пул-реквестов в {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Читает запуски GitHub Actions только в твоих собственных открытых пул-реквестах, через твой вход в gh. Отключи звук или измени приоритет в разделе Настройки → Уведомления."
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Читает запуски GitHub Actions только в твоих собственных открытых пул-реквестах, через твой вход в gh. Отключи звук или измени приоритет в разделе Настройки → Уведомления.",
+            "first_issue_friendly_count_one": "<strong>{{n}}</strong> открытая задача помечена как подходящая для первого вклада",
+            "first_issue_friendly_count_few": "<strong>{{n}}</strong> открытые задачи помечены как подходящие для первого вклада",
+            "first_issue_friendly_count_many": "<strong>{{n}}</strong> открытых задач помечены как подходящие для первого вклада",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> открытой задачи помечены как подходящие для первого вклада",
+            "triage_needed_of_open": "Открытые задачи, требующие разбора: <strong>{{triage}}</strong> из {{n}}"
           }
         },
         "tagging": {
@@ -5132,7 +5137,10 @@
           "up": "Вверх",
           "use_recent_project": "Использовать недавний проект {{path}}",
           "use_this_folder": "Использовать эту папку",
-          "use_this_folder_path": "Использовать эту папку: {{path}}"
+          "use_this_folder_path": "Использовать эту папку: {{path}}",
+          "load_failed": "Не удалось получить список этой папки",
+          "load_failed_unknown": "Чтение не удалось, причина не указана.",
+          "retry": "Повторить"
         },
         "settingsModal": {
           "cancel": "Отмена",
@@ -5321,7 +5329,11 @@
         "rerunning": "Перезапуск...",
         "started_run": "Запуск начат",
         "view_source": "Показать исходный код",
-        "workflow_source_for": "исходный код рабочего процесса для {{runId}}"
+        "workflow_source_for": "исходный код рабочего процесса для {{runId}}",
+        "lines_one": "{{count}} строка",
+        "lines_few": "{{count}} строки",
+        "lines_many": "{{count}} строк",
+        "lines_other": "{{count}} строки"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Создавайте, запускайте и отслеживайте динамические рабочие процессы",
@@ -5336,20 +5348,29 @@
         "validate": "Проверить",
         "workflow_script_python": "Скрипт рабочего процесса (Python)",
         "workflow_source": "исходный код рабочего процесса",
-        "workflows": "Рабочие процессы"
+        "workflows": "Рабочие процессы",
+        "view_author": "Создание",
+        "view_runs": "Запуски"
       },
       "workflowsRuns": {
         "budget": "бюджет",
         "cancel": "Отменить",
         "cancelling": "Отмена...",
         "could_not_load_runs": "Не удалось загрузить запуски:",
-        "events": "события",
         "no_background_runs_yet_runs_started_in_the_backg": "Фоновых запусков пока нет. Запуски, начатые в фоне, появятся здесь.",
         "run_detail": "Подробности запуска",
         "select_a_run_to_see_its_phases_agents_and_result": "Выберите запуск, чтобы увидеть его этапы, агентов и результат.",
         "unknown": "Неизвестно",
         "view_graph": "Граф",
-        "view_tree": "Дерево"
+        "view_tree": "Дерево",
+        "agents_one": "{{count}} агент",
+        "agents_few": "{{count}} агента",
+        "agents_many": "{{count}} агентов",
+        "agents_other": "{{count}} агента",
+        "events_one": "{{count}} событие",
+        "events_few": "{{count}} события",
+        "events_many": "{{count}} событий",
+        "events_other": "{{count}} события"
       }
     },
     "commandBar": {
@@ -5905,15 +5926,18 @@
       "asked": "Твой запрос",
       "done": "Сделано",
       "label": "Сводка",
+      "more_waiting": "Ещё {{count}}",
       "needs_you": "Нужно от тебя",
       "next": "Дальше",
       "progress": "Прогресс",
       "progress_count": "Готово {{accepted}} из {{total}}",
       "remaining": "Осталось",
+      "show_fewer": "Свернуть",
       "status_blocked": "Застряло",
       "status_done": "Готово",
       "status_needs_you": "Ждёт тебя",
-      "status_on_track": "По плану"
+      "status_on_track": "По плану",
+      "unlisted": "Ещё {{count}} не показано"
     },
     "voicePlaybackNotice": {
       "failed": "Не удалось выполнить «{{speak}}». Проверь настройки преобразования текста в речь и попробуй снова.",
@@ -6196,7 +6220,8 @@
       "some_setup_could_not_be_read": "{{productName}} не смог прочитать {{sources}} — ниже не показано.",
       "files_could_not_be_read": "Не удалось прочитать файлы",
       "your_existing_kirocrew_setup_will_not_be_affecte": "Ваша существующая конфигурация {{productName}} не будет затронута.",
-      "your_selected_setup_is_ready_in_kiro_crew": "Выбранная конфигурация готова в {{productName}}."
+      "your_selected_setup_is_ready_in_kiro_crew": "Выбранная конфигурация готова в {{productName}}.",
+      "import_setup_stage": "Импортировать конфигурацию · {{stage}} из {{stages}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Сохранено, но эта копия {{productName}} не смогла обновить конфигурацию агента, поэтому новые чаты используют прежние настройки. Причину смотри на странице «Логи»."
@@ -6246,6 +6271,14 @@
       "retry": "Повторить",
       "this_app_is_disabled": "Это приложение отключено",
       "this_app_provides_agents_and_skills_but_no_visua": "Это приложение предоставляет агентов и навыки, но не имеет визуального интерфейса.\n            Используйте его агентов из чата."
+    },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "Открыть приложение в отдельном окне",
+      "this_app_is_open_in_its_own_window_focus_it": "Это приложение открыто в отдельном окне — перейти к нему",
+      "focus_popped_out_window": "Перейти к отдельному окну",
+      "return": "Вернуть",
+      "return_to_main_window": "Вернуть в главное окно",
+      "return_this_app_to_the_main_window": "Вернуть это приложение в главное окно"
     },
     "approvalCard": {
       "actions_group": "Действия подтверждения",
@@ -6799,7 +6832,8 @@
       "split_right_d": "Разделить вправо (⌘D)",
       "type_to_filter": "Введите для фильтрации…",
       "earlier_conversation_show": "Начать заново в {{time}} · Показать прошлые сообщения ({{count}})",
-      "earlier_conversation_hide": "Начать заново в {{time}} · Скрыть прошлые сообщения (он их больше не помнит)"
+      "earlier_conversation_hide": "Начать заново в {{time}} · Скрыть прошлые сообщения (он их больше не помнит)",
+      "preparing_catch_up": "Готовлю сводку…"
     },
     "cliPanel": {
       "copied": "Скопировано",
@@ -7143,7 +7177,7 @@
       "next": "Далее",
       "no_execution_history_yet": "История запусков пока пуста",
       "ok": "OK",
-      "page": "Страница",
+      "page_n": "Страница {{page}}",
       "prev": "Назад",
       "status": "Статус",
       "summary": "Сводка",
@@ -7610,6 +7644,9 @@
       "auto_pause_after_failures": "Автопауза после N сбоев подряд",
       "auto_pause_after_failures_description": "0 означает: никогда не ставить на паузу. Начиная с 5-го сбоя подряд, задача со значением 0 или больше 5 ждёт 5 минут перед следующим запуском, удваивая паузу до часа.",
       "auto_pause_after_failures_invalid": "Лимит автопаузы должен быть целым числом от 0 до 10000.",
+      "alert_after_failures": "Отправлять сообщение о сбое после N сбоев подряд",
+      "alert_after_failures_description": "1 отправляет его при первом сбойном запуске. Более ранние сбои по-прежнему звонят в колокольчик панели; отказ по политике и запуск, ставящий задачу на паузу, отправляют его всегда.",
+      "alert_after_failures_invalid": "Порог оповещения должен быть целым числом от 1 до 10000.",
       "runs_as": "Запускается как",
       "runs_as_custom_agent": "Пользовательский агент",
       "runs_as_crewmate": "Товарищ по команде",
@@ -7640,13 +7677,13 @@
       "copied": "Скопировано",
       "copy_link": "Скопировать ссылку",
       "could_not_start_sign_in": "Не удалось начать вход. Проверь соединение и попробуй ещё раз.",
-      "device_aside_body": "{{productName}} работает на другом компьютере, поэтому не может открыть окно браузера для тебя. Открой ссылку ниже на любом устройстве — подойдёт и телефон — и введи код.",
+      "device_aside_body": "Открой ссылку ниже в браузере и введи код. Если {{productName}} работает на другом компьютере, подойдёт любое устройство, даже телефон.",
       "device_aside_footnote": "Код действителен ограниченное время.",
       "device_aside_headline": "Подтверди в браузере",
-      "enter_the_code_in_your_browser": "Заверши вход на телефоне или другом компьютере",
+      "enter_the_code_in_your_browser": "Заверши вход в браузере",
       "enter_this_code": "Введи этот код",
       "get_started": "Начало работы",
-      "open_this_link": "Открой эту ссылку на телефоне или в другом браузере",
+      "open_this_link": "Открой эту ссылку в браузере",
       "provider_builder_id": "AWS Builder ID",
       "provider_company_sso": "Корпоративный SSO",
       "provider_github": "GitHub",
@@ -8252,6 +8289,7 @@
         "keep_receiving_these": ". Продолжать получать такие уведомления?",
         "mark_all_as_read": "Отметить все как прочитанные",
         "mute_channel": "Отключить звук канала",
+        "mute_failed": "Не удалось отключить звук канала. Попробуй ещё раз.",
         "muted_2": "без звука",
         "no_notifications": "Нет уведомлений",
         "open_notification": "Открыть уведомление: {{title}}",
@@ -8783,11 +8821,12 @@
     },
     "searchResultsList": {
       "assistant": "Ассистент",
-      "matches_around_the_current_result_narrow_your_se": "совпадений вокруг текущего результата — уточните запрос, чтобы увидеть все.",
-      "of": "из",
       "search_results": "Результаты поиска",
       "selected": "выбрано",
-      "showing": "Показано",
+      "showing_matches_few": "Показано {{shown}} из {{n}} совпадений вокруг текущего результата — уточни запрос, чтобы увидеть все.",
+      "showing_matches_many": "Показано {{shown}} из {{n}} совпадений вокруг текущего результата — уточни запрос, чтобы увидеть все.",
+      "showing_matches_one": "Показано {{shown}} из {{n}} совпадения вокруг текущего результата — уточни запрос, чтобы увидеть все.",
+      "showing_matches_other": "Показано {{shown}} из {{n}} совпадения вокруг текущего результата — уточни запрос, чтобы увидеть все.",
       "you": "Ты"
     },
     "multiSelect": {
@@ -9301,18 +9340,19 @@
       "var_warning": "Предупреждение"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• Ассистент примет тематическую роль (безопасность и точность всегда в приоритете; вы можете в любой момент попросить отказаться от роли).",
-      "enable_experience": "Включить оформление",
       "enable_named_experience": "Включить оформление «{{name}}»?",
       "keep_colors_only": "Оставить только цвета",
+      "keep_persona_off": "Оставить персону выключенной",
       "mute_theme_sounds": "Отключить звуки темы",
       "persona_text": "Текст роли",
       "persona_that_will_be_added_to_the_assistant_s_sy": "Роль, которая будет добавлена в системный промпт ассистента:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• Будут воспроизводиться тематические звуки (учитывается отключение звука и режим уменьшенной анимации).",
-      "show_animated_visual_overlays": "• Будут показываться анимированные визуальные наложения.",
       "theme_overlay": "наложение темы {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "Это тема с оформлением. Её включение приведёт к следующему:",
-      "unmute_theme_sounds": "Включить звуки темы"
+      "unmute_theme_sounds": "Включить звуки темы",
+      "save": "Сохранить",
+      "sounds": "Звуки",
+      "overlays": "Оверлеи",
+      "persona": "Персона",
+      "save_failed_storage": "Не удалось сохранить. Хранилище браузера заполнено или отключено."
     },
     "timezoneSelect": {
       "render_timezone": "Часовой пояс отображения"
@@ -10125,6 +10165,7 @@
       "cred_view_token_title": "Посмотреть токен",
       "cred_why": "почему?",
       "link_allow": "Разрешить для этого хоста",
+      "link_allow_unsupported": "Разрешить можно только имя хоста вроде example.com. Вместо этого используй «Открыть один раз».",
       "link_allow_confirm_aria": "Подтверждение разрешения",
       "link_allow_confirm_body": "Это касается <0>только этой рабочей области</0>. Панель сохраняет этот выбор. Агент никогда не может его записать. Ослабляются только проверки длинного запроса и закодированных данных (base64). Правила для учётных данных остаются активными. Отменить это можно в «Настройки → Безопасность → Скрытие данных».",
       "link_allow_confirm_title": "Разрешить длинные запросы на {{host}}?",
@@ -10247,7 +10288,6 @@
       "flow_parallel": "Свои чаты",
       "flow_board": "Доска",
       "flow_needs_you": "Нужен ты",
-      "side_panel_open": "Доска задач",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "В этом чате включён Ultra Mode",
       "breadcrumb_label": "Участник команды",
@@ -10321,6 +10361,18 @@
       "ultra_row_sessions_few": "{{count}} сессии · активно: {{running}}",
       "ultra_row_sessions_many": "{{count}} сессий · активно: {{running}}",
       "ultra_row_sessions_other": "{{count}} сессии · активно: {{running}}",
+      "ultra_row_count_working_one": "{{count}} работает",
+      "ultra_row_count_working_few": "{{count}} работают",
+      "ultra_row_count_working_many": "{{count}} работают",
+      "ultra_row_count_working_other": "{{count}} работают",
+      "ultra_row_count_waiting_one": "{{count}} ждёт",
+      "ultra_row_count_waiting_few": "{{count}} ждут",
+      "ultra_row_count_waiting_many": "{{count}} ждут",
+      "ultra_row_count_waiting_other": "{{count}} ждут",
+      "ultra_row_count_needs_you_one": "{{count}} ждёт тебя",
+      "ultra_row_count_needs_you_few": "{{count}} ждут тебя",
+      "ultra_row_count_needs_you_many": "{{count}} ждут тебя",
+      "ultra_row_count_needs_you_other": "{{count}} ждут тебя",
       "ultra_done_line_merged_few": "Готово, когда все {{count}} PR будут слиты.",
       "ultra_done_line_merged_rest_few": "Готово, когда все {{count}} PR будут слиты и ты одобришь остальное.",
       "ultra_done_line_green_few": "Готово, когда все {{count}} PR пройдут проверки.",
@@ -11114,6 +11166,7 @@
       "next": "Далее",
       "once_launched_the_app_will_automatically_connect": "После запуска приложение автоматически подключится к этому экземпляру {{productName}} и появится в разделе «Приложения».",
       "open_screenshot": "Открыть снимок экрана {{n}}",
+      "screenshot_viewer": "Просмотр снимков экрана",
       "origin": "Источник:",
       "permissions": "Разрешения",
       "session_approval_desc": "Может отправлять сообщения и выбирать варианты ответа в твоих чатах, одобрять или отклонять запросы инструментов и переключать режим одобрения чата.",
@@ -11168,6 +11221,14 @@
       "retry": "Повторить",
       "back_to_apps": "Назад к приложениям",
       "failed_to_load_app": "Не удалось загрузить приложение"
+    },
+    "appPopoutFrame": {
+      "app": "Приложение",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "По адресу {{route}} нет приложения",
+      "no_app_at_route_lead": "Это окно было открыто для страницы, которая не является приложением, или для приложения, которое больше не установлено. Вернитесь в главное окно, чтобы продолжить.",
+      "could_not_load_the_app_list": "Не удалось загрузить список приложений",
+      "retry": "Повторить"
     },
     "appsPage": {
       "action_failed": "Не удалось {{action}} {{name}}",
@@ -11301,6 +11362,8 @@
       "default_profile": "Профиль по умолчанию",
       "deploy": "Развернуть",
       "deploy_anyway": "Развернуть всё равно",
+      "pending_deploy_failed_status": "Не удалось подтвердить ({{status}})",
+      "dismiss_failed_status": "Не удалось скрыть ({{status}})",
       "deploy_artifact": "Развернуть {{name}}",
       "deploy_profile_for_slug": "Профиль развёртывания для {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "«Развернуть», «Отозвать» и «Уничтожить» требуют явного подтверждения\n              (никогда не разрешаются автоматически) и создают событие аудита SEL.",
@@ -12451,7 +12514,6 @@
         "aria_expand_task_list": "Выполнено задач: {{done}} из {{total}}. Развернуть список задач",
         "current_task": "Текущая задача",
         "more": "ещё…",
-        "of": "из",
         "task_completion": "Выполнение задачи",
         "aria_mark_done": "Отметить выполненной: {{task}}. Агент не будет её переделывать. Нажми ещё раз, чтобы отменить.",
         "aria_mark_not_done": "Отметить невыполненной: {{task}}. Агент будет считать её открытой. Нажми ещё раз, чтобы отменить.",
@@ -12464,7 +12526,8 @@
         "fail_remote": "Этим списком управляет удалённая машина этой сессии, поэтому изменить его здесь нельзя.",
         "set_by_you_done": "Ты отметил это как выполненное; агент ещё не подтвердил.",
         "set_by_you_open": "Ты отметил это как невыполненное; агент ещё не подтвердил.",
-        "sending": "Отправка"
+        "sending": "Отправка",
+        "done_of_total": "{{done}} из {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Свернуть рассуждения модели",
@@ -14565,7 +14628,8 @@
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
         "opencode": "OpenCode",
-        "pi": "Pi"
+        "pi": "Pi",
+        "strands": "Strands"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Показывает поверх чата диагностику прокрутки и якорей в реальном времени",
@@ -14738,6 +14802,48 @@
         "could_not_sign_out": "Не удалось выйти",
         "keep_current_sign_in": "Оставить текущий вход",
         "signed_in_body_no_refresh": "Агенты работают от имени этого аккаунта Kiro. У этого входа нет refresh-токена, и он не может обновиться сам — войдите снова до истечения срока."
+      },
+      "strandsSetup": {
+        "cancel": "Отмена",
+        "desc_anthropic_api_key": "Твой ключ API Anthropic.",
+        "desc_aws_bearer_token_bedrock": "Ключ API Bedrock, созданный в консоли Bedrock.",
+        "desc_aws_region": "Регион AWS, например us-east-1.",
+        "desc_gemini_api_key": "Твой ключ API Gemini.",
+        "desc_litellm_api_key": "Ключ, который требует твой прокси LiteLLM.",
+        "desc_litellm_base_url": "Адрес твоего прокси LiteLLM.",
+        "desc_ollama_host": "Адрес Ollama, например http://localhost:11434.",
+        "desc_openai_api_key": "Твой ключ API OpenAI.",
+        "field_label_optional": "{{name}} (необязательно)",
+        "intro": "Выбери поставщика, с которым работает Strands, и вставь то, что ему нужно. Ключи и другие значения попадают в «Настройки > Секреты», а в конфигурации хранится только ссылка на них.",
+        "model_desc_default": "Оставь пустым, чтобы использовать модель по умолчанию.",
+        "model_desc_required": "Id модели из списка твоего поставщика. Для этого поставщика он обязателен.",
+        "model_label": "Модель",
+        "model_missing": "Пока для этого поставщика не сохранена модель, новые сеансы Strands используют модель Bedrock по умолчанию.",
+        "note_anthropic": "Нужен ключ API Anthropic.",
+        "note_bedrock": "{{productName}} скрывает от агента твои файлы профилей и SSO AWS, поэтому для Bedrock нужен ключ API Bedrock и его регион.",
+        "note_bedrock_mantle": "Совместимая с OpenAI конечная точка Bedrock. {{productName}} скрывает от агента твои файлы профилей и SSO AWS, поэтому нужен ключ API Bedrock и его регион.",
+        "note_google": "Нужен ключ API Gemini.",
+        "note_litellm": "Работает с твоим прокси LiteLLM. Ключ нужен, только если прокси его требует.",
+        "note_ollama": "Модели работают на твоём компьютере. Ключ не нужен. Задай хост, только если Ollama не на адресе по умолчанию.",
+        "note_openai": "Нужен ключ API OpenAI.",
+        "provider_anthropic": "Anthropic",
+        "provider_bedrock": "Amazon Bedrock",
+        "provider_bedrock_mantle": "Bedrock Mantle",
+        "provider_google": "Google Gemini",
+        "provider_label": "Поставщик",
+        "provider_litellm": "LiteLLM",
+        "provider_ollama": "Ollama",
+        "provider_openai": "OpenAI",
+        "read_failed": "Не удалось прочитать настройки Strands. Перезагрузи страницу и попробуй ещё раз.",
+        "remove": "Убрать",
+        "remove_confirm": "Больше не использовать это значение здесь? Оно останется в «Настройки > Секреты».",
+        "remove_delete": "Убрать",
+        "remove_failed": "Не удалось убрать значение. Попробуй ещё раз.",
+        "replace": "Заменить",
+        "save": "Сохранить",
+        "save_failed": "Не удалось сохранить значение. Попробуй ещё раз.",
+        "title": "Поставщик моделей",
+        "value_missing": "Значения, на которое это указывает, больше нет в «Секретах», поэтому новые сеансы Strands отклоняются. Сохрани новое значение или убери его."
       }
     },
     "developerPage": {
@@ -15016,8 +15122,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} векторизовано ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "Движок эмбеддингов готов — элементы знаний нужно векторизовать.",
+        "generate_disabled": "Векторизация знаний выключена, поэтому создать ничего нельзя.",
+        "generate_embedded_none": "Ни один элемент не векторизован. Модель эмбеддингов ничего для них не вернула.",
+        "generate_failed": "Не удалось создать эмбеддинги.",
         "generate_now": "Создать сейчас",
+        "generate_unavailable": "Модель эмбеддингов знаний сейчас недоступна. Попробуй ещё раз чуть позже.",
         "generating": "Создание...",
+        "knowledge_embedder_off": "Умный поиск недоступен — векторизация знаний выключена.",
+        "knowledge_embedder_unreachable": "Умный поиск недоступен — модель эмбеддингов знаний недоступна.",
         "smart_search_active": "Умный поиск активен",
         "smart_search_unavailable_embedding_model_is_down": "Умный поиск недоступен — модель эмбеддингов загружается в фоне."
       },
@@ -15066,8 +15178,6 @@
         "no_items_found": "Элементы не найдены",
         "no_items_match_your_filters": "Нет элементов, соответствующих фильтрам",
         "no_items_match_your_search": "Нет элементов, соответствующих запросу",
-        "of": "из",
-        "page": "Страница",
         "prev": "← Назад",
         "prev_next_page": "Пред./след. страница",
         "search_explore_and_manage_your_knowledge_base": "Поиск, изучение и управление базой знаний",
@@ -15096,7 +15206,8 @@
         "stats_sources_one": "{{count}} источник",
         "stats_sources_few": "{{count}} источника",
         "stats_sources_many": "{{count}} источников",
-        "stats_sources_other": "{{count}} источника"
+        "stats_sources_other": "{{count}} источника",
+        "page_of": "Страница {{page}} из {{pages}}"
       },
       "itemCard": {
         "copied": "Скопировано!",
@@ -15116,15 +15227,17 @@
         "recenter": "Центрировать",
         "start_physics": "Физика",
         "pause_physics": "Пауза",
-        "graph_region_label": "Граф сущностей знаний"
+        "graph_region_label": "Граф сущностей знаний",
+        "load_failed": "Не удалось загрузить граф знаний",
+        "load_failed_unknown": "Чтение не удалось, причина не указана.",
+        "retry": "Повторить"
       },
       "sourceGroup": {
         "items_added_directly": "Добавлено напрямую",
         "items_count": "(элементов: {{count}})",
         "next": "Далее →",
         "no_source": "Без источника",
-        "of": "из",
-        "page": "Страница",
+        "page_of": "Страница {{page}} из {{pages}}",
         "prev": "← Назад",
         "unknown_source": "Неизвестный источник"
       },
@@ -15840,7 +15953,10 @@
         "partial_notice": "Здесь показана только часть твоей памяти, поэтому поиск находит только эти узлы.",
         "refresh": "Обновить",
         "search_memory_nodes": "Поиск узлов памяти",
-        "search_nodes": "Поиск узлов…"
+        "search_nodes": "Поиск узлов…",
+        "load_failed": "Не удалось загрузить граф памяти",
+        "load_failed_unknown": "Чтение не удалось, причина не указана.",
+        "retry": "Повторить"
       },
       "memoryTab": {
         "actions": "Действия",
@@ -16360,10 +16476,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · выполняется локально в процессе",
         "embedding_status": "Статус эмбеддингов",
-        "entries": "записей",
         "episodic_context_injected_per_message": "Эпизодический контекст (подставляется в каждое сообщение)",
         "episodic_memory": "Эпизодическая память",
-        "events": "событий",
         "every_memory_create_update_delete_conflict_and_i": "Здесь фиксируются все создания, обновления, удаления, конфликты и блоки внедрения памяти.",
         "filter_by_key_or_value": "Фильтр по ключу или значению…",
         "filter_by_tag": "Фильтр по тегу:",
@@ -16380,7 +16494,6 @@
         "no_matching_entries": "Нет подходящих записей",
         "no_semantic_entries": "Нет семантических записей",
         "not_active": "не активно",
-        "of": "из",
         "open_embedding_model_settings": "Открыть настройки модели эмбеддингов",
         "preview": "Предпросмотр",
         "preview_what_gets_injected_into_prompts_enter_a": "Посмотри, что попадает в промпты. Введи запрос, чтобы увидеть результаты эпизодического поиска.",
@@ -16394,7 +16507,6 @@
         "semantic_memory": "Семантическая память",
         "set": "Задать",
         "setup_failed": "Настройка не удалась",
-        "showing": "Показано",
         "status_unknown": "неизвестно",
         "structured_key_value_facts_about_you_confidence": "Структурированные факты о тебе в виде ключ-значение. Уверенность: насколько система уверена (1.0 = задано тобой, 0.85 = извлечено из чата). Источник: кто записал (user_explicit = ты, consolidation = извлечено автоматически).",
         "structured_semantic_key_value_episodic_conversat": "Структурированная семантическая (ключ-значение) и эпизодическая (фрагменты переписки) память с векторным поиском. Эмбеддинги всегда включены — модель скачивается автоматически в фоне.",
@@ -16406,7 +16518,27 @@
         "verifying_model_integrity": "Проверка целостности модели...",
         "enable_err_config_unreadable": "Не удалось сохранить векторную память: не удалось прочитать config.json. Исправь файл и попробуй ещё раз.",
         "enable_err_dim_unreadable": "Не удалось прочитать ширину векторов модели эмбеддингов, поэтому векторная память не включена. Попробуй ещё раз или запусти 'kirocrew doctor', если ошибка повторяется.",
-        "enable_err_owner_only": "Настроить векторную память может только владелец панели."
+        "enable_err_owner_only": "Настроить векторную память может только владелец панели.",
+        "showing_entries_one": "Показана {{n}} запись",
+        "showing_entries_few": "Показаны {{n}} записи",
+        "showing_entries_many": "Показано {{n}} записей",
+        "showing_entries_other": "Показано {{n}} записи",
+        "showing_events_one": "Показано {{n}} событие",
+        "showing_events_few": "Показаны {{n}} события",
+        "showing_events_many": "Показано {{n}} событий",
+        "showing_events_other": "Показано {{n}} события",
+        "showing_events_filtered_one": "Показано {{n}} событие (всего {{total}})",
+        "showing_events_filtered_few": "Показаны {{n}} события (всего {{total}})",
+        "showing_events_filtered_many": "Показано {{n}} событий (всего {{total}})",
+        "showing_events_filtered_other": "Показано {{n}} события (всего {{total}})",
+        "showing_semantic_one": "Показано {{shown}} из {{total}}",
+        "showing_semantic_few": "Показано {{shown}} из {{total}}",
+        "showing_semantic_many": "Показано {{shown}} из {{total}}",
+        "showing_semantic_other": "Показано {{shown}} из {{total}}",
+        "showing_semantic_filtered_one": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})",
+        "showing_semantic_filtered_few": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})",
+        "showing_semantic_filtered_many": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})",
+        "showing_semantic_filtered_other": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})"
       },
       "wakatimeTab": {
         "active_projects": "Проекты, над которыми вы работали",
@@ -18090,12 +18222,14 @@
         "installed_theme_could_not_be_loaded": "Не удалось загрузить установленную тему. Переустанови её или выбери другую тему.",
         "custom_theme_could_not_be_loaded": "Не удалось загрузить эту тему. Выбери другую тему или отредактируй эту.",
         "local_folder": "Локальная папка",
+        "zip_file": "Zip-файл",
         "mode": "Режим",
         "native_window_zoom_tip": "Родной масштаб окна — та же настройка, что и {{mod}}+ / {{mod}}− (50–300 %). Сохраняется между запусками.",
         "new_theme": "+ Новая тема",
         "no_color": "Без цвета",
         "none_auto_cycle_or_pick_a_fixed_color": "Нет, автоперебор или фиксированный цвет.",
         "palette": "Палитра",
+        "palette_categorical": "Категориальная",
         "select_a_theme_for_the_dashboard": "Выберите тему для панели управления",
         "sidebar_colors": "Цвета боковой панели",
         "terminal": "Терминал",
@@ -18175,7 +18309,12 @@
         "desktop_app": "Настольное приложение",
         "keep_running_when_window_closed": "Оставлять приложение работать в фоне после закрытия окна",
         "keep_running_when_window_closed_desc": "При закрытии окна {{productName}} скрывается, а твои сеансы и задания продолжают работать. Отключи это, чтобы кнопка закрытия завершала приложение. Шлюз, запущенный этим приложением, останавливается вместе с ним, а шлюз, к которому оно только подключается, продолжает работать.",
-        "keep_running_when_window_closed_save_failed": "Не удалось сохранить этот параметр. Ничего не изменилось. Попробуй ещё раз."
+        "keep_running_when_window_closed_save_failed": "Не удалось сохранить этот параметр. Ничего не изменилось. Попробуй ещё раз.",
+        "choose_zip_file": "Выбрать файл .zip",
+        "theme_experience": "Оформление",
+        "theme_experience_sounds": "Звуки",
+        "theme_experience_overlays": "Оверлеи",
+        "theme_experience_persona": "Персона"
       },
       "importPanel": {
         "agent_data": "Данные агента",
@@ -18445,13 +18584,17 @@
       "privacyPanel": {
         "recordMetricsLabel": "Записывать метрики",
         "recordMetricsDescription": "Собирать метрики производительности на этом компьютере.",
-        "recordMetricsDescriptionExporting": "Собирать метрики производительности и отправлять их сборщику, указанному в config.json.",
+        "recordMetricsDescriptionExporting": "Собирать метрики производительности и отправлять их настроенным сборщикам.",
         "recordMetricsSaveFailed": "Не удалось изменить настройку. Попробуй ещё раз.",
-        "recordMetricsSaveRefusedEgress": "Запись не включена: задан telemetry.otlp_endpoint, поэтому её включение здесь начало бы отправлять метрики за пределы этого компьютера. Включи запись вместо этого в config.json.",
+        "recordMetricsSaveRefusedEgress": "Запись не включена: настроены сборщики, поэтому её включение здесь начало бы отправлять метрики за пределы этого компьютера. Включи запись вместо этого в config.json.",
         "recordMetricsEnvPinned": "Значение закреплено переменной окружения {{envVar}} — удали её из окружения, чтобы менять настройку здесь.",
         "recordMetricsOverlayPinned": "Значение закреплено записью в config.local.json — удали её, чтобы менять настройку здесь.",
-        "recordMetricsEgressOff": "Задан telemetry.otlp_endpoint, поэтому запись ещё и отправляла бы метрики за пределы этого компьютера. Включи её в config.json, если тебе нужно именно это.",
-        "recordMetricsEgressOn": "Метрики отправляются за пределы этого компьютера — сборщику по адресу telemetry.otlp_endpoint.",
+        "recordMetricsEgressOff": "Настроены сборщики, поэтому запись ещё и отправляла бы метрики за пределы этого компьютера. Включи её в config.json, если тебе нужно именно это.",
+        "recordMetricsEgressOn": "Метрики отправляются за пределы этого компьютера — сборщикам из списка ниже.",
+        "recordMetricsEgressDestinations": "Сборщики: {{names}}",
+        "recordMetricsEgressLockedName": "{{name}} (входит в эту сборку; выключение «Записывать метрики» останавливает и его)",
+        "recordMetricsEgressLockedNameOff": "{{name}} (входит в эту сборку)",
+        "recordMetricsEgressLegacyName": "Твой сборщик (config.json)",
         "recordMetricsStatusUnavailable": "Не удалось загрузить настройку записи метрик. Переключатель заблокирован до загрузки."
       },
       "postureDisclosure": {
@@ -20071,7 +20214,7 @@
       "add_member": "Новый напарник",
       "import_from_file": "Импорт из файла",
       "import_title": "Импорт напарника",
-      "import_hint": "Выбери файл .crewmate, которым с тобой поделились. Ничего не создаётся, пока ты не нажмёшь «Импортировать напарника» на следующем экране.",
+      "import_hint": "Выбери файл .crewjam, которым с тобой поделились. Ничего не создаётся, пока ты не нажмёшь «Импортировать напарника» на следующем экране.",
       "import_checking": "Проверяем файл…",
       "import_pick": "Выбрать файл",
       "import_refused": "Этот файл нельзя импортировать.",
@@ -20495,7 +20638,7 @@
       "import_keep_hint": "«Решить позже» оставляет этот импорт ждать здесь, пока не истечёт срок. «Не импортировать» удаляет его.",
       "import_later": "Решить позже",
       "export_row": "Экспорт в файл",
-      "export_row_sub": "Поделиться этим напарником как файлом .crewmate",
+      "export_row_sub": "Поделиться этим напарником как файлом .crewjam",
       "export_title": "Экспорт в файл",
       "export_intro": "В файле ровно то, что указано здесь. На этом компьютере ничего не сохраняется.",
       "export_identity": "Имя, описание и изображение",
@@ -21657,6 +21800,13 @@
     "remote_control_open": "Настроить удалённое управление",
     "invite_key_link": "Открыть Keys в Tailscale",
     "requested_by_person": "запрошено во время хода {{name}}",
+    "approved_by_you": "Одобрено тобой",
+    "rejected_by_you": "Отклонено тобой",
+    "answered_by_you": "Отвечено тобой",
+    "requested_by_you": "запрошено во время твоего хода",
+    "crew_owner": "Владелец Crew",
+    "already_approved": "Уже одобрено в другом месте",
+    "already_rejected": "Уже отклонено в другом месте",
     "cancel_work": "Отменить",
     "invite_body": "Пригласи коллегу в один шаг. Tailscale откроет ему доступ к этой машине; когда он примет приглашение, Crew впустит тот аккаунт Tailscale, которым он воспользовался.",
     "setup_tailscale_body": "Коллеги из твоей tailnet подключаются через Tailscale, каждый под своим логином tailnet.",

@@ -484,6 +484,7 @@ function mutateSlot(key: string, fn: (b: Bucket) => Bucket, unfocusedShows: stri
   if (opts?.choice) {
     tabChoices.set(key, (tabChoices.get(key) ?? 0) + 1)
     stoppedAt.set(key, null)
+    heldViews.delete(key)
   }
   const prev = store[key] ?? { tabs: [], activeId: null }
   const changed = fn(prev)
@@ -517,11 +518,15 @@ const tabChoices = new Map<string, number>()
  *  checked but did not land. No entry means the strip has not been shown in
  *  this page session, which is a plain open. */
 const stoppedAt = new Map<string, number | 'landed' | null>()
+/** Per strip, a view opened with `openPanelView(..., { hold: true })` that a
+ *  discovery open may not take the focus from (see there). */
+const heldViews = new Map<string, string>()
 /** Ends the show of `slot`'s strip: the panel closed, or it shows another chat
  *  (see `notePanelShown`). */
 export function notePanelStoppedShowing(slot: string | null): void {
   const key = bucketKey(slot)
   stoppedAt.set(key, tabChoices.get(key) ?? 0)
+  heldViews.delete(key)
 }
 /** Take this show's landing: true once per show, when nothing has asked for a
  *  tab in `slot`'s strip since the panel last stopped showing it. A successful
@@ -656,8 +661,15 @@ export function dropPanelViews(slotKey: string | null, kinds: readonly ViewKind[
   })
 }
 
-export function openPanelView(slotKey: string | null, kind: ViewKind): void {
-  mutateSlot(bucketKey(slotKey), b => upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) }), null, { choice: true })
+export function openPanelView(slotKey: string | null, kind: ViewKind, opts?: { hold?: boolean }): void {
+  const key = bucketKey(slotKey)
+  mutateSlot(key, b => upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) }), null, { choice: true })
+  // `hold`: a discovery open (Changes for a link the chat's history turns out
+  // to hold) keeps this view in front until the next tab choice or the end of
+  // this show. The Ultra Mode board opens a worker with Workers in front, and
+  // the worker's history loads after it: without the hold, its PR link took
+  // the focus and hid the panel's way back to the root.
+  if (opts?.hold) heldViews.set(key, kind)
 }
 
 /** Drop every document body the panel holds in memory, in EVERY slot, so the
@@ -891,6 +903,7 @@ export function __resetPanelTabs(): void {
   autoOpenedApps.clear()
   tabChoices.clear()
   stoppedAt.clear()
+  heldViews.clear()
   shownPanelSlot = null
   clearTimeout(persistTimer)
   dirtySlots.clear()
@@ -1024,7 +1037,8 @@ export function usePanelTabs(
       const next = upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) })
       const keepSummary = automatic && stoppedAt.get(key) === 'landed'
         && b.activeId === 'summary' && b.tabs[0]?.id === 'summary'
-      return keepSummary ? { ...next, activeId: b.activeId } : next
+      const keepHeld = automatic && b.activeId !== null && heldViews.get(key) === b.activeId
+      return keepSummary || keepHeld ? { ...next, activeId: b.activeId } : next
     }, { choice: !automatic })
   }, [key, update])
 

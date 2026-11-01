@@ -87,7 +87,7 @@ Container or CI alternative: set the environment variables `KIROCREW_CONNECTIONS
 
 ## 6. Verify the connection
 
-1. In the dashboard open **Capabilities → Connections**. The HubSpot card should have changed from "Needs configuration" to **Connect**.
+1. In the dashboard open **Customize → Connections**. The HubSpot card should have changed from "Needs configuration" to **Connect**.
 2. Click **Connect**. A browser tab opens HubSpot's authorization page. HubSpot describes the three steps you will see: "Select the HubSpot account to connect. Grant permissions to the app. Authorize the connection."
 3. Choose the account, review the permission list (untick write items if you want read-only), and authorize.
 4. If the gateway runs on the same machine as the browser, the tab lands on the loopback callback and the card shows **Connected**. If the gateway is remote, copy the landing URL from the address bar and paste it into the dashboard prompt.

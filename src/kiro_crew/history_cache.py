@@ -132,15 +132,19 @@ class _TranscriptIndexBase(NamedTuple):
     ``ConversationLog.append`` drops the cached :class:`_TranscriptRowIndexEntry`
     on every write, so without this the next bounded page re-parses the whole
     file. The base records the index of bytes ``[0, scanned_end)``, where
-    ``scanned_end`` is a record boundary, plus the file identity and a digest of
-    the last bytes before it. It is trusted only after the file is re-checked
-    (same device and inode, grown past ``scanned_end``, same digest), so it needs
-    no invalidation of its own: atomic rewrites change the inode, and an edit
-    that moves those bytes changes the digest.
+    ``scanned_end`` is a record boundary, plus the length of the first line and a
+    digest of three windows of the bytes AFTER it: the start of the body, the
+    last checkpoint and the end of the scan. Identity is the content, never the
+    inode: a copy, a restore or an atomic rewrite of the same rows gives a new
+    inode and the same bytes. A file whose first line changed length is checked
+    with every offset moved by that change, which is the one rewrite that keeps
+    the body and moves it (a metadata update, a consolidation marker, a save
+    that rewrites the whole file). Any other edit inside the windows changes the
+    digest, and an edit that moves body bytes moves the end window off its
+    expected offset, so either way the base is refused and the file rescanned.
     """
 
-    dev: int
-    ino: int
+    head_len: int
     scanned_end: int
     digest: bytes
     row_count: int

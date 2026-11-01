@@ -6,7 +6,7 @@
  *  nothing to say, so a single-operator Crew's chat is unchanged. It also
  *  reports this tab's presence for the session. */
 import { useEffect } from 'react'
-import { capabilityUsable } from '../../../api/sharedCrewUi'
+import { capabilityUsable, isUnknownPrincipal } from '../../../api/sharedCrewUi'
 import ErrorNotice from '../../../components/ErrorNotice'
 import {
   useSessionDecisions,
@@ -17,6 +17,7 @@ import {
   useSharedCrewMode,
   useSharedCrewPeople,
   useSharedCrewViewer,
+  useTeamAttribution,
 } from '../../../hooks/sharedCrew/useSharedCrew'
 import { usePresenceReporter } from '../../../hooks/sharedCrew/usePresenceReporter'
 import { i18nT } from '../../../i18n/t'
@@ -61,7 +62,11 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
   // viewer and then goes would resize the band and move the chat under the pointer.
   const viewerKnown = !(presenceOn || attributionOn) || !viewer.isPending
   const shown = viewerKnown && othersPresent(entries, viewer.data).length > 0
-  const decisionItems = decisions.data?.items ?? []
+  // Who approved what is for a Crew with other people in it; alone, every
+  // line would only name the owner's own token.
+  const team = useTeamAttribution()
+  const decisionItems = team ? decisions.data?.items ?? [] : []
+  const viewerId = viewer.data && !isUnknownPrincipal(viewer.data) ? viewer.data.id : ''
   const failed = [caps, viewer, mode, people, presence, decisions, sendState, typingLease].find(query => query.isError)
   if (!sessionKey || (!failed && !shown && decisionItems.length === 0)) return null
   return (
@@ -74,7 +79,7 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
           data-testid="session-collab-strip"
         >
           {shown && <PresenceChips entries={entries} viewer={viewer.data} />}
-          <DecisionAttributionList items={decisionItems} />
+          <DecisionAttributionList items={decisionItems} viewerId={viewerId} />
         </section>
       )}
     </>

@@ -456,7 +456,12 @@ def _subagent_wave_digest(
                 bp.setdefault("held_infos", []).append(info)
                 if _oc == "completed":
                     bp["held_ok_deliveries"].append(
-                        SubagentDelivery(info.id, info.elapsed, info.credits)
+                        SubagentDelivery(
+                            info.id,
+                            info.elapsed,
+                            info.credits,
+                            leaked_process=getattr(info, "_leaked_process", False) is True,
+                        )
                     )
                 elif getattr(info, "_report_owed", False) is True:
                     # A memory-wait expiry the store owes a report until

@@ -46,6 +46,7 @@ import { formatThinkingTime, getTopMoods, shouldShowStat, formatDate, formatComp
 import { api } from '../mochiApi'
 import { i18nT } from '../../../../i18n/t'
 import ErrorNotice from '../../../../components/ErrorNotice'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../../../components/ui/tabs'
 import { capabilitiesVars } from '../../../../components/destinationVars'
 import { SUPPORTED_LANGUAGES } from '../../../../i18n/languages'
 import { moodLabel } from '../../i18nKeys'
@@ -1186,19 +1187,31 @@ const McpSection: React.FC<{
               label={i18nT('apps.mochi.settingsPanel.mcp_agent_bg')} />
           </div>
         )}
-        {/* Chat / BG tab selector */}
-        <div style={{ display: 'flex', gap: 0, marginBottom: 6 }}>
+        {/* Chat / BG tab selector: the shared Radix rail, so a screen reader
+            hears which tab is selected and the arrow keys move between them.
+            Its Tailwind classes resolve to no rules in this window (see the
+            ErrorNotice note below), so the look stays inline `var(--*)`. The
+            body below is ONE panel, mounted for the selected tab only, so
+            only the selected tab carries `aria-controls`: Radix emits it on
+            every trigger, and on the other one it would name an element that
+            does not exist. A caller prop wins over Radix's own, so passing
+            `undefined` drops it there. */}
+        <Tabs value={tab} onValueChange={(v) => setActiveTab(prev => ({ ...prev, [s.name]: v === 'bg' ? 'bg' : 'chat' }))} layoutId={`mochi-mcp-tabs-${s.name}`}>
+        <TabsList aria-label={s.name} style={{ display: 'flex', gap: 0, marginBottom: 6 }}>
           {(['chat', 'bg'] as const).map(t => (
-            <button key={t} onClick={() => setActiveTab(prev => ({ ...prev, [s.name]: t }))} style={{
+            <TabsTrigger key={t} value={t} {...(tab === t ? {} : { 'aria-controls': undefined })} style={{
               fontSize: 10, padding: '3px 10px', cursor: 'pointer', border: '1px solid var(--border)',
               background: tab === t ? 'var(--accent-glow)' : 'var(--bg)',
               color: tab === t ? 'var(--accent)' : 'var(--text-muted)',
               fontWeight: tab === t ? 600 : 400,
               borderRadius: t === 'chat' ? '4px 0 0 4px' : '0 4px 4px 0',
               borderLeft: t === 'bg' ? 'none' : undefined,
-            }}>{t === 'chat' ? i18nT('apps.mochi.settingsPanel.mcp_tab_chat') : i18nT('apps.mochi.settingsPanel.mcp_tab_bg')}</button>
+            }}>{t === 'chat' ? i18nT('apps.mochi.settingsPanel.mcp_tab_chat') : i18nT('apps.mochi.settingsPanel.mcp_tab_bg')}</TabsTrigger>
           ))}
-        </div>
+        </TabsList>
+        {/* Radix makes the panel a tab stop; it is a container, not a control,
+            so it shows no focus ring (the wrapper's outline class is inert here). */}
+        <TabsContent value={tab} style={{ outline: 'none' }}>
         {/* Refresh tools */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
           <button onClick={() => refreshTools(s.name)} disabled={refreshing === s.name} style={{
@@ -1255,6 +1268,8 @@ const McpSection: React.FC<{
             {staleTools.length > 0 && renderToolGroup(i18nT('apps.mochi.settingsPanel.mcp_stale'), staleTools, 'var(--text-muted)', true)}
           </div>
         )}
+        </TabsContent>
+        </Tabs>
       </div>
     )
   }

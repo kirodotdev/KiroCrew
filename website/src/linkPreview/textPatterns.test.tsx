@@ -428,7 +428,7 @@ describe('textPatterns: rendering', () => {
 })
 
 describe('textPatterns: hover', () => {
-  const mint = vi.fn(async (appName: string) => ({ frame: `/link-preview-frame/${appName}/tok`, capability: 'cap', ttl: 3600 }))
+  const mint = vi.fn(async (appName: string) => ({ frame: `/app-frame/${appName}/lp/f/tok`, capability: 'cap', ttl: 3600 }))
   async function mountLayer(apps: unknown[]) {
     listApps.mockResolvedValue(apps)
     const mod = await import('./LinkPreviewLayer')

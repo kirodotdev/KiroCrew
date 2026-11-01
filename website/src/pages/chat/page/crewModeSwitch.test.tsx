@@ -236,5 +236,36 @@ describe('useCrewModeSwitch turning Ultra Mode on', () => {
   })
 })
 
+describe("useCrewModeSwitch the welcome page's Board button", () => {
+  beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
+  afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
+
+  const press = () => {
+    const store = createTestStore()
+    const openView = vi.fn()
+    const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
+    const hook = renderHook(() => useCrewModeSwitch({ currentSlot: plain('root', 'kirocrew-conductor'), defaultAgent: 'default', hasUserMessage: true, switchAgent: vi.fn(), openView }), { wrapper })
+    store.dispatch(closeActivityPanel())
+    openView.mockClear()
+    act(() => { hook.result.current.openTaskBoard!() })
+    return { store, openView }
+  }
+
+  it('opens the side panel on the Board tab, not the Dashboard', () => {
+    const { store, openView } = press()
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(openView).toHaveBeenCalledTimes(1)
+    expect(openView).toHaveBeenCalledWith('workers')
+    expect(openView).not.toHaveBeenCalledWith('command-center')
+  })
+
+  it('opens the Board in the panel sheet on a phone too: the person pressed it', () => {
+    mobile.value = true
+    const { store, openView } = press()
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(openView).toHaveBeenCalledWith('workers')
+  })
+})
+
 // Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
 crewModePreviewOn()

@@ -648,7 +648,10 @@
         "header_addressing_review": "レビュー対応",
         "header_awaiting_merge": "マージ待ち",
         "header_resolved": "解決済み",
-        "page_label": "自動トリアージパイプライン"
+        "page_label": "自動トリアージパイプライン",
+        "load_failed": "パイプラインを読み込めませんでした",
+        "load_failed_unknown": "理由が示されないまま読み込みに失敗しました。",
+        "retry": "再試行"
       },
       "global": {
         "unattributed_label": "リポジトリのないイベント",
@@ -2866,9 +2869,6 @@
             "no_members_found_for_this_repo": "このリポジトリのメンバーが見つかりません。",
             "notifications": "通知",
             "notify_me_when_a": "通知を受け取る:",
-            "of": "の",
-            "open_issues_are_marked_first_issue_friendly": "オープンな Issue が first-issue-friendly とマークされている",
-            "open_issues_currently_need_triage": "オープンな Issue が現在トリアージが必要",
             "open_on": "以下で開く:",
             "open_tagging": "タグ付けを開く",
             "organises_its_issues_and_are_never_written_back": "その Issue を整理しており、以下に書き込まれることはありません:",
@@ -2897,7 +2897,9 @@
             "without_push_access_to": "へのプッシュアクセス権がない場合:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "編集内容はここに保持されていますが、永続化されません。Issue Radar を更新した場合は、バックエンドを再起動して、設定 API を利用できるようにしてください。",
             "notify_me_when_ci_fails_on_my_pull_request": "{{repo}} の自分のプルリクエストで CI が失敗したら通知する",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh のサインインを使い、自分のオープンなプルリクエストの GitHub Actions 実行だけを読み取ります。設定 → 通知 でミュートや優先度の変更ができます。"
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh のサインインを使い、自分のオープンなプルリクエストの GitHub Actions 実行だけを読み取ります。設定 → 通知 でミュートや優先度の変更ができます。",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> 件のオープンな Issue が first-issue-friendly とマークされています",
+            "triage_needed_of_open": "トリアージが必要なオープンな Issue：{{n}} 件中 <strong>{{triage}}</strong> 件"
           }
         },
         "tagging": {
@@ -4953,7 +4955,10 @@
           "up": "上へ",
           "use_recent_project": "最近のプロジェクト {{path}} を使用",
           "use_this_folder": "このフォルダーを使用",
-          "use_this_folder_path": "このフォルダーを使用：{{path}}"
+          "use_this_folder_path": "このフォルダーを使用：{{path}}",
+          "load_failed": "このフォルダーの一覧を取得できませんでした",
+          "load_failed_unknown": "理由が示されないまま読み込みに失敗しました。",
+          "retry": "再試行"
         },
         "settingsModal": {
           "cancel": "キャンセル",
@@ -5136,7 +5141,8 @@
         "rerunning": "再実行中…",
         "started_run": "実行開始",
         "view_source": "ソースを表示",
-        "workflow_source_for": "{{runId}} のワークフローソース"
+        "workflow_source_for": "{{runId}} のワークフローソース",
+        "lines_other": "{{count}} 行"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "動的ワークフローを作成、実行、監視",
@@ -5151,20 +5157,23 @@
         "validate": "検証",
         "workflow_script_python": "ワークフロースクリプト（Python）",
         "workflow_source": "ワークフローソース",
-        "workflows": "Workflows"
+        "workflows": "Workflows",
+        "view_author": "作成",
+        "view_runs": "実行一覧"
       },
       "workflowsRuns": {
         "budget": "予算",
         "cancel": "キャンセル",
         "cancelling": "キャンセル中…",
         "could_not_load_runs": "実行を読み込めませんでした：",
-        "events": "イベント",
         "no_background_runs_yet_runs_started_in_the_backg": "バックグラウンド実行はまだありません。バックグラウンドで開始された実行はここに表示されます。",
         "run_detail": "実行詳細",
         "select_a_run_to_see_its_phases_agents_and_result": "実行を選択してそのフェーズ、エージェント、結果を確認してください。",
         "unknown": "不明",
         "view_graph": "グラフ",
-        "view_tree": "ツリー"
+        "view_tree": "ツリー",
+        "agents_other": "{{count}} 個のエージェント",
+        "events_other": "{{count}} 件のイベント"
       }
     },
     "awsControl": {
@@ -5596,15 +5605,18 @@
       "asked": "ご依頼",
       "done": "済んだこと",
       "label": "進捗のまとめ",
+      "more_waiting": "ほか {{count}} 件",
       "needs_you": "あなたの対応が必要",
       "next": "次に",
       "progress": "進み具合",
       "progress_count": "{{total}} 件中 {{accepted}} 件完了",
       "remaining": "残り",
+      "show_fewer": "閉じる",
       "status_blocked": "止まっています",
       "status_done": "完了",
       "status_needs_you": "あなた待ち",
-      "status_on_track": "順調"
+      "status_on_track": "順調",
+      "unlisted": "ほか {{count}} 件は一覧にありません"
     },
     "voicePlaybackNotice": {
       "failed": "「{{speak}}」に失敗しました。テキスト音声変換の設定を確認して、もう一度お試しください。",
@@ -5857,7 +5869,8 @@
       "some_setup_could_not_be_read": "{{productName}} は {{sources}} を読み取れませんでした（以下には表示されません）。",
       "files_could_not_be_read": "ファイルを読み取れませんでした",
       "your_existing_kirocrew_setup_will_not_be_affecte": "既存の {{productName}} セットアップは影響を受けません。",
-      "your_selected_setup_is_ready_in_kiro_crew": "選択されたセットアップは {{productName}} で準備ができています。"
+      "your_selected_setup_is_ready_in_kiro_crew": "選択されたセットアップは {{productName}} で準備ができています。",
+      "import_setup_stage": "セットアップをインポート · {{stages}} 中 {{stage}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "保存しましたが、この {{productName}} ではエージェント設定を更新できなかったため、新しいチャットでは以前の設定が使われます。理由は「ログ」ページで確認してください。"
@@ -5904,6 +5917,14 @@
       "retry": "再試行",
       "this_app_is_disabled": "このアプリは無効です",
       "this_app_provides_agents_and_skills_but_no_visua": "このアプリはエージェントとスキルを提供しますが、ビジュアルインターフェースはありません。\n            チャットからそのエージェントを使用します。"
+    },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "アプリを別ウィンドウに切り離す",
+      "this_app_is_open_in_its_own_window_focus_it": "このアプリは別ウィンドウで開いています — そこにフォーカス",
+      "focus_popped_out_window": "切り離したウィンドウにフォーカス",
+      "return": "戻す",
+      "return_to_main_window": "メインウィンドウに戻す",
+      "return_this_app_to_the_main_window": "このアプリをメインウィンドウに戻す"
     },
     "approvalCard": {
       "actions_group": "承認アクション",
@@ -6457,7 +6478,8 @@
       "split_right_d": "右に分割 (⌘D)",
       "type_to_filter": "フィルタリングするには入力…",
       "earlier_conversation_show": "{{time}} にリセットして再開 · 以前のメッセージを表示 ({{count}})",
-      "earlier_conversation_hide": "{{time}} にリセットして再開 · 以前のメッセージを隠す (もう覚えていません)"
+      "earlier_conversation_hide": "{{time}} にリセットして再開 · 以前のメッセージを隠す (もう覚えていません)",
+      "preparing_catch_up": "まとめを準備しています…"
     },
     "cliPanel": {
       "copied": "コピーしました",
@@ -6789,7 +6811,7 @@
       "next": "次へ",
       "no_execution_history_yet": "実行履歴はまだありません",
       "ok": "OK",
-      "page": "ページ",
+      "page_n": "{{page}} ページ",
       "prev": "前へ",
       "status": "ステータス",
       "summary": "概要",
@@ -7232,6 +7254,9 @@
       "auto_pause_after_failures": "連続 N 回失敗したら自動で一時停止",
       "auto_pause_after_failures_description": "0 は一時停止しないという意味です。0 または 5 より大きい値のジョブは、連続 5 回目の失敗から次の実行まで 5 分待ち、待ち時間は 1 時間まで倍になります。",
       "auto_pause_after_failures_invalid": "自動一時停止の上限は 0 から 10000 までの整数にしてください。",
+      "alert_after_failures": "連続 N 回失敗したら失敗メッセージを送る",
+      "alert_after_failures_description": "1 なら最初の失敗で送ります。それより前の失敗もダッシュボードのベルは鳴らします。ポリシーによる拒否と、ジョブを一時停止させる実行は常に送ります。",
+      "alert_after_failures_invalid": "通知のしきい値は 1 から 10000 までの整数にしてください。",
       "runs_as": "実行方法",
       "runs_as_custom_agent": "カスタムエージェント",
       "runs_as_crewmate": "クルーメイト",
@@ -7262,13 +7287,13 @@
       "copied": "コピーしました",
       "copy_link": "リンクをコピー",
       "could_not_start_sign_in": "サインインを開始できませんでした。接続を確認して、もう一度お試しください。",
-      "device_aside_body": "{{productName}} は別のコンピューターで動作しているため、ブラウザーのウィンドウを開けません。下のリンクを任意のデバイス（スマートフォンでも可）で開き、コードを入力してください。",
+      "device_aside_body": "下のリンクをブラウザーで開き、コードを入力してください。{{productName}} が別のコンピューターで動作している場合は、どのデバイスでも構いません（スマートフォンでも可）。",
       "device_aside_footnote": "コードの有効期限は限られています。",
       "device_aside_headline": "ブラウザーで承認",
-      "enter_the_code_in_your_browser": "スマートフォンか別のコンピューターでサインインを完了",
+      "enter_the_code_in_your_browser": "ブラウザーでサインインを完了",
       "enter_this_code": "このコードを入力",
       "get_started": "はじめる",
-      "open_this_link": "このリンクをスマートフォンか別のブラウザーで開く",
+      "open_this_link": "このリンクをブラウザーで開く",
       "provider_builder_id": "AWS Builder ID",
       "provider_company_sso": "会社の SSO",
       "provider_github": "GitHub",
@@ -7871,6 +7896,7 @@
         "keep_receiving_these": "。これらを受け続けますか？",
         "mark_all_as_read": "すべてを既読にする",
         "mute_channel": "チャネルをミュート",
+        "mute_failed": "このチャネルをミュートできませんでした。もう一度お試しください。",
         "muted_2": "ミュート済み",
         "no_notifications": "通知がありません",
         "open_notification": "通知を開く：{{title}}",
@@ -8372,11 +8398,9 @@
     },
     "searchResultsList": {
       "assistant": "アシスタント",
-      "matches_around_the_current_result_narrow_your_se": "現在の結果周辺の一致 — 検索を絞り込んですべてを表示します。",
-      "of": "の",
       "search_results": "検索結果",
       "selected": "選択済み",
-      "showing": "表示中",
+      "showing_matches_other": "現在の結果周辺の {{n}} 件の一致のうち {{shown}} 件を表示中 — すべて表示するには検索を絞り込んでください。",
       "you": "あなた"
     },
     "multiSelect": {
@@ -8887,18 +8911,19 @@
       "var_warning": "警告"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• アシスタントで設定されたペルソナを採用する（セキュリティと正確性は常に優先。任意の時点でペルソナを削除するよう依頼できます）。",
-      "enable_experience": "エクスペリエンスを有効にする",
       "enable_named_experience": "「{{name}}」エクスペリエンスを有効にしますか？",
       "keep_colors_only": "色のみ保持",
+      "keep_persona_off": "ペルソナをオフのままにする",
       "mute_theme_sounds": "テーマサウンドをミュート",
       "persona_text": "ペルソナテキスト",
       "persona_that_will_be_added_to_the_assistant_s_sy": "アシスタントのシステムプロンプトに追加されるペルソナ:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• テーマサウンドを再生する（ミュートトグルと動きを減らす設定を尊重）。",
-      "show_animated_visual_overlays": "• アニメーション視覚オーバーレイを表示。",
       "theme_overlay": "テーマオーバーレイ {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "これはエクスペリエンステーマです。有効にすると:",
-      "unmute_theme_sounds": "テーマサウンドをミュート解除"
+      "unmute_theme_sounds": "テーマサウンドをミュート解除",
+      "save": "保存",
+      "sounds": "サウンド",
+      "overlays": "オーバーレイ",
+      "persona": "ペルソナ",
+      "save_failed_storage": "保存できませんでした。ブラウザーのストレージがいっぱいか、オフになっています。"
     },
     "timezoneSelect": {
       "render_timezone": "タイムゾーンをレンダリング"
@@ -9690,6 +9715,7 @@
       "cred_view_token_title": "トークンを表示",
       "cred_why": "なぜ？",
       "link_allow": "このホストで許可",
+      "link_allow_unsupported": "許可できるのは example.com のようなホスト名だけです。代わりに「1 回だけ開く」を使ってください。",
       "link_allow_confirm_aria": "許可の確認",
       "link_allow_confirm_body": "これは<0>このワークスペースのみ</0>に適用されます。ダッシュボードがこの選択を保存します。エージェントが書き込むことはできません。緩和されるのは長いクエリとエンコードされたデータ（base64）のチェックだけです。認証情報のルールは有効なままです。設定 → セキュリティ → 秘匿 で取り消せます。",
       "link_allow_confirm_title": "{{host}} で長いクエリを許可しますか？",
@@ -9812,7 +9838,6 @@
       "flow_parallel": "別々のチャット",
       "flow_board": "ボード",
       "flow_needs_you": "要判断",
-      "side_panel_open": "タスクボード",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "このチャットでは Ultra Mode がオンです",
       "breadcrumb_label": "クルーメンバー",
@@ -9847,6 +9872,9 @@
       "ultra_crew": "クルー",
       "ultra_finished": "完了 · {{n}}",
       "ultra_row_sessions_other": "{{count}} セッション · {{running}} 件実行中",
+      "ultra_row_count_working_other": "{{count}} 件実行中",
+      "ultra_row_count_waiting_other": "{{count}} 件待機中",
+      "ultra_row_count_needs_you_other": "{{count}} 件対応が必要",
       "ultra_recap_empty": "クルーからの報告はまだありません。",
       "chip_hint_pressed": "Ultra Mode がオンです。最初のメッセージの前にクリックするとオフにできます。",
       "ultra_view_status": "ステータス",
@@ -10649,6 +10677,7 @@
       "next": "次へ",
       "once_launched_the_app_will_automatically_connect": "起動後、アプリはこの {{productName}} インスタンスに自動的に接続され、アプリに表示されます。",
       "open_screenshot": "スクリーンショット {{n}} を開く",
+      "screenshot_viewer": "スクリーンショットビューアー",
       "origin": "起源:",
       "permissions": "権限",
       "session_approval_desc": "あなたのチャットでメッセージを送信して返信オプションを選び、ツール要求を承認または拒否し、チャットの承認モードを切り替えられます。",
@@ -10703,6 +10732,14 @@
       "retry": "再試行",
       "back_to_apps": "アプリに戻る",
       "failed_to_load_app": "アプリの読み込みに失敗"
+    },
+    "appPopoutFrame": {
+      "app": "アプリ",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "{{route}} にアプリはありません",
+      "no_app_at_route_lead": "このウィンドウは、アプリではないページ、またはすでにインストールされていないアプリのために開かれました。続けるにはメインウィンドウに戻してください。",
+      "could_not_load_the_app_list": "アプリ一覧の読み込みに失敗",
+      "retry": "再試行"
     },
     "appsPage": {
       "action_failed": "{{name}} の{{action}}に失敗しました",
@@ -10812,6 +10849,8 @@
       "default_profile": "デフォルトプロファイル",
       "deploy": "デプロイ",
       "deploy_anyway": "それでもデプロイ",
+      "pending_deploy_failed_status": "確認に失敗しました（{{status}}）",
+      "dismiss_failed_status": "非表示にできませんでした（{{status}}）",
       "deploy_artifact": "{{name}} をデプロイ",
       "deploy_profile_for_slug": "{{slug}} のデプロイプロファイル",
       "deploy_recall_destroy_each_require_explicit_conf": "デプロイ / Recall / 破棄のそれぞれが明示的な確認を必要とします\n              （自動承認なし）および SEL 監査イベントを発行します。",
@@ -11887,7 +11926,6 @@
         "aria_expand_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を展開",
         "current_task": "現在のタスク",
         "more": "ほか…",
-        "of": "／",
         "task_completion": "タスクの完了状況",
         "aria_mark_done": "完了にする: {{task}}。エージェントはやり直しません。もう一度クリックで元に戻せます。",
         "aria_mark_not_done": "未完了にする: {{task}}。エージェントは未着手として扱います。もう一度クリックで元に戻せます。",
@@ -11900,7 +11938,8 @@
         "fail_remote": "このチェックリストはこのセッションのリモートのマシンが管理しているため、ここでは変更できません。",
         "set_by_you_done": "あなたが完了にしました。エージェントはまだ確認していません。",
         "set_by_you_open": "あなたが未完了にしました。エージェントはまだ確認していません。",
-        "sending": "送信中"
+        "sending": "送信中",
+        "done_of_total": "{{done}} ／ {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "モデルの推論を折りたたむ",
@@ -13845,7 +13884,8 @@
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
         "opencode": "OpenCode",
-        "pi": "Pi"
+        "pi": "Pi",
+        "strands": "Strands"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "チャットにスクロールとアンカーの診断情報をリアルタイムで重ねて表示します",
@@ -14018,6 +14058,48 @@
         "could_not_sign_out": "サインアウトできませんでした",
         "keep_current_sign_in": "現在のサインインを維持",
         "signed_in_body_no_refresh": "エージェントはこの Kiro アカウントとして動作します。このサインインにはリフレッシュトークンがなく自動更新できません。期限切れになる前に再度サインインしてください。"
+      },
+      "strandsSetup": {
+        "cancel": "キャンセル",
+        "desc_anthropic_api_key": "Anthropic の API キー。",
+        "desc_aws_bearer_token_bedrock": "Bedrock コンソールで作成した Bedrock API キー。",
+        "desc_aws_region": "AWS リージョン（例: us-east-1）。",
+        "desc_gemini_api_key": "Gemini の API キー。",
+        "desc_litellm_api_key": "LiteLLM プロキシが求めるキー。",
+        "desc_litellm_base_url": "LiteLLM プロキシのアドレス。",
+        "desc_ollama_host": "Ollama のアドレス（例: http://localhost:11434）。",
+        "desc_openai_api_key": "OpenAI の API キー。",
+        "field_label_optional": "{{name}}（任意）",
+        "intro": "Strands が使うプロバイダーを選び、必要なものを貼り付けます。キーなどの値は「設定 > シークレット」に保存され、設定には参照だけが残ります。",
+        "model_desc_default": "空のままにすると既定のモデルを使います。",
+        "model_desc_required": "プロバイダーが掲載しているモデル ID。このプロバイダーでは必須です。",
+        "model_label": "モデル",
+        "model_missing": "このプロバイダーのモデルを保存するまで、新しい Strands セッションは既定の Bedrock モデルを使います。",
+        "note_anthropic": "Anthropic の API キーが必要です。",
+        "note_bedrock": "{{productName}} はエージェントから AWS のプロファイルと SSO のファイルを隠すため、Bedrock には Bedrock API キーとそのリージョンが必要です。",
+        "note_bedrock_mantle": "Bedrock の OpenAI 互換エンドポイントです。{{productName}} はエージェントから AWS のプロファイルと SSO のファイルを隠すため、Bedrock API キーとそのリージョンが必要です。",
+        "note_google": "Gemini の API キーが必要です。",
+        "note_litellm": "LiteLLM プロキシに接続します。プロキシが求める場合だけキーが必要です。",
+        "note_ollama": "自分のマシンでモデルを実行します。キーは不要です。Ollama が既定のアドレスにない場合だけホストを設定してください。",
+        "note_openai": "OpenAI の API キーが必要です。",
+        "provider_anthropic": "Anthropic",
+        "provider_bedrock": "Amazon Bedrock",
+        "provider_bedrock_mantle": "Bedrock Mantle",
+        "provider_google": "Google Gemini",
+        "provider_label": "プロバイダー",
+        "provider_litellm": "LiteLLM",
+        "provider_ollama": "Ollama",
+        "provider_openai": "OpenAI",
+        "read_failed": "Strands の設定を読み込めませんでした。ページを再読み込みしてもう一度お試しください。",
+        "remove": "削除",
+        "remove_confirm": "ここでこの値を使うのをやめますか？値は「設定 > シークレット」に残ります。",
+        "remove_delete": "削除",
+        "remove_failed": "この値を削除できませんでした。もう一度お試しください。",
+        "replace": "置き換え",
+        "save": "保存",
+        "save_failed": "この値を保存できませんでした。もう一度お試しください。",
+        "title": "モデルプロバイダー",
+        "value_missing": "参照先の値がシークレットにないため、新しい Strands セッションは拒否されます。新しい値を保存するか、削除してください。"
       }
     },
     "developerPage": {
@@ -14293,8 +14375,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}}埋め込み済み（{{pct}}%）",
         "embedding_engine_ready_knowledge_items_need_embe": "埋め込みエンジンは準備完了 — ナレッジアイテムを埋め込む必要があります。",
+        "generate_disabled": "ナレッジの埋め込みがオフのため、生成できません。",
+        "generate_embedded_none": "埋め込まれた項目はありません。埋め込みモデルから結果が返されませんでした。",
+        "generate_failed": "埋め込みを生成できませんでした。",
         "generate_now": "今すぐ生成",
+        "generate_unavailable": "ナレッジの埋め込みモデルに現在接続できません。しばらくしてからもう一度お試しください。",
         "generating": "生成中…",
+        "knowledge_embedder_off": "スマート検索は利用できません — ナレッジの埋め込みがオフです。",
+        "knowledge_embedder_unreachable": "スマート検索は利用できません — ナレッジの埋め込みモデルに接続できません。",
         "smart_search_active": "スマート検索アクティブ",
         "smart_search_unavailable_embedding_model_is_down": "スマート検索は利用できません — 埋め込みモデルはバックグラウンドでダウンロード中です。"
       },
@@ -14343,8 +14431,6 @@
         "no_items_found": "アイテムが見つかりません",
         "no_items_match_your_filters": "フィルタに一致するアイテムはありません",
         "no_items_match_your_search": "検索に一致するアイテムはありません",
-        "of": "の",
-        "page": "ページ",
         "prev": "← 前へ",
         "prev_next_page": "前/次ページ",
         "search_explore_and_manage_your_knowledge_base": "ナレッジベースを検索・探索・管理する",
@@ -14361,7 +14447,8 @@
         "stats_items_other": "{{count}} 件の項目",
         "stats_entities_other": "{{count}} 件のエンティティ",
         "stats_relations_other": "{{count}} 件の関連",
-        "stats_sources_other": "{{count}} 件のソース"
+        "stats_sources_other": "{{count}} 件のソース",
+        "page_of": "{{pages}} ページ中 {{page}} ページ"
       },
       "itemCard": {
         "copied": "コピーしました！",
@@ -14381,15 +14468,17 @@
         "recenter": "中央に戻す",
         "start_physics": "物理演算",
         "pause_physics": "一時停止",
-        "graph_region_label": "ナレッジエンティティグラフ"
+        "graph_region_label": "ナレッジエンティティグラフ",
+        "load_failed": "ナレッジグラフを読み込めませんでした",
+        "load_failed_unknown": "理由が示されないまま読み込みに失敗しました。",
+        "retry": "再試行"
       },
       "sourceGroup": {
         "items_added_directly": "直接追加されたアイテム",
         "items_count": "({{count}} アイテム)",
         "next": "次へ →",
         "no_source": "ソースなし",
-        "of": "の",
-        "page": "ページ",
+        "page_of": "{{pages}} ページ中 {{page}} ページ",
         "prev": "← 前へ",
         "unknown_source": "不明なソース"
       },
@@ -15060,7 +15149,10 @@
         "partial_notice": "ここにはメモリの一部だけが表示されているため、検索ではこれらのノードしか見つかりません。",
         "refresh": "更新",
         "search_memory_nodes": "メモリノードを検索",
-        "search_nodes": "ノードを検索…"
+        "search_nodes": "ノードを検索…",
+        "load_failed": "メモリグラフを読み込めませんでした",
+        "load_failed_unknown": "理由が示されないまま読み込みに失敗しました。",
+        "retry": "再試行"
       },
       "memoryTab": {
         "actions": "アクション",
@@ -15541,10 +15633,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · ローカルでインプロセス実行",
         "embedding_status": "埋め込みの状態",
-        "entries": "エントリ",
         "episodic_context_injected_per_message": "エピソード的コンテキスト（メッセージごとに注入）",
         "episodic_memory": "エピソード的メモリ",
-        "events": "イベント",
         "every_memory_create_update_delete_conflict_and_i": "すべてのメモリの作成、更新、削除、競合、注入ブロックがここに記録されます。",
         "filter_by_key_or_value": "キーまたは値でフィルタ…",
         "filter_by_tag": "タグでフィルタ:",
@@ -15561,7 +15651,6 @@
         "no_matching_entries": "一致するエントリなし",
         "no_semantic_entries": "意味的エントリなし",
         "not_active": "非アクティブ",
-        "of": "の",
         "open_embedding_model_settings": "埋め込みモデルの設定を開く",
         "preview": "プレビュー",
         "preview_what_gets_injected_into_prompts_enter_a": "プロンプトに注入される内容をプレビューします。クエリを入力してエピソード的検索結果を確認します。",
@@ -15575,7 +15664,6 @@
         "semantic_memory": "意味的メモリ",
         "set": "設定",
         "setup_failed": "セットアップ失敗",
-        "showing": "表示中",
         "status_unknown": "不明",
         "structured_key_value_facts_about_you_confidence": "構造化されたキー-バリューペアのあなたに関する事実。信頼度：システムがどの程度確実か（1.0 =設定済み、0.85 =チャットから抽出）。ソース：誰が書いたか（user_explicit =ユーザー、consolidation =自動抽出）。",
         "structured_semantic_key_value_episodic_conversat": "構造化された意味的（キー-バリューペア）およびエピソード的（会話フラグメント）なメモリとベクトル検索。埋め込みは常時オン — モデルはバックグラウンドで自動的にダウンロードされます。",
@@ -15587,7 +15675,12 @@
         "verifying_model_integrity": "モデルの整合性を確認中…",
         "enable_err_config_unreadable": "config.json を読み込めないため、ベクトルメモリを保存できませんでした。ファイルを修正してから、再試行してください。",
         "enable_err_dim_unreadable": "埋め込みモデルのベクトル幅を読み込めないため、ベクトルメモリを有効にできませんでした。再試行してください。失敗が続く場合は 'kirocrew doctor' を実行してください。",
-        "enable_err_owner_only": "ベクトルメモリを設定できるのはダッシュボードの所有者だけです。"
+        "enable_err_owner_only": "ベクトルメモリを設定できるのはダッシュボードの所有者だけです。",
+        "showing_entries_other": "{{n}} 件のエントリを表示中",
+        "showing_events_other": "{{n}} 件のイベントを表示中",
+        "showing_events_filtered_other": "{{n}} 件のイベントを表示中（全 {{total}} 件）",
+        "showing_semantic_other": "{{total}} 件中 {{shown}} 件を表示中",
+        "showing_semantic_filtered_other": "{{matched}} 件中 {{shown}} 件を表示中（{{total}} 件から絞り込み）"
       },
       "wakatimeTab": {
         "active_projects": "取り組んだプロジェクト",
@@ -17181,12 +17274,14 @@
         "installed_theme_could_not_be_loaded": "インストール済みのテーマを読み込めませんでした。再インストールするか、別のテーマを選択してください。",
         "custom_theme_could_not_be_loaded": "このテーマを読み込めませんでした。別のテーマを選択するか、このテーマを編集してください。",
         "local_folder": "ローカルフォルダー",
+        "zip_file": "Zip ファイル",
         "mode": "モード",
         "native_window_zoom_tip": "ネイティブウィンドウのズーム（{{mod}}+ / {{mod}}− と同じ設定、50%〜300%）。次回起動後も保持されます。",
         "new_theme": "+ 新しいテーマ",
         "no_color": "色なし",
         "none_auto_cycle_or_pick_a_fixed_color": "なし、自動サイクル、または固定カラーを選択します。",
         "palette": "パレット",
+        "palette_categorical": "カテゴリ別",
         "select_a_theme_for_the_dashboard": "ダッシュボードのテーマを選択",
         "sidebar_colors": "サイドバーカラー",
         "terminal": "ターミナル",
@@ -17266,7 +17361,12 @@
         "desktop_app": "デスクトップアプリ",
         "keep_running_when_window_closed": "ウィンドウを閉じてもアプリをバックグラウンドで実行し続ける",
         "keep_running_when_window_closed_desc": "ウィンドウを閉じると {{productName}} は非表示になり、セッションとジョブは実行を続けます。オフにすると、閉じるボタンでアプリが終了します。このアプリが起動したゲートウェイは一緒に停止し、接続しているだけのゲートウェイは実行を続けます。",
-        "keep_running_when_window_closed_save_failed": "この設定を保存できませんでした。何も変更されていません。もう一度お試しください。"
+        "keep_running_when_window_closed_save_failed": "この設定を保存できませんでした。何も変更されていません。もう一度お試しください。",
+        "choose_zip_file": ".zip ファイルを選択",
+        "theme_experience": "エクスペリエンス",
+        "theme_experience_sounds": "サウンド",
+        "theme_experience_overlays": "オーバーレイ",
+        "theme_experience_persona": "ペルソナ"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",
@@ -17535,14 +17635,18 @@
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",
-        "recordMetricsDescriptionExporting": "パフォーマンスメトリクスを収集し、config.json で設定されたコレクターに送信します。",
-        "recordMetricsEgressOff": "telemetry.otlp_endpoint が設定されているため、記録するとメトリクスがこのマシンの外にも送信されます。それを望む場合は config.json で有効にしてください。",
-        "recordMetricsEgressOn": "メトリクスは telemetry.otlp_endpoint のコレクターへ、このマシンの外に送信されています。",
+        "recordMetricsDescriptionExporting": "パフォーマンスメトリクスを収集し、設定されたコレクターに送信します。",
+        "recordMetricsEgressOff": "コレクターが設定されているため、記録するとメトリクスがこのマシンの外にも送信されます。それを望む場合は config.json で有効にしてください。",
+        "recordMetricsEgressOn": "メトリクスは下に示すコレクターへ、このマシンの外に送信されています。",
+        "recordMetricsEgressDestinations": "コレクター: {{names}}",
+        "recordMetricsEgressLockedName": "{{name}}（このビルドに含まれます。「メトリクスを記録」をオフにするとこれも止まります）",
+        "recordMetricsEgressLockedNameOff": "{{name}}（このビルドに含まれます）",
+        "recordMetricsEgressLegacyName": "あなたのコレクター（config.json）",
         "recordMetricsEnvPinned": "環境変数 {{envVar}} がこの設定を固定しています — ここで変更するには、この環境変数を解除してください。",
         "recordMetricsLabel": "メトリクスを記録",
         "recordMetricsOverlayPinned": "config.local.json のエントリがこの設定を固定しています — ここで変更するには、そのエントリを削除してください。",
         "recordMetricsSaveFailed": "設定を変更できませんでした。もう一度お試しください。",
-        "recordMetricsSaveRefusedEgress": "記録は有効になりませんでした。telemetry.otlp_endpoint が設定されているため、ここで有効にするとメトリクスがこのマシンの外に送信され始めます。代わりに config.json で有効にしてください。",
+        "recordMetricsSaveRefusedEgress": "記録は有効になりませんでした。コレクターが設定されているため、ここで有効にするとメトリクスがこのマシンの外に送信され始めます。代わりに config.json で有効にしてください。",
         "recordMetricsStatusUnavailable": "メトリクス記録の設定を読み込めませんでした。読み込まれるまでスイッチはロックされます。"
       },
       "postureDisclosure": {
@@ -19102,7 +19206,7 @@
       "add_member": "新しいクルーメイト",
       "import_from_file": "ファイルからインポート",
       "import_title": "クルーメイトをインポート",
-      "import_hint": "共有された .crewmate ファイルを選んでください。次の画面で「クルーメイトをインポート」を押すまで何も作成されません。",
+      "import_hint": "共有された .crewjam ファイルを選んでください。次の画面で「クルーメイトをインポート」を押すまで何も作成されません。",
       "import_checking": "ファイルを確認しています…",
       "import_pick": "ファイルを選ぶ",
       "import_refused": "このファイルはインポートできません。",
@@ -19487,7 +19591,7 @@
       "import_keep_hint": "「あとで決める」を押すと、このインポートは期限が切れるまでここで待機します。「インポートしない」を押すと破棄されます。",
       "import_later": "あとで決める",
       "export_row": "ファイルとして書き出す",
-      "export_row_sub": "このクルーメイトを .crewmate ファイルで共有します",
+      "export_row_sub": "このクルーメイトを .crewjam ファイルで共有します",
       "export_title": "ファイルとして書き出す",
       "export_intro": "ファイルにはここに一覧したものだけが入ります。このマシンには何も保存しません。",
       "export_identity": "名前・説明・画像",
@@ -20646,6 +20750,13 @@
     "remote_control_open": "リモートコントロールを設定",
     "invite_key_link": "Tailscale Keys を開く",
     "requested_by_person": "{{name}} のターン中に依頼",
+    "approved_by_you": "あなたが承認",
+    "rejected_by_you": "あなたが拒否",
+    "answered_by_you": "あなたが回答",
+    "requested_by_you": "あなたのターン中に依頼",
+    "crew_owner": "Crew のオーナー",
+    "already_approved": "別の場所で承認済み",
+    "already_rejected": "別の場所で拒否済み",
     "cancel_work": "キャンセル",
     "invite_body": "ワンステップでチームメイトを招待します。Tailscale がこのマシンを共有し、相手が承認すると、Crew はその Tailscale アカウントを通します。",
     "setup_tailscale_body": "tailnet のメンバーは Tailscale 経由で接続し、それぞれの tailnet ログイン名で表示されます。",

@@ -255,6 +255,12 @@ def work_item_is_terminal(state: object) -> bool:
     return state in work_ledger.TERMINAL_ITEM_STATES
 
 
+def work_item_answered(item: work_ledger.WorkItem) -> bool:
+    """Whether the conductor's ``decide`` answered *item*'s last report: the
+    ledger's own hand-back rule, so the next move is the worker's again."""
+    return work_ledger._decided_after_report(item) is not None
+
+
 def closed_items(slot_key: str) -> list[dict[str, Any]]:
     """The closed items on thread *slot_key*'s own ledger, as this board reads them.
 
@@ -298,6 +304,13 @@ def _alive_of(state: DashboardState, worker_key: str) -> str:
     if _slot_open(state, worker_key) or _find_slot(state, worker_key) is not None:
         return "idle"
     return "closed"
+
+
+def _remote_alive(running: bool, closed: bool) -> str:
+    """``running`` / ``idle`` / ``closed`` for a remote worker, from its stored record."""
+    if running:
+        return "running"
+    return "closed" if closed else "idle"
 
 
 async def api_work_ledger_board(request: web.Request) -> web.Response:
@@ -376,15 +389,21 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         lambda: {item.item_id: work_ledger.read_undelivered(key, item) for item in items}
     )
 
+    remote_live = await asyncio.to_thread(work_ledger.remote_liveness_map, key, items)
     rows: list[dict[str, Any]] = []
     for item in items:
         row = item.to_dict()
         row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
-        row["stale"] = work_ledger.is_stale(
+        running, closed, looping = work_ledger.item_liveness(
+            key,
             item,
-            worker_running=_slot_running(state, item.worker_session_key or ""),
-            worker_closed=_slot_closed(state, item.worker_session_key or ""),
-            worker_looping=_slot_looping(item.worker_session_key or ""),
+            running=lambda k: _slot_running(state, k),
+            closed=lambda k: _slot_closed(state, k),
+            looping=_slot_looping,
+            remote=remote_live.get(item.item_id) or (False, False),
+        )
+        row["stale"] = work_ledger.is_stale(
+            item, worker_running=running, worker_closed=closed, worker_looping=looping
         )
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
         row["report_undelivered"] = undelivered.get(item.item_id)
@@ -392,7 +411,11 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         rows.append(
             _project_item(
                 row,
-                alive=_alive_of(state, item.worker_session_key or ""),
+                alive=(
+                    _remote_alive(running, closed)
+                    if item.worker_instance_id
+                    else _alive_of(state, item.worker_session_key or "")
+                ),
                 outstanding=_is_outstanding(item, row["events"]),
                 terminal=item.is_terminal,
             )
@@ -558,6 +581,21 @@ async def api_work_ledger_board_action(request: web.Request) -> web.Response:
             resources=f"conductor={key} item={item_id}:no_worker_bound",
         )
         return _refuse("no_worker_bound", "this item has no bound worker to stop", 409)
+    if item.worker_instance_id:
+        # A remote worker runs on another crew: its slot is not in this gateway's
+        # table, so the local stop below cannot reach it. Said plainly, rather than
+        # the "worker closed" a local miss would answer for a worker still running.
+        _audit(
+            caller,
+            "crew_board_action",
+            "denied",
+            resources=f"conductor={key} item={item_id}:remote_worker",
+        )
+        return _refuse(
+            "remote_worker",
+            "this item's worker runs on another crew; stop it from that crew's window",
+            409,
+        )
     slot = _find_slot(state, worker_key)
     if slot is None:
         _audit(

@@ -678,7 +678,10 @@
         "header_addressing_review": "REVISIONE",
         "header_awaiting_merge": "ATTESA UNIONE",
         "header_resolved": "RISOLTO",
-        "page_label": "Pipeline di auto-triage"
+        "page_label": "Pipeline di auto-triage",
+        "load_failed": "Impossibile caricare la pipeline",
+        "load_failed_unknown": "La lettura non è riuscita senza indicare un motivo.",
+        "retry": "Riprova"
       },
       "global": {
         "unattributed_label": "EVENTI SENZA REPOSITORY",
@@ -2906,9 +2909,6 @@
             "no_members_found_for_this_repo": "Nessun membro trovato per questo repo.",
             "notifications": "Notifiche",
             "notify_me_when_a": "Avvisami quando un",
-            "of": "di",
-            "open_issues_are_marked_first_issue_friendly": "issue aperte sono contrassegnate come adatte ai nuovi arrivati",
-            "open_issues_currently_need_triage": "issue aperte necessitano attualmente di triage",
             "open_on": "Apri su",
             "open_tagging": "Apri l'assegnazione dei tag",
             "organises_its_issues_and_are_never_written_back": "organizza le sue issue e non vengono mai riscritte su",
@@ -2937,7 +2937,11 @@
             "without_push_access_to": "Senza accesso push a",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Le tue modifiche vengono mantenute qui ma non verranno salvate in modo permanente. Se hai appena aggiornato Issue Radar, riavvia il backend così l'API delle impostazioni diventa disponibile.",
             "notify_me_when_ci_fails_on_my_pull_request": "Avvisami quando la CI fallisce su una delle mie pull request in {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Legge solo le esecuzioni di GitHub Actions sulle tue pull request aperte, tramite il tuo accesso a gh. Silenzialo o cambiane la priorità in Impostazioni → Notifiche."
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Legge solo le esecuzioni di GitHub Actions sulle tue pull request aperte, tramite il tuo accesso a gh. Silenzialo o cambiane la priorità in Impostazioni → Notifiche.",
+            "first_issue_friendly_count_one": "<strong>{{n}}</strong> issue aperta è contrassegnata come adatta ai nuovi arrivati",
+            "first_issue_friendly_count_many": "<strong>{{n}}</strong> issue aperte sono contrassegnate come adatte ai nuovi arrivati",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> issue aperte sono contrassegnate come adatte ai nuovi arrivati",
+            "triage_needed_of_open": "Issue aperte da smistare: <strong>{{triage}}</strong> di {{n}}"
           }
         },
         "tagging": {
@@ -5043,7 +5047,10 @@
           "up": "Su",
           "use_recent_project": "Usa il progetto recente {{path}}",
           "use_this_folder": "Usa questa cartella",
-          "use_this_folder_path": "Usa questa cartella: {{path}}"
+          "use_this_folder_path": "Usa questa cartella: {{path}}",
+          "load_failed": "Impossibile elencare questa cartella",
+          "load_failed_unknown": "La lettura non è riuscita senza indicare un motivo.",
+          "retry": "Riprova"
         },
         "settingsModal": {
           "cancel": "Annulla",
@@ -5230,7 +5237,10 @@
         "rerunning": "Riesecuzione in corso…",
         "started_run": "Esecuzione avviata",
         "view_source": "Visualizza l'origine",
-        "workflow_source_for": "origine del workflow per {{runId}}"
+        "workflow_source_for": "origine del workflow per {{runId}}",
+        "lines_one": "{{count}} riga",
+        "lines_many": "{{count}} righe",
+        "lines_other": "{{count}} righe"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Crea, esegui e osserva workflow dinamici",
@@ -5245,20 +5255,27 @@
         "validate": "Convalida",
         "workflow_script_python": "Script del workflow (Python)",
         "workflow_source": "origine del workflow",
-        "workflows": "Workflow"
+        "workflows": "Workflow",
+        "view_author": "Crea",
+        "view_runs": "Esecuzioni"
       },
       "workflowsRuns": {
         "budget": "budget",
         "cancel": "Annulla",
         "cancelling": "Annullamento in corso…",
         "could_not_load_runs": "Impossibile caricare le esecuzioni:",
-        "events": "eventi",
         "no_background_runs_yet_runs_started_in_the_backg": "Ancora nessuna esecuzione in background. Le esecuzioni avviate in background appaiono qui.",
         "run_detail": "Dettaglio dell'esecuzione",
         "select_a_run_to_see_its_phases_agents_and_result": "Seleziona un'esecuzione per vederne le fasi, gli agenti e il risultato.",
         "unknown": "Sconosciuto",
         "view_graph": "Grafo",
-        "view_tree": "Albero"
+        "view_tree": "Albero",
+        "agents_one": "{{count}} agente",
+        "agents_many": "{{count}} agenti",
+        "agents_other": "{{count}} agenti",
+        "events_one": "{{count}} evento",
+        "events_many": "{{count}} eventi",
+        "events_other": "{{count}} eventi"
       }
     },
     "commandBar": {
@@ -5802,15 +5819,18 @@
       "asked": "Hai chiesto",
       "done": "Fatto",
       "label": "Riepilogo",
+      "more_waiting": "Altre {{count}}",
       "needs_you": "Serve a te",
       "next": "Prossimi passi",
       "progress": "Avanzamento",
       "progress_count": "{{accepted}} di {{total}} completate",
       "remaining": "Manca",
+      "show_fewer": "Mostra meno",
       "status_blocked": "Bloccato",
       "status_done": "Completato",
       "status_needs_you": "Aspetta te",
-      "status_on_track": "Procede bene"
+      "status_on_track": "Procede bene",
+      "unlisted": "Altre {{count}} non elencate"
     },
     "voicePlaybackNotice": {
       "failed": "«{{speak}}» non riuscito. Controlla le impostazioni «Da testo a voce» e riprova.",
@@ -6093,7 +6113,8 @@
       "some_setup_could_not_be_read": "{{productName}} non è riuscito a leggere {{sources}} — non elencato di seguito.",
       "files_could_not_be_read": "Non è stato possibile leggere i file",
       "your_existing_kirocrew_setup_will_not_be_affecte": "La tua configurazione esistente di {{productName}} non verrà modificata.",
-      "your_selected_setup_is_ready_in_kiro_crew": "La configurazione selezionata è pronta in {{productName}}."
+      "your_selected_setup_is_ready_in_kiro_crew": "La configurazione selezionata è pronta in {{productName}}.",
+      "import_setup_stage": "Importa la configurazione · {{stage}} di {{stages}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Salvato, ma questa copia di {{productName}} non è riuscita ad aggiornare la configurazione dell’agente, quindi le nuove chat mantengono la configurazione precedente. Apri la pagina «Log» per vedere il motivo."
@@ -6142,6 +6163,14 @@
       "retry": "Riprova",
       "this_app_is_disabled": "Questa app è disattivata",
       "this_app_provides_agents_and_skills_but_no_visua": "Questa app fornisce agenti e skill ma nessuna interfaccia visiva.\n            Usa i suoi agenti dalla chat."
+    },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "Apri l'app in una finestra separata",
+      "this_app_is_open_in_its_own_window_focus_it": "Questa app è aperta in una finestra separata — mettila a fuoco",
+      "focus_popped_out_window": "Metti a fuoco la finestra separata",
+      "return": "Riporta indietro",
+      "return_to_main_window": "Torna alla finestra principale",
+      "return_this_app_to_the_main_window": "Riporta questa app nella finestra principale"
     },
     "approvalCard": {
       "actions_group": "Azioni di approvazione",
@@ -6685,7 +6714,8 @@
       "split_right_d": "Dividi a destra (⌘D)",
       "type_to_filter": "Digita per filtrare…",
       "earlier_conversation_show": "Ricomincia da capo alle {{time}} · Mostra i messaggi precedenti ({{count}})",
-      "earlier_conversation_hide": "Ricomincia da capo alle {{time}} · Nascondi i messaggi precedenti (non più ricordati)"
+      "earlier_conversation_hide": "Ricomincia da capo alle {{time}} · Nascondi i messaggi precedenti (non più ricordati)",
+      "preparing_catch_up": "Preparo il tuo riepilogo…"
     },
     "cliPanel": {
       "copied": "Copiato",
@@ -7025,7 +7055,7 @@
       "next": "Avanti",
       "no_execution_history_yet": "Ancora nessuna cronologia di esecuzione",
       "ok": "OK",
-      "page": "Pagina",
+      "page_n": "Pagina {{page}}",
       "prev": "Prec.",
       "status": "Stato",
       "summary": "Riepilogo",
@@ -7484,6 +7514,9 @@
       "auto_pause_after_failures": "Metti in pausa dopo N errori consecutivi",
       "auto_pause_after_failures_description": "0 significa non mettere mai in pausa. Dal 5° errore consecutivo, un'attività impostata a 0 o a più di 5 attende 5 minuti prima della prossima esecuzione, raddoppiando fino a un'ora.",
       "auto_pause_after_failures_invalid": "Il limite di pausa automatica deve essere un numero intero da 0 a 10000.",
+      "alert_after_failures": "Invia il messaggio di errore dopo N errori consecutivi",
+      "alert_after_failures_description": "1 lo invia alla prima esecuzione fallita. Gli errori precedenti suonano comunque la campanella del pannello; un rifiuto dei criteri e l'esecuzione che mette in pausa l'attività lo inviano sempre.",
+      "alert_after_failures_invalid": "La soglia di avviso deve essere un numero intero da 1 a 10000.",
       "runs_as": "Viene eseguito come",
       "runs_as_custom_agent": "Agente personalizzato",
       "runs_as_crewmate": "Compagno",
@@ -7514,13 +7547,13 @@
       "copied": "Copiato",
       "copy_link": "Copia link",
       "could_not_start_sign_in": "Impossibile avviare l'accesso. Controlla la connessione e riprova.",
-      "device_aside_body": "{{productName}} è in esecuzione su un altro computer, quindi non può aprire una finestra del browser per te. Apri il link qui sotto su un dispositivo qualsiasi — va bene anche il telefono — e inserisci il codice.",
+      "device_aside_body": "Apri il link qui sotto nel browser e inserisci il codice. Se {{productName}} è in esecuzione su un altro computer, va bene qualsiasi dispositivo, anche il telefono.",
       "device_aside_footnote": "Il codice è valido per un tempo limitato.",
       "device_aside_headline": "Approva nel browser",
-      "enter_the_code_in_your_browser": "Completa l'accesso sul telefono o su un altro computer",
+      "enter_the_code_in_your_browser": "Completa l'accesso nel browser",
       "enter_this_code": "Inserisci questo codice",
       "get_started": "Per iniziare",
-      "open_this_link": "Apri questo link sul telefono o in un altro browser",
+      "open_this_link": "Apri questo link nel browser",
       "provider_builder_id": "AWS Builder ID",
       "provider_company_sso": "SSO aziendale",
       "provider_github": "GitHub",
@@ -8125,6 +8158,7 @@
         "keep_receiving_these": ". Continuare a riceverli?",
         "mark_all_as_read": "Segna tutto come letto",
         "mute_channel": "Silenzia il canale",
+        "mute_failed": "Non è stato possibile silenziare questo canale. Riprova.",
         "muted_2": "silenziato",
         "no_notifications": "Nessuna notifica",
         "open_notification": "Apri la notifica: {{title}}",
@@ -8646,11 +8680,11 @@
     },
     "searchResultsList": {
       "assistant": "Assistente",
-      "matches_around_the_current_result_narrow_your_se": "corrispondenze intorno al risultato attuale — restringi la ricerca per vederle tutte.",
-      "of": "di",
       "search_results": "Risultati della ricerca",
       "selected": "selezionato",
-      "showing": "Visualizzati",
+      "showing_matches_many": "Visualizzate {{shown}} di {{n}} corrispondenze intorno al risultato attuale — restringi la ricerca per vederle tutte.",
+      "showing_matches_one": "Visualizzate {{shown}} di {{n}} corrispondenza intorno al risultato attuale — restringi la ricerca per vederle tutte.",
+      "showing_matches_other": "Visualizzate {{shown}} di {{n}} corrispondenze intorno al risultato attuale — restringi la ricerca per vederle tutte.",
       "you": "Tu"
     },
     "multiSelect": {
@@ -9163,18 +9197,19 @@
       "var_warning": "Avviso"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• Adottare una persona a tema nell'assistente (sicurezza e accuratezza hanno sempre la priorità; puoi chiedere di abbandonare la persona in qualsiasi momento).",
-      "enable_experience": "Attiva l'esperienza",
       "enable_named_experience": "Attiva l'esperienza \"{{name}}\"?",
       "keep_colors_only": "Mantieni solo i colori",
+      "keep_persona_off": "Mantieni la Persona disattivata",
       "mute_theme_sounds": "Disattiva i suoni del tema",
       "persona_text": "Testo della persona",
       "persona_that_will_be_added_to_the_assistant_s_sy": "Persona che verrà aggiunta al prompt di sistema dell'assistente:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• Riprodurre suoni a tema (rispetta l'interruttore di silenziamento e l'impostazione di riduzione del movimento).",
-      "show_animated_visual_overlays": "• Mostrare sovrapposizioni visive animate.",
       "theme_overlay": "overlay del tema {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "Questo è un tema esperienziale. Attivandolo:",
-      "unmute_theme_sounds": "Riattiva i suoni del tema"
+      "unmute_theme_sounds": "Riattiva i suoni del tema",
+      "save": "Salva",
+      "sounds": "Suoni",
+      "overlays": "Overlay",
+      "persona": "Persona",
+      "save_failed_storage": "Impossibile salvare. La memoria del browser è piena o disattivata."
     },
     "timezoneSelect": {
       "render_timezone": "Fuso orario di visualizzazione"
@@ -9980,6 +10015,7 @@
       "cred_view_token_title": "Visualizza il token",
       "cred_why": "perché?",
       "link_allow": "Consenti per questo host",
+      "link_allow_unsupported": "Si può consentire solo un nome host come example.com. Usa invece «Apri una volta».",
       "link_allow_confirm_aria": "Conferma del consenso",
       "link_allow_confirm_body": "Vale <0>solo per questo workspace</0>. La dashboard salva questa scelta. Un agente non può mai scriverla. Vengono allentati solo i controlli sulle query lunghe e sui dati codificati (base64). Le regole sulle credenziali restano attive. Revocala in Impostazioni → Sicurezza → Oscuramento.",
       "link_allow_confirm_title": "Consentire query lunghe su {{host}}?",
@@ -10102,7 +10138,6 @@
       "flow_parallel": "Chat separate",
       "flow_board": "Bacheca",
       "flow_needs_you": "Serve a te",
-      "side_panel_open": "Bacheca delle attività",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "Ultra Mode è attivo per questa chat",
       "breadcrumb_label": "Membro della squadra",
@@ -10139,6 +10174,15 @@
       "ultra_row_sessions_one": "{{count}} sessione · {{running}} in corso",
       "ultra_row_sessions_many": "{{count}} sessioni · {{running}} in corso",
       "ultra_row_sessions_other": "{{count}} sessioni · {{running}} in corso",
+      "ultra_row_count_working_one": "{{count}} in corso",
+      "ultra_row_count_working_many": "{{count}} in corso",
+      "ultra_row_count_working_other": "{{count}} in corso",
+      "ultra_row_count_waiting_one": "{{count}} in attesa",
+      "ultra_row_count_waiting_many": "{{count}} in attesa",
+      "ultra_row_count_waiting_other": "{{count}} in attesa",
+      "ultra_row_count_needs_you_one": "{{count}} ha bisogno di te",
+      "ultra_row_count_needs_you_many": "{{count}} hanno bisogno di te",
+      "ultra_row_count_needs_you_other": "{{count}} hanno bisogno di te",
       "ultra_recap_empty": "La squadra non ha ancora inviato aggiornamenti.",
       "chip_hint_pressed": "Ultra Mode è attivo. Fai clic per disattivarlo prima del tuo primo messaggio.",
       "ultra_view_status": "Stato",
@@ -10959,6 +11003,7 @@
       "next": "Avanti",
       "once_launched_the_app_will_automatically_connect": "Una volta avviata, l'app si connetterà automaticamente a questa istanza di {{productName}} e apparirà in App.",
       "open_screenshot": "Apri lo screenshot {{n}}",
+      "screenshot_viewer": "Visualizzatore di screenshot",
       "origin": "Origine:",
       "permissions": "Permessi",
       "session_approval_desc": "Può inviare messaggi e scegliere opzioni di risposta nelle tue chat, approvare o rifiutare richieste degli strumenti e cambiare la modalità di approvazione di una chat.",
@@ -11013,6 +11058,14 @@
       "retry": "Riprova",
       "back_to_apps": "Torna alle app",
       "failed_to_load_app": "Caricamento dell'app non riuscito"
+    },
+    "appPopoutFrame": {
+      "app": "App",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "Nessuna app in {{route}}",
+      "no_app_at_route_lead": "Questa finestra è stata aperta per una pagina che non è un'app, o per un'app che non è più installata. Torna alla finestra principale per continuare.",
+      "could_not_load_the_app_list": "Caricamento dell'elenco delle app non riuscito",
+      "retry": "Riprova"
     },
     "appsPage": {
       "action_failed": "Operazione «{{action}}» non riuscita su {{name}}",
@@ -11138,6 +11191,8 @@
       "default_profile": "Profilo predefinito",
       "deploy": "Esegui il deploy",
       "deploy_anyway": "Esegui il deploy comunque",
+      "pending_deploy_failed_status": "Conferma non riuscita ({{status}})",
+      "dismiss_failed_status": "Ignora non riuscito ({{status}})",
       "deploy_artifact": "Esegui il deploy di {{name}}",
       "deploy_profile_for_slug": "Profilo di deploy per {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Deploy / Richiama / Distruggi richiedono ciascuno una conferma esplicita\n              (mai approvati automaticamente) ed emettono un evento di audit SEL.",
@@ -12263,7 +12318,6 @@
         "aria_expand_task_list": "{{done}} di {{total}} attività completate. Espandi l’elenco delle attività",
         "current_task": "Attività corrente",
         "more": "altri…",
-        "of": "di",
         "task_completion": "Completamento dell'attività",
         "aria_mark_done": "Segna come completata: {{task}}. L'agente non la rifarà. Clicca di nuovo per annullare.",
         "aria_mark_not_done": "Segna come non completata: {{task}}. L'agente la considera ancora aperta. Clicca di nuovo per annullare.",
@@ -12276,7 +12330,8 @@
         "fail_remote": "Questa lista è gestita dalla macchina remota di questa sessione, quindi non può essere modificata qui.",
         "set_by_you_done": "Hai segnato questa riga come fatta; l'agente non l'ha ancora confermato.",
         "set_by_you_open": "Hai segnato questa riga come non fatta; l'agente non l'ha ancora confermato.",
-        "sending": "Invio in corso"
+        "sending": "Invio in corso",
+        "done_of_total": "{{done}} di {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Comprimi il ragionamento del modello",
@@ -14325,7 +14380,8 @@
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
         "opencode": "OpenCode",
-        "pi": "Pi"
+        "pi": "Pi",
+        "strands": "Strands"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Sovrappone alla chat una diagnostica live di scorrimento e ancoraggi",
@@ -14498,6 +14554,48 @@
         "could_not_sign_out": "Impossibile uscire",
         "keep_current_sign_in": "Mantieni l’accesso attuale",
         "signed_in_body_no_refresh": "Gli agenti vengono eseguiti con questo account Kiro. Questo accesso non ha un token di aggiornamento e non può rinnovarsi da solo: accedi di nuovo prima che scada."
+      },
+      "strandsSetup": {
+        "cancel": "Annulla",
+        "desc_anthropic_api_key": "La tua chiave API di Anthropic.",
+        "desc_aws_bearer_token_bedrock": "Una chiave API di Bedrock, creata nella console di Bedrock.",
+        "desc_aws_region": "La regione AWS, ad esempio us-east-1.",
+        "desc_gemini_api_key": "La tua chiave API di Gemini.",
+        "desc_litellm_api_key": "La chiave che chiede il tuo proxy LiteLLM.",
+        "desc_litellm_base_url": "L'indirizzo del tuo proxy LiteLLM.",
+        "desc_ollama_host": "L'indirizzo di Ollama, ad esempio http://localhost:11434.",
+        "desc_openai_api_key": "La tua chiave API di OpenAI.",
+        "field_label_optional": "{{name}} (facoltativo)",
+        "intro": "Scegli il provider con cui parla Strands e incolla ciò che gli serve. Chiavi e altri valori vanno in Impostazioni > Segreti, e la configurazione ne conserva solo un riferimento.",
+        "model_desc_default": "Lascia vuoto per usare il modello predefinito.",
+        "model_desc_required": "L'id di modello elencato dal tuo provider. Questo provider ne richiede uno.",
+        "model_label": "Modello",
+        "model_missing": "Le nuove sessioni di Strands usano il modello Bedrock predefinito finché non salvi un modello per questo provider.",
+        "note_anthropic": "Richiede una chiave API di Anthropic.",
+        "note_bedrock": "{{productName}} nasconde all'agente i tuoi file di profilo e SSO di AWS, quindi Bedrock richiede una chiave API di Bedrock e la sua regione.",
+        "note_bedrock_mantle": "L'endpoint di Bedrock compatibile con OpenAI. {{productName}} nasconde all'agente i tuoi file di profilo e SSO di AWS, quindi richiede una chiave API di Bedrock e la sua regione.",
+        "note_google": "Richiede una chiave API di Gemini.",
+        "note_litellm": "Parla con il tuo proxy LiteLLM. La chiave serve solo se il proxy la chiede.",
+        "note_ollama": "Esegue i modelli sulla tua macchina. Non serve alcuna chiave. Imposta un host solo se Ollama non è al suo indirizzo predefinito.",
+        "note_openai": "Richiede una chiave API di OpenAI.",
+        "provider_anthropic": "Anthropic",
+        "provider_bedrock": "Amazon Bedrock",
+        "provider_bedrock_mantle": "Bedrock Mantle",
+        "provider_google": "Google Gemini",
+        "provider_label": "Provider",
+        "provider_litellm": "LiteLLM",
+        "provider_ollama": "Ollama",
+        "provider_openai": "OpenAI",
+        "read_failed": "Impossibile leggere le impostazioni di Strands. Ricarica la pagina per riprovare.",
+        "remove": "Rimuovi",
+        "remove_confirm": "Non usare più questo valore qui? Resta in Impostazioni > Segreti.",
+        "remove_delete": "Rimuovi",
+        "remove_failed": "Impossibile rimuovere questo valore. Riprova.",
+        "replace": "Sostituisci",
+        "save": "Salva",
+        "save_failed": "Impossibile salvare questo valore. Riprova.",
+        "title": "Provider di modelli",
+        "value_missing": "Il valore a cui punta non è più nei Segreti, quindi le nuove sessioni di Strands vengono rifiutate. Salva un nuovo valore o rimuovilo."
       }
     },
     "developerPage": {
@@ -14775,8 +14873,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} incorporato ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "Motore di embedding pronto — gli elementi di conoscenza necessitano di embedding.",
+        "generate_disabled": "L'embedding della conoscenza è disattivato, quindi non si può generare nulla.",
+        "generate_embedded_none": "Nessun elemento è stato incorporato. Il modello di embedding non ha restituito nulla.",
+        "generate_failed": "Impossibile generare gli embedding.",
         "generate_now": "Genera ora",
+        "generate_unavailable": "Il modello di embedding della conoscenza non è raggiungibile al momento. Riprova tra poco.",
         "generating": "Generazione…",
+        "knowledge_embedder_off": "Ricerca intelligente non disponibile — l'embedding della conoscenza è disattivato.",
+        "knowledge_embedder_unreachable": "Ricerca intelligente non disponibile — il modello di embedding della conoscenza non è raggiungibile.",
         "smart_search_active": "Ricerca intelligente attiva",
         "smart_search_unavailable_embedding_model_is_down": "Ricerca intelligente non disponibile — il modello di embedding è in download in background."
       },
@@ -14825,8 +14929,6 @@
         "no_items_found": "Nessun elemento trovato",
         "no_items_match_your_filters": "Nessun elemento corrisponde ai tuoi filtri",
         "no_items_match_your_search": "Nessun elemento corrisponde alla tua ricerca",
-        "of": "di",
-        "page": "Pagina",
         "prev": "← Prec.",
         "prev_next_page": "Pagina prec./succ.",
         "search_explore_and_manage_your_knowledge_base": "Cerca, esplora e gestisci la tua base di conoscenze",
@@ -14851,7 +14953,8 @@
         "stats_relations_many": "{{count}} relazioni",
         "stats_sources_one": "{{count}} origine",
         "stats_sources_other": "{{count}} origini",
-        "stats_sources_many": "{{count}} origini"
+        "stats_sources_many": "{{count}} origini",
+        "page_of": "Pagina {{page}} di {{pages}}"
       },
       "itemCard": {
         "copied": "Copiato!",
@@ -14871,15 +14974,17 @@
         "recenter": "Ricentra",
         "start_physics": "Fisica",
         "pause_physics": "Pausa",
-        "graph_region_label": "Grafo delle entità di conoscenza"
+        "graph_region_label": "Grafo delle entità di conoscenza",
+        "load_failed": "Impossibile caricare il grafo della conoscenza",
+        "load_failed_unknown": "La lettura non è riuscita senza indicare un motivo.",
+        "retry": "Riprova"
       },
       "sourceGroup": {
         "items_added_directly": "Elementi aggiunti direttamente",
         "items_count": "({{count}} elementi)",
         "next": "Avanti →",
         "no_source": "Nessuna origine",
-        "of": "di",
-        "page": "Pagina",
+        "page_of": "Pagina {{page}} di {{pages}}",
         "prev": "← Prec.",
         "unknown_source": "Origine sconosciuta"
       },
@@ -15580,7 +15685,10 @@
         "partial_notice": "Qui è mostrata solo una parte della tua memoria, quindi la ricerca trova solo questi nodi.",
         "refresh": "Aggiorna",
         "search_memory_nodes": "Cerca tra i nodi della memoria",
-        "search_nodes": "Cerca tra i nodi…"
+        "search_nodes": "Cerca tra i nodi…",
+        "load_failed": "Impossibile caricare il grafo della memoria",
+        "load_failed_unknown": "La lettura non è riuscita senza indicare un motivo.",
+        "retry": "Riprova"
       },
       "memoryTab": {
         "actions": "Azioni",
@@ -16087,10 +16195,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · viene eseguito localmente nel processo",
         "embedding_status": "Stato degli embedding",
-        "entries": "voci",
         "episodic_context_injected_per_message": "Contesto episodico (inserito per messaggio)",
         "episodic_memory": "Memoria episodica",
-        "events": "eventi",
         "every_memory_create_update_delete_conflict_and_i": "Ogni creazione, aggiornamento, eliminazione, conflitto e blocco di inserimento della memoria viene registrato qui.",
         "filter_by_key_or_value": "Filtra per chiave o valore…",
         "filter_by_tag": "Filtra per tag:",
@@ -16107,7 +16213,6 @@
         "no_matching_entries": "Nessuna voce corrispondente",
         "no_semantic_entries": "Nessuna voce semantica",
         "not_active": "non attivo",
-        "of": "di",
         "open_embedding_model_settings": "Apri le impostazioni del modello di embedding",
         "preview": "Anteprima",
         "preview_what_gets_injected_into_prompts_enter_a": "Anteprima di ciò che viene inserito nei prompt. Inserisci una query per vedere i risultati del recupero episodico.",
@@ -16121,7 +16226,6 @@
         "semantic_memory": "Memoria semantica",
         "set": "Imposta",
         "setup_failed": "Configurazione non riuscita",
-        "showing": "Visualizzati",
         "status_unknown": "sconosciuto",
         "structured_key_value_facts_about_you_confidence": "Fatti strutturati chiave-valore su di te. Confidenza: quanto è certo il sistema (1.0 = l’hai impostato tu, 0.85 = estratto dalla chat). Origine: chi l’ha scritto (user_explicit = tu, consolidation = estratto automaticamente).",
         "structured_semantic_key_value_episodic_conversat": "Memoria semantica strutturata (chiave-valore) + episodica (frammenti di conversazione) con ricerca vettoriale. Gli embedding sono sempre attivi — il modello viene scaricato automaticamente in background.",
@@ -16133,7 +16237,22 @@
         "verifying_model_integrity": "Verifica dell’integrità del modello…",
         "enable_err_config_unreadable": "Non è stato possibile salvare la memoria vettoriale perché config.json non è leggibile. Correggi il file, poi riprova.",
         "enable_err_dim_unreadable": "Non è stato possibile leggere la larghezza dei vettori del modello di embedding, quindi la memoria vettoriale non è stata attivata. Riprova, o esegui 'kirocrew doctor' se continua a non riuscire.",
-        "enable_err_owner_only": "Solo il proprietario della dashboard può configurare la memoria vettoriale."
+        "enable_err_owner_only": "Solo il proprietario della dashboard può configurare la memoria vettoriale.",
+        "showing_entries_one": "Visualizzata {{n}} voce",
+        "showing_entries_many": "Visualizzate {{n}} voci",
+        "showing_entries_other": "Visualizzate {{n}} voci",
+        "showing_events_one": "Visualizzato {{n}} evento",
+        "showing_events_many": "Visualizzati {{n}} eventi",
+        "showing_events_other": "Visualizzati {{n}} eventi",
+        "showing_events_filtered_one": "Visualizzato {{n}} evento ({{total}} in totale)",
+        "showing_events_filtered_many": "Visualizzati {{n}} eventi ({{total}} in totale)",
+        "showing_events_filtered_other": "Visualizzati {{n}} eventi ({{total}} in totale)",
+        "showing_semantic_one": "Visualizzato {{shown}} di {{total}}",
+        "showing_semantic_many": "Visualizzati {{shown}} di {{total}}",
+        "showing_semantic_other": "Visualizzati {{shown}} di {{total}}",
+        "showing_semantic_filtered_one": "Visualizzato {{shown}} di {{matched}} (filtrato da {{total}})",
+        "showing_semantic_filtered_many": "Visualizzati {{shown}} di {{matched}} (filtrati da {{total}})",
+        "showing_semantic_filtered_other": "Visualizzati {{shown}} di {{matched}} (filtrati da {{total}})"
       },
       "wakatimeTab": {
         "active_projects": "Progetti su cui hai lavorato",
@@ -17787,12 +17906,14 @@
         "installed_theme_could_not_be_loaded": "Impossibile caricare il tema installato. Reinstallalo o scegli un altro tema.",
         "custom_theme_could_not_be_loaded": "Impossibile caricare questo tema. Scegli un altro tema o modifica questo.",
         "local_folder": "Cartella locale",
+        "zip_file": "File zip",
         "mode": "Modalità",
         "native_window_zoom_tip": "Zoom nativo della finestra, la stessa impostazione di {{mod}}+ / {{mod}}− (50%–300%). Viene mantenuto tra un avvio e l’altro.",
         "new_theme": "+ Nuovo tema",
         "no_color": "Nessun colore",
         "none_auto_cycle_or_pick_a_fixed_color": "Nessuno, ciclo automatico oppure scegli un colore fisso.",
         "palette": "Palette",
+        "palette_categorical": "Categoriale",
         "select_a_theme_for_the_dashboard": "Seleziona un tema per la dashboard",
         "sidebar_colors": "Colori della barra laterale",
         "terminal": "Terminale",
@@ -17872,7 +17993,12 @@
         "desktop_app": "App desktop",
         "keep_running_when_window_closed": "Continua in background dopo la chiusura della finestra",
         "keep_running_when_window_closed_desc": "Chiudendo la finestra, {{productName}} viene nascosto e le sessioni e i lavori pianificati continuano. Disattiva l'opzione perché il pulsante di chiusura chiuda completamente l'app. Un gateway avviato da questa app si arresta con essa, mentre un gateway a cui si connette soltanto continua a funzionare.",
-        "keep_running_when_window_closed_save_failed": "Impossibile salvare questa impostazione. Non è cambiato nulla. Riprova."
+        "keep_running_when_window_closed_save_failed": "Impossibile salvare questa impostazione. Non è cambiato nulla. Riprova.",
+        "choose_zip_file": "Scegli un file .zip",
+        "theme_experience": "Esperienza",
+        "theme_experience_sounds": "Suoni",
+        "theme_experience_overlays": "Overlay",
+        "theme_experience_persona": "Persona"
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",
@@ -18142,13 +18268,17 @@
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",
         "recordMetricsDescription": "Raccogli le metriche di prestazione su questa macchina.",
-        "recordMetricsDescriptionExporting": "Raccogli le metriche di prestazione e inviale al collector configurato nel file config.json.",
+        "recordMetricsDescriptionExporting": "Raccogli le metriche di prestazione e inviale ai collector configurati.",
         "recordMetricsSaveFailed": "Impossibile modificare questa impostazione. Riprova.",
-        "recordMetricsSaveRefusedEgress": "Registrazione non attivata: telemetry.otlp_endpoint è impostato, quindi attivarla qui inizierebbe a inviare le metriche fuori da questa macchina. Attivala invece nel file config.json.",
+        "recordMetricsSaveRefusedEgress": "Registrazione non attivata: sono configurati dei collector, quindi attivarla qui inizierebbe a inviare le metriche fuori da questa macchina. Attivala invece nel file config.json.",
         "recordMetricsEnvPinned": "La variabile d’ambiente {{envVar}} sta fissando questa impostazione: rimuovila dall’ambiente per modificarla qui.",
         "recordMetricsOverlayPinned": "Una voce in config.local.json sta fissando questa impostazione: rimuovila per modificarla qui.",
-        "recordMetricsEgressOff": "telemetry.otlp_endpoint è impostato, quindi la registrazione invierebbe le metriche anche fuori da questa macchina. Attivala nel file config.json se è ciò che desideri.",
-        "recordMetricsEgressOn": "Le metriche vengono inviate fuori da questa macchina, al collector indicato da telemetry.otlp_endpoint.",
+        "recordMetricsEgressOff": "Sono configurati dei collector, quindi la registrazione invierebbe le metriche anche fuori da questa macchina. Attivala nel file config.json se è ciò che desideri.",
+        "recordMetricsEgressOn": "Le metriche vengono inviate fuori da questa macchina, ai collector elencati sotto.",
+        "recordMetricsEgressDestinations": "Collector: {{names}}",
+        "recordMetricsEgressLockedName": "{{name}} (incluso in questa build; disattivare «Registra le metriche» ferma anche questo)",
+        "recordMetricsEgressLockedNameOff": "{{name}} (incluso in questa build)",
+        "recordMetricsEgressLegacyName": "Il tuo collector (config.json)",
         "recordMetricsStatusUnavailable": "Impossibile caricare l'impostazione di registrazione delle metriche. L'interruttore resta bloccato finché non viene caricata."
       },
       "postureDisclosure": {
@@ -19748,7 +19878,7 @@
       "add_member": "Nuovo compagno",
       "import_from_file": "Importa da file",
       "import_title": "Importa un compagno",
-      "import_hint": "Scegli un file .crewmate che qualcuno ha condiviso con te. Non viene creato nulla finché non premi Importa compagno nella schermata successiva.",
+      "import_hint": "Scegli un file .crewjam che qualcuno ha condiviso con te. Non viene creato nulla finché non premi Importa compagno nella schermata successiva.",
       "import_checking": "Controllo del file…",
       "import_pick": "Scegli un file",
       "import_refused": "Questo file non può essere importato.",
@@ -20159,7 +20289,7 @@
       "import_keep_hint": "Decidi più tardi lascia questa importazione in attesa qui finché non scade. Non importare la scarta.",
       "import_later": "Decidi più tardi",
       "export_row": "Esporta come file",
-      "export_row_sub": "Condividi questo compagno come file .crewmate",
+      "export_row_sub": "Condividi questo compagno come file .crewjam",
       "export_title": "Esporta come file",
       "export_intro": "Il file contiene esattamente ciò che è elencato qui. Su questo computer non viene salvato nulla.",
       "export_identity": "Nome, descrizione e immagine",
@@ -21320,6 +21450,13 @@
     "remote_control_open": "Configura controllo remoto",
     "invite_key_link": "Apri Keys di Tailscale",
     "requested_by_person": "chiesto durante il turno di {{name}}",
+    "approved_by_you": "Approvato da te",
+    "rejected_by_you": "Rifiutato da te",
+    "answered_by_you": "Risposto da te",
+    "requested_by_you": "chiesto durante il tuo turno",
+    "crew_owner": "Proprietario della Crew",
+    "already_approved": "Già approvato altrove",
+    "already_rejected": "Già rifiutato altrove",
     "cancel_work": "Annulla",
     "invite_body": "Invita un collega in un solo passaggio. Tailscale gli condivide questa macchina; quando accetta, Crew fa entrare l’account Tailscale usato.",
     "setup_tailscale_body": "I colleghi nella tua tailnet si collegano tramite Tailscale, ciascuno indicato dal proprio login tailnet.",

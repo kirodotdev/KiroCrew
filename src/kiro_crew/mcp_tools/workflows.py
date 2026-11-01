@@ -105,6 +105,27 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "integer",
                         "description": "Optional token budget ceiling for the run",
                     },
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "Optional title for the fallback `workflow-<run_id>` session this "
+                            "run gets when its originating chat is gone (e.g. a webhook-driven "
+                            "run). Lets many runs of one workflow be told apart in the sidebar. "
+                            "Ignored when the originating chat is still live. Omit to keep the "
+                            "default `Workflow: <name>`."
+                        ),
+                    },
+                    "folder": {
+                        "type": "string",
+                        "description": (
+                            "Optional EXISTING sidebar folder (id or '/'-separated path, "
+                            "like session_create's `folder`) for the fallback "
+                            "`workflow-<run_id>` session. Must already exist — nothing is "
+                            "created; a missing or ambiguous folder rejects the run. "
+                            "Ignored when the originating chat is still live. Omit to leave "
+                            "the fallback unfiled."
+                        ),
+                    },
                 },
             },
         },
@@ -265,6 +286,18 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
         wf_body["args"] = args["args"]
     if isinstance(args.get("budget_total"), int):
         wf_body["budget_total"] = args["budget_total"]
+    # Opt-in title/folder for the fallback ``workflow-<run_id>`` slot. Both are
+    # forwarded as-is: the title is cleaned where every run path converges on
+    # applying it (the result injector), and the folder (id or '/'-path) is
+    # resolved to an EXISTING folder id server-side by the run handler — nothing
+    # is created, and a missing/ambiguous folder rejects the run. This tool
+    # builds no dashboard client.
+    fallback_title = (args.get("title") or "").strip()
+    if fallback_title:
+        wf_body["title"] = fallback_title
+    fallback_folder = (args.get("folder") or "").strip()
+    if fallback_folder:
+        wf_body["folder"] = fallback_folder
     if workflow_ref:
         if args.get("input"):
             wf_body["input"] = args["input"]

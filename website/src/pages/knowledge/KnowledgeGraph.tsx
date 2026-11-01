@@ -3,7 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import { Network, RotateCcw, Filter, Atom } from 'lucide-react'
 import Graph from 'graphology'
 import Sigma from 'sigma'
-import { EmptyState } from '../../components/ui'
+import { Btn, EmptyState } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
+import { errMessage } from '../../utils/thunkError'
 import SimpleSelect from '../../components/SimpleSelect'
 import { knowledgeApi } from './api'
 import type { GraphData, Source } from './types'
@@ -120,7 +122,7 @@ export default function KnowledgeGraph({
   const graphQueryParams = selectedSourceId
     ? `/graph?limit=200&source_id=${selectedSourceId}`
     : '/graph?limit=200'
-  const { data: graphData, isLoading } = useQuery({
+  const { data: graphData, isLoading, isError, error, isFetching, refetch } = useQuery({
     queryKey: ['knowledge-graph', selectedSourceId],
     queryFn: () => knowledgeApi<GraphData>(graphQueryParams),
   })
@@ -753,6 +755,27 @@ export default function KnowledgeGraph({
       </div>
     )
   }
+  // A failed read is not an empty graph: "no graph data yet" in front of an
+  // outage sent the user off to ingest documents they already have. A failed
+  // background refetch keeps the last good graph instead.
+  // Over a graph from an earlier read the notice sits above it instead, so a
+  // failed refetch is not passed off as a fresh graph.
+  const loadError = isError ? (
+    <div className="p-4 flex flex-col items-start gap-2">
+      <ErrorNotice
+        askAgent
+        testId="knowledge-graph-load-error"
+        title={i18nT('pages.knowledge.knowledgeGraph.load_failed')}
+        message={errMessage(error) || i18nT('pages.knowledge.knowledgeGraph.load_failed_unknown')}
+        messagePlacement="below"
+        className="w-full"
+      />
+      <Btn disabled={isFetching} onClick={() => void refetch()}>
+        <RotateCcw size={12} className="lucide-inline" /> {i18nT('pages.knowledge.knowledgeGraph.retry')}
+      </Btn>
+    </div>
+  ) : null
+  if (isError && !graphData?.nodes.length) return loadError
   if (!graphData || !graphData.nodes.length) {
     return (
       <EmptyState
@@ -769,6 +792,7 @@ export default function KnowledgeGraph({
 
   return (
     <div className="border border-border rounded-lg overflow-hidden flex flex-col">
+      {loadError}
       <div className="px-4 py-2 border-b border-border flex items-center gap-3 text-[12px] text-muted shrink-0">
         <span>
           {graphData.nodes.length} {i18nT('pages.knowledge.knowledgeGraph.nodes')}{' '}

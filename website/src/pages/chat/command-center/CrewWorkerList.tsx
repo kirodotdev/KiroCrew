@@ -105,7 +105,9 @@ export function useCrewWorkerSummary(root: string): {
  *  open -- the panel is opened on the target too, so the Workers list stays beside
  *  the worker. A phone passes false: there the panel is a sheet over the chat. */
 export function openCrewSession(dispatch: ReturnType<typeof useAppDispatch>, key: string, keepPanel = false) {
-  openPanelView(key, 'workers')
+  // Held: the target's history loads after the switch, and a PR link in it
+  // must not move the panel off Workers, where the way back lives.
+  openPanelView(key, 'workers', { hold: true })
   dispatch(switchSlot({ key, announceOnMissing: true, gesture: true }))
   // `switchSlot.pending` has already made `key` the active slot and restored ITS
   // remembered panel state. Desktop keeps the panel beside the chat; a phone

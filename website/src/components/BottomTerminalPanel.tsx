@@ -7,6 +7,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
 import { useKeyboardLift } from '../hooks/useKeyboardLift'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2 } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -16,7 +17,7 @@ import { Input } from './ui'
 import { useTranslation } from 'react-i18next'
 import { TabCloseMenuItems, batchCloseConfirm, openTabCloseMenu, type TabCloseActions } from './TabCloseMenu'
 import { useConfirm } from './ConfirmDialog'
-import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from './CliPanel'
+import CliPanel, { disposeTerminalSession, useDeleteTerminalSession, prewarmTerminal } from './CliPanel'
 import ErrorNotice from './ErrorNotice'
 import { getTerminalTitle, useTerminalTitle, disposeTerminalConnection } from '../utils/terminalRegistry'
 import { useAppSelector } from '../store'
@@ -35,6 +36,8 @@ import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 
+/** Longest a phone waits for an idle moment to build a restored terminal. */
+const PREWARM_IDLE_TIMEOUT_MS = 4000
 /** Latest: open the terminal even if the slide never reports completion. */
 const SETTLE_CEILING_MS = 700
 
@@ -676,7 +679,25 @@ export function TerminalDetachedBar() {
  * shell warm. Only closing an individual tab kills its PTY.
  */
 export default function BottomTerminalPanel() {
-  const { open, height, width, position } = useBottomTerminal()
+  const { open, height, width, position, tabs, activeId } = useBottomTerminal()
+  // On a phone, a tab restored from an earlier visit has no xterm yet, and
+  // building it is the largest block of work in the tap that opens the dock.
+  // Build it off screen while the app is idle, only when such a tab exists:
+  // someone who never opens a terminal pays nothing.
+  const isMobile = useIsMobile()
+  const hydratePending = useTerminalHydratePending()
+  useEffect(() => {
+    if (!isMobile || open || hydratePending || !activeId || !tabs.some(t => t.id === activeId)) return
+    const run = () => prewarmTerminal(activeId, window.innerWidth, height)
+    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void }
+    if (w.requestIdleCallback && w.cancelIdleCallback) {
+      const h = w.requestIdleCallback(run, { timeout: PREWARM_IDLE_TIMEOUT_MS })
+      const cancel = w.cancelIdleCallback
+      return () => cancel(h)
+    }
+    const t = window.setTimeout(run, PREWARM_IDLE_TIMEOUT_MS)
+    return () => window.clearTimeout(t)
+  }, [isMobile, open, hydratePending, activeId, tabs, height])
   const [dragging, setDragging] = useState(false)
   // The docked panel's guide scope (`shell.terminal-panel`), reported from
   // outside its `open` guard so "closed" is said while it is hidden.

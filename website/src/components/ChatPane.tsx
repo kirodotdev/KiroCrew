@@ -20,6 +20,7 @@ import { filterCrewmateChat, withQueuedAsBubbles } from './chat/crewmateBubbles'
 import { crewmateFollowUps } from './chat/crewmateChips'
 import { AWAITING_REPLY_ACTIVITY, useCrewmateAwaitingReply } from './chat/useCrewmateAwaitingReply'
 import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
+import type { PillActivity } from '../pages/members/pillActivity'
 import { useUnreadLanding } from './chat/useUnreadLanding'
 import ErrorNotice from './ErrorNotice'
 import StatusNotice from './StatusNotice'
@@ -43,6 +44,8 @@ import { sessionMemoryTag } from '../lib/agentMemorySource'
 import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
+import { useSessionPalette } from '../hooks/useSessionPalette'
+import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { legacyCodexEffort } from '../hooks/useInteractiveModels'
 import { selectionCapabilitiesFailed } from '../lib/effort'
 import { isUnpinnedModel } from '../lib/jevRoute'
@@ -324,6 +327,10 @@ export default function ChatPane({
   // indicator a turn shows, but is not a turn: the composer stays idle.
   const preparing = !!paneSlot?.preparing
   const crewmateTyping = crewmateLive || awaitingReply || preparing
+  // The only background message today is the warm catch-up (warm_task_brief.py).
+  // Resolved per render, not as a module constant, so the caption follows a
+  // language switch; the held caption compares by content, not identity.
+  const preparingActivity: PillActivity = { kind: 'working', text: i18nT('components.chatPane.preparing_catch_up') }
   // The composer agrees with the typing bubble: from the person's Send it is
   // busy (Stop while empty), not idle, though the answering turn's first frame
   // can be seconds away. `busy` alone is the store's word, and the store has
@@ -513,10 +520,19 @@ export default function ChatPane({
 
   const pickerModels = useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch, dashCfg })
   const {
-    installedAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, agentDD, selectionCapabilitiesQ, codexPairModels,
+    installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, agentDD, selectionCapabilitiesQ, codexPairModels,
     jevRouteOn, modelDD, anchorAgentBtn, anchorModelBtn, shownModel, effortSupported, defaultEffort, effectiveEffort,
     chipDefault, modelMarker,
   } = pickerModels
+  // The pane header carries the same session colour as the sidebar row, read
+  // from the display roster so a scope switch does not blank it.
+  const headerPalette = useSessionPalette()
+  const headerColor = resolveSessionColor(
+    paneSlot,
+    headerPalette.paletteColors,
+    paneSlot?.agent ? displayAgents.find(a => a.name === paneSlot.agent)?.session_color : null,
+  )
+  const headerColorStyle = headerColor ? headerBandStyle(headerColor, headerPalette.boost, headerPalette.boostFor) : undefined
 
   // One-time hydrate of this slot's message history via React Query + the api
   // client (caching + cross-pane dedup; staleTime Infinity keeps it one-shot —
@@ -708,7 +724,7 @@ export default function ChatPane({
         } as React.CSSProperties}
       >
         {!frameless && (
-        <div data-pane-title-row className={`@container/panehead group/header relative z-50 flex items-center gap-2 pr-3 py-2 border-b border-border bg-card shrink-0 transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${leading?.inset ? 'pl-[49px]' : 'pl-3'}`}>
+        <div data-pane-title-row style={headerColorStyle} className={`@container/panehead group/header relative z-50 flex items-center gap-2 pr-3 py-2 border-b border-border bg-card shrink-0 ${headerColor ? 'chat-header-colored' : ''} transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${leading?.inset ? 'pl-[49px]' : 'pl-3'}`}>
           {/* Leading edge (#10585): in split view this pane may stand in for
               the single-chat title row at the surface's top-left. `inset`
               clears the shell's stationary sidebar toggle: the pane starts at
@@ -725,6 +741,8 @@ export default function ChatPane({
               footer's "Stopping…" caption and the composer instead of staying
               green as if the turn were working normally (#20397). */}
           <span data-testid="chat-pane-status-dot" className={`w-2 h-2 rounded-full shrink-0 ${headerStopUnderWay ? 'bg-danger animate-pulse' : running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
+          {/* A separate dot: a red session colour must never read as the stopping dot. */}
+          {headerColor && <span data-testid="chat-pane-session-dot" className="chat-header-dot" aria-hidden="true" />}
           {/* Same rename / regenerate control as the single-session header
               (#9727): the title row is the `group/header` hover target that
               reveals the Pen and the Sparkles button. */}
@@ -900,7 +918,9 @@ export default function ChatPane({
                     // Before the answering turn runs there is no live reading
                     // to name (the slot's status record is the last turn's),
                     // so the caption says it is working on it.
-                    activity={crewmateLive ? liveActivity : AWAITING_REPLY_ACTIVITY}
+                    // The gateway preparing the warm catch-up says so; the
+                    // finished message then lands where the bubble was.
+                    activity={crewmateLive ? liveActivity : preparing && !awaitingReply ? preparingActivity : AWAITING_REPLY_ACTIVITY}
                     streamingText={messages[messages.length - 1]?.role === 'streaming' && streamState === 'streaming'}
                     streamTick={
                       messages[messages.length - 1]?.role === 'streaming'
@@ -910,6 +930,7 @@ export default function ChatPane({
                   />
                 )
                 : (
+                  <>
                   <ChatFooter
                     statusLabel={paneEnvironmentStart}
                     running={running || !!paneSlot?.running || preparing}
@@ -922,6 +943,12 @@ export default function ChatPane({
                         : 0
                     }
                   />
+                  {preparing && !crewmateLive && (
+                    <div className="px-4 text-[12px] text-muted" data-testid="chat-pane-preparing-catch-up" role="status">
+                      {i18nT('components.chatPane.preparing_catch_up')}
+                    </div>
+                  )}
+                  </>
                 )}
               </>
             ),

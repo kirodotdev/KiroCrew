@@ -901,6 +901,7 @@ def test_a_source_pinned_install_below_the_floor_is_not_told_to_run_kirocrew_upd
 # DERIVED from the helpers it calls, so a newly added gate fails here until the
 # route reads it too — or until it is declared dynamic below, with its reason.
 _GATE_HELPER_MODULES = (
+    "kiro_crew.platform.update_fetch",
     "kiro_crew.platform.update_governance",
     "kiro_crew.platform.update_layout",
     "kiro_crew.platform.wheel_engine",
@@ -1013,6 +1014,8 @@ class TestTheStatusFrameAnswersBeforeAnyCheck:
             raise AssertionError("the status frame must not shell out to git")
 
         monkeypatch.setattr("kiro_crew.platform.update_governance._git_probe", _boom)
+        # update_fetch imports the probe by name, so its binding is patched too.
+        monkeypatch.setattr("kiro_crew.platform.update_fetch._git_probe", _boom)
         monkeypatch.setattr("kiro_crew.platform.update_capability.subprocess.run", _boom)
 
     def test_a_desktop_bundle_reports_notify(self, monkeypatch, _no_derivation_yet):
@@ -1183,6 +1186,7 @@ def test_a_pipx_install_answers_notify_without_git(monkeypatch):
         raise AssertionError("the status frame must not shell out to git")
 
     monkeypatch.setattr("kiro_crew.platform.update_governance._git_probe", _boom)
+    monkeypatch.setattr("kiro_crew.platform.update_fetch._git_probe", _boom)
     monkeypatch.setattr(updates, "_auto_effect", None)
     monkeypatch.setattr(updates, "_shape_effect", None)
     monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")

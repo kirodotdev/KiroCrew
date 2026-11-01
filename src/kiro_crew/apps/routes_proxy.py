@@ -139,7 +139,7 @@ _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
         "x-kirocrew-proxy-v2",
         "x-kirocrew-proxy-nonce",
         "x-kirocrew-principal",
-        # The link-preview frame's capability (apps/link_preview_frame.py): read by
+        # An app frame's capability (apps/app_frame.py): read by
         # the gateway, never handed on to the app's backend.
         "x-kirocrew-capability",
     }

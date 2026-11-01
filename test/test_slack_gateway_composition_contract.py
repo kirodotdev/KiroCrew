@@ -615,6 +615,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
     "cron_failure": (
         (
+            "_failure_alert_due",
+            "function",
+            "(job: 'CronJob', streak: 'int', *, denied: 'bool' = False) -> 'bool'",
+        ),
+        ("_log_held_alert", "function", "(job: 'CronJob') -> 'None'"),
+        (
             "_failure_alert_is_duplicate",
             "method",
             "(self, job: 'CronJob', failure_hash: 'str') -> 'bool'",
@@ -717,6 +723,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(job: 'CronJob', _run_provider: 'object | None') -> 'tuple[bool, bool]'",
         ),
         ("_charge_failure", "function", "(job: 'CronJob', _hand_over_streak: 'bool') -> 'None'"),
+        (
+            "_streak_after_charge",
+            "function",
+            "(job: 'CronJob', charges: 'bool', _hand_over_streak: 'bool') -> 'int'",
+        ),
         (
             "_inject_with_retry",
             "async method",

@@ -248,3 +248,92 @@ async def test_intent_handlers_keep_missing_or_blank_intent_answer(
     assert response.status == 400
     assert body == {"error": "intent is required"}
     method.assert_not_awaited()
+
+
+async def test_run_rejects_bad_folder_before_admission_reserves_capacity() -> None:
+    """An unresolvable ``folder`` must 400 BEFORE fair admission reserves a slot.
+
+    ``api_workflow_run`` admits the run (Shared Crew fair admission) and then
+    starts it. If the folder were resolved AFTER admission, a bad folder would
+    return a 400 while the ADMITTED record kept its reserved capacity — the
+    deadline sweep ignores ADMITTED work and the probe sweep needs an
+    execution_id, so each bad-folder request would permanently leak one of the
+    caller's admission slots. The folder is therefore resolved first; this test
+    pins that order by failing if admission is reached on a bad folder.
+    """
+    from unittest.mock import patch
+
+    import kiro_crew.dashboard.handlers.workflows as wf
+
+    start = AsyncMock(return_value={"run_id": "wf_never"})
+    app = web.Application()
+    app["state"] = SimpleNamespace(workflow_service=SimpleNamespace(start=start))
+    app.router.add_post("/api/workflows/run", api_workflow_run)
+
+    admit = AsyncMock()
+
+    async def _bad_folder(_request, _ref):
+        return "", web.json_response(
+            {"error": "folder not found: Nope", "code": "folder_unresolvable"}, status=400
+        )
+
+    with (
+        patch.object(wf, "_resolve_fallback_folder_id", _bad_folder),
+        patch.object(wf, "_admit_workflow_run", admit),
+    ):
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/api/workflows/run", json={"source": "print('ok')", "folder": "Nope"}
+            )
+            body = await response.json()
+
+    assert response.status == 400
+    assert body["code"] == "folder_unresolvable"
+    admit.assert_not_awaited()  # admission never ran -> no slot leaked
+    start.assert_not_awaited()
+
+
+async def test_run_refuses_mate_home_folder_before_admission() -> None:
+    """A fallback folder inside a member's home is a 403 ``mate_home_locked``
+    returned BEFORE admission reserves a slot — the real resolver runs, so no
+    slot is leaked and the run never starts."""
+    from unittest.mock import patch
+
+    import kiro_crew.dashboard.handlers.workflows as wf
+
+    start = AsyncMock(return_value={"run_id": "wf_never"})
+    folders = [
+        {
+            "id": "home-1",
+            "name": "Home",
+            "parent_id": "",
+            "mate_home": True,
+            "owner_app": "member:store-x",
+        },
+        {"id": "child-1", "name": "Inside", "parent_id": "home-1"},
+    ]
+    app = web.Application()
+    app["state"] = SimpleNamespace(workflow_service=SimpleNamespace(start=start), _folders=folders)
+    app.router.add_post("/api/workflows/run", api_workflow_run)
+
+    admit = AsyncMock()
+
+    async def _pass(_request, _op):
+        return None
+
+    with (
+        patch.object(wf, "_private_memory_refusal", _pass),
+        patch.object(wf, "_admit_workflow_run", admit),
+    ):
+        async with TestClient(TestServer(app)) as client:
+            # Both the home itself (by id) and a folder inside it (by path) refuse.
+            for ref in ("home-1", "Home/Inside"):
+                response = await client.post(
+                    "/api/workflows/run", json={"source": "print('ok')", "folder": ref}
+                )
+                body = await response.json()
+                assert response.status == 403
+                assert body["code"] == "mate_home_locked"
+
+    admit.assert_not_awaited()  # admission never ran -> no slot leaked
+    start.assert_not_awaited()

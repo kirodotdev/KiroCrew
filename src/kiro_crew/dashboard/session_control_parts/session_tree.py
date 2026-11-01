@@ -373,8 +373,9 @@ async def fork_session(
         child._lineage_minted = True
         from kiro_crew.dashboard.approval_posture import trust_carries
 
-        # A card-scoped trust ("Trust this crew member") covers the caller's own
-        # tools only, so a fork does not inherit it (``trust_carries``).
+        # A card-scoped trust ("Trust this crew member") covers the caller and the
+        # subagents it spawns, not a fork, so a fork does not inherit it
+        # (``trust_carries``).
         posture["trust"] = trust_carries(live_caller)
         posture["trust_reads"] = bool(getattr(live_caller, "_trust_reads", False))
         child._trust = posture["trust"]

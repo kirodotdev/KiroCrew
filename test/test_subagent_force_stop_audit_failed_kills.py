@@ -577,7 +577,8 @@ class TestALeakedProcessIsEndedWithoutASecondNotice:
     ) -> None:
         manager, info, key = self._completed_run_on_disk("leak-once", pid=5151)
         await self._fail_the_kill(manager, info, key)
-        assert "kill failed:" in (info.error or "")
+        # A completed run keeps its clean record; the survivor is the flag's.
+        assert not info.error and info._leaked_process is True
 
         mock_sel, notify = await self._restart("leak-once", kill={})
 
@@ -587,7 +588,7 @@ class TestALeakedProcessIsEndedWithoutASecondNotice:
         tombstone = read_tombstone("leak-once")
         assert tombstone is not None
         assert "leaked_process" not in tombstone, "a process already ended is retried forever"
-        assert "kill failed:" in tombstone["detail"], "clearing the flag lost the record"
+        assert tombstone["outcome"] == "completed", "clearing the flag lost the record"
 
     @pytest.mark.asyncio
     async def test_a_kill_that_fails_again_keeps_the_flag_for_the_start_after(

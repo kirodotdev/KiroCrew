@@ -178,6 +178,7 @@ async def _record_conductor_write(
         title=cleaned.get("title"),
         acceptance=cleaned.get("acceptance"),
         worker_session_key=cleaned.get("worker_session_key"),
+        worker_instance_id=cleaned.get("worker_instance_id"),
         decision=probe_decision,
         verdict=cleaned.get("verdict"),
         state="abandoned",
@@ -240,7 +241,7 @@ async def _record_conductor_write(
         raw_worker = cleaned.get("worker_session_key")
         folded_worker = (
             session_ledger.ledger_key(raw_worker)
-            if isinstance(raw_worker, str) and raw_worker
+            if isinstance(raw_worker, str) and raw_worker and not cleaned.get("worker_instance_id")
             else None
         )
         snapshot = await asyncio.to_thread(
@@ -323,6 +324,11 @@ async def _record_conductor_write(
                     if "worker_session_key" in sets
                     else None
                 ),
+                worker_instance_id=(
+                    getattr(item, "worker_instance_id", None)
+                    if "worker_instance_id" in sets
+                    else None
+                ),
                 decision=getattr(item, "decision", None) if "decision" in sets else None,
                 verdict=getattr(item, "verdict", None) if "verdict" in sets else None,
                 state=getattr(item, "state", None) if "state" in sets else None,
@@ -369,7 +375,9 @@ async def _record_conductor_write(
         _count_recorded(action, item, header)
         if action == "close" and item is not None:
             await _count_crew_mode_run(state, key, item)
-        crew_store = _crew_store(key) if action == "bind" else ""
+        # A remote bind names a PEER's slot, which no local crew record can resolve.
+        remote = bool(getattr(item, "worker_instance_id", None))
+        crew_store = _crew_store(key) if action == "bind" and not remote else ""
         worker_slot = getattr(item, "worker_session_key", "") or ""
         if item is not None and crew_store and worker_slot:
             # The crew-side record of the fact the entry above recorded: a dispatch
@@ -482,9 +490,55 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     # A dispatch never opens a ledger: only ``kirocrew-work``'s own
     # ``work_ledger_record`` does, so a session without that server is refused,
     # whatever its backend.
-    return await _record_conductor_write(
+    resp = await _record_conductor_write(
         state, key, unit, action, cleaned, operation="work_ledger_record", dispatch=dispatch
     )
+    if action == "decide" and resp.status == 200:
+        resp = await _forward_remote_decide(state, key, cleaned, resp)
+    return resp
+
+
+async def _forward_remote_decide(
+    state: DashboardState, key: str, cleaned: dict[str, Any], resp: web.Response
+) -> web.Response:
+    """A recorded ``decide`` on a REMOTE item also reaches its peer copy (RFC §2).
+
+    Only with ``work_ledger.remote_dispatch`` on and for an item bound to a crew;
+    every other decide returns *resp* untouched. The PATCH runs after the board
+    lock is released. Its outcome is added to the reply as ``remote_decide``; a
+    failure leaves the local write standing, and the next decide carries the
+    decision again.
+    """
+    import json
+
+    from kiro_crew.dashboard.handlers.work_ledger_read import _remote_dispatch_on
+
+    item_id = str(cleaned.get("item_id") or "")
+    if not await asyncio.to_thread(_remote_dispatch_on):
+        return resp
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    item = await remote_ingest.settled_item(key, item_id)
+    if item is None or not item.worker_instance_id:
+        return resp
+
+    outcome = await remote_ingest.forward_decide(state, key, item_id)
+    _audit(
+        key,
+        "work_ledger_record.remote_decide",
+        "ok" if outcome.get("ok") else "failure",
+        resources=item_id,
+        error=str(outcome.get("code") or ""),
+    )
+    try:
+        payload = json.loads(resp.body) if isinstance(resp.body, bytes | str) else None
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        return resp
+    payload["remote_decide"] = outcome
+    # Reached only for a recorded decide, whose reply is a 200.
+    return web.json_response(payload)
 
 
 #: The body field ``work_dispatch`` marks its step-1 create with.
@@ -799,6 +853,16 @@ def _ensure(key: str, depth: int, parent_item: str | None) -> work_ledger.Conduc
 
 def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
     """Route one validated action to the store call that owns it."""
+    if action == "bind" and cleaned.get("worker_instance_id"):
+        # Reached only from the gateway's own remote create, never from the record
+        # route: its schema has no ``worker_instance_id``. The peer's slot key is
+        # not folded, since no local binding file is written for it.
+        return work_ledger.apply_remote_bind(
+            key,
+            str(cleaned.get("item_id") or ""),
+            worker_session_key=cleaned.get("worker_session_key"),
+            worker_instance_id=cleaned.get("worker_instance_id"),
+        )
     if action == "accept":
         return work_ledger.apply_acceptance_update(
             key,

@@ -8,9 +8,8 @@
  *  shows none. */
 import { useContext, useSyncExternalStore } from 'react'
 import { ReactReduxContext } from 'react-redux'
-import { bylineFor, bylineSelfId, capabilityUsable, messageAuthor, principalName, sharedAccessConfigured } from '../../../api/sharedCrewUi'
-import { effectiveMode, hidesTeamAttribution } from '../../../api/sharedCrewMode'
-import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople, useSharedCrewViewer } from '../../../hooks/sharedCrew/useSharedCrew'
+import { bylineFor, bylineSelfId, messageAuthor, principalName } from '../../../api/sharedCrewUi'
+import { useSharedCrewViewer, useTeamAttribution } from '../../../hooks/sharedCrew/useSharedCrew'
 import type { PublicPrincipal, SessionAttribution } from '../../../api/sharedCrew'
 import type { RootState } from '../../../store'
 import { i18nT } from '../../../i18n/t'
@@ -26,22 +25,6 @@ function useSlotAttribution(slotKey: string | undefined): SessionAttribution | n
     const state = store.getState() as RootState
     return state.dashboard.slots.find(x => x.key === slotKey)?.attribution ?? null
   })
-}
-
-/** Whether this Crew shows team attribution, decided the way the session list
- *  decides it (`useSharedCrewListView`). */
-function useTeamAttribution(): boolean {
-  const { capabilities } = useSharedCrewCapabilities()
-  const attributes = capabilityUsable(capabilities.attribution)
-  const modeQuery = useSharedCrewMode(attributes)
-  const people = useSharedCrewPeople(attributes)
-  // SessionCollabStrip owns these read failures once per chat, never per message.
-  // Cached mode and viewer data keep attribution visible during a failed refresh.
-  const mode = effectiveMode(modeQuery.data, {
-    teamPath: sharedAccessConfigured(capabilities),
-    othersSeen: (people.data?.people ?? []).some(row => !row.is_viewer),
-  })
-  return attributes && modeQuery.data !== undefined && !hidesTeamAttribution(mode)
 }
 
 function SenderLine({ name }: { name: string }) {

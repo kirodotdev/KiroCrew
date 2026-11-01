@@ -34,6 +34,7 @@ import logging
 import re
 import socket
 import sys as _sys
+import threading
 import time  # noqa: F401  (a test clock installs here and the mirror carries it to exfil_oauth)
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
@@ -44,20 +45,24 @@ from .exfil_oauth import (  # noqa: F401
     _OAUTH_QUERY_PARAMS,
     OAuthUrlCredentialDiagnostic,
     _approved_oauth_authorization_endpoint,
+    _log_operator_list_use,
     _oauth_diagnostic,
     _oauth_query_diagnostic,
     _oauth_url_payload_diagnostic,
     _valid_oauth_extension_path,
 )
-from .exfil_url_rules import (
+from .exfil_scan_span import _walk_flagged_span, _walk_span_urls
+from .exfil_url_rules import (  # noqa: F401  # _URL_RE: kiro_crew.security serves it from here
     _EXFIL_PATTERNS,
     _EXFIL_PERCENT_RE,
     _EXFIL_QUERY_MIN_LEN,
     _HARD_CREDENTIAL_RE,
     _MAX_URL_DECODE_PASSES,
     _URL_RE,
+    _URL_SCAN_RE,
     _heavy_percent_encoding,
     _is_safe_presigned,
+    _url_scan_candidates,
 )
 from .redaction import (
     _contains_fixed_credential,
@@ -451,17 +456,32 @@ def scan_exfiltration_urls(text: str) -> list[str]:
     """
     exempt_hosts = _exfil_exempt_hosts()
     warnings: list[str] = []
-    for match in _URL_RE.finditer(text):
-        warning = _exfil_url_warning(
-            match.group(1),
-            match.group(3) or "",
-            exempt_hosts,
-            port=match.group(2) or "",
-            is_https=match.group(0).lower().startswith("https://"),
-        )
-        if warning:
-            warnings.append(warning)
+    for match in _URL_SCAN_RE.finditer(text):
+        flagged = _flagged_url_span(match, exempt_hosts)
+        if flagged:
+            warnings.append(flagged[3])
     return warnings
+
+
+def _flagged_url_span(
+    match: re.Match[str], exempt_hosts: frozenset[str], rules: list[str] | None = None
+) -> tuple[re.Match[str], str, str, str] | None:
+    """The span to replace for one scan match: :func:`exfil_scan_span._walk_flagged_span`."""
+
+    def judge(domain: str, path_and_query: str, port: str, is_https: bool) -> str | None:
+        return _exfil_url_warning(
+            domain, path_and_query, exempt_hosts, port=port, is_https=is_https, _rule_out=rules
+        )
+
+    def slack_alias(domain: str, path: str, query: str, port: str, is_https: bool) -> str | None:
+        return _kirocrew_slack_app_link_alias(domain, path, query, is_https=is_https, port=port)
+
+    return _walk_flagged_span(match, exempt_hosts, judge, slack_alias)
+
+
+def _scan_span_urls(text: str) -> set[str]:
+    """Every URL span :func:`redact_exfiltration_urls` can judge and replace in *text*."""
+    return _walk_span_urls(text, _exfil_exempt_hosts())
 
 
 #: Stable PREFIX of the substitution :func:`redact_exfiltration_urls` writes in
@@ -810,24 +830,16 @@ def redact_exfiltration_urls_with_records(
     seen: set[str] = set()
     blocked: dict[str, str] = {}
     overflow = 0
-    for match in _URL_RE.finditer(text):
-        domain = match.group(1)
-        path_and_query = match.group(3) or ""
-        port = match.group(2) or ""
-        is_https = match.group(0).lower().startswith("https://")
+    for match in _URL_SCAN_RE.finditer(text):
         rules: list[str] = []
-        warning = _exfil_url_warning(
-            domain,
-            path_and_query,
-            exempt_hosts,
-            port=port,
-            is_https=is_https,
-            _rule_out=rules,
-        )
-        if not warning:
+        flagged = _flagged_url_span(match, exempt_hosts, rules)
+        if not flagged:
             continue
+        judged, matched, path_and_query, warning = flagged
+        domain = judged.group(1)
+        port = judged.group(2) or ""
+        is_https = matched.lower().startswith("https://")
         warnings.append(warning)
-        matched = match.group(0)
         placeholder = f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"
         if removed_out is not None:
             removed_out.append((matched, placeholder))
@@ -913,16 +925,54 @@ def redact_exfiltration_urls(
 _SCOPED_EXEMPT_HOSTS: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
     "kiro_crew_scoped_exempt_hosts", default=frozenset()
 )
+#: The workspace those hosts were allowed in, so a use audit names the allowance.
+_SCOPED_EXEMPT_WORKSPACE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "kiro_crew_scoped_exempt_workspace", default=""
+)
+#: The revoke epoch read before those hosts were, so a use audit can tell a
+#: snapshot taken before a revoke from one taken after it. None outside a scope.
+_SCOPED_AUDIT_EPOCH: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "kiro_crew_scoped_audit_epoch", default=None
+)
 
 
 @contextlib.contextmanager
-def scoped_exempt_hosts(hosts: frozenset[str]) -> Iterator[None]:
-    """Relax the length and base64 checks for ``hosts`` inside the block only."""
+def scoped_exempt_hosts(
+    hosts: frozenset[str], workspace: str | None = None, epoch: int | None = None
+) -> Iterator[None]:
+    """Relax the length and base64 checks for ``hosts`` inside the block only.
+
+    ``workspace`` is the stored workspace key the hosts came from; it is only
+    written into the use audit and changes no verdict. ``epoch`` is
+    :func:`allowed_host_audit_epoch` read before ``hosts`` was; a use audit
+    from a scope whose epoch a revoke has since passed is not remembered.
+    """
     token = _SCOPED_EXEMPT_HOSTS.set(frozenset(h.lower() for h in hosts))
+    ws_token = _SCOPED_EXEMPT_WORKSPACE.set(workspace or "")
+    epoch_mark = _SCOPED_AUDIT_EPOCH.set(_allowed_host_audit_epoch if epoch is None else epoch)
     try:
         yield
     finally:
+        _SCOPED_AUDIT_EPOCH.reset(epoch_mark)
+        _SCOPED_EXEMPT_WORKSPACE.reset(ws_token)
         _SCOPED_EXEMPT_HOSTS.reset(token)
+
+
+#: False inside :func:`allowed_host_use_unaudited`. A save-time projection
+#: restores links to judge them, not to show them, so it writes no use audit.
+_AUDIT_ALLOWED_HOST_USE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "kiro_crew_audit_allowed_host_use", default=True
+)
+
+
+@contextlib.contextmanager
+def allowed_host_use_unaudited() -> Iterator[None]:
+    """Restore allowed links in the block without auditing a use nobody saw."""
+    marker = _AUDIT_ALLOWED_HOST_USE.set(False)
+    try:
+        yield
+    finally:
+        _AUDIT_ALLOWED_HOST_USE.reset(marker)
 
 
 #: The rules an allowed host relaxes (see :func:`scoped_exempt_hosts`): a long
@@ -991,13 +1041,87 @@ def restore_allowed_links(
             size += len(url)
             last = m.end()
         out = "".join(parts) + text[last:]
-        starts = {r.start(): r.group(0) for r in _URL_RE.finditer(out)}
-        failed = {d for d, at, url in placed if starts.get(at) != url}
+        starts = {
+            r.start(): {url for url, _ in _url_scan_candidates(r)}
+            for r in _URL_SCAN_RE.finditer(out)
+        }
+        failed = {d for d, at, url in placed if url not in starts.get(at, ())}
         if not failed:
             restored = {i for d in domains for i in by_domain[d]}
+            if _AUDIT_ALLOWED_HOST_USE.get():
+                for domain in domains:
+                    _emit_allowed_host_used_event(domain, records)
             return out, [r for i, r in enumerate(records) if i not in restored]
         domains -= failed
     return text, records
+
+
+# One ``redaction_allowed_host_used`` event per (workspace, host) per process:
+# every history load and live frame re-restores the same links. The memo holds
+# at most ``_ALLOWED_HOST_AUDITED_MAX`` pairs; past it a new pair is audited on
+# every restore but not remembered: more SEL records, bounded memory, owner-added
+# hosts. A revoke forgets the host, so a later re-allow is audited on first use.
+_ALLOWED_HOST_AUDITED: set[tuple[str, str]] = set()
+_ALLOWED_HOST_AUDITED_MAX = 1024
+# One lock for the memo and the epoch: a revoke iterates the set while render
+# workers add to it, and an unguarded add mid-iteration raises.
+_ALLOWED_HOST_AUDIT_LOCK = threading.Lock()
+# Bumped on every revoke. Render memos key on it, so a row restored before the
+# revoke is rendered again after a re-allow and its use is audited again.
+_allowed_host_audit_epoch = 0
+
+
+def allowed_host_audit_epoch() -> int:
+    """How many revokes this process has seen, for render memo keys."""
+    return _allowed_host_audit_epoch
+
+
+def current_scoped_workspace() -> str:
+    """The workspace :func:`scoped_exempt_hosts` has in effect here, for cache keys."""
+    return _SCOPED_EXEMPT_WORKSPACE.get()
+
+
+def current_scoped_audit_epoch() -> int:
+    """The revoke epoch :func:`scoped_exempt_hosts` took with its hosts, for cache keys."""
+    scoped = _SCOPED_AUDIT_EPOCH.get()
+    return _allowed_host_audit_epoch if scoped is None else scoped
+
+
+def forget_allowed_host_use(host: str) -> None:
+    """Drop ``host`` from the use memo in every workspace (called on revoke)."""
+    global _allowed_host_audit_epoch
+    with _ALLOWED_HOST_AUDIT_LOCK:
+        for key in [k for k in _ALLOWED_HOST_AUDITED if k[1] == host]:
+            _ALLOWED_HOST_AUDITED.discard(key)
+        _allowed_host_audit_epoch += 1
+
+
+def _emit_allowed_host_used_event(host: str, records: list[dict]) -> None:
+    """SEL-audit that a reader-allowed host put a blocked link back on screen."""
+    workspace = _SCOPED_EXEMPT_WORKSPACE.get()
+    key = (workspace, host)
+    with _ALLOWED_HOST_AUDIT_LOCK:
+        if key in _ALLOWED_HOST_AUDITED:
+            return
+        # A snapshot taken before a revoke still shows its links, so the use
+        # is audited, but remembering it would hide the first use after a
+        # re-allow that the revoke's forget was meant to expose.
+        scoped = _SCOPED_AUDIT_EPOCH.get()
+        fresh = scoped is None or scoped == _allowed_host_audit_epoch
+        if fresh and len(_ALLOWED_HOST_AUDITED) < _ALLOWED_HOST_AUDITED_MAX:
+            _ALLOWED_HOST_AUDITED.add(key)
+    rules = sorted(
+        {str(r.get("rule")) for r in records if str(r.get("domain", "")).lower() == host}
+    )
+    meta = {
+        "workspace": workspace,
+        "host": host,
+        "rules": rules,
+        "mechanism": "REDACTION_ALLOWED_HOST",
+    }
+    _log_operator_list_use(
+        "redaction_allowed_host_used", "restore_allowed_links", host, lambda: meta
+    )
 
 
 def current_scoped_exempt_hosts() -> frozenset[str]:
@@ -1773,6 +1897,7 @@ def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = N
 # owner names ``display_safety`` reads here.
 # Owners never import this module. New work goes to the owner of its responsibility:
 #   ``exfil_url_rules`` -- the URL and query patterns and the presigned-URL validator
+#   ``exfil_scan_span`` -- which span of a URL match is judged and replaced
 #   ``exfil_oauth`` -- the OAuth endpoint set, its audit events and the shape diagnostics
 #   ``exfil_bash`` -- the data-egress and reverse-shell command gate
 from kiro_crew import _facade_mirror  # noqa: E402
@@ -1780,6 +1905,7 @@ from kiro_crew import _facade_mirror  # noqa: E402
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.security.exfil_url_rules",
+    "kiro_crew.security.exfil_scan_span",
     "kiro_crew.security.exfil_oauth",
     "kiro_crew.security.exfil_bash",
 )  # the loop below imports them in this order
@@ -1829,13 +1955,25 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _validate_operator_oauth_entries,
         record_discovered_oauth_endpoint,
     )
+    from kiro_crew.security.exfil_scan_span import (  # noqa: F401
+        _SlackAlias,
+        _tail_after_exempt_span,
+        _UrlJudge,
+    )
     from kiro_crew.security.exfil_url_rules import (  # noqa: F401
         _CREDENTIAL_RE,
+        _NON_ASCII_RUN_RE,
         _S3_PRESIGNED_PARAMS,
         _S3_PRESIGNED_RE,
         _SIGNATURE_RE,
         _STRUCTURAL_VALIDATORS,
         _STS_TOKEN_RE,
+        _URL_DISPLAY_STOP_RE,
+        _URL_HOST,
+        _URL_PUNCTUATION_TAIL_RE,
+        _URL_SCHEME,
+        _URL_START_RE,
+        _embedded_url_matches,
         _is_encoded_path_text,
         exfil_query_min_len,
     )

@@ -671,7 +671,7 @@ class LinkPreviewConfig:
 
     The host owns detection -- which links, the hover delay, leave and dismissal --
     and never runs app code until a link on one of ``hosts`` is hovered. Then it
-    creates a sandboxed, opaque-origin frame (``apps/link_preview_frame.py``) that
+    creates a sandboxed, opaque-origin frame (``apps/app_frame.py``) that
     imports ``entry`` and calls the module's ``activate(ctx)`` once; the returned
     provider receives ``show`` with the hovered URL or text and the anchor's rect,
     ``leave`` and ``hide``, over ``postMessage``. The card never runs in the

@@ -83,8 +83,8 @@ class WorkflowSessionPort:
     def _ceiling(self, launching: Any) -> int:
         """The posture the launching session can pass on NOW; ``normal`` once it is gone.
 
-        A Crew Mode card trust (``_trust_card_scoped``) covers that session's own
-        tools only and does not carry to what it starts (``trust_carries``), so it
+        A Crew Mode card trust (``_trust_card_scoped``) covers that session and the
+        subagents it spawns, not the sessions it starts (``trust_carries``), so it
         sets no ``trust`` ceiling for a workflow it launched.
         """
         live = self._state.get_slot(launching.key)

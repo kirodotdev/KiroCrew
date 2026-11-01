@@ -68,6 +68,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { ThemeProvider } from '../hooks/useTheme'
 
 const SLOT = 'member-default'
 const OTHER = 'chat-1-main'
@@ -107,9 +108,11 @@ function mount(store: ReturnType<typeof makeStore>, slotKey: string = SLOT) {
   const tree = (key: string) => (
     <Provider store={store}>
       <QueryClientProvider client={qc}>
+        <ThemeProvider>
         <MemoryRouter>
           <ChatPane slotKey={key} agentLocked frameless />
         </MemoryRouter>
+        </ThemeProvider>
       </QueryClientProvider>
     </Provider>
   )

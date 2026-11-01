@@ -4,10 +4,14 @@
  * Mounts the active installed theme's sandboxed overlay/topbar iframes, runs a
  * strict postMessage Message Router (only the `theme:resize|sound|visibility`
  * allowlist is honoured, and only from our own theme iframes), and drives an
- * opt-in audio engine. Because an L2 theme injects a persona into the agent's
- * own system prompt (backend, §6.5) and can play sound, activating one requires
- * an explicit first-activation confirmation; declining reverts the selection so
- * nothing L2 takes effect (including the backend persona).
+ * opt-in audio engine. A pack has up to three parts, each on or off on its own
+ * (utils/themeConsent.ts): sounds, overlays (with the topbar strip) and a
+ * persona the agent adopts in its system prompt (backend, §6.5). A pack that
+ * ships sounds or a persona asks on first activation, one checkbox per part;
+ * "Keep colors only" turns every part off. It asks again about the persona
+ * alone when the persona is wanted without a matching grant (turned on in
+ * Settings, or changed); "Keep persona off" there turns only the persona off.
+ * The palette applies either way.
  *
  * Security posture (§8.2): overlay/topbar iframes are `sandbox="allow-scripts"`
  * WITHOUT `allow-same-origin`, so they run in an opaque origin and cannot read
@@ -22,16 +26,27 @@ import { createPortal } from 'react-dom'
 import { Volume2, VolumeX } from 'lucide-react'
 import {
   useTheme,
-  type ColorTheme,
   type ThemeAudioManifest,
   type ThemeOverlayDecl,
   type ThemeOverlayPosition,
 } from '../hooks/useTheme'
-import { safeSetItem } from '../utils/safeStorage'
-// Consent contract lives in ONE module so the token format can't drift between
-// the write/strict-read side (this layer) and the wire-flag reader
-// (api/client/chat.ts).
-import { grantConsent, getStoredConsent, revokeConsent } from '../utils/themeConsent'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+// The choice and the persona grant live in ONE module so the grant format can't
+// drift between this layer and the wire reader (api/client/chat.ts).
+import {
+  experiencePack,
+  keepColorsOnly,
+  getStoredConsent,
+  readExperience,
+  saveExperienceChoice,
+  settleExperience,
+  subscribeExperience,
+  type ExperienceChoice,
+  type ExperiencePart,
+  type ExperienceState,
+} from '../utils/themeConsent'
+import ErrorNotice from './ErrorNotice'
+import { Btn, Checkbox } from './ui'
 // App-event → theme-audio bridge: real chat/notification events route to the
 // active theme's manifest sounds (message-received / notification triggers).
 import { MC_THEME_SOUND_EVENT, type ThemeSoundDetail } from '../hooks/themeSound'
@@ -172,8 +187,17 @@ function parseIdleSeconds(trigger: string): number | null {
   return m ? Number(m[1]) : null
 }
 
+/** Nothing on and nothing asked: a built-in theme, or a Level-1 render-cache seed. */
+const EXPERIENCE_OFF: ExperienceState = { answered: false, sounds: false, overlays: false, persona: false, ask: [] }
+
+function partLabel(part: ExperiencePart): string {
+  if (part === 'sounds') return i18nT('components.themeExperienceLayer.sounds')
+  if (part === 'overlays') return i18nT('components.themeExperienceLayer.overlays')
+  return i18nT('components.themeExperienceLayer.persona')
+}
+
 export default function ThemeExperienceLayer() {
-  const { theme: mode, colorTheme, customThemeDataMap, setColorTheme } = useTheme()
+  const { theme: mode, colorTheme, customThemeDataMap } = useTheme()
 
   // A remote Crew is a separate SPA in a full-bleed iframe; switching Crews only
   // toggles `display` on the local dashboard's wrapper inside `App`. This layer is
@@ -234,58 +258,47 @@ export default function ThemeExperienceLayer() {
   const hasPersona = !!(isL2 && assets?.hasPersona)
   const personaInfo = assets?.personaInfo
   const anyExperience = isL2 && (overlayDecls.length > 0 || hasTopbarForMode || hasAudio || hasPersona)
-  // Persona/audio are trust-sensitive → require explicit first-activation opt-in.
-  const needsConsent = isL2 && (hasPersona || hasAudio)
 
-  // The value we persist for a granted consent. When the pack ships a persona,
-  // we bind the grant to that persona's content fingerprint (sha256) so a
-  // re-install that swaps persona.md re-prompts instead of silently injecting
-  // new text under the old grant (§8.2). Audio-only packs (or persona packs
-  // from a pre-upgrade backend that hasn't surfaced personaInfo yet) use a
-  // stable sentinel. NOTE: this is intentionally NOT the legacy '1'/'true'
-  // token, so any grant stored by an older build is treated as not-consented
-  // and re-prompted exactly once.
-  const consentToken = personaInfo?.sha256 ?? 'consented-v2'
-
-  // Consent is per-slug in localStorage; mirrored into state so Enable updates
-  // it without a re-read hack. A stored grant is honoured ONLY if it matches the
-  // current consentToken — so a changed persona (new sha256) re-prompts, and
-  // legacy '1' grants (which never equal the token) re-prompt once.
-  //
-  // Level-2 only. The render cache (themeRenderCache.ts) seeds a Level-1
-  // projection of the active pack before the server detail arrives: level is
-  // capped to 1 and personaInfo is stripped, so on that seed consentToken is
-  // the sentinel while the stored grant is the persona sha256. Consent is read,
-  // honoured and revoked only against the server-confirmed Level-2 detail, so a
-  // seed can neither validate a grant (GPT, head 6856a77997) nor revoke one
-  // (Opus, head 1d002b0c7b). When the real detail lands, isL2 flips true and
-  // consentToken becomes the real sha256 in the same commit, and this effect
-  // then compares the stored grant against that hash.
-  const [consented, setConsented] = useState(false)
+  // What the pack ships, and which parts are on (utils/themeConsent.ts). Read,
+  // settled and revoked only against the server-confirmed Level-2 detail: the
+  // render cache (themeRenderCache.ts) seeds a Level-1 projection of the active
+  // pack before that detail arrives, with level capped to 1 and personaInfo
+  // stripped, so a seed can neither validate a grant nor revoke one. When the
+  // real detail lands, isL2 flips true and the persona token becomes the real
+  // sha256 in the same commit.
+  const pack = useMemo(() => experiencePack(isL2 ? assets : undefined), [isL2, assets])
+  const [experience, setExperience] = useState<ExperienceState>(() =>
+    slug && isL2 ? readExperience(slug, pack) : EXPERIENCE_OFF,
+  )
   useEffect(() => {
     if (!slug || !isL2) {
-      // A Level-1 entry (incl. a render-cache seed) has no consent to read or revoke.
-      setConsented(false)
+      setExperience(EXPERIENCE_OFF)
       return
     }
-    // STRICT read: honour a stored grant only if it matches the current
-    // consentToken (persona sha256 / sentinel). Changed persona or legacy '1'
-    // fails and re-prompts.
-    const stored = getStoredConsent(slug)
-    // Revoke-on-mismatch hygiene: if a grant is stored but no longer matches the
-    // current content fingerprint — persona re-installed with a new sha256, or a
-    // legacy '1' token — DELETE it now, before the user answers the re-prompt, so
-    // the stale grant can't be transmitted on the wire (api/client/chat.ts reads
-    // the raw token) in the window before they decide.
-    if (stored !== null && stored !== consentToken) {
-      revokeConsent(slug)
-    }
-    setConsented(stored !== null && stored === consentToken)
-  }, [slug, isL2, consentToken])
-  const featuresOn = anyExperience && (!needsConsent || consented)
+    // Migrates an older build's answer and revokes a grant the choice does not
+    // back (a changed persona, a persona turned off or no longer shipped), so a
+    // stale grant is never sent before the dialog is answered.
+    settleExperience(slug, pack)
+    const reread = () => setExperience(readExperience(slug, pack))
+    reread()
+    // Settings and other tabs change the choice without a theme switch.
+    return subscribeExperience(slug, reread)
+  }, [slug, isL2, pack])
+
+  // Set when Save could not store the persona grant. The saved choice then has
+  // the persona off, which would close the dialog, so it stays open on the
+  // persona alone until a Save stores the grant or the persona is kept off.
+  const [failedSave, setFailedSave] = useState<{ slug: string; ask: ExperiencePart[]; answered: boolean } | null>(null)
+  const failed = failedSave && failedSave.slug === slug ? failedSave : null
+  const dialogAsk = failed ? failed.ask : experience.ask
+  const dialogAnswered = failed ? failed.answered : experience.answered
+  const showConsent = anyExperience && dialogAsk.length > 0
+  // While the dialog is open nothing of the experience runs.
+  const soundsOn = experience.sounds && !showConsent
+  const overlaysOn = experience.overlays && !showConsent
 
   const reduced = useReducedMotion()
-  const [muted, setMuted] = useState(() => localStorage.getItem(MUTE_KEY) === '1')
+  const [muted, setMuted] = useState(() => safeGetItem(MUTE_KEY) === '1')
   // NOT useIsMobile: this layer mounts above the router on every route, embed included,
   // so the hook's `/embed/` always-false carve-out would un-hide a hideOnMobile topbar.
   const isNarrow = useIsNarrowViewport()
@@ -293,27 +306,20 @@ export default function ThemeExperienceLayer() {
   // of `activate`+`once` overlays whose one-shot window has elapsed.
   const [idleOverlayIds, setIdleOverlayIds] = useState<ReadonlySet<string>>(new Set())
   const [activateOnceExpired, setActivateOnceExpired] = useState<ReadonlySet<string>>(new Set())
-  const audioEnabled = featuresOn && hasAudio && !muted && !reduced
+  const audioEnabled = soundsOn && hasAudio && !muted && !reduced
 
   // Which overlays are mounted right now, honouring reduced-motion + trigger.
   const mountedOverlays = useMemo<ThemeOverlayDecl[]>(() => {
-    if (!featuresOn || reduced) return []
+    if (!overlaysOn || reduced) return []
     return overlayDecls.filter((d) => {
       const fam = triggerFamily(d.trigger)
       if (fam === 'activate') return !(d.animation === 'once' && activateOnceExpired.has(d.id))
       if (fam === 'idle') return idleOverlayIds.has(d.id)
       return true // continuous
     })
-  }, [featuresOn, reduced, overlayDecls, activateOnceExpired, idleOverlayIds])
+  }, [overlaysOn, reduced, overlayDecls, activateOnceExpired, idleOverlayIds])
 
-  const showTopbar = hasTopbarForMode && !(topbarHideOnMobile && isNarrow)
-
-  // Track a "safe" theme to revert to when an experience is declined (the last
-  // active selection that wasn't an unconsented L2 pack).
-  const prevSafeRef = useRef<ColorTheme>('emerald')
-  useEffect(() => {
-    if (!(isL2 && needsConsent && !consented)) prevSafeRef.current = colorTheme
-  }, [colorTheme, isL2, needsConsent, consented])
+  const showTopbar = overlaysOn && hasTopbarForMode && !(topbarHideOnMobile && isNarrow)
 
   // ── Audio engine (§3.3/§4.3) ──
   // The wire now carries a trigger NAME (`theme:sound {trigger}`) resolved
@@ -514,9 +520,9 @@ export default function ThemeExperienceLayer() {
   // and the existing notification event (shared with useNotificationSound) maps to
   // the `notification` trigger. playTrigger self-gates on consent/mute/reduced-
   // motion + a matching manifest entry, so an event with no matching trigger (or a
-  // muted theme) is a silent no-op. Only attach while L2 features are on.
+  // muted theme) is a silent no-op. Only attach while Sounds is on.
   useEffect(() => {
-    if (!featuresOn) return
+    if (!soundsOn) return
     const onThemeSound = (e: Event) => {
       const trig = (e as CustomEvent<ThemeSoundDetail>).detail?.trigger
       if (typeof trig === 'string' && trig) playTrigger(trig)
@@ -528,14 +534,14 @@ export default function ThemeExperienceLayer() {
       window.removeEventListener(MC_THEME_SOUND_EVENT, onThemeSound)
       window.removeEventListener(MC_NOTIFICATION_EVENT, onNotification)
     }
-  }, [featuresOn, playTrigger])
+  }, [soundsOn, playTrigger])
 
   // `activate`+`once` overlays: mount on activation, then auto-unmount after the
   // one-shot window. Re-keys on overlayDecls (a theme switch), so a fresh
   // activation re-shows them. `continuous`/`none` activate overlays stay mounted.
   useEffect(() => {
     setActivateOnceExpired(new Set())
-    if (!featuresOn || reduced) return
+    if (!overlaysOn || reduced) return
     const onceIds = overlayDecls
       .filter((d) => triggerFamily(d.trigger) === 'activate' && d.animation === 'once')
       .map((d) => d.id)
@@ -546,7 +552,7 @@ export default function ThemeExperienceLayer() {
       }, ACTIVATE_ONCE_MS),
     )
     return () => timers.forEach((t) => clearTimeout(t))
-  }, [featuresOn, reduced, overlayDecls])
+  }, [overlaysOn, reduced, overlayDecls])
 
   // `idle-<N>s` overlays: mount after N seconds with no input; any input hides
   // them and restarts the countdown. Input is a key press, a pointer press, or a
@@ -559,7 +565,7 @@ export default function ThemeExperienceLayer() {
   // that time and waits out the remainder, and state changes only when an
   // overlay is actually showing.
   useEffect(() => {
-    if (!featuresOn || reduced) {
+    if (!overlaysOn || reduced) {
       setIdleOverlayIds(new Set())
       return
     }
@@ -602,7 +608,7 @@ export default function ThemeExperienceLayer() {
       for (const type of IDLE_INPUT_EVENTS) window.removeEventListener(type, onInput, opts)
       timers.forEach((t) => clearTimeout(t))
     }
-  }, [featuresOn, reduced, overlayDecls])
+  }, [overlaysOn, reduced, overlayDecls])
 
   // ── theme:state downlink (§4.3) ── Dashboard → each live theme iframe.
   // Sandboxed frames are opaque-origin, so '*' is required; payload carries no
@@ -628,14 +634,16 @@ export default function ThemeExperienceLayer() {
     [mode, muted, reduced],
   )
   useEffect(() => {
-    if (!featuresOn) return
+    if (!overlaysOn) return
     const frames = document.querySelectorAll<HTMLIFrameElement>('iframe[data-theme-frame="1"]')
     frames.forEach((f) => postThemeState(f.contentWindow))
-  }, [featuresOn, postThemeState, showTopbar, mountedOverlays])
+  }, [overlaysOn, postThemeState, showTopbar, mountedOverlays])
 
   // ── Message Router (only our theme iframes, only the allowlisted types) ──
+  // Every message comes from an overlay or topbar frame, which exist only while
+  // Overlays is on; theme:sound additionally needs Sounds (audioEnabled).
   useEffect(() => {
-    if (!featuresOn) return
+    if (!overlaysOn) return
     const handler = (e: MessageEvent) => {
       const frames = Array.from(
         document.querySelectorAll<HTMLIFrameElement>('iframe[data-theme-frame="1"]'),
@@ -688,20 +696,45 @@ export default function ThemeExperienceLayer() {
     }
     window.addEventListener('message', handler)
     return () => window.removeEventListener('message', handler)
-  }, [featuresOn, audioEnabled, slug, assets, playTrigger, enqueueAudio])
+  }, [overlaysOn, audioEnabled, slug, assets, playTrigger, enqueueAudio])
 
-  const enableExperience = useCallback(() => {
+  // Dialog answers, one per asked part; a part not yet touched counts as checked.
+  const [picks, setPicks] = useState<ExperienceChoice>({})
+  useEffect(() => {
+    if (showConsent) setPicks({})
+  }, [showConsent])
+
+  // Save: the asked parts take their checkbox, the rest keep the stored choice.
+  // The persona grant is bound to the fingerprint of the text shown in the dialog.
+  const saveChoice = useCallback(() => {
     if (!slug) return
-    // Bind the grant to the current persona fingerprint (or sentinel) so a later
-    // persona change re-prompts. See consentToken above.
-    grantConsent(slug, consentToken)
-    setConsented(true)
-  }, [slug, consentToken])
+    const next: ExperienceChoice = dialogAnswered
+      ? { sounds: experience.sounds, overlays: experience.overlays, persona: experience.persona }
+      : {}
+    for (const part of dialogAsk) next[part] = picks[part] !== false
+    saveExperienceChoice(slug, next, pack.personaToken)
+    // A choice that only this tab keeps still applies, so the dialog closes. A
+    // persona grant that could not be stored leaves the persona off; the dialog
+    // stays open on the persona alone, since chat sends only a stored grant.
+    const grantMissing = next.persona === true && pack.personaToken !== null && getStoredConsent(slug) !== pack.personaToken
+    setFailedSave(grantMissing ? { slug, ask: ['persona'], answered: true } : null)
+  }, [slug, experience, dialogAsk, dialogAnswered, picks, pack.personaToken])
 
-  const declineExperience = useCallback(() => {
-    const back = prevSafeRef.current && prevSafeRef.current !== colorTheme ? prevSafeRef.current : 'emerald'
-    setColorTheme(back)
-  }, [colorTheme, setColorTheme])
+  // Decline ("Keep colors only" on a first answer, "Keep persona off" when only
+  // the persona is asked about; Escape does the same): the palette stays
+  // (useTheme applies it whatever this layer decides) and any grant is revoked.
+  // On a first answer every part is off; on the persona-only ask the persona is
+  // off and the stored sounds and overlays stay as they are.
+  const keepColors = useCallback(() => {
+    if (!slug) return
+    setFailedSave(null)
+    // A failed store needs no notice: the off choice is kept for this tab and the dialog closes.
+    if (dialogAnswered) {
+      saveExperienceChoice(slug, { sounds: experience.sounds, overlays: experience.overlays, persona: false }, null)
+    } else {
+      keepColorsOnly(slug)
+    }
+  }, [slug, dialogAnswered, experience.sounds, experience.overlays])
 
   const toggleMute = useCallback(() => {
     setMuted((m) => {
@@ -711,19 +744,18 @@ export default function ThemeExperienceLayer() {
     })
   }, [])
 
-  const enableBtnRef = useRef<HTMLButtonElement>(null)
-  const showConsent = anyExperience && needsConsent && !consented
-  // Consent-modal a11y: focus the primary action on open and let Escape decline
-  // (mirrors "Keep colors only"). Backdrop already blocks pointer interaction.
+  const saveBtnRef = useRef<HTMLButtonElement>(null)
+  // Consent-modal a11y: focus the primary action on open and let Escape press
+  // the decline button. Backdrop already blocks pointer interaction.
   useEffect(() => {
     if (!showConsent) return
-    enableBtnRef.current?.focus()
+    saveBtnRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') declineExperience()
+      if (e.key === 'Escape') keepColors()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [showConsent, declineExperience])
+  }, [showConsent, keepColors])
 
   // A remote Crew owns the viewport: unmount every overlay/topbar iframe, the mute
   // button and the consent modal. `display: none` on App's local-dashboard wrapper
@@ -731,8 +763,7 @@ export default function ThemeExperienceLayer() {
   if (activeInstanceId !== null) return null
   if (!anyExperience || !slug) return null
 
-  // First-activation consent gate for persona/audio packs.
-  if (needsConsent && !consented) {
+  if (showConsent) {
     return (
       <div
         className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-4"
@@ -744,46 +775,51 @@ export default function ThemeExperienceLayer() {
           <h2 id="theme-consent-title" className="text-base font-semibold text-text-strong">
             {i18nT('components.themeExperienceLayer.enable_named_experience', { name: active?.name })}
           </h2>
-          <p className="mt-2 text-sm text-muted">
-            {i18nT('components.themeExperienceLayer.this_is_an_experience_theme_enabling_it_will')}
-          </p>
-          <ul className="mt-2 space-y-1 text-sm text-muted">
-            {hasPersona && (
-              <li>{i18nT('components.themeExperienceLayer.adopt_a_themed_persona_in_the_assistant_security')}</li>
-            )}
-            {hasAudio && <li>{i18nT('components.themeExperienceLayer.play_themed_sounds_respects_your_mute_toggle_and')}</li>}
-            {overlayDecls.length > 0 && <li>{i18nT('components.themeExperienceLayer.show_animated_visual_overlays')}</li>}
-          </ul>
-          {hasPersona && personaInfo?.text && (
-            <div className="mt-3">
-              <p className="text-xs font-medium text-muted">
-                {i18nT('components.themeExperienceLayer.persona_that_will_be_added_to_the_assistant_s_sy')}
-              </p>
-              <pre
-                className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-bg-elevated p-2 text-xs text-text"
-                aria-label={i18nT('components.themeExperienceLayer.persona_text')}
-                data-testid="consent-persona-text"
-              >
-                {personaInfo.text}
-              </pre>
-            </div>
-          )}
+          <div className="mt-3 space-y-2">
+            {dialogAsk.map((part) => (
+              <div key={part}>
+                <label className="flex items-center gap-2 text-sm text-text cursor-pointer">
+                  <Checkbox
+                    checked={picks[part] !== false}
+                    onChange={(e) => {
+                      const on = e.currentTarget.checked
+                      setPicks((p) => ({ ...p, [part]: on }))
+                    }}
+                  />
+                  {partLabel(part)}
+                </label>
+                {part === 'persona' && personaInfo?.text && (
+                  <div className="mt-1 pl-6">
+                    <p className="text-[12px] font-medium text-muted">
+                      {i18nT('components.themeExperienceLayer.persona_that_will_be_added_to_the_assistant_s_sy')}
+                    </p>
+                    <pre
+                      className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-bg-elevated p-2 text-[12px] text-text"
+                      aria-label={i18nT('components.themeExperienceLayer.persona_text')}
+                      data-testid="consent-persona-text"
+                    >
+                      {personaInfo.text}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          {/* No hand-off: the checkbox picks in this dialog are unsaved until
+              Save succeeds, and a navigation would discard them. */}
+          <ErrorNotice
+            className="mt-3"
+            message={failed ? i18nT('components.themeExperienceLayer.save_failed_storage') : null}
+          />
           <div className="mt-5 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={declineExperience}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text hover:bg-bg-hover"
-            >
-              {i18nT('components.themeExperienceLayer.keep_colors_only')}
-            </button>
-            <button
-              type="button"
-              ref={enableBtnRef}
-              onClick={enableExperience}
-              className="rounded-md bg-accent px-3 py-1.5 text-sm text-card hover:bg-accent-hover"
-            >
-              {i18nT('components.themeExperienceLayer.enable_experience')}
-            </button>
+            <Btn type="button" onClick={keepColors}>
+              {dialogAnswered
+                ? i18nT('components.themeExperienceLayer.keep_persona_off')
+                : i18nT('components.themeExperienceLayer.keep_colors_only')}
+            </Btn>
+            <Btn type="button" primary ref={saveBtnRef} onClick={saveChoice}>
+              {i18nT('components.themeExperienceLayer.save')}
+            </Btn>
           </div>
         </div>
       </div>
@@ -818,6 +854,9 @@ export default function ThemeExperienceLayer() {
       }}
     />
   )
+  // With Sounds and Overlays both off nothing mounts, the mute button included.
+  if (!overlaysOn && !soundsOn) return null
+
   const overlays = <>{mountedOverlays.filter((d) => d.layer !== 'behind').map(overlayFrame)}</>
   const behindOverlays = <>{mountedOverlays.filter((d) => d.layer === 'behind').map(overlayFrame)}</>
 
@@ -870,8 +909,8 @@ export default function ThemeExperienceLayer() {
       {/* Without a shell (popout, embed) nothing sits on top to cover them, so they are skipped. */}
       {behindSlot && createPortal(behindOverlays, behindSlot)}
 
-      {/* Mute toggle — only when the active theme actually ships audio. */}
-      {hasAudio && (
+      {/* Mute toggle — only while Sounds is on for a pack that ships audio. */}
+      {soundsOn && hasAudio && (
         <button
           type="button"
           onClick={toggleMute}

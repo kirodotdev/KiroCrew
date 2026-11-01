@@ -93,7 +93,7 @@ describe('Ultra Mode Crew tab', () => {
     await toList()
     fireEvent.click(await screen.findByRole('button', { name: /Worker A/ }))
     expect(screen.queryByTestId('ultra-member-drawer')).toBeNull()
-    expect(panel.openPanelView).toHaveBeenCalledWith('w-work', 'workers')
+    expect(panel.openPanelView).toHaveBeenCalledWith('w-work', 'workers', { hold: true })
     expect(store.getState().chat.activeSlot).toBe('w-work')
   })
 
@@ -171,7 +171,7 @@ describe('Ultra Mode Crew tab', () => {
     fireEvent.click(back)
     expect(store.getState().chat.activeSlot).toBe('root-1')
     expect(store.getState().chat.activityOpen).toBe(true)
-    expect(panel.openPanelView).toHaveBeenCalledWith('root-1', 'workers')
+    expect(panel.openPanelView).toHaveBeenCalledWith('root-1', 'workers', { hold: true })
   })
 
   it('viewing the root itself: no Back row', async () => {

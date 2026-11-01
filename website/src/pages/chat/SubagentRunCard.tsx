@@ -319,7 +319,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
           <span className="truncate text-[13px] leading-5 font-medium text-text-strong">{label}</span>
           {queued > 0 && settled === 0 && (
             <span
-              className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted"
+              className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-bg-hover border border-border text-muted"
               data-testid="subagent-card-queued"
               title={waitText ?? i18nT('pages.chat.subagentRunCard.waiting_to_start_queued_behind_the_concurrency_l')}
             >
@@ -346,7 +346,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
             </span>
           )}
           {counts.stopped > 0 && (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted">
+            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-bg-hover border border-border text-muted">
               <Square size={10} aria-hidden /> {counts.stopped}
             </span>
           )}

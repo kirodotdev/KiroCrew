@@ -18,6 +18,7 @@ import { DEFAULT_PET_NAME } from '../../builtinPacks'
 import { i18nT } from '../../../../i18n/t'
 import { watchKindLabel, watchPriorityLabel, watchStatusLabel } from '../../i18nKeys'
 import { fmtDateFields } from '../../../../i18n/format'
+import { useDialogFocusTrap } from '../../../../hooks/useDialogFocusTrap'
 
 // ── Editable fields type (exported for testing) ────────────────────────────
 
@@ -863,16 +864,7 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
 
       {/* Clear-completed confirmation — innermost layer, so Escape lands here. */}
       {(clearState !== 'idle') && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={i18nT('apps.mochi.watchPanel.clear_confirm_title')}
-          style={{
-            position: 'fixed', inset: 0, zIndex: 1000,
-            background: 'rgba(0,0,0,0.5)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-        >
+        <ClearConfirmDialog>
           <div style={{
             background: 'var(--bg-elevated)', borderRadius: 10, padding: '16px 20px',
             width: 240, border: '1px solid var(--border)', boxShadow: '0 8px 24px var(--shadow)',
@@ -928,8 +920,37 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
               )}
             </div>
           </div>
-        </div>
+        </ClearConfirmDialog>
       )}
+    </div>
+  )
+}
+
+// Escape stays on the panel's own window listener, which unwinds this confirm
+// before the panel behind it, so the trap is wired with Escape off.
+const NO_ESCAPE = () => {}
+
+/**
+ * The clear-completed confirm's modal frame. It mounts with the confirm, so
+ * focus moves in when it opens, Tab stays inside, and focus goes back to the
+ * "Clear all completed" button when it closes.
+ */
+function ClearConfirmDialog({ children }: { children: React.ReactNode }) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
+  return (
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={i18nT('apps.mochi.watchPanel.clear_confirm_title')}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      {children}
     </div>
   )
 }

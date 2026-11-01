@@ -16,7 +16,9 @@ import LabelPicker from '../../components/LabelPicker'
 import CrewProtocolSettings from './CrewProtocolSettings'
 import { asArray } from '../../lib/format'
 
+import { Trans } from 'react-i18next'
 import { i18nT } from '../../../../i18n/t'
+import { fmtNumber } from '../../../../i18n/format'
 import ErrorNotice from '../../../../components/ErrorNotice'
 import { findReport } from '../../../../utils/errorReport'
 // Heuristic name patterns used only to *suggest* likely labels (one-click add);
@@ -512,7 +514,11 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <StatLine>
           {issuesQuery.isLoading
             ? i18nT('apps.issueRadar.views.settings.repoSettings.counting_open_issues')
-            : <><strong className="text-text">{triageCount}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.of')} {openIssues.length} {i18nT('apps.issueRadar.views.settings.repoSettings.open_issues_currently_need_triage')}</>}
+            : <Trans
+                i18nKey="apps.issueRadar.views.settings.repoSettings.triage_needed_of_open"
+                values={{ n: fmtNumber(openIssues.length), triage: fmtNumber(triageCount) }}
+                components={{ strong: <strong className="text-text" /> }}
+              />}
         </StatLine>
       </Card>
 
@@ -534,7 +540,12 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <StatLine>
           {issuesQuery.isLoading
             ? i18nT('apps.issueRadar.views.settings.repoSettings.counting_open_issues')
-            : <><strong className="text-text">{gfiCount}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.open_issues_are_marked_first_issue_friendly')}</>}
+            : <Trans
+                i18nKey="apps.issueRadar.views.settings.repoSettings.first_issue_friendly_count"
+                count={gfiCount}
+                values={{ n: fmtNumber(gfiCount) }}
+                components={{ strong: <strong className="text-text" /> }}
+              />}
         </StatLine>
       </Card>
 

@@ -6,9 +6,17 @@ import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
 import { setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
-import { switchSlot, selectActiveSlotProject, stageToMainComposer } from '../store/chatSlice'
+import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
-import { applyNavIntentInMain, chatDeepLinkSlot } from '../utils/navIntent'
+import { setNavIntentHandler as setAppNavIntentHandler } from '../utils/appPopout'
+import { appPopoutRouteOf } from '../utils/appPopoutRoute'
+import type { NavIntent } from '../utils/popoutController'
+import {
+  applyNavIntentInMain,
+  chatDeepLinkSlot,
+  takeDeferredPendingInput,
+  type DeferredPendingInput,
+} from '../utils/navIntent'
 import { installSoftNavigate } from '../utils/errorReport'
 import { fetchNotifications, armBootNotificationsFallback } from '../store/notificationsSlice'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -133,6 +141,11 @@ export function useAppShell() {
   // The load-time popout URL: App's popout wildcard route re-pins any stray
   // in-window navigation back to this frame instead of escaping to '/'.
   const initialPopoutPath = useRef(appPathname() + window.location.search).current
+  // The app an APP pop-out window is pinned to (`/popout/app/<route>/…` at
+  // load), null in every other window. Sticky for the same reason as
+  // `isPopout`: the router inside that window is mounted at `/popout/app`, so
+  // the live route reads as the app's own path and cannot re-derive this.
+  const appPopoutRoute = useRef(appPopoutRouteOf(appPathname())).current
   const dispatch = useAppDispatch()
   // Register the operator's link rules (dashboard.link_patterns) into the
   // autolink registry from the shell, so every surface linkifies — not only
@@ -257,6 +270,32 @@ export function useAppShell() {
   const appStore = useAppStore()
   const pathnameRef = useRef(location.pathname)
   pathnameRef.current = location.pathname
+  const locationKeyRef = useRef(location.key)
+  locationKeyRef.current = location.key
+  const deferredPendingInputRef = useRef<DeferredPendingInput | null>(null)
+
+  // Publish a forwarded prompt only on its own commit: the destination itself,
+  // or ChatPage's `/chat[/<slug>]?sid=` rewrite for the named active session.
+  // Any other commit inside the pending transition, including another intent,
+  // a sidebar click, or a session switch, drops it rather than seed a draft the
+  // intent never named. ChatPage renders under App, so its intake runs first in
+  // the same commit and the dispatch re-runs it against the committed route and
+  // query.
+  useEffect(() => {
+    const staged = deferredPendingInputRef.current
+    if (!staged || location.key === staged.fromKey) return
+    deferredPendingInputRef.current = null
+    const text = takeDeferredPendingInput(
+      staged,
+      {
+        key: location.key,
+        href: `${location.pathname}${location.search}`,
+        activeSlot: appStore.getState().chat.activeSlot,
+      },
+      Date.now(),
+    )
+    if (text !== null) dispatch(setPendingInput(text))
+  }, [location.key, location.pathname, location.search, dispatch, appStore])
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
   // navigation intents forwarded from popout windows (activity-timeline
@@ -270,9 +309,14 @@ export function useAppShell() {
   // `mainComposerAppend`, whose consumers (ChatPage, or the split-view grid
   // pane for that slot) merge it into the live draft. Read through the store at
   // call time so the handler is not re-registered on every slot switch.
+  //
+  // One applier, two channels: artifact pop-outs and app pop-outs coordinate on
+  // separate BroadcastChannels (so neither feature's liveness map sees the
+  // other's windows), but a forwarded navigation means the same thing from
+  // either, so both register the same handler here.
   useEffect(() => {
     if (isPopout || isEmbed) return
-    return setArtifactNavIntentHandler((intent) =>
+    const perform = (intent: NavIntent) =>
       applyNavIntentInMain(intent, {
         navigate,
         switchSlot: (slotKey) => { dispatch(switchSlot({ key: slotKey, announceOnMissing: true })) },
@@ -284,8 +328,20 @@ export function useAppShell() {
           dispatch(stageToMainComposer({ slot: slotKey, text }))
           return true
         },
-      }),
-    )
+        setPendingInput: (text, to, slotKey) => {
+          // Last writer wins for one destination and session.
+          deferredPendingInputRef.current = {
+            text,
+            fromKey: locationKeyRef.current,
+            to,
+            slotKey,
+            ts: Date.now(),
+          }
+        },
+      })
+    const unsetArtifact = setArtifactNavIntentHandler(perform)
+    const unsetApp = setAppNavIntentHandler(perform)
+    return () => { unsetArtifact(); unsetApp() }
   }, [isPopout, isEmbed, navigate, dispatch, mayLeaveForNavigation, appStore])
 
   // Publish the router navigator and the current page's leave answer for the
@@ -295,15 +351,16 @@ export function useAppShell() {
   // load when nothing is installed. The guard runs before prompt staging, so a
   // veto leaves both the page and the hand-off queue untouched.
   //
-  // Popout and embed windows never register, for the same reason the nav-intent
-  // handler above skips them: routing THAT window to /chat would replace the
-  // surface the user deliberately popped out (an artifact editor renders error
-  // banners of its own). They fall through to the hard-nav path instead.
+  // Embed windows never register. Chat and artifact pop-outs do not either:
+  // routing those windows to /chat would replace the surface the user chose to
+  // keep open. An app pop-out does register because its frame forwards a /chat
+  // navigation to the main window and steps back, so the soft path preserves
+  // the popped-out app while carrying the staged prompt across windows.
   useEffect(() => {
-    if (isPopout || isEmbed) return
+    if ((isPopout && !appPopoutRoute) || isEmbed) return
     installSoftNavigate(navigate, mayLeaveForNavigation)
     return () => installSoftNavigate(null)
-  }, [isPopout, isEmbed, navigate, mayLeaveForNavigation])
+  }, [isPopout, appPopoutRoute, isEmbed, navigate, mayLeaveForNavigation])
 
   const {
     colorTheme,
@@ -896,7 +953,7 @@ export function useAppShell() {
   const mobileNavOpen = mobileNavPhase === 'open'
 
   return {
-    isEmbed, isPopout, initialPopoutPath, dispatch, connected, updateAvailable, authRequired, terminalEnabled,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, updateAvailable, authRequired, terminalEnabled,
     gatewayStatusMsg, focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,

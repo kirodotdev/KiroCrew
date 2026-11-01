@@ -128,7 +128,7 @@ const ADVANCED_FOLD = {
 const ADVANCED_CUT = { duration: 0 } as const
 
 /**
- * The Advanced settings toggle: a quiet centred text button under Create,
+ * The Advanced settings toggle: a quiet centred text button under the name,
  * the chevron before the label. The fields it unfolds open directly below
  * it, so the chevron turns from pointing down to pointing up while they are
  * open. Under reduced motion the chevron turns without animating.
@@ -224,8 +224,8 @@ function LookTile({ seed, avatar, onEdit, label, disabled }: {
 }
 
 /**
- * The form's DOM id. Every control, both Create buttons included, lives
- * inside the form, so each Create is a submit button by nesting, and a form
+ * The form's DOM id. Every control, the one Create included, lives
+ * inside the form, so Create is a submit button by nesting, and a form
  * with a submit button is what gives Enter in the Name field its implicit
  * submission (with two text fields and no submit button, Enter does nothing).
  */
@@ -768,7 +768,7 @@ export default function NewCrewmateDialog({
     >
       {/* One lock for the whole form while the POST is in flight: a
           disabled fieldset disables every control under it -- the look
-          tile, both Create buttons and the editor's own fields, which take
+          tile, Create and the editor's own fields, which take
           no `disabled` prop of their own -- so an edit cannot land after
           the body was sent and vanish when success closes the dialog. */}
       <fieldset
@@ -777,8 +777,8 @@ export default function NewCrewmateDialog({
         className="contents min-w-0 m-0 p-0 border-0"
         data-testid="crewmate-create-fieldset"
       >
-      {/* One column, top to bottom: the look, the name, Create,
-          the secondary line, then the Advanced fields. Spacing is each
+      {/* One column, top to bottom: the look, the name, the secondary
+          line, then the Advanced fields; Create follows in the footer. Spacing is each
           element's own margin, so the space above the unfolding region is
           its own padding and moves with it. */}
       <div className="flex flex-col">
@@ -825,8 +825,8 @@ export default function NewCrewmateDialog({
         {/* No hand-off on either notice: both sit over this unsaved form --
             the name, job and every Advanced pick live only in local state --
             and the hand-off navigates to the chat, unmounting the dialog
-            and the draft with it. Both sit right above Create, the press
-            they answer. */}
+            and the draft with it. Both sit under the name, above the
+            Advanced settings toggle. */}
         {/* A load that did not happen is a failure (errors-use-error-notice):
             the shared notice, inline, naming WHICH list fell back so the
             user knows what they are not being offered. The create still
@@ -864,15 +864,9 @@ export default function NewCrewmateDialog({
             />
           </div>
         )}
-        {/* The primary action, right after the name: full width and 44px
-            tall on a phone. It is the form's first submit button, so Enter
-            in the Name field submits through it. */}
-        <Btn primary type="submit" disabled={busy || wsModalOpen} className="mt-5 min-h-11 w-full justify-center sm:min-h-9" data-testid="crewmate-create-submit" data-guide-anchor={guided ? GUIDE_ANCHORS.crewmateCreate : undefined}>
-          {busy ? t('pages.membersPage.create_submitting') : t('pages.membersPage.create_submit')}
-        </Btn>
-        {/* The secondary line, centred under Create: the Advanced settings
+        {/* The secondary line, centred under the name: the Advanced settings
             toggle alone. The way out is the modal's header X. */}
-        <div className="mt-2 flex items-center justify-center" data-testid="crewmate-create-secondary">
+        <div className="mt-3 flex items-center justify-center" data-testid="crewmate-create-secondary">
           <AdvancedSettingsToggle
             open={advanced}
             onToggle={() => setAdvanced((v) => !v)}
@@ -883,11 +877,7 @@ export default function NewCrewmateDialog({
             instead of appearing whole, so the reader sees where they came
             from (sequenced as `ADVANCED_OPEN` / `ADVANCED_FOLD` describe).
             Cut, not animated, under reduced motion. Folding unmounts the
-            fields, never their values: those live in this dialog's state.
-            The region ends with a second Create, so a user who scrolled
-            down through the fields does not scroll back up to finish. It
-            is a plain submit button of the same form: each press is one
-            submit event through the one `onSubmit`, with the same lock. */}
+            fields, never their values: those live in this dialog's state. */}
         <AnimatePresence initial={false}>
           {advanced && (
             <motion.div
@@ -898,7 +888,7 @@ export default function NewCrewmateDialog({
               exit={reduceMotion ? { ...ADVANCED_FOLD, transition: ADVANCED_CUT } : ADVANCED_FOLD}
               data-testid="crewmate-create-advanced"
             >
-              <div className="flex flex-col gap-5 pt-5">
+              <div className="flex flex-col gap-4 pt-4">
                 <Field
                   label={`${t('pages.membersPage.create_job')} · ${t('pages.membersPage.create_optional')}`}
                   hint={t('pages.membersPage.create_job_hint')}
@@ -928,13 +918,23 @@ export default function NewCrewmateDialog({
                 />
                 <TriggersField value={triggers} onChange={setTriggers} subject="member" />
                 <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" />
-                <Btn primary type="submit" disabled={busy || wsModalOpen} className="min-h-11 w-full justify-center sm:min-h-9" data-testid="crewmate-create-submit-end">
-                  {busy ? t('pages.membersPage.create_submitting') : t('pages.membersPage.create_submit')}
-                </Btn>
               </div>
             </motion.div>
           )}
         </AnimatePresence>
+      </div>
+      {/* The one primary action, in a footer that sticks to the bottom of
+          the modal's scrolling body: however far the Advanced fields run,
+          Create stays in view without a second copy of it. The band reaches
+          over the body's padding (`-mx-5 -mb-4`, and `-bottom-4` because a
+          sticky box stops at the scroller's padding edge) so the fields
+          scroll under it, never past it. It stays inside the form, so it is the form's
+          submit button (Enter in the Name field submits through it) and the
+          fieldset's lock covers it. 44px tall on a phone. */}
+      <div className="sticky -bottom-4 z-10 -mx-5 -mb-4 mt-4 border-t border-border bg-card px-5 py-3" data-testid="crewmate-create-footer">
+        <Btn primary type="submit" disabled={busy || wsModalOpen} className="min-h-11 w-full justify-center sm:min-h-9" data-testid="crewmate-create-submit" data-guide-anchor={guided ? GUIDE_ANCHORS.crewmateCreate : undefined}>
+          {busy ? t('pages.membersPage.create_submitting') : t('pages.membersPage.create_submit')}
+        </Btn>
       </div>
       </fieldset>
     </form>

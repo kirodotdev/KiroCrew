@@ -340,7 +340,10 @@
         "header_addressing_review": "ADDR REV",
         "header_awaiting_merge": "AWAIT MRG",
         "header_resolved": "RESOLVED",
-        "page_label": "Auto Triage Pipeline"
+        "page_label": "Auto Triage Pipeline",
+        "load_failed": "Could not load the pipeline",
+        "load_failed_unknown": "The read failed without a reason.",
+        "retry": "Retry"
       },
       "global": {
         "unattributed_label": "EVENTS WITHOUT A REPOSITORY",
@@ -1637,9 +1640,6 @@
             "no_labels": "no labels",
             "notifications": "Notifications",
             "notify_me_when_a": "Notify me when a",
-            "of": "of",
-            "open_issues_are_marked_first_issue_friendly": "open issues are marked first-issue-friendly",
-            "open_issues_currently_need_triage": "open issues currently need triage",
             "open_on": "Open on",
             "open_tagging": "Open Tagging",
             "organises_its_issues_and_are_never_written_back": "organises its issues and are never written back to",
@@ -3648,7 +3648,10 @@
           "up": "Up",
           "use_recent_project": "Use recent project {{path}}",
           "use_this_folder": "Use this folder",
-          "use_this_folder_path": "Use this folder: {{path}}"
+          "use_this_folder_path": "Use this folder: {{path}}",
+          "load_failed": "Could not list this folder",
+          "load_failed_unknown": "The read failed without a reason.",
+          "retry": "Retry"
         },
         "settingsModal": {
           "cancel": "Cancel",
@@ -3809,7 +3812,9 @@
         "invalid_fix_before_rerun": "Invalid — fix before rerun:",
         "no_source_captured_for_this_run": "No source captured for this run.",
         "started_run": "Started run",
-        "view_source": "View source"
+        "view_source": "View source",
+        "lines_one": "{{count}} line",
+        "lines_other": "{{count}} lines"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Author, run, and watch dynamic workflows",
@@ -3823,14 +3828,19 @@
         "validate": "Validate",
         "workflow_script_python": "Workflow script (Python)",
         "workflow_source": "workflow source",
-        "workflows": "Workflows"
+        "workflows": "Workflows",
+        "view_author": "Author",
+        "view_runs": "Runs"
       },
       "workflowsRuns": {
         "budget": "budget",
         "could_not_load_runs": "Could not load runs:",
-        "events": "events",
         "no_background_runs_yet_runs_started_in_the_backg": "No background runs yet. Runs started in the background appear here.",
-        "select_a_run_to_see_its_phases_agents_and_result": "Select a run to see its phases, agents, and result."
+        "select_a_run_to_see_its_phases_agents_and_result": "Select a run to see its phases, agents, and result.",
+        "agents_one": "{{count}} agent",
+        "agents_other": "{{count}} agents",
+        "events_one": "{{count}} event",
+        "events_other": "{{count}} events"
       }
     },
     "awsControl": {
@@ -4258,7 +4268,8 @@
       "found_setup_but_could_not_read_it": "{{productName}} found {{sources}} but could not read the files, so nothing was imported.",
       "some_setup_could_not_be_read": "{{productName}} could not read {{sources}} — not listed below.",
       "files_could_not_be_read": "Files could not be read",
-      "your_existing_kirocrew_setup_will_not_be_affecte": "Your existing {{productName}} setup will not be affected."
+      "your_existing_kirocrew_setup_will_not_be_affecte": "Your existing {{productName}} setup will not be affected.",
+      "import_setup_stage": "Import setup · {{stage}} of {{stages}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Saved, but this copy of {{productName}} could not update the agent config, so new chats keep the old setup. Open the Logs page to see why."
@@ -4295,6 +4306,14 @@
       "retry": "Retry",
       "this_app_is_disabled": "This app is disabled",
       "this_app_provides_agents_and_skills_but_no_visua": "This app provides agents and skills but no visual interface.\n            Use its agents from chat."
+    },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "Pop out app to its own window",
+      "this_app_is_open_in_its_own_window_focus_it": "This app is open in its own window — focus it",
+      "focus_popped_out_window": "Focus popped-out window",
+      "return": "Return",
+      "return_to_main_window": "Return to main window",
+      "return_this_app_to_the_main_window": "Return this app to the main window"
     },
     "approvalCard": {
       "actions_group": "Approval actions",
@@ -4499,7 +4518,8 @@
       "split_down": "Split down",
       "split_right": "Split right",
       "split_right_d": "Split right (⌘D)",
-      "type_to_filter": "Type to filter…"
+      "type_to_filter": "Type to filter…",
+      "preparing_catch_up": "Preparing your catch-up…"
     },
     "cliPanel": {
       "copy_selection": "Copy selection"
@@ -4661,7 +4681,7 @@
       "next": "Next",
       "no_execution_history_yet": "No execution history yet",
       "ok": "OK",
-      "page": "Page",
+      "page_n": "Page {{page}}",
       "prev": "Prev",
       "status": "Status",
       "summary": "Summary",
@@ -5104,6 +5124,7 @@
         "keep_receiving_these": ". Keep receiving these?",
         "mark_all_as_read": "Mark all as read",
         "mute_channel": "Mute channel",
+        "mute_failed": "Couldn't mute this channel. Try again.",
         "muted_2": "muted",
         "no_notifications": "No notifications",
         "press_again_to_clear": "Press again to clear",
@@ -5370,10 +5391,9 @@
       "previous_match": "Previous match"
     },
     "searchResultsList": {
-      "matches_around_the_current_result_narrow_your_se": "matches around the current result — narrow your search to see all.",
-      "of": "of",
       "search_results": "Search results",
-      "showing": "Showing"
+      "showing_matches_one": "Showing {{shown}} of {{n}} match around the current result — narrow your search to see all.",
+      "showing_matches_other": "Showing {{shown}} of {{n}} matches around the current result — narrow your search to see all."
     },
     "secretField": {
       "cancel": "Cancel",
@@ -5634,14 +5654,15 @@
       "theme_name": "Theme Name"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• Adopt a themed persona in the assistant (security and accuracy always take priority; you can ask it to drop the persona at any time).",
-      "enable_experience": "Enable experience",
       "keep_colors_only": "Keep colors only",
+      "keep_persona_off": "Keep persona off",
       "persona_text": "Persona text",
       "persona_that_will_be_added_to_the_assistant_s_sy": "Persona that will be added to the assistant’s system prompt:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• Play themed sounds (respects your mute toggle and reduced-motion setting).",
-      "show_animated_visual_overlays": "• Show animated visual overlays.",
-      "this_is_an_experience_theme_enabling_it_will": "This is an experience theme. Enabling it will:"
+      "save": "Save",
+      "sounds": "Sounds",
+      "overlays": "Overlays",
+      "persona": "Persona",
+      "save_failed_storage": "Couldn't save. Browser storage is full or turned off."
     },
     "timezoneSelect": {
       "render_timezone": "Render timezone"
@@ -6034,6 +6055,7 @@
       "cred_view_token_title": "View the token",
       "cred_why": "why?",
       "link_allow": "Allow for this host",
+      "link_allow_unsupported": "Only a host name like example.com can be allowed. Use “Open once” instead.",
       "link_allow_confirm_aria": "Allow confirmation",
       "link_allow_confirm_body": "This applies to <0>this workspace only</0>. The dashboard saves this choice. An agent can never write it. Only the long-query and encoded-data (base64) checks are relaxed. Credential rules stay active. Revoke it in Settings → Security → Redaction.",
       "link_allow_confirm_title": "Allow long queries on {{host}}?",
@@ -6281,6 +6303,14 @@
     },
     "appPage": {
       "loading_app": "Loading app…"
+    },
+    "appPopoutFrame": {
+      "app": "App",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "No app at {{route}}",
+      "no_app_at_route_lead": "This window was opened for a page that is not an app, or for an app that is no longer installed. Return to the main window to continue.",
+      "could_not_load_the_app_list": "Could not load the app list",
+      "retry": "Retry"
     },
     "appsPage": {
       "add_an_app_source_gear_icon_above_or_install_fro": "Add an app source (Sources, top right) or install from a local path.",
@@ -6967,8 +6997,8 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
       "taskProgressBar": {
+        "done_of_total": "{{done}} of {{total}}",
         "more": "more…",
-        "of": "of",
         "task_completion": "Task completion"
       },
       "thinkingBlock": {
@@ -7820,6 +7850,48 @@
         "artifact_deploy": "Artifact Deploy",
         "artifact_deploy_desc": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet.",
         "open_artifact_deploy": "Open Artifact Deploy"
+      },
+      "strandsSetup": {
+        "cancel": "Cancel",
+        "desc_anthropic_api_key": "Your Anthropic API key.",
+        "desc_aws_bearer_token_bedrock": "A Bedrock API key, created in the Bedrock console.",
+        "desc_aws_region": "The AWS region, for example us-east-1.",
+        "desc_gemini_api_key": "Your Gemini API key.",
+        "desc_litellm_api_key": "The key your LiteLLM proxy asks for.",
+        "desc_litellm_base_url": "The address of your LiteLLM proxy.",
+        "desc_ollama_host": "The Ollama address, for example http://localhost:11434.",
+        "desc_openai_api_key": "Your OpenAI API key.",
+        "field_label_optional": "{{name}} (optional)",
+        "intro": "Pick the provider Strands talks to and paste what it needs. Keys and other values go to Settings > Secrets, and the config keeps only a reference to them.",
+        "model_desc_default": "Leave it empty to use the default model.",
+        "model_desc_required": "The model id your provider lists. This provider needs one.",
+        "model_label": "Model",
+        "model_missing": "New Strands sessions run the default Bedrock model until a model is saved for this provider.",
+        "note_anthropic": "Needs an Anthropic API key.",
+        "note_bedrock": "{{productName}} hides your AWS profile and SSO files from the agent, so Bedrock needs a Bedrock API key and its region.",
+        "note_bedrock_mantle": "Bedrock's OpenAI-compatible endpoint. {{productName}} hides your AWS profile and SSO files from the agent, so it needs a Bedrock API key and its region.",
+        "note_google": "Needs a Gemini API key.",
+        "note_litellm": "Talks to your LiteLLM proxy. The key is needed only when your proxy asks for one.",
+        "note_ollama": "Runs models on your own machine. No key is needed. Set a host only when Ollama is not at its default address.",
+        "note_openai": "Needs an OpenAI API key.",
+        "provider_anthropic": "Anthropic",
+        "provider_bedrock": "Amazon Bedrock",
+        "provider_bedrock_mantle": "Bedrock Mantle",
+        "provider_google": "Google Gemini",
+        "provider_label": "Provider",
+        "provider_litellm": "LiteLLM",
+        "provider_ollama": "Ollama",
+        "provider_openai": "OpenAI",
+        "read_failed": "Could not read your Strands settings. Reload the page to try again.",
+        "remove": "Remove",
+        "remove_confirm": "Stop using this value here? It stays in Settings > Secrets.",
+        "remove_delete": "Remove",
+        "remove_failed": "Could not remove this value. Try again.",
+        "replace": "Replace",
+        "save": "Save",
+        "save_failed": "Could not save this value. Try again.",
+        "title": "Model provider",
+        "value_missing": "The value this names is no longer in Secrets, so new Strands sessions are refused. Save a new value, or remove it."
       }
     },
     "embedSettingsPage": {
@@ -7967,6 +8039,12 @@
       },
       "embeddingStatus": {
         "embedding_engine_ready_knowledge_items_need_embe": "Embedding engine ready — knowledge items need embedding.",
+        "generate_disabled": "Knowledge embedding is turned off, so nothing can be generated.",
+        "generate_embedded_none": "No items were embedded. The embedding model returned nothing for them.",
+        "generate_failed": "Couldn't generate embeddings.",
+        "generate_unavailable": "The knowledge embedding model can't be reached right now. Try again in a moment.",
+        "knowledge_embedder_off": "Smart Search unavailable — knowledge embedding is turned off.",
+        "knowledge_embedder_unreachable": "Smart Search unavailable — the knowledge embedding model can't be reached.",
         "smart_search_active": "Smart Search active",
         "smart_search_unavailable_embedding_model_is_down": "Smart Search unavailable — embedding model is downloading in the background."
       },
@@ -7996,8 +8074,7 @@
         "no_items_found": "No items found",
         "no_items_match_your_filters": "No items match your filters",
         "no_items_match_your_search": "No items match your search",
-        "of": "of",
-        "page": "Page",
+        "page_of": "Page {{page}} of {{pages}}",
         "prev": "← Prev",
         "prev_next_page": "Prev/Next page",
         "search_explore_and_manage_your_knowledge_base": "Search, explore, and manage your knowledge base",
@@ -8019,12 +8096,14 @@
         "recenter": "Recenter",
         "start_physics": "Physics",
         "pause_physics": "Pause",
-        "graph_region_label": "Knowledge entity graph"
+        "graph_region_label": "Knowledge entity graph",
+        "load_failed": "Could not load the knowledge graph",
+        "load_failed_unknown": "The read failed without a reason.",
+        "retry": "Retry"
       },
       "sourceGroup": {
         "next": "Next →",
-        "of": "of",
-        "page": "Page",
+        "page_of": "Page {{page}} of {{pages}}",
         "prev": "← Prev"
       },
       "sourcesList": {
@@ -8530,7 +8609,7 @@
       "dashboard_values_behind_old": "These values have not updated in a while, so they may be behind.",
       "dashboard_values_stale": "Live values stopped updating, so these are the last ones received.",
       "export_row": "Export as file",
-      "export_row_sub": "Share this mate as a .crewmate file",
+      "export_row_sub": "Share this mate as a .crewjam file",
       "export_title": "Export as file",
       "export_intro": "The file holds exactly what is listed here. Nothing is saved on this machine.",
       "export_identity": "Name, description and picture",
@@ -8764,7 +8843,10 @@
         "no_memory_data_to_visualize_add_preferences_proj": "No memory data to visualize. Add preferences, projects, or lessons first.",
         "refresh": "Refresh",
         "search_memory_nodes": "Search memory nodes",
-        "search_nodes": "Search nodes…"
+        "search_nodes": "Search nodes…",
+        "load_failed": "Could not load the memory graph",
+        "load_failed_unknown": "The read failed without a reason.",
+        "retry": "Retry"
       },
       "memoryTab": {
         "actions": "Actions",
@@ -9033,10 +9115,8 @@
         "delete": "Delete",
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · runs locally in-process",
-        "entries": "entries",
         "episodic_context_injected_per_message": "Episodic Context (injected per-message)",
         "episodic_memory": "Episodic Memory",
-        "events": "events",
         "filter_by_key_or_value": "Filter by key or value…",
         "filter_by_tag": "Filter by tag:",
         "inspector": "Inspector",
@@ -9049,7 +9129,6 @@
         "no_context_to_inject_add_some_memories_first": "No context to inject. Add some memories first.",
         "no_episodic_entries": "No episodic entries",
         "no_events": "No events",
-        "of": "of",
         "open_embedding_model_settings": "Open embedding model settings",
         "preview": "Preview",
         "ready": "Ready!",
@@ -9059,7 +9138,16 @@
         "semantic_context_injected_at_session_start": "Semantic Context (injected at session start)",
         "semantic_memory": "Semantic Memory",
         "set": "Set",
-        "showing": "Showing",
+        "showing_entries_one": "Showing {{n}} entry",
+        "showing_entries_other": "Showing {{n}} entries",
+        "showing_events_filtered_one": "Showing {{n}} event ({{total}} total)",
+        "showing_events_filtered_other": "Showing {{n}} events ({{total}} total)",
+        "showing_events_one": "Showing {{n}} event",
+        "showing_events_other": "Showing {{n}} events",
+        "showing_semantic_filtered_one": "Showing {{shown}} of {{matched}} (filtered from {{total}})",
+        "showing_semantic_filtered_other": "Showing {{shown}} of {{matched}} (filtered from {{total}})",
+        "showing_semantic_one": "Showing {{shown}} of {{total}}",
+        "showing_semantic_other": "Showing {{shown}} of {{total}}",
         "test_query_e_g_what_database_should_i_use": "Test query (e.g. 'what database should I use?')",
         "value": "Value",
         "vector_memory": "Vector Memory",
@@ -9851,11 +9939,13 @@
         "installed_theme_could_not_be_loaded": "The installed theme could not be loaded. Reinstall it or choose another theme.",
         "custom_theme_could_not_be_loaded": "This theme could not be loaded. Choose another theme or edit this one.",
         "local_folder": "Local folder",
+        "zip_file": "Zip file",
         "mode": "Mode",
         "new_theme": "+ New Theme",
         "no_color": "No color",
         "none_auto_cycle_or_pick_a_fixed_color": "None, auto-cycle, or pick a fixed color.",
         "palette": "Palette",
+        "palette_categorical": "Categorical",
         "select_a_theme_for_the_dashboard": "Select a theme for the dashboard",
         "sidebar_colors": "Sidebar Colors",
         "theme": "Theme",
@@ -9874,7 +9964,12 @@
         "desktop_app": "Desktop app",
         "keep_running_when_window_closed": "Keep running in the background after closing the window",
         "keep_running_when_window_closed_desc": "Closing the window hides {{productName}} and keeps your sessions and jobs running. Turn this off to make the close button quit the app. A gateway this app started stops with it, and a gateway it only connects to keeps running.",
-        "keep_running_when_window_closed_save_failed": "Couldn't save this setting. Nothing changed. Try again."
+        "keep_running_when_window_closed_save_failed": "Couldn't save this setting. Nothing changed. Try again.",
+        "choose_zip_file": "Choose a .zip file",
+        "theme_experience": "Experience",
+        "theme_experience_sounds": "Sounds",
+        "theme_experience_overlays": "Overlays",
+        "theme_experience_persona": "Persona"
       },
       "importPanel": {
         "agent_data": "Agent data",
@@ -11016,6 +11111,13 @@
     "refused_too_large": "This message is too large for this Crew. It is still in the composer. Shorten it or attach less, then send again.",
     "rejected_by_person": "Rejected by {{name}}",
     "requested_by_person": "asked during {{name}}'s turn",
+    "approved_by_you": "Approved by you",
+    "rejected_by_you": "Rejected by you",
+    "answered_by_you": "Answered by you",
+    "requested_by_you": "asked during your turn",
+    "crew_owner": "Crew owner",
+    "already_approved": "Already approved elsewhere",
+    "already_rejected": "Already rejected elsewhere",
     "send_race_dismiss": "Dismiss",
     "send_race_lost": "{{name}} sent first, so your message was not sent. Your draft is still here and can go next, with its own reply.",
     "send_race_send_now": "Send after {{name}}'s message",

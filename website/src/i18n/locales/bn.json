@@ -663,7 +663,10 @@
         "header_addressing_review": "রিভিউ",
         "header_awaiting_merge": "মার্জ অপেক্ষা",
         "header_resolved": "সমাধান",
-        "page_label": "স্বয়ংক্রিয় ট্রায়াজ পাইপলাইন"
+        "page_label": "স্বয়ংক্রিয় ট্রায়াজ পাইপলাইন",
+        "load_failed": "পাইপলাইন লোড করা যায়নি",
+        "load_failed_unknown": "কোনো কারণ ছাড়াই পড়া ব্যর্থ হয়েছে।",
+        "retry": "আবার চেষ্টা করো"
       },
       "global": {
         "unattributed_label": "রিপোজিটরি ছাড়া ইভেন্ট",
@@ -2842,9 +2845,6 @@
             "no_members_found_for_this_repo": "এই রিপোর জন্য কোনো মেম্বার পাওয়া যায়নি।",
             "notifications": "বিজ্ঞপ্তি",
             "notify_me_when_a": "আমাকে জানান যখন একটি",
-            "of": "মোট",
-            "open_issues_are_marked_first_issue_friendly": "খোলা ইস্যু নতুনদের উপযোগী হিসেবে চিহ্নিত",
-            "open_issues_currently_need_triage": "খোলা ইস্যুর বর্তমানে ট্রায়াজ প্রয়োজন",
             "open_on": "এখানে খুলুন:",
             "open_tagging": "ট্যাগিং খুলুন",
             "organises_its_issues_and_are_never_written_back": "নিজের ইস্যু সাজায়, এবং এগুলো কখনোই ফেরত লেখা হয় না এখানে:",
@@ -2873,7 +2873,10 @@
             "without_push_access_to": "পুশ অ্যাক্সেস না থাকলে এখানে:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "আপনার সম্পাদনাগুলো এখানে রাখা হচ্ছে, কিন্তু স্থায়ী হবে না। আপনি যদি সদ্য Issue Radar আপডেট করে থাকেন, তবে ব্যাকএন্ড পুনরায় চালু করুন যাতে সেটিংস API পাওয়া যায়।",
             "notify_me_when_ci_fails_on_my_pull_request": "{{repo}}-এ আমার কোনো pull request-এ CI ব্যর্থ হলে আমাকে জানান",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "তোমার gh সাইন-ইন দিয়ে শুধু তোমার নিজের খোলা pull request-এর GitHub Actions রান পড়ে। সেটিংস → বিজ্ঞপ্তি থেকে এটি মিউট করো বা এর অগ্রাধিকার বদলাও।"
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "তোমার gh সাইন-ইন দিয়ে শুধু তোমার নিজের খোলা pull request-এর GitHub Actions রান পড়ে। সেটিংস → বিজ্ঞপ্তি থেকে এটি মিউট করো বা এর অগ্রাধিকার বদলাও।",
+            "first_issue_friendly_count_one": "<strong>{{n}}</strong>টি খোলা ইস্যু নতুনদের উপযোগী হিসেবে চিহ্নিত",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong>টি খোলা ইস্যু নতুনদের উপযোগী হিসেবে চিহ্নিত",
+            "triage_needed_of_open": "ট্রায়াজ দরকার এমন খোলা ইস্যু: {{n}}টির মধ্যে <strong>{{triage}}</strong>টি"
           }
         },
         "tagging": {
@@ -4954,7 +4957,10 @@
           "up": "উপরে",
           "use_recent_project": "সাম্প্রতিক প্রকল্প {{path}} ব্যবহার করো",
           "use_this_folder": "এই ফোল্ডারটি ব্যবহার করুন",
-          "use_this_folder_path": "এই ফোল্ডারটি ব্যবহার করো: {{path}}"
+          "use_this_folder_path": "এই ফোল্ডারটি ব্যবহার করো: {{path}}",
+          "load_failed": "এই ফোল্ডারের তালিকা আনা যায়নি",
+          "load_failed_unknown": "কোনো কারণ ছাড়াই পড়া ব্যর্থ হয়েছে।",
+          "retry": "আবার চেষ্টা করো"
         },
         "settingsModal": {
           "cancel": "বাতিল",
@@ -5139,7 +5145,9 @@
         "rerunning": "আবার চালানো হচ্ছে…",
         "started_run": "রান শুরু হয়েছে",
         "view_source": "সোর্স দেখুন",
-        "workflow_source_for": "{{runId}}-এর ওয়ার্কফ্লো সোর্স"
+        "workflow_source_for": "{{runId}}-এর ওয়ার্কফ্লো সোর্স",
+        "lines_one": "{{count}}টি লাইন",
+        "lines_other": "{{count}}টি লাইন"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "ডায়নামিক ওয়ার্কফ্লো লিখুন, চালান ও পর্যবেক্ষণ করুন",
@@ -5154,20 +5162,25 @@
         "validate": "যাচাই করুন",
         "workflow_script_python": "ওয়ার্কফ্লো স্ক্রিপ্ট (Python)",
         "workflow_source": "ওয়ার্কফ্লো সোর্স",
-        "workflows": "ওয়ার্কফ্লো"
+        "workflows": "ওয়ার্কফ্লো",
+        "view_author": "লিখুন",
+        "view_runs": "রান"
       },
       "workflowsRuns": {
         "budget": "বাজেট",
         "cancel": "বাতিল",
         "cancelling": "বাতিল করা হচ্ছে…",
         "could_not_load_runs": "রান লোড করা যায়নি:",
-        "events": "ইভেন্ট",
         "no_background_runs_yet_runs_started_in_the_backg": "এখনও কোনো ব্যাকগ্রাউন্ড রান নেই। ব্যাকগ্রাউন্ডে শুরু হওয়া রান এখানে দেখা যাবে।",
         "run_detail": "রানের বিবরণ",
         "select_a_run_to_see_its_phases_agents_and_result": "ফেজ, এজেন্ট ও ফলাফল দেখতে একটি রান বেছে নিন।",
         "unknown": "অজানা",
         "view_graph": "গ্রাফ",
-        "view_tree": "ট্রি"
+        "view_tree": "ট্রি",
+        "agents_one": "{{count}}টি এজেন্ট",
+        "agents_other": "{{count}}টি এজেন্ট",
+        "events_one": "{{count}}টি ইভেন্ট",
+        "events_other": "{{count}}টি ইভেন্ট"
       }
     },
     "commandBar": {
@@ -5699,15 +5712,18 @@
       "asked": "তুমি বলেছিলে",
       "done": "যা হয়েছে",
       "label": "সারসংক্ষেপ",
+      "more_waiting": "আরও {{count}}টি",
       "needs_you": "তোমার কাছে দরকার",
       "next": "এরপর",
       "progress": "অগ্রগতি",
       "progress_count": "{{total}}টির মধ্যে {{accepted}}টি শেষ",
       "remaining": "বাকি",
+      "show_fewer": "কম দেখাও",
       "status_blocked": "আটকে আছে",
       "status_done": "শেষ",
       "status_needs_you": "তোমার অপেক্ষায়",
-      "status_on_track": "ঠিকঠাক চলছে"
+      "status_on_track": "ঠিকঠাক চলছে",
+      "unlisted": "আরও {{count}}টি তালিকায় নেই"
     },
     "voicePlaybackNotice": {
       "failed": "“{{speak}}” চালানো যায়নি। টেক্সট-টু-স্পিচ সেটিংস পরীক্ষা করে আবার চেষ্টা করো।",
@@ -5990,7 +6006,8 @@
       "some_setup_could_not_be_read": "{{productName}} {{sources}} পড়তে পারেনি — নিচে তালিকাভুক্ত নয়।",
       "files_could_not_be_read": "ফাইলগুলি পড়া যায়নি",
       "your_existing_kirocrew_setup_will_not_be_affecte": "আপনার বিদ্যমান {{productName}} সেটআপ প্রভাবিত হবে না।",
-      "your_selected_setup_is_ready_in_kiro_crew": "তোমার নির্বাচিত সেটআপ {{productName}}-এ তৈরি।"
+      "your_selected_setup_is_ready_in_kiro_crew": "তোমার নির্বাচিত সেটআপ {{productName}}-এ তৈরি।",
+      "import_setup_stage": "সেটআপ ইমপোর্ট করো · {{stages}}টির মধ্যে {{stage}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "সংরক্ষিত হয়েছে, কিন্তু এই {{productName}} এজেন্ট কনফিগারেশন আপডেট করতে পারেনি, তাই নতুন চ্যাটগুলো আগের সেটআপ রাখবে। কারণ জানতে 'লগ' পেজ খোলো।"
@@ -6038,6 +6055,14 @@
       "retry": "আবার চেষ্টা করুন",
       "this_app_is_disabled": "এই অ্যাপটি বন্ধ করা আছে",
       "this_app_provides_agents_and_skills_but_no_visua": "এই অ্যাপটি এজেন্ট ও স্কিল দেয়, কিন্তু কোনও ভিজ্যুয়াল ইন্টারফেস নেই।\n            চ্যাট থেকে এর এজেন্টগুলি ব্যবহার করুন।"
+    },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "অ্যাপটি আলাদা উইন্ডোতে খোলো",
+      "this_app_is_open_in_its_own_window_focus_it": "এই অ্যাপটি আলাদা উইন্ডোতে খোলা আছে — সেটিতে ফোকাস করো",
+      "focus_popped_out_window": "পপ-আউট উইন্ডোতে ফোকাস করো",
+      "return": "ফিরিয়ে আনো",
+      "return_to_main_window": "মূল উইন্ডোতে ফিরিয়ে আনো",
+      "return_this_app_to_the_main_window": "এই অ্যাপটি মূল উইন্ডোতে ফিরিয়ে আনো"
     },
     "approvalCard": {
       "actions_group": "অনুমোদন ক্রিয়া",
@@ -6571,7 +6596,8 @@
       "split_right_d": "ডানে ভাগ করুন (⌘D)",
       "type_to_filter": "ফিল্টার করতে লিখুন…",
       "earlier_conversation_show": "{{time}}-এ নতুন করে শুরু · আগের মেসেজ দেখাও ({{count}})",
-      "earlier_conversation_hide": "{{time}}-এ নতুন করে শুরু · আগের মেসেজ লুকাও (আর মনে নেই)"
+      "earlier_conversation_hide": "{{time}}-এ নতুন করে শুরু · আগের মেসেজ লুকাও (আর মনে নেই)",
+      "preparing_catch_up": "তোমার জন্য সারাংশ তৈরি হচ্ছে…"
     },
     "cliPanel": {
       "copied": "কপি হয়েছে",
@@ -6907,7 +6933,7 @@
       "next": "পরবর্তী",
       "no_execution_history_yet": "এখনও কোনো এক্সিকিউশন ইতিহাস নেই",
       "ok": "OK",
-      "page": "পৃষ্ঠা",
+      "page_n": "পৃষ্ঠা {{page}}",
       "prev": "পূর্ববর্তী",
       "status": "স্ট্যাটাস",
       "summary": "সারসংক্ষেপ",
@@ -7358,6 +7384,9 @@
       "auto_pause_after_failures": "পরপর N বার ব্যর্থ হলে নিজে থেকে থামাও",
       "auto_pause_after_failures_description": "0 মানে কখনো থামবে না। পরপর 5ম ব্যর্থতা থেকে, 0 বা 5-এর বেশি সেট করা কাজ পরের রানের আগে 5 মিনিট অপেক্ষা করে, আর এই সময় এক ঘণ্টা পর্যন্ত দ্বিগুণ হয়।",
       "auto_pause_after_failures_invalid": "নিজে থেকে থামানোর সীমা 0 থেকে 10000-এর মধ্যে একটি পূর্ণসংখ্যা হতে হবে।",
+      "alert_after_failures": "পরপর N বার ব্যর্থ হলে ব্যর্থতার বার্তা পাঠাও",
+      "alert_after_failures_description": "1 হলে প্রথম ব্যর্থ রানেই পাঠায়। তার আগের ব্যর্থতাগুলোতেও ড্যাশবোর্ডের ঘণ্টা বাজে; নীতির প্রত্যাখ্যান আর যে রান কাজটিকে নিজে থেকে থামায়, সেগুলো সব সময় পাঠায়।",
+      "alert_after_failures_invalid": "সতর্কতার সীমা 1 থেকে 10000-এর মধ্যে একটি পূর্ণসংখ্যা হতে হবে।",
       "runs_as": "যেভাবে চলে",
       "runs_as_custom_agent": "কাস্টম এজেন্ট",
       "runs_as_crewmate": "ক্রুমেট",
@@ -7388,13 +7417,13 @@
       "copied": "কপি হয়েছে",
       "copy_link": "লিংক কপি করুন",
       "could_not_start_sign_in": "সাইন-ইন শুরু করা গেল না। সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।",
-      "device_aside_body": "{{productName}} অন্য একটি কম্পিউটারে চলছে, তাই এটি আপনার জন্য ব্রাউজার উইন্ডো খুলতে পারে না। নিচের লিংকটি যেকোনো ডিভাইসে খুলুন — ফোন হলেও চলবে — এবং কোডটি লিখুন।",
+      "device_aside_body": "নিচের লিংকটি তোমার ব্রাউজারে খোলো এবং কোডটি লেখো। {{productName}} অন্য কোনো কম্পিউটারে চললে যেকোনো ডিভাইস কাজ করবে, ফোনও।",
       "device_aside_footnote": "কোডটি সীমিত সময় পর্যন্ত বৈধ।",
       "device_aside_headline": "আপনার ব্রাউজারে অনুমোদন দিন",
-      "enter_the_code_in_your_browser": "ফোন বা অন্য কোনো কম্পিউটারে সাইন-ইন সম্পূর্ণ করুন",
+      "enter_the_code_in_your_browser": "তোমার ব্রাউজারে সাইন-ইন শেষ করো",
       "enter_this_code": "এই কোডটি লিখুন",
       "get_started": "শুরু করুন",
-      "open_this_link": "এই লিংকটি ফোনে বা অন্য কোনো ব্রাউজারে খুলুন",
+      "open_this_link": "এই লিংকটি তোমার ব্রাউজারে খোলো",
       "provider_builder_id": "AWS Builder ID",
       "provider_company_sso": "কোম্পানি SSO",
       "provider_github": "GitHub",
@@ -7998,6 +8027,7 @@
         "keep_receiving_these": ". এগুলো পেতে থাকতে চান?",
         "mark_all_as_read": "সবগুলো পঠিত হিসেবে চিহ্নিত করুন",
         "mute_channel": "চ্যানেল মিউট করুন",
+        "mute_failed": "এই চ্যানেল মিউট করা যায়নি। আবার চেষ্টা করো।",
         "muted_2": "মিউট করা",
         "no_notifications": "কোনো নোটিফিকেশন নেই",
         "open_notification": "নোটিফিকেশন খোলো: {{title}}",
@@ -8509,11 +8539,10 @@
     },
     "searchResultsList": {
       "assistant": "অ্যাসিস্ট্যান্ট",
-      "matches_around_the_current_result_narrow_your_se": "মিল বর্তমান ফলাফলের আশপাশে — সবগুলো দেখতে সার্চ আরও নির্দিষ্ট করুন।",
-      "of": "মোট",
       "search_results": "সার্চ ফলাফল",
       "selected": "নির্বাচিত",
-      "showing": "দেখানো হচ্ছে",
+      "showing_matches_one": "বর্তমান ফলাফলের আশপাশে {{n}}টি মিলের মধ্যে {{shown}}টি দেখানো হচ্ছে — সবগুলো দেখতে সার্চ আরও নির্দিষ্ট করো।",
+      "showing_matches_other": "বর্তমান ফলাফলের আশপাশে {{n}}টি মিলের মধ্যে {{shown}}টি দেখানো হচ্ছে — সবগুলো দেখতে সার্চ আরও নির্দিষ্ট করো।",
       "you": "তুমি"
     },
     "multiSelect": {
@@ -9025,18 +9054,19 @@
       "var_warning": "সতর্কতা"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• সহকারীতে একটি থিমযুক্ত পার্সোনা গ্রহণ করা হবে (নিরাপত্তা ও নির্ভুলতা সর্বদাই অগ্রাধিকার পায়; আপনি যেকোনো সময় পার্সোনাটি বাদ দিতে বলতে পারেন)।",
-      "enable_experience": "অভিজ্ঞতা চালু করুন",
       "enable_named_experience": "“{{name}}” অভিজ্ঞতাটি চালু করবেন?",
       "keep_colors_only": "শুধু রং রাখুন",
+      "keep_persona_off": "পারসোনা বন্ধ রাখুন",
       "mute_theme_sounds": "থিমের শব্দ মিউট করো",
       "persona_text": "পার্সোনা টেক্সট",
       "persona_that_will_be_added_to_the_assistant_s_sy": "সহকারীর সিস্টেম প্রম্পটে যে পার্সোনা যোগ করা হবে:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• থিমযুক্ত সাউন্ড বাজানো হবে (আপনার মিউট টগল ও রিডিউসড-মোশন সেটিং মেনে চলে)।",
-      "show_animated_visual_overlays": "• অ্যানিমেটেড ভিজ্যুয়াল ওভারলে দেখানো হবে।",
       "theme_overlay": "থিম ওভারলে {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "এটি একটি এক্সপেরিয়েন্স থিম। এটি চালু করলে:",
-      "unmute_theme_sounds": "থিমের শব্দ আনমিউট করো"
+      "unmute_theme_sounds": "থিমের শব্দ আনমিউট করো",
+      "save": "সংরক্ষণ",
+      "sounds": "সাউন্ড",
+      "overlays": "ওভারলে",
+      "persona": "পারসোনা",
+      "save_failed_storage": "সংরক্ষণ করা যায়নি। ব্রাউজারের স্টোরেজ পূর্ণ বা বন্ধ আছে।"
     },
     "timezoneSelect": {
       "render_timezone": "প্রদর্শনের টাইমজোন"
@@ -9835,6 +9865,7 @@
       "cred_view_token_title": "টোকেনটা দেখো",
       "cred_why": "কেন?",
       "link_allow": "এই হোস্টের জন্য অনুমতি দাও",
+      "link_allow_unsupported": "শুধু example.com-এর মতো হোস্টের নাম অনুমোদন করা যায়। তার বদলে “একবার খোলো” ব্যবহার করো।",
       "link_allow_confirm_aria": "অনুমতির নিশ্চিতকরণ",
       "link_allow_confirm_body": "এটা <0>শুধু এই ওয়ার্কস্পেসে</0> খাটে। ড্যাশবোর্ড এই পছন্দটা সেভ করে রাখে। কোনো এজেন্ট কখনও এটা লিখতে পারে না। শুধু লম্বা-query আর এনকোড করা ডেটা (base64) চেক শিথিল করা হয়। ক্রেডেনশিয়াল নিয়ম চালু থাকে। সেটিংস → নিরাপত্তা → রিড্যাকশন থেকে এটা ফিরিয়ে নাও।",
       "link_allow_confirm_title": "{{host}}-এ লম্বা query-তে অনুমতি দেবে?",
@@ -9957,7 +9988,6 @@
       "flow_parallel": "আলাদা চ্যাট",
       "flow_board": "বোর্ড",
       "flow_needs_you": "তোমাকে দরকার",
-      "side_panel_open": "টাস্ক বোর্ড",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "এই চ্যাটে Ultra Mode চালু আছে",
       "breadcrumb_label": "দলের সদস্য",
@@ -9993,6 +10023,12 @@
       "ultra_finished": "শেষ · {{n}}",
       "ultra_row_sessions_one": "{{count}}টি সেশন · {{running}}টি চলছে",
       "ultra_row_sessions_other": "{{count}}টি সেশন · {{running}}টি চলছে",
+      "ultra_row_count_working_one": "{{count}}টি চলছে",
+      "ultra_row_count_working_other": "{{count}}টি চলছে",
+      "ultra_row_count_waiting_one": "{{count}}টি অপেক্ষায়",
+      "ultra_row_count_waiting_other": "{{count}}টি অপেক্ষায়",
+      "ultra_row_count_needs_you_one": "{{count}}টির তোমাকে দরকার",
+      "ultra_row_count_needs_you_other": "{{count}}টির তোমাকে দরকার",
       "ultra_recap_empty": "ক্রু এখনও রিপোর্ট করেনি।",
       "chip_hint_pressed": "Ultra Mode চালু আছে। প্রথম বার্তার আগে বন্ধ করতে ক্লিক করো।",
       "ultra_view_status": "অবস্থা",
@@ -10804,6 +10840,7 @@
       "next": "পরবর্তী",
       "once_launched_the_app_will_automatically_connect": "একবার চালু হলে, অ্যাপটি স্বয়ংক্রিয়ভাবে এই {{productName}} ইনস্ট্যান্সের সাথে সংযুক্ত হবে এবং অ্যাপ-এ দেখা যাবে।",
       "open_screenshot": "স্ক্রিনশট {{n}} খোলো",
+      "screenshot_viewer": "স্ক্রিনশট ভিউয়ার",
       "origin": "উৎস:",
       "permissions": "অনুমতি",
       "session_approval_desc": "তোমার চ্যাটে বার্তা পাঠাতে ও উত্তরের বিকল্প বেছে নিতে, টুল অনুরোধ অনুমোদন বা প্রত্যাখ্যান করতে এবং চ্যাটের অনুমোদন মোড বদলাতে পারে।",
@@ -10858,6 +10895,14 @@
       "retry": "আবার চেষ্টা করুন",
       "back_to_apps": "অ্যাপে ফিরে যান",
       "failed_to_load_app": "অ্যাপ লোড করা যায়নি"
+    },
+    "appPopoutFrame": {
+      "app": "অ্যাপ",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "{{route}}-এ কোনো অ্যাপ নেই",
+      "no_app_at_route_lead": "এই উইন্ডোটি এমন একটি পেজের জন্য খোলা হয়েছিল যা কোনো অ্যাপ নয়, অথবা এমন একটি অ্যাপের জন্য যা আর ইনস্টল করা নেই। চালিয়ে যেতে মূল উইন্ডোতে ফিরে যাও।",
+      "could_not_load_the_app_list": "অ্যাপের তালিকা লোড করা যায়নি",
+      "retry": "আবার চেষ্টা করো"
     },
     "appsPage": {
       "action_failed": "{{name}}-কে {{action}} করা যায়নি",
@@ -10975,6 +11020,8 @@
       "default_profile": "ডিফল্ট প্রোফাইল",
       "deploy": "ডিপ্লয়",
       "deploy_anyway": "তবুও ডিপ্লয় করো",
+      "pending_deploy_failed_status": "ডিপ্লয় নিশ্চিত করা যায়নি ({{status}})",
+      "dismiss_failed_status": "খারিজ করা যায়নি ({{status}})",
       "deploy_artifact": "{{name}} ডিপ্লয় করো",
       "deploy_profile_for_slug": "{{slug}}-এর জন্য ডিপ্লয় প্রোফাইল",
       "deploy_recall_destroy_each_require_explicit_conf": "ডিপ্লয় / রিকল / ডেস্ট্রয় — প্রত্যেকটির জন্য স্পষ্ট নিশ্চিতকরণ প্রয়োজন\n              (কখনও স্বয়ংক্রিয়ভাবে অনুমোদিত হয় না) এবং প্রত্যেকটি একটি SEL অডিট ইভেন্ট তৈরি করে।",
@@ -12075,7 +12122,6 @@
         "aria_expand_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা প্রসারিত করো",
         "current_task": "বর্তমান টাস্ক",
         "more": "আরও…",
-        "of": "/",
         "task_completion": "টাস্ক সম্পন্নতা",
         "aria_mark_done": "সম্পন্ন চিহ্নিত করো: {{task}}। এজেন্ট এটি আবার করবে না। ফিরিয়ে নিতে আবার ক্লিক করো।",
         "aria_mark_not_done": "অসম্পন্ন চিহ্নিত করো: {{task}}। এজেন্ট এটি এখনো বাকি ধরবে। ফিরিয়ে নিতে আবার ক্লিক করো।",
@@ -12088,7 +12134,8 @@
         "fail_remote": "এই চেকলিস্ট এই সেশনের দূরবর্তী মেশিন পরিচালনা করে, তাই এখানে বদলানো যাবে না।",
         "set_by_you_done": "তুমি এটা সম্পন্ন চিহ্নিত করেছ; এজেন্ট এখনও নিশ্চিত করেনি।",
         "set_by_you_open": "তুমি এটা অসম্পন্ন চিহ্নিত করেছ; এজেন্ট এখনও নিশ্চিত করেনি।",
-        "sending": "পাঠানো হচ্ছে"
+        "sending": "পাঠানো হচ্ছে",
+        "done_of_total": "{{done}} / {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "মডেলের রিজনিং সংকুচিত করো",
@@ -14085,7 +14132,8 @@
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
         "opencode": "OpenCode",
-        "pi": "Pi"
+        "pi": "Pi",
+        "strands": "Strands"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "চ্যাটের উপরে লাইভ স্ক্রল ও অ্যাঙ্কর ডায়াগনস্টিকস দেখায়",
@@ -14258,6 +14306,48 @@
         "could_not_sign_out": "সাইন আউট করা যায়নি",
         "keep_current_sign_in": "বর্তমান সাইন-ইন রাখুন",
         "signed_in_body_no_refresh": "এজেন্টগুলি এই Kiro অ্যাকাউন্ট হিসেবে চলে। এই সাইন-ইনে রিফ্রেশ টোকেন নেই, তাই এটি নিজে নবায়ন হতে পারে না — মেয়াদ শেষ হওয়ার আগে আবার সাইন ইন করুন।"
+      },
+      "strandsSetup": {
+        "cancel": "বাতিল",
+        "desc_anthropic_api_key": "তোমার Anthropic API কী।",
+        "desc_aws_bearer_token_bedrock": "একটি Bedrock API কী, যা Bedrock কনসোলে তৈরি হয়।",
+        "desc_aws_region": "AWS অঞ্চল, যেমন us-east-1।",
+        "desc_gemini_api_key": "তোমার Gemini API কী।",
+        "desc_litellm_api_key": "তোমার LiteLLM প্রক্সি যে কী চায়।",
+        "desc_litellm_base_url": "তোমার LiteLLM প্রক্সির ঠিকানা।",
+        "desc_ollama_host": "Ollama-র ঠিকানা, যেমন http://localhost:11434।",
+        "desc_openai_api_key": "তোমার OpenAI API কী।",
+        "field_label_optional": "{{name}} (ঐচ্ছিক)",
+        "intro": "Strands যে প্রদানকারীর সাথে কথা বলে সেটি বেছে নাও এবং যা দরকার তা পেস্ট করো। কী এবং অন্যান্য মান সেটিংস > সিক্রেটস-এ যায়, আর কনফিগে শুধু তাদের একটি রেফারেন্স থাকে।",
+        "model_desc_default": "ডিফল্ট মডেল ব্যবহার করতে এটি খালি রাখো।",
+        "model_desc_required": "তোমার প্রদানকারীর তালিকার মডেল আইডি। এই প্রদানকারীর জন্য এটি লাগবেই।",
+        "model_label": "মডেল",
+        "model_missing": "এই প্রদানকারীর জন্য মডেল সংরক্ষণ না করা পর্যন্ত নতুন Strands সেশন ডিফল্ট Bedrock মডেল চালাবে।",
+        "note_anthropic": "একটি Anthropic API কী লাগে।",
+        "note_bedrock": "{{productName}} তোমার AWS প্রোফাইল ও SSO ফাইল এজেন্টের কাছ থেকে লুকিয়ে রাখে, তাই Bedrock-এর জন্য একটি Bedrock API কী এবং তার অঞ্চল লাগে।",
+        "note_bedrock_mantle": "Bedrock-এর OpenAI-সামঞ্জস্যপূর্ণ এন্ডপয়েন্ট। {{productName}} তোমার AWS প্রোফাইল ও SSO ফাইল এজেন্টের কাছ থেকে লুকিয়ে রাখে, তাই এর জন্য একটি Bedrock API কী এবং তার অঞ্চল লাগে।",
+        "note_google": "একটি Gemini API কী লাগে।",
+        "note_litellm": "তোমার LiteLLM প্রক্সির সাথে কথা বলে। প্রক্সি চাইলে তবেই কী লাগে।",
+        "note_ollama": "মডেল তোমার নিজের মেশিনে চলে। কোনো কী লাগে না। Ollama তার ডিফল্ট ঠিকানায় না থাকলেই শুধু হোস্ট সেট করো।",
+        "note_openai": "একটি OpenAI API কী লাগে।",
+        "provider_anthropic": "Anthropic",
+        "provider_bedrock": "Amazon Bedrock",
+        "provider_bedrock_mantle": "Bedrock Mantle",
+        "provider_google": "Google Gemini",
+        "provider_label": "প্রদানকারী",
+        "provider_litellm": "LiteLLM",
+        "provider_ollama": "Ollama",
+        "provider_openai": "OpenAI",
+        "read_failed": "তোমার Strands সেটিংস পড়া যায়নি। আবার চেষ্টা করতে পেজটি রিলোড করো।",
+        "remove": "সরাও",
+        "remove_confirm": "এখানে এই মানটি ব্যবহার বন্ধ করবে? এটি সেটিংস > সিক্রেটস-এ থেকে যাবে।",
+        "remove_delete": "সরাও",
+        "remove_failed": "এই মানটি সরানো যায়নি। আবার চেষ্টা করো।",
+        "replace": "বদলাও",
+        "save": "সংরক্ষণ করো",
+        "save_failed": "এই মানটি সংরক্ষণ করা যায়নি। আবার চেষ্টা করো।",
+        "title": "মডেল প্রদানকারী",
+        "value_missing": "এটি যে মানের নাম দেয় তা আর সিক্রেটস-এ নেই, তাই নতুন Strands সেশন প্রত্যাখ্যাত হবে। নতুন মান সংরক্ষণ করো, অথবা এটি সরাও।"
       }
     },
     "developerPage": {
@@ -14534,8 +14624,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} এমবেড করা ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "এমবেডিং ইঞ্জিন প্রস্তুত — নলেজ আইটেমগুলোর এমবেডিং প্রয়োজন।",
+        "generate_disabled": "নলেজ এমবেডিং বন্ধ আছে, তাই কিছু তৈরি করা যাবে না।",
+        "generate_embedded_none": "কোনো আইটেম এমবেড হয়নি। এমবেডিং মডেল এগুলোর জন্য কিছুই ফেরত দেয়নি।",
+        "generate_failed": "এমবেডিং তৈরি করা যায়নি।",
         "generate_now": "এখনই তৈরি করো",
+        "generate_unavailable": "নলেজ এমবেডিং মডেলের সাথে এখন যোগাযোগ করা যাচ্ছে না। একটু পরে আবার চেষ্টা করো।",
         "generating": "তৈরি হচ্ছে…",
+        "knowledge_embedder_off": "স্মার্ট সার্চ পাওয়া যাচ্ছে না — নলেজ এমবেডিং বন্ধ আছে।",
+        "knowledge_embedder_unreachable": "স্মার্ট সার্চ পাওয়া যাচ্ছে না — নলেজ এমবেডিং মডেলের সাথে যোগাযোগ করা যাচ্ছে না।",
         "smart_search_active": "স্মার্ট সার্চ সক্রিয়",
         "smart_search_unavailable_embedding_model_is_down": "স্মার্ট সার্চ অনুপলব্ধ — এমবেডিং মডেল ব্যাকগ্রাউন্ডে ডাউনলোড হচ্ছে।"
       },
@@ -14584,8 +14680,6 @@
         "no_items_found": "কোনো আইটেম পাওয়া যায়নি",
         "no_items_match_your_filters": "আপনার ফিল্টারের সাথে কোনো আইটেম মেলেনি",
         "no_items_match_your_search": "আপনার সার্চের সাথে কোনো আইটেম মেলেনি",
-        "of": "মোট",
-        "page": "পৃষ্ঠা",
         "prev": "← পূর্ববর্তী",
         "prev_next_page": "পূর্ববর্তী/পরবর্তী পৃষ্ঠা",
         "search_explore_and_manage_your_knowledge_base": "আপনার নলেজ বেস সার্চ করুন, অন্বেষণ করুন এবং পরিচালনা করুন",
@@ -14606,7 +14700,8 @@
         "stats_relations_one": "{{count}}টি সম্পর্ক",
         "stats_relations_other": "{{count}}টি সম্পর্ক",
         "stats_sources_one": "{{count}}টি সোর্স",
-        "stats_sources_other": "{{count}}টি সোর্স"
+        "stats_sources_other": "{{count}}টি সোর্স",
+        "page_of": "{{pages}}-এর মধ্যে পৃষ্ঠা {{page}}"
       },
       "itemCard": {
         "copied": "কপি হয়েছে!",
@@ -14626,15 +14721,17 @@
         "recenter": "পুনরায় কেন্দ্রে আনুন",
         "start_physics": "ফিজিক্স",
         "pause_physics": "বিরতি",
-        "graph_region_label": "নলেজ এনটিটি গ্রাফ"
+        "graph_region_label": "নলেজ এনটিটি গ্রাফ",
+        "load_failed": "নলেজ গ্রাফ লোড করা যায়নি",
+        "load_failed_unknown": "কোনো কারণ ছাড়াই পড়া ব্যর্থ হয়েছে।",
+        "retry": "আবার চেষ্টা করো"
       },
       "sourceGroup": {
         "items_added_directly": "সরাসরি যোগ করা আইটেম",
         "items_count": "({{count}}টি আইটেম)",
         "next": "পরবর্তী →",
         "no_source": "কোনো সোর্স নেই",
-        "of": "মোট",
-        "page": "পৃষ্ঠা",
+        "page_of": "{{pages}}-এর মধ্যে পৃষ্ঠা {{page}}",
         "prev": "← পূর্ববর্তী",
         "unknown_source": "অজানা সোর্স"
       },
@@ -15320,7 +15417,10 @@
         "partial_notice": "এখানে তোমার মেমরির শুধু একটি অংশ দেখানো হয়েছে, তাই অনুসন্ধান কেবল এই নোডগুলো খুঁজে পায়।",
         "refresh": "রিফ্রেশ",
         "search_memory_nodes": "মেমরি নোড অনুসন্ধান",
-        "search_nodes": "নোড অনুসন্ধান…"
+        "search_nodes": "নোড অনুসন্ধান…",
+        "load_failed": "মেমরি গ্রাফ লোড করা যায়নি",
+        "load_failed_unknown": "কোনো কারণ ছাড়াই পড়া ব্যর্থ হয়েছে।",
+        "retry": "আবার চেষ্টা করো"
       },
       "memoryTab": {
         "actions": "অ্যাকশন",
@@ -15814,10 +15914,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · স্থানীয়ভাবে ইন-প্রসেসে চলে",
         "embedding_status": "এমবেডিং স্থিতি",
-        "entries": "এন্ট্রি",
         "episodic_context_injected_per_message": "এপিসোডিক কনটেক্সট (প্রতি বার্তায় যোগ করা হয়)",
         "episodic_memory": "এপিসোডিক মেমরি",
-        "events": "ইভেন্ট",
         "every_memory_create_update_delete_conflict_and_i": "মেমরির প্রতিটি তৈরি, আপডেট, মুছে ফেলা, দ্বন্দ্ব ও ইনজেকশন ব্লক এখানে লেখা হয়।",
         "filter_by_key_or_value": "কী বা ভ্যালু দিয়ে ফিল্টার করুন…",
         "filter_by_tag": "ট্যাগ দিয়ে ফিল্টার:",
@@ -15834,7 +15932,6 @@
         "no_matching_entries": "মিলে যাওয়া কোনো এন্ট্রি নেই",
         "no_semantic_entries": "কোনো সিমান্টিক এন্ট্রি নেই",
         "not_active": "সক্রিয় নয়",
-        "of": "এর মধ্যে",
         "open_embedding_model_settings": "এমবেডিং মডেল সেটিংস খুলুন",
         "preview": "প্রিভিউ",
         "preview_what_gets_injected_into_prompts_enter_a": "প্রম্পটে কী ঢোকানো হয় তার প্রিভিউ দেখো। এপিসোডিক রিট্রিভালের ফলাফল দেখতে একটি কোয়েরি লেখো।",
@@ -15848,7 +15945,6 @@
         "semantic_memory": "সিমান্টিক মেমরি",
         "set": "সেট করুন",
         "setup_failed": "সেটআপ করা যায়নি",
-        "showing": "দেখানো হচ্ছে",
         "status_unknown": "অজানা",
         "structured_key_value_facts_about_you_confidence": "তোমার সম্পর্কে গঠিত কী-ভ্যালু তথ্য। Confidence: সিস্টেম কতটা নিশ্চিত (1.0 = তুমি নিজে দিয়েছ, 0.85 = চ্যাট থেকে নেওয়া)। Source: কে লিখেছে (user_explicit = তুমি, consolidation = স্বয়ংক্রিয়ভাবে নেওয়া)।",
         "structured_semantic_key_value_episodic_conversat": "গঠিত সিমান্টিক (কী-ভ্যালু) + এপিসোডিক (কথাবার্তার টুকরো) মেমরি, ভেক্টর সার্চসহ। এমবেডিং সব সময় চালু — মডেলটি পেছনে স্বয়ংক্রিয়ভাবে ডাউনলোড হয়।",
@@ -15860,7 +15956,17 @@
         "verifying_model_integrity": "মডেলের অখণ্ডতা যাচাই করা হচ্ছে…",
         "enable_err_config_unreadable": "config.json পড়া যায়নি, তাই ভেক্টর মেমরি সংরক্ষণ করা যায়নি। ফাইলটি ঠিক করো, তারপর আবার চেষ্টা করো।",
         "enable_err_dim_unreadable": "এমবেডিং মডেলের ভেক্টর প্রস্থ পড়া যায়নি, তাই ভেক্টর মেমরি চালু হয়নি। আবার চেষ্টা করো, বারবার ব্যর্থ হলে 'kirocrew doctor' চালাও।",
-        "enable_err_owner_only": "শুধু ড্যাশবোর্ডের মালিক ভেক্টর মেমরি সেট আপ করতে পারে।"
+        "enable_err_owner_only": "শুধু ড্যাশবোর্ডের মালিক ভেক্টর মেমরি সেট আপ করতে পারে।",
+        "showing_entries_one": "{{n}}টি এন্ট্রি দেখানো হচ্ছে",
+        "showing_entries_other": "{{n}}টি এন্ট্রি দেখানো হচ্ছে",
+        "showing_events_one": "{{n}}টি ইভেন্ট দেখানো হচ্ছে",
+        "showing_events_other": "{{n}}টি ইভেন্ট দেখানো হচ্ছে",
+        "showing_events_filtered_one": "{{n}}টি ইভেন্ট দেখানো হচ্ছে (মোট {{total}}টি)",
+        "showing_events_filtered_other": "{{n}}টি ইভেন্ট দেখানো হচ্ছে (মোট {{total}}টি)",
+        "showing_semantic_one": "{{total}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে",
+        "showing_semantic_other": "{{total}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে",
+        "showing_semantic_filtered_one": "{{matched}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে ({{total}}টি থেকে ফিল্টার করা)",
+        "showing_semantic_filtered_other": "{{matched}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে ({{total}}টি থেকে ফিল্টার করা)"
       },
       "wakatimeTab": {
         "active_projects": "আপনি যে প্রকল্পগুলোতে কাজ করেছেন",
@@ -17484,12 +17590,14 @@
         "installed_theme_could_not_be_loaded": "ইনস্টল করা থিম লোড করা যায়নি। এটি আবার ইনস্টল করো বা অন্য একটি থিম বেছে নাও।",
         "custom_theme_could_not_be_loaded": "এই থিম লোড করা যায়নি। অন্য একটি থিম বেছে নাও বা এটি সম্পাদনা করো।",
         "local_folder": "স্থানীয় ফোল্ডার",
+        "zip_file": "Zip ফাইল",
         "mode": "মোড",
         "native_window_zoom_tip": "নেটিভ উইন্ডো জুম, {{mod}}+ / {{mod}}− এর মতো একই সেটিং (50%–300%)। অ্যাপ আবার চালু করলেও মনে রাখা হয়।",
         "new_theme": "+ নতুন থিম",
         "no_color": "রঙ নেই",
         "none_auto_cycle_or_pick_a_fixed_color": "কোনোটি নয়, স্বয়ংক্রিয়ভাবে বদলাতে থাকুক, বা একটি নির্দিষ্ট রঙ বেছে নিন।",
         "palette": "প্যালেট",
+        "palette_categorical": "শ্রেণিভিত্তিক",
         "select_a_theme_for_the_dashboard": "ড্যাশবোর্ডের জন্য একটি থিম বেছে নিন",
         "sidebar_colors": "সাইডবারের রঙ",
         "terminal": "টার্মিনাল",
@@ -17569,7 +17677,12 @@
         "desktop_app": "ডেস্কটপ অ্যাপ",
         "keep_running_when_window_closed": "উইন্ডো বন্ধ করলে অ্যাপটি পটভূমিতে চালু রাখো",
         "keep_running_when_window_closed_desc": "উইন্ডো বন্ধ করলে {{productName}} লুকিয়ে যায় এবং তোমার সেশন ও নির্ধারিত কাজ চলতে থাকে। বন্ধ বোতামে অ্যাপটি বন্ধ করতে চাইলে এটি বন্ধ করো। এই অ্যাপ যে গেটওয়ে চালু করেছে সেটি অ্যাপের সাথে থেমে যায়, আর যে গেটওয়েতে এটি শুধু সংযুক্ত হয় সেটি চলতে থাকে।",
-        "keep_running_when_window_closed_save_failed": "এই সেটিংটি সংরক্ষণ করা যায়নি। কিছুই বদলায়নি। আবার চেষ্টা করো।"
+        "keep_running_when_window_closed_save_failed": "এই সেটিংটি সংরক্ষণ করা যায়নি। কিছুই বদলায়নি। আবার চেষ্টা করো।",
+        "choose_zip_file": ".zip ফাইল বেছে নাও",
+        "theme_experience": "অভিজ্ঞতা",
+        "theme_experience_sounds": "সাউন্ড",
+        "theme_experience_overlays": "ওভারলে",
+        "theme_experience_persona": "পারসোনা"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",
@@ -17839,13 +17952,17 @@
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",
         "recordMetricsDescription": "এই মেশিনে পারফরম্যান্স মেট্রিক সংগ্রহ করো।",
-        "recordMetricsDescriptionExporting": "পারফরম্যান্স মেট্রিক সংগ্রহ করো আর config.json-এ ঠিক করা কলেক্টরে সেগুলো পাঠাও।",
+        "recordMetricsDescriptionExporting": "পারফরম্যান্স মেট্রিক সংগ্রহ করো আর কনফিগার করা কলেক্টরগুলোতে সেগুলো পাঠাও।",
         "recordMetricsSaveFailed": "এই সেটিং বদলানো যায়নি। আবার চেষ্টা করো।",
         "recordMetricsEnvPinned": "{{envVar}} এনভায়রনমেন্ট ভেরিয়েবল এই সেটিং আটকে রেখেছে — এখানে বদলাতে চাইলে সেটি এনভায়রনমেন্ট থেকে সরিয়ে দাও।",
         "recordMetricsOverlayPinned": "config.local.json-এর একটি এন্ট্রি এই সেটিং আটকে রেখেছে — এখানে বদলাতে চাইলে সেটি সরিয়ে দাও।",
-        "recordMetricsEgressOff": "telemetry.otlp_endpoint সেট করা আছে, তাই রেকর্ড করলে মেট্রিক এই মেশিনের বাইরেও পাঠানো হবে। এটাই যদি চাও, তাহলে config.json ফাইলে গিয়ে এটি চালু করো।",
-        "recordMetricsEgressOn": "মেট্রিক এই মেশিনের বাইরে, telemetry.otlp_endpoint-এ থাকা কলেক্টরে পাঠানো হচ্ছে।",
-        "recordMetricsSaveRefusedEgress": "রেকর্ডিং চালু করা হয়নি: telemetry.otlp_endpoint সেট করা আছে, তাই এখান থেকে চালু করলে মেট্রিক এই মেশিনের বাইরে পাঠানো শুরু হবে। বদলে config.json ফাইলে গিয়ে এটি চালু করো।",
+        "recordMetricsEgressOff": "কলেক্টর কনফিগার করা আছে, তাই রেকর্ড করলে মেট্রিক এই মেশিনের বাইরেও পাঠানো হবে। এটাই যদি চাও, তাহলে config.json ফাইলে গিয়ে এটি চালু করো।",
+        "recordMetricsEgressOn": "মেট্রিক এই মেশিনের বাইরে, নিচে তালিকাভুক্ত কলেক্টরগুলোতে পাঠানো হচ্ছে।",
+        "recordMetricsEgressDestinations": "কলেক্টর: {{names}}",
+        "recordMetricsEgressLockedName": "{{name}} (এই বিল্ডে যুক্ত; «মেট্রিক রেকর্ড করো» বন্ধ করলে এটিও থেমে যায়)",
+        "recordMetricsEgressLockedNameOff": "{{name}} (এই বিল্ডে যুক্ত)",
+        "recordMetricsEgressLegacyName": "তোমার কলেক্টর (config.json)",
+        "recordMetricsSaveRefusedEgress": "রেকর্ডিং চালু করা হয়নি: কলেক্টর কনফিগার করা আছে, তাই এখান থেকে চালু করলে মেট্রিক এই মেশিনের বাইরে পাঠানো শুরু হবে। বদলে config.json ফাইলে গিয়ে এটি চালু করো।",
         "recordMetricsStatusUnavailable": "মেট্রিক রেকর্ডিং সেটিং লোড করা যায়নি। লোড না হওয়া পর্যন্ত সুইচটি লক থাকবে।"
       },
       "postureDisclosure": {
@@ -19425,7 +19542,7 @@
       "add_member": "নতুন সঙ্গী",
       "import_from_file": "ফাইল থেকে আমদানি করো",
       "import_title": "সঙ্গী আমদানি করো",
-      "import_hint": "কারও পাঠানো একটি .crewmate ফাইল বেছে নাও। পরের স্ক্রিনে সঙ্গী আমদানি করো না চাপা পর্যন্ত কিছুই তৈরি হবে না।",
+      "import_hint": "কারও পাঠানো একটি .crewjam ফাইল বেছে নাও। পরের স্ক্রিনে সঙ্গী আমদানি করো না চাপা পর্যন্ত কিছুই তৈরি হবে না।",
       "import_checking": "ফাইল যাচাই করা হচ্ছে…",
       "import_pick": "ফাইল বেছে নাও",
       "import_refused": "এই ফাইল আমদানি করা যাবে না।",
@@ -19823,7 +19940,7 @@
       "import_keep_hint": "পরে ঠিক করো চাপলে এই আমদানি মেয়াদ শেষ হওয়া পর্যন্ত এখানে অপেক্ষা করে। আমদানি কোরো না চাপলে এটি বাতিল হয়।",
       "import_later": "পরে ঠিক করো",
       "export_row": "ফাইল হিসেবে রপ্তানি করো",
-      "export_row_sub": "এই সঙ্গীকে .crewmate ফাইল হিসেবে শেয়ার করো",
+      "export_row_sub": "এই সঙ্গীকে .crewjam ফাইল হিসেবে শেয়ার করো",
       "export_title": "ফাইল হিসেবে রপ্তানি করো",
       "export_intro": "ফাইলে ঠিক সেটুকুই থাকে যা এখানে তালিকাভুক্ত। এই মেশিনে কিছুই সংরক্ষিত হয় না।",
       "export_identity": "নাম, বিবরণ ও ছবি",
@@ -20983,6 +21100,13 @@
     "remote_control_open": "রিমোট কন্ট্রোল সেট আপ করো",
     "invite_key_link": "Tailscale Keys খোলো",
     "requested_by_person": "{{name}}-এর পালায় চাওয়া হয়েছে",
+    "approved_by_you": "তুমি অনুমোদন করেছ",
+    "rejected_by_you": "তুমি প্রত্যাখ্যান করেছ",
+    "answered_by_you": "তুমি উত্তর দিয়েছ",
+    "requested_by_you": "তোমার পালায় চাওয়া হয়েছে",
+    "crew_owner": "Crew-এর মালিক",
+    "already_approved": "আগেই অন্য কোথাও অনুমোদিত",
+    "already_rejected": "আগেই অন্য কোথাও প্রত্যাখ্যাত",
     "cancel_work": "বাতিল",
     "invite_body": "এক ধাপে সহকর্মীকে আমন্ত্রণ জানাও। Tailscale এই মেশিনটি তার সাথে শেয়ার করে; সে গ্রহণ করলে Crew তার ব্যবহৃত Tailscale অ্যাকাউন্টকে ঢুকতে দেয়।",
     "setup_tailscale_body": "তোমার tailnet-এর সতীর্থরা Tailscale দিয়ে যুক্ত হন, প্রত্যেককে তাঁর tailnet লগইনের নামে দেখা যায়।",

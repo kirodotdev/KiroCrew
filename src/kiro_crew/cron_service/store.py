@@ -28,7 +28,12 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.cron_service.model import _AUTO_PAUSE_THRESHOLD, CronJob, CronSchedule
+from kiro_crew.cron_service.model import (
+    _ALERT_AFTER_DEFAULT,
+    _AUTO_PAUSE_THRESHOLD,
+    CronJob,
+    CronSchedule,
+)
 
 logger = logging.getLogger("kiro_crew.cron")
 
@@ -417,6 +422,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         # keep the default limit. A malformed value is left for
         # CronJob.auto_pause_limit() to read back as the default.
         auto_pause_after_failures=_guard_num("auto_pause_after_failures", _AUTO_PAUSE_THRESHOLD),
+        alert_after_failures=_guard_num("alert_after_failures", _ALERT_AFTER_DEFAULT),
         strict_schedule=j.get("strict_schedule", False),
         script=_selector_str("script"),
         command=_selector_str("command"),
@@ -611,6 +617,7 @@ def job_record(j: CronJob) -> dict[str, Any]:
         "env": j.env,
         "timeout_secs": j.timeout_secs,
         "auto_pause_after_failures": j.auto_pause_after_failures,
+        "alert_after_failures": j.alert_after_failures,
         "strict_schedule": j.strict_schedule,
         "script": j.script,
         "command": j.command,
@@ -626,6 +633,8 @@ def job_record(j: CronJob) -> dict[str, Any]:
     # an older build reading it back sees nothing new.
     if j.auto_pause_after_failures == _AUTO_PAUSE_THRESHOLD:
         del record["auto_pause_after_failures"]
+    if j.alert_after_failures == _ALERT_AFTER_DEFAULT:
+        del record["alert_after_failures"]
     # Written only when set, and last: a store with no ordered user pause,
     # installer-managed job, or app-registered job stays byte-identical to one
     # an older build writes.
@@ -643,8 +652,8 @@ def job_record(j: CronJob) -> dict[str, Any]:
 #: Every key :func:`job_record` can write, read off the encoder itself so the two
 #: cannot drift: a job that sets each conditionally written key
 #: (``user_pause_generation``, ``managed_by``, ``app_manifest_digest``, and a
-#: non-default ``auto_pause_after_failures``, which is omitted at the default). A
-#: record key outside this set came from a newer
+#: non-default ``auto_pause_after_failures`` and ``alert_after_failures``, which
+#: are omitted at the default). A record key outside this set came from a newer
 #: build. A key inside it is this build's to write or to omit, so a value this
 #: build cleared stays cleared.
 _KNOWN_JOB_KEYS = frozenset(
@@ -658,6 +667,7 @@ _KNOWN_JOB_KEYS = frozenset(
             managed_by="-",
             app_manifest_digest="-",
             auto_pause_after_failures=0,
+            alert_after_failures=2,
         )
     )
 )

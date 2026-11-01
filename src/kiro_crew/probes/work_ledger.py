@@ -370,11 +370,15 @@ class WorkLedgerProbe(irq.Probe):
                     )
                 )
 
-        if work_ledger.is_stale(
+        running, closed, looping = work_ledger.item_liveness(
+            conductor_key,
             item,
-            worker_running=self._worker_running(item.worker_session_key or ""),
-            worker_closed=self._worker_closed(item.worker_session_key or ""),
-            worker_looping=self._worker_looping(item.worker_session_key or ""),
+            running=self._worker_running,
+            closed=self._worker_closed,
+            looping=self._worker_looping,
+        )
+        if work_ledger.is_stale(
+            item, worker_running=running, worker_closed=closed, worker_looping=looping
         ):
             # The whole liveness conjunction is ``is_stale``'s, not this module's:
             # quiet past the window -- or the worker's session gone, which needs no
@@ -515,6 +519,12 @@ def person_wait_fingerprint(
             item.status in WORK_REASON_STATUSES and item.reason in WORK_BLOCKED_REASONS
             for item in open_items
         ):
+            return None
+        if any(item.worker_instance_id for item in open_items):
+            # A remote worker's reports reach this board only when the conductor
+            # reads it (the hub pulls on read), so its fields here can be older than
+            # the peer's. Holding the patrol on them could hold it past the report
+            # that moves the item; the patrol runs instead.
             return None
         closed = worker_closed or _always_open
         if any(closed(item.worker_session_key or "") for item in open_items):

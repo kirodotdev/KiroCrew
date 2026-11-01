@@ -31,6 +31,16 @@ import { uiLocation } from '../../uiLocations/uiLocation'
  *  mute) via the first-notification prompt. System channels never prompt. */
 export const SEEN_CHANNELS_STORAGE_KEY = 'mc:notif:seenChannels'
 
+const withChannel = (set: ReadonlySet<string>, channel: string): ReadonlySet<string> =>
+  set.has(channel) ? set : new Set(set).add(channel)
+
+function withoutChannel(set: ReadonlySet<string>, channel: string): ReadonlySet<string> {
+  if (!set.has(channel)) return set
+  const next = new Set(set)
+  next.delete(channel)
+  return next
+}
+
 function loadSeenChannels(): Set<string> {
   try {
     const arr = JSON.parse(localStorage.getItem(SEEN_CHANNELS_STORAGE_KEY) || '[]')
@@ -75,18 +85,38 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   // prompt (persisted so the prompt shows exactly once per channel).
   const [seenChannels, setSeenChannels] = useState<Set<string>>(loadSeenChannels)
 
+  // Writes the decision to storage outside the state updater, so a mute that
+  // lands after this feed unmounted (the bell popover closed) is still kept.
   const markChannelSeen = useCallback((channel: string) => {
+    const stored = loadSeenChannels()
+    stored.add(channel)
+    try { safeSetItem(SEEN_CHANNELS_STORAGE_KEY, JSON.stringify(Array.from(stored))) } catch { /* ignore quota errors */ }
     setSeenChannels(prev => {
+      if (prev.has(channel)) return prev
       const next = new Set(prev)
       next.add(channel)
-      try { safeSetItem(SEEN_CHANNELS_STORAGE_KEY, JSON.stringify(Array.from(next))) } catch { /* ignore quota errors */ }
       return next
     })
   }, [])
 
+  // Mute records the channel as decided only once the server took the mute.
+  // A failed write keeps the prompt up with an error, so the user can retry
+  // instead of being left with a loud channel and no prompt.
+  // Both are per channel: one channel's save or failure never unlocks or
+  // clears another's.
+  const [mutingChannels, setMutingChannels] = useState<ReadonlySet<string>>(() => new Set())
+  const [muteFailedChannels, setMuteFailedChannels] = useState<ReadonlySet<string>>(() => new Set())
   const muteChannel = useCallback((channel: string) => {
+    setMuteFailedChannels(prev => withoutChannel(prev, channel))
+    setMutingChannels(prev => withChannel(prev, channel))
+    api.updateNotificationChannelSettings(channel, { muted: true })
+      .then(() => { markChannelSeen(channel) })
+      .catch(() => { setMuteFailedChannels(prev => withChannel(prev, channel)) })
+      .finally(() => { setMutingChannels(prev => withoutChannel(prev, channel)) })
+  }, [markChannelSeen])
+  const keepChannel = useCallback((channel: string) => {
+    setMuteFailedChannels(prev => withoutChannel(prev, channel))
     markChannelSeen(channel)
-    api.updateNotificationChannelSettings(channel, { muted: true }).catch(() => {})
   }, [markChannelSeen])
 
   const silencedCount = useMemo(() => items.filter(n => n.silenced).length, [items])
@@ -114,14 +144,24 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
 
   // First notification from a new app channel gets an inline keep/mute prompt
   // (attached to the newest such row). System channels never prompt; a channel
-  // already decided on (or already muted server-side) doesn't either.
-  const promptTs = useMemo(() => {
+  // already decided on (or already muted server-side) doesn't either. A
+  // channel whose mute is saving or failed keeps its prompt on its own newest
+  // row, so a note from another new channel cannot hide that save or its error.
+  const promptTsSet = useMemo(() => {
+    const out = new Set<string>()
+    const prompted = new Set<string>()
+    let freshShown = false
     for (const n of filtered) {
-      if (n.source && n.source !== 'system' && n.channel &&
-          !seenChannels.has(n.channel) && !n.silenced) return n.ts
+      if (!n.source || n.source === 'system' || !n.channel ||
+          seenChannels.has(n.channel) || n.silenced || prompted.has(n.channel)) continue
+      const held = mutingChannels.has(n.channel) || muteFailedChannels.has(n.channel)
+      if (!held && freshShown) continue
+      if (!held) freshShown = true
+      out.add(n.ts)
+      prompted.add(n.channel)
     }
-    return null
-  }, [filtered, seenChannels])
+    return out
+  }, [filtered, seenChannels, mutingChannels, muteFailedChannels])
 
   const groups = useMemo(() => {
     const map = new Map<string, Notification[]>()
@@ -390,13 +430,16 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       <div className="flex-1 min-w-0 text-[12px] text-text">{i18nT('components.notifications.notificationFeed.first_notification_from')} <span className="font-semibold">{pc.label}</span>{i18nT('components.notifications.notificationFeed.keep_receiving_these')}</div>
       <button
         type="button"
-        className="px-2.5 py-1 rounded-md text-[12px] font-semibold cursor-pointer border-none bg-accent text-card hover:opacity-90 transition-opacity font-body whitespace-nowrap"
-        onClick={() => markChannelSeen(pc.channel)}
+        className="px-2.5 py-1 rounded-md text-[12px] font-semibold cursor-pointer border-none bg-accent text-card hover:opacity-90 transition-opacity font-body whitespace-nowrap disabled:opacity-50 disabled:cursor-default"
+        onClick={() => keepChannel(pc.channel)}
+        // Keep waits for an in-flight mute, so the two answers cannot race.
+        disabled={mutingChannels.has(pc.channel)}
       >{i18nT('components.notifications.notificationFeed.keep')}</button>
       <button
         type="button"
-        className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer bg-transparent text-muted border border-border-strong hover:text-text transition-colors font-body whitespace-nowrap"
+        className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer bg-transparent text-muted border border-border-strong hover:text-text transition-colors font-body whitespace-nowrap disabled:opacity-50 disabled:cursor-default"
         onClick={() => muteChannel(pc.channel)}
+        disabled={mutingChannels.has(pc.channel)}
         {...uiLocation('notifications.mute-channel')}
       >{i18nT('components.notifications.notificationFeed.mute_channel')}</button>
     </>
@@ -501,7 +544,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // index.css solidifies these surfaces to var(--card) where
                 // backdrop-filter is unsupported (#1817).
                 const panelBorder = silenced ? 'border-l-muted' : prio === 'critical' ? 'border-l-danger' : km.borderColor
-                const promptChannel = promptTs === n.ts && n.channel && n.source
+                const promptChannel = promptTsSet.has(n.ts) && n.channel && n.source
                   ? { channel: n.channel, label: `${n.source} / ${n.channel.startsWith(`${n.source}.`) ? n.channel.slice(n.source.length + 1) : n.channel}` }
                   : null
                 // Inline actions: approval approve/reject, plus generic
@@ -719,6 +762,14 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         {promptBody(promptChannel)}
                       </div>
                     ))}
+                    {promptChannel && (
+                      <ErrorNotice
+                        message={muteFailedChannels.has(promptChannel.channel) ? i18nT('components.notifications.notificationFeed.mute_failed') : null}
+                        askAgent
+                        actionPlacement="below"
+                        className="mb-2"
+                      />
+                    )}
                   </div>
                 )
               })}

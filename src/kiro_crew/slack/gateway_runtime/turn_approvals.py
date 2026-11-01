@@ -312,22 +312,10 @@ def _interactive_approval(
                 # re-checked here per request and never renewed from here.
                 _ps_trusted = bool(_ps) and _slot_is_trusted(_ps)
                 _ps_via_scope = _ps_trusted and _auto_approve_reason(_ps, False) == "trust_scope"
-                # A Crew Mode card trust ("Trust this worker") covers THAT
-                # worker's own tools only (decided per event by chat_runner).
-                # Everything that reaches this gate on its behalf -- its
-                # spawn_run, its subagents' tools -- still asks, so the request
-                # reaches the conductor's card.
-                from kiro_crew.dashboard.approval_posture import trust_carries
-
-                _ps_card_scoped = _ps_trusted and not _ps_via_scope and not trust_carries(_ps)
-                if _ps_card_scoped:
-                    _sel_log(
-                        caller=f"slot:{_parent_slot_key}",
-                        operation=f"{source}.card_trust_not_inherited",
-                        outcome="not_auto_approved",
-                        resources=_safe_title,
-                    )
-                elif _ps_trusted and not _child_grant_eligible:
+                # A Crew Mode card trust ("Trust this worker") is a slot trust
+                # here like any other (``_slot_is_trusted``): it covers the
+                # worker's spawn_run and its subagents' tools.
+                if _ps_trusted and not _child_grant_eligible:
                     # Slot IS trusted; the fidelity gate is what blocks
                     # the auto-approve. A distinct audit reason — an
                     # auditor reading "not_trusted" for a trusted slot

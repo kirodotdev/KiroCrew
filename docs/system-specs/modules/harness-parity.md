@@ -5,13 +5,14 @@ first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
 growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`
 (`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), OpenCode
 (`ACP_BACKEND_OPENCODE`), Pi (`ACP_BACKEND_PI`), goose (`ACP_BACKEND_GOOSE`),
-and DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), plus whatever a bring-your-own
+DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), GitHub Copilot CLI
+(`ACP_BACKEND_COPILOT`) and Strands (`ACP_BACKEND_STRANDS`), plus whatever a bring-your-own
 (BYO) adapter registers next. Adding a harness requires reviewing
 `session_pid_orphan_scan.py::_BROWSER_PLAUSIBLE_OWNER_NAMES` as a separate
 touchpoint, because an unreadable environment on a recognizable harness process
 must keep its browser daemon alive.
 
-Kiro, Claude Code, KAS, Codex, OpenCode, Pi, goose and DeepSeek are selectable on a
+Kiro, Claude Code, KAS, Strands, Codex, OpenCode, Pi, goose, DeepSeek and Copilot are selectable on a
 plain public build. Claude Code in particular is a shipped harness and not a dormant seam: `acp/harness/claude.py` owns the
 whole Claude launch and the adapter is a public npm package, so an earlier
 revision that left it out of the baseline removed only the switch, never a
@@ -38,9 +39,9 @@ set once both halves landed — `backend_install.py` gained its probe, so the in
 names the missing component and its command instead of reading `unknown`, and
 `acp_tool_gate` established that its tool calls reach the PreToolUse gate.
 
-Read the invariants below against that tree: eight harnesses can serve a real
+Read the invariants below against that tree: ten harnesses can serve a real
 session today, so a site that spells "kiro" by exclusion is already wrong on
-seven of them.
+nine of them.
 
 *Parity* here does not mean equal treatment. It means the opposite, stated
 precisely: **an added harness may only adapt itself to the seams the Kiro
@@ -118,7 +119,15 @@ mirror: the consumed spec is the parse its member mounts and zero-tool answer
 come from (`AcpClient._mirrorless_member_mounts`), and since its projection is
 `BROKER_ONLY` a declared server that is not pooled never reaches pi and leaves
 the session unverified rather than applied. On a member session pi's pooled stubs
-pass the spec's `tools` allowlist, as a mirror's do. `ACP_BACKENDS_MEMBER_TOOL_LIMITS`
+pass the spec's `tools` allowlist, as a mirror's do. strands is outside every
+member-facing set (`ACP_BACKENDS_MEMBER_CAPABILITIES`, `ACP_BACKENDS_MEMBER_DISPATCH`,
+`ACP_BACKENDS_MEMBER_PANEL`, `ACP_BACKENDS_MATE_WORKER_KIT`): a member or worker
+session's Crew servers (`kirocrew-core`, the dashboard and panel mounts) are stdio
+children inside its sandbox, and the enforced credential mask hides the gateway
+credential from them, so their gateway-backed calls would be refused. Its mirror
+already confirms a saved spec (`strands/saved-spec-projection-live.jsonl`, recorded
+with no mask); it joins once a host-side control-plane transport exists.
+`ACP_BACKENDS_MEMBER_TOOL_LIMITS`
 (Kiro only) says which honour a saved spec's per-tool `disabledTools`; on any
 other backend such a spec is refused before spawn with
 `capability_tool_limits_unsupported`. A member DM whose
@@ -201,10 +210,11 @@ exists, it uses the factory's member-aware `select_provider_backend` authority.
 default `agent.acp_backend` capability only; a member session routed to a
 different harness is still judged by the gate above when the command is sent.
 The same default decides the rest of the list on a harness in
-`ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS): the list keeps only the commands
-the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`, `/mcp`,
-`/model`, `/prompts`, `/side`, `/tools`, `/workflow`), because the slash gate reads
-the same set and answers every other harness command with a notice. `/model`,
+`ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS, Strands): the list keeps only the
+commands the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`,
+`/prompts`, `/side`, `/workflow`, plus `/mcp`, `/model` and `/tools` on KAS alone,
+`served_slash_commands`), because the slash gate reads the same set and answers
+every other harness command with a notice naming the harness. `/model`,
 `/tools` and `/mcp` are answered by `dashboard/kas_local_commands.py` from state
 the dashboard already holds, never by the model and without a turn: `/model`
 shows the slot's pin and the session's advertised list (else the recorded KAS

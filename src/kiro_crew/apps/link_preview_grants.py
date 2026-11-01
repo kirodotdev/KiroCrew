@@ -23,119 +23,29 @@ Three grant families:
     where a signed link carries its credential), else empty. Turning it on is a
     widening like any other.
 
-Hosts must not claim a public suffix (``co.uk``, ``github.io``): such a claim would
-reach every site under it. The check is a curated list plus a rule for the common
-ccTLD second levels, not the full Public Suffix List, which this package does not
-ship; ``website/src/linkPreview/linkPreviewRegistry.ts`` mirrors both.
+Hosts follow the one rule every point shares (``apps/app_hosts.py``): normalized,
+and never a public suffix or a bare TLD. The families are registered with the other
+points' in ``apps/point_grants.py``.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from typing import Any
+
+# Re-exported: the host rule lives in app_hosts, shared by every point that names hosts.
+from kiro_crew.apps.app_hosts import (  # noqa: F401
+    _CC_SECOND_LEVELS,
+    PUBLIC_SUFFIXES,
+    host_refusal,
+    is_public_suffix,
+    normalize_host,
+)
 
 #: Grant families this module derives, in the order they are stored.
 LINK_PREVIEW_GRANT_FAMILIES = ("linkPreviewHosts", "linkPreviewTextPatterns", "linkPreviewFullUrl")
 #: The one entry of ``linkPreviewFullUrl``.
 FULL_URL_ENTRY = "fullUrl"
-
-#: Characters transitional and non-transitional IDNA map differently.
-_IDNA_DEVIATIONS = frozenset("\u00df\u03c2\u200c\u200d")
-
-_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
-
-#: Second-level labels a country-code TLD commonly sells under (``co.uk``,
-#: ``com.au``, ``ac.jp``). ``<label>.<two letters>`` is treated as a public suffix.
-_CC_SECOND_LEVELS = frozenset(
-    {
-        "ac",
-        "co",
-        "com",
-        "edu",
-        "gob",
-        "go",
-        "gov",
-        "ltd",
-        "mil",
-        "ne",
-        "net",
-        "nic",
-        "or",
-        "org",
-        "plc",
-        "sch",
-    }
-)
-
-#: Suffixes under which anyone can publish a site. Claiming one would match every
-#: tenant. Mirrored in ``linkPreviewRegistry.ts`` (``PUBLIC_SUFFIXES``).
-PUBLIC_SUFFIXES = frozenset(
-    {
-        "appspot.com",
-        "azurewebsites.net",
-        "blogspot.com",
-        "cloudfront.net",
-        "firebaseapp.com",
-        "github.io",
-        "gitlab.io",
-        "herokuapp.com",
-        "netlify.app",
-        "ngrok.io",
-        "pages.dev",
-        "vercel.app",
-        "web.app",
-        "workers.dev",
-    }
-)
-
-
-def normalize_host(raw: str) -> str | None:
-    """The canonical form of a manifest host, or None when it is not a hostname.
-
-    Lowercase, one trailing dot dropped, each label in IDNA (punycode) form. A
-    leading dot is kept. Validity of the result is :func:`host_refusal`'s job.
-    """
-    s = str(raw).strip().lower()
-    lead = s.startswith(".")
-    if lead:
-        s = s[1:]
-    if s.endswith("."):
-        s = s[:-1]
-    if not s:
-        return None
-    # Python's codec is transitional IDNA 2003: it maps the deviation characters
-    # (ß to ss, ς to σ, and drops ZWJ/ZWNJ) where a browser keeps them (UTS 46
-    # non-transitional), so the two would name different domains. Such a host is
-    # refused rather than normalized to the wrong one.
-    if _IDNA_DEVIATIONS & set(s):
-        return None
-    try:
-        ascii_host = s.encode("idna").decode("ascii")
-    except UnicodeError:
-        return None
-    return ("." if lead else "") + ascii_host
-
-
-def is_public_suffix(host: str) -> bool:
-    """Whether a normalized host (no leading dot) is a public suffix or a bare TLD."""
-    labels = host.split(".")
-    if len(labels) < 2:
-        return True
-    if host in PUBLIC_SUFFIXES:
-        return True
-    return len(labels) == 2 and len(labels[1]) == 2 and labels[0] in _CC_SECOND_LEVELS
-
-
-def host_refusal(host: str) -> str | None:
-    """Why a normalized host cannot be declared, or None when it can."""
-    bare = host[1:] if host.startswith(".") else host
-    labels = bare.split(".")
-    if len(bare) > 253 or any(not _LABEL_RE.fullmatch(lbl) or len(lbl) > 63 for lbl in labels):
-        return "not a hostname"
-    if is_public_suffix(bare):
-        return "a public suffix or a bare top-level domain"
-    return None
 
 
 def pattern_grant(tp: dict[str, Any], index: int) -> str:
@@ -194,35 +104,6 @@ def link_preview_grant_entries(contributes: Any) -> dict[str, list[str]]:
     }
 
 
-def grant_source(manifest: Any) -> dict[str, list[str]] | None:
-    """Every staged grant family a manifest declares, as one mapping.
-
-    Accepts a parsed ``AppManifest`` or a raw manifest dict, and returns ``None``
-    for ``None``, so a caller that has no manifest keeps passing ``None``.
-    """
-    if manifest is None:
-        return None
-    if isinstance(manifest, dict):
-        perms = manifest.get("permissions")
-        contributes = manifest.get("contributes")
-        perms = perms if isinstance(perms, dict) else {}
-        api = perms.get("api")
-        events = perms.get("events")
-    else:
-        perms_obj = getattr(manifest, "permissions", None)
-        contributes = getattr(manifest, "contributes", None)
-        api = getattr(perms_obj, "api", None)
-        events = getattr(perms_obj, "events", None)
-    out: dict[str, list[str]] = {
-        "api": [e for e in api if isinstance(e, str) and e] if isinstance(api, list) else [],
-        "events": (
-            [e for e in events if isinstance(e, str) and e] if isinstance(events, list) else []
-        ),
-    }
-    out.update(link_preview_grant_entries(contributes))
-    return out
-
-
 def link_preview_grant_row(name: str, manifest: Any) -> dict[str, Any]:
     """The ``linkPreviewGrant`` key of an app row: what the owner approved, and what waits.
 
@@ -272,7 +153,6 @@ __all__ = [
     "FULL_URL_ENTRY",
     "LINK_PREVIEW_GRANT_FAMILIES",
     "PUBLIC_SUFFIXES",
-    "grant_source",
     "host_refusal",
     "is_public_suffix",
     "link_preview_grant_entries",

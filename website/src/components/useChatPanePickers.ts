@@ -54,7 +54,10 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   // This pane takes no project prop, so read THIS slot's project from the store:
   // it scopes which project-local agents exist, so a project change must refetch.
   const paneProject = useAppSelector((s) => slotRowByKey(s.dashboard.slots, slotKey)?.project || undefined)
-  const { agents: installedAgents, choices: catalogChoices, defaultAgent } = useAgents(agentsRefreshTrigger, slotKey, paneProject)
+  const { agents: installedAgents, displayAgents: loadedAgents, choices: catalogChoices, defaultAgent } = useAgents(agentsRefreshTrigger, slotKey, paneProject)
+  // Display-only roster (the header's agent colour): the last LOADED list, so a
+  // scope switch does not blank it. Falls back for sources exposing only `agents`.
+  const displayAgents = loadedAgents ?? installedAgents
   // The picker lists every catalog row (a member and a template of one name
   // are two rows). A roster source that exposes only the folded list -- one
   // row per name -- is still a complete, if namespace-blind, catalog.
@@ -184,7 +187,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   )
 
   return {
-    installedAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD,
+    installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD,
     selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
     attachModelList, modelListEdges, agentBtnRect, anchorAgentBtn, modelBtnRect, anchorModelBtn, shownModel,
     effortSupported, effortLevelsOverride, defaultEffort, effectiveEffort, chipDefault, modelMarker,

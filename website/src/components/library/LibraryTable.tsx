@@ -782,24 +782,39 @@ export function FolderRow({ folder, folders, depth, expanded, onToggle, actions,
               onClick={() => { if (!renaming) onToggle(folder.id) }}
               style={{ opacity: isDragging ? 0.4 : 1 }}
               className={`group cursor-pointer transition-colors focus-ring-accent-inset ${isOver || dropHighlight ? 'bg-accent/15' : 'hover:bg-bg-hover'}`}
-              aria-expanded={expanded}
             >
               <td colSpan={9} className="px-2.5 py-1.5 border-b border-border" style={depth > 0 ? { paddingLeft: `${10 + depth * 20}px` } : undefined}>
                 <div className={`flex items-center gap-1.5 rounded transition-shadow ${isOver || dropHighlight ? 'ring-2 ring-inset ring-accent/50 px-1 -mx-1' : ''}`}>
-                  <Chevron size={13} className="text-muted shrink-0" />
-                  <FolderGlyph folder={folder} size={14} open={expanded} />
                   {renaming ? (
-                    <span className="min-w-0 flex-1 max-w-[280px]">
-                      <FolderNameInput
-                        initial={folder.name}
-                        placeholder={i18nT('pages.artifactsPage.rename_folder')}
-                        onCommit={(name) => actions.onRenameSubmit(folder, name)}
-                        onCancel={actions.onRenameCancel}
-                        onClose={restoreRowFocus}
-                      />
-                    </span>
+                    <>
+                      <Chevron size={13} className="text-muted shrink-0" />
+                      <FolderGlyph folder={folder} size={14} open={expanded} />
+                      <span className="min-w-0 flex-1 max-w-[280px]">
+                        <FolderNameInput
+                          initial={folder.name}
+                          placeholder={i18nT('pages.artifactsPage.rename_folder')}
+                          onCommit={(name) => actions.onRenameSubmit(folder, name)}
+                          onCancel={actions.onRenameCancel}
+                          onClose={restoreRowFocus}
+                        />
+                      </span>
+                    </>
                   ) : (
-                    <span className="text-sm text-text-strong font-medium truncate">{folder.name}</span>
+                    // The row is not a tab stop (tabIndex -1 is only the rename
+                    // editor's focus return) and the ⋯ menu has no expand item,
+                    // so this button is the keyboard's only way into a folder.
+                    // A sibling of the menu button, never its parent. It stops
+                    // the click so the row's own handler does not toggle twice.
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      onClick={(e) => { e.stopPropagation(); onToggle(folder.id) }}
+                      className="flex items-center gap-1.5 min-w-0 p-0 bg-transparent border-none rounded cursor-pointer text-left focus-ring-accent"
+                    >
+                      <Chevron size={13} aria-hidden className="text-muted shrink-0" />
+                      <FolderGlyph folder={folder} size={14} open={expanded} />
+                      <span className="text-sm text-text-strong font-medium truncate">{folder.name}</span>
+                    </button>
                   )}
                   <span className="text-[11px] text-muted">
                     {stats.artifactCount}{stats.subfolderCount > 0 ? ` · ${i18nT('pages.artifactsPage.folder', { count: stats.subfolderCount })}` : ''}

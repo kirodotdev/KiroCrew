@@ -678,7 +678,10 @@
         "header_addressing_review": "REVISIÓN",
         "header_awaiting_merge": "ESPERA FUSIÓN",
         "header_resolved": "RESUELTO",
-        "page_label": "Pipeline de auto-triaje"
+        "page_label": "Pipeline de auto-triaje",
+        "load_failed": "No se pudo cargar el pipeline",
+        "load_failed_unknown": "La lectura falló sin indicar el motivo.",
+        "retry": "Reintentar"
       },
       "global": {
         "unattributed_label": "EVENTOS SIN REPOSITORIO",
@@ -2906,9 +2909,6 @@
             "no_members_found_for_this_repo": "No se encontraron miembros para este repositorio.",
             "notifications": "Notificaciones",
             "notify_me_when_a": "Avísame cuando se abra una",
-            "of": "de",
-            "open_issues_are_marked_first_issue_friendly": "incidencias abiertas están marcadas como aptas para una primera contribución",
-            "open_issues_currently_need_triage": "incidencias abiertas necesitan clasificación ahora mismo",
             "open_on": "Abrir en",
             "open_tagging": "Abrir Etiquetado",
             "organises_its_issues_and_are_never_written_back": "organiza sus incidencias y nunca se escriben en",
@@ -2937,7 +2937,11 @@
             "without_push_access_to": "Sin acceso de escritura a",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Tus cambios se conservan aquí, pero no se guardarán. Si acabas de actualizar Issue Radar, reinicia el backend para que la API de ajustes esté disponible.",
             "notify_me_when_ci_fails_on_my_pull_request": "Avísame cuando falle la CI en una de mis pull requests en {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Solo lee las ejecuciones de GitHub Actions de tus propias pull requests abiertas, con tu sesión de gh. Siléncialo o cambia su prioridad en Ajustes → Notificaciones."
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Solo lee las ejecuciones de GitHub Actions de tus propias pull requests abiertas, con tu sesión de gh. Siléncialo o cambia su prioridad en Ajustes → Notificaciones.",
+            "first_issue_friendly_count_one": "<strong>{{n}}</strong> incidencia abierta está marcada como apta para una primera contribución",
+            "first_issue_friendly_count_many": "<strong>{{n}}</strong> incidencias abiertas están marcadas como aptas para una primera contribución",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> incidencias abiertas están marcadas como aptas para una primera contribución",
+            "triage_needed_of_open": "Incidencias abiertas que necesitan clasificación: <strong>{{triage}}</strong> de {{n}}"
           }
         },
         "tagging": {
@@ -5043,7 +5047,10 @@
           "up": "Subir",
           "use_recent_project": "Usar el proyecto reciente {{path}}",
           "use_this_folder": "Usar esta carpeta",
-          "use_this_folder_path": "Usar esta carpeta: {{path}}"
+          "use_this_folder_path": "Usar esta carpeta: {{path}}",
+          "load_failed": "No se pudo listar esta carpeta",
+          "load_failed_unknown": "La lectura falló sin indicar el motivo.",
+          "retry": "Reintentar"
         },
         "settingsModal": {
           "cancel": "Cancelar",
@@ -5230,7 +5237,10 @@
         "rerunning": "Volviendo a ejecutar…",
         "started_run": "Ejecución iniciada",
         "view_source": "Ver el código fuente",
-        "workflow_source_for": "código fuente del flujo de trabajo de {{runId}}"
+        "workflow_source_for": "código fuente del flujo de trabajo de {{runId}}",
+        "lines_one": "{{count}} línea",
+        "lines_many": "{{count}} líneas",
+        "lines_other": "{{count}} líneas"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Crea, ejecuta y observa flujos de trabajo dinámicos",
@@ -5245,20 +5255,27 @@
         "validate": "Validar",
         "workflow_script_python": "Script del flujo de trabajo (Python)",
         "workflow_source": "código fuente del flujo de trabajo",
-        "workflows": "Flujos de trabajo"
+        "workflows": "Flujos de trabajo",
+        "view_author": "Crear",
+        "view_runs": "Ejecuciones"
       },
       "workflowsRuns": {
         "budget": "presupuesto",
         "cancel": "Cancelar",
         "cancelling": "Cancelando…",
         "could_not_load_runs": "No se pudieron cargar las ejecuciones:",
-        "events": "eventos",
         "no_background_runs_yet_runs_started_in_the_backg": "Aún no hay ejecuciones en segundo plano. Las ejecuciones iniciadas en segundo plano aparecen aquí.",
         "run_detail": "Detalle de la ejecución",
         "select_a_run_to_see_its_phases_agents_and_result": "Selecciona una ejecución para ver sus fases, agentes y resultado.",
         "unknown": "Desconocido",
         "view_graph": "Grafo",
-        "view_tree": "Árbol"
+        "view_tree": "Árbol",
+        "agents_one": "{{count}} agente",
+        "agents_many": "{{count}} agentes",
+        "agents_other": "{{count}} agentes",
+        "events_one": "{{count}} evento",
+        "events_many": "{{count}} eventos",
+        "events_other": "{{count}} eventos"
       }
     },
     "commandBar": {
@@ -5802,15 +5819,18 @@
       "asked": "Pediste",
       "done": "Hecho",
       "label": "Puesta al día",
+      "more_waiting": "{{count}} más",
       "needs_you": "Te necesita",
       "next": "Siguiente",
       "progress": "Progreso",
       "progress_count": "{{accepted}} de {{total}} hechas",
       "remaining": "Falta",
+      "show_fewer": "Mostrar menos",
       "status_blocked": "Bloqueado",
       "status_done": "Terminado",
       "status_needs_you": "Te espera",
-      "status_on_track": "Va bien"
+      "status_on_track": "Va bien",
+      "unlisted": "{{count}} más sin listar"
     },
     "voicePlaybackNotice": {
       "failed": "No se pudo usar «{{speak}}». Revisa los ajustes de texto a voz e inténtalo de nuevo.",
@@ -6093,7 +6113,8 @@
       "some_setup_could_not_be_read": "{{productName}} no pudo leer {{sources}}: no aparece a continuación.",
       "files_could_not_be_read": "No se pudieron leer los archivos",
       "your_existing_kirocrew_setup_will_not_be_affecte": "Tu configuración existente de {{productName}} no se verá afectada.",
-      "your_selected_setup_is_ready_in_kiro_crew": "La configuración que seleccionaste ya está lista en {{productName}}."
+      "your_selected_setup_is_ready_in_kiro_crew": "La configuración que seleccionaste ya está lista en {{productName}}.",
+      "import_setup_stage": "Importar configuración · {{stage}} de {{stages}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Guardado, pero esta copia de {{productName}} no pudo actualizar la configuración del agente, así que los chats nuevos mantienen la configuración anterior. Abre la página «Registros» para ver el motivo."
@@ -6142,6 +6163,14 @@
       "retry": "Reintentar",
       "this_app_is_disabled": "Esta app está desactivada",
       "this_app_provides_agents_and_skills_but_no_visua": "Esta app proporciona agentes y habilidades, pero no tiene interfaz visual.\n            Usa sus agentes desde el chat."
+    },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "Abrir la app en su propia ventana",
+      "this_app_is_open_in_its_own_window_focus_it": "Esta app está abierta en su propia ventana — enfócala",
+      "focus_popped_out_window": "Enfocar la ventana aparte",
+      "return": "Devolver",
+      "return_to_main_window": "Volver a la ventana principal",
+      "return_this_app_to_the_main_window": "Devolver esta app a la ventana principal"
     },
     "approvalCard": {
       "actions_group": "Acciones de aprobación",
@@ -6685,7 +6714,8 @@
       "split_right_d": "Dividir a la derecha (⌘D)",
       "type_to_filter": "Escribe para filtrar…",
       "earlier_conversation_show": "Empezar de cero a las {{time}} · Mostrar mensajes anteriores ({{count}})",
-      "earlier_conversation_hide": "Empezar de cero a las {{time}} · Ocultar mensajes anteriores (ya no los recuerda)"
+      "earlier_conversation_hide": "Empezar de cero a las {{time}} · Ocultar mensajes anteriores (ya no los recuerda)",
+      "preparing_catch_up": "Preparando tu resumen…"
     },
     "cliPanel": {
       "copied": "Copiado",
@@ -7025,7 +7055,7 @@
       "next": "Siguiente",
       "no_execution_history_yet": "Aún no hay historial de ejecuciones",
       "ok": "OK",
-      "page": "Página",
+      "page_n": "Página {{page}}",
       "prev": "Anterior",
       "status": "Estado",
       "summary": "Resumen",
@@ -7484,6 +7514,9 @@
       "auto_pause_after_failures": "Pausar automáticamente tras N fallos seguidos",
       "auto_pause_after_failures_description": "0 significa no pausar nunca. A partir del 5.º fallo seguido, una tarea con 0 o más de 5 espera 5 minutos antes de la siguiente ejecución, y el tiempo se duplica hasta una hora.",
       "auto_pause_after_failures_invalid": "El límite de pausa automática debe ser un número entero de 0 a 10000.",
+      "alert_after_failures": "Enviar el mensaje de fallo tras N fallos seguidos",
+      "alert_after_failures_description": "1 lo envía en la primera ejecución fallida. Los fallos anteriores siguen sonando la campana del panel; una denegación de política y la ejecución que pausa la tarea siempre lo envían.",
+      "alert_after_failures_invalid": "El umbral de alerta debe ser un número entero de 1 a 10000.",
       "runs_as": "Se ejecuta como",
       "runs_as_custom_agent": "Agente personalizado",
       "runs_as_crewmate": "Compañero",
@@ -7514,13 +7547,13 @@
       "copied": "Copiado",
       "copy_link": "Copiar enlace",
       "could_not_start_sign_in": "No se pudo iniciar la sesión. Comprueba tu conexión e inténtalo de nuevo.",
-      "device_aside_body": "{{productName}} se ejecuta en otro equipo, así que no puede abrir una ventana del navegador por ti. Abre el enlace de abajo en cualquier dispositivo — tu teléfono sirve — e introduce el código.",
+      "device_aside_body": "Abre el enlace de abajo en tu navegador e introduce el código. Si {{productName}} se ejecuta en otro equipo, sirve cualquier dispositivo, incluso tu teléfono.",
       "device_aside_footnote": "El código es válido durante un tiempo limitado.",
       "device_aside_headline": "Aprueba en tu navegador",
-      "enter_the_code_in_your_browser": "Termina de iniciar sesión en tu teléfono o en otro equipo",
+      "enter_the_code_in_your_browser": "Termina de iniciar sesión en tu navegador",
       "enter_this_code": "Introduce este código",
       "get_started": "Empezar",
-      "open_this_link": "Abre este enlace en tu teléfono o en otro navegador",
+      "open_this_link": "Abre este enlace en tu navegador",
       "provider_builder_id": "AWS Builder ID",
       "provider_company_sso": "SSO de empresa",
       "provider_github": "GitHub",
@@ -8125,6 +8158,7 @@
         "keep_receiving_these": ". ¿Seguir recibiéndolas?",
         "mark_all_as_read": "Marcar todas como leídas",
         "mute_channel": "Silenciar canal",
+        "mute_failed": "No se pudo silenciar este canal. Inténtalo de nuevo.",
         "muted_2": "silenciada",
         "no_notifications": "Sin notificaciones",
         "open_notification": "Abrir la notificación: {{title}}",
@@ -8646,11 +8680,11 @@
     },
     "searchResultsList": {
       "assistant": "Asistente",
-      "matches_around_the_current_result_narrow_your_se": "coincidencias en torno al resultado actual: acota tu búsqueda para verlas todas.",
-      "of": "de",
       "search_results": "Resultados de búsqueda",
       "selected": "seleccionado",
-      "showing": "Mostrando",
+      "showing_matches_many": "Mostrando {{shown}} de {{n}} coincidencias en torno al resultado actual: acota tu búsqueda para verlas todas.",
+      "showing_matches_one": "Mostrando {{shown}} de {{n}} coincidencia en torno al resultado actual: acota tu búsqueda para verlas todas.",
+      "showing_matches_other": "Mostrando {{shown}} de {{n}} coincidencias en torno al resultado actual: acota tu búsqueda para verlas todas.",
       "you": "Tú"
     },
     "multiSelect": {
@@ -9163,18 +9197,19 @@
       "var_warning": "Advertencia"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• Adoptar una personalidad temática en el asistente (la seguridad y la precisión siempre tienen prioridad; puedes pedirle que abandone la personalidad en cualquier momento).",
-      "enable_experience": "Activar la experiencia",
       "enable_named_experience": "¿Activar la experiencia “{{name}}”?",
       "keep_colors_only": "Mantener solo los colores",
+      "keep_persona_off": "Mantener la Persona desactivada",
       "mute_theme_sounds": "Silenciar los sonidos del tema",
       "persona_text": "Texto de la personalidad",
       "persona_that_will_be_added_to_the_assistant_s_sy": "Personalidad que se añadirá al prompt de sistema del asistente:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• Reproducir sonidos temáticos (respeta tu opción de silencio y el ajuste de movimiento reducido).",
-      "show_animated_visual_overlays": "• Mostrar superposiciones visuales animadas.",
       "theme_overlay": "superposición del tema {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "Este es un tema de experiencia. Al activarlo:",
-      "unmute_theme_sounds": "Reactivar los sonidos del tema"
+      "unmute_theme_sounds": "Reactivar los sonidos del tema",
+      "save": "Guardar",
+      "sounds": "Sonidos",
+      "overlays": "Superposiciones",
+      "persona": "Persona",
+      "save_failed_storage": "No se pudo guardar. El almacenamiento del navegador está lleno o desactivado."
     },
     "timezoneSelect": {
       "render_timezone": "Zona horaria de visualización"
@@ -9980,6 +10015,7 @@
       "cred_view_token_title": "Ver el token",
       "cred_why": "¿por qué?",
       "link_allow": "Permitir para este host",
+      "link_allow_unsupported": "Solo se puede permitir un nombre de host como example.com. Usa «Abrir una vez» en su lugar.",
       "link_allow_confirm_aria": "Confirmación de permiso",
       "link_allow_confirm_body": "Esto se aplica <0>solo a este espacio de trabajo</0>. El panel guarda esta elección. Un agente nunca puede escribirla. Solo se relajan las comprobaciones de consulta larga y de datos codificados (base64). Las reglas de credenciales siguen activas. Revócalo en Ajustes → Seguridad → Redacción.",
       "link_allow_confirm_title": "¿Permitir consultas largas en {{host}}?",
@@ -10102,7 +10138,6 @@
       "flow_parallel": "Chats propios",
       "flow_board": "Tablero",
       "flow_needs_you": "Te necesita",
-      "side_panel_open": "Tablero de tareas",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "Ultra Mode está activado en este chat",
       "breadcrumb_label": "Miembro del equipo",
@@ -10139,6 +10174,15 @@
       "ultra_row_sessions_one": "{{count}} sesión · {{running}} en curso",
       "ultra_row_sessions_many": "{{count}} sesiones · {{running}} en curso",
       "ultra_row_sessions_other": "{{count}} sesiones · {{running}} en curso",
+      "ultra_row_count_working_one": "{{count}} trabajando",
+      "ultra_row_count_working_many": "{{count}} trabajando",
+      "ultra_row_count_working_other": "{{count}} trabajando",
+      "ultra_row_count_waiting_one": "{{count}} esperando",
+      "ultra_row_count_waiting_many": "{{count}} esperando",
+      "ultra_row_count_waiting_other": "{{count}} esperando",
+      "ultra_row_count_needs_you_one": "{{count}} te necesita",
+      "ultra_row_count_needs_you_many": "{{count}} te necesitan",
+      "ultra_row_count_needs_you_other": "{{count}} te necesitan",
       "ultra_recap_empty": "El equipo aún no ha informado.",
       "chip_hint_pressed": "Ultra Mode está activado. Haz clic para desactivarlo antes de tu primer mensaje.",
       "ultra_view_status": "Estado",
@@ -10959,6 +11003,7 @@
       "next": "Siguiente",
       "once_launched_the_app_will_automatically_connect": "Una vez iniciada, la app se conectará automáticamente a esta instancia de {{productName}} y aparecerá en Apps.",
       "open_screenshot": "Abrir la captura de pantalla {{n}}",
+      "screenshot_viewer": "Visor de capturas de pantalla",
       "origin": "Origen:",
       "permissions": "Permisos",
       "session_approval_desc": "Puede enviar mensajes y elegir opciones de respuesta en tus chats, aprobar o rechazar solicitudes de herramientas y cambiar el modo de aprobación de un chat.",
@@ -11013,6 +11058,14 @@
       "retry": "Reintentar",
       "back_to_apps": "Volver a Apps",
       "failed_to_load_app": "No se pudo cargar la app"
+    },
+    "appPopoutFrame": {
+      "app": "App",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "No hay ninguna app en {{route}}",
+      "no_app_at_route_lead": "Esta ventana se abrió para una página que no es una app, o para una app que ya no está instalada. Vuelve a la ventana principal para continuar.",
+      "could_not_load_the_app_list": "No se pudo cargar la lista de apps",
+      "retry": "Reintentar"
     },
     "appsPage": {
       "action_failed": "No se pudo {{action}} {{name}}",
@@ -11138,6 +11191,8 @@
       "default_profile": "Perfil predeterminado",
       "deploy": "Desplegar",
       "deploy_anyway": "Desplegar de todos modos",
+      "pending_deploy_failed_status": "Error al confirmar ({{status}})",
+      "dismiss_failed_status": "Error al descartar ({{status}})",
       "deploy_artifact": "Desplegar {{name}}",
       "deploy_profile_for_slug": "Perfil de despliegue para {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Desplegar / Retirar / Destruir requieren cada uno una confirmación explícita\n              (nunca se aprueban automáticamente) y emiten un evento de auditoría SEL.",
@@ -12263,7 +12318,6 @@
         "aria_expand_task_list": "{{done}} de {{total}} tareas completadas. Expandir la lista de tareas",
         "current_task": "Tarea actual",
         "more": "más…",
-        "of": "de",
         "task_completion": "Progreso de tareas",
         "aria_mark_done": "Marcar como hecha: {{task}}. El agente no la repetirá. Haz clic otra vez para deshacer.",
         "aria_mark_not_done": "Marcar como no hecha: {{task}}. El agente la tratará como pendiente. Haz clic otra vez para deshacer.",
@@ -12276,7 +12330,8 @@
         "fail_remote": "Esta lista la gestiona la máquina remota de esta sesión, así que no se puede cambiar aquí.",
         "set_by_you_done": "Marcaste esto como hecho; el agente aún no lo ha confirmado.",
         "set_by_you_open": "Marcaste esto como no hecho; el agente aún no lo ha confirmado.",
-        "sending": "Enviando"
+        "sending": "Enviando",
+        "done_of_total": "{{done}} de {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Contraer el razonamiento del modelo",
@@ -14325,7 +14380,8 @@
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
         "opencode": "OpenCode",
-        "pi": "Pi"
+        "pi": "Pi",
+        "strands": "Strands"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Superpone al chat un diagnóstico en vivo del desplazamiento y los anclajes",
@@ -14498,6 +14554,48 @@
         "could_not_sign_out": "No se pudo cerrar la sesión",
         "keep_current_sign_in": "Mantener el inicio de sesión actual",
         "signed_in_body_no_refresh": "Los agentes se ejecutan con esta cuenta de Kiro. Este inicio de sesión no tiene token de actualización y no puede renovarse solo: vuelve a iniciar sesión antes de que caduque."
+      },
+      "strandsSetup": {
+        "cancel": "Cancelar",
+        "desc_anthropic_api_key": "Tu clave de API de Anthropic.",
+        "desc_aws_bearer_token_bedrock": "Una clave de API de Bedrock, creada en la consola de Bedrock.",
+        "desc_aws_region": "La región de AWS, por ejemplo us-east-1.",
+        "desc_gemini_api_key": "Tu clave de API de Gemini.",
+        "desc_litellm_api_key": "La clave que pide tu proxy de LiteLLM.",
+        "desc_litellm_base_url": "La dirección de tu proxy de LiteLLM.",
+        "desc_ollama_host": "La dirección de Ollama, por ejemplo http://localhost:11434.",
+        "desc_openai_api_key": "Tu clave de API de OpenAI.",
+        "field_label_optional": "{{name}} (opcional)",
+        "intro": "Elige el proveedor con el que habla Strands y pega lo que necesita. Las claves y demás valores van a Configuración > Secretos, y la configuración solo guarda una referencia a ellos.",
+        "model_desc_default": "Déjalo vacío para usar el modelo predeterminado.",
+        "model_desc_required": "El id de modelo que lista tu proveedor. Este proveedor necesita uno.",
+        "model_label": "Modelo",
+        "model_missing": "Las nuevas sesiones de Strands usan el modelo de Bedrock predeterminado hasta que guardes un modelo para este proveedor.",
+        "note_anthropic": "Necesita una clave de API de Anthropic.",
+        "note_bedrock": "{{productName}} oculta al agente tus archivos de perfil y SSO de AWS, así que Bedrock necesita una clave de API de Bedrock y su región.",
+        "note_bedrock_mantle": "El endpoint de Bedrock compatible con OpenAI. {{productName}} oculta al agente tus archivos de perfil y SSO de AWS, así que necesita una clave de API de Bedrock y su región.",
+        "note_google": "Necesita una clave de API de Gemini.",
+        "note_litellm": "Habla con tu proxy de LiteLLM. La clave solo hace falta si tu proxy la pide.",
+        "note_ollama": "Ejecuta modelos en tu propio equipo. No necesita clave. Configura un host solo si Ollama no está en su dirección predeterminada.",
+        "note_openai": "Necesita una clave de API de OpenAI.",
+        "provider_anthropic": "Anthropic",
+        "provider_bedrock": "Amazon Bedrock",
+        "provider_bedrock_mantle": "Bedrock Mantle",
+        "provider_google": "Google Gemini",
+        "provider_label": "Proveedor",
+        "provider_litellm": "LiteLLM",
+        "provider_ollama": "Ollama",
+        "provider_openai": "OpenAI",
+        "read_failed": "No se pudo leer tu configuración de Strands. Recarga la página para intentarlo de nuevo.",
+        "remove": "Quitar",
+        "remove_confirm": "¿Dejar de usar este valor aquí? Sigue en Configuración > Secretos.",
+        "remove_delete": "Quitar",
+        "remove_failed": "No se pudo quitar este valor. Inténtalo de nuevo.",
+        "replace": "Reemplazar",
+        "save": "Guardar",
+        "save_failed": "No se pudo guardar este valor. Inténtalo de nuevo.",
+        "title": "Proveedor de modelos",
+        "value_missing": "El valor al que apunta ya no está en Secretos, así que las nuevas sesiones de Strands se rechazan. Guarda un valor nuevo o quítalo."
       }
     },
     "developerPage": {
@@ -14775,8 +14873,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} con embeddings ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "Motor de embeddings listo — los elementos de conocimiento necesitan embeddings.",
+        "generate_disabled": "La vectorización del conocimiento está desactivada, así que no se puede generar nada.",
+        "generate_embedded_none": "Ningún elemento recibió embeddings. El modelo de embeddings no devolvió nada para ellos.",
+        "generate_failed": "No se pudieron generar los embeddings.",
         "generate_now": "Generar ahora",
+        "generate_unavailable": "No se puede contactar con el modelo de embeddings del conocimiento ahora mismo. Inténtalo de nuevo en un momento.",
         "generating": "Generando…",
+        "knowledge_embedder_off": "Búsqueda inteligente no disponible — la vectorización del conocimiento está desactivada.",
+        "knowledge_embedder_unreachable": "Búsqueda inteligente no disponible — no se puede contactar con el modelo de embeddings del conocimiento.",
         "smart_search_active": "Búsqueda inteligente activa",
         "smart_search_unavailable_embedding_model_is_down": "Búsqueda inteligente no disponible — el modelo de embeddings se está descargando en segundo plano."
       },
@@ -14825,8 +14929,6 @@
         "no_items_found": "No se encontraron elementos",
         "no_items_match_your_filters": "Ningún elemento coincide con tus filtros",
         "no_items_match_your_search": "Ningún elemento coincide con tu búsqueda",
-        "of": "de",
-        "page": "Página",
         "prev": "← Anterior",
         "prev_next_page": "Página anterior/siguiente",
         "search_explore_and_manage_your_knowledge_base": "Busca, explora y gestiona tu base de conocimiento",
@@ -14851,7 +14953,8 @@
         "stats_relations_many": "{{count}} relaciones",
         "stats_sources_one": "{{count}} fuente",
         "stats_sources_other": "{{count}} fuentes",
-        "stats_sources_many": "{{count}} fuentes"
+        "stats_sources_many": "{{count}} fuentes",
+        "page_of": "Página {{page}} de {{pages}}"
       },
       "itemCard": {
         "copied": "¡Copiado!",
@@ -14871,15 +14974,17 @@
         "recenter": "Recentrar",
         "start_physics": "Física",
         "pause_physics": "Pausar",
-        "graph_region_label": "Grafo de entidades de conocimiento"
+        "graph_region_label": "Grafo de entidades de conocimiento",
+        "load_failed": "No se pudo cargar el grafo de conocimiento",
+        "load_failed_unknown": "La lectura falló sin indicar el motivo.",
+        "retry": "Reintentar"
       },
       "sourceGroup": {
         "items_added_directly": "Elementos añadidos directamente",
         "items_count": "({{count}} elementos)",
         "next": "Siguiente →",
         "no_source": "Sin fuente",
-        "of": "de",
-        "page": "Página",
+        "page_of": "Página {{page}} de {{pages}}",
         "prev": "← Anterior",
         "unknown_source": "Fuente desconocida"
       },
@@ -15580,7 +15685,10 @@
         "partial_notice": "Aquí solo se muestra una parte de tu memoria, así que la búsqueda solo encuentra estos nodos.",
         "refresh": "Actualizar",
         "search_memory_nodes": "Buscar nodos de memoria",
-        "search_nodes": "Buscar nodos…"
+        "search_nodes": "Buscar nodos…",
+        "load_failed": "No se pudo cargar el grafo de memoria",
+        "load_failed_unknown": "La lectura falló sin indicar el motivo.",
+        "retry": "Reintentar"
       },
       "memoryTab": {
         "actions": "Acciones",
@@ -16087,10 +16195,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · se ejecuta localmente en el proceso",
         "embedding_status": "Estado de embeddings",
-        "entries": "entradas",
         "episodic_context_injected_per_message": "Contexto episódico (inyectado por mensaje)",
         "episodic_memory": "Memoria episódica",
-        "events": "eventos",
         "every_memory_create_update_delete_conflict_and_i": "Aquí se registra cada creación, actualización, eliminación, conflicto y bloque de inyección de memoria.",
         "filter_by_key_or_value": "Filtrar por clave o valor…",
         "filter_by_tag": "Filtrar por etiqueta:",
@@ -16107,7 +16213,6 @@
         "no_matching_entries": "No hay entradas coincidentes",
         "no_semantic_entries": "No hay entradas semánticas",
         "not_active": "no activa",
-        "of": "de",
         "open_embedding_model_settings": "Abrir la configuración del modelo de embeddings",
         "preview": "Vista previa",
         "preview_what_gets_injected_into_prompts_enter_a": "Previsualiza lo que se inyecta en los prompts. Introduce una consulta para ver los resultados de la recuperación episódica.",
@@ -16121,7 +16226,6 @@
         "semantic_memory": "Memoria semántica",
         "set": "Establecer",
         "setup_failed": "Configuración fallida",
-        "showing": "Mostrando",
         "status_unknown": "desconocida",
         "structured_key_value_facts_about_you_confidence": "Datos estructurados de clave-valor sobre ti. Confianza: qué tan seguro está el sistema (1.0 = lo definiste tú, 0.85 = extraído del chat). Fuente: quién lo escribió (user_explicit = tú, consolidation = extraído automáticamente).",
         "structured_semantic_key_value_episodic_conversat": "Memoria semántica estructurada (clave-valor) + episódica (fragmentos de conversación) con búsqueda vectorial. Los embeddings están siempre activos — el modelo se descarga automáticamente en segundo plano.",
@@ -16133,7 +16237,22 @@
         "verifying_model_integrity": "Verificando la integridad del modelo…",
         "enable_err_config_unreadable": "No se pudo guardar la memoria vectorial porque no se pudo leer config.json. Corrige el archivo y vuelve a intentarlo.",
         "enable_err_dim_unreadable": "No se pudo leer el ancho de vector del modelo de embeddings, así que la memoria vectorial no se activó. Vuelve a intentarlo, o ejecuta 'kirocrew doctor' si sigue fallando.",
-        "enable_err_owner_only": "Solo el propietario del panel puede configurar la memoria vectorial."
+        "enable_err_owner_only": "Solo el propietario del panel puede configurar la memoria vectorial.",
+        "showing_entries_one": "Mostrando {{n}} entrada",
+        "showing_entries_many": "Mostrando {{n}} entradas",
+        "showing_entries_other": "Mostrando {{n}} entradas",
+        "showing_events_one": "Mostrando {{n}} evento",
+        "showing_events_many": "Mostrando {{n}} eventos",
+        "showing_events_other": "Mostrando {{n}} eventos",
+        "showing_events_filtered_one": "Mostrando {{n}} evento ({{total}} en total)",
+        "showing_events_filtered_many": "Mostrando {{n}} eventos ({{total}} en total)",
+        "showing_events_filtered_other": "Mostrando {{n}} eventos ({{total}} en total)",
+        "showing_semantic_one": "Mostrando {{shown}} de {{total}}",
+        "showing_semantic_many": "Mostrando {{shown}} de {{total}}",
+        "showing_semantic_other": "Mostrando {{shown}} de {{total}}",
+        "showing_semantic_filtered_one": "Mostrando {{shown}} de {{matched}} (filtrados de {{total}})",
+        "showing_semantic_filtered_many": "Mostrando {{shown}} de {{matched}} (filtrados de {{total}})",
+        "showing_semantic_filtered_other": "Mostrando {{shown}} de {{matched}} (filtrados de {{total}})"
       },
       "wakatimeTab": {
         "active_projects": "Proyectos en los que trabajaste",
@@ -17787,12 +17906,14 @@
         "installed_theme_could_not_be_loaded": "No se pudo cargar el tema instalado. Reinstálalo o elige otro tema.",
         "custom_theme_could_not_be_loaded": "No se pudo cargar este tema. Elige otro tema o edita este.",
         "local_folder": "Carpeta local",
+        "zip_file": "Archivo zip",
         "mode": "Modo",
         "native_window_zoom_tip": "Zoom nativo de la ventana, el mismo ajuste que {{mod}}+ / {{mod}}− (50%–300%). Se recuerda entre inicios.",
         "new_theme": "+ Tema nuevo",
         "no_color": "Sin color",
         "none_auto_cycle_or_pick_a_fixed_color": "Ninguno, ciclo automático o elige un color fijo.",
         "palette": "Paleta",
+        "palette_categorical": "Categórica",
         "select_a_theme_for_the_dashboard": "Selecciona un tema para el panel",
         "sidebar_colors": "Colores de la barra lateral",
         "terminal": "Terminal",
@@ -17872,7 +17993,12 @@
         "desktop_app": "Aplicación de escritorio",
         "keep_running_when_window_closed": "Mantener la aplicación en segundo plano al cerrar la ventana",
         "keep_running_when_window_closed_desc": "Al cerrar la ventana, {{productName}} se oculta y tus sesiones y trabajos programados siguen en ejecución. Desactívalo para que el botón de cerrar cierre la aplicación por completo. Un gateway iniciado por esta aplicación se detiene con ella, y un gateway al que solo se conecta sigue en ejecución.",
-        "keep_running_when_window_closed_save_failed": "No se pudo guardar este ajuste. No se cambió nada. Inténtalo de nuevo."
+        "keep_running_when_window_closed_save_failed": "No se pudo guardar este ajuste. No se cambió nada. Inténtalo de nuevo.",
+        "choose_zip_file": "Elegir un archivo .zip",
+        "theme_experience": "Experiencia",
+        "theme_experience_sounds": "Sonidos",
+        "theme_experience_overlays": "Superposiciones",
+        "theme_experience_persona": "Persona"
       },
       "importPanel": {
         "agent_data": "Datos del agente",
@@ -18142,13 +18268,17 @@
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",
         "recordMetricsDescription": "Recopila métricas de rendimiento en esta computadora.",
-        "recordMetricsDescriptionExporting": "Recopila métricas de rendimiento y las envía al recolector configurado en config.json.",
+        "recordMetricsDescriptionExporting": "Recopila métricas de rendimiento y las envía a los recolectores configurados.",
         "recordMetricsSaveFailed": "No se pudo cambiar este ajuste. Inténtalo de nuevo.",
         "recordMetricsEnvPinned": "La variable de entorno {{envVar}} está fijando este ajuste — quítala del entorno para poder cambiarlo aquí.",
         "recordMetricsOverlayPinned": "Una entrada de config.local.json está fijando este ajuste — elimínala para poder cambiarlo aquí.",
-        "recordMetricsEgressOff": "telemetry.otlp_endpoint está definido, así que registrar las métricas también las enviaría fuera de esta computadora. Actívalo en config.json si eso es lo que quieres.",
-        "recordMetricsEgressOn": "Las métricas se están enviando fuera de esta computadora, al recolector en telemetry.otlp_endpoint.",
-        "recordMetricsSaveRefusedEgress": "El registro no se activó: telemetry.otlp_endpoint está definido, así que activarlo aquí empezaría a enviar métricas fuera de esta computadora. Actívalo en config.json en su lugar.",
+        "recordMetricsEgressOff": "Hay recolectores configurados, así que registrar las métricas también las enviaría fuera de esta computadora. Actívalo en config.json si eso es lo que quieres.",
+        "recordMetricsEgressOn": "Las métricas se están enviando fuera de esta computadora, a los recolectores que se indican abajo.",
+        "recordMetricsEgressDestinations": "Recolectores: {{names}}",
+        "recordMetricsEgressLockedName": "{{name}} (incluido en esta compilación; desactivar «Registrar métricas» también lo detiene)",
+        "recordMetricsEgressLockedNameOff": "{{name}} (incluido en esta compilación)",
+        "recordMetricsEgressLegacyName": "Tu recolector (config.json)",
+        "recordMetricsSaveRefusedEgress": "El registro no se activó: hay recolectores configurados, así que activarlo aquí empezaría a enviar métricas fuera de esta computadora. Actívalo en config.json en su lugar.",
         "recordMetricsStatusUnavailable": "No se pudo cargar el ajuste de registro de métricas. El interruptor queda bloqueado hasta que se cargue."
       },
       "postureDisclosure": {
@@ -19748,7 +19878,7 @@
       "add_member": "Nuevo compañero",
       "import_from_file": "Importar desde archivo",
       "import_title": "Importar un compañero",
-      "import_hint": "Elige un archivo .crewmate que alguien compartió contigo. No se crea nada hasta que pulses Importar compañero en la siguiente pantalla.",
+      "import_hint": "Elige un archivo .crewjam que alguien compartió contigo. No se crea nada hasta que pulses Importar compañero en la siguiente pantalla.",
       "import_checking": "Revisando el archivo…",
       "import_pick": "Elegir un archivo",
       "import_refused": "Este archivo no se puede importar.",
@@ -20159,7 +20289,7 @@
       "import_keep_hint": "Decidir más tarde deja esta importación esperando aquí hasta que caduque. No importar la descarta.",
       "import_later": "Decidir más tarde",
       "export_row": "Exportar como archivo",
-      "export_row_sub": "Comparte este compañero como archivo .crewmate",
+      "export_row_sub": "Comparte este compañero como archivo .crewjam",
       "export_title": "Exportar como archivo",
       "export_intro": "El archivo contiene exactamente lo que se lista aquí. No se guarda nada en este equipo.",
       "export_identity": "Nombre, descripción e imagen",
@@ -21320,6 +21450,13 @@
     "remote_control_open": "Configurar control remoto",
     "invite_key_link": "Abrir Keys de Tailscale",
     "requested_by_person": "pedida durante el turno de {{name}}",
+    "approved_by_you": "Aprobada por ti",
+    "rejected_by_you": "Rechazada por ti",
+    "answered_by_you": "Respondida por ti",
+    "requested_by_you": "pedida durante tu turno",
+    "crew_owner": "Propietario de la Crew",
+    "already_approved": "Ya se aprobó en otro sitio",
+    "already_rejected": "Ya se rechazó en otro sitio",
     "cancel_work": "Cancelar",
     "invite_body": "Invita a un compañero en un paso. Tailscale le comparte esta máquina; cuando acepta, Crew deja entrar la cuenta de Tailscale que usó.",
     "setup_tailscale_body": "Los compañeros de tu tailnet se conectan con Tailscale, cada uno con el nombre de su inicio de sesión de tailnet.",

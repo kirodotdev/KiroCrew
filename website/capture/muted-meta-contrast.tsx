@@ -1,7 +1,8 @@
 /**
- * Capture entry for #26268 / #26283: the REAL AssistantMessage footer (credits
- * line + timestamp) in any built-in palette, on the page surface (`bg-bg`, the
- * main chat row) and on a card (`bg-card`).
+ * Capture entry for #26268 / #26283 / #26598: the REAL AssistantMessage footer
+ * (credits line + timestamp) in any built-in palette, on the page surface
+ * (`bg-bg`, the main chat row), a card (`bg-card`), a raised panel
+ * (`bg-bg-elevated`) and a hovered row (`bg-bg-hover`).
  *
  * Query string: ?theme=<palette name> (default `dark`)
  */
@@ -38,9 +39,11 @@ createRoot(document.getElementById('root')!).render(
   <Provider store={store}>
     <QueryClientProvider client={qc}>
       <MemoryRouter>
-        <div className="bg-bg text-text p-4 flex gap-4" style={{ width: 860 }} data-capture-root>
-          <div className="flex-1 min-w-0 p-3" data-testid="on-bg"><Reply /></div>
-          <div className="flex-1 min-w-0 p-3 bg-card rounded-xl" data-testid="on-card"><Reply /></div>
+        <div className="bg-bg text-text p-4 grid grid-cols-2 gap-4" style={{ width: 860 }} data-capture-root>
+          <div className="min-w-0 p-3" data-testid="on-bg"><Reply /></div>
+          <div className="min-w-0 p-3 bg-card rounded-xl" data-testid="on-card"><Reply /></div>
+          <div className="min-w-0 p-3 bg-bg-elevated rounded-xl" data-testid="on-bg-elevated"><Reply /></div>
+          <div className="min-w-0 p-3 bg-bg-hover rounded-xl" data-testid="on-bg-hover"><Reply /></div>
         </div>
       </MemoryRouter>
     </QueryClientProvider>

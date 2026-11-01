@@ -179,6 +179,29 @@ export interface CrewRootSummary {
   total: number
 }
 
+/** One count on a Crew Mode root's row: how many workers are in one bucket. */
+export interface CrewRowCount {
+  bucket: 'working' | 'waiting' | 'needs_you'
+  /** The group whose dot and tone the count wears. */
+  group: CrewWorkerGroup
+  count: number
+}
+
+/** The row's per-bucket counts, needs you first (a narrow row drops the last
+ *  one whole, so the urgent count stays), zero buckets left out.
+ *  Needs you is a tool approval (the only thing a worker owes the person);
+ *  working is a moving worker or one whose question sits with its conductor;
+ *  waiting is idle. Done is not counted. */
+export function crewRowCounts(groups: readonly CrewWorkerGroup[]): CrewRowCount[] {
+  const n = (...gs: CrewWorkerGroup[]) => groups.filter(g => gs.includes(g)).length
+  const all: CrewRowCount[] = [
+    { bucket: 'needs_you', group: 'approval', count: n('approval') },
+    { bucket: 'working', group: 'working', count: n('working', 'with_conductor') },
+    { bucket: 'waiting', group: 'waiting', count: n('waiting') },
+  ]
+  return all.filter(c => c.count > 0)
+}
+
 /** A Crew Mode root's workers, as the worker list API groups them, summarized
  *  for its session-list row. */
 export function summarizeCrewWorkers(workers: readonly CrewWorker[]): CrewRootSummary {

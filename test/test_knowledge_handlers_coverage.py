@@ -1327,7 +1327,10 @@ class TestBatchEmbedItems:
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/embedding/generate")
             assert resp.status == 400
-            assert (await resp.json())["error"] == "Embedding not enabled"
+            assert await resp.json() == {
+                "error": "Embedding not enabled",
+                "code": "knowledge_embedding_disabled",
+            }
 
     @pytest.mark.asyncio
     async def test_unavailable_model_is_503(self, store):
@@ -1335,7 +1338,10 @@ class TestBatchEmbedItems:
         async with _client(app) as client:
             resp = await client.post("/api/knowledge/embedding/generate")
             assert resp.status == 503
-            assert (await resp.json())["error"] == "Embedding model not available"
+            assert await resp.json() == {
+                "error": "Embedding model not available",
+                "code": "knowledge_embedding_unavailable",
+            }
 
     @pytest.mark.asyncio
     async def test_fills_null_embeddings_synchronously(self, store):

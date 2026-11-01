@@ -1501,6 +1501,7 @@ the routes still read that cache.
 | `verdict` | string | optional | The acceptance verdict, set by `verdict`. | `pass`, `fail`, `pending`, `refused`, `error` (closed) |
 | `decision` | string | optional | The conductor's decision text, set by `decide`. | |
 | `worker_session_key` | string | optional | The worker slot bound to the item, set by `bind`. | |
+| `worker_instance_id` | string | optional | The remote crew the bound worker runs on, set by a remote `bind` beside `worker_session_key` (then the peer's slot key). | |
 | `fails` | int | optional | The item's failed-verdict count, when it moved. | |
 | `status` | string | optional | The worker's status, set by `report`. | `progress`, `done`, `blocked`, `question`, `reply` (closed) |
 | `summary` | string | optional | The worker's summary, set by `report`. | |

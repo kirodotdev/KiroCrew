@@ -154,7 +154,7 @@ describe('PrivacyPanel metric-recording switch', () => {
     mount({ otlp_configured: true })
     const sw = await screen.findByRole('switch', { name: LABEL })
     await waitFor(() => expect(sw).toHaveAttribute('aria-disabled', 'true'))
-    expect(await screen.findByText(/telemetry\.otlp_endpoint is set/)).toBeInTheDocument()
+    expect(await screen.findByText(/Metrics collectors are configured/)).toBeInTheDocument()
     await userEvent.click(sw)
     expect(patchConfig).not.toHaveBeenCalled()
   })
@@ -179,13 +179,62 @@ describe('PrivacyPanel metric-recording switch', () => {
     expect(await screen.findByText(/being sent off this machine/)).toBeInTheDocument()
   })
 
+  it('names every destination, marking one the build locked on', async () => {
+    // The egress note says WHERE: an operator entry and a build's own collector
+    // are listed side by side, by name only (the server never sends a URL).
+    mount({
+      enabled: true,
+      otlp_configured: true,
+      otlp_destinations: [
+        { name: 'ops', source: 'otlp_endpoints', locked: false },
+        { name: 'edition-product', source: 'provider', locked: true },
+      ],
+    })
+    await screen.findByRole('switch', { name: LABEL })
+    expect(
+      await screen.findByText(
+        'Collectors: ops, edition-product (included by this build; turning off Record metrics stops it too)',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('drops the stop note from a locked destination while recording is off', async () => {
+    // Nothing is being sent while recording is off, so "turning it off stops it
+    // too" would describe a state the person is not in.
+    mount({
+      enabled: false,
+      otlp_configured: true,
+      otlp_destinations: [{ name: 'edition-product', source: 'provider', locked: true }],
+    })
+    await screen.findByRole('switch', { name: LABEL })
+    expect(
+      await screen.findByText('Collectors: edition-product (included by this build)'),
+    ).toBeInTheDocument()
+  })
+
+  it('names the legacy endpoint as the person\'s collector, not its config key', async () => {
+    mount({
+      enabled: true,
+      otlp_configured: true,
+      otlp_destinations: [
+        { name: 'telemetry.otlp_endpoint', source: 'otlp_endpoint', locked: false },
+        { name: 'ops', source: 'otlp_endpoints', locked: false },
+      ],
+    })
+    await screen.findByRole('switch', { name: LABEL })
+    expect(
+      await screen.findByText('Collectors: Your collector (config.json), ops'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/telemetry\.otlp_endpoint/)).not.toBeInTheDocument()
+  })
+
   it('never claims locality in the description on a host that exports', async () => {
     // The description is the full-weight line a skimming user reads before
     // flipping the switch; "on this machine" there would be a false claim.
     mount({ otlp_configured: true })
     await screen.findByRole('switch', { name: LABEL })
     // Wait for the status query to land before asserting on the swap.
-    expect(await screen.findByText(/send them to the collector/)).toBeInTheDocument()
+    expect(await screen.findByText(/send them to the configured metrics collectors/)).toBeInTheDocument()
     expect(
       screen.queryByText('Collect performance metrics on this machine.'),
     ).not.toBeInTheDocument()

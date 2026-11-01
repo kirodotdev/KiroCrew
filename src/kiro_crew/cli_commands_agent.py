@@ -324,8 +324,29 @@ def _handle_agent(args: argparse.Namespace) -> None:
         if args.kiro_agent is not None:
             _kiro_agent_or_exit(args.kiro_agent)
             agent.kiro_agent = args.kiro_agent
-        if args.workspace is not None:
-            agent.workspace = args.workspace
+        # Blank keeps the current binding, as the dashboard PUT does: a stored
+        # "" resolves to the shared default workspace, so saving it would move
+        # this member's files onto the shared tree.
+        new_workspace = args.workspace
+        if new_workspace is not None and not new_workspace.strip():
+            print("Note: blank --workspace ignored; the workspace is unchanged", file=sys.stderr)
+            new_workspace = None
+        if new_workspace is not None:
+            from kiro_crew.member_workspace import DEFAULT_WORKSPACE
+
+            # Saved as before, but an unconfigured name falls back to another
+            # workspace's directory, so the caller is told.
+            if (
+                new_workspace != agent.workspace
+                and new_workspace not in cfg.workspaces
+                and new_workspace not in (DEFAULT_WORKSPACE, cfg.default_workspace)
+            ):
+                print(
+                    f"Warning: workspace '{safe_terminal_line(new_workspace)}' is not "
+                    "configured; the crew shares a fallback workspace directory",
+                    file=sys.stderr,
+                )
+            agent.workspace = new_workspace
         new_model = getattr(args, "model", None)
         if new_model is not None:
             agent.model = _agent_model_or_exit(new_model, cfg, args.name)
@@ -342,6 +363,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 for field in ("kiro_agent", "workspace", "display_name", "model")
                 if getattr(args, field, None) is not None
             }
+            if new_workspace is None:
+                changed_fields.discard("workspace")
             if agent.memory_store != prior_memory_store:
                 changed_fields.add("memory_store")
             persist_member_config(

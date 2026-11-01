@@ -143,7 +143,7 @@ describe('FolderRow rename focus contract (#13598)', () => {
     act(() => { fireEvent.blur(input) })
     await nextFrame()
     await nextFrame()
-    const row = document.querySelector('[aria-expanded]') as HTMLElement
+    const row = document.querySelector('tr') as HTMLElement
     expect(document.activeElement).toBe(row)
     expect(document.activeElement).not.toBe(document.body)
   })
@@ -154,7 +154,7 @@ describe('FolderRow rename focus contract (#13598)', () => {
     act(() => { fireEvent.keyDown(input, { key: 'Escape' }) })
     await nextFrame()
     await nextFrame()
-    const row = document.querySelector('[aria-expanded]') as HTMLElement
+    const row = document.querySelector('tr') as HTMLElement
     expect(document.activeElement).toBe(row)
     expect(document.activeElement).not.toBe(document.body)
   })

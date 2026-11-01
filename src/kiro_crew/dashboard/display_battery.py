@@ -50,6 +50,7 @@ RULE_SOURCES: tuple[str, ...] = (
     "security/redaction_patterns.py",
     "security/redaction_entropy.py",
     "security/exfil_url_rules.py",
+    "security/exfil_scan_span.py",
     "security/exfil_oauth.py",
 )
 

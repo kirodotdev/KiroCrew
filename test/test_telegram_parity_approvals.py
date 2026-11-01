@@ -271,7 +271,7 @@ class TestSessionTrust:
             "keep_policy=standing_trust" in src
         ), "the override-expiry revoke must exclude slots carrying standing trust"
         assert (
-            "if trust_carries(slot) or slot._trust_reads:" in src
+            "if trust_reaches_subagents(slot) or slot._trust_reads:" in src
         ), "the exclusion set must be built from the same condition the reset loop skips"
 
     def test_a_kept_key_loses_its_grant_but_keeps_its_policy(self) -> None:

@@ -171,6 +171,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         validate_secret_env_grant,
     )
     from kiro_crew.cron_service.model import (  # noqa: F401
+        validate_alert_after_failures,
         validate_auto_pause_after_failures,
     )
     from kiro_crew.dashboard.chat_persistence import (  # noqa: F401

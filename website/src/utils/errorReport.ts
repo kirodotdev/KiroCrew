@@ -28,9 +28,10 @@
  * pulling the UI graph into `api/client.ts`.
  */
 
+import { appPopoutRouteOf } from './appPopoutRoute'
 import { safeSetSessionItem } from './safeStorage'
 import { errMessage } from './thunkError'
-import { withBase } from '@/lib/basePath'
+import { appPathname, withBase } from '@/lib/basePath'
 
 /** Where the error was observed. */
 export type ErrorSource =
@@ -97,6 +98,8 @@ export const MAX_DETAIL = 1200
 export const MAX_MESSAGE = 2000
 /** sessionStorage channel ChatPage drains to seed the composer. */
 export const ERROR_HANDOFF_KEY = 'kirocrew_error_handoff'
+/** Marks sessionStorage that belongs to an app pop-out window rather than its opener. */
+export const APP_POPOUT_STORAGE_OWNED_KEY = 'kirocrew_app_popout_storage_owned'
 /** Hand-off TTL. Long enough to survive a full reload, short enough not to ambush a later visit. */
 export const HANDOFF_TTL_MS = 60_000
 
@@ -557,6 +560,36 @@ export function persistClaimedChatHandoffs(prompts: readonly string[]): boolean 
 }
 
 /**
+ * Drop hand-offs copied from main into a newly opened app pop-out.
+ *
+ * A window created by `window.open` starts with a copy of its opener's
+ * sessionStorage, so a new app pop-out inherits main's hand-off queue and the
+ * FIFO main is delivering. Those diagnostics belong to main; forwarding the
+ * copies back from the pop-out would open a second session for each. The marker
+ * distinguishes the first document of a new window (main never writes it) from
+ * a reload of that window, preserving recovery of the window's own entries.
+ *
+ * Any other document clears the marker: a pop-out whose Return fell back to
+ * loading the dashboard in the same tab is now a main window, and a stale
+ * marker copied into its next pop-out would skip the drop there.
+ */
+export function dropInheritedChatHandoffs(): void {
+  if (appPopoutRouteOf(appPathname()) === null) {
+    try { sessionStorage.removeItem(APP_POPOUT_STORAGE_OWNED_KEY) } catch { /* best effort */ }
+    return
+  }
+
+  try {
+    if (sessionStorage.getItem(APP_POPOUT_STORAGE_OWNED_KEY)) return
+  } catch {
+    return
+  }
+  try { sessionStorage.removeItem(ERROR_HANDOFF_KEY) } catch { /* best effort */ }
+  try { sessionStorage.removeItem(ERROR_HANDOFF_CLAIMED_KEY) } catch { /* best effort */ }
+  safeSetSessionItem(APP_POPOUT_STORAGE_OWNED_KEY, '1')
+}
+
+/**
  * Recover a prior page's claimed FIFO ahead of newer ingress entries.
  *
  * This runs once when this module loads. A same-document ChatPage remount does
@@ -637,7 +670,9 @@ export function consumeChatHandoff(): string | null {
 }
 
 // Module evaluation is the page-lifetime boundary: it repeats on reload but not
-// on a same-document React remount, which is exactly when claimed work is orphaned.
+// on a same-document React remount, which is exactly when claimed work is orphaned;
+// inherited opener storage is dropped before its copied claim can be recovered.
+dropInheritedChatHandoffs()
 recoverClaimedChatHandoffs()
 
 // ── Soft-navigation seam ─────────────────────────────────────────────────────
@@ -653,6 +688,7 @@ recoverClaimedChatHandoffs()
 
 let _softNavigate: ((to: string) => void) | null = null
 let _maySoftNavigate: (() => boolean) | null = null
+let _hardExit: (() => void) | null = null
 const _handoffListeners = new Set<() => void>()
 
 /** Install (or clear, with `null`) the in-app navigator and its leave guard. Called by App.tsx. */
@@ -662,6 +698,20 @@ export function installSoftNavigate(
 ): void {
   _softNavigate = fn
   _maySoftNavigate = fn ? mayNavigate : null
+}
+
+/**
+ * Install (or clear, with `null`) how a hard exit to chat leaves this window.
+ *
+ * For a window that must never load the dashboard itself. The app pop-out
+ * installs the frame's own exit hand-off (`AppPopoutFrame`), which drains the
+ * prompt staged in this window's sessionStorage and forwards it to the main
+ * window over the pop-out channel, so {@link sendErrorToChat} performs no page
+ * load here. Both sides are plain JS, so a crashed React tree cannot take the
+ * sink down with it, which is the whole point of `hard`.
+ */
+export function installHardExit(fn: (() => void) | null): void {
+  _hardExit = fn
 }
 
 /**
@@ -676,11 +726,20 @@ export function subscribeChatHandoff(fn: () => void): () => void {
   return () => { _handoffListeners.delete(fn) }
 }
 
+/** Notify mounted ChatPage listeners that the hand-off queue has new work. */
+export function notifyChatHandoffs(): void {
+  for (const fn of _handoffListeners) {
+    try { fn() } catch { /* a bad subscriber must not strand the hand-off */ }
+  }
+}
+
 /**
  * Stage the prompt and get the user to a fresh chat session.
  *
- * `hard: true` forces a full page load — for the root ErrorBoundary, where a
- * soft navigation would re-render the very tree that just threw.
+ * `hard: true` skips the soft navigator — for an ErrorBoundary's card, where a
+ * soft navigation would re-render the very tree that just threw. It takes the
+ * hard exit installed through {@link installHardExit}, and falls back to a full
+ * page load when none is installed.
  *
  * **Navigating is conditional on the staging having stuck.** With storage
  * unavailable or quota-exhausted the prompt never lands, so a navigation would
@@ -708,10 +767,13 @@ export function sendErrorToChat(prompt: string, opts: { hard?: boolean; leaveGra
   if (softNavigate) {
     // Notify before navigating: an already-mounted ChatPage drains here, and a
     // not-yet-mounted one drains on mount instead.
-    for (const fn of _handoffListeners) {
-      try { fn() } catch { /* a bad subscriber must not strand the hand-off */ }
-    }
+    notifyChatHandoffs()
     softNavigate('/chat')
+    return true
+  }
+  // After staging, not before: the installed sink drains the queue it forwards.
+  if (_hardExit) {
+    _hardExit()
     return true
   }
   try { window.location.assign(withBase('/chat')) } catch { /* nothing left to try */ }
@@ -722,6 +784,7 @@ export function sendErrorToChat(prompt: string, opts: { hard?: boolean; leaveGra
 export function __resetNavSeamForTests(): void {
   _softNavigate = null
   _maySoftNavigate = null
+  _hardExit = null
   _handoffListeners.clear()
 }
 

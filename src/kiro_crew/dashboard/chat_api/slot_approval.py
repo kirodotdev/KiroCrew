@@ -41,7 +41,7 @@ if TYPE_CHECKING:
         sel,
         session_grant,
         slot_not_found,
-        trust_carries,
+        trust_reaches_subagents,
         yolo_policy_permits,
     )
 
@@ -704,7 +704,7 @@ async def apply_approval_mode(
     # to every slot sharing a session, so two slots addressing one key always agree
     # by the time this runs and iteration order cannot pick a winner.
     for slot in state._slots.values():
-        policy = "auto" if trust_carries(slot) or safety_override().is_active() else ""
+        policy = "auto" if trust_reaches_subagents(slot) or safety_override().is_active() else ""
         state.sessions.set_approval_policy(effective_session_key(slot), policy)
 
     state.push_slots_update()
@@ -1094,11 +1094,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             owner._trust = True
             # A person chose this slot's mode: its creator's changes stop reaching it.
             owner._posture_inherited = False
-            # A conductor card's "Trust this worker" trusts THAT worker only; a
-            # trust pressed in the slot's own pane keeps the usual inheritance.
+            # A conductor card's "Trust this worker" trusts that worker and the
+            # subagents it spawns, not the sessions it creates; a trust pressed in
+            # the slot's own pane keeps the usual inheritance to those too.
             owner._trust_card_scoped = bool(delegated)
             state.sessions.set_approval_policy(
-                effective_session_key(owner), "auto" if trust_carries(owner) else ""
+                effective_session_key(owner), "auto" if trust_reaches_subagents(owner) else ""
             )
             action = "approved"
     # Trust-reads: auto-approve read-only bash commands for this slot
@@ -1192,7 +1193,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         # longer-lived decision that no yolo deny expires.
         if not yolo_policy_permits():
             for s in state._slots.values():
-                if not (trust_carries(s) or s._trust_reads):
+                if not (trust_reaches_subagents(s) or s._trust_reads):
                     state.sessions.set_approval_policy(effective_session_key(s), "")
             state.push_slots_update()
         action = "approved"

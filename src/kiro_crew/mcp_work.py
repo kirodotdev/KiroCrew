@@ -811,6 +811,19 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             warning = str(resp.get("warning") or "")
             if warning:
                 line += f"\nWarning: {warning}"
+            remote = resp.get("remote_decide")
+            if isinstance(remote, dict):
+                # A remote item: the local decision is recorded either way, and
+                # whether the worker's crew got it is said here.
+                if remote.get("ok") is True:
+                    line += "\nThe decision reached the worker's crew."
+                else:
+                    code = str(remote.get("code") or "unknown")[:64]
+                    line += (
+                        f"\nThe decision is recorded here but did NOT reach the worker's "
+                        f"crew ({code}); the worker still has the old one. Record the "
+                        "decide again to retry."
+                    )
             return line
         conductor = resp.get("conductor") or {}
         return f"Recorded {action}. round={conductor.get('round', '(unset)')}"

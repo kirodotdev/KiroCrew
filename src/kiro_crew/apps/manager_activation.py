@@ -15,7 +15,6 @@ import logging
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
-from kiro_crew.apps.link_preview_grants import grant_source
 from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
     SESSION_APPROVAL_PENDING_KEY,
@@ -35,6 +34,7 @@ from kiro_crew.apps.manager_records import (
     holds_app_record_locks,
 )
 from kiro_crew.apps.manager_tree import _check_path_safety
+from kiro_crew.apps.point_grants import grant_source
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.manager")

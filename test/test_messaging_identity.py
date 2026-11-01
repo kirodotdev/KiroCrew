@@ -9,9 +9,36 @@ turn.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from kiro_crew import platform_compat, session_pid_sig
 from kiro_crew.messaging import identity
+from kiro_crew.session_pid_sig import read_session_pid_mapping
+
+
+@pytest.fixture(name="pid_home")
+def pid_home_fixture(tmp_path: Path):
+    """A private mapping dir, so the real writer runs and its file is read back.
+
+    The start token is pinned to ``None``: the fake pid 4242 can be a live process
+    on the test host, and a real token would change the bytes being read.
+    """
+    (tmp_path / "sel_hmac.key").write_bytes(b"\x01" * 32)
+    with (
+        patch.object(session_pid_sig, "config_dir", return_value=tmp_path),
+        patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=None),
+        patch.object(platform_compat, "get_process_start_id", return_value=None),
+        patch.object(session_pid_sig, "sel_hmac_key_path", return_value=tmp_path / "sel_hmac.key"),
+    ):
+        yield tmp_path
+
+
+def _spy_publish():
+    """Patch the publisher with a spy that still writes the real mapping."""
+    return patch.object(identity, "publish_session_pid", wraps=session_pid_sig.publish_session_pid)
 
 
 class _Sessions:
@@ -28,7 +55,7 @@ class _Sessions:
         return self._rows
 
 
-def test_publishes_with_host_pid_and_key() -> None:
+def test_publishes_with_host_pid_and_key(pid_home: Path) -> None:
     """A sole tenant is published with today's call, argument for argument.
 
     Wave 1 changes who a mapping is ATTRIBUTED to, not what a 1:1 pid produces,
@@ -37,12 +64,15 @@ def test_publishes_with_host_pid_and_key() -> None:
     exception and a silently missing publish rather than as an error.
     """
     sessions = _Sessions(4242)
-    with patch.object(identity, "publish_session_pid") as pub:
+    with _spy_publish() as pub:
         asyncio.run(identity.publish_turn_identity(sessions, "telegram:kirocrew:direct:7"))
         pub.assert_called_once_with(4242, "telegram:kirocrew:direct:7")
+    mapping = read_session_pid_mapping(4242, pid_home)
+    assert mapping.session_key == "telegram:kirocrew:direct:7"
+    assert not mapping.shared
 
 
-def test_publishes_every_session_sharing_the_pid() -> None:
+def test_publishes_every_session_sharing_the_pid(pid_home: Path) -> None:
     """One kiro-cli process hosts several ACP sessions; the mapping names one.
 
     The publisher records the whole set so a reader on that pid declines to
@@ -58,16 +88,20 @@ def test_publishes_every_session_sharing_the_pid() -> None:
         {"key": "dashboard:chat-2", "sid": "s3", "pid": 9999},
     ]
     sessions = _Sessions(4242, rows)
-    with patch.object(identity, "publish_session_pid") as pub:
+    with _spy_publish() as pub:
         asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
         pub.assert_called_once_with(
             4242,
             "dashboard:chat-1",
             co_tenants=["dashboard:chat-1", "subagent:chat-1-child"],
         )
+    mapping = read_session_pid_mapping(4242, pid_home)
+    assert mapping.session_key == ""
+    assert mapping.tenants == ("dashboard:chat-1", "subagent:chat-1-child")
+    assert mapping.tenant_count == 2
 
 
-def test_a_companion_runtime_row_does_not_make_a_sole_tenant_shared() -> None:
+def test_a_companion_runtime_row_does_not_make_a_sole_tenant_shared(pid_home: Path) -> None:
     """HEADLINE: the snapshot's trailing rows are RUNTIMES, not sessions.
 
     ``runtime_pids`` appends one row per manager-owned companion runtime, and a
@@ -85,13 +119,16 @@ def test_a_companion_runtime_row_does_not_make_a_sole_tenant_shared() -> None:
         {"key": "Background runtime", "pid": 4242},
     ]
     sessions = _Sessions(4242, rows)
-    with patch.object(identity, "publish_session_pid") as pub:
+    with _spy_publish() as pub:
         asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
         pub.assert_called_once_with(4242, "dashboard:chat-1")
         assert "co_tenants" not in pub.call_args.kwargs
+    mapping = read_session_pid_mapping(4242, pid_home)
+    assert mapping.session_key == "dashboard:chat-1"
+    assert not mapping.shared
 
 
-def test_a_genuine_co_tenant_still_counts_beside_a_companion_row() -> None:
+def test_a_genuine_co_tenant_still_counts_beside_a_companion_row(pid_home: Path) -> None:
     """The converse, so the filter cannot be widened into "ignore extra rows":
     a second real session on the pid is still recorded, and only the runtime row
     beside it is dropped."""
@@ -101,13 +138,16 @@ def test_a_genuine_co_tenant_still_counts_beside_a_companion_row() -> None:
         {"key": "subagent:chat-1-child", "sid": "s2", "pid": 4242},
     ]
     sessions = _Sessions(4242, rows)
-    with patch.object(identity, "publish_session_pid") as pub:
+    with _spy_publish() as pub:
         asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
         pub.assert_called_once_with(
             4242,
             "dashboard:chat-1",
             co_tenants=["dashboard:chat-1", "subagent:chat-1-child"],
         )
+    mapping = read_session_pid_mapping(4242, pid_home)
+    assert mapping.tenants == ("dashboard:chat-1", "subagent:chat-1-child")
+    assert mapping.tenant_count == 2
 
 
 def test_the_companion_producer_still_omits_the_field_the_filter_tests() -> None:
@@ -142,7 +182,7 @@ def test_the_companion_producer_still_omits_the_field_the_filter_tests() -> None
         assert row["pid"] == _UNALLOCATABLE_PID
 
 
-def test_an_unreadable_snapshot_records_no_tenant_set() -> None:
+def test_an_unreadable_snapshot_records_no_tenant_set(pid_home: Path) -> None:
     """An unanswerable snapshot must read as UNKNOWN, not as a sole tenant.
 
     Recording a set of one would make every reader confident about a pid the
@@ -152,17 +192,21 @@ def test_an_unreadable_snapshot_records_no_tenant_set() -> None:
     actually named more than one session.
     """
     sessions = _Sessions(4242, None)  # runtime_pids raises
-    with patch.object(identity, "publish_session_pid") as pub:
+    with _spy_publish() as pub:
         asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
         pub.assert_called_once_with(4242, "dashboard:chat-1")
         assert "co_tenants" not in pub.call_args.kwargs
+    mapping = read_session_pid_mapping(4242, pid_home)
+    assert mapping.session_key == "dashboard:chat-1"
+    assert mapping.tenants == ()
 
 
-def test_no_publish_when_pid_unavailable() -> None:
+def test_no_publish_when_pid_unavailable(pid_home: Path) -> None:
     sessions = _Sessions(None)  # session not spawned yet -> get_pid None
-    with patch.object(identity, "publish_session_pid") as pub:
+    with _spy_publish() as pub:
         asyncio.run(identity.publish_turn_identity(sessions, "slack:kirocrew:C1:T1"))
         pub.assert_not_called()
+    assert sorted(p.name for p in pid_home.glob("session_pid_*")) == []
 
 
 def test_swallows_get_pid_error() -> None:

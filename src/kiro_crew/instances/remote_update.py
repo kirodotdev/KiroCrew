@@ -163,7 +163,21 @@ class RemoteUpdateJobs:
 
         task = asyncio.get_running_loop().create_task(_run())
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def _on_done(t: "asyncio.Task[None]") -> None:
+            self._tasks.discard(t)
+            # A cancel delivered before ``_run``'s first step -- e.g.
+            # ``cancel_all`` during shutdown while the task is still queued --
+            # raises ``CancelledError`` into a coroutine that never entered its
+            # ``try``, so the handler above never runs and the job would stay
+            # ``running`` forever, wedging the instance (``start`` refuses while
+            # a job is running). Settle it here. On every other path the body
+            # has already ended the job, so ``job.running`` is False and this is
+            # a no-op -- no double-fail.
+            if t.cancelled() and job.running:
+                job.fail("update cancelled: the gateway shut down")
+
+        task.add_done_callback(_on_done)
         return job
 
     def cancel_all(self) -> None:

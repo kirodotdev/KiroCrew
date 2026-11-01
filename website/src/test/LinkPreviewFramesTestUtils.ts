@@ -3,7 +3,7 @@
  * window: each frame gets a fake window that records what the dashboard posts to
  * it, and `fromFrame` answers as that frame.
  */
-import { LINK_PREVIEW_TAG } from '../linkPreview/linkPreviewProtocol'
+import { APP_FRAME_TAG } from '../appFrame/frameProtocol'
 
 export type Sent = Record<string, unknown>
 
@@ -48,7 +48,7 @@ export function fromFrame(el: HTMLIFrameElement | Window | null, type: string, d
     const shows = windowOf(el).sent.filter((m) => m.type === 'show')
     extra.invocation = shows.length ? shows[shows.length - 1].invocation : 0
   }
-  postFrom({ [LINK_PREVIEW_TAG]: 1, type, ...extra, ...data }, el instanceof HTMLIFrameElement ? el.contentWindow : el)
+  postFrom({ [APP_FRAME_TAG]: 1, type, ...extra, ...data }, el instanceof HTMLIFrameElement ? el.contentWindow : el)
 }
 
 export function framesIn(doc: Document = document): HTMLIFrameElement[] {

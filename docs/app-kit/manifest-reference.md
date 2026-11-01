@@ -749,7 +749,7 @@ At most **one** provider per app; a link goes to the first enabled app whose
 **Where the module runs.** Never in the dashboard's document. On the first hover
 the dashboard creates an iframe for the provider that is `sandbox="allow-scripts"`
 with no `allow-same-origin`, and loads a frame document the gateway serves at
-`/link-preview-frame/<app>/…` with its own `Content-Security-Policy: sandbox
+`/app-frame/<app>/linkPreviews/<id>/…` with its own `Content-Security-Policy: sandbox
 allow-scripts`. The frame's origin is opaque: it cannot read the dashboard's DOM,
 its cookies, its storage or its token. The iframe is `credentialless`, the frame's
 CSP starts from `default-src 'none'` (scripts and network on the gateway only,
@@ -1236,8 +1236,8 @@ the endpoint; it does not import provider code.
 | `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed** — no code path dispatches it. Put update-time work in an idempotent `onInstall`, which a registry update re-runs |
 | `setup.onEnable` | string | `""` | Shell command run when app is enabled |
 | `setup.onDisable` | string | `""` | Shell command run when app is disabled |
-| `setup.onEnableTimeout` | number | `30` | Timeout in seconds for `onEnable` script |
-| `setup.onDisableTimeout` | number | `30` | Timeout in seconds for `onDisable` script |
+| `setup.onEnableTimeout` | number | `30` | Timeout in seconds for `onEnable` script, 1 to 300. A numeric string such as `"60"` is read as its number and a fraction is truncated. A value below 1 (including `false`) runs at the 30s default; `true` is read as 1 second and one above 300 runs at 300, with a warning logged each time the script runs; the manifest still installs and its signature is unaffected. A value that is not a number (`"abc"`, `null`) fails validation |
+| `setup.onDisableTimeout` | number | `30` | Timeout in seconds for `onDisable` script, 1 to 300, clamped the same way as `onEnableTimeout` |
 | `setup.configSchema` | object | `{}` | JSON Schema for app configuration |
 
 If `onEnable` fails (non-zero exit), the enable is rolled back — the app

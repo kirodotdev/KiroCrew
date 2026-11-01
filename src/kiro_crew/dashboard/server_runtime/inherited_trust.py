@@ -15,7 +15,7 @@ if TYPE_CHECKING:
         DashboardState,
         effective_session_key,
         logger,
-        trust_carries,
+        trust_reaches_subagents,
     )
 
 
@@ -50,7 +50,7 @@ def _clear_override_derived_trust(state: "DashboardState", source: str) -> None:
         # back for them. A partial revocation is the failure this whole path
         # exists to prevent, so the iteration cannot be the thing that breaks it.
         for slot in list(state._slots.values()):
-            if trust_carries(slot) or slot._trust_reads:
+            if trust_reaches_subagents(slot) or slot._trust_reads:
                 # Excluded from the channel-trust revoke below, via the SAME
                 # derivation the reset uses: a channel-born slot's turns run on
                 # the channel's own session key, so a `dashboard:<slot>` spelling
@@ -106,7 +106,7 @@ def _suspend_override_derived_trust(state: "DashboardState") -> Callable[[], Non
         return None
     suspended: list[tuple[str, str]] = []
     for slot in list(state._slots.values()):
-        if trust_carries(slot) or slot._trust_reads:
+        if trust_reaches_subagents(slot) or slot._trust_reads:
             continue
         key = effective_session_key(slot)
         try:
@@ -129,9 +129,7 @@ def _suspend_override_derived_trust(state: "DashboardState") -> Callable[[], Non
         # trust to full auto-approve on the read ``parent_trusted`` makes; over a
         # ``normal`` slot it would undo an explicit revoke. So a slot gets its
         # ``"auto"`` back only if it still exists, still carries no standing trust
-        # flag, and its policy is still the empty string this suspension left. A
-        # card-scoped trust counts as standing here: it never stores ``"auto"``, so
-        # putting the override's back would hand that trust to its children.
+        # flag, and its policy is still the empty string this suspension left.
         for slot_key, key in suspended:
             slot = state._slots.get(slot_key)
             if slot is None or slot._trust or slot._trust_reads:

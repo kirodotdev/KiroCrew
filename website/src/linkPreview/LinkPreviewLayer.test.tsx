@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { createElement } from 'react'
 import { render, waitFor, act, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { BURST_CAPACITY, LINK_PREVIEW_TAG, MAX_MESSAGE_BYTES, readFrameMessage } from './linkPreviewProtocol'
+import { APP_FRAME_TAG } from '../appFrame/frameProtocol'
+import { BURST_CAPACITY, MAX_MESSAGE_BYTES, readFrameMessage } from './linkPreviewProtocol'
 import { FRAME_SANDBOX, MAX_PINNED, READY_TIMEOUT_MS } from './linkPreviewFrames'
 import { resolveLinkPreviews } from './linkPreviewRegistry'
 import { fromFrame, installFrameWindows, postFrom, sentTo, type Sent } from '../test/LinkPreviewFramesTestUtils'
@@ -16,7 +17,7 @@ const APP = {
   manifest: { contributes: { linkPreviews: [{ id: 'cards', entry: 'dist/lp.mjs', hosts: ['tickets.example.com'] }] } },
 }
 
-const mint = vi.fn(async () => ({ frame: '/link-preview-frame/cards-app/tok', capability: 'cap-1', ttl: 3600 }))
+const mint = vi.fn(async () => ({ frame: '/app-frame/cards-app/lp/f/tok', capability: 'cap-1', ttl: 3600 }))
 
 /** The frame the layer created, the messages it was sent, and a way to answer as it. */
 function theFrame() {
@@ -81,7 +82,7 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     expect(el.getAttribute('sandbox')).toBe(FRAME_SANDBOX)
     expect(FRAME_SANDBOX).toBe('allow-scripts')
     expect(el.getAttribute('sandbox')).not.toMatch(/allow-same-origin/)
-    expect(el.getAttribute('src')).toBe('/link-preview-frame/cards-app/tok')
+    expect(el.getAttribute('src')).toBe('/app-frame/cards-app/lp/f/tok')
     expect(el.getAttribute('referrerpolicy')).toBe('no-referrer')
     expect(mint.mock.calls[0][0]).toBe('cards-app')
   })
@@ -90,7 +91,7 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     await mount()
     const a = link()
     const { sent } = await hoverReady(a)
-    expect(sent[0]).toMatchObject({ [LINK_PREVIEW_TAG]: 1, type: 'init', capability: 'cap-1', theme: 'light' })
+    expect(sent[0]).toMatchObject({ [APP_FRAME_TAG]: 1, type: 'init', capability: 'cap-1', theme: 'light' })
     const show = sent.find((m) => m.type === 'show')
     expect(show).toMatchObject({ url: 'https://tickets.example.com/t/TK-1', rect: { left: 100, top: 50, width: 40, height: 16 } })
     expect(Object.values(show ?? {}).some((v) => v instanceof Node)).toBe(false)
@@ -366,7 +367,7 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
   it('a capabilityExpired message is answered with a fresh capability', async () => {
     await mount()
     const { el, sent } = await hoverReady(link())
-    mint.mockResolvedValueOnce({ frame: '/link-preview-frame/cards-app/tok2', capability: 'cap-2', ttl: 3600 })
+    mint.mockResolvedValueOnce({ frame: '/app-frame/cards-app/lp/f/tok2', capability: 'cap-2', ttl: 3600 })
     fromFrame(el, 'capabilityExpired')
     await waitFor(() => expect(sent.at(-1)).toMatchObject({ type: 'capability', capability: 'cap-2' }))
   })
@@ -481,7 +482,7 @@ describe('LinkPreviewLayer: overlay mode (a provider with windows of its own)', 
 
 describe('linkPreviewProtocol', () => {
   it('reads only the messages it defines, with their fields coerced', () => {
-    const t = { [LINK_PREVIEW_TAG]: 1 }
+    const t = { [APP_FRAME_TAG]: 1 }
     expect(readFrameMessage({ ...t, type: 'resize', invocation: 2, width: '9', height: 5 })).toEqual({ type: 'resize', invocation: 2, width: 0, height: 5 })
     expect(readFrameMessage({ ...t, type: 'dock', edge: 'top' })).toEqual({ type: 'dock', invocation: -1, edge: null })
     expect(readFrameMessage({ ...t, type: 'pin', invocation: 1.5, pinned: 'yes' })).toEqual({ type: 'pin', invocation: -1, pinned: false })

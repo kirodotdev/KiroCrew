@@ -982,7 +982,8 @@ describe('file-menu result toast', () => {
     const frames = '{(isPopout || isEmbed) && <FileMenuResultToastFrame />}'
     expect(src.split(frames).length - 1).toBe(1)
     expect(src.indexOf(frames)).toBeGreaterThan(src.indexOf('<WsContext.Provider'))
-    expect(src.indexOf(frames)).toBeLessThan(src.indexOf('{isPopout ? ('))
+    // The frame branches open with the app pop-out arm (`isPopout` is true there too).
+    expect(src.indexOf(frames)).toBeLessThan(src.indexOf('{appPopoutRoute ? ('))
   })
 })
 
@@ -993,7 +994,9 @@ describe('import outcome notice', () => {
     // layouts each render a session menu, so each must host the notice. The
     // dashboard's copy lives inside the local pane's overlay root so it hides
     // while a remote Crew shows; the frames, which have no local pane, keep one
-    // mounted above the branch that picks among them.
+    // mounted above the branch that picks among them. The app pop-out frame is
+    // the first arm of that branch (an app pop-out window is a popout too, so
+    // the frames' copy covers it).
     // Read from source: standing up the popout and embed shells here would
     // mean faking the window-level flags each branch keys on.
     const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8')
@@ -1001,8 +1004,10 @@ describe('import outcome notice', () => {
     expect(src.split('<ImportSessionOutcomeNotice').length - 1).toBe(2)
     expect(src.split(frames).length - 1).toBe(1)
     expect(src.indexOf(frames)).toBeGreaterThan(src.indexOf('<WsContext.Provider'))
-    expect(src.indexOf(frames)).toBeLessThan(src.indexOf('{isPopout ? ('))
-    // The only other branch is the dashboard, and its copy is in the local pane.
+    expect(src.indexOf(frames)).toBeLessThan(src.indexOf('{appPopoutRoute ? ('))
+    // The only other branches are the generic popout frames, the embed and the
+    // dashboard, whose copy is in the local pane.
+    expect(src).toContain(') : isPopout ? (')
     expect(src).toContain(') : isEmbed ? (')
     // The dashboard's copy navigates to /chat on Open, so it carries the flag.
     const dashboard = src.indexOf('<ImportSessionOutcomeNotice navigateToChat />', src.indexOf('<LocalOverlayRoot hidden='))

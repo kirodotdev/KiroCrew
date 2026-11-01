@@ -188,7 +188,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
                 : interrupted
                   ? 'bg-warn-subtle border-warn/20 text-warn-text'
                   : stopped
-                    ? 'bg-muted/15 border-border text-muted'
+                    ? 'bg-bg-hover border-border text-muted'
                     : 'bg-ok-subtle border-ok/20 text-ok-text'
             }`}
           >
@@ -207,7 +207,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
               </span>
             )}
             {parsed.stopped > 0 && (
-              <span className={`${CHIP} bg-muted/15 border-border text-muted`} data-testid="chip-stopped">
+              <span className={`${CHIP} bg-bg-hover border-border text-muted`} data-testid="chip-stopped">
                 <Square size={10} aria-hidden /> {parsed.stopped}
               </span>
             )}

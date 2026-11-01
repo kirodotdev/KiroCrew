@@ -272,6 +272,34 @@ describe('Design Critique — the built-in example', () => {
     expect(screen.queryByRole('dialog', { name: 'Full size view' })).toBeNull()
   })
 
+  // The lightbox is aria-modal: focus left on the report behind it, or a Tab
+  // that walks out of it, reaches controls the overlay hides.
+  it('moves focus onto the lightbox Close, keeps Tab inside, and returns it to Enlarge', () => {
+    openExample()
+
+    const enlarge = screen.getByTitle('Enlarge')
+    enlarge.focus()
+    fireEvent.click(enlarge)
+    const box = screen.getByRole('dialog', { name: 'Full size view' })
+    const close = within(box).getByRole('button', { name: 'Close' })
+    expect(document.activeElement).toBe(close)
+
+    // A browser gives a `position: fixed` element a null offsetParent, which
+    // the trap reads as hidden; the corner pin belongs on a wrapper instead.
+    expect(close.style.position).not.toBe('fixed')
+    // jsdom has no layout, so give the button an offsetParent for the trap's visibility filter.
+    Object.defineProperty(close, 'offsetParent', { configurable: true, get: () => box })
+    enlarge.focus()
+    fireEvent.keyDown(enlarge, { key: 'Tab' })
+    expect(document.activeElement).toBe(close)
+    fireEvent.keyDown(close, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(close)
+
+    fireEvent.click(close)
+    expect(screen.queryByRole('dialog', { name: 'Full size view' })).toBeNull()
+    expect(document.activeElement).toBe(enlarge)
+  })
+
   it('returns to the composer from the report', () => {
     openExample()
     expect(screen.queryByText('What should I critique?')).toBeNull()

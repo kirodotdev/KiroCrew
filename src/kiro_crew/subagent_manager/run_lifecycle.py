@@ -211,27 +211,43 @@ async def _teardown_run_session_impl(
                     fallback_ran = True
                     kill_failed = join_failures(kill_failed, missing)
             if kill_failed is not None:
-                # The record names the survivor BEFORE the report publishes:
-                # the terminal report spawned ahead of this teardown waits
-                # on ``teardown_done`` (set by the caller's ``finally`` once
-                # this returns) before it builds its payload, so the
-                # completion the parent receives, the ``subagent_done``
-                # event and the tombstone all carry the same failure -- and
-                # the survivor is recorded as a LEAKED PROCESS, separate
-                # from the delivery. Published first, the parent received a
-                # clean completion whose ``delivered`` tombstone hid the
-                # process from reconciliation for good (the cron reaper's
-                # ``last_error`` takes the same suffix, the one spelling).
-                # A completed run has no tombstone yet and gets none here:
-                # until the parent acknowledges the completion its folder
-                # must stay in orphan reconciliation, which re-delivers a
-                # completion a restart dropped from the parent's queue.
-                # ``_leaked_process`` is read by the report instead: an
-                # acknowledged delivery writes the ``delivered`` tombstone
-                # with ``leaked_process``, so the next start ends the
-                # process without announcing the run a second time
-                # (``_end_leaked_processes_impl``).
-                info.error = with_kill_failure(info.error or "", kill_failed)
+                # The survivor is recorded as a LEAKED PROCESS, separate from
+                # the run's outcome, BEFORE the report publishes: the terminal
+                # report spawned ahead of this teardown waits on
+                # ``teardown_done`` (set by the caller's ``finally`` once this
+                # returns) before it builds its payload. A completed run has
+                # no tombstone yet and gets none here: until the parent
+                # acknowledges the completion its folder must stay in orphan
+                # reconciliation, which re-delivers a completion a restart
+                # dropped from the parent's queue. ``_leaked_process`` is read
+                # by the report instead: an acknowledged delivery writes the
+                # ``delivered`` tombstone with ``leaked_process``, so the next
+                # start ends the process without announcing the run a second
+                # time (``_end_leaked_processes_impl``).
+                #
+                # A run that COMPLETED keeps its clean record, by design:
+                # folding the failure into ``info.error`` for every run makes
+                # ``outcome`` read ``failed`` (it is ``failed`` whenever
+                # ``error`` is set), so a finished answer reaches the parent as
+                # a failure with its result replaced by ``Error: …; kill
+                # failed: …``. The
+                # run's work is done; the process its teardown could not end is
+                # the gateway's to clean up, not the parent's to act on. The
+                # failure stays on the ``run_finally_force_kill`` audit row
+                # below and in the log, the reap's rule for a run that
+                # completed before its kill decided (``_reap_once_impl``). A
+                # run that already failed, timed out or was stopped still
+                # gains the suffix on its error text.
+                if info.outcome != "completed":
+                    info.error = with_kill_failure(info.error or "", kill_failed)
+                else:
+                    logger.warning(
+                        "Subagent %s: completed, but its teardown could not end its "
+                        "process; kept on the audit and flagged for the next start, "
+                        "not on the delivered record: %s",
+                        info.id,
+                        kill_failed,
+                    )
                 tombstone = read_tombstone(info.id)
                 if tombstone is None:
                     info._leaked_process = True
@@ -249,8 +265,9 @@ async def _teardown_run_session_impl(
                         source="subagent",
                         tool_name="run_finally_force_kill",
                         # Never ``sigkill`` for a process the kill left
-                        # alive; the failure it reported is the record's
-                        # error text and this row's.
+                        # alive; the failure it reported is this row's, and
+                        # the record's error text too unless the run
+                        # completed (then this row is where it lives).
                         outcome="sigkill" if kill_failed is None else "failed",
                         error=kill_failed or "",
                         metadata={"subagent_id": info.id},

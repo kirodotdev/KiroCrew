@@ -629,6 +629,17 @@ def _crew_mode_agent_or_default(value: object) -> str:
     return DEFAULT_CREW_MODE_AGENT
 
 
+def _strands_str_or_empty(value: object) -> str:
+    """A Strands string setting trimmed, or ``""``: ``agent.strands_project`` (empty is
+    the bundled project), ``agent.strands_provider`` and ``agent.strands_model``.
+
+    Only the shape is read here; whether a value is usable (a loadable project, a
+    provider the CLI knows) is decided at spawn, where a bad one refuses the session
+    by name.
+    """
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _build_agent_config(agent_data: dict) -> AgentConfig:
     section = _sections.SectionReader(AgentConfig, agent_data)
     return AgentConfig(
@@ -660,6 +671,11 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # so a new name joins it only by being an old one. Same shape as
         # ``coerce_refusal_fallback_model`` above.
         deepseek_env=_sections.coerce_deepseek_env(section.get("deepseek_env")),
+        # The same type coercion: the Strands map has deepseek_env's shape.
+        strands_env=_sections.coerce_deepseek_env(section.get("strands_env")),
+        strands_project=_strands_str_or_empty(section.get("strands_project")),
+        strands_provider=_strands_str_or_empty(section.get("strands_provider")),
+        strands_model=_strands_str_or_empty(section.get("strands_model")),
         sweep_agents_backups=section.read("sweep_agents_backups", _safe_bool),
         sandbox=section.get("sandbox"),
         sandbox_allow_no_isolation=bool(section.get("sandbox_allow_no_isolation")),
@@ -989,6 +1005,21 @@ def _build_session_config(session_data: dict) -> SessionConfig:
     )
 
 
+def _otlp_endpoint_rows(value: object, default: list) -> list:
+    """``telemetry.otlp_endpoints`` as a list, dict rows copied, else *default*.
+
+    Every row is kept, malformed ones too: ``metrics.otlp_endpoints`` warns about
+    each one under its real index, and dropping one here would hide it and
+    renumber the rows after it. A ``config.json`` value that is not a list never
+    reaches this: the schema check on load warns about it by path and drops it,
+    as for any mistyped field, so *default* here only covers a caller that builds
+    the section from a raw dict.
+    """
+    if not isinstance(value, list):
+        return default
+    return [dict(row) if isinstance(row, dict) else row for row in value]
+
+
 def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
     section = _sections.SectionReader(TelemetryConfig, telemetry_data)
     return TelemetryConfig(
@@ -998,6 +1029,10 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
         retention_days=section.read("retention_days", _safe_int),
         max_total_mb=section.read("max_total_mb", _safe_int),
         otlp_endpoint=str(section.get("otlp_endpoint")),
+        # Shape only: a list of objects, else the field default. Each entry is
+        # checked where destinations are resolved (metrics/otlp_endpoints.py),
+        # which skips a bad one with a warning rather than failing the load.
+        otlp_endpoints=section.read("otlp_endpoints", _otlp_endpoint_rows),
         beacon_enabled=bool(section.get("beacon_enabled")),
         beacon_endpoint=str(section.get("beacon_endpoint")),
     )

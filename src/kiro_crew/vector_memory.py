@@ -293,7 +293,58 @@ _EPISODIC_SCORING_MAX_BYTES = 64 * 1024 * 1024
 # its resident snapshot is bounded independently. Above this ceiling retrieval
 # preserves the existing per-call SQLite read rather than retaining unbounded
 # user data in the gateway process.
+#
+# This is the FLOOR of the scaled cap below, not a fixed cap. The per-call scan
+# the overflow path falls back to re-stems the whole population in pure Python on
+# every recall, holding the GIL that every turn's context build needs, so on a
+# large store that fallback serializes turn builds against each other and against
+# consolidation writes. A large store holds the resident set and keeps the term
+# index instead — but only on a host with the memory to spare, so the effective
+# cap scales with available memory (``_semantic_scoring_max_bytes``).
 _SEMANTIC_SCORING_MAX_BYTES = 64 * 1024 * 1024
+# How far above the floor the scaled cap may reach. The hard ceiling is
+# ``_SEMANTIC_SCORING_CEILING_MULTIPLE * _SEMANTIC_SCORING_MAX_BYTES``, computed
+# from the floor at call time so it tracks the floor rather than being a second
+# fixed number that could drift from it: 16 x 64 MiB = 1 GiB. A store's resident
+# scoring set is bounded user data (keys + values + embeddings); past ~1 GiB the
+# memory spent to avoid the per-call scan is not a good trade even on a large
+# host, and an unbounded cap lets one store's set dominate the gateway's RSS.
+# 1 GiB holds a large store (a 54k-row 1024-d store's ~266 MB set) with headroom.
+_SEMANTIC_SCORING_CEILING_MULTIPLE = 16
+# Fraction of currently-available memory the resident semantic scoring set may
+# occupy. 1/16 keeps the set a small slice of free memory: a ~266 MB set is
+# admitted once a host has ~4.3 GB free, and the 1 GiB ceiling is reached at
+# ~16 GB free. A small host keeps the 64 MiB floor and never loads a resident
+# set it cannot hold.
+_SEMANTIC_SCORING_AVAIL_FRACTION = 1 / 16
+
+
+def _semantic_scoring_max_bytes() -> int:
+    """Memory-scaled ceiling on the resident semantic scoring set, in bytes.
+
+    ``clamp(floor, fraction * available, CEILING_MULTIPLE * floor)``, where the
+    floor is ``_SEMANTIC_SCORING_MAX_BYTES`` read at call time (so pinning that
+    constant moves both the floor and the derived ceiling). The probe is the same
+    cgroup-clamped available-memory reader the dynamic sub-agent cap uses, so a
+    container's limit binds. FAIL SAFE: when available memory cannot be read
+    (probe returns <= 0, or raises), the 64 MiB floor is kept, so a host whose
+    memory is unmeasurable never loads a resident set larger than the floor.
+    """
+    floor = _SEMANTIC_SCORING_MAX_BYTES
+    ceiling = _SEMANTIC_SCORING_CEILING_MULTIPLE * floor
+    try:
+        from kiro_crew.subagent import _available_memory_gb
+
+        available_gb = _available_memory_gb()
+    except Exception:  # pragma: no cover - defensive; the probe must never raise here
+        return floor
+    if available_gb <= 0:  # unreadable probe -> fail safe to the floor
+        return floor
+    available_bytes = available_gb * 1024 * 1024 * 1024
+    scaled = int(available_bytes * _SEMANTIC_SCORING_AVAIL_FRACTION)
+    return max(floor, min(scaled, ceiling))
+
+
 # Conservative ceiling on bound parameters in one statement. sqlite's own limit is
 # 32,766 on the bundled build but only 999 on hosts still on a pre-3.32 library,
 # and there is no cheap way to read it on every supported runtime, so batched id

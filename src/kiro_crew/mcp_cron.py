@@ -974,6 +974,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         timeout_val = args.get("timeout", 0)
         timeout_secs_val = args.get("timeout_secs", 0)
         auto_pause_val = args.get("auto_pause_after_failures")
+        alert_after_val = args.get("alert_after_failures")
         # Resolve the folder BEFORE add_job so an unresolvable reference never
         # leaves an orphaned job behind (same position as the model check
         # above). A folder auto-created here that a subsequent add_job failure
@@ -1018,6 +1019,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 timeout=timeout_val or 0,
                 timeout_secs=timeout_secs_val or 0,
                 auto_pause_after_failures=auto_pause_val,
+                alert_after_failures=alert_after_val,
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
@@ -1149,6 +1151,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             kwargs["timeout_secs"] = args["timeout_secs"]
         if "auto_pause_after_failures" in args:
             kwargs["auto_pause_after_failures"] = args["auto_pause_after_failures"]
+        if "alert_after_failures" in args:
+            kwargs["alert_after_failures"] = args["alert_after_failures"]
         if not kwargs:
             return "Error: no fields to update"
         # The owner's auto-approve covers the job the owner saw. A tool edit that
@@ -1527,6 +1531,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _strip_shell_quotes,
     )
     from kiro_crew.mcp_cron_tool_list import (  # noqa: F401
+        _ALERT_AFTER_DESCRIPTION,
         _AUTO_PAUSE_AFTER_DESCRIPTION,
     )
     from kiro_crew.mcp_cron_vet import (  # noqa: F401
@@ -1548,6 +1553,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         lookup_cron_folder_id,
     )
     from kiro_crew.cron_service.model import (  # noqa: F401
+        _ALERT_AFTER_DEFAULT,
         _AUTO_PAUSE_MAX,
         _AUTO_PAUSE_THRESHOLD,
     )

@@ -392,7 +392,7 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                 "Last-Modified": formatdate(st.st_mtime, usegmt=True),
                 "Content-Security-Policy": "default-src 'none'; sandbox",
                 "X-Content-Type-Options": "nosniff",
-                # Read by the link-preview frame (apps/link_preview_frame.py): an
+                # Read by app frames (apps/app_frame.py): an
                 # opaque-origin sandbox loads the app's module in CORS mode. Only
                 # the "null" origin is answered, never with credentials, and these
                 # bytes are already served to anyone without a token.

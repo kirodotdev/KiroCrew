@@ -56,7 +56,7 @@ from kiro_crew.dashboard.handlers.usage import (
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
-from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin, otlp_egress_active
+from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin, otlp_egress_listing
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 from kiro_crew.metrics.turns import TURN_COST_METRIC, TURN_CREDITS_METRIC, TURN_METRIC
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -222,6 +222,12 @@ class _TelemetryState(NamedTuple):
     # this, so the OTEL cards cannot cover a wider window. 0 means no age
     # pruning (``telemetry.max_total_mb`` can still drop the oldest shards).
     retention_days: int = 0
+    # Every destination enabling collection would send to, as
+    # ``{"name", "source", "locked"}`` rows: names only, never an endpoint or a
+    # host, which can carry credentials. Empty when ``otlp_configured`` is False,
+    # and also when posture could not be resolved (``otlp_configured`` is then
+    # True: a disclosure that cannot name its destinations still says they exist).
+    otlp_destinations: "tuple[dict, ...]" = ()
 
 
 def _telemetry_cfg() -> _TelemetryState:
@@ -241,6 +247,7 @@ def _telemetry_cfg() -> _TelemetryState:
     enabled = False
     env_pinned = False
     otlp_configured = False
+    destinations: "tuple[dict, ...]" = ()
     retention_days = 0
     directory = config_dir() / "metrics"
     try:
@@ -256,7 +263,15 @@ def _telemetry_cfg() -> _TelemetryState:
         # leave the machine. The endpoint value never leaves that resolution; the
         # panel only needs to know whether egress would happen.
         try:
-            otlp_configured = otlp_egress_active(cfg)
+            destinations = tuple(
+                {
+                    "name": row.destination.name,
+                    "source": row.source,
+                    "locked": row.locked,
+                }
+                for row in otlp_egress_listing(cfg)
+            )
+            otlp_configured = bool(destinations)
         except Exception:
             # Posture unresolvable (a provider that raised, an uncomposable
             # context). Report egress rather than promising local-only: this
@@ -276,7 +291,9 @@ def _telemetry_cfg() -> _TelemetryState:
     if pin is not None:
         enabled = pin
         env_pinned = True
-    return _TelemetryState(enabled, directory, env_pinned, env_var, otlp_configured, retention_days)
+    return _TelemetryState(
+        enabled, directory, env_pinned, env_var, otlp_configured, retention_days, destinations
+    )
 
 
 def _shards_in_window(directory: Path, days: float, until: float | None = None) -> list[Path]:
@@ -1839,6 +1856,13 @@ async def api_collection_status(request: web.Request) -> web.Response:
     itself is never returned: it can carry credentials, and the panel only needs to
     know that one exists.
 
+    ``otlp_destinations`` lists each of those destinations by NAME, with where it
+    came from (``otlp_endpoint``, ``otlp_endpoints`` or ``provider``)
+    and whether this build locked it on. Every configured entry is listed, including
+    one that is refused right now for a reason that can lift on its own (an unset
+    ``headers_env`` variable, a host the policy refuses today): this is a
+    disclosure, so its closed direction is "assume it exports".
+
     Nothing here is an egress control — the switch cannot start egress, by the gate
     above — so unlike the beacon there is no governance ceiling to report.
     """
@@ -1851,6 +1875,7 @@ async def api_collection_status(request: web.Request) -> web.Response:
             "env_var": state.env_var,
             "overlay_override": overlay_override,
             "otlp_configured": state.otlp_configured,
+            "otlp_destinations": [dict(row) for row in state.otlp_destinations],
             "metrics_dir": str(state.directory),
         }
     )

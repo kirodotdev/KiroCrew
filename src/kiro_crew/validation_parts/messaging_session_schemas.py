@@ -392,6 +392,9 @@ SESSION_CREATE_SCHEMA = ToolSchema(
         # ``remote_dispatch_disabled`` rather than this schema's unknown-field error.
         # No default: absence is what keeps a call local.
         FieldSpec("crew", str, required=False, max_len=MAX_CREW_REF_LEN),
+        # ``work_item`` (wave 4): with ``crew`` only, the caller's own item the crew
+        # session is born bound to. The gateway refuses it without ``crew``.
+        FieldSpec("work_item", str, required=False, max_len=16),
     ],
 )
 

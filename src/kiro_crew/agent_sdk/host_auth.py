@@ -73,6 +73,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.kiro_cli_bundle import KIRO_CLI_LOGIN_COMMAND, spawn_login_command
@@ -462,6 +463,42 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         signed_out_message=_KAS_SIGNED_OUT,
         host_logout_retires_children=True,
         entitlement_source=ENTITLEMENT_HOST_IDENTITY_STORE,
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_STRANDS,
+        # The Strands CLI stores no credential of its own: its config keeps provider
+        # settings and strips every key name (``normalizeStoredProviderEnvironment``
+        # deletes the ``PROVIDER_CREDENTIAL_KEYS``). A key reaches it from the process
+        # environment, which Crew fills from its own vault (``agent.strands_env``). The
+        # sandbox masks ``~/.aws``, so Bedrock needs a mapped Bedrock API key too.
+        credential_leaves=(),
+        home_override_env_vars=(),
+        # Nothing spared: the routing is ``VERIFIED_GATE_EXTENSION`` (enforced), so the
+        # mask denies the child the whole floor. The vault keys never enter a launch
+        # environment: they reach the gate module through a one-time owner-only file
+        # (``acp/harness/strands_keys.py``), which it loads into its own runtime
+        # environment, removes, and withholds from every shell and code child the
+        # agent runs; the worker then goes non-dumpable -- proved per spawn by its
+        # load marker (agent-host-contract.md, "No provider key is in any launch
+        # environment").
+        adapter_own_leaves=(),
+        sign_in_remedy=(
+            "The Strands harness reaches its model with the provider settings Kiro Crew "
+            "holds for it. Save a key under Settings → Secrets and map it in "
+            "agent.strands_env under the name the provider reads (ANTHROPIC_API_KEY, "
+            "OPENAI_API_KEY, GEMINI_API_KEY, ...). For Bedrock, map "
+            "AWS_BEARER_TOKEN_BEDROCK and AWS_REGION: the harness runs sandboxed "
+            "without ~/.aws or the host's AWS environment."
+        ),
+        signed_out_message=(
+            "The Strands harness has no model credential. Save a key under Settings > "
+            "Secrets and map it in `agent.strands_env` (for example "
+            "`ANTHROPIC_API_KEY: secret://my-anthropic-key`; for Bedrock, "
+            "`AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION`), then start a new chat."
+        ),
+        # Its credential is not the host's: a kiro-cli logout cannot bear on it.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_HOST_VAULT,
     ),
     AgentAuthDeclaration(
         backend=ACP_BACKEND_CODEX,
@@ -939,6 +976,23 @@ def sign_in_remedy(
     return _with_spawn_login_command(
         declaration, declaration.sign_in_remedy, environ, platform_name
     )
+
+
+def bedrock_auth_remedy(backend: str) -> str:
+    """The Bedrock auth-failure text for a harness whose remedy is not the host's AWS
+    sign-in, or ``""`` for the shared one.
+
+    Strands runs under the enforced sandbox, whose mask hides ``~/.aws``, so the
+    host's AWS profiles never reach it: the remedy is the vault mapping, named.
+    """
+    if backend == ACP_BACKEND_STRANDS:
+        return (
+            "Bedrock authentication failed. Strands runs sandboxed and cannot read ~/.aws "
+            "profiles: store a Bedrock API key in the vault and map it with "
+            'agent.strands_env ({"AWS_BEARER_TOKEN_BEDROCK": "secret://<name>", '
+            '"AWS_REGION": "secret://<name>"}), then start a new chat.'
+        )
+    return ""
 
 
 def signed_out_message(

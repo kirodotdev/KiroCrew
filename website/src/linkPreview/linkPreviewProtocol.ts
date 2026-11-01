@@ -1,10 +1,10 @@
 /**
  * The message protocol between the dashboard and a link-preview frame.
  *
- * An app's card runs in an iframe that is `sandbox="allow-scripts"` with no
- * `allow-same-origin` (served by `apps/link_preview_frame.py`), so its origin is
- * opaque and `postMessage` is the only channel. Every message carries
- * `{ [LINK_PREVIEW_TAG]: 1, type }`.
+ * An app's card runs in an app frame (`apps/app_frame.py`): `sandbox="allow-scripts"`
+ * with no `allow-same-origin`, so its origin is opaque and `postMessage` is the
+ * only channel. What every app frame shares (the tag, the rate bound) is in
+ * `appFrame/frameProtocol.ts`.
  *
  * Dashboard to frame (the frame's bootstrap turns these into provider calls):
  *
@@ -45,7 +45,9 @@
  * @module linkPreview/linkPreviewProtocol
  */
 
-export const LINK_PREVIEW_TAG = 'kirocrew-link-preview'
+import { finite, readTagged, tagged } from '../appFrame/frameProtocol'
+
+export { BURST_CAPACITY, BURST_PER_SECOND, messageBytes } from '../appFrame/frameProtocol'
 
 export interface AnchorRect {
   left: number
@@ -89,27 +91,10 @@ export type FromFrame =
 export const MAX_REGIONS = 32
 /** Largest message a frame may send, as JSON text. */
 export const MAX_MESSAGE_BYTES = 8192
-/** Messages a frame may send in a burst, and how fast that allowance refills. */
-export const BURST_CAPACITY = 120
-export const BURST_PER_SECOND = 60
-
-/** The serialized size of a message, or Infinity when it is not plain data. */
-export function messageBytes(data: unknown): number {
-  try {
-    const s = JSON.stringify(data)
-    return typeof s === 'string' ? s.length : Infinity
-  } catch {
-    return Infinity
-  }
-}
-
-const finite = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) ? n : 0)
-
 /** The frame message in `data`, or null when it is not one this protocol defines. */
 export function readFrameMessage(data: unknown): FromFrame | null {
-  if (!data || typeof data !== 'object') return null
-  const m = data as Record<string, unknown>
-  if (m[LINK_PREVIEW_TAG] !== 1 || typeof m.type !== 'string') return null
+  const m = readTagged(data)
+  if (!m) return null
   const invocation = typeof m.invocation === 'number' && Number.isInteger(m.invocation) && m.invocation >= 0 ? m.invocation : -1
   switch (m.type) {
     case 'ready':
@@ -151,5 +136,5 @@ export function readFrameMessage(data: unknown): FromFrame | null {
 }
 
 export function toFrame(msg: ToFrame): Record<string, unknown> {
-  return { [LINK_PREVIEW_TAG]: 1, ...msg }
+  return tagged(msg)
 }

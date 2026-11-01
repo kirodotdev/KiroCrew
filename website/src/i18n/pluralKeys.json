@@ -94,6 +94,9 @@
   "apps.pptxMaker.pptxMakerPage.slide_count",
   "apps.specBuilder.components.specDetail.pending_comment",
   "apps.workflows.workflowRunTree.agent",
+  "apps.workflows.workflowsRuns.agents",
+  "apps.workflows.workflowsRuns.events",
+  "apps.workflows.workflowSourcePanel.lines",
   "components.agentSkillsEditor.mapping_unresolved_count",
   "components.agentTemplateDetail.changes_count",
   "components.appstore.categoryRail.app",
@@ -312,6 +315,9 @@
   "pages.mcpManagement.confirm_will_share",
   "apps.issueRadar.components.threads.show_earlier",
   "components.crewMode.ultra_row_sessions",
+  "components.crewMode.ultra_row_count_working",
+  "components.crewMode.ultra_row_count_waiting",
+  "components.crewMode.ultra_row_count_needs_you",
   "components.crewMode.ultra_done_line_merged",
   "components.crewMode.ultra_done_line_merged_rest",
   "components.crewMode.ultra_done_line_green",
@@ -335,5 +341,12 @@
   "pages.settings.postureDisclosure.count_exfil_heuristics",
   "pages.settings.postureDisclosure.count_audit_surfaces",
   "pages.settings.postureDisclosure.count_token_auth",
-  "pages.schedulePage.delete_n_selected_jobs"
+  "pages.schedulePage.delete_n_selected_jobs",
+  "pages.overview.vectorMemoryCard.showing_entries",
+  "pages.overview.vectorMemoryCard.showing_events",
+  "pages.overview.vectorMemoryCard.showing_events_filtered",
+  "components.searchResultsList.showing_matches",
+  "apps.issueRadar.views.settings.repoSettings.first_issue_friendly_count",
+  "pages.overview.vectorMemoryCard.showing_semantic",
+  "pages.overview.vectorMemoryCard.showing_semantic_filtered"
 ]

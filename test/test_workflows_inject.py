@@ -28,6 +28,12 @@ class _FakeSlot:
         self.messages: list[dict] = []
         self.linked_session_key = ""
         self.title = ""
+        self.folder_id = ""
+        # Title-pin state the auto-title gate reads (mirrors _ChatSlot): an
+        # explicit per-run title sets _titled/_title_origin and bumps the epoch.
+        self._titled = False
+        self._title_origin = "auto"
+        self._title_epoch = 0
         # Mirror the delivery seam append_and_surface reads: append's own
         # broadcast callback (the SSE door, mid-carrying) and the reader flag
         # that suppresses it. Deliveries land in ``delivered`` so tests can
@@ -72,6 +78,7 @@ class _FakeState:
         self.conversation_log = None
         self.broadcasts: list[tuple[str, dict]] = []
         self.created: list[str] = []
+        self._folders: list[dict] = []
 
     def get_slot(self, name):
         return self._slots.get(name)
@@ -250,6 +257,174 @@ def test_inject_falls_back_when_origin_slot_gone() -> None:
     ok = inject_workflow_result(state, "wf_9", snap)
     assert ok is True
     assert state.created == ["workflow-wf_9"]  # dedicated fallback slot created
+
+
+def test_fallback_slot_uses_per_run_title_when_given() -> None:
+    # A webhook-driven run (originating session always gone) can title its own
+    # fallback slot, so many runs of the same workflow are told apart in the
+    # sidebar instead of all reading ``Workflow: <name>``.
+    state = _FakeState({})
+    snap = {
+        "name": "mr-review-sage-bot",
+        "run_id": "wf_t",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
+        "fallback_title": "MR !1234 review",
+    }
+    ok = inject_workflow_result(state, "wf_t", snap)
+    assert ok is True
+    slot = state.get_slot("workflow-wf_t")
+    assert slot.title == "MR !1234 review"
+    # The explicit title is pinned so a follow-up turn's auto-titling cannot
+    # silently overwrite it (mirrors slot_create's caller-explicit title).
+    assert slot._titled is True
+    assert slot._title_origin == "user"
+    assert slot._title_epoch == 1
+
+
+def test_supplied_title_survives_a_follow_up_auto_title() -> None:
+    # End to end: a supplied fallback title is pinned by the injector, so a
+    # later follow-up turn's background auto-titling (`_maybe_auto_title`)
+    # leaves it alone instead of silently replacing it. Without the pin the
+    # `_titled` gate would be open and the title would be overwritten.
+    import asyncio
+
+    from kiro_crew.dashboard.chat_title import _maybe_auto_title
+
+    state = _FakeState({})
+    snap = {
+        "name": "mr-review-sage-bot",
+        "run_id": "wf_e2e",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
+        "fallback_title": "MR !1234 review",
+    }
+    assert inject_workflow_result(state, "wf_e2e", snap) is True
+    slot = state.get_slot("workflow-wf_e2e")
+    # The auto-title path reads these; a non-member slot with a user turn would
+    # normally be titled, but the pin set by the injector short-circuits it.
+    slot.mode = ""
+    slot._title_in_flight = False
+    slot.messages.append({"role": "user", "content": "please re-run the review"})
+    asyncio.run(_maybe_auto_title(state, slot))
+    assert slot.title == "MR !1234 review"  # the caller's title is untouched
+    # No per-run title given -> the default ``Workflow: <name>`` is unchanged.
+    state = _FakeState({})
+    snap = {
+        "name": "pizza",
+        "run_id": "wf_d",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
+    }
+    ok = inject_workflow_result(state, "wf_d", snap)
+    assert ok is True
+    slot = state.get_slot("workflow-wf_d")
+    assert slot.title == "Workflow: pizza"
+    # The default title is NOT pinned: a run that named no title keeps today's
+    # auto-title behaviour.
+    assert slot._titled is False
+    assert slot._title_origin == "auto"
+
+
+def test_fallback_title_is_cleaned_at_the_injector() -> None:
+    # The title is cleaned where every run path converges on applying it: a
+    # title with newlines/control chars collapses to a single bounded line.
+    state = _FakeState({})
+    snap = {
+        "name": "x",
+        "run_id": "wf_c",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
+        "fallback_title": "MR  !1234\n\treview",
+    }
+    ok = inject_workflow_result(state, "wf_c", snap)
+    assert ok is True
+    slot = state.get_slot("workflow-wf_c")
+    assert slot.title == "MR !1234 review"
+
+
+def test_fallback_slot_filed_under_resolved_folder_id() -> None:
+    # The folder id is resolved server-side by the run handler (from an
+    # EXISTING folder); the fallback slot is filed under it when the folder
+    # still exists at delivery.
+    state = _FakeState({})
+    state._folders = [{"id": "fld_mr"}]
+    snap = {
+        "name": "mr-review-sage-bot",
+        "run_id": "wf_f",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
+        "fallback_folder_id": "fld_mr",
+    }
+    ok = inject_workflow_result(state, "wf_f", snap)
+    assert ok is True
+    slot = state.get_slot("workflow-wf_f")
+    assert slot.folder_id == "fld_mr"
+
+
+def test_fallback_slot_unfiled_when_folder_deleted_before_delivery() -> None:
+    # The folder resolved to an existing id at run start but was deleted
+    # before the result arrives -> the slot is left unfiled and nothing is
+    # recreated, no error.
+    state = _FakeState({})
+    state._folders = []  # the resolved folder is absent at delivery
+    snap = {
+        "name": "mr-review-sage-bot",
+        "run_id": "wf_g",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
+        "fallback_folder_id": "fld_gone",
+    }
+    ok = inject_workflow_result(state, "wf_g", snap)
+    assert ok is True
+    slot = state.get_slot("workflow-wf_g")
+    assert slot.folder_id == ""  # unfiled, default preserved
+
+
+def test_fallback_slot_unfiled_when_no_folder_given() -> None:
+    # No folder given -> the fallback slot stays unfiled (today's default).
+    state = _FakeState({})
+    snap = {
+        "name": "pizza",
+        "run_id": "wf_h",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
+    }
+    ok = inject_workflow_result(state, "wf_h", snap)
+    assert ok is True
+    slot = state.get_slot("workflow-wf_h")
+    assert slot.folder_id == ""
+
+
+def test_fallback_slot_unfiled_when_folder_is_mate_home_at_delivery() -> None:
+    # The folder exists at delivery but sits in a member's home, and the slot's
+    # own store is not that member's. Delivery re-checks ownership against the
+    # run's real store and leaves the slot unfiled — fail-safe, no error — even
+    # though the admission-time refusal already guards the common path.
+    state = _FakeState({})
+    state._folders = [
+        {"id": "home-1", "parent_id": "", "mate_home": True, "owner_app": "member:store-x"},
+        {"id": "child-1", "parent_id": "home-1"},
+    ]
+    snap = {
+        "name": "mr-review-sage-bot",
+        "run_id": "wf_m",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
+        "fallback_folder_id": "child-1",
+    }
+    ok = inject_workflow_result(state, "wf_m", snap)
+    assert ok is True
+    slot = state.get_slot("workflow-wf_m")
+    assert slot.folder_id == ""  # unfiled: a member's home is not ours to file into
 
 
 def test_inject_no_session_key_returns_false() -> None:

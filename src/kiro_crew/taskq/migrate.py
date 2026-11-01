@@ -222,7 +222,7 @@ def legacy_subagent_records(subagents_dir: Path, *, now: float) -> list[TaskReco
     records: list[TaskRecord] = []
     try:
         entries = sorted(p for p in subagents_dir.iterdir() if p.is_dir())
-    except (FileNotFoundError, NotADirectoryError, OSError):
+    except OSError:
         return records
     for folder in entries:
         if (folder / "tombstone.json").exists():

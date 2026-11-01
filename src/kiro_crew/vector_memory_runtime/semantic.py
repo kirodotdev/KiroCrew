@@ -1103,9 +1103,11 @@ def semantic_scoring_set(store: VectorMemoryStore) -> _SemanticScoringSet | None
 
     ``PRAGMA data_version`` catches another process changing the database;
     the in-process generation catches this store's own commits. A snapshot
-    that would exceed the fixed retention budget is refused for that exact
-    token pair, so an oversized store pays one scan per state change rather
-    than rebuilding on every context request.
+    that would exceed the retention budget (``vm._semantic_scoring_max_bytes``,
+    the memory-scaled clamp of a 64 MiB floor, 1/16 of available memory and a
+    1 GiB ceiling) is refused for that exact token pair, so an oversized store
+    pays one scan per state change rather than rebuilding on every context
+    request.
     """
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
 
@@ -1136,7 +1138,11 @@ def semantic_scoring_set(store: VectorMemoryStore) -> _SemanticScoringSet | None
             "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'",
             scan="semantic",
         )
-        budget = vm._SEMANTIC_SCORING_MAX_BYTES
+        # The ceiling is read ONCE per build and reused for the overflow log, so
+        # the budget and the message it prints never disagree (the memory-scaled
+        # value could otherwise move between the two reads).
+        max_bytes = vm._semantic_scoring_max_bytes()
+        budget = max_bytes
         cached_rows: list[dict[str, object]] = []
         for raw in rows:
             row = dict(raw)
@@ -1152,7 +1158,7 @@ def semantic_scoring_set(store: VectorMemoryStore) -> _SemanticScoringSet | None
             if budget < 0:
                 logger.info(
                     "Semantic scoring set over %d bytes; falling back to a per-call scan",
-                    vm._SEMANTIC_SCORING_MAX_BYTES,
+                    max_bytes,
                 )
                 store._semantic_scoring_refused = token
                 # Clear any prior snapshot too: a store that held a valid one

@@ -49,6 +49,7 @@ import aiohttp
 from aiohttp import web
 
 import kiro_crew
+from kiro_crew import session_ledger
 from kiro_crew.apps.version import versions_compatible
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import _registry
@@ -79,7 +80,7 @@ CREW_VERBS = ("create", "send", "read", "stop", "close")
 #: The create fields a crew create carries. Anything else a local create takes
 #: (folder, agent_kind, reasoning_effort, autocompact_pct, dry_run) names a
 #: local-only behaviour and is refused rather than dropped.
-_CREATE_FIELDS = frozenset({"crew", "title", "agent", "model"})
+_CREATE_FIELDS = frozenset({"crew", "title", "agent", "model", "work_item"})
 
 #: A peer slot key this hub will put in a path: one plain segment. A peer is
 #: untrusted, and its create reply names the key every later path is built from,
@@ -107,6 +108,19 @@ class CrewCallError(Exception):
         self.status = status
         self.code = code
         self.message = message
+
+
+#: A peer's typed refusal of a work-item create that it has no room for (wave 3).
+CREW_BUSY = "crew_busy"
+
+
+class CrewBusyError(CrewCallError):
+    """The peer answered ``crew_busy``: nothing was created there (RFC §2b)."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        short = payload.get("short")
+        short = short if short in ("memory", "cpu", "disk") else "a resource"
+        super().__init__(503, CREW_BUSY, f"that crew has no room: it is short on {short}")
 
 
 def _response(exc: CrewCallError) -> web.Response:
@@ -146,6 +160,14 @@ def has_crew(body: dict[str, Any]) -> bool:
     as one, never read as "no crew" and run locally.
     """
     return "crew" in body
+
+
+async def placement_enabled() -> bool:
+    """Whether a create with ``work_item`` and no ``crew`` goes to hub placement.
+
+    Read per call. Off, such a create stays on the local path exactly as before.
+    """
+    return await asyncio.to_thread(remote_dispatch_enabled)
 
 
 async def refuse_if_disabled(caller: str, verb: str) -> web.Response | None:
@@ -504,8 +526,37 @@ def _fenced_target(state: "DashboardState", caller: str, instance_id: str, targe
     return slot
 
 
+async def _fenced_target_or_item(
+    state: "DashboardState", caller: str, board: str, instance_id: str, target: object
+) -> str:
+    """:func:`_fenced_target`, or a slot an open item on *board* is bound to on that crew.
+
+    The item pair (``worker_session_key`` + ``worker_instance_id``) survives a hub
+    restart, which the in-memory record does not (wave 4).
+    """
+    try:
+        return _fenced_target(state, caller, instance_id, target)
+    except CrewCallError as exc:
+        if exc.code != "crew_target_not_dispatched" or not isinstance(target, str):
+            raise
+        slot = target.strip()
+        if slot.startswith("dashboard:"):
+            slot = slot[len("dashboard:") :]
+        from kiro_crew.dashboard.handlers import remote_ingest
+
+        if _slot_ok(slot) and await remote_ingest.holds_peer_slot(board, instance_id, slot):
+            return slot
+        raise
+
+
 async def _create(
-    state: "DashboardState", mgr: Any, caller: str, instance_id: str, body: dict[str, Any]
+    state: "DashboardState",
+    mgr: Any,
+    caller: str,
+    instance_id: str,
+    body: dict[str, Any],
+    *,
+    board: str = "",
 ) -> dict[str, Any]:
     extra = sorted(k for k in body if k not in _CREATE_FIELDS)
     if extra:
@@ -545,15 +596,29 @@ async def _create(
         create["agent"] = fields["agent"]
     if fields["model"]:
         create["model"] = fields["model"]
-    status, payload = await peer_call(mgr, instance_id, "POST", "api/chat/slots", body=create)
-    if not 200 <= status < 300:
-        raise _peer_error(status, payload, "could not create the crew session")
-    slot = payload.get("key") if isinstance(payload, dict) else None
-    if not _slot_ok(slot):
-        raise CrewCallError(
-            502, "crew_reply_malformed", "the crew's create reply named no usable session key"
+    work_item_id = ""
+    if body.get("work_item") is not None:
+        # Wave 4: born bound (RFC §3). The peer binds the slot to its mailbox copy
+        # and echoes the id; this hub records the pair once it did.
+        from kiro_crew.dashboard.handlers import remote_ingest
+
+        slot, payload, bound = await remote_ingest.create_bound(
+            state, mgr, board, instance_id, body.get("work_item"), create
         )
-    assert isinstance(slot, str)
+        work_item_id = bound.item_id
+        if not fields["title"]:
+            fields["title"] = bound.title
+    else:
+        status, payload = await peer_call(mgr, instance_id, "POST", "api/chat/slots", body=create)
+        if not 200 <= status < 300:
+            raise _peer_error(status, payload, "could not create the crew session")
+        key = payload.get("key") if isinstance(payload, dict) else None
+        if not _slot_ok(key):
+            raise CrewCallError(
+                502, "crew_reply_malformed", "the crew's create reply named no usable session key"
+            )
+        assert isinstance(key, str)
+        slot = key
     # Recorded before the rename, so a failed rename still leaves the slot this
     # caller's to close.
     _record_dispatch(state, caller, instance_id, slot)
@@ -565,6 +630,12 @@ async def _create(
         "model": fields["model"],
         "memory_mode": memory_mode,
     }
+    if work_item_id:
+        result["work_item_id"] = work_item_id
+        if isinstance(payload, dict) and payload.get("decision_error"):
+            # The latest decision did not reach the new worker; it holds the one
+            # the create carried until the next decide.
+            result["decision_error"] = payload["decision_error"]
     if fields["title"]:
         # The session exists from here on: a failed rename is reported beside its
         # key, never as a refusal that would hide a session the caller must close.
@@ -724,6 +795,16 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
     slot, limit, name = "", 20, ""
     try:
         caller = await authorize_remote_dispatch(request, verb)
+        if verb == "create" and not has_crew(body):
+            # Wave 5: a work item with no crew is placed by the hub (RFC §2b).
+            from kiro_crew.dashboard.handlers import remote_placement
+
+            board = session_ledger.ledger_key(declared)
+            result, name = await remote_placement.place(
+                state, _manager(state), caller, body, board=board
+            )
+            _audit(declared, verb, "success", crew=result["crew"])
+            return web.json_response({**result, "crew_name": name, "placed": True})
         instance_id, name = await resolve_crew(state, body.get("crew"))
         mgr = _manager(state)
         if verb == "read":
@@ -734,11 +815,20 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
                     "crew_field_unsupported",
                     "session_read_message with crew= does not take since",
                 )
+        board = session_ledger.ledger_key(declared)
         if verb != "create":
-            slot = _fenced_target(state, caller, instance_id, body.get("target"))
+            slot = await _fenced_target_or_item(
+                state, caller, board, instance_id, body.get("target")
+            )
         await check_version(mgr, instance_id)
-        if verb == "create":
-            result = await _create(state, mgr, caller, instance_id, body)
+        if verb == "create" and body.get("work_item") is not None:
+            # Counted in flight so a placement running meanwhile sees it (wave 5).
+            from kiro_crew.dashboard.handlers import remote_placement
+
+            async with remote_placement.holding(state, instance_id):
+                result = await _create(state, mgr, caller, instance_id, body, board=board)
+        elif verb == "create":
+            result = await _create(state, mgr, caller, instance_id, body, board=board)
         elif verb == "send":
             result = await _send(mgr, instance_id, slot, body)
         elif verb == "read":

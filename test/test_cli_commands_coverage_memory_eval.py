@@ -1329,13 +1329,63 @@ class TestRunEval:
         with (
             _EvalHarness([_scenario_result(True), _scenario_result(False)]) as h,
             patch("kiro_crew.cli_commands.load_scenarios", return_value=scenarios) as loader,
+            pytest.raises(SystemExit) as exc,
         ):
             await cc._run_eval(_ns(all_scenarios=True, scenarios=None, judge=False))
+        # One of the two failed, so the command fails.
+        assert exc.value.code == 1
         assert loader.call_args[0][0].name == "scenarios"
         h.runner.run_scenarios.assert_awaited_once_with(scenarios)
         out = capsys.readouterr().out
         assert "Running: a, b (4 turns)" in out
         assert "Overall: 1/2 scenarios passed" in out
+
+    @pytest.mark.asyncio
+    async def test_a_failed_scenario_exits_1_after_writing_the_report(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        with (
+            _EvalHarness([_scenario_result(False)]),
+            patch("kiro_crew.cli_commands.load_scenario", return_value=_scenario()),
+            pytest.raises(SystemExit) as exc,
+        ):
+            await cc._run_eval(_ns(all_scenarios=False, scenarios=None, judge=False))
+        # `kirocrew eval && next` must stop on a failed scenario ...
+        assert exc.value.code == 1
+        # ... and the exit comes after the report, so the evidence is kept.
+        results_dir = tmp_path / "eval_results"
+        dump = next(p for p in results_dir.iterdir() if p.suffix == ".json")
+        payload = json.loads(dump.read_text())
+        assert payload["overall_passed"] == 0 and payload["overall_total"] == 1
+        assert any(p.suffix == ".md" for p in results_dir.iterdir())
+        out = capsys.readouterr().out
+        assert "Overall: 0/1 scenarios passed" in out
+        assert "Results saved to:" in out
+
+    @pytest.mark.asyncio
+    async def test_a_judge_verdict_that_fails_a_turn_exits_1(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The judge rewrites a turn's verdict after the run, and the exit code
+        reads the rewritten one: real result types, not a frozen ``passed``."""
+        from kiro_crew.eval.runner import ScenarioResult, SessionResult, TurnResult
+
+        monkeypatch.chdir(tmp_path)
+        assertion = SimpleNamespace(type=AssertionType.JUDGE, value="was it helpful")
+        turn = TurnResult(
+            user_message="hi", agent_response="hello", assertion_results=[(assertion, True)]
+        )
+        result = ScenarioResult(name="smoke", sessions=[SessionResult(name="s1", turns=[turn])])
+        with (
+            _EvalHarness([result]) as h,
+            patch("kiro_crew.cli_commands.load_scenario", return_value=_scenario()),
+            pytest.raises(SystemExit) as exc,
+        ):
+            h.judge.judge_turn.return_value = SimpleNamespace(score=1, reason="unhelpful")
+            await cc._run_eval(_ns(all_scenarios=False, scenarios=None, judge=True))
+        assert turn.assertion_results[0][1] is False
+        assert exc.value.code == 1
 
     @pytest.mark.asyncio
     async def test_named_scenario_is_resolved_by_extension(

@@ -1,5 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
+import { useSessionPalette } from '../hooks/useSessionPalette'
+import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { useAppSelector, store, type AppDispatch } from '../store'
 import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey,
@@ -671,6 +673,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
 
   const currentSlot = slots.find(s => s.key === activeSlot)
+  // The thread header carries the same session colour as the sidebar row, read
+  // from the same display roster so a scope switch does not blank it.
+  const headerPalette = useSessionPalette()
+  const headerColor = resolveSessionColor(
+    currentSlot,
+    headerPalette.paletteColors,
+    currentSlot?.agent ? sidebarAgents.find(a => a.name === currentSlot.agent)?.session_color : null,
+  )
+  const headerColorStyle = headerColor ? headerBandStyle(headerColor, headerPalette.boost, headerPalette.boostFor) : undefined
   // Unknown counts as sent: while the transcript is still loading the mark does not
   // offer to turn Crew Mode off, since the server refuses that once a message was
   // sent (`crew_mode_locked`) and the loaded rows are the only way to know.
@@ -1114,7 +1125,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               activityOpen={activityOpen} setActionError={setActionError} showActionError={showActionError} onPinCollapsedHeight={onPinCollapsedHeight} pinCardRef={pinCardRef}
               pinExpanded={pinExpanded} pinFoldRef={pinFoldRef} pinned={pinned} scrollToPinnedPrompt={scrollToPinnedPrompt} scrollTranscriptBy={scrollTranscriptBy} setPinExpanded={setPinExpanded}
               activePoppedOut={activePoppedOut} focusActivePopout={focusActivePopout} openActivePopout={openActivePopout} returnSelfToMain={returnSelfToMain} splitFeatureEnabled={splitFeatureEnabled}
-              currentSlot={currentSlot} effectiveMode={effectiveMode} title={title} activeIsSplitAnchor={activeIsSplitAnchor} editingTitle={editingTitle} enterSplit={enterSplit}
+              currentSlot={currentSlot} headerColorStyle={headerColorStyle} effectiveMode={effectiveMode} title={title} activeIsSplitAnchor={activeIsSplitAnchor} editingTitle={editingTitle} enterSplit={enterSplit}
               setEditingTitleSlot={setEditingTitleSlot} setSidebarPinned={setSidebarPinned} sidebarAutoHidden={sidebarAutoHidden} sidebarPinned={sidebarPinned} sidePanelDock={sidePanelDock}
               splitAnchorForActive={splitAnchorForActive} toggleAct={toggleAct} openSidebar={openSidebar} sidebarOnScreen={sidebarOnScreen} sidebarOpen={sidebarOpen}
               sidePanelWantsMount={sidePanelWantsMount} mobileNewSessionItem={mobileNewSessionItem} mobileSessionsToggle={mobileSessionsToggle} popOutTip={popOutTip} activityTip={activityTip}

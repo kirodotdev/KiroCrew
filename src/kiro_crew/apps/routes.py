@@ -69,7 +69,6 @@ from kiro_crew.apps.hooks_integration import (
 
 # Aliased to keep `routes._run_lifecycle_script` patchable, which several tests rely on.
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script as _run_lifecycle_script
-from kiro_crew.apps.link_preview_grants import LINK_PREVIEW_GRANT_FAMILIES  # noqa: F401
 from kiro_crew.apps.manager import (
     _credential_free_source_metadata,
     app_enabled_state,
@@ -259,10 +258,10 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_get("/apps/{name}/art/{path:.*}", handle_app_art_file)
     # Reverse proxy: dashboard app UI → app backend (same-origin, avoids CORS)
     app.router.add_route("*", "/apps/{name}/api/{path:.*}", handle_app_api_proxy)
-    # Link-preview frames: the sandboxed card document, its mint and its fetch.
-    from kiro_crew.apps.link_preview_frame import register_link_preview_routes
+    # App frames (every frame-backed point): the sandboxed document, its mint and its fetch.
+    from kiro_crew.apps.app_frame import register_app_frame_routes
 
-    register_link_preview_routes(app)
+    register_app_frame_routes(app)
 
 
 # This module keeps only the route table. It is the facade of the app management route
@@ -303,6 +302,9 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.point_grants import (  # noqa: F401
+        point_grant_families,
+    )
     from kiro_crew.apps.routes_art import (  # noqa: F401
         _BLOB_FETCH_SEMAPHORE,
         _BLOB_FETCH_TIMEOUT,

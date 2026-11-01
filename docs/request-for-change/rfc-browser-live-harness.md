@@ -1,474 +1,343 @@
 ---
-title: Live browser in chat -- drive Browser Harness through a gateway CDP relay and show the page in the transcript
+title: Live browser in chat -- Browser Harness behind a gateway CDP relay, watched and taken over from the transcript
 status: draft
 author: bolichen97
-created: 2026-10-22
-last-audited: 2026-10-22
-audited-at: 2aa6878731
+created: 2026-10-31
+last-audited: 2026-10-31
+audited-at: 0301f8b34f
 doc-pr:
 implementation-prs: []
-tracking-issues: []
+tracking-issues: [22561]
 supersedes: []
 superseded-by: []
 ---
 
-# RFC: Live browser in chat
+# RFC: Live Browser in Chat
 
-**Status:** `draft`. Nothing here is built. Measured against main `2aa6878731`.
-When PR 4 lands, this document supersedes
+**Status:** `draft`. Nothing here is on main. Main was read at `0301f8b34f`.
+A prototype of the whole design is on the `feat/browser-live-harness` branch,
+read at `278f08eec6`. This document records the decisions that prototype makes
+so a maintainer can accept or reject them before any of its code lands. It is
+`draft`, not `in-progress`, because the decision has not been made. When its last
+implementation PR merges, this document supersedes
 [rfc-playwright-cli-migration.md](rfc-playwright-cli-migration.md).
 
 ## Summary
 
-The agent browses through two stacks today, and the person watches through a
-third surface. The `browser` MCP tool drives an Electron view in the side
-panel; `playwright-cli` is the fallback and the only way to reach the user's own
-Chrome; the side panel's Browser tab shows either one. None of them puts the
-page where the person is already looking, which is the chat.
+An agent that browses today does it out of sight. The page is in a side panel
+the person has to open, or in a headless browser nobody sees, and stepping in
+means leaving the chat. This RFC proposes one agent browser, shown where the
+person already looks:
 
-This RFC replaces the agent's browser with one driver and moves the view into
-the transcript:
-
-1. **One driver: Browser Harness, local only.** [Browser
-   Harness](https://github.com/browser-use/browser-harness) (MIT) drives a
-   Chromium-family browser over CDP. Kiro Crew pins it, runs its daemon under
-   the gateway, and forces its telemetry and its cloud path off. The `browser`
-   tool keeps its name, its governance check and its URL gate; only what sits
-   behind it changes.
-2. **One CDP connection, owned by the gateway.** A loopback relay in the gateway
-   holds the only connection to the browser. Harness's daemon connects to the
-   relay as if it were the browser. The relay takes its own screencast and
-   input on sessions Harness never sees.
-3. **The page lives in the chat.** While the agent browses, its turn shows one
-   live card. Clicking the frame hands mouse and keyboard to the person; the
-   same card grows. When the turn ends the card collapses to a one-line record.
-4. **The browser is whichever one is there.** The user's own Chrome on a
-   desktop, Edge on Windows when Chrome is absent, and a Kiro-owned Chromium,
-   headless, on a server or a remote gateway.
-5. **Passwords never pass the model.** Logins happen during takeover. The
-   agent's `type` refuses a password field and the frame masks one.
-
-The side panel keeps one surface: a **Preview** tab for the person's own local
-dev server, so front-end work keeps its page annotation. The agent no longer
-drives that tab.
+1. **One driver.** [Browser Harness](https://github.com/browser-use/browser-harness)
+   (MIT), pinned and run locally by the gateway, drives a Chromium-family
+   browser over CDP (the Chrome DevTools Protocol). Its telemetry and its cloud path are forced off.
+2. **One CDP connection, owned by the gateway.** A loopback relay holds the only
+   connection to the browser. Harness connects to the relay as if it were the
+   browser. The relay takes the screencast and the person's input on sessions
+   Harness never sees.
+3. **The page lives in the chat.** Each browsing turn shows one live card. A
+   click on the picture hands mouse and keyboard to the person, on desktop or
+   phone. Esc hands it back and the agent carries on by itself.
+4. **Quick asks.** When the agent needs a sign-in, a code or a "not a robot"
+   check, it asks. The person answers in a small sheet in the chat, and the
+   gateway types the values into the page. The agent gets back one word, never
+   the value.
+5. **Replay.** A finished card plays the turn back, with each click, key and
+   run of typing marked on a timeline.
+6. **Playwright-CLI goes.** The `browser` tool keeps its name, governance check
+   and URL gate. The shell path, its side-panel view and its installer are
+   removed in the same release. There is no flag to bring them back.
 
 ## Motivation
 
-### Current state
+### What happens today
 
-Verified at `2aa6878731`:
+Read at main `0301f8b34f`:
 
-| Surface | What it does | Where |
+| Path | What the agent does | What the person sees |
 |---|---|---|
-| `browser` MCP tool | posts one op to `/api/browser/command`; Electron drains it and runs it in the panel's `WebContentsView` | `mcp_tools/browser.py`, `browser/command_bus.py`, `website/electron/browser-ops.js` |
-| `playwright-cli` | the fallback, the attach path to the user's Chrome, and the `show` view | `browser_cli/` (16 modules), `dashboard/handlers/browser_view_relay.py` |
-| Browser tab | renders the native view or the relayed `show` page | `website/src/components/WebPreviewPanel.tsx` (1,441 lines) and its surfaces |
-| Prompt and skills | 96 mentions of `playwright-cli` across `config/prompt.md` and 8 builtin skill trees | `config/prompt.md` `{{BROWSER_BEGIN}}` section, `builtin_skills/` |
+| `browser` MCP tool (`mcp_tools/browser.py`) | posts ops over a command bus to the Electron view in the side panel | the page in the side panel's Browser tab, if they open it |
+| `playwright-cli` (`browser_cli/`, 16 modules) | runs shell commands: `open`, `click`, `snapshot`; `attach --extension` to reach the person's Chrome | a relayed `show` page in the side panel; Escape releases control, and the agent is not told |
+| Prompt and skills | `config/prompt.md` names `playwright-cli` on 7 lines; 7 builtin skills name it | nothing |
 
-The backend browser code is 7,862 lines (`browser/`, `browser_cli/`,
-`mcp_tools/browser*.py`); the Electron side is 2,788 (`browser-*.js`).
+The problems that follow:
 
-### What breaks for the person
-
-- **The screenshot op hangs when the panel is hidden.** Switching the side
-  panel to another tab hides the `WebContentsView` but keeps the page alive, so
-  `navigate` and `snapshot` work while `Page.captureScreenshot` never returns
-  (`browser-ops.js` documents this). The bus and CDP timeouts are both 15 s, so
-  the bus fires first and the agent sees a bare `504 timeout` instead of the
-  clearer `cdp_timeout`.
-- **The native tool cannot draw.** It addresses elements by ref only: no
-  coordinate click, no drag, no scroll by position. `click` accepts
-  `doubleClick: true` but the tool description does not say so.
-- **The model never sees a native screenshot.** The frame stays in the panel,
-  so the agent cannot show the person what it saw.
-- **The user's own Chrome is opt-in by prose.** [#19313](https://github.com/kirodotdev/KiroCrew/pull/19313)
-  made the agent attach the user's Chrome when a page needs their login, but
-  the decision lives in prompt text, and attach goes through the Playwright
-  extension, whose token or click is needed each time.
-  [#22561](https://github.com/kirodotdev/KiroCrew/issues/22561) asks for the
-  same outcome from the other direction: a browser that carries the user's
-  logins, that the user can watch and take over, without the agent touching
-  their own tabs.
-- **Watching means the side panel.** A headless or remote browser is visible
-  only through the relayed `show` page, in a panel the person has to open.
-
-### What the code already makes easy
-
-- `computer_use/screencast.py` already relays frames to OWNER websockets as a
-  `computer_use_frame` event, loopback-gated. The browser frame follows that
-  shape.
-- `browser_cli/install_browsers.py` already downloads a Chromium build per OS;
-  the headless fallback reuses it.
-- `browser_cli/own_browser.py` already detects the user's Chrome; the browser
-  order extends it.
-- `websockets` is already a runtime dependency (`setup.cfg`), so the relay adds
-  none.
-
-### Why this, not what we have
-
-Kiro Crew has had three agent browser paths: the Playwright MCP proxy, retired
-by [rfc-playwright-cli-migration.md](rfc-playwright-cli-migration.md) (its "Why"
-section holds the numbers below); `playwright-cli`, the shell fallback and the
-only road to the user's own Chrome; and the native Electron panel behind the
-`browser` tool. The table puts them beside the new stack. Cells say what each
-path does at `2aa6878731`, not what it could be made to do.
-
-| | Playwright MCP (retired) | `playwright-cli` | Native panel | Browser Harness + relay (this RFC) |
-|---|---|---|---|---|
-| Uses the user's logins | extension mode, or a storage-state file Kiro assembled | `attach --extension` to their Chrome | no: own empty profile | yes: their Chrome over CDP; Edge; Kiro's Chromium last |
-| Approval for their Chrome | extension prompt or token, per attach | extension click or pasted token, per attach | never reaches it | Chrome's Allow once per gateway connection, after a one-time `chrome://inspect` tick |
-| Headless or remote gateway | headless launch | headless `open`; remote watched in the `show` page | desktop app only | Kiro's Chromium headless; the same card from a remote gateway |
-| Where the person watches | side panel frame | side panel, `show` iframe | side panel Browser tab | the chat: one live card per turn |
-| One-click takeover | panel input over the command bus | `show` page, Escape releases; the agent is not told | click in the panel; the agent keeps going | click the card; the agent waits, Esc hands back, it resumes by itself |
-| Click or drag by x,y; double click | refs | refs: `click`, `dblclick`, `drag` | ref only; no drag; `doubleClick` undocumented | ref or x,y; `drag`, `scroll`; `clicks: 2` |
-| Screenshot reaches the model | not recorded | file on disk, path on stdout | never; the frame stays in the panel, and hangs (504) when the panel is hidden | PNG path returned; shown in the reply |
-| Passwords | storage-state file | `state-save`, `state-load`, cookies; a prose rule | no logins at all | `type` refuses a password field; the frame masks it; take over to sign in |
-| Frame rate and adaptation | screencast, unmeasured | live viewport, no adaptation | native view, no stream | cap 60; 57.6 headed, 57.8 headless measured; 8 rungs by link; off when hidden |
-| Telemetry and cloud | none; npm registry auth at every gateway start | none; npm registry at install | none | PostHog on by default in Harness, forced off by five env fences; cloud keys removed |
-| Extra process or binary | Node 20+, `@playwright/mcp` via `npx`, Kiro's proxy | Node 20+, `npm install -g`, 19 MB, `show` daemon, Chrome extension | none beyond Electron | hash-locked `browser-harness==0.1.13` venv, daemon and helper worker; Chromium only for headless |
-| Code Kiro Crew maintains | about 9,700 lines, removed by that migration | 7,862 backend and 2,788 Electron lines, shared with the native panel | same | one change: 382 files, +23,569 / −45,464; the deleted files alone were 35,569 lines |
-| Token cost per task | 22 tool schemas, 14,080 bytes, 3.5K to 5K tokens re-sent every turn; vendor-reported 4.4M tokens per task at score 60.0 | one shell tool; about 250 chars of stdout per command | one tool, one enum | one tool, one enum; vendor-reported 2.1M tokens per task at score 60.4 |
-
-The benchmark row is Browser Use's own published number, Codex only,
-vendor-reported and not reproduced here.
-
-**Why switch.** Each path misses something the person needs: the native panel
-has no logins, no coordinates, and a screenshot that hangs when the panel is
-hidden; `playwright-cli` reaches their Chrome only through an extension click
-per attach and shows the page in a panel they have to open; none of the three
-runs on a remote gateway with a view the person can take over from the chat.
-Browser Harness speaks CDP to whichever Chromium-family browser is present,
-headed or headless, so their own Chrome, Edge and a server Chromium are one code
-path. Because the gateway owns the only CDP connection, the live frame and the
-takeover input ride on sessions Kiro controls, which no Playwright path offered
-without a second process. One tool with one enum replaces 22 re-sent schemas,
-and the whole change removes 45,464 lines while adding 23,569, so the stack we
-keep is smaller than the two we drop.
-
-**What it costs.** CDP on the user's Chrome is browser-wide; the relay's tab
-filter is the control, and a bug there would reach their tabs. Kiro's Chromium
-on Windows keeps a loopback debugging port. Harness is a third-party project
-(Browser Use) pinned at 0.x whose telemetry is on by default, so every bump
-re-reads `telemetry.py` and `auth.py` before it lands.
+- **Invisible work.** On a remote or headless gateway the only view is a
+  relayed page in a panel. Nothing in the chat says what the agent is doing on
+  the page.
+- **No clean way to step in.** The person can click inside the `show` page, but
+  the agent keeps going and is never told it was interrupted.
+- **Their logins cost a click each time.** Reaching the person's own Chrome goes
+  through the Playwright extension: a click or a pasted token per attach. The
+  decision to attach lives in prompt text.
+- **Sign-ins have no safe path.** The agent either types a password itself or
+  stops and asks in prose. Issue
+  [#22561](https://github.com/kirodotdev/KiroCrew/issues/22561) asks for a
+  browser with the person's logins that they can watch and take over.
+- **Two stacks.** The native panel and the shell CLI do the same job with
+  different gaps. The panel has no logins and no coordinates; the CLI has no
+  in-chat view.
 
 ## Goals
 
-- One agent browser stack on macOS, Windows and Linux, desktop and headless.
-- The agent's page is visible in the chat while it works, at up to 60 frames per
-  second on a fast link, and costs nothing while the page is still or the card
-  is off screen.
-- One click hands control to the person; one key hands it back.
-- The user's logins are used where they exist and never typed by the agent.
-- No usage data leaves the machine, and no cloud browser is reachable.
+- One agent browser on macOS, Windows and Linux, headed or headless, local or
+  remote gateway.
+- The person sees the agent's page in the chat while it works.
+- One click hands control to the person; one key hands it back; the agent
+  resumes without a "continue".
+- A value the person types into a quick ask reaches only the page field it was
+  meant for. The gateway never hands it to the agent, a log or a file. What the
+  site itself shows afterwards is page content (D1).
+- No usage data leaves the machine and no cloud browser is reachable.
 
 ## Non-goals
 
-- **120 fps.** Measured below: the CDP screencast tops out near 95 fps headed and
-  60 fps headless. More needs native window capture and hardware encoding per
-  OS, which is its own project.
-- **Browser Use's cloud, its proxy, or its agent library.** The cloud sends pages
-  to a third party and costs money; the `Agent` library is an LLM agent inside
-  ours.
-- **Running arbitrary code through Harness.** Its `run.py`, `browser_js`,
-  `browser_cdp` and `http_get` stay unreachable; the agent gets the ops this RFC
-  lists and nothing else.
-- **Replacing the Playwright library.** The E2E suite, `design_critique` and the
-  recording skills keep using Playwright directly. Only `playwright-cli` goes.
+- **Browser Use's cloud, proxy or agent library.** The cloud runs the page on a
+  third party's machine. The agent library is an LLM agent inside ours.
+- **Arbitrary code through Harness.** Its `run.py`, `browser_js`, `browser_cdp`
+  and `http_get` stay unreachable. The agent gets the tool's ops and nothing
+  else.
+- **Replacing the Playwright library.** The E2E suite and the recording skills
+  keep using it. Only the `playwright-cli` agent path goes.
+- **A password manager.** The sheet does not read or fill a saved password.
 
 ## Design
 
-![Live card while the agent works](https://github.com/user-attachments/assets/07688936-4d8a-4ea5-876e-18a21d0e3175)
-
-### 1. The driver
-
-The gateway installs `browser-harness==0.1.13` into its own virtual environment
-at `<data-home>/browser-harness`, from PyPI with `--require-hashes` against a
-lock file shipped in the package. Installing from Settings -> Browser replaces
-the `playwright-cli` install button. The prefix joins `_CREW_READONLY_LEAVES`, so
-the agent can neither read it as a path nor replace it.
-
-The gateway starts the daemon with a scrubbed environment:
-
-| Variable | Value | Why |
-|---|---|---|
-| `BH_TELEMETRY`, `BROWSER_HARNESS_TELEMETRY`, `ANONYMIZED_TELEMETRY` | `false` | the three switches the package reads |
-| `BH_POSTHOG_HOST` | `http://127.0.0.1:9` | a second fence if a switch is missed |
-| `BH_TAB_MARKER` | `0` | no badge painted on the page |
-| `BU_CDP_URL` | the relay's URL | connects to the relay, not the browser |
-| `BROWSER_USE_API_KEY`, `BU_CDP_WS`, `BU_AUTOSPAWN` | removed | the only ways in to the cloud |
-
-A test pins this table: the daemon's environment is built by one function, and
-the test asserts the removed keys stay removed even when the gateway's own
-environment carries them.
-
-The gateway does not run Harness's CLI, its MCP server or its update check. It
-calls the daemon through Harness's own IPC (`_ipc.py`: a Unix socket on POSIX,
-loopback TCP with a token on Windows), whose path or token lives in a
-`HIDDEN` crew-home leaf.
-
-Audited in Harness 0.1.13: telemetry is PostHog, on by default, and its
-`browser_harness_run` event carries the agent's whole script and up to 20,000
-characters of output with no scrubbing. That is why every switch above is
-forced, and why this RFC pins one version: a bump re-reads `telemetry.py` and
-`auth.py` before it lands.
-
-### 2. The relay
-
 ```
-browser ◀──one CDP websocket──▶ gateway relay ◀── Harness daemon (as if it were the browser)
-                                     │
-                                     ├── screencast sessions ──▶ browser_frame ──▶ live card
-                                     └── input sessions ◀── /api/browser/input ◀── takeover
+browser ◀──one CDP connection──▶ gateway relay ◀── Harness daemon (as if it were the browser)
+                                      │
+                                      ├── screencast session ──▶ live card in the chat
+                                      └── input session ◀── takeover and quick asks
 ```
 
-- **One upstream connection.** On the user's Chrome, Chrome 144+ asks "Allow
-  remote debugging?" per connection. One connection means one click, which
-  lasts until Chrome or the gateway restarts.
-- **Disjoint ids.** Every daemon request is renumbered from 1 and mapped back on
-  reply, so several daemon clients never collide. The relay's own requests use
-  ids from 1,000,000,000 up.
-- **Private sessions.** The relay attaches its own flat sessions for screencast
-  and input. Every reply and event on those sessions stays in the relay, so
-  frames never enter Harness's shared event buffer, which `drain_events`
-  empties on each read.
-- **Agent tabs stay live.** When the daemon creates a target, the relay
-  attaches to it and turns on `Emulation.setFocusEmulationEnabled`. Without
-  that, a tab behind another tab paints no frames and Harness's input calls on
-  it hang for 5 s (headless: `Runtime.evaluate` too). The user's own tabs are
-  never attached.
-- **Tab ledger.** The relay records each target the agent creates the moment the
-  create returns, whether or not the page then loads, and closes only those at
-  session end.
-- **Loopback only.** The relay listens on `127.0.0.1:0` and hands its URL to the
-  daemon alone. Nothing in the agent sandbox learns the port.
+The spec that owns each part is
+[`browser.md`](../system-specs/modules/browser.md) on the branch. This section
+names only the shape a reviewer has to agree to.
 
-A 199-line spike of this relay drove Harness 0.1.13, unmodified, on all three
-platforms. Frames per second on a page under constant change, cap 10 (row 5:
-cap 30):
+### 1. The driver and the relay
 
-| Phase | macOS Chrome headed | macOS Chrome headless | Linux arm64 Chromium headless | Windows Edge headed | Windows Edge headless | Windows Chromium headless |
-|---|---|---|---|---|---|---|
-| 1 static, new tab | 0 | 0 | 0 | 0 | 0 | 0 |
-| 2 drawing, new tab | 9.9 | 10.0 | 10.0 | 10.5 | 10.5 | 10.5 |
-| 3 static, foreground | 0 | 0 | 0 | 0 | 0 | 0 |
-| 4 drawing, foreground | 9.9 | 10.0 | 10.1 | 10.3 | 10.6 | 10.6 |
-| 5 cap 30 | 29.6 | 29.2 | 28.8 | 27.2 | 31.2 | 30.9 |
-| 6 behind another tab | 10.0 | 10.0 | 9.9 | 10.2 | 10.5 | 10.4 |
-| 7 behind, focus emulation | 9.9 | 10.0 | 10.0 | 10.3 | 10.6 | 8.3 |
-| 8 own window, behind | 10.1 | 10.0 | 10.0 | 9.9 | 10.6 | 10.4 |
+- The gateway installs `browser-harness==0.1.13` into its own virtual
+  environment from a hash-locked requirements file. The install path is
+  read-only to the agent's sandbox.
+- The daemon starts with an environment built by one function and pinned by one
+  test: three telemetry switches forced off, the telemetry host pointed at a
+  dead loopback port, the update check off, and every cloud key removed even
+  when the gateway's own environment carries it.
+- The relay listens on `127.0.0.1:0`. Every path carries a per-start secret
+  that only the daemon is given; a request without it is 404. It renumbers the
+  daemon's requests so its own never collide, keeps its screencast and input
+  sessions private, and records each tab the agent creates. The agent can list
+  and switch only those tabs, and only those are closed when the session ends.
 
-The Windows Chromium column is the second run. The first stalled one tab at 0-2
-fps and recovered on rerun, which is why section 3 carries a watchdog.
+### 2. Which browser
 
-### 3. The stream
-
-- **Source.** `Page.startScreencast` on the relay's session: JPEG, quality 60,
-  1280 wide. Chrome emits a frame only when the page changes, so a still page
-  costs nothing.
-- **Pacing.** The relay acks a frame only after the card has received it, on a
-  fixed time grid, so transit time counts toward the interval. With a cap of 60
-  this measured 57.6 fps headed and 57.8 headless on macOS, from 53.5 under
-  ack-after-sleep.
-- **Ceilings measured.** Headed Chrome on a 120 Hz display tops out near 95 fps;
-  headless Chromium's compositor is clocked at 60. Lifting the frame-rate limit
-  reaches 81-84 fps at about 450% CPU, so the product does not.
-- **Adaptive ladder.** Once a second the relay picks a rung:
-
-  | Rung | fps | quality | width |
-  |---|---|---|---|
-  | 0 | 60 | 60 | 1280 |
-  | 1 | 45 | 55 | 1280 |
-  | 2 | 30 | 50 | 1280 |
-  | 3 | 30 | 45 | 960 |
-  | 4 | 20 | 40 | 960 |
-  | 5 | 15 | 40 | 800 |
-  | 6 | 10 | 35 | 640 |
-  | 7 | 5 | 30 | 640 |
-
-  It steps down at once when more than 20% of frames arrive later than 1.5
-  periods or the link cannot carry the rung, jumping as far as the measured
-  rate needs. It steps up after 2 calm seconds, straight to the best rung the
-  link covers with 30% headroom. An fps change is free; a quality or size change
-  restarts the screencast on the same session. On a simulated link the stream
-  settled one second after each drop and was back at 60 fps three seconds after
-  the link recovered.
-- **Off screen, off.** The card reports visibility; an off-screen or collapsed
-  card stops the screencast.
-- **Watchdog.** Input sent with no frame for 3 s restarts the screencast.
-- **Wire.** Frames go to OWNER websockets only, as binary messages; the card
-  paints them on a `<canvas>` outside React's render cycle.
-- **Password mask.** Before a frame is sent, the relay asks the page for the
-  boxes of focused or visible `input[type=password]` and the card paints over
-  them. The setting can be turned off; the default is on.
-
-### 4. Takeover
-
-![Takeover: the same card, grown](https://github.com/user-attachments/assets/adcc102f-496c-4fb7-8a65-890a99e14aed)
-
-- Clicking the frame posts `POST /api/browser/input/claim`. The route accepts the
-  dashboard owner's cookie or token and refuses the internal secret, so an
-  agent cannot claim input for itself.
-- While claimed, mouse, wheel and key events from the card go to
-  `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` on the relay's input
-  session, at 15 fps for the stream. Keystrokes are never logged and never enter
-  the transcript.
-- While claimed, an agent `browser` op does not fail: the tool waits until the
-  person hands the browser back (in short polls of a hand-back endpoint, so no
-  single call blocks and the turn's keepalive keeps ticking; bounded at ten
-  minutes, after which it returns `user_in_control` and the agent stops for
-  their word) and then runs. The turn shows "Waiting for you to hand the browser
-  back", and the agent resumes on its own the moment they press Esc -- no
-  "continue" needed. An op the takeover cut short is not re-run; it answers
-  `interrupted` after the hand-back so the agent re-reads the page first.
-- Esc or "Hand back to Kiro" releases. "Open in Chrome" focuses the real window
-  for things the frame cannot carry: the password manager's autofill popup,
-  file pickers, extension pop-ups.
-
-### 5. The card
-
-![Done: the card collapses to one line](https://github.com/user-attachments/assets/4312f36d-9f5a-475b-a864-b8ad72460dc2)
-
-| State | Shows |
+| Host | Browser |
 |---|---|
-| Waiting for Allow | which browser, the one step ("click Allow in Chrome"), no timeout; approval took 215 s in one test |
-| Live | address, live dot, which browser, Take over, frame, current action, step strip |
-| Hover | "Click to take over" |
-| In control | grown card, accent border, "You are in control", Open in Chrome, Hand back (Esc) |
-| Done | thumbnail, step count, duration, Replay, Last frame, Open in Chrome |
-| Login needed | "Take over to sign in" |
+| macOS, Linux desktop, Windows with Chrome | the person's own Chrome, after a one-time `chrome://inspect` switch and Chrome's "Allow" |
+| Windows without Chrome | Edge |
+| Linux with no display (a server, a remote Linux gateway), or Chrome's debugging policy off | Kiro's own Chromium, headless, with its own profile |
 
-![Waiting for Allow](https://github.com/user-attachments/assets/053a01cd-33a9-40a0-aeda-29595301a062)
+Kiro's Chromium speaks CDP over a pipe on macOS and Linux, so it opens no port.
+On Windows it keeps a loopback port (decision D5). The person can pick a
+browser by hand in Settings.
 
-One card per turn, attached to that turn's first browser call. Takeover grows
-the same element (`layoutId`); it never swaps in another component. Replay plays
-the frames the stream already sent, kept in memory for the life of the page.
+### 3. The live card
 
-### 6. The browser
+- One card per browsing turn. It shows the address, which browser, the current
+  step, and the page at up to 60 frames per second. Chrome sends a frame only
+  when the page changes; when it stops, the gateway asks for one sharp still. An
+  off-screen card stops the stream.
+- The stream adapts to the link on two axes: frame rate (60 down to 5 fps) and
+  picture (1280 px down to 640 px). It steps down at once. Frame rate climbs
+  back after two calm seconds, picture after five.
+- Frames go only to the dashboard owner's websockets.
+- **Takeover.** A click on the picture claims input. The claim route refuses the
+  agent's own credential, so only the person can take control. While they hold
+  it, an agent op waits in the tool (polling in short calls, up to ten minutes),
+  then runs. An op the takeover cut short is not re-run; the agent is told to
+  look at the page again first. Esc or Hand back returns control, with an
+  optional one-line note ("Done", "Wrong site", or free text) that the agent
+  receives as the person's own words.
+- **Phone.** On a phone the card opens a full-screen sheet with the same
+  takeover. On desktop it can grow into the side panel.
 
-| Host | Browser | First run |
+### 4. Quick asks
+
+The agent calls `browser` op `ask` for one thing it must not handle itself: a
+sign-in, one short text field, a one-time code, a "not a robot" check, or a
+confirm before a purchase. The person sees a sheet in the chat:
+
+- **A standalone sign-in sheet.** The sheet names the site's origin, read-only,
+  and has its own username and password boxes. The person does not hunt for
+  fields in the small picture.
+- **The gateway fills the page step by step.** For a sign-in the gateway finds
+  each field itself, screen by screen (username, then password on the next
+  screen), and stops the moment the tab leaves that origin. A passkey, a puzzle
+  or a "not a robot" check goes to takeover instead.
+- **Bound before, re-checked after.** A field ask is bound, when it is made, to
+  the page's top frame, its origin and each target field. A sign-in ask is bound
+  to the origin alone, and each field is found and checked on its own screen.
+  Before writing, the gateway checks again: same document, same origin, the
+  field still attached, visible, not covered and of its type. Anything else answers `origin_changed` and
+  nothing is written. Page reads for these checks run in an isolated world (a
+  separate script context the page's own code cannot touch), so page script
+  cannot fake them.
+- **Values held for one ask, never saved by the gateway.** The answer arrives in
+  one owner-only POST. The gateway writes it into the bound field and drops it.
+  It is not logged, audited, recorded in the replay, kept in card state or
+  returned to the agent; the agent gets one outcome word such as `submitted`,
+  `declined` or `timed_out`. The person may tick "Remember on <site>" to keep a
+  username, name or email in their own browser's storage; passwords and codes have no
+  slot there.
+- **Iframes.** A field inside a same-site or cross-origin frame (an embedded
+  sign-in form) can be bound and filled. A see-through frame over a decoy is
+  refused.
+
+### 5. Replay
+
+The gateway keeps one recording per turn: frames at up to 5 fps, plus each
+action's label and time. Before a frame is written, every secret field is
+painted out: password boxes, one-time-code fields, and every field a quick ask
+filled. A frame whose mask cannot be computed is dropped, not kept. The live
+card's picture covers the same fields. The finished card's Replay shows a timeline with one marker per action,
+play and pause, step by step, and 1x, 2x and 4x.
+
+### 6. The tool
+
+`browser` keeps its name, its call-time `capabilities.browse` check and its
+navigate gate (public HTTP(S), plus the operator's exact loopback origins). Its
+ops are `navigate`, `back`, `snapshot`, `click` (a ref or x,y; `clicks: 2`),
+`drag`, `hover`, `scroll`, `type`, `press_key`, `select_option`, `wait_for`,
+`console`, `screenshot`, `tabs`, `ask` (section 4) and `reflex` (a fast loop of
+the other ops, only with the optional decision model, D4). `type` and printable
+`press_key` refuse a password field. The navigate gate runs twice: on the URL
+asked for, and on the URL the page actually landed on.
+
+### 7. Settings -> Browser
+
+The gateway installs Harness on its own at start, in the background, when it is
+missing or out of date. It adds Kiro's Chromium only when that browser would be
+used. The page shows the browser in use, its connection, Install and
+Redownload, a locked "No usage data, no cloud browser" line, and the live view's
+quality and frame-rate caps. It replaces the `playwright-cli` installer.
+
+## Decisions
+
+Each decision is the branch's default. Each trade-off is what the decision gives
+up.
+
+| # | Decision | Trade-off |
 |---|---|---|
-| macOS, Linux desktop, Windows with Chrome | the user's Chrome | enable `chrome://inspect/#remote-debugging` once, then Allow |
-| Windows without Chrome | Edge | same |
-| Server, no display, remote gateway | Kiro's Chromium, `--headless=new --remote-debugging-port=0 --user-data-dir=<data-home>/browser-profile` | none |
-| Chrome's `RemoteDebuggingAllowed` policy is off | Kiro's Chromium | none |
+| D1 | **No post-fill masking.** After a quick ask fills a field, the gateway adds no mask over the page. Sites already draw password boxes as dots. The snapshot outline leaves out a filled field's value, and `screenshot` is refused while a filled value is still on the page. | Anything the site itself shows afterwards, such as the email echoed on the next screen, is ordinary page content: the agent can read it, and the replay records it. |
+| D2 | **The browser is on by default.** `capabilities.browse` defaults to allow, and the gateway installs Harness at start without a click. | A fresh install downloads a Python package (and, on a host with no Chrome, a Chromium build) the person did not ask for by name. |
+| D3 | **One governance row turns the whole browser off.** A deny on `capabilities.browse` is checked in the tool and again, fail-closed, at every browser route, the engine start and every helper call. It never falls back to another driver. The first refusal stops a running browser. | An organisation cannot allow the live view but forbid driving, or the reverse; it is one switch. |
+| D4 | **The decision model is optional and off by default.** A decision model is a small, fast model, separate from the chat model, that answers narrow questions. An owner may arm one to pick an element from a description, check a step, or run a fast `reflex` loop. Providers come from one closed registry; nothing is sent until the owner consents, and `capabilities.decisions` withdraws it with the rest of that feature. With it off, every op runs exactly as listed above. | Two paths per op (with and without the model) to test and keep equal. |
+| D5 | **Windows keeps a loopback debugging port for Kiro's Chromium.** Python cannot hand a Windows child the pipe file descriptors CDP's pipe mode needs. | Any local process on that Windows host can find the port and drive Kiro's Chromium. The person's own Chrome is not affected: Chrome asks "Allow" for every new connection. |
+| D6 | **Playwright-CLI is removed outright, with no flag.** The CLI path, its `show` relay, the native-panel command bus, and the `dashboard.use_builtin_browser` and `dashboard.browser_view_port` keys go in the same release that adds the new stack. | No fallback if Harness breaks on some host; the fix is a new release. An installed CLI is left on disk and reported by `kirocrew doctor`, not deleted. |
 
-A snap-packaged Chromium is skipped: snap confinement breaks the debugging
-port. Kiro's profile is a `HIDDEN` crew-home leaf; cookies from a takeover login
-stay there and the agent cannot read the file.
+## Security model
 
-### 7. The tool
+What the gateway trusts, and what it does not:
 
-`browser` keeps its name, its call-time governance check and its `navigate` URL
-gate. Its ops become:
-
-| Op | Change |
-|---|---|
-| `navigate`, `back`, `wait_for`, `press_key`, `hover`, `select_option`, `console` | same arguments |
-| `snapshot` | the existing walker from `browser-ops.js`, run in the page |
-| `click` | a ref or `x`,`y`; `clicks: 2` is a double click |
-| `drag`, `scroll` | new; ref or coordinates |
-| `type` | refuses a password field |
-| `screenshot` | writes a PNG under the gateway's snapshot directory and returns its path |
-| `tabs` | lists and switches the agent's own tabs only |
-
-The prompt's `{{BROWSER_BEGIN}}` section and the 8 builtin skill trees are
-rewritten to this one tool. `browser-auth` becomes "take over to sign in".
-`web-preview` changes one word: Browser tab becomes Preview tab.
-
-### 8. Settings -> Browser
-
-First run is a three-step list; once done, or skipped, the page becomes a status
-card.
-
-![First run](https://github.com/user-attachments/assets/51c3253d-aef9-4c45-83c6-b52f8212a16d)
-
-![Status](https://github.com/user-attachments/assets/428e82fe-1c23-438b-adb5-828e91872ba8)
-
-| Section | Contents |
-|---|---|
-| Browser in use | the active browser, connection state, the fallback order, Test, Disconnect |
-| Engine | Browser Harness version; Kiro's Chromium version, Redownload |
-| Privacy | "No usage data, no cloud browser", locked |
-| Live view in chat | show live view, quality (auto by link), max fps, mask password fields |
-| Local preview | the Preview tab's `browser_local_origins` |
-| Advanced | pick a browser by hand: automatic, your Chrome, Kiro's Chromium, headless |
-
-Every control carries its `configKey`; every string goes to the i18n catalog.
-
-### 9. The Preview tab
-
-The side panel's Browser tab becomes Preview. It keeps the native view
-(`browser-view.js`), annotation (`browser-annotate.js`) and `WebPreviewPanel`,
-opens only the origins in `dashboard.browser_local_origins`, and answers an
-outside URL with "Open this in your Chrome, or ask Kiro". The agent no longer
-drives it.
-
-![The Preview tab: a local dev server beside the chat](https://github.com/user-attachments/assets/2dbff0a3-d49a-4de1-9820-151554c7cd90)
-
-## Migration plan
-
-There is no switch and no period with two stacks. Each PR replaces what it
-touches outright, and no release is cut until all of them have merged, so no
-user ever runs a build where the old path and the new one coexist.
-
-| PR | Lands | Removes in the same PR |
+| Actor | Can | Cannot |
 |---|---|---|
-| 0 | this RFC | -- |
-| 1 | Harness install, daemon supervision, relay, environment fence, sandbox leaves; Settings first-run steps 1-2 and the status card | the `playwright-cli` installer, launcher, `show` relay and address-bar launcher in `browser_cli/` and `dashboard/handlers/browser_view_relay.py`; the Settings sections that served them |
-| 2 | `browser` tool on Harness; the prompt section and the 8 skill trees rewritten | the command bus routes, `browser-ops.js`, `browser-control.js`, `browser-agent-channel.js`; every `playwright-cli` mention in prompt and skills |
-| 3 | live card, stream, adaptive ladder, password mask; Settings live-view section | the panel surfaces that showed the agent's browser |
-| 4 | takeover | the side panel's agent browser; the Browser tab becomes Preview |
+| The agent | call the `browser` tool's ops on tabs it created; read page text and the outline | claim input, answer an ask, reach the relay or the daemon socket, read Kiro's profile, read a value typed into an ask |
+| The page | run its own script; put text in front of the agent | fake the ask's checks (isolated world); send the agent past the navigate gate |
+| Other local processes | find the relay's port | open the relay without its secret; on macOS and Linux, reach Kiro's Chromium at all |
+| The dashboard owner | watch, take over, answer asks, replay | -- |
 
-`use_builtin_browser` and `browser_view_port` go with the PR that removes their
-reader. Each removal PR carries `Breaking:` and a `Reader:` list
-([take-away-changes](../system-specs/common/take-away-changes.md)). Between
-merges `main` may lack a browser for the agent; that is acceptable only because
-nothing ships from it until PR 4 is in.
-
-## Backward compatibility
-
-- The release that carries this work is the first and only one that changes
-  browsing. It has no `legacy` path to fall back to.
-- `use_builtin_browser` and `browser_view_port` in an existing `config.json` are
-  dropped by the config coercer with one warning.
-- An installed `playwright-cli` prefix is left on disk and reported in
-  `kirocrew doctor`; it is not deleted.
-
-## Security considerations
-
-| Risk | Control |
+| Threat | Control |
 |---|---|
-| The relay can reach the user's whole Chrome | the agent gets only the listed ops, on tabs it created; the relay never attaches the user's tabs |
-| Harness sends data out | five environment fences, a pinned version, a test on the fence; no CLI, MCP server or update check runs |
-| Agent claims input | `/api/browser/input/*` refuses the internal secret |
-| Agent types a password | `type` refuses password fields; the frame masks them |
-| Frames show logged-in pages | OWNER websockets only; never written to disk except as a requested `screenshot` |
-| Another local process uses the relay | loopback, ephemeral port, URL given only to the daemon |
-| Agent reads Kiro's profile cookies | `HIDDEN` leaf in every sandbox mode |
-| Local addresses | `navigate` keeps the public-only gate plus `browser_local_origins` |
+| The relay reaches the person's whole Chrome | the agent's ops act only on tabs the relay recorded as the agent's; the person's tabs are never attached |
+| Harness sends data out | the pinned version, the environment fence and its test; no Harness CLI, MCP server or update check runs |
+| The agent claims input or answers an ask | the input, live and ask-answer routes refuse the internal credential (403) and require the owner |
+| The agent types or spells a password | `type` and printable `press_key` refuse password fields, through open shadow roots |
+| An ask writes into the wrong place | binding at ask time, re-check before write, origin pinned, opacity check on frames |
+| A public page redirects to a private address | the navigate gate runs again on the committed URL; a refused landing blanks the tab |
+| Frames show logged-in pages | owner websockets only; on disk only as a requested `screenshot` or a replay frame with secret and quick-ask fields painted out |
 
-**Accepted residual:** on the user's Chrome, CDP is browser-wide. A bug in the
-relay's tab filter would let the agent act on a tab the user opened. Tests pin
-the filter, and the card always shows which tab is live.
+**Accepted residuals.** Page text is untrusted input and can sway the agent
+(prompt injection); the navigate gate bounds where a navigation can land, but
+not what the agent decides to do on a public page. CDP on the person's Chrome is
+browser-wide, so a bug in
+the relay's tab filter would reach their tabs; tests pin the filter and the card
+shows which tab is live. DNS rebinding (a public name resolving to a private
+address) is not seen, because names are not resolved. D1 and D5 above.
 
 ## Alternatives considered
 
-- **Harness's MCP server directly.** It exposes `browser_js`, `browser_cdp` and
-  `http_get`, which bypass our approval model.
-- **Harness's own events for frames.** `drain_events` empties one shared buffer;
-  frames would push out the events Harness itself waits on. An upstream
-  subscribe API would work but waits on their release.
-- **Vendoring Harness.** Avoids a dependency but needs about 2,500 lines
-  (`daemon.py`, `helpers.py`, `_ipc.py`, `paths.py` and 26 functions of
-  `admin.py`) plus its interaction notes, and a manual merge per upgrade.
-- **Browser Use Cloud live view.** Hosted, paid, and the page runs on a third
-  party's machine.
-- **Keep the native panel and fix it.** It still cannot carry the user's logins
-  or run headless, and the agent would keep two stacks.
+- **Keep `playwright-cli` and add a card.** Its live view is a separate `show`
+  server; the card would be a second view over a process the gateway does not
+  own, and takeover still would not tell the agent.
+- **Fix the native panel.** It still has no logins and no headless or remote
+  mode, and the agent keeps two stacks.
+- **Harness's own MCP server.** It exposes `browser_js`, `browser_cdp` and
+  `http_get`, which bypass the approval model.
+- **Frames from Harness's event buffer.** That buffer is shared and emptied on
+  each read; frames would push out the events Harness waits on. Hence the
+  relay's private sessions.
+- **Vendoring Harness.** About 2,500 lines plus a manual merge per upgrade,
+  against a pinned, hash-locked install.
+- **A hosted live view.** Paid, and the page runs on someone else's machine.
+- **Mask the field after a fill (the opposite of D1).** Painting over a field in
+  the picture does not stop the page from echoing the value elsewhere, and a
+  site's password box is already dots.
+- **Keep `playwright-cli` behind a flag (the opposite of D6).** Two stacks, two
+  prompt sections and two sets of skills, for a path the new one covers.
+
+## Rollout
+
+- **PR 0:** this document, docs only. It must merge to main and be accepted
+  first, because the First Principles review lane reads RFC status from the
+  base commit.
+- **Then a stack of implementation PRs,** each under 1 MB of diff so every
+  review lane reads it whole, each green on its own: driver and relay; the tool
+  on Harness with the prompt and skills rewritten; the live card and stream;
+  takeover; quick asks; replay; Settings; the removal of what this replaces.
+- **No release between the first and the last.** Main may have a gap in the
+  agent browser while the stack lands. Nothing automatic enforces this: the
+  maintainer who accepts this RFC holds the release cut until the last PR
+  merges, so no user runs both stacks or neither.
+- The removal PR carries `Breaking:` and a `Reader:` list
+  ([take-away-changes](../system-specs/common/take-away-changes.md)) and flips
+  [rfc-playwright-cli-migration.md](rfc-playwright-cli-migration.md) to
+  `superseded`, filling `superseded-by` there and `supersedes` here.
+
+### Backward compatibility
+
+- `dashboard.use_builtin_browser` and `dashboard.browser_view_port` in an
+  existing `config.json` still load, log one warning naming them, and are
+  dropped on the next save.
+- An installed `playwright-cli` prefix is left on disk and reported by
+  `kirocrew doctor`.
+- Skills and prompts that name `playwright-cli` are rewritten in the same stack;
+  a user skill that shells out to it stops working (it is no longer installed).
+
+## Evidence
+
+- **Sign-in coverage.** The author ran a read-only survey of the sign-in pages
+  of the top 100 sites by traffic against the prototype: the quick ask handled
+  76 of 100. The rest need a passkey, a puzzle or a page the sheet cannot bind,
+  and go to takeover. The per-site table is not in this repository.
+- **CI pre-flight.** The whole prototype ran through CI as draft PR
+  [#26129](https://github.com/kirodotdev/KiroCrew/pull/26129) (head
+  `50416b6450`, since closed). 78 checks passed. The 9 that did not are the AI
+  review lanes and their roll-ups, which need this document on main first.
+- **Frame rate.** In the author's relay spike on macOS, with a cap of 60, the
+  stream measured 57.6 fps headed and 57.8 fps headless. A still page sent no
+  stream frames on macOS, Linux and Windows.
 
 ## Open questions
 
-1. Should the card's Replay survive a page reload (frames on disk) or stay
-   memory-only?
-2. On first launch after the update, should the chat show a one-time card that
-   points at Settings -> Browser, or rely on the first live card's "Allow" step?
+1. **The recording write queue has no bound.** Each session's writes wait in a
+   queue with no cap (`LiveRecorder._submit` in `recording.py`), so a slow disk
+   grows gateway memory. Proposed: a fixed cap that drops the oldest frame and
+   marks the gap in the timeline.
+2. **Cleanup can delete the next session's recording.** Deleting a session's
+   recordings waits for its queued writes, then removes the directory by session
+   key (`delete_session`). A new session that reuses that key and starts
+   recording during the wait loses its recording. Proposed: tie the delete to the
+   recording generation it started from, not the key alone.
+
+Both are follow-ups to the replay part and block nothing else.

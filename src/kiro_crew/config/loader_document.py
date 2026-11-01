@@ -302,11 +302,25 @@ def _refuse_unpublishable(data: dict, path: Path) -> None:
     through the same function is untouched -- it has neither mapping.
     """
     _refuse_deepseek_env_plaintext(data, path)
+    _refuse_vault_env_plaintext(data, path, "strands_env", "a Strands session")
     _refuse_agent_env_entries(data, path)
 
 
 def _refuse_deepseek_env_plaintext(data: dict, path: Path) -> None:
     """Refuse a plaintext provider key under ``agent.deepseek_env``.
+
+    One of the maps :func:`_refuse_vault_env_plaintext` guards; kept by this name
+    because the loader re-exports it.
+    """
+    _refuse_vault_env_plaintext(data, path, "deepseek_env", "a DeepSeek session")
+
+
+def _refuse_vault_env_plaintext(data: dict, path: Path, key: str, refused_session: str) -> None:
+    """Refuse a plaintext provider key under ``agent.<key>``.
+
+    The rule every ``secret://``-only provider-key map shares
+    (``agent.deepseek_env``, ``agent.strands_env``); *refused_session* names the
+    session the spawn-time validator refuses while a plaintext stands.
 
     That mapping takes ``secret://`` references only, and a plaintext that reaches
     disk is already the defect the spawn-time validator would later name.
@@ -326,23 +340,25 @@ def _refuse_deepseek_env_plaintext(data: dict, path: Path) -> None:
     absent or unparseable file fails closed.
     """
     agent = data.get("agent") if isinstance(data, dict) else None
-    mapping = agent.get("deepseek_env") if isinstance(agent, dict) else None
+    mapping = agent.get(key) if isinstance(agent, dict) else None
     plaintext = _sections.deepseek_env_plaintext_keys(mapping)
     if not plaintext:
         return
-    names = ", ".join(repr(key) for key in plaintext)
-    if _deepseek_env_on_disk(path) == mapping:
+    names = ", ".join(repr(name) for name in plaintext)
+    if _agent_key_on_disk(path, key) == mapping:
         logger.warning(
-            "config.json already holds a literal value under agent.deepseek_env entry %s; "
+            "config.json already holds a literal value under agent.%s entry %s; "
             "this write left that mapping as it found it. That mapping takes a "
-            "'secret://<vault name>' reference only, and a DeepSeek session is refused "
+            "'secret://<vault name>' reference only, and %s is refused "
             "while it stands: save the key under Settings > Secrets, then map it as "
             "'secret://<vault name>'.",
+            key,
             names,
+            refused_session,
         )
         return
     raise ConfigWriteRefused(
-        f"agent.deepseek_env entry {names} holds a literal value, so the config "
+        f"agent.{key} entry {names} holds a literal value, so the config "
         "write was refused: this mapping takes a 'secret://<vault name>' reference "
         "only, and no provider key is ever stored in config.json. Save the key "
         "under Settings > Secrets, then map it as 'secret://<vault name>'."

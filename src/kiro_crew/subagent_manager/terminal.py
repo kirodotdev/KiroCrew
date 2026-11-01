@@ -491,6 +491,9 @@ class TerminalCoordinator(ManagerComponent):
             if (
                 mark_delivered_on_success
                 and not info.error
+                # A completed run whose kill failed keeps an empty error, so the
+                # flag sends it to the ``leaked_process`` branch below.
+                and not info._leaked_process
                 and not info._digest_held
                 and not info._delivery_queued
                 # A report the gateway gave up on reached the parent at most as a
@@ -499,12 +502,9 @@ class TerminalCoordinator(ManagerComponent):
                 # settles it.
                 and not info._report_undelivered
             ):
-                # The teardown has decided by now (this report waited for it
-                # before publishing), so an empty error means the reset ended
-                # the process or the kill landed: only then is the run's folder
-                # excluded from orphan reconciliation. A kill the teardown could
-                # not deliver is in ``info.error`` and leaves no ``delivered``
-                # tombstone, so reconciliation still reaches the survivor.
+                # The teardown has decided by now (this report waited for it), so
+                # no error and no leaked process means the process is gone: only
+                # then does a plain ``delivered`` tombstone end reconciliation.
                 #
                 # Retain result.txt for a TTL grace window instead of deleting
                 # it now, so the parent can read the full transcript

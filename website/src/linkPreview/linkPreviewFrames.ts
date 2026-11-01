@@ -10,23 +10,26 @@
  *
  * @module linkPreview/linkPreviewFrames
  */
-import { withBase } from '../lib/basePath'
+import { freshRate, takeMessage, type RateState } from '../appFrame/frameProtocol'
 import {
-  BURST_CAPACITY,
-  BURST_PER_SECOND,
+  createSandboxedFrame,
+  loadMintedFrame,
+  mintAppFrame,
+  postToFrame,
+  renewIntervalMs,
+  type Minted,
+} from '../appFrame/sandboxFrame'
+import {
   MAX_MESSAGE_BYTES,
   messageBytes,
   readFrameMessage,
-  toFrame,
   type AnchorRect,
   type FromFrame,
   type Modifiers,
   type ToFrame,
 } from './linkPreviewProtocol'
 
-/** The only sandbox grant. Never `allow-same-origin`: with `allow-scripts` it would
- *  let the frame remove its own sandbox. */
-export const FRAME_SANDBOX = 'allow-scripts'
+export { FRAME_SANDBOX, type Minted } from '../appFrame/sandboxFrame'
 /** Waiting for the module to activate; a frame that has not said `ready` by then failed. */
 export const READY_TIMEOUT_MS = 10_000
 /** At most this many pinned cards at once; pinning one more closes the oldest. */
@@ -36,14 +39,6 @@ const GAP = 6
 const DEFAULT_SIZE = { width: 360, height: 200 }
 const MIN_SIZE = { width: 40, height: 24 }
 const MAX_SIZE = { width: 720, height: 800 }
-
-export interface Minted {
-  frame: string
-  /** The frame's own id; a renewal names it so the new capability is that frame's. */
-  frameId?: string
-  capability: string | null
-  ttl: number
-}
 
 export interface PreviewFrame {
   key: string
@@ -67,15 +62,14 @@ export interface PreviewFrame {
   regions: AnchorRect[]
   /** The latest show's number; a card message for an older one is dropped. */
   invocation: number
-  /** Burst allowance left, and when it was last refilled (`performance.now()`). */
-  tokens: number
-  refilledAt: number
+  /** Burst allowance left, and when it was last refilled. */
+  rate: RateState
 }
 
 export interface FrameHostOptions {
-  /** The frame URL and capability for an app (`POST /api/apps/<app>/link-preview`);
+  /** The frame URL and capability for a provider (`POST /api/apps/<app>/frames/linkPreviews/<id>`);
    *  with `frameId`, a renewal for that frame. */
-  mint(appName: string, frameId?: string): Promise<Minted>
+  mint(appName: string, frameId?: string, providerId?: string): Promise<Minted>
   theme(): 'dark' | 'light'
   /** The frame could not load or activate the module. */
   onFailed(frame: PreviewFrame, why: string): void
@@ -86,24 +80,12 @@ export interface FrameHostOptions {
   onFramesChanged(frames: HTMLIFrameElement[]): void
 }
 
-export async function mintFrame(appName: string, frameId?: string): Promise<Minted> {
-  const q = frameId ? `?frame=${encodeURIComponent(frameId)}` : ''
-  const res = await fetch(withBase(`/api/apps/${encodeURIComponent(appName)}/link-preview${q}`), {
-    method: 'POST',
-    credentials: 'same-origin',
-  })
-  if (!res.ok) throw new Error(`link-preview mint failed: ${res.status}`)
-  const data = (await res.json()) as Partial<Minted>
-  if (typeof data.frame !== 'string' || !data.frame.startsWith('/link-preview-frame/')) {
-    throw new Error('link-preview mint returned no frame')
-  }
-  return {
-    frame: data.frame,
-    ...(typeof data.frameId === 'string' ? { frameId: data.frameId } : {}),
-    capability: typeof data.capability === 'string' ? data.capability : null,
-    ttl: typeof data.ttl === 'number' && data.ttl > 0 ? data.ttl : 3600,
-  }
+export function mintFrame(appName: string, frameId?: string, providerId = ''): Promise<Minted> {
+  return mintAppFrame(appName, 'linkPreviews', providerId, frameId)
 }
+
+/** A provider key is `${appName}:${id}`; an app name holds no `:`. */
+const providerIdOf = (frame: { key: string; appName: string }): string => frame.key.slice(frame.appName.length + 1)
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(n, Math.max(lo, hi)))
 
@@ -234,13 +216,7 @@ export class FrameHost {
   }
 
   private create(key: string, appName: string): PreviewFrame {
-    const el = document.createElement('iframe')
-    el.setAttribute('sandbox', FRAME_SANDBOX)
-    // No cookies or other credentials on the frame's own requests, where supported.
-    el.setAttribute('credentialless', '')
-    el.setAttribute('referrerpolicy', 'no-referrer')
-    el.setAttribute('allow', '')
-    el.setAttribute('title', appName)
+    const el = createSandboxedFrame(appName)
     el.dataset.linkPreviewFrame = key
     Object.assign(el.style, {
       // Placed by `place` / `layoutOverlay` before it is ever shown.
@@ -259,7 +235,7 @@ export class FrameHost {
     const frame: PreviewFrame = {
       key, appName, el, state: 'loading', ready, visible: false, pinned: false, moved: false, dock: null,
       left: 0, top: 0, width: DEFAULT_SIZE.width, height: DEFAULT_SIZE.height, anchor: null,
-      overlay: false, regions: [], invocation: 0, tokens: BURST_CAPACITY, refilledAt: performance.now(),
+      overlay: false, regions: [], invocation: 0, rate: freshRate(),
     }
     const fail = (why: string) => {
       if (frame.state !== 'loading') return
@@ -282,32 +258,20 @@ export class FrameHost {
       },
       cancel: () => window.clearTimeout(timer),
     })
-    this.opts.mint(appName).then(
+    this.opts.mint(appName, undefined, providerIdOf(frame)).then(
       (minted) => {
         if (!this.frames().includes(frame)) return
         frame.frameId = minted.frameId
-        let loads = 0
-        el.addEventListener('load', () => {
-          loads += 1
-          if (loads === 1) {
-            this.post(frame, { type: 'init', capability: minted.capability, theme: this.opts.theme() })
-            return
-          }
-          // The frame navigated itself away from the card document: its contents
-          // are no longer the gateway's, so the frame goes.
-          // eslint-disable-next-line no-console -- an app's frame navigating away is otherwise silent
-          console.warn(`[link-preview] ${frame.key}: the card frame navigated away and was closed`)
-          this.destroy(frame)
+        loadMintedFrame(el, this.root, minted, {
+          theme: this.opts.theme,
+          onNavigatedAway: () => {
+            // eslint-disable-next-line no-console -- an app's frame navigating away is otherwise silent
+            console.warn(`[link-preview] ${frame.key}: the card frame navigated away and was closed`)
+            this.destroy(frame)
+          },
         })
-        // The URL is the gateway's own: mintFrame accepts only a same-origin
-        // `/link-preview-frame/` path, and the frame is sandboxed to an opaque origin.
-        // nosemgrep: semgrep.kirocrew.frontend-external-script-inject
-        el.src = withBase(minted.frame)
-        // In the document only once it has its real URL, so its first load is the card's.
-        this.root.appendChild(el)
         // Renew the capability well before it lapses, while the frame lives.
-        const every = Math.max(60, Math.floor(minted.ttl / 2)) * 1000
-        this.renewals.set(frame, window.setInterval(() => { void this.renew(frame) }, every))
+        this.renewals.set(frame, window.setInterval(() => { void this.renew(frame) }, renewIntervalMs(minted.ttl)))
       },
       () => {
         window.clearTimeout(timer)
@@ -319,7 +283,7 @@ export class FrameHost {
 
   private async renew(frame: PreviewFrame): Promise<void> {
     try {
-      const minted = await this.opts.mint(frame.appName, frame.frameId)
+      const minted = await this.opts.mint(frame.appName, frame.frameId, providerIdOf(frame))
       if (frame.el.isConnected) this.post(frame, { type: 'capability', capability: minted.capability })
     } catch {
       // The frame retries on its next 401; nothing to show here.
@@ -345,12 +309,7 @@ export class FrameHost {
   }
 
   private post(frame: PreviewFrame, msg: ToFrame): void {
-    // An opaque origin cannot be named as a target, hence '*'. The window is this
-    // iframe's own. The one secret sent, the capability, is the frame's own: bound
-    // to this app, this frame id and this client, and the app's code inside the
-    // frame already holds it.
-    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-    try { frame.el.contentWindow?.postMessage(toFrame(msg), '*') } catch { /* frame gone */ }
+    postToFrame(frame.el, msg)
   }
 
   private changed(): void {
@@ -424,11 +383,7 @@ export class FrameHost {
     const frame = this.frames().find((f) => f.el.contentWindow === e.source)
     if (!frame) return
     // Bounded: an oversized message, or one past the burst allowance, is dropped unread.
-    const now = performance.now()
-    frame.tokens = Math.min(BURST_CAPACITY, frame.tokens + (Math.max(0, now - frame.refilledAt) / 1000) * BURST_PER_SECOND)
-    frame.refilledAt = now
-    if (frame.tokens < 1) return
-    frame.tokens -= 1
+    if (!takeMessage(frame.rate)) return
     if (messageBytes(e.data) > MAX_MESSAGE_BYTES) return
     const msg = readFrameMessage(e.data)
     if (msg) this.handle(frame, msg)

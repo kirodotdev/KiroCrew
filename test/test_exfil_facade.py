@@ -54,7 +54,7 @@ PACKAGE = "kiro_crew.security"
 LEAF = "exfil"
 SECURITY_DIR = Path(exfil.__file__).resolve().parent
 #: The owner modules, in the layer order ``_OWNERS`` must list them.
-OWNERS = ("exfil_url_rules", "exfil_oauth", "exfil_bash")
+OWNERS = ("exfil_url_rules", "exfil_scan_span", "exfil_oauth", "exfil_bash")
 _THIS_FILE = Path(__file__).resolve()
 #: Text every file that reaches the facade by name holds: a dotted spelling (an import,
 #: a string target, a ``sys.modules`` key, an attribute chain off the package) or an import

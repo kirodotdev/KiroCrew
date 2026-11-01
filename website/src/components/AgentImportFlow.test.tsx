@@ -8,6 +8,7 @@ import type {
 import { api, ApiError } from '../api/client'
 import { renderWithProviders } from '../test/helpers'
 import AgentImportFlow from './AgentImportFlow'
+import { i18next } from '../i18n/all'
 import { LocalOverlayRoot } from './overlayRoot'
 
 // Spread the real module rather than replacing it: the component branches on
@@ -134,6 +135,14 @@ describe('AgentImportFlow', () => {
     expect(within(dialog).queryByText('Codex')).not.toBeInTheDocument()
     expect(within(dialog).queryByText('Quick')).not.toBeInTheDocument()
     expect(api.onboardingImportScan).toHaveBeenCalledOnce()
+  })
+
+  it('renders the stage counter inside one catalog sentence', async () => {
+    // en-XA brackets every catalog value, so "Import setup" + " · 1 of 4" reads `[Import setup] · 1 of 4`.
+    await i18next.changeLanguage('en-XA')
+    mockSuccessfulRequests()
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    expect(await screen.findByText(/^\[[^[\]]* · 1 [^[\]]* \d[^[\]]*\]$/)).toBeInTheDocument()
   })
 
   it('closes when persisted onboarding state resolves after the first render', async () => {

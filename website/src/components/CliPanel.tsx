@@ -213,6 +213,38 @@ function destroyTerm(id: string) {
     entry.term.dispose()
     termCache.delete(id)
   }
+  prewarmHosts.get(id)?.remove()
+  prewarmHosts.delete(id)
+}
+
+/** Off-screen hosts of terminals opened ahead of their first showing. */
+const prewarmHosts = new Map<string, HTMLDivElement>()
+
+/**
+ * Build a cached tab's xterm off screen, ahead of its first showing, so the
+ * tap that opens the dock only re-attaches it: xterm's first open (DOM,
+ * cell measuring, glyph cache) is the single largest block of work in a
+ * first open. No-op for a terminal that is already open. The host is sized
+ * like the panel so the later fit changes little.
+ */
+export function prewarmTerminal(id: string, width: number, height: number): void {
+  // The terminal can sit here before any pane mounts, so follow theme and
+  // font changes from now on, as a mounted pane would.
+  ensureThemeObserver()
+  ensureTerminalFontSync()
+  const { term, fit } = getOrCreateTerm(id)
+  if (term.element || typeof document === 'undefined') return
+  const host = document.createElement('div')
+  host.setAttribute('aria-hidden', 'true')
+  Object.assign(host.style, {
+    position: 'absolute', left: '-10000px', top: '0', width: `${width}px`, height: `${height}px`,
+    visibility: 'hidden', pointerEvents: 'none', overflow: 'hidden',
+  })
+  document.body.appendChild(host)
+  prewarmHosts.set(id, host)
+  term.open(host)
+  measuredWith.set(term, cellKey(term))
+  fit.fit()
 }
 
 /**
@@ -409,6 +441,8 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     const el = term.element
     if (el) {
       containerRef.current.appendChild(el)
+      prewarmHosts.get(sessionId)?.remove()
+      prewarmHosts.delete(sessionId)
     } else {
       term.open(containerRef.current)
       // open() has just measured the cell with the font as it is now, so the
@@ -420,7 +454,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     const pending = proxyText.current
     proxyText.current = ''
     if (pending) term.paste(pending)
-  }, [term, fit, holding])
+  }, [term, fit, holding, sessionId])
 
   // Focus + refit when becoming visible. Re-measure here too so a pane that
   // gained the web font while it was hidden (display:none) picks up the correct

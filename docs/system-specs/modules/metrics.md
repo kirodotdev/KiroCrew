@@ -153,8 +153,9 @@ to `0` (cap disabled) rather than being interpreted as "prune everything".
 `telemetry.enabled` defaults `false`, so every metric call site is a cheap no-op
 and no file is written — including the session-lifetime breadcrumb, which is
 gated on the same consent and fails closed. Even once local collection is
-enabled, `otlp_endpoint` defaults empty, so **no data ever leaves the machine
-unless the operator explicitly sets an OTLP endpoint.**
+enabled, `otlp_endpoint` defaults empty and `otlp_endpoints` defaults to an
+empty list, so **no data ever leaves the machine unless the operator explicitly
+sets an OTLP endpoint** (or the build ships a collector of its own).
 
 **Easy opt-in (four equivalent ways):**
 - **Config flag:** set `"telemetry": {"enabled": true}` in `~/.kiro/crew/config.json`.
@@ -162,7 +163,8 @@ unless the operator explicitly sets an OTLP endpoint.**
 - **Dashboard:** the recording switch in Settings → Privacy, which writes the same
   key through `PATCH /api/config/kirocrew` (`telemetry.enabled` is in
   `_EDITABLE_CONFIG`). That route refuses `true` with **HTTP 409** when
-  `telemetry.otlp_endpoint` is set: `_build_recorder` attaches an OTLP reader
+  any OTLP destination resolves (`telemetry.otlp_endpoint`, a
+  `telemetry.otlp_endpoints` entry, or one the build ships): `_build_recorder` attaches an OTLP reader
   whenever the active telemetry provider supplies a destination — which the public
   default does for any non-empty endpoint — so enabling from a switch offered as
   local-only would start network egress. The endpoint is chosen in the config
@@ -188,8 +190,13 @@ recheck or at their next start.
 `provider.watch_config()` registers one applier on the `telemetry` section, and its
 callback calls `shutdown()` — the next `get_recorder()` then builds a fresh
 recorder from the new config. That covers the settings the 30s consent recheck
-cannot see, because it only re-reads `enabled`: the OTLP endpoint, the export
-cadence, and every other value `_build_recorder` reads once. Registration is
+cannot see: the export cadence and every other value `_build_recorder` reads
+once. The recheck itself compares three things against the live recorder:
+`enabled`, the `agent` pair the harness label comes from (`_agent_key`), and a
+sha256 of `telemetry.otlp_endpoint` plus `telemetry.otlp_endpoints`
+(`_endpoints_key`). So a process with no config watcher (the MCP gateway
+daemon, through `recheck_consent`) still drops the reader of a list entry that
+was turned off or removed, within one window. Registration is
 idempotent per process, so a re-entered boot path cannot stack appliers that each
 rebuild. The rebuild is lazy by design — `shutdown()` only drops the memo, so the
 ~57ms of SDK import is paid on the next metric call rather than on the config
@@ -230,8 +237,8 @@ re-evaluates `Session.auth` per request, so a credential that rotates during
 process lifetime (an OIDC/SSO id_token, STS credentials) is re-read on every
 export, where `OTEL_EXPORTER_OTLP_HEADERS` — the only injection point before this
 seam — freezes into the exporter's session at construction and starts returning
-401 once it rotates. Static per-destination headers ride on `Session.headers` and
-need no field of their own.
+401 once it rotates. A destination built in code carries static headers on
+`Session.headers`; one declared as data names them in `headers_env` (below).
 
 The method must be cheap and side-effect-free per call: it is read once per
 recorder build AND on every egress-posture read (the Privacy panel's status, and
@@ -475,6 +482,191 @@ inventory gauges) have no session, so they carry only the resource attribute.
 
 Tests: `test/metrics/test_harness_label.py`.
 
+### Per-destination narrowing: the export allowlist, point attributes, resource
+
+The table above is the resource EVERY sink gets, and the roster below is the
+instrument set every sink gets. That is the right answer for the local JSONL sink
+and for an operator's own collector: both are the operator's own machine talking
+to the operator's own backend. It is the wrong answer for a destination that may
+receive only part of it -- a product destination reporting how Kiro Crew is used,
+whose exported set is a reviewed list rather than everything the process happens
+to record.
+
+So `OtlpDestination` carries three optional NARROWING fields. Each can only
+reduce or label what THAT destination receives; none of them can widen anything,
+reach the local sink, or touch another destination. All three default to today's
+behaviour, so an existing destination's payload is byte-identical.
+
+| Field | Default | What it does |
+|-------|---------|--------------|
+| `allow: frozenset[str] \| None` | `None` | A metric whose name is not in the set is dropped before encoding. `None` sends every metric collected. Full instrument names, `kirocrew.` prefix included. |
+| `point_attributes: Mapping[str, str]` | empty | Fixed pairs added to every exported data point of this destination. |
+| `resource_allow: frozenset[str] \| None` | `None` | This destination's batches carry a `Resource` reduced to these keys. A key the shared resource does not set is simply absent. |
+
+`metrics/destination_filter.py` enforces all three as an exporter WRAPPER that
+`_build_otlp_reader` puts around that destination's own exporter. The descriptor
+declares the narrowing; the core performs it. Four properties follow from where
+the wrapper sits:
+
+- **Containment is structural.** A wrapper only ever sees batches handed to its
+  own exporter. The local sink and every other destination read their own, and a
+  destination that narrows nothing is handed the unwrapped exporter object -- there
+  is no wrapper in its path to differ by.
+- **Nothing shared is mutated.** A collected batch arrives as SDK dataclasses
+  whose nested objects a sibling exporter may also hold, so every narrowed level
+  is rebuilt with `dataclasses.replace` rather than assigned in place. That also
+  keeps it correct as the SDK adds fields (`NumberDataPoint.exemplars` arrived
+  that way).
+- **It fails closed.** If the narrowing itself raises, the batch is DROPPED and
+  the first occurrence logs one WARNING (the rest are debug, because a per-minute
+  reader would otherwise write a line per interval forever). Forwarding the
+  unnarrowed batch is the one outcome that would turn a bug here into an egress
+  of data the destination was never allowed.
+- **Temporality stays a core decision.** The wrapper mirrors the wrapped
+  exporter's `_preferred_temporality` and `_preferred_aggregation`, which
+  `PeriodicExportingMetricReader` reads at construction -- answering `None` there
+  would silently put that destination back on the SDK's CUMULATIVE default while
+  the local sink stayed on DELTA.
+
+**A point-attribute key is refused, not dropped.** Keys are checked at
+construction against `destination_filter.ALLOWED_POINT_ATTRIBUTE_KEYS`
+(`ClientType` only today), and an unreviewed key raises. `_build_otlp_reader`
+turns that into "this destination gets no reader", so the cost is one
+destination's egress and local collection continues. Dropping the label instead
+would publish a series the receiving side cannot route, with only a debug line to
+say why. Keys are a reviewed non-secret set and are named in that log; attribute
+VALUES are never logged, least of all beside an endpoint that may carry a
+credential. On a key collision the destination's fixed value WINS over one
+already on the point: the value is a constant fixed at construction and a
+receiving side routes on it, so a call site must not be able to steer it.
+
+`PRODUCT_METRICS` in `metrics/product_metrics.py` is the reviewed set a product
+destination exports under. Names are spelled as literals there because
+`metrics.turns` imports `metrics.provider` at module scope and the recorder reads
+the set, so importing the declaring modules would close a cycle;
+`test/metrics/test_product_metrics.py` resolves every name against its declaring
+constant instead, and fails on a name with no instrument or on one that is a
+histogram or an up/down counter. Counters and gauges only: a fixed-bucket
+histogram's boundaries may not survive a receiving backend, so a distribution is
+exported as a bucket-labelled counter.
+
+Being a real counter is not sufficient. Every attribute value on an exported
+series has to come from a closed enum, which the kind check cannot see, so a
+metric carrying an open value is held out by name with its reason:
+`kirocrew.turn.tokens` is wanted and its instrument exists, but its `model` value
+is the configured model id, drawn from no set this repo controls -- on a non-Kiro
+backend it can be a provider resource id, so its range is whatever that provider
+names and whatever the person pointed the backend at. `provider` is configured
+the same way. It waits for a bucketed or enumerated stand-in for those two. A negative test asserts each holdout stays
+absent and that its name resolves to a real instrument, so the guard cannot pass
+on a typo and putting a name back means deleting a line that states why it was
+out.
+
+Tests: `test/metrics/test_destination_filter.py` (one provider with the real local
+sink plus narrowed and un-narrowed destinations attached at once: the allowed
+metric only, the fixed attribute on every point, the reduced resource, both other
+sinks untouched; then the nearby inputs -- an empty allowlist, an allowlist naming
+an unknown metric, observable gauges, existing attributes preserved, a collision
+on the fixed key, two destinations with different allowlists, a resource key the
+build does not set, a refused key, and a raise inside the narrowing),
+`test/metrics/test_product_metrics.py` (allowlist membership, instrument kind, the
+open-attribute holdouts, and selftests that drive each rejection those checks rely
+on).
+
+### OTLP endpoint entries: `telemetry.otlp_endpoints`
+
+Every OTLP destination built from config is an entry, parsed by
+`metrics/otlp_endpoints.py` into one `OtlpDestination` each, in this order:
+
+1. `telemetry.otlp_endpoint`, when non-empty: the first entry, named
+   `telemetry.otlp_endpoint`, not validated and carrying no narrowing, so the
+   descriptor is byte-identical to the one the default provider returned before
+   the list existed.
+2. `telemetry.otlp_endpoints`: the operator's list. The loader keeps only the
+   shape (a list of objects); each entry is checked when destinations resolve.
+
+`DefaultTelemetryProvider.otlp_destinations` returns
+`otlp_endpoints.config_destinations(cfg)`. A build that ships its own collector
+returns it from its provider's `otlp_destinations`, after
+`config_destinations(cfg)` so the operator's entries stay. That is the whole lock
+mechanism: a destination code returns is not config, so no config value removes
+or disables it, and no new seam is needed. `otlp_endpoints.label_sources` marks
+each resolved destination `otlp_endpoint`, `otlp_endpoints` (equal to the
+descriptor an operator entry produces, each entry matched once) or `provider`
+(anything else, reported `locked`). Matching is by the whole descriptor, not the
+name, so an operator entry that reuses a build collector's name cannot relabel it.
+
+Entry keys: `name`, `endpoint` (required, `http(s)://` with a host, at most
+`MAX_ENDPOINT_LEN` characters), `enabled` (a boolean; any other value refuses the
+entry, so a mistyped opt-out never exports), `headers_env` (at most
+`MAX_HEADERS` pairs), `temporality` (`""` / `cumulative` / `delta`), `allow`
+(a list of names, or a preset name from `otlp_endpoints.ALLOW_PRESETS`:
+`PRODUCT_METRICS`), `point_attributes`, `resource_allow`. A malformed entry,
+including a shape no check anticipated, is skipped with one WARNING per process
+naming the entry and the field, never a value; it never stops collection. The
+warn-once memory keeps a 16-byte digest per warning, at most `MAX_WARNED` (256),
+and clears when full, so config revisions that are later discarded do not
+accumulate in a long-lived gateway. An
+unknown `allow` preset refuses the entry: an allowlist must not fail open into
+"send everything". At most `MAX_ENTRIES` (16) are read. These bounds are
+arbitrary safety bounds on threads and retained memory, not tuned values.
+There is no key for a literal header value: an entry carrying `headers` is
+refused with a warning that points at `headers_env`, so no credential has to be
+written into `config.json`, where the dashboard and the agent's settings
+diagnosis can read the config.
+
+Three fields on `OtlpDestination` carry what an entry needs at reader build:
+
+- `headers_env` -- header name -> environment variable name, read by
+  `_build_otlp_reader` when it builds the exporter. An unset or blank variable
+  refuses that destination (no reader, one warning naming the variable), so a
+  secret never sits on the descriptor or in `config.json`.
+- `temporality` -- `""` keeps `temporality.otlp_preference()`; `delta`
+  (`otel_delta_preset`) and `cumulative` (`cumulative_preset`) pin every
+  instrument kind for that reader only, so the OTel variable cannot move it.
+- `process_env_credentials` -- `True` (the default, and the legacy
+  `otlp_endpoint` entry) leaves the exporter's fallbacks in place: with no headers
+  of its own it sends `OTEL_EXPORTER_OTLP_METRICS_HEADERS` /
+  `OTEL_EXPORTER_OTLP_HEADERS`, and with no `session` it may load the OTel
+  credential-provider session. Every `otlp_endpoints` entry is `False`:
+  `_build_otlp_reader` passes a header map that stays truthy when empty
+  (`_OwnHeadersOnly`, because the exporter reads `headers or <env>`) and a plain
+  `requests.Session`, so the entry sends only its `headers_env` headers. Those
+  variables were set for one collector; without this, adding a second entry with
+  no headers would send the first collector's credential to the second host.
+
+Gates are unchanged and apply to every entry because every entry is a
+destination: the consent gate in `_build_recorder` runs before any is resolved,
+`otlp_governance.governed_destinations` applies the `otlp_hosts` check, and
+`gate_exporter` re-checks each export. An enterprise build blanks both local keys
+in `_edition_locked_view` (`CONFIG_PATH_LOCKS` names both).
+
+The config view masks the whole `telemetry.otlp_endpoints` value
+(`core_config_view._masked_config_dict` masks every string under a container
+marked sensitive), because entries can carry endpoint userinfo. The agent's
+settings diagnosis (`change_cards_settings.non_default_settings`, behind
+`diagnose_settings`) reports any path the schema marks sensitive, or that sits
+inside a sensitive field, only as `{set: bool}` (`_schema_sensitive`, through
+`config.validation._is_sensitive_path`), whatever its key names look like.
+
+Disclosure: `otlp_egress_listing(cfg)` returns the labelled set before the policy
+check, and `otlp_egress_active` is `bool()` of it. A configured entry is listed
+even when its reader would be refused for a reason that can lift with no change by
+the person (an unset `headers_env` variable, a host the policy refuses today).
+`GET /api/telemetry/collection` returns it as `otlp_destinations: [{name, source,
+locked}]` -- names only, never an endpoint or host -- and Settings -> Privacy lists
+those names under its egress note.
+
+Tests: `test/metrics/test_otlp_endpoint_list.py` (the legacy string unchanged,
+parsing, refusals and bounds, a build-shipped destination next to operator
+entries, the gates on it, reader headers and temporality, the disclosure listing,
+and loopback wire tests: two destinations where the second is narrowed and
+authenticated from the environment, and the OTel header variable reaching the
+legacy entry but not a list entry), `test/test_change_cards_settings.py`
+(the diagnosis withholds schema-sensitive fields), `test/test_config_patch_otlp_endpoints.py`
+(a list entry and a build-shipped destination each refuse the enable; the list is
+not PATCH-writable; the config view masks it).
+
 ## Instrumented signals
 
 | Metric | Type | Attrs | Site |
@@ -487,7 +679,7 @@ Tests: `test/metrics/test_harness_label.py`.
 | `kirocrew.session.idle_expired` | counter | `turn_active` (bool), `orphaned` (bool) | `session_cleanup.py`; emitted after an idle/orphan sweep successfully resets a session. |
 | `kirocrew.session.startup.duration` | histogram (ms) | `outcome` (`ready` / `auth_required` / `error`), `spawned` (bool), `backend` (`kiro`) + `phase` (`total` / `spawn_init` / `session_new` / `session_load` / `set_model`), `channel` (conversation source), `resumed` (bool) on the kiro path | Two sites. **claude**: `acp/client_start.py::AcpClient.ensure_ready()` — times cold-start (spawn + session init) and emits in a `finally` so every exit path is measured, with no `phase` attr. **kiro** (default): `providers/acp_runtime_start.py::_emit_kiro_startup_metric` — one `phase=total` point PLUS one point per internal phase; `spawned` is unconditionally `True` because `_start_kiro_runtime_impl` always spawns a fresh runtime (the warm fast-path returns before reaching either site and is NOT measured). `outcome` defaults to `"error"` so an unexpected exception is never mislabeled `"ready"`. Consumers MUST treat only the end-to-end point (`phase` absent or `total`) as a startup — the phase points are components of one startup. `channel` comes from `messaging.link::telemetry_channel_of`, a closed label set (an unrecognised key classifies as `other`, never the key itself) answering WHICH surface paid the cost; `resumed` separates the `session/load` path from `session/new`. `session_load` is recorded only when a resume was attempted, and `session_new` only when `create_session` actually ran, so a resumed startup never reports a near-zero `session_new`. |
 | `kirocrew.chat.first_token.duration` | histogram (ms) | `channel`, `first_turn` (bool), `resumed` (bool) | `dashboard/chat_turn/turn_stats.py::_emit_ttft_metric`; user-message-to-first-visible-token latency for top-level user prompts. Own bucket family `_STARTUP_BUCKETS_MS`. |
-| `kirocrew.session.pool.decision` | counter | `outcome` (`hit` / `miss_empty` / `bypass_member_capabilities` / `bypass_resume` / `bypass_stateless` / `bypass_member` / `bypass_app_launch` / `bypass_restricted_context` / `bypass_member_context` / `bypass_cwd` / `bypass_env` / `bypass_shared_scratch` / `bypass_backend_override` / `bypass_effort` / `disabled` / `other`), `channel` | `session_parts/runtimes.py::SessionManager._record_pool_decision`, one point per `get_or_create` warm-pool decision. Exactly one reason is reported per decision — the disqualifiers form a disjunction, so branch order picks the reported reason, not the outcome. Deliberately a counter rather than an attribute on the startup histogram: "was the pool used" and "how long did startup take" are separate questions, and crossing them would multiply every phase series. `bypass_resume` quantifies how often a `resume_sid` disqualifies a session from the pool, and `bypass_shared_scratch` how often a dedicated subagent cold-starts to mount its parent's scratch. Values are pinned by `session.POOL_DECISIONS`, which lists every reason `get_or_create` assigns (a test reads the assignments), so no reason folds into `other`. |
+| `kirocrew.session.pool.decision` | counter | `outcome` (`hit` / `miss_empty` / `bypass_member_capabilities` / `bypass_resume` / `bypass_stateless` / `bypass_member` / `bypass_app_launch` / `bypass_restricted_context` / `bypass_member_context` / `bypass_cwd` / `bypass_env` / `bypass_shared_scratch` / `bypass_backend_override` / `bypass_effort` / `bypass_model_at_launch` / `disabled` / `other`), `channel` | `session_parts/runtimes.py::SessionManager._record_pool_decision`, one point per `get_or_create` warm-pool decision. Exactly one reason is reported per decision — the disqualifiers form a disjunction, so branch order picks the reported reason, not the outcome. Deliberately a counter rather than an attribute on the startup histogram: "was the pool used" and "how long did startup take" are separate questions, and crossing them would multiply every phase series. `bypass_resume` quantifies how often a `resume_sid` disqualifies a session from the pool, and `bypass_shared_scratch` how often a dedicated subagent cold-starts to mount its parent's scratch. `bypass_model_at_launch` counts model-pinned chats on a harness that takes its model only at launch (`ACP_BACKENDS_MODEL_AT_LAUNCH`): the pooled process cannot switch, so it is discarded and the chat cold-starts on its pin. Values are pinned by `session.POOL_DECISIONS`, which lists every reason `get_or_create` assigns (a test reads the assignments), so no reason folds into `other`. |
 | `kirocrew.session.resume.outcome` | counter | `outcome` (`loaded` / `fallback_replay` / `no_session_file`), `channel` | `providers/acp_runtime_start.py::_emit_kiro_startup_metric`, emitted only when a resume was attempted. Distinguishes a lossless native resume from the degraded fallback (fresh `session/new` plus history replay on the Kiro Crew side, taken when `session/load` exhausts `_RESUME_MAX_ATTEMPTS` against a stale lock) and from a resume skipped because the session file was gone. |
 | `kirocrew.session.duration` | histogram (ms) | `end_reason` (`reset` / `removed` / `unclaimed` / `destroyed` / `discarded` / `shutdown` / `retired` / `recycled` / `evicted` / `crashed`), `session_source` (via `messaging.link::telemetry_channel_of`) | `metrics/sessions.py::record_session_ended` (or `record_sessions_ended` for a path that drains many keys at once) for every clean end; `metrics/sessions.py::backfill_crashed_sessions` for `crashed`. **Why the reason is passed in, never derived.** There is no single teardown funnel: `SessionLifecycleService` (its bodies in `session_lifecycle_parts/teardown.py` and `session_lifecycle_parts/fleet.py`) holds six end paths that each pop the registry themselves (`reset` / `remove` / `remove_if_unclaimed` / `destroy` / `discard_conversation` / `close_all`), and four more pop it outside all of those — `retire_kiro_identity_sessions` reports `retired` for the sessions it tears down on an identity change, `reload_provider_factory` reports `retired` too for the registry it clears on a provider switch (both are "this process is no longer the right host for these sessions", which is why they share a label rather than minting a second one), `session_compaction.py::CompactionCoordinator._recycle_held` reports `recycled` (context overflow replacing the provider in place), `session_background.py::recycle_heartbeat` also reports `recycled` (the background runtime replacing its own session at cycle end), and the two dead-provider evictions in `session_allocation.py` report `evicted`. So each site states its own `end_reason`, the same contract `metrics/turns.py` holds its callers to. Every path calls this while it still holds the session registry lock, in the same event-loop tick as its `_sessions.pop`: the pop and the histogram record are both in-memory and both happen before the call's single suspension point, and a later call lets a racing cold start register a SUCCESSOR under the reused key whose record the predecessor's teardown then consumes. `reset` is a PATH label rather than a cause — the idle sweep and a slot reset both reach teardown through it, and the finer causes are already counted by `kirocrew.session.idle_expired` and `kirocrew.watchdog.recovery.outcome`; the other four are separate precisely because they never take the `reset` route. **EVERY registry removal must record an end, and that is a correctness requirement rather than a completeness one.** An unrecorded removal does not merely lose a sample: the crumb below survives it, so the next boot reports the session as `crashed` — a failure that never happened, injected into the one population this histogram exists to measure. Four such paths shipped unrecorded and were caught in review, which is why the gate for this is `test_every_registry_removal_records_an_end`, a fail-closed AST walk over every module that mutates the registry (recognising `pop`, `del` and `clear`) rather than a hand-kept list of method names that a new path silently escapes. **The crumb is what makes a crash countable.** A start time held only in memory dies with the process, which is exactly the population most worth measuring, because a crash runs no teardown path at all. So `record_session_started` drops one small JSON file under `<data home>/metrics/open-sessions/`, named by SHA-256 digest of the session key PLUS the writing pid and the start time, with the key stored inside (keys carry channel ids and slot names and are not filesystem-safe; `session_map.json` already holds every key in the same data home, so this is not new exposure). **The name identifies the writer and the generation, not just the key, and that is what makes every unlink here safe.** A session key is not unique across processes — `BACKGROUND_KEY` is a fixed constant, so a `kirocrew run` and the gateway hold the same key at the same time with a live session each — so while the name was the digest alone they shared one file, and whichever ended first unlinked the other's record; the locks in this module are THREAD locks and never spanned processes, so nothing here could have prevented it. With the writer and the generation in the name, a crumb can only ever be removed by the session that wrote it. Three consequences follow. A clean end unlinks the ONE generation it can name, and an end with no live table entry unlinks NOTHING — the files sharing that digest belong to other processes or earlier runs, and removing them is precisely the bug the name now prevents. A start that displaces a live generation of the same key, and an eviction under `_MAX_LIVE_SESSIONS`, must each reap the generation they orphan, because once the table forgets a generation nothing can ever name its file again; both ride the same awaited worker hop as the start's own write, so those unlinks stay off the event loop without opening a second cancellation window. And the backfill legitimately finds SEVERAL files for one key, each a distinct session judged on its own recorded owner. Whatever survives to the next boot is a session that never ended cleanly, which `backfill_crashed_sessions(started_before)` emits as `crashed` and unlinks; it is also the only reader of these files, so an unparseable crumb is reaped there rather than by an end unlinking blind. `started_before` is the calling process's own start time, so a crumb at or after it is left alone. **The crumb also records WHO owns it — the writing process's pid plus a per-process start identifier — and the backfill skips any crumb whose owner is still running.** The cutoff alone was not enough: it only ever protected THIS process's own crumbs, and `cli.py` and `eval/runner.py` each build their own session manager against the same data home, so a `kirocrew run` session started before the gateway booted was read as a crash. That both invented a sample and deleted the live crumb, losing the real crash that session might later suffer. The start identifier is what makes pid reuse safe: a recycled pid belongs to a different process and must not look like the owner, and that includes reuse of the CURRENT process's own pid — a container hands the gateway PID 1 on every restart, so a crashed predecessor's crumb arrives carrying this process's pid, and skipping it on the strength of the pid alone meant its crash was never emitted and its file never cleaned on any later boot either. **Liveness comes from `platform_compat.pid_exists`; the start identifier only refines it.** `get_process_start_id` returns None for any process the caller may not introspect, and its own contract says a None must NOT be read as a mismatch — using it as the liveness test would judge dead every owner it cannot introspect and reap live sibling sessions. The ownership check fails CLOSED — a live pid whose identity cannot be read counts as running, so an ambiguous crumb waits for a later boot rather than becoming a fabricated crash; losing a real crash sample costs one data point, inventing one corrupts the population this instrument reports. A crumb with no ownership recorded (written before this field existed) falls back to the cutoff alone. **A registration that never became a session is discarded, not ended:** `discard_session_start` pops the table entry and unlinks that generation's crumb WITHOUT emitting, for the cancellation window between inserting a session into the registry and finishing its start record — a session that never lived has no lifetime to report, and it must not be left as a crumb the next boot calls a crash. It is deliberately not an eleventh `end_reason`, because those describe how a live session ENDED. **Exactly-once accounting.** A crumb is consumed at most once, so the teardown paths — which are NOT mutually exclusive, the idle sweep calls `reset` — cannot double-count between them, and a backfilled session cannot be counted again on the boot after. The clean path deliberately reads neither the crumb nor the popped entry's `created_at`: consuming a DIFFERENT record than the crash path would let a clean end's leftover crumb be re-emitted as `crashed`, and `created_at` is reset when a provider is recycled in place, so it measures provider age rather than registry residency. **A crashed session's END time** is its transcript mtime (`<data home>/sessions/<stem>.jsonl`, appended as the conversation runs, so it is the last moment the session was observably alive and the honest post-hoc maximum). A session with no transcript — a subagent leaves only a replay log — yields no end time and is unlinked WITHOUT an emit rather than recorded as a 0ms lifetime: absence reads as "no data", a recorded zero renders as a real zero. **Two locks, split by what they may be held across.** `_live_lock` guards the in-memory start table ONLY and is never held across I/O, because every end takes it on the event loop; `_crumb_io_lock` orders the two worker-thread paths that touch crumb FILES — the writer, and the backfill's read-decide-unlink — and nothing on the loop may take it. Coupling them was a real stall: the backfill held one lock across a crumb read plus an unlink on a worker while a teardown waited for that same lock on the loop. The end path needs no crumb lock at all, because ownership already partitions the work — the backfill skips every crumb whose owner is live, so the crumbs a session ends in THIS process and the crumbs the backfill reaps are disjoint sets. It is also worth stating that these are THREAD locks and so never protected anything against a sibling PROCESS; that is exactly what the ownership field is for. The write itself runs on a worker thread (`asyncio.to_thread`) and is AWAITED while the caller still holds the session registry lock, which is what satisfies two constraints that look opposed: the syscalls never run on the event loop, where a slow or network-homed data home would stall every gateway task behind one session insertion, and nothing can interleave, because starts, ends and successors all serialise on that registry lock. Three earlier shapes each satisfied one and broke the other — a fire-and-forget pool write let a late writer delete a successor's crumb (an ended-key set, then a generation token compared before and after the write, both failed, because every check still acted on a path the successor SHARED), and writing inline fixed the ordering by putting filesystem I/O on the loop. Naming the file after its writer and generation is what finally removed that shared path, so the post-write check now removes only this writer's own file. The END path's unlink runs on a worker thread too, and is AWAITED there for the same reason the write is. Inline on the event loop it would be one syscall against the data home on the paths a person is waiting on -- closing a tab, resetting a slot, shutting the gateway down -- so on a slow or network-backed home that single `unlink` would park every gateway task behind whichever session happened to be closing, felt as the whole gateway freezing rather than as a metrics problem. Queued fire-and-forget it would be worse than slow: `shutdown_maintenance_executor` drains with `cancel_futures=True`, so at `close_all` -- when teardown is heaviest -- the unlink is dropped outright and a cleanly ended session's crumb survives to be back-filled as `crashed`, inflating the exact population this instrument measures. Awaiting a worker hop is the only shape that is both off the loop and never dropped. The same-tick rule the inline version protected is unaffected, on three counts: the registry pop and the histogram sample both happen BEFORE the function's only suspension point, so a teardown path still accounts for its session immediately after its `_sessions.pop`; every caller awaits while it still holds the session registry lock, which is the lock a racing cold start must take to register and map a SUCCESSOR; and the hop is awaited so nothing is fired blind. **Submitted is not started, so the hop is a BARE executor future awaited through `asyncio.shield`.** On a saturated executor the work item is still queued, and cancelling the await reaches the underlying `concurrent.futures.Future` through `futures._chain_future`'s `_call_check_cancel`, which cancels a work item that has not begun -- the same dropped-unlink failure that ruled out the maintenance pool, reached by a different queue. Shielding leaves the inner future alone, so nothing cancels the queued work and it runs when a thread frees up. Two details make abandoning it safe on the cancellation path, and both are why this is not the fire-and-forget shape the start path forbids. It is a Future and NOT a Task, so `runners._cancel_all_tasks` at loop teardown -- which iterates `all_tasks()` -- cannot reach it; shielding a `to_thread` COROUTINE would be wrong, because `shield` wraps a coroutine in a Task that teardown cancels, dropping a still-queued item all over again. And a worker finishing after the loop closed cannot raise "Event loop is closed", because `_chain_future._call_set_state` returns early when `dest_loop.is_closed()` instead of calling `call_soon_threadsafe`; the historical Windows failure was a start-path write never awaited at all, whereas here the normal path awaits to completion and only a cancellation abandons the future. Unlinking inline in the cancellation handler was tried and rejected in review: it fixed the drop but put a filesystem syscall back on the event loop, which is the thing this issue is about. The start path still must not use this shape, because its write has to be ORDERED under the caller's registry lock and so cannot be allowed to land late; an end's unlink can, because the crumb name encodes the writer and the generation, so a late unlink can only ever reach the file its own session wrote. If the executor is already shut down the hop cannot be scheduled at all, and the crumb is left to the boot backfill rather than unlinked on the loop -- reachable only once the loop itself is tearing down, and the backfill's ownership check means it is claimed only after this process is gone. **A cancellation at that hop is ABSORBED by all three end paths, and that is what makes the new suspension point safe to give a teardown.** The registry pop is the caller's point of no return: past it only the caller's remaining cleanup can finish the job, and `destroy` deletes the session-map entry in a `finally` BELOW its end call while `discard_conversation` and `reset` clear the resume SID on the line after the lock. Raising would exit those callers before that cleanup, leaving a permanently destroyed session's mapping behind for the next boot to resume -- a data-loss window the synchronous version did not have, because it had no suspension point there at all. A cancellation cannot undo a teardown, only leave it half done, so the correct answer is to let the teardown finish. That cancellation is genuinely DISCARDED rather than deferred -- a swallowed `CancelledError` is not re-delivered by asyncio, so the caller runs to completion unless something cancels it again -- which is the intended outcome rather than a side effect, because finishing a teardown that has already popped is exactly what the callers' `finally` blocks exist for. The consequence worth knowing is that a caller wanting a hard cap on teardown must impose it outside the pop, since a cancellation delivered after the pop is not honoured; no caller does today (every `close_all` await site is bare). The two guarantees sit in two places deliberately: whether a CALLER may be aborted is knowable only where its post-pop cleanup is known, so it lives in the end paths, while whether the UNLINK survives a cancelled hop is a property of the hop, so it lives in the helper. Two more consequences are worth stating. The sample is emitted BEFORE the hop, the opposite of `kirocrew.session.started`'s counter, because the risks are opposite: a cancelled start is rolled back and never existed, while an end cannot be rolled back (the pop has already consumed the only record of that generation), so emitting first is what keeps the sample under cancellation and what measures the lifetime at the pop rather than a worker round-trip later. And the four paths that pop MANY keys at once -- `close_all`, `drain_all_providers`, `retire_kiro_identity_sessions` and `reload_provider_factory` -- call `record_sessions_ended` instead, which pops the whole set under one `_live_lock` hold and unlinks it in ONE hop: a hop per key would put a cancellation point BETWEEN two keys, leaving every key after it popped but unrecorded, and on `close_all` (a path cancellation reaches by design) that would turn one orderly shutdown into a burst of fabricated crashes -- strictly worse than the on-loop unlink it replaced. `discard_session_start` is a coroutine for the same reason, and absorbs its cancellation for a second one too: its callers re-raise the failure that started the rollback on the very next line, so letting a cancellation escape would displace that failure with one of its own making. **The crumb is written only under telemetry consent**, checked fail-closed: it exists solely to feed this instrument, which is a no-op without consent, so writing one on an unopted host would persist state nothing can read against a documented default of collecting nothing. Bounded throughout: `_MAX_BACKFILL_EMITS` (2000) caps a runaway crumb directory while still unlinking everything it walks, and `_MAX_LIVE_SESSIONS` (4096) drops the oldest half of the table, unlinking each dropped generation's crumb as it goes — both cost samples, never memory. Own bucket family `_SESSION_BUCKETS_MS`. |
 | `kirocrew.session.started` | counter | `session_source` (via `messaging.link::telemetry_channel_of`), `harness` (the session's EFFECTIVE harness, closed set below) | `metrics/sessions.py::record_session_started`, one increment per session admitted to the registry, called from the sites that insert into `_sessions` (`session_allocation.py` and `session_allocation_parts/get_or_create.py` cold-start and resume paths, `session_background.py`, and the compaction path that keeps a session alive) with the provider the entry was built around. `harness` is read off that provider by `metrics/harness.py::harness_of` (through `providers/acp.py::_provider_backend`, the shape check the session-map label uses), so a per-session or per-agent `acp_backend` override counts as its own harness; see "The `harness` label" below. The denominator the `kirocrew.session.duration` population is a subset of: not every registry removal records an end, so `started` counts admissions while `duration` counts the endings actually observed, and the gap between the two is itself readable. `session_source` is the SAME `telemetry_channel_of` derivation the duration histogram and `metrics/turns.py` use, so all three group by one bounded label set (an unrecognised key classifies as `other`, never the key itself). The increment and the `_live_starts` write are in-memory and therefore safe under the session registry lock; only the crumb touches disk, off-thread. |

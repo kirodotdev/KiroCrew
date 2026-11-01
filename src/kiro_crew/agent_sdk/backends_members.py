@@ -71,6 +71,16 @@ from kiro_crew.agent_sdk.backends import (
 # ``test/fixtures/acp_frames/pi/saved-spec-projection-live.jsonl`` is a member session on
 # pi-acp 0.0.34 over pi 1.3.0 whose saved spec the client confirmed after
 # ``session/new``; the same drive with the spec edited after its save was refused.
+#
+# strands is NOT a member, although its mirror records the consumed spec and the
+# confirmation passes (``test/fixtures/acp_frames/strands/saved-spec-projection-live.jsonl``,
+# captured with no sandbox backend, so with no credential mask). A member session's
+# ``kirocrew-core`` is a stdio Crew child inside the session's sandbox, and the enforced
+# credential mask (``tool_gate.adapter_hidden_credential_dirs``) hides ``.local_secret``
+# and ``run/`` from it, so its gateway-backed tools would be refused
+# (``internal_secret_missing``). Fail closed until a host-side control-plane transport
+# exists; letting the child read the credential widens the mask, which this set does
+# not decide.
 ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -123,6 +133,10 @@ ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS = frozenset({ACP_BACKEND_KAS})
 # ``test/fixtures/acp_frames/claude/saved-spec-projection-live.jsonl``. The server a
 # spec declares, projected into the ``session/new`` array, ran in the session; the
 # worker's spec reaches claude through that same array.
+# strands is NOT here, for the reason it is outside ``ACP_BACKENDS_MEMBER_CAPABILITIES``:
+# the worker's ``kirocrew-core`` would run inside the sandbox with the gateway
+# credential hidden by the enforced mask, so its control plane would be refused. A
+# worker allocated on strands is refused before spawn (``capability_harness_unsupported``).
 ACP_BACKENDS_MATE_WORKER_KIT = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE})
 
 # Backends of the set above whose worker gets its prompt only from the
@@ -314,6 +328,15 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE})
 # session here (``mcp-stdio-rollback-live.jsonl``), so an entry that does not
 # resolve is never placed (``member_dispatch_session_server`` answers ``None``).
 #
+# strands is NOT a member, although its array is client-composed and its routing is
+# enforced. The dispatch entry is a stdio ``kirocrew mcp-dashboard`` child the CLI
+# starts inside the session's sandbox, and the enforced credential mask
+# (``tool_gate.adapter_hidden_credential_dirs``) hides ``.local_secret`` and ``run/``
+# from that child, so it would reach the gateway with no internal credential and every
+# call would be refused (``internal_secret_missing``). Joining would advertise a tool
+# that cannot work; letting the child read the credential widens the mask, which this
+# set does not decide.
+#
 # WHERE the mount happens differs by backend, and opencode's is the client's.
 # ``AcpClient._append_member_dispatch_server`` serves the backends whose array the
 # CLIENT composes -- claude's, opencode's, goose's, deepseek's and pi's -- while codex and
@@ -408,6 +431,11 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
 # sandbox backend). Like deepseek, a narrowed panel tool withholds the whole mount (no
 # mirror, so no per-tool deny channel), and ``agent.crew_panel: false`` withholds it
 # outright.
+#
+# strands is NOT a member, for the reason it is outside ``ACP_BACKENDS_MEMBER_DISPATCH``:
+# the panel entry is a stdio ``kirocrew mcp-panel`` child inside the session's
+# sandbox, and the enforced credential mask hides the gateway credential from it, so
+# every publish would be refused (``internal_secret_missing``).
 #
 # kiro is excluded and cannot be added by this set alone: a member session's key is
 # what every mount reads, and ``providers/acp_runtime_start.py`` ``_member_session_key`` gates

@@ -20,7 +20,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.apps import link_preview_frame as lp
+from kiro_crew.apps import app_frame as lp
 from kiro_crew.dashboard.token_auth_paths import (
     _BYPASS_PREFIXES,
     SPA_FALLBACK_EXCLUDED_PREFIXES,
@@ -28,6 +28,8 @@ from kiro_crew.dashboard.token_auth_paths import (
 )
 
 APP = "cards-app"
+PID = "cards"
+MINT = f"/api/apps/{APP}/frames/linkPreviews/{PID}"
 
 
 class _Registry:
@@ -51,7 +53,11 @@ async def _client(
     session: dict[str, Any] | None = None,
 ) -> AsyncIterator[tuple[TestClient, _Registry]]:
     registry = _Registry()
-    monkeypatch.setattr(lp, "_provider_entry", lambda name: entry if name == APP else None)
+    monkeypatch.setattr(
+        lp,
+        "_provider_entry",
+        lambda name, pid=None: entry if name == APP and pid in (None, PID) else None,
+    )
     monkeypatch.setattr("kiro_crew.apps.hooks_integration.get_route_registry", lambda: registry)
     # The mint request's validated embed-parent claim; a test sets it on the caller.
     monkeypatch.setattr(
@@ -70,7 +76,7 @@ async def _client(
         return await handler(request)
 
     app = web.Application(middlewares=[auth])
-    lp.register_link_preview_routes(app)
+    lp.register_app_frame_routes(app)
     client = TestClient(TestServer(app))
     await client.start_server()
     try:
@@ -80,7 +86,7 @@ async def _client(
 
 
 async def _mint(client: TestClient) -> dict[str, Any]:
-    resp = await client.post(f"/api/apps/{APP}/link-preview")
+    resp = await client.post(MINT)
     assert resp.status == 200, await resp.text()
     data: dict[str, Any] = await resp.json()
     return data
@@ -140,7 +146,7 @@ def test_the_bootstrap_keeps_a_sub_path_mount() -> None:
     compares against the prefixed fetch base.
     """
     boot = lp._BOOTSTRAP
-    assert "location.pathname.indexOf('/link-preview-frame/')" in boot
+    assert "location.pathname.indexOf('/app-frame/')" in boot
     assert "CFG.entry = MOUNT + CFG.entry;" in boot
     assert "CFG.fetchBase = MOUNT + CFG.fetchBase;" in boot
     # Both uses come after the prefix is applied.
@@ -155,7 +161,7 @@ const posted = [];
 const listeners = {};
 const parent = { postMessage: (m) => posted.push(m) };
 globalThis.window = { parent, addEventListener: (t, f) => { (listeners[t] ||= []).push(f); } };
-globalThis.location = { pathname: '/link-preview-frame/a/f/t', href: 'http://gw/link-preview-frame/a/f/t' };
+globalThis.location = { pathname: '/app-frame/a/linkPreviews/c/f/t', href: 'http://gw/app-frame/a/linkPreviews/c/f/t' };
 const lateProvider = 'export function activate(ctx) { return { show(link) { globalThis.shows.push(link); } }; }';
 globalThis.shows = [];
 globalThis.document = {
@@ -163,12 +169,12 @@ globalThis.document = {
   body: {},
   getElementById: () => ({ textContent: JSON.stringify({
     app: 'a', entry: 'data:text/javascript,' + encodeURIComponent(lateProvider),
-    fetchBase: '/link-preview-fetch/a/', theme: 'light',
+    fetchBase: '/app-frame-fetch/a/', theme: 'light',
   }) }),
 };
 """
 _BOOTSTRAP_DRIVER = r"""
-const deliver = (data) => (listeners.message || []).forEach((f) => f({ source: parent, data: { 'kirocrew-link-preview': 1, ...data } }));
+const deliver = (data) => (listeners.message || []).forEach((f) => f({ source: parent, data: { 'kirocrew-app-frame': 1, ...data } }));
 const done = (async () => {
   deliver({ type: 'init', capability: 'c' });
   for (let i = 0; i < 50 && !posted.some((m) => m.type === 'ready'); i++) await new Promise((r) => setTimeout(r, 10));
@@ -304,7 +310,9 @@ async def test_an_embedded_dashboard_frame_admits_its_parent_from_the_signed_tok
         )
         assert "'self'" in ancestors
         assert "http://127.0.0.1:7001" in ancestors
-        forged = f"{lp.FRAME_PREFIX}{APP}/{frame_id}/7002-{token.split('-', 1)[1]}"
+        forged = (
+            f"{lp.FRAME_PREFIX}{APP}/linkPreviews/{PID}/{frame_id}/7002-{token.split('-', 1)[1]}"
+        )
         assert (await client.get(forged)).status == 404
     async with _client(monkeypatch) as (client, _):
         minted = await _mint(client)
@@ -324,15 +332,23 @@ async def test_the_frame_needs_its_own_token(monkeypatch: pytest.MonkeyPatch) ->
         minted = await _mint(client)
         frame_id, token = minted["frame"].rsplit("/", 2)[1:]
         assert frame_id == minted["frameId"]
-        assert (await client.get(f"{lp.FRAME_PREFIX}{APP}/{frame_id}/nonsense")).status == 404
+        assert (
+            await client.get(f"{lp.FRAME_PREFIX}{APP}/linkPreviews/{PID}/{frame_id}/nonsense")
+        ).status == 404
         # A token minted for one app does not open another app's frame.
-        assert (await client.get(f"{lp.FRAME_PREFIX}other-app/{frame_id}/{token}")).status == 404
+        assert (
+            await client.get(f"{lp.FRAME_PREFIX}other-app/linkPreviews/{PID}/{frame_id}/{token}")
+        ).status == 404
         # Nor another frame's.
         other_id = (await _mint(client))["frameId"]
-        assert (await client.get(f"{lp.FRAME_PREFIX}{APP}/{other_id}/{token}")).status == 404
+        assert (
+            await client.get(f"{lp.FRAME_PREFIX}{APP}/linkPreviews/{PID}/{other_id}/{token}")
+        ).status == 404
         # The fetch capability is not a frame token (separate signers).
-        cap_token = minted["capability"].split("~", 1)[1]
-        assert (await client.get(f"{lp.FRAME_PREFIX}{APP}/{frame_id}/{cap_token}")).status == 404
+        cap_token = minted["capability"].split("~")[3]
+        assert (
+            await client.get(f"{lp.FRAME_PREFIX}{APP}/linkPreviews/{PID}/{frame_id}/{cap_token}")
+        ).status == 404
 
 
 @pytest.mark.asyncio
@@ -349,7 +365,7 @@ async def test_only_a_dashboard_session_can_mint(
     monkeypatch: pytest.MonkeyPatch, session: dict[str, Any]
 ) -> None:
     async with _client(monkeypatch, session=session) as (client, _):
-        resp = await client.post(f"/api/apps/{APP}/link-preview")
+        resp = await client.post(MINT)
         assert resp.status == 403
 
 
@@ -358,7 +374,7 @@ async def test_an_app_without_an_enabled_provider_gets_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with _client(monkeypatch, entry=None) as (client, _):
-        assert (await client.post(f"/api/apps/{APP}/link-preview")).status == 404
+        assert (await client.post(MINT)).status == 404
 
 
 @pytest.mark.asyncio
@@ -465,12 +481,14 @@ async def test_a_process_backend_goes_through_the_signed_proxy(
 
 def test_the_capability_is_bound_to_the_app_the_client_and_the_frame() -> None:
     fid = "f" * 16
-    cap = f"{fid}~{lp._signer('fetch').mint(APP, '10.0.0.1', fid)}"
+    cap = f"{fid}~linkPreviews~{PID}~{lp._signer('fetch').mint(APP, '10.0.0.1', fid, 'linkPreviews', PID)}"
     assert lp._capability_ok(cap, APP, "10.0.0.1")
     assert not lp._capability_ok(cap, APP, "10.0.0.2")
     assert not lp._capability_ok(cap, "other-app", "10.0.0.1")
     assert not lp._capability_ok(cap.replace(fid, "g" * 16, 1), APP, "10.0.0.1")
-    assert not lp._signer("frame").verify(cap.split("~", 1)[1], APP, "10.0.0.1", fid)
+    assert not lp._signer("frame").verify(
+        cap.split("~")[3], APP, "10.0.0.1", fid, "0", "linkPreviews", PID
+    )
     assert lp._CAPABILITY_TTL_SECS <= 900, "the capability is meant to be short-lived"
 
 
@@ -478,7 +496,7 @@ def test_the_capability_is_bound_to_the_app_the_client_and_the_frame() -> None:
 async def test_a_renewal_keeps_the_frame_id(monkeypatch: pytest.MonkeyPatch) -> None:
     async with _client(monkeypatch) as (client, _):
         first = await _mint(client)
-        resp = await client.post(f"/api/apps/{APP}/link-preview?frame={first['frameId']}")
+        resp = await client.post(f"{MINT}?frame={first['frameId']}")
         renewed = await resp.json()
         assert renewed["frameId"] == first["frameId"]
         assert renewed["capability"].split("~", 1)[0] == first["frameId"]
@@ -504,7 +522,7 @@ async def test_the_capability_is_no_credential_anywhere_else(path: str) -> None:
     await client.start_server()
     try:
         fid = "f" * 16
-        cap = f"{fid}~{lp._signer('fetch').mint(APP, '127.0.0.1', fid)}"
+        cap = f"{fid}~linkPreviews~{PID}~{lp._signer('fetch').mint(APP, '127.0.0.1', fid, 'linkPreviews', PID)}"
         for headers in (
             {"Origin": "null", lp.CAPABILITY_HEADER: cap},
             {"Origin": "null"},
@@ -525,8 +543,8 @@ def test_the_routes_are_bypassed_excluded_from_the_shell_and_csrf_exempt() -> No
         assert prefix in SPA_FALLBACK_EXCLUDED_PREFIXES
     assert is_csrf_exempt(f"{lp.FETCH_PREFIX}{APP}/kv", "POST")
     # The frame document and every other route keep the Origin check.
-    assert not is_csrf_exempt(f"{lp.FRAME_PREFIX}{APP}/t", "POST")
-    assert not is_csrf_exempt(f"/api/apps/{APP}/link-preview", "POST")
+    assert not is_csrf_exempt(f"{lp.FRAME_PREFIX}{APP}/linkPreviews/{PID}/f/t", "POST")
+    assert not is_csrf_exempt(MINT, "POST")
     assert not is_csrf_exempt(f"/apps/{APP}/api/kv", "POST")
 
 
@@ -556,18 +574,18 @@ async def test_fetch_reaches_only_a_registered_method_and_path() -> None:
         _RegisteredRoute(method="GET", path="/status", handler=status, has_params=False)
     ]
     registry._contexts[APP] = object()  # type: ignore[assignment]
-    lp.register_link_preview_routes(app)
+    lp.register_app_frame_routes(app)
     fid = "f" * 16
     import kiro_crew.apps.hooks_integration as hooks
 
     old = hooks.get_route_registry
     old_entry = lp._provider_entry
     hooks.get_route_registry = lambda: registry  # type: ignore[assignment]
-    lp._provider_entry = lambda name: ("dist/lp.mjs", False, APP)  # type: ignore[assignment]
+    lp._provider_entry = lambda name, pid=None: ("dist/lp.mjs", False, APP)  # type: ignore[assignment]
     client = TestClient(TestServer(app))
     await client.start_server()
     try:
-        cap = f"{fid}~{lp._signer('fetch').mint(APP, '127.0.0.1', fid)}"
+        cap = f"{fid}~linkPreviews~{PID}~{lp._signer('fetch').mint(APP, '127.0.0.1', fid, 'linkPreviews', PID)}"
         h = {lp.CAPABILITY_HEADER: cap}
         assert (await client.get(f"{lp.FETCH_PREFIX}{APP}/status", headers=h)).status == 200
         assert (await client.post(f"{lp.FETCH_PREFIX}{APP}/status", headers=h)).status == 404

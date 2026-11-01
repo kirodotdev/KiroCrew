@@ -35,6 +35,9 @@ _AUTO_PAUSE_MAX = 10000
 # own schedule. A success resets the counter and with it the backoff.
 _NEVER_PAUSE_BACKOFF_BASE_SECS = 300
 _NEVER_PAUSE_BACKOFF_MAX_SECS = 3600
+# Default consecutive failures before a failure alert leaves the dashboard bell
+# for the job's channel or the owner's DM: 1 alerts on the first failure.
+_ALERT_AFTER_DEFAULT = 1
 
 
 def _lifts_default_pause(limit: object) -> bool:
@@ -63,6 +66,29 @@ def validate_auto_pause_after_failures(value: Any) -> int:
         raise ValueError(
             f"auto_pause_after_failures must be within 0..{_AUTO_PAUSE_MAX} "
             f"(0 = never auto-pause), got {limit}"
+        )
+    return limit
+
+
+def validate_alert_after_failures(value: Any) -> int:
+    """Return *value* as a per-job alert threshold, or raise ``ValueError``.
+
+    ``1.._AUTO_PAUSE_MAX`` sends the failure message only once that many runs
+    have failed in a row. ``0`` is refused: "never alert" is what ``silent``
+    means. ``bool`` is refused like :func:`validate_auto_pause_after_failures`.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"alert_after_failures must be an integer, got {value!r}")
+    try:
+        limit = int(value)
+    except (TypeError, ValueError, OverflowError) as e:
+        raise ValueError(f"alert_after_failures must be an integer, got {value!r}") from e
+    if isinstance(value, float) and value != limit:
+        raise ValueError(f"alert_after_failures must be an integer, got {value!r}")
+    if not 1 <= limit <= _AUTO_PAUSE_MAX:
+        raise ValueError(
+            f"alert_after_failures must be within 1..{_AUTO_PAUSE_MAX} "
+            f"(1 = alert on the first failure), got {limit}"
         )
     return limit
 
@@ -261,6 +287,9 @@ class CronJob:
     # :meth:`auto_pause_limit`, never directly, so every threshold comparison
     # shares one meaning of 0.
     auto_pause_after_failures: int = _AUTO_PAUSE_THRESHOLD
+    # Consecutive failed runs before the failure message leaves the dashboard
+    # bell for the channel or DM. Read it through :meth:`alert_after_limit`.
+    alert_after_failures: int = _ALERT_AFTER_DEFAULT
     skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["YYYY-MM-DD"]
     timezone: str = ""  # IANA timezone for skip evaluation
     persistent_session: bool = True  # False → fresh ephemeral session per run
@@ -450,6 +479,21 @@ class CronJob:
         ):
             return _AUTO_PAUSE_THRESHOLD
         return limit or None
+
+    def alert_after_limit(self) -> int:
+        """Consecutive failures before a failure alert leaves the dashboard bell.
+
+        A value no writer can produce falls back to the default, so a damaged
+        record alerts on the first failure rather than never.
+        """
+        limit = self.alert_after_failures
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= _AUTO_PAUSE_MAX
+        ):
+            return _ALERT_AFTER_DEFAULT
+        return limit
 
     def failure_backoff_until(self) -> float | None:
         """Epoch before which a failing job must not fire, or ``None``.

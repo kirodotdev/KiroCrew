@@ -33,7 +33,7 @@ import ErrorNotice from '../components/ErrorNotice'
 import { useConfirm } from '../components/ConfirmDialog'
 import { findReport, recordError } from '../utils/errorReport'
 import { copyCode } from '../utils/clipboard'
-import { focusOnMount } from '../utils/focusOnMount'
+import AppStoreDialog from '../components/appstore/AppStoreDialog'
 import { safeHttpUrl } from '../lib/safeUrl'
 
 import { i18nT } from '../i18n/t'
@@ -1082,15 +1082,14 @@ export default function AppDetailPage() {
         />
         {consentDialog}
 
-        {/* Uninstall confirmation modal */}
+        {/* Uninstall confirmation modal. Click-to-dismiss on the backdrop is a
+            mouse affordance; keyboard users close with Escape, and Tab stays
+            inside the dialog (AppStoreDialog). */}
         {showUninstallConfirm && app && (
-          // Modal backdrop: click-to-dismiss is a mouse affordance; keyboard
-          // users dismiss via the Escape handler in onKeyDown below.
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
-            onClick={() => setShowUninstallConfirm(false)}
-            onKeyDown={e => { if (e.key === 'Escape') setShowUninstallConfirm(false) }}
-            tabIndex={-1} ref={focusOnMount} role="dialog" aria-modal="true" aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}
+          <AppStoreDialog
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
+            onClose={() => setShowUninstallConfirm(false)}
+            aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}
           >
             {/* Presentational wrapper: stops backdrop-dismiss on inner clicks. */}
             {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
@@ -1119,7 +1118,7 @@ export default function AppDetailPage() {
                 </Btn>
               </div>
             </div>
-          </div>
+          </AppStoreDialog>
         )}
 
         {/* Hero banner (only when the app ships one, or its local fallback survives a load failure) */}

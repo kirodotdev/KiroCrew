@@ -131,7 +131,14 @@ def _defer_queued_delivery(
     # until the announce is consumed, so its debt is carried the same way.
     owed: list[SubagentDelivery] = []
     if not flush_only and info.outcome == "completed":
-        owed.append(SubagentDelivery(info.id, info.elapsed, info.credits))
+        owed.append(
+            SubagentDelivery(
+                info.id,
+                info.elapsed,
+                info.credits,
+                leaked_process=getattr(info, "_leaked_process", False) is True,
+            )
+        )
     elif not flush_only and getattr(info, "_report_owed", False) is True:
         owed.append(SubagentDelivery(info.id, info.elapsed, info.credits, report_owed=True))
     held = getattr(info, "_digest_settle_deliveries", None)

@@ -550,6 +550,11 @@ nothing that passes today.
    top-level row in the crew's group.
 4. **The owner-only caller rule.** Resolved: #6874 closed unmerged, so wave 1
    adds the §4 caller rule itself. Any later crew-scoped read reuses it.
+   One deliberate exception (maintainer decision by buluoray, #26651): the wave 4
+   ledger-read pull and decide forward may run on a turn the owner did not send,
+   such as a patrol wake. Their reach is the one remote item bound on the
+   caller's own ledger, and both are off unless `work_ledger.remote_dispatch` is
+   on. Later crew-scoped reads still apply the owner-sent rule.
 5. **#12821 and the server-side fence.** #12821 calls `proxy_request` for
    `api/spawn`, outside `_PROXY_ALLOWED_PREFIXES`. Wave 1 makes server-side
    calls pass the fence. Does #12821 get its own named row, or a closed-set

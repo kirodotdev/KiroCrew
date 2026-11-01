@@ -153,8 +153,8 @@ export default function WorkflowsPage() {
       <div className="px-4 md:px-6 pb-4">
         <SegmentedControl<WorkflowsView>
           segments={[
-            { key: 'author', label: 'Author', icon: <FileCode size={14} /> },
-            { key: 'runs', label: 'Runs', icon: <ListTree size={14} /> },
+            { key: 'author', label: i18nT('apps.workflows.workflowsPage.view_author'), icon: <FileCode size={14} /> },
+            { key: 'runs', label: i18nT('apps.workflows.workflowsPage.view_runs'), icon: <ListTree size={14} /> },
           ]}
           value={view}
           onChange={setView}

@@ -4018,6 +4018,10 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   the update handler owners (`dashboard/handlers/updates_verdict.py`, `updates_check.py`,
   `updates_apply.py`), `cli_server_update.py` and the gateway's update owners
   (`slack/gateway_runtime/update_schedule.py`, `slack/gateway_runtime/update_apply.py`).
+- `platform/update_fetch.py` — `fetch_and_pin_upstream`, the isolated fetch the update
+  check and the unattended apply share. It fetches into a throwaway git dir so no hook in
+  the checkout's config fires, and every read it makes goes through
+  `update_governance`'s guarded probe.
 - `platform/policy_distribution.py` — central distribution: source resolution
   (env ∘ the policy's `distribution` block), the append-only
   `register_policy_fetcher` transport seam, the last-known-good cache, the

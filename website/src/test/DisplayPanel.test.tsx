@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { DisplayPanel } from '../pages/settings/DisplayPanel'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
+import { experiencePack, readExperience, saveExperienceChoice } from '../utils/themeConsent'
 
 // The rail mounts one item at a time; each describe sets the item it exercises
 // in its beforeEach and renders through this helper.
@@ -302,6 +303,46 @@ describe('DisplayPanel – theme install', () => {
     spy.mockRestore()
   })
 
+  it('picking "Zip file" installs the picked archive via api.installThemeZip', async () => {
+    // The folder-path source names a directory on the GATEWAY host, so a phone
+    // or a browser through a tunnel has nothing to type there. The zip source
+    // uploads the file the browser picked instead.
+    const setColorTheme = vi.fn()
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      setColorTheme,
+      loadCustomThemes: vi.fn().mockResolvedValue(true),
+    }))
+    const zipSpy = vi.spyOn(api, 'installThemeZip').mockResolvedValue({ ok: true, slug: 'haunted-crew' })
+    const pathSpy = vi.spyOn(api, 'installTheme')
+    renderPanel()
+
+    const trigger = screen.getByRole('combobox', { name: 'Theme source' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('option', { name: 'Zip file' }))
+    expect(trigger).toHaveTextContent('Zip file')
+    expect(screen.queryByLabelText('Theme source location')).not.toBeInTheDocument()
+
+    const install = screen.getByText('Install').closest('button')!
+    expect(install).toBeDisabled()
+
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'haunted-crew.zip', {
+      type: 'application/zip',
+    })
+    fireEvent.change(screen.getByTestId('theme-zip-input'), { target: { files: [file] } })
+    expect(screen.getByRole('button', { name: 'haunted-crew.zip' })).toBeInTheDocument()
+    expect(install).toBeEnabled()
+
+    fireEvent.click(install)
+    await waitFor(() => expect(zipSpy).toHaveBeenCalledWith(file))
+    await waitFor(() => expect(setColorTheme).toHaveBeenCalledWith('custom-haunted-crew'))
+    expect(pathSpy).not.toHaveBeenCalled()
+    // A finished install clears the pick, so a second click cannot resend it.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a .zip file' })).toBeInTheDocument())
+    zipSpy.mockRestore()
+    pathSpy.mockRestore()
+  })
+
   it('an install whose list refresh failed never selects the pack on its own', async () => {
     // Install lands, the list refresh fails: the notice under the picker says
     // so at once. When a catalog fetch later LANDS (Retry, a background refetch,
@@ -595,6 +636,133 @@ describe('DisplayPanel – dropped overrides notice', () => {
     }))
     renderPanel()
     expect(screen.queryByText("Some of this theme's styles were ignored")).not.toBeInTheDocument()
+  })
+})
+
+describe('DisplayPanel – Experience parts of the active Level-2 pack', () => {
+  const RECORD_KEY = 'mc-theme-experience-bikini-bottom'
+  const GRANT_KEY = 'mc-theme-consent-bikini-bottom'
+  const THEMES = [
+    { value: 'default', label: 'Default', custom: false },
+    { value: 'custom-bikini-bottom', label: 'Bikini Bottom', custom: true, installed: true },
+  ]
+  const FULL_ASSETS = {
+    overlays: ['bubbles'],
+    hasAudio: true,
+    hasPersona: true,
+    personaInfo: { sha256: 'sha-abc', chars: 4, text: 'You are Karen.' },
+  }
+  const withTheme = (colorTheme: string, level: number, assets: Record<string, unknown> = FULL_ASSETS) =>
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      colorTheme,
+      allThemes: THEMES,
+      customThemeDataMap: new Map([['bikini-bottom', { slug: 'bikini-bottom', level, assets }]]),
+    }))
+  const part = (name: string) => screen.queryByRole('switch', { name })
+  const record = () => JSON.parse(localStorage.getItem(RECORD_KEY) ?? 'null')
+
+  beforeEach(() => {
+    displaySub = 'theme'
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
+
+  it('lists only the parts the active pack ships', () => {
+    withTheme('custom-bikini-bottom', 2, { overlays: ['bubbles'], hasAudio: true })
+    renderPanel()
+    expect(screen.getByRole('group', { name: 'Experience' })).toBeInTheDocument()
+    expect(part('Sounds')).toBeInTheDocument()
+    expect(part('Overlays')).toBeInTheDocument()
+    expect(part('Persona')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['the pack is not Level 2', 'custom-bikini-bottom', 1],
+    ['the pack is not the active theme', 'default', 2],
+  ])('is absent when %s', (_label, colorTheme, level) => {
+    withTheme(colorTheme, level)
+    renderPanel()
+    expect(screen.queryByRole('group', { name: 'Experience' })).not.toBeInTheDocument()
+  })
+
+  it('Sounds and Overlays apply as soon as they are toggled, without a grant', () => {
+    localStorage.setItem(RECORD_KEY, JSON.stringify({ sounds: false, overlays: false, persona: false }))
+    withTheme('custom-bikini-bottom', 2)
+    renderPanel()
+    fireEvent.click(part('Sounds') as HTMLElement)
+    expect(record()).toEqual({ sounds: true, overlays: false, persona: false })
+    expect(part('Sounds')).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(part('Overlays') as HTMLElement)
+    expect(record()).toEqual({ sounds: true, overlays: true, persona: false })
+    expect(localStorage.getItem(GRANT_KEY)).toBeNull()
+  })
+
+  it('Persona on stores the persona as wanted without a grant, so the consent dialog asks about it', () => {
+    localStorage.setItem(RECORD_KEY, JSON.stringify({ sounds: true, overlays: true, persona: false }))
+    withTheme('custom-bikini-bottom', 2)
+    renderPanel()
+    fireEvent.click(part('Persona') as HTMLElement)
+    expect(record()).toEqual({ sounds: true, overlays: true, persona: true })
+    expect(localStorage.getItem(GRANT_KEY)).toBeNull()
+    expect(readExperience('bikini-bottom', experiencePack(FULL_ASSETS)).ask).toEqual(['persona'])
+    // Settings has no confirm step of its own; the switch turns on once the dialog's Save writes the grant.
+    expect(screen.queryByLabelText('Persona text')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(part('Persona')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('Persona off revokes the grant at once', () => {
+    localStorage.setItem(RECORD_KEY, JSON.stringify({ sounds: true, overlays: true, persona: true }))
+    localStorage.setItem(GRANT_KEY, 'sha-abc')
+    withTheme('custom-bikini-bottom', 2)
+    renderPanel()
+    expect(part('Persona')).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(part('Persona') as HTMLElement)
+    expect(localStorage.getItem(GRANT_KEY)).toBeNull()
+    expect(record()).toEqual({ sounds: true, overlays: true, persona: false })
+  })
+
+  it('Persona on a changed persona drops the old grant and leaves the persona asked about', () => {
+    localStorage.setItem(RECORD_KEY, JSON.stringify({ sounds: true, overlays: true, persona: true }))
+    localStorage.setItem(GRANT_KEY, 'sha-OLD')
+    withTheme('custom-bikini-bottom', 2)
+    renderPanel()
+    expect(part('Persona')).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(part('Persona') as HTMLElement)
+    expect(record()).toEqual({ sounds: true, overlays: true, persona: true })
+    expect(localStorage.getItem(GRANT_KEY)).toBeNull()
+    expect(readExperience('bikini-bottom', experiencePack(FULL_ASSETS)).ask).toEqual(['persona'])
+  })
+
+  it('follows a choice saved by the layer while the panel is open', () => {
+    withTheme('custom-bikini-bottom', 2)
+    renderPanel()
+    expect(part('Overlays')).toHaveAttribute('aria-checked', 'false')
+    act(() => saveExperienceChoice('bikini-bottom', { overlays: true }, null))
+    expect(part('Overlays')).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('a toggle storage refuses shows an error under the section until the next stored toggle', () => {
+    const SAVE_FAILED = "Couldn't save. Browser storage is full or turned off."
+    localStorage.setItem(RECORD_KEY, JSON.stringify({ sounds: false, overlays: false, persona: false }))
+    withTheme('custom-bikini-bottom', 2)
+    renderPanel()
+    expect(screen.queryByText(SAVE_FAILED)).not.toBeInTheDocument()
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError')
+    })
+    try {
+      fireEvent.click(part('Sounds') as HTMLElement)
+      // The choice is kept for this tab, so the switch moves and the error says it was not stored.
+      expect(part('Sounds')).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByText(SAVE_FAILED)).toBeInTheDocument()
+    } finally {
+      setItem.mockRestore()
+    }
+    fireEvent.click(part('Overlays') as HTMLElement)
+    expect(record()).toEqual({ sounds: true, overlays: true, persona: false })
+    expect(screen.queryByText(SAVE_FAILED)).not.toBeInTheDocument()
   })
 })
 

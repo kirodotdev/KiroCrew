@@ -99,7 +99,7 @@ describe('KasLoginGate', () => {
     expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
     expect(kasLoginBeginDevice).toHaveBeenCalledWith('google', undefined)
     expect(
-      screen.getByRole('heading', { name: 'Finish signing in on your phone or another computer' }),
+      screen.getByRole('heading', { name: 'Finish signing in with your browser' }),
     ).toBeInTheDocument()
     // Step 1's link is rendered as a copyable block, verbatim.
     expect(

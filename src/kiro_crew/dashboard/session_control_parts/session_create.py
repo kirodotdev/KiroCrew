@@ -1190,8 +1190,9 @@ async def create_session(
         profile_worker = own_worker and bool(crewmate_name_for(cfg, child_execution))
         if not profile_worker:
             # A trust granted from a Crew Mode conductor's approval card ("Trust
-            # this crew member", ``_trust_card_scoped``) covers that crew member
-            # only, so the sessions it creates are born asking, on that same card.
+            # this crew member", ``_trust_card_scoped``) covers that crew member and
+            # the subagents it spawns, not the sessions it creates: those are born
+            # asking, on that same card (``trust_carries``).
             # Marked inherited, so a later mode change on the creator reaches this
             # child too (``approval_inheritance``), not only the posture held now.
             inherit_posture(slot, live_caller)
