@@ -54,7 +54,7 @@ export default function FindingRow({
           : <span style={{ ...S.numBadge, background: s.color, color: readableOn(s.color), marginTop: '1px' }}>{String(pinNum || '·')}</span>}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-            <span style={S.fTitle}>{withMarks(f.title || 'Finding')}</span>
+            <span style={S.fTitle}>{withMarks(f.title || i18nT('apps.designCritique.findingRow.finding'))}</span>
             <ChevronRight size={15} style={{ flexShrink: 0, marginTop: '2px', transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform .15s', color: 'var(--muted)' }} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '7px', flexWrap: 'wrap' }}>
@@ -68,7 +68,7 @@ export default function FindingRow({
         <div style={S.fBody}>
           {f.location ? <div><span style={S.fLabel}>{i18nT('apps.designCritique.findingRow.where')} </span>{f.location}</div> : null}
           {f.evidence ? <div><div style={S.fLabel}>{i18nT('apps.designCritique.findingRow.what_i_saw')}</div>{withMarks(f.evidence)}</div> : null}
-          {f.fix ? <div><div style={S.fLabel}>{/accessib/i.test(f.category || '') ? 'Fix' : 'Suggestion'}</div>{withMarks(f.fix)}</div> : null}
+          {f.fix ? <div><div style={S.fLabel}>{/accessib/i.test(f.category || '') ? i18nT('apps.designCritique.findingRow.fix') : i18nT('apps.designCritique.findingRow.suggestion')}</div>{withMarks(f.fix)}</div> : null}
           {(Array.isArray(f.rules) && f.rules.length) ? (
             <div>
               <div style={S.fLabel}>{i18nT('apps.designCritique.findingRow.based_on')}</div>
