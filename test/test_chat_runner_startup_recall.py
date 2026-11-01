@@ -35,12 +35,15 @@ from kiro_crew.skills import SkillsLoader
 MESSAGE = "Summarize the deploy checklist."
 
 
-def _turn_state(tmp_path, monkeypatch, *, registered: bool, is_new=True, resumed=False):
+def _turn_state(
+    tmp_path, monkeypatch, *, registered: bool, is_new=True, resumed=False, unclaimed=False
+):
     """A DashboardState whose session manager, provider and builder are mocks.
 
     *registered* is what ``has_session`` answers before the claim: False is a turn
     that starts its session itself, True one whose session an eager spawn (or an
-    earlier turn) already registered.
+    earlier turn) already registered. *unclaimed* is what ``fresh_start_unclaimed``
+    answers: True for an eager prewarm no real turn has claimed yet.
     """
     builder = ContextBuilder(
         memory=MemoryStore(workspace=tmp_path / "workspace"),
@@ -61,6 +64,7 @@ def _turn_state(tmp_path, monkeypatch, *, registered: bool, is_new=True, resumed
     # as a truthy mock.
     state.sessions.has_session = MagicMock(return_value=registered)
     state.sessions.resumable_hint = MagicMock(return_value=False)
+    state.sessions.fresh_start_unclaimed = MagicMock(return_value=unclaimed)
     state.sessions.consume_replay_suppression = MagicMock(return_value=False)
     state.sessions.consume_needs_reinjection = MagicMock(return_value=False)
     state.sessions.record_failure = AsyncMock()
