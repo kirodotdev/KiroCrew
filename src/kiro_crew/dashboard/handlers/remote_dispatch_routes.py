@@ -606,6 +606,10 @@ async def _create(
             state, mgr, board, instance_id, body.get("work_item"), create
         )
         work_item_id = bound.item_id
+        # The new worker's reports reach this board through the background puller.
+        from kiro_crew.dashboard.handlers import remote_puller
+
+        remote_puller.ensure_running(state)
         if not fields["title"]:
             fields["title"] = bound.title
     else:

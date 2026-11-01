@@ -24,6 +24,7 @@ fetches and calls these.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ from kiro_crew.work_ledger_rules import (
     parse_stamp,
 )
 from kiro_crew.work_ledger_store import (
+    _CONDUCTOR_FILE,
     _ITEMS_DIR,
     _REMOTE_DIR,
     RESERVED_ROOT_DIRS,
@@ -57,6 +59,7 @@ from kiro_crew.work_ledger_store import (
     _require_item_id,
     _work_ledger_root,
     _write_record,
+    conductor_dir,
     item_lock,
     read_work_item,
 )
@@ -108,6 +111,15 @@ class RemoteState:
     attempted_at: str | None = None
     #: Why the last pull did not ingest, a stable code, or ``None``.
     error: str | None = None
+    #: A digest of the peer snapshot whose filing last failed to reach the crew log,
+    #: and when. A pull retries that same snapshot only after
+    #: ``UNRECORDED_RETRY_SECS``, so a log that keeps refusing costs one audited
+    #: attempt per window, not one per pull; a changed snapshot is filed at once.
+    unrecorded_key: str | None = None
+    unrecorded_at: str | None = None
+    #: Whether the last pull read the crew's slot list. ``False`` means ``running``
+    #: and ``closed`` are carried over from an older read.
+    roster_read: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +131,9 @@ class RemoteState:
             "ingested_at": self.ingested_at,
             "attempted_at": self.attempted_at,
             "error": self.error,
+            "unrecorded_key": self.unrecorded_key,
+            "unrecorded_at": self.unrecorded_at,
+            "roster_read": self.roster_read,
         }
 
     @classmethod
@@ -144,6 +159,9 @@ class RemoteState:
             ingested_at=_text("ingested_at"),
             attempted_at=_text("attempted_at"),
             error=_text("error"),
+            unrecorded_key=_text("unrecorded_key"),
+            unrecorded_at=_text("unrecorded_at"),
+            roster_read=_flag("roster_read"),
         )
 
 
@@ -219,6 +237,33 @@ def remote_liveness_map(board: str, items: Any) -> dict[str, tuple[bool, bool]]:
     return out
 
 
+def _open_remote_items(board_dir: Path) -> list[WorkItem]:
+    """The open items in *board_dir* bound to a worker on a crew. Never raises."""
+    try:
+        entries = sorted((board_dir / _ITEMS_DIR).glob("it_*.json"))
+    except OSError:
+        return []
+    out: list[WorkItem] = []
+    for entry in entries:
+        try:
+            raw = _read_json_record(entry)
+        except Exception:  # noqa: BLE001 - one torn file must not hide the rest
+            raw = None
+        if not isinstance(raw, dict):
+            continue
+        item = WorkItem.from_dict(raw)
+        if item.worker_instance_id and item.worker_session_key and not item.is_terminal:
+            out.append(item)
+    return out
+
+
+def _board_dirs() -> list[Path]:
+    try:
+        return [d for d in _work_ledger_root().iterdir() if d.name not in RESERVED_ROOT_DIRS]
+    except OSError:
+        return []
+
+
 def open_remote_bindings() -> dict[str, int]:
     """``{crew instance id: open remote bindings}`` across every ledger here. BLOCKING.
 
@@ -228,27 +273,75 @@ def open_remote_bindings() -> dict[str, int]:
     directory counts nothing: the peer gate, not this count, admits a create.
     """
     counts: dict[str, int] = {}
-    try:
-        boards = [d for d in _work_ledger_root().iterdir() if d.name not in RESERVED_ROOT_DIRS]
-    except OSError:
-        return counts
-    for board in boards:
-        try:
-            entries = sorted((board / _ITEMS_DIR).glob("it_*.json"))
-        except OSError:
-            continue
-        for entry in entries:
-            try:
-                raw = _read_json_record(entry)
-            except Exception:  # noqa: BLE001 - one torn file must not hide the rest
-                raw = None
-            if not isinstance(raw, dict):
-                continue
-            item = WorkItem.from_dict(raw)
-            crew = item.worker_instance_id
-            if crew and item.worker_session_key and not item.is_terminal:
-                counts[crew] = counts.get(crew, 0) + 1
+    for board in _board_dirs():
+        for item in _open_remote_items(board):
+            crew = str(item.worker_instance_id)
+            counts[crew] = counts.get(crew, 0) + 1
     return counts
+
+
+def boards_with_open_remote() -> list[str]:
+    """The conductor keys of every ledger here holding an open crew-bound item. BLOCKING.
+
+    What the hub's background puller walks. The key comes from the board's own
+    header, and a header whose key does not name the directory it sits in is
+    skipped, so a pull never runs against a board it cannot address. Never raises.
+    """
+    keys: list[str] = []
+    for board in _board_dirs():
+        if not _open_remote_items(board):
+            continue
+        try:
+            raw = _read_json_record(board / _CONDUCTOR_FILE)
+        except Exception:  # noqa: BLE001 - one torn header must not hide the rest
+            raw = None
+        key = raw.get("slot_key") if isinstance(raw, dict) else None
+        if not isinstance(key, str) or not key:
+            continue
+        # By name, not by path: ``conductor_dir`` resolves symlinks and the listed
+        # directory does not, so a data home under a symlinked $HOME would match none.
+        if _store_name(key) != board.name:
+            continue
+        try:
+            conductor_dir(key)
+        except WorkLedgerError:
+            continue
+        keys.append(key)
+    return sorted(keys)
+
+
+#: Seconds between two runs of the hub's background puller
+#: (:mod:`kiro_crew.dashboard.handlers.remote_puller`). Here, not there, because the
+#: work-ledger probe reads it too and must not import the dashboard.
+REMOTE_PULL_INTERVAL_SECS = 30.0
+
+#: How old a remote item's last good pull may be before the probe stops trusting
+#: the hub's copy of its fields: three puller runs, so one slow or missed run never
+#: drops the person-wait hold, and a puller that stopped does within two minutes.
+REMOTE_PULL_FRESH_SECS = 3 * REMOTE_PULL_INTERVAL_SECS
+
+
+def remote_pull_fresh(board: str, item: WorkItem, now: datetime | None = None) -> bool:
+    """Whether the hub's copy of remote *item* is recent enough to stand for the peer's.
+
+    True only when the last pull reached the crew connected, read its slot list,
+    filed without error, and did so within :data:`REMOTE_PULL_FRESH_SECS`. Anything else, a missing or
+    unreadable record included, answers ``False``. Never raises.
+    """
+    try:
+        stored = read_remote_state(board, item.item_id)
+    except Exception:  # noqa: BLE001 - a doubt answers not fresh
+        return False
+    if stored is None or stored.crew_state != "connected" or stored.error is not None:
+        return False
+    if not stored.roster_read:
+        # The slot list was not read, so whether the worker is gone is unknown.
+        return False
+    moment = parse_stamp(stored.ingested_at) if stored.ingested_at else None
+    if moment is None:
+        return False
+    age = ((now or datetime.now(timezone.utc)) - moment).total_seconds()
+    return -REMOTE_PULL_FRESH_SECS < age <= REMOTE_PULL_FRESH_SECS
 
 
 def _require_peer_text(value: Any, cap: int, name: str) -> str:
