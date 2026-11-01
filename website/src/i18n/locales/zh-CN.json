@@ -10369,6 +10369,14 @@
       "reason": "我不能运行这条命令，但你可以。",
       "run_unanswered": "终端没有响应，请把它复制到你电脑上的终端应用里。",
       "title": "请你自己运行"
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "已删除的内置技能",
+      "hint": "你删除过的内置技能。在你恢复之前，重启或更新后它们都不会重新出现。",
+      "load_failed": "无法加载已删除的内置技能。",
+      "restore": "恢复",
+      "restoring": "正在恢复…",
+      "restore_failed": "无法恢复此技能，请重试。"
     }
   },
   "hooks": {

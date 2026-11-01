@@ -10691,6 +10691,14 @@
       "reason": "Yo no puedo ejecutar esto, pero tú sí.",
       "run_unanswered": "El terminal no respondió, así que cópialo en la aplicación Terminal de tu ordenador.",
       "title": "Ejecútalo tú"
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "Habilidades integradas eliminadas",
+      "hint": "Habilidades integradas que eliminaste. Siguen eliminadas tras reinicios y actualizaciones hasta que las restaures.",
+      "load_failed": "No se pudieron cargar las habilidades integradas eliminadas.",
+      "restore": "Restaurar",
+      "restoring": "Restaurando…",
+      "restore_failed": "No se pudo restaurar esta habilidad. Inténtalo de nuevo."
     }
   },
   "hooks": {

@@ -10691,6 +10691,14 @@
       "reason": "Io non posso eseguirlo, ma tu sì.",
       "run_unanswered": "Il terminale non ha risposto, quindi copialo nell'app Terminale del tuo computer.",
       "title": "Eseguilo tu"
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "Skill integrate eliminate",
+      "hint": "Skill integrate che hai eliminato. Restano rimosse dopo riavvii e aggiornamenti finché non le ripristini.",
+      "load_failed": "Impossibile caricare le skill integrate eliminate.",
+      "restore": "Ripristina",
+      "restoring": "Ripristino…",
+      "restore_failed": "Impossibile ripristinare questa skill. Riprova."
     }
   },
   "hooks": {

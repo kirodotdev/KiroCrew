@@ -4078,14 +4078,14 @@ comment header per owner. The module-level code these owners hold is re-imported
 | `skills_auto_model` | The `auto/` namespace and its on-disk layout, `AutoSkillProvenance` and the generated `SKILL.md` renderer, `ClaimRefusal`, and the pending-queue observer hooks |
 | `skills_discovery` | The skills directory, the packaged and trusted provider roots, the installed package's RECORD admission of a hardlinked `SKILL.md`, screening and adoption of the configured extra roots (`reconfigure`), the tree walk `_iter_skill_files` with its no-follow traversal of a trusted project, and the bounds on how long a walk's answer is served |
 | `skills_builtin_provenance` | The tree fingerprint, the provenance marker, the ownership check (`_verified_unchanged_fingerprint`), `installed_skill_currency` and the deployed cron-script source verdicts |
-| `skills_builtin_sync` | The packaged-skill sync (`_ensure_builtin_skills`, `sync_builtins`) with its claim, retirement, quarantine and opt-out carry, stale and relocated cleanup (`_RELOCATED_SKILLS`), and `remove_retired_conductor_skill` |
+| `skills_builtin_sync` | The packaged-skill sync (`_ensure_builtin_skills`, `sync_builtins`) with its claim, retirement, quarantine and opt-out carry, the skip of every name in the uninstalled record (`skills_uninstalled`), stale and relocated cleanup (`_RELOCATED_SKILLS`), and `remove_retired_conductor_skill` |
 | `skills_body_reads` | The project trust key and its audit, the enumerated-read choke point (`_read_enumerated_skill_bytes`) and the frontmatter cache, `load_skill` and the global body reader, exact-key reads of the scoped catalog with their paging, and the shapes that mark a tool call as a skill-body read |
 | `skills_selection` | `get_always_skills`, `get_triggered_skills` with its `trigger_score` call and the live per-message cap, the `repo_scope` gate, `scoped_skills`, and the user-first order of the startup index and the bounds it is rendered under |
 | `skills_candidate_tree` | A pending candidate's tree read without following a link: the link screen, the top-level layout guard both the verdict and the approve paths enforce, and the script collection walks with their entry and depth budgets |
 | `skills_review` | Operator review of untrusted skill text: the pending list, detail, script verdict, update preview and both approve paths, the consent picker's `catalog_project_skills`, and the redaction of everything they serve; it is the module `security_posture` registers as the pending detail and promotion redaction sink |
 
-`skills.py` keeps `__init__` and `close`, the `skill_runtime` delegates, `delete_skill` and
-`_safe_name` (the link-screen baseline names `SkillsLoader.delete_skill`), `search_skills`,
+`skills.py` keeps `__init__` and `close`, the `skill_runtime` delegates, `delete_skill`,
+`uninstalled_builtins`, `restore_builtin` and `_safe_name` (the link-screen baseline names `SkillsLoader.delete_skill`), `search_skills`,
 the frontmatter grammar (`_parse_frontmatter`, `_parse_frontmatter_text`,
 `strip_frontmatter`), and three constants it defines itself (`_DIR_FD_SUPPORTED`,
 `_DOLLAR_SKILL_PATTERN`, `_MAX_DOLLAR_SKILLS`). Every other constant a `skill_runtime` owner
@@ -4125,7 +4125,31 @@ private name only its owner reads stays on that owner.
 pins the surface, the seams and the `skill_runtime` placement rules, and
 `test/test_skills_bindings.py` pins the bindings, the owner order and the mirror's reach.
 
-**Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
+**Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Copied to `~/.kiro/crew/skills/` by every gateway start, except a skill the user deleted (below). Copies entire skill directories (scripts, assets, etc.).
+
+**A deleted built-in skill stays deleted.** Both startup installers,
+`_ensure_builtin_skills` and the deploy layer's `_register_core_skills`, copy a
+shipped skill whose destination directory is missing, so a plain `rmtree`
+would be undone by the next start. `SkillsLoader.delete_skill` therefore records
+the name in `<skills dir>/.uninstalled-builtins.json` (`skills_uninstalled`: a
+sorted JSON list, dot-prefixed so discovery never reads it as a skill) after the
+`rmtree` succeeds, and only for a name the package ships; a user-authored skill
+leaves no record. Both installers read the record once per pass and skip every
+name in it. The record is read fail-open (missing, unreadable or malformed reads
+as empty, so a damaged record reinstalls the shipped defaults rather than
+blocking startup), written atomically, and its read-modify-write is serialized by
+an in-process lock. `SkillsLoader.uninstalled_builtins` lists recorded names the
+package still ships (`GET /api/skills/-/uninstalled`); `restore_builtin`
+(`POST /api/skills/-/restore-builtin`, owner-gated, under the skill write lock,
+audited) clears the name, reruns `_ensure_builtin_skills`, reruns
+`_register_core_skills(only=name)` when the name is a deploy skill and the loader
+owns the home skills dir, and puts the record back if either raises. The
+dashboard's Skills tab lists them under "Deleted built-in skills" with a Restore
+button per row (`components/UninstalledBuiltinSkillsList.tsx`). The lock is
+per-process: a sync already running in another process that read the record
+before the delete wrote it can reinstall that one skill; the record still holds
+the name, so later starts leave the reinstalled copy untouched (no update, no
+removal) and deleting it again removes it for good.
 
 **The Context-budget switch survives updates.** `inject_on_trigger: false` is the
 one user-mutable setting on a built-in skill, written into the installed
