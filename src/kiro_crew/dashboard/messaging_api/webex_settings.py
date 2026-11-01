@@ -307,8 +307,15 @@ async def _webex_config_save(request: web.Request) -> web.Response:
     applied: list[str] = []
     async with _get_config_lock():
         path = config_path()
+
+        def _read_config() -> object:
+            # The existence check, the read and the parse share one worker-thread hop
+            # (as in feishu_settings.py): a stalled mount must not block the loop on
+            # any of them.
+            return json.loads(read_config_text(path)) if path.exists() else {}
+
         try:
-            data = json.loads(read_config_text(path)) if path.exists() else {}
+            data = await asyncio.to_thread(_read_config)
             if not isinstance(data, dict):
                 raise ValueError("config.json is not a JSON object")
         except Exception:
