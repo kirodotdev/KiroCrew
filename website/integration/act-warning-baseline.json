@@ -449,7 +449,6 @@
   "src/test/sidePanelBrowserTabs.test.tsx",
   "src/test/sidePanelLeadingTab.test.tsx",
   "src/test/terminalExitClosesTab.test.ts",
-  "src/test/toolDiff.test.tsx",
   "src/test/toolDisclosureKey.renderSite.test.tsx",
   "src/test/useAgentSync.defaultLabel.test.tsx",
   "src/test/useAgentSync.recencyOrder.test.tsx",
