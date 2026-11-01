@@ -30,6 +30,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
 )
 
 __all__ = [
@@ -104,6 +105,9 @@ NATIVE_ALLOW_STORES_NONE: Mapping[str, str] = {
     ACP_BACKEND_STRANDS: "in the Python-project ACP mode Crew runs, the CLI consults "
     "no allow list of its own (its ~/.strands/cli/config.json permissions apply to its "
     "terminal UI only); every call raises Crew's gate module interrupt",
+    # Dormant: KNOWN but not selectable, so no session of its can be pinned to a
+    # store -- and no live capture has shown where vibe reads config from disk.
+    ACP_BACKEND_VIBE: "no on-disk allow list is known; its config surface is unmeasured",
 }
 
 #: A project's own harness config, refused for the file-edit tools in any directory:

@@ -372,6 +372,10 @@ def test_core_counts_per_harness_are_pinned() -> None:
         # Crew's tools only: no member dispatch or side chat, no steer, no compact,
         # no effort, and the model is fixed at launch (no live switch).
         "strands": 1,
+        # Known but dormant: in no capability set, so its card carries no
+        # available core line -- the honest count for a harness whose routing
+        # and channel claims are both unmeasured.
+        "vibe": 0,
     }
     assert counts["kas"] == len(cards_mod.USER_FACING_LINES)
 

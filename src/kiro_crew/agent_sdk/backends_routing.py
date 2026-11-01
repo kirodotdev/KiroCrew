@@ -34,6 +34,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
 )
 
 # Backends on which a Side Chat turn may EXECUTE read-only tools under
@@ -410,6 +411,18 @@ ACP_BACKEND_ROUTING: dict = {
     # pi's and deepseek's member. Live capture:
     # ``test/fixtures/acp_frames/strands/permission-deny-allow-live.jsonl``.
     ACP_BACKEND_STRANDS: Routing.VERIFIED_GATE_EXTENSION,
+    # vibe is KNOWN but dormant, and this entry is the reason it is not
+    # selectable. The CANDIDATE mechanism is source-read off mistral-vibe
+    # v3.0.2, not measured: its ``initialize`` advertises a ``mode`` config
+    # option (the vibe agent modes -- ``ask``, ``accept-edits`` and the rest)
+    # and it implements ``session/set_mode``, so the pin is expected to be a
+    # session-config style route to ``ask``. But no live ``vibe-acp`` capture
+    # exists, so this stays UNVERIFIED -- which always resolves INDETERMINATE
+    # and refuses -- until the capture lands. Selectability then needs a
+    # SESSION_CONFIG/VERIFIED entry, an ``ACP_BACKEND_PERMISSION_CONFIG``
+    # row naming the measured option, and a revisit of the harness-onboarding
+    # worked example.
+    ACP_BACKEND_VIBE: Routing.UNVERIFIED,
 }
 
 
