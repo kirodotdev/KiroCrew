@@ -675,6 +675,130 @@ class TestProxyRequest:
         assert ei.value.code == "proxy_peer_unreachable"
         assert ei.value.http_status == 502
 
+    async def _dropping_mgr(self, tmp_path, monkeypatch, outcomes):
+        """A connected manager whose session pops *outcomes*: an exception
+        class is raised from ``request``, an int is answered as that status."""
+        from kiro_crew.instances import ssh_tunnel_manager as m
+        from kiro_crew.instances import ssh_tunnel_manager_peer as peer
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+
+        async def fake_exchange(url, link, cookie_name):
+            return f"S-{link}"
+
+        monkeypatch.setattr(mgr, "_exchange_link", fake_exchange)
+        monkeypatch.setattr(peer, "_REDIAL_DELAY_SECS", 0)
+        await mgr.connect("cd-1")
+        calls: list = []
+
+        class _Resp:
+            def __init__(self, status):
+                self.status = status
+
+            def release(self):
+                return None
+
+        class _Sess:
+            def __init__(self, *a, **k):
+                pass
+
+            async def request(self, method, url, **kwargs):
+                calls.append(method)
+                nxt = outcomes.pop(0)
+                if isinstance(nxt, int):
+                    return _Resp(nxt)
+                raise nxt()
+
+            async def close(self):
+                return None
+
+        monkeypatch.setattr(m.aiohttp, "ClientSession", _Sess)
+        return mgr, calls
+
+    @pytest.mark.asyncio
+    async def test_get_dropped_before_a_response_is_redialled_once(self, tmp_path, monkeypatch):
+        import aiohttp
+
+        mgr, calls = await self._dropping_mgr(
+            tmp_path, monkeypatch, [aiohttp.ServerDisconnectedError, 200]
+        )
+        async with mgr.proxy_request("cd-1", "GET", "api/chat-slots") as resp:
+            assert resp.status == 200
+        assert calls == ["GET", "GET"]
+
+    @pytest.mark.asyncio
+    async def test_get_dropped_twice_is_unreachable_after_one_redial(self, tmp_path, monkeypatch):
+        import aiohttp
+
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        mgr, calls = await self._dropping_mgr(
+            tmp_path,
+            monkeypatch,
+            [aiohttp.ServerDisconnectedError, aiohttp.ServerDisconnectedError, 200],
+        )
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_request("cd-1", "GET", "api/chat-slots"):
+                pass
+        assert ei.value.code == "proxy_peer_unreachable"
+        assert calls == ["GET", "GET"]
+
+    @pytest.mark.asyncio
+    async def test_post_dropped_before_a_response_is_not_redialled(self, tmp_path, monkeypatch):
+        import aiohttp
+
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        mgr, calls = await self._dropping_mgr(
+            tmp_path, monkeypatch, [aiohttp.ServerDisconnectedError, 200]
+        )
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_request("cd-1", "POST", "/api/chat", data=b"{}"):
+                pass
+        assert ei.value.code == "proxy_peer_unreachable"
+        assert calls == ["POST"]
+
+    @pytest.mark.asyncio
+    async def test_get_reset_before_a_response_is_redialled_once(self, tmp_path, monkeypatch):
+        import aiohttp
+
+        mgr, calls = await self._dropping_mgr(tmp_path, monkeypatch, [aiohttp.ClientOSError, 200])
+        async with mgr.proxy_request("cd-1", "GET", "api/chat-slots") as resp:
+            assert resp.status == 200
+        assert calls == ["GET", "GET"]
+
+    @pytest.mark.asyncio
+    async def test_get_refused_dial_is_not_redialled(self, tmp_path, monkeypatch):
+        from kiro_crew.instances import ssh_tunnel_manager_peer as peer
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        class _Refused(Exception):
+            pass
+
+        # A refused dial means nothing listens on the forward: no redial.
+        assert not peer._dropped_before_response(_Refused())
+        import aiohttp
+
+        refused = aiohttp.ClientConnectorError.__new__(aiohttp.ClientConnectorError)
+        assert not peer._dropped_before_response(refused)
+
+        mgr, calls = await self._dropping_mgr(tmp_path, monkeypatch, [ConnectionRefusedError, 200])
+        with pytest.raises(ProxyRequestError):
+            async with mgr.proxy_request("cd-1", "GET", "api/status"):
+                pass
+        assert calls == ["GET"]
+
+    @pytest.mark.asyncio
+    async def test_get_timeout_is_not_redialled(self, tmp_path, monkeypatch):
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        mgr, calls = await self._dropping_mgr(tmp_path, monkeypatch, [asyncio.TimeoutError, 200])
+        with pytest.raises(ProxyRequestError):
+            async with mgr.proxy_request("cd-1", "GET", "api/status"):
+                pass
+        assert calls == ["GET"]
+
 
 class TestPeerRequestSharedDance:
     """The derivation shared by the three peer-request methods.
