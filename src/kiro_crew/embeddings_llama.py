@@ -20,8 +20,13 @@ import time
 import weakref
 from pathlib import Path
 
+from kiro_crew.embeddings_blas import blas_safe_ubatch, runtime_has_blas_backend
 from kiro_crew.embeddings_child import ChildLlama, is_vendored_llama_class
-from kiro_crew.embeddings_gguf import _GGUF_CAUSAL_SUFFIX, _model_context_policy
+from kiro_crew.embeddings_gguf import (
+    _DECODER_CONTEXT_POLICY,
+    _GGUF_CAUSAL_SUFFIX,
+    _model_context_policy,
+)
 from kiro_crew.embeddings_model import (
     _is_sensitive_model_path,
     _model_file_stamp,
@@ -195,6 +200,15 @@ def _free_llama(llm: object) -> None:
             closer()
         except Exception:  # noqa: BLE001 - freeing must not propagate
             logger.debug("Freeing abandoned model failed", exc_info=True)
+
+
+def _runtime_has_blas() -> bool:
+    """Whether the vendored binding loaded a runtime with ggml's BLAS device."""
+    try:
+        from llama_cpp import llama_cpp as native  # vendored copy, already imported
+    except Exception:  # noqa: BLE001 - no binding, no BLAS device to avoid
+        return False
+    return runtime_has_blas_backend(getattr(native, "_lib", None))
 
 
 def _construct_llama(llama_cls: object, kwargs: dict, stamp: "tuple[int, ...] | None") -> object:
@@ -628,11 +642,24 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # its own and keeps only the last one's result, which would store
                 # the mean, or the first token, of a longer input's tail. The
                 # token last-token pooling reads is always in the last micro-batch,
-                # so only a last-token decoder keeps the 128.
+                # so only a last-token decoder keeps the 128, lowered below ggml's
+                # BLAS threshold on a runtime that registers that backend (see
+                # kiro_crew.embeddings_blas).
                 n_ctx=policy.n_ctx,
                 n_batch=policy.n_batch,
                 n_ubatch=(
-                    policy.n_ubatch if self._pooling_type == _POOLING_TYPE_LAST else policy.n_batch
+                    blas_safe_ubatch(
+                        policy.n_ubatch,
+                        policy.n_batch,
+                        # An unreadable header is sized as a decoder whatever the file
+                        # is, so its micro-batch is never lowered: a non-causal model
+                        # behind it would abort on any input past the smaller bound.
+                        policy is not _DECODER_CONTEXT_POLICY
+                        and is_vendored_llama_class(llama_cls)
+                        and _runtime_has_blas(),
+                    )
+                    if self._pooling_type == _POOLING_TYPE_LAST
+                    else policy.n_batch
                 ),
                 # Both pools are pinned. Embedding is prompt processing, so the
                 # BATCH pool is the one that actually runs, but leaving the
