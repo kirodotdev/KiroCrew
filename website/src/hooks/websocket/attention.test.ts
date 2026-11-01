@@ -7,6 +7,7 @@ import { sseSlots } from '../../store/dashboardSlice'
 import type { ChatSlot } from '../../types'
 import { emitComposeIntent } from '../../lib/composeIntent'
 import { attachFocusRelay, COMPOSE_INTENT_THROTTLE_MS, emitSlotFocused, endSplitPaneFocus, focusedSlotForCurrentSurface } from './attention'
+import { noteRouteChange } from '../../lib/routeChange'
 import type { SocketConnection } from './connection'
 
 describe('warm task brief focus signal', () => {
@@ -87,6 +88,78 @@ describe('warm task brief focus signal', () => {
       hidden.mockReturnValue(true)
       act(() => document.dispatchEvent(new Event('visibilitychange')))
       expect(sendIfOpen).toHaveBeenLastCalledWith({ type: 'slot_focused', slot: null })
+    } finally {
+      detach()
+      window.history.pushState({}, '', oldPath || '/')
+      store.dispatch(setActiveSlot(null))
+      store.dispatch(sseSlots([]))
+    }
+  })
+
+  it('a Crew Mode chat is not on screen off the chat routes; the route change re-announces it', () => {
+    const oldPath = window.location.pathname
+    const sendIfOpen = vi.fn()
+    const lastFocus = () => sendIfOpen.mock.calls.map(c => c[0]).filter(f => f.type === 'slot_focused').at(-1)
+    window.history.pushState({}, '', '/chat')
+    const detach = attachFocusRelay({
+      socket: { sendIfOpen, reconnectingRef: { current: false } } as unknown as SocketConnection,
+      flushSlotActivity: vi.fn(),
+      onActiveSlotChange: vi.fn(),
+    })
+    try {
+      store.dispatch(sseSlots([{ key: 'crew-a', crew_mode_root: true } as unknown as ChatSlot]))
+      act(() => { store.dispatch(setActiveSlot('crew-a')) })
+      expect(lastFocus()).toEqual({ type: 'slot_focused', slot: 'crew-a' })
+      // Opening Settings leaves the chat: its away time starts now.
+      window.history.pushState({}, '', '/settings')
+      act(() => noteRouteChange())
+      expect(lastFocus()).toEqual({ type: 'slot_focused', slot: null })
+      expect(focusedSlotForCurrentSurface()).toBeNull()
+      // Hidden, then revealed on Settings: the reveal names no chat.
+      hidden.mockReturnValue(true)
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      hidden.mockReturnValue(false)
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      expect(lastFocus()).toEqual({ type: 'slot_focused', slot: null })
+      // Back on the chat route: that frame is the return.
+      window.history.pushState({}, '', '/chat')
+      act(() => noteRouteChange())
+      expect(lastFocus()).toEqual({ type: 'slot_focused', slot: 'crew-a' })
+      // A route change inside the chat routes sends nothing more.
+      const before = sendIfOpen.mock.calls.length
+      window.history.pushState({}, '', '/chat/crew-a')
+      act(() => noteRouteChange())
+      expect(sendIfOpen).toHaveBeenCalledTimes(before)
+    } finally {
+      detach()
+      window.history.pushState({}, '', oldPath || '/')
+      store.dispatch(setActiveSlot(null))
+      store.dispatch(sseSlots([]))
+    }
+  })
+
+  it('an ordinary chat keeps its retained focus off the chat routes', () => {
+    const oldPath = window.location.pathname
+    const sendIfOpen = vi.fn()
+    const lastFocus = () => sendIfOpen.mock.calls.map(c => c[0]).filter(f => f.type === 'slot_focused').at(-1)
+    window.history.pushState({}, '', '/chat')
+    const detach = attachFocusRelay({
+      socket: { sendIfOpen, reconnectingRef: { current: false } } as unknown as SocketConnection,
+      flushSlotActivity: vi.fn(),
+      onActiveSlotChange: vi.fn(),
+    })
+    try {
+      store.dispatch(sseSlots([{ key: 'plain-a' } as unknown as ChatSlot]))
+      act(() => { store.dispatch(setActiveSlot('plain-a')) })
+      const before = sendIfOpen.mock.calls.length
+      window.history.pushState({}, '', '/settings')
+      act(() => noteRouteChange())
+      expect(sendIfOpen).toHaveBeenCalledTimes(before)
+      hidden.mockReturnValue(true)
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      hidden.mockReturnValue(false)
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      expect(lastFocus()).toEqual({ type: 'slot_focused', slot: 'plain-a' })
     } finally {
       detach()
       window.history.pushState({}, '', oldPath || '/')
