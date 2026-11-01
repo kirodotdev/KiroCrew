@@ -6,6 +6,7 @@ commands that call the gateway with it: ``logout``, ``status``, ``spawn`` and ``
 """
 
 import argparse
+import asyncio
 import json
 import os
 import socket
@@ -72,8 +73,8 @@ class TestLogout:
         except SystemExit as e:
             assert e.code == 1
 
-    def test_logout_http_error(self, tmp_path, monkeypatch):
-        """HTTP error from gateway is handled."""
+    def test_logout_http_error(self, tmp_path, monkeypatch, capsys):
+        """An HTTP error with no reason in its body keeps the bare status."""
         secret_file = tmp_path / ".local_secret"
         secret_file.write_text("test-secret")
         monkeypatch.setattr(
@@ -91,6 +92,63 @@ class TestLogout:
                 assert False, "should have exited"
             except SystemExit as e:
                 assert e.code == 1
+        assert capsys.readouterr().out == "❌ Failed to revoke sessions: HTTP 403\n"
+
+    @staticmethod
+    async def _logout_against_the_real_route(monkeypatch, *, server_secret, cli_secret):
+        """Serve the real ``api_logout`` on loopback and run ``kirocrew logout`` at it.
+
+        ``_logout`` blocks, so it runs on a worker thread while this loop serves
+        the request; its ``SystemExit`` comes back through the await.
+        """
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        from kiro_crew.cli_server import _logout
+        from kiro_crew.dashboard.handlers import core
+
+        monkeypatch.setattr(core, "_sel", MagicMock)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: cli_secret
+        )
+        app = web.Application()
+        app["local_secret"] = server_secret
+        app.router.add_post("/api/logout", core.api_logout)
+        async with TestServer(app, host="127.0.0.1") as server:
+            with pytest.raises(SystemExit) as exited:
+                await asyncio.to_thread(_logout, int(server.port))
+        return exited.value.code
+
+    @pytest.mark.asyncio
+    async def test_an_unpersisted_revocation_says_the_logout_did_not_happen(
+        self, monkeypatch, capsys
+    ):
+        """The gateway's 500 reason is printed, not only its status."""
+
+        def _cannot_persist():
+            raise OSError("disk full")
+
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", _cannot_persist)
+        code = await self._logout_against_the_real_route(
+            monkeypatch, server_secret="the-secret", cli_secret="the-secret"
+        )
+        assert code == 1
+        assert capsys.readouterr().out == (
+            "❌ Failed to revoke sessions: HTTP 500: could not persist session "
+            "revocation; logout not completed\n"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_stale_secret_is_named(self, monkeypatch, capsys):
+        """A refused secret prints the gateway's reason after the status."""
+        revoke = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", revoke)
+        code = await self._logout_against_the_real_route(
+            monkeypatch, server_secret="the-real-one", cli_secret="a-stale-one"
+        )
+        assert code == 1
+        assert capsys.readouterr().out == "❌ Failed to revoke sessions: HTTP 403: invalid secret\n"
+        revoke.assert_not_called()
 
     def test_logout_connection_error(self, tmp_path, monkeypatch):
         """Connection error means gateway not running."""
