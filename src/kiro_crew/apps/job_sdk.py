@@ -168,6 +168,48 @@ logger = logging.getLogger(__name__)
 #: process could hold the very pid a stale record names).
 _ORIGIN = uuid.uuid4().hex
 
+#: A strictly increasing COMPLETION counter for THIS gateway process, and its
+#: lock. Minted onto each run's ``seq`` at its terminal write so retention can
+#: order runs newest-FINISHED-first without trusting the second-resolution wall
+#: clock, where a burst of fast runs shares one stamp. Process-wide rather than
+#: per-SDK because the order it records -- which run finished first -- is a fact
+#: about this process, and a per-SDK counter would be one more thing to thread
+#: through construction for no gain: the value is only ever compared within one
+#: kind of one app.
+#:
+#: SEEDED above the highest ``seq`` any store already holds, by
+#: ``_ensure_seq_seeded`` the first time an SDK mints a completion seq (off the
+#: event loop). Without that the counter resets to 0 on a gateway restart, and a
+#: kind that already had records on disk (carrying the previous process's high
+#: seqs) would see each NEW run minted a low seq, sort it oldest, and evict the
+#: just-finished run -- deleting exactly the latest result retention exists to
+#: keep. Seeding makes the order hold across a restart: a run finishing later
+#: always carries a higher seq than one on disk, whichever process wrote it.
+_SEQ_LOCK = threading.Lock()
+_seq = 0
+
+
+def _next_seq() -> int:
+    global _seq
+    with _SEQ_LOCK:
+        _seq += 1
+        return _seq
+
+
+def _seed_seq(floor: int) -> None:
+    """Raise the shared counter to at least ``floor`` -- never lower it.
+
+    Called with the highest ``seq`` a store holds, so the next minted seq
+    outranks every record already on disk. Monotone by construction: a concurrent
+    seed or mint that already pushed the counter higher wins, because this only
+    moves it up. One lock acquisition, no I/O.
+    """
+    global _seq
+    with _SEQ_LOCK:
+        if floor > _seq:
+            _seq = floor
+
+
 #: How far a run had got, in words -- and deliberately COARSER than
 #: ``interrupted_from`` itself. A consumer needs ``queued`` apart from
 #: ``starting`` (only one of them owns a dedupe key), but a person reading a
@@ -284,10 +326,43 @@ class CleanupResult:
         return not self.failed and not self.still_running
 
 
+#: A kind's liveness predicate: given a terminal run, is it still using its
+#: resources? Retention asks it before evicting a terminal run, so a run that is
+#: terminal by status but still writing its results (Code Review Sage's
+#: ``posting`` phase) is kept rather than deleted out from under its own writer.
+JobLive = Callable[["JobRun"], bool]
+
+#: A kind's eviction callback: called with a run the moment retention drops it,
+#: BEFORE its record file is removed, so the app can release whatever it holds
+#: for that run (an on-disk subtree, a cache entry). The SDK records nothing a
+#: consumer reads but the run itself, so freeing a payload the consumer owns is
+#: the consumer's to do, and this is where it is told to.
+JobOnEvict = Callable[["JobRun"], None]
+
+#: No cap: a kind registered without ``retention`` keeps every record, exactly
+#: as the SDK did before retention existed. A cap is opt-in per kind because the
+#: right bound is the consumer's to choose, and a silent default would evict a
+#: consumer's records on an upgrade it never asked for.
+_NO_RETENTION = 0
+
+
 @dataclass
 class _Runner:
     fn: JobFn
     cancellable: bool
+    #: How many terminal records of this kind to keep, newest first. ``0`` means
+    #: no cap. A LIVE terminal run (``live`` below) is never counted out: it is
+    #: kept even past the cap and becomes evictable only once it stops being live.
+    retention: int = _NO_RETENTION
+    #: Is a terminal run still using its resources? Retention never evicts a run
+    #: this returns True for. With none registered, terminal status alone decides
+    #: eviction, which is unsafe for a kind whose work continues AFTER its status
+    #: goes terminal -- so a kind with a mid-delivery phase (Sage's ``posting``)
+    #: MUST register its own.
+    live: JobLive | None = None
+    #: Called with each run retention evicts, before its file is removed, so the
+    #: app can drop the payload it owns for that run.
+    on_evict: JobOnEvict | None = None
 
 
 @dataclass
@@ -393,7 +468,90 @@ class JobStore:
             except (OSError, TypeError, ValueError):
                 logger.warning("skipping unreadable job record: %s", path.name)
                 continue
+            # The record's identity is its FILENAME, not the ``run_id`` in its
+            # body. ``write`` only ever names a file ``{run_id}.json``, so a
+            # genuine record always matches; a file whose body carries a
+            # DIFFERENT run_id is not one this store wrote (a hand-copied record),
+            # and admitting it would let a reader -- retention especially, which
+            # then calls ``remove(run.run_id)`` -- act on the body's id and delete
+            # or evict a DIFFERENT run's file while leaving the impostor. Skip it:
+            # its filename is the only identity the store guarantees.
+            if run.run_id != path.stem:
+                logger.warning(
+                    "skipping job record whose body id does not match its filename: %s",
+                    path.name,
+                )
+                continue
             yield run
+
+    def max_seq(self) -> int:
+        """Highest ``seq`` any record on disk carries, or 0 for none.
+
+        Deliberately NOT routed through ``iter_runs``: this feeds the seq-counter
+        seed, which runs inside a worker's terminal write, and ``iter_runs`` is a
+        patchable seam a concurrent ``reconcile`` drives in its own tests -- going
+        through it would re-enter that seam on an unrelated thread. It reads each
+        record's own ``seq`` by canonical filename, applying the same
+        filename/body identity check so a forged file contributes nothing.
+
+        The reads go through ``safe_read_file_bytes_nolink`` -- the same bounded,
+        ``O_NOFOLLOW`` funnel the disable scan uses -- because the ``jobs/``
+        directory is app-writable: a planted ``<id>.json`` symlink to ``/dev/zero``
+        would make an unbounded read hang the worker, and one pointed at a
+        sensitive file would pull its bytes in. Every refusal (a link, an
+        oversized file, a permission error) is treated as "contributes nothing",
+        and the whole scan NEVER raises: it runs inside the terminal ``finally``,
+        so a storage error here must not skip the terminal write and the
+        live/dedupe cleanup. Best effort: a missed record costs at most one
+        duplicate seq, which the sort's secondary keys still order.
+        """
+        highest = 0
+        try:
+            if not self.dir.is_dir():
+                return 0
+            paths = sorted(self.dir.glob("*.json"))
+        except OSError:
+            # A stat/glob failure on the directory itself: the seed cannot run,
+            # but it must not take the terminal write down with it.
+            return 0
+        for path in paths:
+            try:
+                raw = safe_read_file_bytes_nolink(
+                    str(path),
+                    within_root=str(self.dir),
+                    max_bytes=_MAX_RECORD_BYTES,
+                )
+            except (FileTooLargeError, OSError):
+                continue
+            if raw is None:
+                continue
+            try:
+                run = JobRun.from_dict(json.loads(raw.decode("utf-8")))
+            except (TypeError, ValueError):
+                continue
+            if run.run_id != path.stem:
+                continue
+            if run.seq > highest:
+                highest = run.seq
+        return highest
+
+    def remove(self, run_id: str) -> bool:
+        """Delete one run's record. Returns whether a file was removed.
+
+        Retention's single-file counterpart to ``remove_all``: a missing file
+        (already gone, or never written) is not an error -- the caller's intent
+        is "this record should not exist", which an absent file already
+        satisfies -- so it returns False rather than raising, and a real OS
+        failure is logged and reported the same way.
+        """
+        try:
+            self._path(run_id).unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError):
+            logger.warning("could not remove job record: %s", run_id)
+            return False
 
     def remove_all(self) -> tuple[int, int]:
         """Delete every record. Returns ``(removed, failed)``.
@@ -445,6 +603,58 @@ class JobSDK:
         #: the SAME critical section as the dedupe claim, so there is no window
         #: between the check and the claim.
         self._closed = False
+        # Whether this SDK has seeded the shared seq counter from its store yet.
+        # The seed is DEFERRED to the first completion/reconcile rather than run
+        # in __init__, because __init__ is called on the gateway event loop
+        # (build_app_context at startup and on app-enable) and a full-store scan
+        # there would stall the loop for a time that grows with the record count.
+        # The counter is only READ when a terminal seq is minted, and both mint
+        # sites run off the loop (a worker thread, or reconcile's to_thread), so
+        # seeding there costs the loop nothing.
+        self._seq_seeded = False
+        self._seq_seed_lock = threading.Lock()
+        #: Serializes ``_sweep_retention`` for this SDK, and the set of run ids
+        #: whose eviction is still outstanding (``on_evict`` fired, ``remove`` not
+        #: yet confirmed). Two runs of one capped kind can finish on their own
+        #: threads at the same time; without serialization both sweeps read the
+        #: store before either deletes, compute the same evictable tail, and call
+        #: ``on_evict`` twice on one run. The lock makes the second sweep read a
+        #: store the first already pruned, and the set is the belt to that brace:
+        #: a run's callback fires AT MOST once even if a ``remove`` that returned
+        #: False leaves its record for a later sweep to re-encounter. A tombstone
+        #: is DROPPED once ``remove`` confirms the file is gone, so the set holds
+        #: only outstanding evictions and does not grow with historical runs.
+        self._sweep_lock = threading.Lock()
+        self._evicted_ids: set[str] = set()
+
+    def _ensure_seq_seeded(self) -> None:
+        """Seed the shared seq counter past the highest ``seq`` on disk, once.
+
+        Called from every terminal write and from ``reconcile`` -- both off the
+        event loop -- the first time this SDK mints a completion seq, so a run
+        finishing after a gateway restart outranks every record the previous
+        process left and retention does not evict it as oldest. Seeding is
+        UNCONDITIONAL, not gated on whether the completing kind caps: an uncapped
+        kind still mints completion seqs onto its records, and if that kind later
+        opts into retention the sweep sorts by those seqs -- so they must already
+        be monotone across restarts, which seeding only at the first capped
+        completion cannot repair. Idempotent and cheap after the first call: the
+        flag short-circuits without taking the store scan again.
+
+        A damaged or unreadable record contributes nothing (``max_seq`` already
+        skips it) rather than aborting the seed; the worst case of a missed
+        record is one duplicate seq, which the ``updated_at``/``created_at``
+        secondary sort keys still order, so the seed is best-effort by design.
+        """
+        if self._seq_seeded:
+            return
+        with self._seq_seed_lock:
+            if self._seq_seeded:
+                return
+            highest = self._store.max_seq()
+            if highest:
+                _seed_seq(highest)
+            self._seq_seeded = True
 
     @property
     def app_name(self) -> str:
@@ -520,6 +730,17 @@ class JobSDK:
                 latest = self._store.read(run.run_id)
                 if latest is not None and latest.is_terminal:
                     return False
+                # ABSENT means the record was removed between the caller's
+                # snapshot and now -- a completion that finished and was then
+                # EVICTED by retention, whose ``on_evict`` has already released
+                # its resources. Reconcile is the only ``only_if_not_terminal``
+                # caller, and it works off a stale snapshot; recreating the file
+                # here would resurrect an evicted run as falsely ``interrupted``
+                # and let a later sweep fire its callback a second time. Refuse:
+                # this guarded write only ever RESOLVES a record that still
+                # exists, it never re-creates one retention has deleted.
+                if latest is None:
+                    return False
             try:
                 self._store.write(run)
                 return True
@@ -529,7 +750,16 @@ class JobSDK:
 
     # ── Registration ──
 
-    def register(self, kind: str, fn: JobFn, *, cancellable: bool = False) -> None:
+    def register(
+        self,
+        kind: str,
+        fn: JobFn,
+        *,
+        cancellable: bool = False,
+        retention: int = _NO_RETENTION,
+        live: JobLive | None = None,
+        on_evict: JobOnEvict | None = None,
+    ) -> None:
         """Bind ``kind`` to the callable that services it.
 
         Call from the app's ``on_startup`` hook. ``cancellable=True`` is the
@@ -559,9 +789,33 @@ class JobSDK:
         those are design questions this refusal does not answer. It answers only
         the question a caller cannot currently ask -- "did my runner run" -- at
         the one point where the answer is still cheap.
+
+        ``retention`` BOUNDS the store for this kind: after each terminal write
+        the kind's terminal records past the newest ``retention`` are evicted.
+        It is OPT-IN -- ``0`` keeps every record, which is what every existing
+        consumer gets unchanged, because the right bound is the consumer's to
+        choose and a silent default would delete records on an upgrade nobody
+        asked for.
+
+        ``live`` is the kind's liveness predicate over a terminal run. Eviction
+        asks it FIRST and never drops a run it returns True for -- a terminal-
+        status run that is still writing its results (the exact unsafe case, a
+        run mid-delivery AFTER its status went terminal) is kept past the cap and
+        becomes evictable only once ``live`` goes False. Without one, terminal
+        status alone decides, so a kind with such a phase MUST supply it.
+
+        ``on_evict`` is handed each run the moment it is dropped, before the
+        record file is removed, so the app can release what it owns for that run.
+        It runs inside the terminal writer's own thread; keep it quick and let it
+        raise nothing it cannot afford to log -- a failing callback is caught so
+        one run's cleanup cannot wedge the writer, but the record is still
+        removed, so a callback that must not be skipped belongs in the runner's
+        own ``finally``, not here.
         """
         if not kind:
             raise ValueError("job kind must be a non-empty string")
+        if retention < 0:
+            raise ValueError(f"job retention must not be negative, got {retention}")
         lazy = _lazy_call_shape(fn)
         if lazy:
             raise ValueError(
@@ -572,7 +826,13 @@ class JobSDK:
                 "with asyncio.run)."
             )
         with self._lock:
-            self._runners[kind] = _Runner(fn=fn, cancellable=cancellable)
+            self._runners[kind] = _Runner(
+                fn=fn,
+                cancellable=cancellable,
+                retention=retention,
+                live=live,
+                on_evict=on_evict,
+            )
         logger.info("App %s registered job kind: %s", self._app_name, kind)
 
     def kinds(self) -> list[str]:
@@ -890,6 +1150,23 @@ class JobSDK:
             # a single-writer document. Set before ``_write_terminal`` so the one
             # terminal write carries it.
             run.work_observed = handle.work_observed
+            # Stamp the retention order HERE, at completion, not at start. Minting
+            # it at start ordered runs by when they BEGAN, so a long run that
+            # started first but finished last carried the lowest seq and its own
+            # terminal-write sweep evicted it as oldest -- losing the result it
+            # had just produced. Completion order is what retention means by
+            # "newest": the run finishing now is the newest terminal record, so
+            # it sorts last-to-evict. Set before ``_write_terminal`` so the one
+            # terminal write carries it. Seed UNCONDITIONALLY, for an uncapped
+            # kind too: its records still carry completion seqs, and if the kind
+            # later opts into retention the sweep sorts by them, so they must be
+            # monotone across restarts now -- seeding only at the first capped
+            # completion cannot repair seqs already written. The seed reads the
+            # store through ``max_seq`` (a direct file scan, off the loop on this
+            # worker thread), NOT the ``iter_runs`` seam a concurrent ``reconcile``
+            # drives, and the once-flag keeps it to a single scan per SDK.
+            self._ensure_seq_seeded()
+            run.seq = _next_seq()
             # The guarded writer owns the discard check, so a cleanup landing
             # mid-write cannot have this record recreated, and a failure comes
             # back as False rather than as an exception that would skip the
@@ -901,6 +1178,13 @@ class JobSDK:
                 if run.dedupe_key:
                     self._keys.pop((run.kind, run.dedupe_key), None)
             self._audit(f"job_{run.status}", run.run_id, "ok")
+            # Retention runs AFTER the live-table pop, so this run counts as a
+            # terminal record (not a live one) the moment it is weighed against
+            # the cap, and never evicts a run another thread is still executing:
+            # ``_sweep_retention`` reads ``cancelling_and_live_ids`` and spares
+            # every live id. On the terminal thread, after the record is durable,
+            # so a sweep failure cannot lose a run's own terminal state.
+            self._sweep_retention(runner, run.kind)
 
     def _write_terminal(self, run: JobRun, handle: JobHandle) -> None:
         """Persist a run's final state, retrying once.
@@ -928,6 +1212,118 @@ class JobSDK:
             "as interrupted rather than left running",
             run.run_id,
         )
+
+    def _sweep_retention(self, runner: _Runner, kind: str) -> None:
+        """Evict this kind's terminal records past its cap. Writes nothing new.
+
+        No-ops when the kind has no cap (``retention == 0``), which is every
+        consumer that did not opt in -- so an app that never asks for retention
+        keeps every record exactly as before.
+
+        What a run is weighed as is decided here, in order:
+
+        * a run still LIVE in this process is never evicted and never counted --
+          it is excluded before the cap is applied, reading the same live-table
+          snapshot ``cancel`` and ``reconcile`` consult, so a run whose worker is
+          still executing cannot have its record deleted;
+        * a terminal run the kind's ``live`` predicate claims is kept past the
+          cap and does not count toward it -- the terminal-but-still-writing case
+          (Sage's ``posting``). It becomes evictable on a later sweep once
+          ``live`` goes False;
+        * the remaining terminal records are ordered newest-first and the ones
+          past ``retention`` are evicted: the kind's ``on_evict`` is called with
+          each, then its file is removed.
+
+        A non-terminal record of another process (a foreign run not yet
+        reconciled) is left alone: this is retention, not reconciliation, and
+        deleting an unresolved run would strand it. Reads the store once; the
+        iteration cost is the same the report paths already pay.
+        """
+        cap = runner.retention
+        if cap <= _NO_RETENTION:
+            return
+        # Serialize the whole sweep for this SDK. Two runs of one capped kind can
+        # finish on their own threads at once; without this lock both sweeps read
+        # the store before either deletes and compute the same evictable tail, so
+        # ``on_evict`` fires twice on one run. Held across the store scan and the
+        # deletes so the second sweep sees a store the first already pruned. It
+        # guards only retention bookkeeping and takes no other lock inside, so it
+        # cannot deadlock against ``self._lock``.
+        with self._sweep_lock:
+            _, live_ids = self.cancelling_and_live_ids()
+            terminal: list[JobRun] = []
+            for r in self._store.iter_runs():
+                if r.kind != kind or not r.is_terminal:
+                    continue
+                if r.run_id in live_ids:
+                    # A record terminal on disk but whose worker is still in the
+                    # live table (its terminal write landed before the live pop).
+                    # Spared and uncounted: finishing, not finished-and-old.
+                    continue
+                terminal.append(r)
+
+            # A LIVE terminal run is kept and does not consume a slot, so a burst
+            # of mid-delivery runs cannot push a just-finished one off the cap.
+            # The predicate is the app's; a raising one must not strand the sweep,
+            # so it is treated as "live" (keep) -- eviction is the destructive
+            # side, and the safe answer under doubt is not to evict.
+            def _is_live(r: JobRun) -> bool:
+                if runner.live is None:
+                    return False
+                try:
+                    return bool(runner.live(r))
+                except Exception:  # noqa: BLE001 - a bad predicate must not strand the sweep
+                    logger.exception(
+                        "App %s retention live-predicate for kind %s raised on run %s; "
+                        "keeping the run",
+                        self._app_name,
+                        kind,
+                        r.run_id,
+                    )
+                    return True
+
+            evictable = [r for r in terminal if not _is_live(r)]
+            if len(evictable) <= cap:
+                return
+            # Newest-first by the monotonic completion order, NOT the wall clock:
+            # a burst of fast runs shares one second-resolution stamp, so a
+            # timestamp sort ties and could evict the just-finished run. ``seq``
+            # is minted at each run's terminal write and never ties; a record from
+            # an older build carries seq 0 and so sorts oldest, which is correct.
+            # ``updated_at`` is the stable secondary key so the order is total
+            # even among seq-0 records.
+            evictable.sort(key=lambda r: (r.seq, r.updated_at, r.created_at), reverse=True)
+            for r in evictable[cap:]:
+                # ``on_evict`` fires AT MOST once per run id. The id is a
+                # TOMBSTONE held only while deletion is still outstanding: it
+                # suppresses a second callback if a ``remove`` returns False and
+                # leaves the record for a later sweep to re-encounter. Recorded
+                # before the callback so a raising callback still counts as fired
+                # -- it is the app's to make idempotent, and re-calling a raising
+                # release helps nothing.
+                if r.run_id not in self._evicted_ids:
+                    self._evicted_ids.add(r.run_id)
+                    if runner.on_evict is not None:
+                        try:
+                            runner.on_evict(r)
+                        except Exception:  # noqa: BLE001 - a callback failure is logged, not fatal
+                            logger.exception(
+                                "App %s retention on_evict for kind %s raised on run %s; "
+                                "removing the record anyway",
+                                self._app_name,
+                                kind,
+                                r.run_id,
+                            )
+                if self._store.remove(r.run_id):
+                    self._audit("job_evicted", r.run_id, "ok")
+                    # Deletion succeeded, so the record cannot return through
+                    # ``iter_runs`` (the sweep holds ``_sweep_lock`` across the
+                    # scan and the deletes). Drop the tombstone: keeping every
+                    # evicted id for the process's life would grow this set with
+                    # historical runs, the unbounded growth retention exists to
+                    # stop. The once-per-run guarantee still holds -- a gone file
+                    # is never re-encountered -- so the tombstone has no more work.
+                    self._evicted_ids.discard(r.run_id)
 
     # ── Read ──
 
@@ -1059,6 +1455,12 @@ class JobSDK:
         a true terminal record with a false one, which is a worse failure than any
         unverified claim, because the truth was on disk and this pass deleted it.
         """
+        # Seed the shared counter before this pass mints any completion seq, so a
+        # reconciled record outranks the records it sits beside across a restart.
+        # Reads the store through ``max_seq`` (a direct scan), NOT this method's
+        # own ``iter_runs`` loop below, so it does not re-enter that seam. reconcile
+        # runs via asyncio.to_thread, so the scan is off the event loop.
+        self._ensure_seq_seeded()
         flipped = 0
         for run in self._store.iter_runs():
             if run.is_terminal:
@@ -1099,6 +1501,12 @@ class JobSDK:
             run.interrupt_cause = cause
             run.status = INTERRUPTED
             run.finished_at = _now()
+            # A completion-order seq, like a worker's terminal write mints, so a
+            # reconciled record has a defined order against its siblings rather
+            # than tying at 0. The counter was seeded at the top of this pass, so
+            # the number outranks the records already on disk -- a run resolved
+            # now is newer than everything the previous process left.
+            run.seq = _next_seq()
             run.error = _interrupt_error(run.interrupt_cause, run.interrupted_from, run.kind)
             # `only_if_not_terminal` re-reads under the write's lock. The
             # `is_terminal` check at the top of this loop reads a SNAPSHOT: a

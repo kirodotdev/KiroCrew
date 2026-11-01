@@ -4795,6 +4795,46 @@ Writers: `apps/manifest.py`, `apps/manifest_names.py`, `apps/manifest_containmen
 `apps/manifest_sections.py`, `apps/manifest_contributes.py`, `apps/job_sdk.py`,
 `apps/job_sdk_records.py`, `apps/job_sdk_returns.py`.
 
+### 26.1 Retention and liveness (per-kind, opt-in)
+
+`JobStore` writes one JSON file per run and, by itself, removes one only on app
+disable, so a consumer's run-file count grows without bound. `register` takes
+three optional, per-kind arguments that bound it without changing any kind that
+does not pass them:
+
+- `retention` — a count cap. After each terminal write the kind's terminal
+  records past the newest `retention` are evicted. It is **off by default**
+  (`0` keeps every record), so an app that never opts in behaves exactly as it
+  did before retention existed; the right bound is the consumer's to choose.
+- `live` — a predicate over a terminal run. Eviction asks it first and never
+  drops a run it returns True for, so a run that is terminal by status but still
+  using its resources (Code Review Sage's `posting` phase, where delivery runs
+  **after** the run reaches a terminal status) is kept past the cap and becomes
+  evictable only once `live` clears. Without one, terminal status alone decides
+  eviction. A live run is also not counted toward the cap, so a burst of live
+  runs cannot push a just-finished one off it.
+- `on_evict` — handed each run the moment it is dropped, before its record file
+  is removed, so the app can release what it owns for that run.
+
+Newest-first is decided by a per-process monotonic `seq` minted at a run's
+terminal write (completion order), not by `created_at`/`updated_at`, which are
+second-resolution and tie for a burst of fast runs. Completion order, not start
+order: a long run that started first but finished last sorts newest, so its own
+terminal-write sweep does not evict the result it just produced. The counter is
+seeded above the highest `seq` on disk the first time an SDK mints one — lazily,
+off the event loop (a worker thread or `reconcile`'s `to_thread`), never in the
+constructor, which runs on the loop — so ordering holds across a gateway
+restart. A run still executing in this process is never evicted: the sweep reads
+the same live-table snapshot `cancel` and `reconcile` consult.
+
+This adds to the public App Kit contract (the `register` signature and the
+`JobRun.seq` field), so it is **pending a maintainer decision**. The shape
+implemented here — cap + eviction callback + a `live` predicate registered
+alongside the runner — follows the proposal in the issue thread
+([#7588](https://github.com/kirodotdev/KiroCrew/issues/7588), comment of
+2026-09-28), which is a proposal and not a ruling under
+`docs/decisions/README.md`.
+
 ## 27. The app manager is composed by lifecycle owner
 
 The app manager (`apps/manager.py`) is one import path over sibling owner modules.
