@@ -43,9 +43,7 @@ def _write_config(home, telemetry: dict) -> None:
 
 
 def _write_overlay(home, telemetry: dict) -> None:
-    (home / "config.local.json").write_text(
-        json.dumps({"telemetry": telemetry}), encoding="utf-8"
-    )
+    (home / "config.local.json").write_text(json.dumps({"telemetry": telemetry}), encoding="utf-8")
 
 
 async def _get(client: TestClient) -> dict:
@@ -132,9 +130,7 @@ class TestCollectionStatusEndpoint:
     async def test_unreadable_config_reports_off_rather_than_raising(self, _home) -> None:
         # A diagnostic must never 500, and it must fail toward "off" so the UI
         # never claims collection is on when that cannot be proven.
-        with patch(
-            "kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError("boom")
-        ):
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError("boom")):
             async with TestClient(TestServer(_make_app())) as c:
                 body = await _get(c)
         assert body["enabled"] is False
