@@ -195,6 +195,7 @@ def test_redaction_does_not_touch_an_at_sign_in_a_path(tmp_path: Path) -> None:
         input="https://npm.example/@scope/pkg\nhttps://u:p@ss@npm.example/@scope/pkg\n",
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
         cwd=str(tmp_path),
     )
@@ -781,6 +782,7 @@ def test_a_node_that_does_not_run_here_leaves_the_previous_one_in_place(
             ["sh", "-c", f'"{node_dir}/bin/node" >/dev/null 2>&1; echo $?'],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
             cwd=str(tmp_path),
         ).stdout.strip()
@@ -857,6 +859,7 @@ def test_an_interrupted_rebootstrap_restores_the_previous_node(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
         start_new_session=True,
         cwd=str(tmp_path),
     )
