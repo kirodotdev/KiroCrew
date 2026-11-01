@@ -134,6 +134,12 @@ def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
             "main-ratchet-audit.yml",
             "build-wheel.yml",
             "dependency-vulnerability.yml",
+            # The OIDC content scan and its caller. The gate's group is keyed on
+            # `pull_request.number || sha`, so it is neither ref-keyed nor
+            # pull-request-only and cannot join either declared-safe set; a red
+            # or orphaned scan is a human's to re-run.
+            "internal-content-scan-gate.yml",
+            "internal-content-scan.yml",
             "pr-merge-conflict-label.yml",
             # Posts a sticky PR comment; left to a human to re-run.
             "sensitive-change-review.yml",

@@ -242,6 +242,11 @@ WATCHED_WORKFLOWS: tuple[str, ...] = (
     "dependency-review.yml",
     "dependency-vulnerability.yml",
     "fast-gate.yml",
+    # The caller is listed as well as the callee: a job called by a local
+    # `uses:` belongs to the CALLER's run, so the run's `path` is the gate's and
+    # the callee's fleet job is invisible unless the gate is watched.
+    "internal-content-scan-gate.yml",
+    "internal-content-scan.yml",
     "macos-on-demand.yml",
     "main-ratchet-audit.yml",
     "pages.yml",
