@@ -18,7 +18,6 @@
 1 src/kiro_crew/dashboard/handlers/terminal.py
 2 src/kiro_crew/service/apparmor.py
 1 test/test_agent_home_isolation.py
-1 test/test_build_desktop_launcher_symlink.py
 2 test/test_cli_lazy_imports.py
 2 test/test_cli_manifest_signature.py
 2 test/test_config_baseline.py
