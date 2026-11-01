@@ -35,7 +35,6 @@
 2 test/test_cli_manifest_signature.py
 2 test/test_config_baseline.py
 1 test/test_config_paths.py
-3 test/test_connections_mint.py
 1 test/test_connections_tool_aliases.py
 1 test/test_docker_entrypoint.py
 2 test/test_ensure_python_symlink.py
