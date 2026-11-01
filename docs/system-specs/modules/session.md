@@ -172,11 +172,13 @@ waits for the turn to end, up to 30 minutes, while the owner keeps the thread
 on screen. Each skip logs one debug line with the thread key and a fixed reason.
 
 A Crew Mode root (a root chat running a conductor) is eligible on the same
-rules as a mate thread, with one stricter trigger: only an explicit page hide
-(`hidden: true`) starts its away episode, because a split-view pane can stay
-visible while another pane holds focus. A pane or sidebar switch, a socket loss
-and a restart never do. Its workers and other chats are not eligible; a plain
-chat never gets a brief. Any thread that owns a work ledger (a conductor
+rules as a mate thread, trigger included: a switch to another chat, from the
+sidebar or to another split-view pane, leaves it as a page hide does, because
+the owner's attention left it. Off the chat routes (Settings and every other
+page) the dashboard reports a Crew Mode root as no chat, though `activeSlot`
+keeps it, and re-announces it when a route change enters or leaves the chat
+routes, so a reveal on Settings is not a return. Its workers and other chats
+are not eligible; a plain chat never gets a brief. Any thread that owns a work ledger (a conductor
 record or work items), whatever its slot mode, gets the conductor prompt,
 which asks which work items finished, which wait on the owner, and which
 still run.

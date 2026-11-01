@@ -723,7 +723,8 @@ describe('useWebSocket lifecycle trace', () => {
     act(() => { view.rerender() })
     expect(WS_INSTANCES).toHaveLength(1)
     view.unmount()
-    vi.stubGlobal('location', { ...original, protocol: 'https:', host: 'crew.test' })
+    // A spread copies no Location getters, so `pathname` is carried over by hand.
+    vi.stubGlobal('location', { ...original, pathname: original.pathname, protocol: 'https:', host: 'crew.test' })
     WS_INSTANCES.length = 0
     renderHook(() => useWebSocket(), {
       wrapper: ({ children }) => createElement(Provider, { store: testStore },

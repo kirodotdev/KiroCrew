@@ -407,20 +407,6 @@ def is_brief_thread(slot: "_ChatSlot") -> bool:
     return slot.mode == members_mod.DM_SLOT_MODE or crew_mode.slot_is_crew_mode_root(slot)
 
 
-def _mark_hidden_leave(state: "DashboardState", conn: int, slot_key: str) -> None:
-    """Record that owner view *conn* left *slot_key* through an explicit page hide.
-
-    The mark belongs to the view: its next frame spends it, whatever it names.
-    """
-    marks = getattr(state, "_warm_task_brief_hidden_left", None)
-    if not isinstance(marks, dict):
-        return
-    marks.pop(conn, None)
-    marks[conn] = slot_key
-    while len(marks) > _MAX_LAST_SEEN:
-        marks.pop(next(iter(marks)))
-
-
 def note_view_closed(state: "DashboardState", conn: int) -> None:
     """An owner socket closed: the thread it showed left that view's screen.
 
@@ -430,9 +416,6 @@ def note_view_closed(state: "DashboardState", conn: int) -> None:
     previous = foreground.get(conn) if isinstance(foreground, dict) else None
     if isinstance(previous, str) and previous:
         _stamp_seen(state, previous, time.time())
-    marks = getattr(state, "_warm_task_brief_hidden_left", None)
-    if isinstance(marks, dict):
-        marks.pop(conn, None)
 
 
 def handle_focus_frame(
@@ -441,7 +424,6 @@ def handle_focus_frame(
     slot_key: object,
     *,
     announce: bool = False,
-    hidden: bool = False,
 ) -> None:
     """Handle one owner focus frame; schedule at most one brief for its thread.
 
@@ -451,24 +433,13 @@ def handle_focus_frame(
     process holds no on-screen record of. Two windows on one thread are one
     view: a frame for a thread another owner view shows is not a return.
 
-    *hidden* marks a null frame the page sent because it became hidden. A Crew
-    Mode chat can sit visible in a split-view pane while another pane holds
-    focus, so for it only a leave through such a hide starts an away episode;
-    a pane or sidebar switch, a socket loss and a restart never do.
+    A crewmate thread and a Crew Mode root share one leave rule: a switch to
+    another chat (sidebar or another split-view pane) leaves the thread, as a
+    page hide does, because the owner's attention left it.
     """
     now = time.time()
     foreground = getattr(state, "_foreground_slots", None)
     previous = foreground.get(conn) if isinstance(foreground, dict) else None
-    # This view's next frame spends its hide mark: it is a hidden return only
-    # when it names the thread the hide left.
-    marks = getattr(state, "_warm_task_brief_hidden_left", None)
-    marked = marks.pop(conn, None) if isinstance(marks, dict) else None
-    hidden_leave = isinstance(slot_key, str) and bool(slot_key) and marked == slot_key
-    # Another view naming the thread puts it back on screen: every other
-    # view's hide of it is spent too.
-    if isinstance(marks, dict) and isinstance(slot_key, str) and slot_key:
-        for other in [c for c, key in marks.items() if key == slot_key]:
-            marks.pop(other, None)
     if isinstance(previous, str) and previous and slot_key != previous:
         _stamp_seen(state, previous, now)
         # The last owner view leaving a thread drops a brief whose "preparing"
@@ -478,9 +449,6 @@ def handle_focus_frame(
         opened = getattr(state, "_warm_task_brief_opened", ())
         if previous not in opened and not _shown_by_other(foreground, conn, previous):
             cancel_warm_task_brief(state, previous)
-        # A thread another view still shows did not leave the screen.
-        if hidden and not slot_key and not _shown_by_other(foreground, conn, previous):
-            _mark_hidden_leave(state, conn, previous)
     # The foreground registry's key bound, before any key is retained.
     if not isinstance(slot_key, str) or not slot_key or len(slot_key) > _MAX_FOREGROUND_KEY:
         return
@@ -503,9 +471,6 @@ def handle_focus_frame(
     slot = state.get_slot(slot_key)
     if slot is None or not is_brief_thread(slot):
         _skip(slot_key, "not_member_thread")
-        return
-    if slot.mode != members_mod.DM_SLOT_MODE and not hidden_leave:
-        _skip(slot_key, "not_hidden_return")
         return
     tasks = state._warm_task_brief_tasks
     existing = tasks.get(slot_key)
