@@ -7008,6 +7008,7 @@
         "model_unavailable": "{{model}} isn't offered right now — this session is running on auto instead. Pick another model from the composer, or leave it: your model choice is kept and will be used automatically once it's offered again.",
         "compaction_continuing": "The context was compacted mid-turn and the response stopped there — continuing automatically.",
         "model_throttled_fallback": "{{primary}} is throttled — running on {{fallback}} until {{primary}} recovers.",
+        "refusal_fallback_same_model": "Automatic retry was skipped because the fallback model (`agent.refusal_fallback_model`) is the same as your current model — retrying the same model hits the same filter. Pick a different model for the fallback to retry automatically.",
         "session_reconnecting": "The agent lost this chat's session — reconnecting…",
         "session_reconnect_give_up": "Could not reconnect this chat's session. Send your message again, or start a new chat if this keeps happening.",
         "credentials_reloading": "The agent could not load its cloud credentials — restarting it to load them again…",

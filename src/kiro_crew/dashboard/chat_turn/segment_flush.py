@@ -74,6 +74,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.model_fallback import (
         _configured_refusal_fallback,
         _record_refused_cycle,
+        _refusal_fallback_is_same_model,
         _refusal_fallback_retry,
     )
     from kiro_crew.dashboard.chat_turn.recovery import (
@@ -98,6 +99,20 @@ if TYPE_CHECKING:
 #: reader. Used only to tag the audit event; the label is applied regardless.
 _DIRECTIVE_SHAPED_RE = re.compile(
     r"""(?ix)(?:^|[\s(\[{"'])(?:system|assistant|developer|instruction)\s*["']?\s*:"""
+)
+
+
+#: English fallback for the same-model refusal-fallback notice row. The
+#: dashboard renders the localized copy keyed on the gateway-notice token
+#: (``refusal_fallback_same_model``); this text is what channel mirrors, SSE
+#: readers and an older frontend read. Emitted as a SEPARATE ``notice`` row from
+#: the terminal refusal card, so the sentence localizes without tokenizing the
+#: composite card.
+_REFUSAL_FALLBACK_SAME_MODEL_NOTICE = (
+    "ℹ️ Automatic retry was skipped because the fallback model"
+    " (`agent.refusal_fallback_model`) is the same as your current model —"
+    " retrying the same model hits the same filter. Pick a different model for"
+    " the fallback to retry automatically."
 )
 
 
@@ -1025,6 +1040,8 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
     resumed = turn.resumed
     slot = turn.slot
     state = turn.state
+    from kiro_crew.dashboard import gateway_notice as gn
+
     # What the turn produced OF ITS OWN: `assistant_text` minus any backend
     # control notice that arrived as assistant text (the claude adapter's
     # "Compacting..."). The notice stays in `assistant_text` — it is real
@@ -1131,6 +1148,25 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                     _refusal_card,
                     "msg msg-err",
                 )
+                if (
+                    _prompt_depth == 0
+                    and turn._crew_log_actor == "user"
+                    and not slot._refusal_fallback_attempted
+                    and _refusal_fallback_is_same_model(turn.client, _turn_refusal)
+                ):
+                    # A fallback is set but equals the refusing model, so the
+                    # swap was skipped. Post a localized notice row keyed on its
+                    # gateway-notice token; the card itself stays un-tokenized.
+                    # Gated to the same turns the retry itself runs on
+                    # (interactive, top-level, actor user): an unattended or
+                    # nested turn never retries, so the advice to pick a
+                    # different fallback would not apply to it.
+                    slot.append(
+                        "notice",
+                        _REFUSAL_FALLBACK_SAME_MODEL_NOTICE,
+                        "msg msg-info",
+                        meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL),
+                    )
     elif _stop_reason == STOP_REASON_REFUSAL:
         # Model-side content refusal with no accompanying text: Anthropic's
         # bare `refusal` stop reason (passed through by every harness), or
@@ -1188,6 +1224,25 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                 _refusal_card,
                 "msg msg-err",
             )
+            if (
+                _prompt_depth == 0
+                and turn._crew_log_actor == "user"
+                and not slot._refusal_fallback_attempted
+                and _refusal_fallback_is_same_model(turn.client, _turn_refusal)
+            ):
+                # A fallback is set but equals the refusing model, so the swap
+                # was skipped. Post a localized notice row keyed on its
+                # gateway-notice token; the card stays un-tokenized. Gated to
+                # the same turns the retry itself runs on (interactive,
+                # top-level, actor user): an unattended or nested turn never
+                # retries, so the advice to pick a different fallback would not
+                # apply to it.
+                slot.append(
+                    "notice",
+                    _REFUSAL_FALLBACK_SAME_MODEL_NOTICE,
+                    "msg msg-info",
+                    meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL),
+                )
     elif not turn._terminal_directive_applied and should_continue_after_compaction(
         # A turn that ended on an applied terminal directive is answered by
         # that directive, whatever compaction happened before it: the empty

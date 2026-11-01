@@ -171,7 +171,11 @@ families — a different model routinely accepts what another's filter declined
   `TURN_FALLBACK_ATTR`, whose start-of-turn probe would restore the primary
   before the retry ran), snapshots `_model_pick_gen` so a later explicit pick
   is detectable at restore, and refuses a candidate equal to the refusing
-  model. When the session is unpinned (the automatic-routing sentinel, so the
+  model; when a fallback IS configured but resolves to that same model
+  (`_refusal_fallback_is_same_model`), a separate `notice` row carrying the
+  `refusal_fallback_same_model` gateway-notice token says the retry was skipped
+  because the fallback is the same model and to pick a different one, rather
+  than the `fallback_off` sentence that reads as no fallback set. When the session is unpinned (the automatic-routing sentinel, so the
   active model reads as unknown), the swap runs only when the sentinel is
   advertised as a switch target: the restore leg would have to
   `set_model("auto")`, and a partition that does not serve the sentinel

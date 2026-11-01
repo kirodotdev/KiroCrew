@@ -8234,6 +8234,7 @@
         "failed_to_save_fallback_model": "Failed to save fallback model",
         "refusal_fallback": "Content-filter fallback",
         "refusal_fallback_desc": "When your current model's content filter declines a message, retry it once on this model. Your primary model returns on the next message.",
+        "refusal_fallback_same_model_note": "Choosing the same model as your default model turns the automatic retry off, since retrying the same model hits the same filter.",
         "refusal_fallback_model": "Content-filter fallback model",
         "refusal_fallback_auto_hint": "Auto retries on the model the provider suggests in its refusal, when it names one. The retry is announced in chat. Disabled shows the refusal as before.",
         "refusal_fallback_auto": "Auto (model named in the refusal)",
