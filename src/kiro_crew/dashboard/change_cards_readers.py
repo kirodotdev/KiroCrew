@@ -1323,8 +1323,10 @@ async def _workflow_state(kind: str, params: dict[str, Any], state: Any) -> dict
         # whether it is free, read again before Apply, so a save that takes it in
         # between is a change since the preview.
         slug = catalog.workflow_save_slug(params)
-        taken = await asyncio.to_thread(svc.get_definition, slug)
-        return {"slug": slug, "slug_taken": taken is not None}
+        # The allocator's own check: a slug a removed workflow holds is taken
+        # though no ref reaches it.
+        taken = await asyncio.to_thread(svc.slug_taken, slug)
+        return {"slug": slug, "slug_taken": bool(taken)}
     definition = await asyncio.to_thread(svc.get_definition, params["workflow"])
     if not isinstance(definition, dict):
         return {"exists": False}
