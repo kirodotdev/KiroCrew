@@ -831,7 +831,9 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   error. Pinned by `test_redaction_rules.py`.
 - `display_safety.py` — what the product may show as it is: the OAuth endpoint sanitizer
   and its copy-ready display form, and `BINARY_MIME_ALLOWLIST`.
-- `memory_audit.py` — audits of stored content: `scan_history` and `audit_bash_command`,
+- `memory_audit.py` — audits of stored content: `scan_history` (the newest rows of the
+  `sessions/*.jsonl` transcripts, returning the findings and how many rows it read, so
+  `security audit` says "no transcripts scanned" rather than a clean result) and `audit_bash_command`,
   `scan_memory` over every declared memory store and its lessons file, and
   `should_record_observe_history`. It imports `kiro_crew.vector_memory` inside
   `scan_memory` only, because that module imports the redaction entry points from the

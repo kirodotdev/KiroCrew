@@ -112,14 +112,20 @@ def _security(args: argparse.Namespace) -> None:
                 for p in extra:
                     print(f"  ✗ {p}")
     elif action == "audit":
-        history_dir = config_dir() / "history"
-        findings = scan_history(history_dir)
+        sessions_dir = config_dir() / "sessions"
+        findings, rows_scanned = scan_history(sessions_dir)
         if findings:
             print(f"⚠️  {len(findings)} suspicious entries found:\n")
             for f in findings:
-                print(f"  📄 {f['file']}")
-                print(f"     {f['warning']}")
-                print(f"     {f['snippet'][:120]}…\n")
+                # A transcript row is agent-written text: one line, no live controls.
+                print(f"  📄 {safe_terminal_line(f['file'])}")
+                print(f"     {safe_terminal_line(f['warning'])}")
+                if f["snippet"]:
+                    print(f"     {safe_terminal_line(f['snippet'][:120])}…")
+                print()
+        elif not rows_scanned:
+            # Nothing was read, so there is no result to call clean.
+            print(f"ℹ️  No session transcripts scanned: none found in {sessions_dir}.")
         else:
             print("✅ No suspicious tool usage found in recent history.")
 

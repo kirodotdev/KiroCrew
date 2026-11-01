@@ -147,6 +147,13 @@ def agents_dir_competing_claim(
     return _claim(agent, agents_dir, own_file)
 
 
+def shell_command_from_tool_params(params: dict) -> str | None:
+    """The shell command the tool gate scans in a tool call's *params*, or None."""
+    from kiro_crew.acp.types import _command_from_tool_params as _command
+
+    return _command(params)
+
+
 def session_start_concurrency() -> int:
     """The configured ``agent.session_start_concurrency`` snapshot (off-loop caller)."""
     from kiro_crew.acp.runtime_start import _resolve_session_start_concurrency as _resolve

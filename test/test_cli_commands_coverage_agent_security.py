@@ -679,7 +679,7 @@ class TestSecurityCli:
         clean audit says nothing about vector memory."""
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=[]),
+            patch("kiro_crew.cli_commands.scan_history", return_value=([], 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
         ):
             cc._security(_ns(sec_action="audit"))
@@ -694,7 +694,7 @@ class TestSecurityCli:
         memory = [{"type": "semantic", "key": "k", "warning": "odd", "value": "v"}]
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=history),
+            patch("kiro_crew.cli_commands.scan_history", return_value=(history, 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=memory),
             pytest.raises(SystemExit) as exc,
         ):
@@ -710,7 +710,7 @@ class TestSecurityCli:
         memory = [{"type": "semantic", "key": "k", "warning": "odd", "value": "v"}]
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=[]),
+            patch("kiro_crew.cli_commands.scan_history", return_value=([], 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=memory),
             pytest.raises(SystemExit) as exc,
         ):
@@ -725,13 +725,55 @@ class TestSecurityCli:
         history = [{"file": "s.jsonl", "warning": "w", "snippet": "x"}]
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=history),
+            patch("kiro_crew.cli_commands.scan_history", return_value=(history, 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
             pytest.raises(SystemExit) as exc,
         ):
             cc._security(_ns(sec_action="audit"))
         assert exc.value.code == 1
         assert "No suspicious content in vector memory." in capsys.readouterr().out
+
+    def test_audit_reads_session_transcripts(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A flagged shell command in ``sessions/*.jsonl`` is reported, end to end."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        rows = [
+            {"_type": "metadata", "title": "t"},
+            {"role": "user", "content": "tidy up"},
+            {
+                "role": "tool",
+                "content": "Run",
+                "meta": {"kind": "execute", "input": json.dumps({"command": "chmod 777 /srv"})},
+            },
+        ]
+        (sessions / "dashboard_chat-1-1.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._security(_ns(sec_action="audit"))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "1 suspicious entries found" in out
+        assert "dashboard_chat-1-1.jsonl" in out and "chmod 777 /srv" in out
+
+    def test_audit_with_no_transcripts_says_nothing_was_scanned(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An empty data home is not a clean scan: no green check is printed."""
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
+        ):
+            cc._security(_ns(sec_action="audit"))
+        out = capsys.readouterr().out
+        assert "No session transcripts scanned" in out
+        assert "No suspicious tool usage" not in out
 
     def test_events_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
         with patch("kiro_crew.cli_commands.sel") as sel:
