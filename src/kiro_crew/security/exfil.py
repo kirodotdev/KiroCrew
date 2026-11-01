@@ -40,6 +40,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
+from .exfil_git_object import _GIT_OBJECT_NAME_RE, _exfil_blob_hit  # noqa: F401
 from .exfil_oauth import (  # noqa: F401
     _OAUTH_EXTENSION_HOST_RE,
     _OAUTH_QUERY_PARAMS,
@@ -437,9 +438,7 @@ def _exfil_url_warning(
                 f"Suspicious URL with long query params ({len(heuristic_query)} chars): "
                 f"{domain}{path_and_query[:60]}..."
             )
-        if _EXFIL_PATTERNS.search(heuristic_query) or _EXFIL_PATTERNS.search(
-            unquote_plus(heuristic_query)
-        ):
+        if _exfil_blob_hit(heuristic_query) or _exfil_blob_hit(unquote_plus(heuristic_query)):
             trace("exfil_query_pattern")
             return f"Suspicious URL with credential-like query data: {domain}"
     return None
@@ -1370,12 +1369,12 @@ def diagnose_oauth_url_credential(
         return _oauth_query_diagnostic(rule, heuristic_query)
     if rule == "exfil_query_pattern":
         query_decoder: Callable[[str], str] | None = (
-            None if _EXFIL_PATTERNS.search(heuristic_query) else unquote_plus
+            None if _exfil_blob_hit(heuristic_query) else unquote_plus
         )
         return _oauth_query_diagnostic(
             rule,
             heuristic_query,
-            predicate=lambda value: bool(_EXFIL_PATTERNS.search(value)),
+            predicate=_exfil_blob_hit,
             decoder=query_decoder,
         )
     if rule == "exfil_hard_credential":
@@ -1897,6 +1896,7 @@ def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = N
 # owner names ``display_safety`` reads here.
 # Owners never import this module. New work goes to the owner of its responsibility:
 #   ``exfil_url_rules`` -- the URL and query patterns and the presigned-URL validator
+#   ``exfil_git_object`` -- the git object name carve-out from the base64-blob test
 #   ``exfil_scan_span`` -- which span of a URL match is judged and replaced
 #   ``exfil_oauth`` -- the OAuth endpoint set, its audit events and the shape diagnostics
 #   ``exfil_bash`` -- the data-egress and reverse-shell command gate
@@ -1905,6 +1905,7 @@ from kiro_crew import _facade_mirror  # noqa: E402
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.security.exfil_url_rules",
+    "kiro_crew.security.exfil_git_object",
     "kiro_crew.security.exfil_scan_span",
     "kiro_crew.security.exfil_oauth",
     "kiro_crew.security.exfil_bash",

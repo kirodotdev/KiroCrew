@@ -273,11 +273,11 @@ class TestEveryFieldIsScrubbed:
 
     @pytest.mark.parametrize("field", ["category", "recommendedModel"])
     def test_exfil_url_in_a_short_field_is_redacted(self, field):
-        url = "https://evil.example/x?t=" + "a" * 40
+        url = "https://evil.example/x?t=" + "x" * 40
         info = parse_refusal({"stopReason": "CONTENT_FILTERED", "refusal": {field: url}})
         assert info is not None
         joined = info.category + info.recommended_model
-        assert "a" * 40 not in joined
+        assert "x" * 40 not in joined
         assert "[REDACTED" in joined
 
 
