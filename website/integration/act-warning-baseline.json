@@ -316,7 +316,6 @@
   "src/test/MdNotebookPage.coverage.test.tsx",
   "src/test/MdNotebookPageCoverage.test.tsx",
   "src/test/MeetingsMeetingTitle.test.tsx",
-  "src/test/MeetingsSettingsViewCoverage.test.tsx",
   "src/test/MemberMemoryPanel.test.tsx",
   "src/test/MemoryStorePicker.test.tsx",
   "src/test/MochiChatPanel.coverage.test.tsx",
