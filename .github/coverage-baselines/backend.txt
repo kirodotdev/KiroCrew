@@ -24,7 +24,6 @@ src/kiro_crew/apps/builtins/mochi/queue_file.py 72.8   # 134/184
 src/kiro_crew/apps/builtins/mochi/queue_poller.py 49.7   # 178/358
 src/kiro_crew/apps/builtins/mochi/stats_service.py 66.9   # 212/317
 src/kiro_crew/apps/builtins/mochi/watchlist_file.py 59.3   # 207/349
-src/kiro_crew/apps/builtins/mochi/watchlist_service.py 65.3   # 109/167
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/cloudwatch.py 58.9   # 116/197
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/http.py 53.8   # 35/65
 src/kiro_crew/apps/builtins/workflows/server.py 61.2   # 82/134
