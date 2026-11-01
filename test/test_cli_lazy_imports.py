@@ -98,9 +98,9 @@ def test_cli_import_does_not_load_heavy_modules(tmp_path: Path) -> None:
     # otherwise; the interpreter resolves kiro_crew from the installed package,
     # not from the directory it runs in, so nothing here needs the checkout.
     res = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-X", "utf8", "-c", code],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         timeout=120,
         cwd=tmp_path,
     )
@@ -194,11 +194,11 @@ def _read_line(
 def _stdio_roundtrip(subcommand: str, tmp_path: Path) -> list[str]:
     """Start ``kirocrew <subcommand>`` over stdio; return the tools/list names."""
     proc = subprocess.Popen(
-        [sys.executable, "-m", "kiro_crew", subcommand],
+        [sys.executable, "-X", "utf8", "-m", "kiro_crew", subcommand],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=True, encoding="utf-8",
         # Confined to the test's directory: the server is pinned to a
         # throwaway home already, and its cwd must not be the checkout either.
         cwd=tmp_path,
