@@ -447,6 +447,70 @@ describe('CrewChatWindow', () => {
     await waitFor(() => expect(screen.queryByTestId('queue-card')).toBeNull(), PEER_ROW_WAIT)
   })
 
+  it('shows a final reply that lands while an earlier re-read is still in flight (#25803)', async () => {
+    renderWindow()
+    await screen.findByText('hello', {}, PEER_ROW_WAIT)
+    // A slow tunnel: the next detail read answers with the transcript AS OF
+    // ITS START, and only when released.
+    let release: (() => void) | null = null
+    mocks.crewPeerGet.mockImplementation((_id: string, path: string) => {
+      if (path === 'api/chat/slots?crew=all') return Promise.resolve([{ key: 'other' }, slotRow])
+      const snapshot = detail
+      if (release) return Promise.resolve(snapshot)
+      return new Promise(resolve => { release = () => resolve(snapshot) })
+    })
+    const es = FakeEventSource.all[FakeEventSource.all.length - 1]
+    // The window throttles its re-read; the clock is stepped past that
+    // throttle, so no step waits on wall time.
+    vi.useFakeTimers()
+    try {
+      // A tool row finishes: its re-read starts and is held on the tunnel.
+      es.emit('chat_message', { slot: 'k1' })
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+      expect(release).not.toBeNull()
+      // The final reply lands on the peer while that read is still in flight,
+      // and its own re-read fires before the first one answers.
+      detail = { ...detail, messages: [...(detail.messages as object[]), { role: 'assistant', content: 'final reply', ts: 't3' }] }
+      es.emit('chat_message', { slot: 'k1' })
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+    } finally {
+      vi.useRealTimers()
+    }
+    release!()
+    expect(await screen.findByText('final reply', {}, PEER_ROW_WAIT)).toBeTruthy()
+  })
+
+  it('follows many frames during one held re-read with a single extra read', async () => {
+    renderWindow()
+    await screen.findByText('hello', {}, PEER_ROW_WAIT)
+    const detailPath = 'api/chat/slots/k1?limit=200'
+    let release: (() => void) | null = null
+    mocks.crewPeerGet.mockImplementation((_id: string, path: string) => {
+      if (path === 'api/chat/slots?crew=all') return Promise.resolve([{ key: 'other' }, slotRow])
+      if (release) return Promise.resolve(detail)
+      return new Promise(resolve => { release = () => resolve(detail) })
+    })
+    mocks.crewPeerGet.mockClear()
+    const detailReads = () => mocks.crewPeerGet.mock.calls.filter(c => c[1] === detailPath).length
+    const es = FakeEventSource.all[FakeEventSource.all.length - 1]
+    vi.useFakeTimers()
+    try {
+      es.emit('chat_message', { slot: 'k1' })
+      await act(() => vi.advanceTimersByTimeAsync(1000))
+      expect(detailReads()).toBe(1)
+      // Several frames land while that read is held, each past the throttle.
+      for (let i = 0; i < 4; i++) {
+        es.emit('chat_message', { slot: 'k1' })
+        await act(() => vi.advanceTimersByTimeAsync(1000))
+      }
+      expect(detailReads()).toBe(1)
+      await act(async () => { release!(); await vi.advanceTimersByTimeAsync(1000) })
+      expect(detailReads()).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('puts a refused steer back into the composer', async () => {
     slotRow = { ...slotRow, running: true }
     mocks.crewPeerPost.mockRejectedValue(new Error('peer refused'))
