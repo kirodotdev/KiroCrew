@@ -373,6 +373,23 @@ describe('crew editor — reasoning effort pin', () => {
   })
 })
 
+describe('crew editor — stored session colour', () => {
+  it('shows no colour control and leaves a stored colour out of the save body', async () => {
+    // The forms no longer edit session_color. The server keeps the stored value
+    // when the key is absent, so an unrelated save must not carry it.
+    const sheet = await openModelPane({ session_color: '#123456' })
+    expect(within(sheet).queryByLabelText('Session color hex value')).toBeNull()
+    expect(within(sheet).queryByText('Session Color')).toBeNull()
+    fireEvent.click(selectScope(sheet, 'Edit reasoning effort').getByRole('option', { name: 'High' }))
+    fireEvent.click(within(sheet).getByText('Save changes'))
+
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    const [, body] = mockApi.updateKirocrewAgent.mock.calls[0]
+    expect(body).not.toHaveProperty('session_color')
+    expect(body.reasoning_effort).toBe('high')
+  })
+})
+
 describe('crew editor — model list', () => {
   it('offers the models of the harness that judges the crew pin, not the configured one', async () => {
     // A crewmate DM thread on Claude Code under a kiro-cli default: kiro ids are not its choices.

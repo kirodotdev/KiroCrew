@@ -600,7 +600,7 @@ describe('crew editor — save', () => {
       triggers: '',
       model: 'claude-opus-5',
       reasoning_effort: '',
-      session_color: '',
+      // No session_color: the editor no longer edits it, so the server keeps it.
       avatar: {},
     })
   })
