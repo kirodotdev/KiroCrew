@@ -752,6 +752,42 @@ class TestRetentionIsBoundedAndCannotEmptyItself:
         assert mb.list_backups(src) == [current_2, current_1]
         assert not legacy.exists()
 
+    def test_a_stray_file_is_neither_rotated_away_nor_counted_as_newest(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        """A file with no stamp in its name is not a backup to retention or restore.
+
+        An operator's ``memory.pre-upgrade.db`` dropped beside the backups must not
+        take a ``keep`` slot (which deleted every real backup at ``keep=1``), must
+        never be deleted itself, and must not become restore's default choice.
+        """
+        src = resolve_store_path(DEFAULT_MEMORY_STORE)
+        base = datetime(2026, 1, 10, 12, tzinfo=timezone.utc)
+        older = mb.backup_store(src, now=base)
+        newer = mb.backup_store(src, now=base + timedelta(days=1))
+        assert older is not None and newer is not None
+        stray = mb.backup_dir_for(src) / f"{src.stem}.pre-upgrade.db"
+        stray.write_bytes(older.read_bytes())
+
+        assert mb.prune_backups(src, keep=1) == 1
+        assert newer.exists()
+        assert not older.exists()
+        assert stray.exists()
+        assert mb.newest_backup(DEFAULT_MEMORY_STORE) == newer
+        # A plain listing still shows the stray, so an operator can see it.
+        assert set(mb.list_backups(src)) == {newer, stray}
+
+    def test_a_stray_file_does_not_defeat_the_interval_guard(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        src = resolve_store_path(DEFAULT_MEMORY_STORE)
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        assert mb.back_up_all_stores(keep=7, now=base)["backed_up"] == 1
+        (mb.backup_dir_for(src) / f"{src.stem}.pre-upgrade.db").write_bytes(b"")
+        result = mb.back_up_all_stores(keep=7, now=base + timedelta(hours=1))
+        assert result["backed_up"] == 0
+        assert len(mb.list_backups(src, stamped_only=True)) == 1
+
 
 class TestAnInterruptedBackupLeavesNothingThatLooksLikeOne:
     def test_a_failure_mid_copy_leaves_no_partial_and_no_target(

@@ -2676,6 +2676,11 @@ self-contained file with no WAL to pair.
   `<stem>.<UTC second stamp>.db` names remain listable and restorable. Retention
   orders both formats by their parsed stamp rather than mtime. A copied or restored
   file carries a new mtime while its name still says when its contents were taken.
+  A file in the directory whose name carries no parseable stamp, such as an
+  operator's `memory.pre-upgrade.db`, is not a backup to retention: `prune_backups`,
+  the interval guard and `newest_backup` (restore's default choice) read
+  `list_backups(..., stamped_only=True)`, so it is never deleted, never counted
+  toward `keep` and never restored without `--from`.
 - **Atomicity**: each call writes its own hidden UUID `.partial` and renames it, so an
   interrupted or concurrent run cannot delete another call's stage or leave a
   truncated file that looks like a backup. The stage is switched to
