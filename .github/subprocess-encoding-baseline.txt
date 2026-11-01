@@ -57,5 +57,4 @@
 3 test/test_spawn_exec_shim.py
 2 test/test_stable_release_gate.py
 1 test/test_tailnet_e2e.py
-3 test/test_windows_job_limits.py
 1 test/test_xdist_host_budget.py
