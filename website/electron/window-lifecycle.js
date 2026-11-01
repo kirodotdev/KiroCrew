@@ -627,6 +627,7 @@ function createWindowLifecycle(options) {
       dashboardUrl: windowBackendUrl,
       resolveDashboardUrl: (wc) => windowForWebContents(wc)?._mcBackendUrl,
       pending: downloadExpectations,
+      platform,
     });
 
     return view;
