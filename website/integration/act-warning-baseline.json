@@ -145,7 +145,6 @@
   "src/test/DiffBlock.test.tsx",
   "src/test/EditableCodeBlock.editorActions.test.tsx",
   "src/test/ExportSessionItem.test.tsx",
-  "src/test/FileChangeChipsAnim.test.tsx",
   "src/test/FolderConfigModal.test.tsx",
   "src/test/FolderPanel.test.tsx",
   "src/test/FolderPanel.tree.test.tsx",
