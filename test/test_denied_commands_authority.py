@@ -138,9 +138,7 @@ class TestIsDeniedForwarding:
         orig = security.is_denied
         security.is_denied = _fake_is_denied  # type: ignore[assignment]
         try:
-            PolicyAuthority().is_denied(
-                "some cmd", denied_regexes=["find .*"], reason_notes=notes
-            )
+            PolicyAuthority().is_denied("some cmd", denied_regexes=["find .*"], reason_notes=notes)
         finally:
             security.is_denied = orig  # type: ignore[assignment]
 
@@ -166,9 +164,7 @@ class TestIsDeniedForwarding:
         # shell fuses together cannot be checked against a branch name at all, so
         # no opt-out may reach it.
         authority = PolicyAuthority()
-        assert (
-            authority.is_denied("git push origin ma$(echo)in", denied_regexes=[]) is not None
-        )
+        assert authority.is_denied("git push origin ma$(echo)in", denied_regexes=[]) is not None
 
     def test_overlay_never_filtered_by_denied_regexes(self) -> None:
         # The ADD-only overlay flows through extra_patterns and is applied even
