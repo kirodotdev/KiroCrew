@@ -25,7 +25,12 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Optional
 
-from kiro_crew.platform_compat_native import _ACCESS_HONOURS_EFFECTIVE_IDS, IS_POSIX, IS_WINDOWS
+from kiro_crew.platform_compat_native import (
+    _ACCESS_HONOURS_EFFECTIVE_IDS,
+    IS_LINUX,
+    IS_POSIX,
+    IS_WINDOWS,
+)
 
 # The whole compatibility layer logs under one name, which operator log filters and
 # the tests' caplog scopes key on.
@@ -68,6 +73,73 @@ def env_key_allowed(key: str, allowed: frozenset[str] | tuple[str, ...]) -> bool
 
 
 _TRUSTED_SYSTEM_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin")
+
+#: Directories the glibc/musl loader searches for a shared object before it
+#: consults any configuration, plus the file that names the rest.
+#:
+#: POSIX-only literals, which is why they live here: this module is the one place
+#: the cross-platform gate exempts, because platform knowledge has to be written
+#: down somewhere and scattering it through callers is how it goes stale. The
+#: sibling of :data:`_TRUSTED_SYSTEM_BIN_DIRS`, for libraries rather than binaries.
+_TRUSTED_SYSTEM_LIB_DIRS = ("/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/local/lib")
+
+#: Loader configuration naming the directories beyond the defaults. Read as a
+#: plain file; nothing here runs ``ldconfig``.
+_LD_SO_CONF = "/etc/ld.so.conf"
+
+#: Bound on ``include`` recursion in that configuration, so a self-referential or
+#: circular config cannot loop.
+_LD_CONF_MAX_DEPTH = 4
+
+
+def _ld_conf_dirs(conf: Path, seen: set[Path], depth: int = 0) -> list[str]:
+    """Library directories named by *conf*, following ``include`` directives."""
+    if depth > _LD_CONF_MAX_DEPTH or conf in seen:
+        return []
+    seen.add(conf)
+    found: list[str] = []
+    try:
+        lines = conf.read_text(errors="replace").splitlines()
+    except OSError:
+        return found
+    for line in lines:
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("include"):
+            pattern = line[len("include") :].strip()
+            if not pattern:
+                continue
+            base = Path(pattern)
+            parent = base.parent if base.is_absolute() else conf.parent / base.parent
+            try:
+                children = sorted(parent.glob(base.name))
+            except OSError:
+                continue
+            for child in children:
+                found.extend(_ld_conf_dirs(child, seen, depth + 1))
+        else:
+            found.append(line)
+    return found
+
+
+def system_library_dirs() -> tuple[Path, ...]:
+    """Directories this host may hold shared libraries in, defaults first.
+
+    The loader's own default set plus whatever ``/etc/ld.so.conf`` adds, which is
+    where a distribution puts its multiarch directories. Empty off Linux: there is
+    no equivalent question to answer on macOS or Windows, and a caller that needs
+    one should ask it separately rather than reinterpret this.
+
+    Directories are returned whether or not they exist, so a caller filters; the
+    order is the loader's, so a caller that stops at the first hit matches it.
+    """
+    if not IS_LINUX:
+        return ()
+    names = list(_TRUSTED_SYSTEM_LIB_DIRS)
+    names.extend(_ld_conf_dirs(Path(_LD_SO_CONF), set()))
+    return tuple(Path(name) for name in dict.fromkeys(names))
+
 
 # Windows argv carries a bare name (``taskkill``) while the file on disk carries
 # an extension (``taskkill.exe``), so a trusted lookup must try the suffixes the

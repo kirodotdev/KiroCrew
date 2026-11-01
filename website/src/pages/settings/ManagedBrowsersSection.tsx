@@ -79,6 +79,19 @@ export function ManagedBrowsersSection({
   // Separate from `!installCmdCopied`: idle and failed both read as not-copied,
   // but only the failure needs a notice (same split as MobileLoginCard).
   const [installCmdCopyFailed, setInstallCmdCopyFailed] = useState(false)
+  // Separate from the installCmd pair: both blocks can be on screen in
+  // different states, so one shared flag would flip the wrong label.
+  const [depsCmdCopied, setDepsCmdCopied] = useState(false)
+  const [depsCmdCopyFailed, setDepsCmdCopyFailed] = useState(false)
+  const noticeCommand = data.last_notice_command
+  // This section stays mounted across installs, so a later install can bring a
+  // different command; a "Copied" latched on the old one must not claim the new.
+  const [commandShown, setCommandShown] = useState(noticeCommand)
+  if (commandShown !== noticeCommand) {
+    setCommandShown(noticeCommand)
+    setDepsCmdCopied(false)
+    setDepsCmdCopyFailed(false)
+  }
 
   // Node is the one prerequisite an install cannot supply for the operator, so a
   // too-old runtime is reported instead of offering a button that would fail.
@@ -383,6 +396,62 @@ export function ManagedBrowsersSection({
           </div>
         </div>
       </SettingsCard>
+
+      {/*
+        An ADVISORY notice, deliberately not an ErrorNotice: the install
+        succeeded, and a red failure banner would send the operator to retry a
+        download that worked. It reports a downloaded browser whose shared
+        libraries may not resolve on this host, naming what to install before the
+        first launch fails cryptically instead of after.
+
+        Muted rather than coloured, because the probe re-implements the loader's
+        search and can be wrong on an unusual host -- a warning colour would
+        overstate a heuristic. Hidden while an install runs: that run re-probes.
+      */}
+      {data.last_notice && !activity && (
+        <SettingsCard>
+          <div className="flex items-start gap-3" data-testid="browser-library-notice">
+            <AlertTriangle size={18} className="text-muted shrink-0 mt-[2px]" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] text-muted mt-0 mb-0 break-words">{data.last_notice}</p>
+              {/* A `<pre>` and a copy button, the treatment `standalone_install`
+                  gets above: a long package list must be transcribed EXACTLY. */}
+              {noticeCommand && (
+                <>
+                  <pre className="mt-1.5 mb-1 whitespace-pre-wrap break-all text-[12px] bg-bg-elevated rounded px-2 py-1.5">
+                    <code>{noticeCommand}</code>
+                  </pre>
+                  <Btn
+                    onClick={async () => {
+                      let ok = false
+                      try {
+                        ok = await copyToClipboard(noticeCommand)
+                      } catch {
+                        ok = false
+                      }
+                      setDepsCmdCopied(ok)
+                      setDepsCmdCopyFailed(!ok)
+                    }}
+                  >
+                    <Copy size={13} className="lucide-inline" />{' '}
+                    {depsCmdCopied
+                      ? i18nT('pages.settings.browserPanel.copied')
+                      : i18nT('pages.settings.browserPanel.copy_command')}
+                  </Btn>
+                  {depsCmdCopyFailed && (
+                    <ErrorNotice
+                      variant="inline"
+                      className="mt-1.5"
+                      message={i18nT('pages.settings.browserPanel.copy_failed')}
+                      askAgent={allowHandoff}
+                    />
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </SettingsCard>
+      )}
     </SettingsSection>
   )
 }

@@ -49,6 +49,8 @@ type State = {
   browser_ok: boolean
   installing: boolean
   last_error: string | null
+  last_notice?: string | null
+  last_notice_command?: string | null
   token: boolean
   browsers?: Record<string, boolean>
   browser_status?: Record<string, 'downloaded' | 'missing' | 'unknown'>
@@ -159,6 +161,98 @@ describe('BrowserPanel', () => {
     expect(screen.getByRole('switch', { name: /Use the built-in browser/ })).toBeTruthy()
     // No hand-off: the token draft shares the panel.
     expect(screen.queryByTitle(/open a chat with this error/i)).toBeNull()
+  })
+
+  it('shows a library advisory from a successful install, with its command, not as an error', async () => {
+    await renderPanel(
+      installed({
+        last_notice: 'Chromium downloaded, but 1 shared library it needs may be missing: libgbm.so.1.',
+        last_notice_command: 'sudo dnf install -y mesa-libgbm',
+        install_job: job({ status: 'succeeded', finished_at: '2026-01-01T00:01:00Z' }),
+      }),
+    )
+    const notice = screen.getByTestId('browser-library-notice')
+    expect(notice.textContent).toMatch(/libgbm\.so\.1/)
+    expect(within(notice).getByText('sudo dnf install -y mesa-libgbm').tagName).toBe('CODE')
+    expect(within(notice).getByRole('button', { name: /Copy command/i })).toBeTruthy()
+    // An advisory, not a failure banner.
+    expect(within(notice).queryByRole('alert')).toBeNull()
+  })
+
+  it('shows the advisory prose alone when it carries no command', async () => {
+    await renderPanel(installed({ last_notice: 'Firefox may be missing libxyz.so.1.', last_notice_command: null }))
+    const notice = screen.getByTestId('browser-library-notice')
+    expect(notice.textContent).toMatch(/libxyz/)
+    expect(notice.querySelector('pre')).toBeNull()
+  })
+
+  it.each([
+    ['succeeds', vi.fn().mockResolvedValue(undefined), /Copied/i, false],
+    ['fails', vi.fn().mockRejectedValue(new Error('denied')), /Copy command/i, true],
+  ])('reports the advisory command copy when the clipboard write %s', async (_label, writeText, label, alert) => {
+    const origClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const origExec = document.execCommand
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    document.execCommand = vi.fn().mockReturnValue(false)
+    try {
+      await renderPanel(
+        installed({ last_notice: 'Chromium may be missing libgbm.so.1.', last_notice_command: 'sudo dnf install -y mesa-libgbm' }),
+      )
+      const notice = screen.getByTestId('browser-library-notice')
+      fireEvent.click(within(notice).getByRole('button', { name: /Copy command/i }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('sudo dnf install -y mesa-libgbm'))
+      await waitFor(() => expect(within(notice).getByRole('button', { name: label })).toBeTruthy())
+      if (alert) await waitFor(() => expect(within(notice).getByRole('alert')).toBeTruthy())
+      else expect(within(notice).queryByRole('alert')).toBeNull()
+    } finally {
+      document.execCommand = origExec
+      if (origClipboard) Object.defineProperty(navigator, 'clipboard', origClipboard)
+      else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
+  })
+
+  it('drops a "Copied" label when a later install brings a different command', async () => {
+    const origClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    })
+    try {
+      const { queryClient } = await renderPanel(
+        installed({ last_notice: 'Chromium may be missing libgbm.so.1.', last_notice_command: 'sudo dnf install -y mesa-libgbm' }),
+      )
+      const notice = screen.getByTestId('browser-library-notice')
+      fireEvent.click(within(notice).getByRole('button', { name: /Copy command/i }))
+      await waitFor(() => expect(within(notice).getByRole('button', { name: /Copied/i })).toBeTruthy())
+
+      mockGet().mockResolvedValue(
+        installed({ last_notice: 'Firefox may be missing libgtk-3.so.0.', last_notice_command: 'sudo dnf install -y gtk3' }) as never,
+      )
+      await act(async () => { await queryClient.invalidateQueries({ queryKey: ['browserInstall'] }) })
+      await waitFor(() => expect(screen.getByText('sudo dnf install -y gtk3')).toBeTruthy())
+      const after = screen.getByTestId('browser-library-notice')
+      expect(within(after).getByRole('button', { name: /Copy command/i })).toBeTruthy()
+      expect(within(after).queryByRole('button', { name: /Copied/i })).toBeNull()
+    } finally {
+      if (origClipboard) Object.defineProperty(navigator, 'clipboard', origClipboard)
+      else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
+  })
+
+  it('hides the library advisory while an install runs', async () => {
+    await renderPanel(
+      installed({
+        installing: true,
+        last_notice: 'Chromium may be missing libgbm.so.1.',
+        install_job: job({ kind: 'engine_download', engine: 'firefox' }),
+      }),
+    )
+    expect(screen.queryByTestId('browser-library-notice')).toBeNull()
+  })
+
+  it('renders no library advisory when the install reported none', async () => {
+    await renderPanel(installed())
+    expect(screen.queryByTestId('browser-library-notice')).toBeNull()
   })
 
   it('offers the install when the CLI is absent', async () => {
