@@ -87,7 +87,6 @@
   "src/test/ExportSessionItem.test.tsx",
   "src/test/FileChangeChipsAnim.test.tsx",
   "src/test/FolderConfigModal.test.tsx",
-  "src/test/FolderPanel.test.tsx",
   "src/test/FollowUpCard.test.tsx",
   "src/test/InstanceTabBar.test.tsx",
   "src/test/InstancesViewport.test.tsx",
