@@ -415,6 +415,22 @@ export function handleDashboardMoved(queryClient: QueryClient, data: FrameData):
   }
 }
 
+/** A slot's crew log grew (`slot_projection` or `slot_fold`), so the root session
+ *  pages over it must re-read. *roots* is the frame's slot and every slot it was
+ *  created under, as for the work board: a worker's report moves its conductor's
+ *  items. The gateway sends no `dashboard_instance_changed` for a ledger write --
+ *  that frame is only for an adopted or moved page -- so without this an open
+ *  Overview keeps its old board until the fallback poll. */
+export function handleSlotFoldMoved(queryClient: QueryClient, roots: readonly string[]): void {
+  const cache = queryClient.getQueryCache()
+  for (const root of roots) {
+    const key = [SESSION_DASHBOARD_QUERY_PREFIX, root]
+    // Most slots have no Overview cached: skip them rather than send a no-op
+    // invalidate per ancestor on every crew-log write.
+    if (root && cache.findAll({ queryKey: key }).length > 0) refreshDashboardReads(queryClient, key)
+  }
+}
+
 /** Sent once per connection before any member_projection frame: the server's
  *  authoritative lastSeq per slug. Truncate held rows that ran ahead of it (a
  *  torn tail rolled back after a restart). */
