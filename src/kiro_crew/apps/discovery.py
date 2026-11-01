@@ -67,6 +67,15 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     if contrib_d:
         d["contributes"] = contrib_d
 
+    # Kept so the persisted snapshot carries every manifest field. Route admission
+    # never reads this copy: a builtin's agentRoutes come from its shipped app.json.
+    if manifest.agentRoutes:
+        d["agentRoutes"] = (
+            list(manifest.agentRoutes)
+            if isinstance(manifest.agentRoutes, list)
+            else manifest.agentRoutes
+        )
+
     if manifest.mcpServers:
         d["mcpServers"] = manifest.mcpServers
     if manifest.config_keys:
