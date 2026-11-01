@@ -4,23 +4,9 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [0.12.0] - 2026-11-01
 
-Mates are now on for everyone, two more coding agents join the harness list,
-and a new Explore panel shows what to try next. Chat, the sidebar and
-notifications pick up many small controls, and Ultra Mode arrives as a
-preview you can switch on.
-
-### Mates for everyone
-
-- **Mates without a preview switch**: the Mates row in the left rail, the
-  `/members` page and the mate rows in the command bar are always shown, and a
-  first visit tours a mate's profile tabs and offers to let it keep track of its
-  own work.
-- **A desk of its own**: each mate keeps the chats and folders it opens in one
-  sidebar folder named after it, and works in its own git worktree per
-  repository, so two mates on one repo no longer commit each other's edits.
-- **Take a mate with you**: the mate profile card's "Export as file" writes a
-  `.crewjam` file with an editable lessons draft, and Mates > Import mate reads it
-  back (older `.crewmate` files still import).
+Two more coding agents join the harness list, and a new Explore panel shows
+what to try next. Chat, the sidebar and notifications pick up many small
+controls, and Ultra Mode arrives as a preview you can switch on.
 
 ### More coding agents
 
@@ -116,8 +102,6 @@ Developer > Feature Previews and is off until you turn it on.
 - **Ultra Mode**: the "Ultra Mode" chip on a new chat runs it on a conductor
   that hands each task to its own worker chat, and the side panel's Board tab
   shows the crew by what needs you, with a catch-up message when you come back.
-- **Agent harness per mate**: a mate's profile gains an "Agent harness" row, so
-  one mate can run on Claude Code while the rest stay on KAS.
 - **Session Environments**: Settings > Session Environments connects Coder,
   Fly.io Sprites or boxd workspaces, with an environment chip in the composer
   and a remote Files panel and terminal; the gateway also needs
@@ -130,10 +114,9 @@ instead of leaving the chat stuck on thinking, and a reply keeps its footer
 however the turn ends. Regenerate that ends empty keeps the previous reply, and
 sessions with only sub-agents running stay under the In progress filter.
 
-**Mates and channels.** Mates you created are listed even with an empty chat,
-and a mate stays silent when it has nothing to say. Slack replies post only the
-final answer, Slack Socket Mode works behind a SOCKS proxy, and the Atlassian
-connection's Jira and Confluence tools work again.
+**Channels and connections.** Slack replies post only the final answer, and
+Slack Socket Mode works behind a SOCKS proxy. The Atlassian connection's Jira
+and Confluence tools work again.
 
 **Schedules, memory and desktop.** A cron's wall-clock time holds across a
 daylight saving change, and a memory backup folder with an extra file no longer
