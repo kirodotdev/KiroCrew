@@ -298,7 +298,6 @@
   "src/test/MarkdownRenderer.blockedLink.test.tsx",
   "src/test/MarkdownRenderer.brokenImage.test.tsx",
   "src/test/MarkdownRenderer.contextmenu.test.tsx",
-  "src/test/MarkdownRenderer.folderChip.test.tsx",
   "src/test/MarkdownRenderer.inlineCodeCopy.test.tsx",
   "src/test/MarkdownRenderer.inlineCodeInLink.test.tsx",
   "src/test/MarkdownRenderer.lightboxCopy.test.tsx",
