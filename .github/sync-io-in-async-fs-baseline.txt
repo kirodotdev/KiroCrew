@@ -29,7 +29,6 @@
 3 src/kiro_crew/dashboard/handlers/artifacts_parts/item_lifecycle.py
 5 src/kiro_crew/dashboard/handlers/core.py
 8 src/kiro_crew/dashboard/handlers/mcp.py
-3 src/kiro_crew/dashboard/handlers/sessions_parts/history_reads.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 src/kiro_crew/dashboard/messaging_api/run_views.py
 1 src/kiro_crew/dashboard/messaging_api/teams_settings.py
