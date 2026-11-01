@@ -18,7 +18,7 @@ import pathlib
 
 import pytest
 
-from .test_producer import load_build, make_crew, sign_plan
+from .test_producer import load_build, make_crew, requires_symlinks, sign_plan
 
 _posix_only = pytest.mark.skipif(
     os.name != "posix",
@@ -58,6 +58,7 @@ def test_a_junction_at_the_agents_directory_is_refused(tmp_path: pathlib.Path) -
     assert "agent spec" in str(caught.value), "the message still says prompt file"
 
 
+@requires_symlinks
 def test_a_link_at_the_spec_itself_is_still_refused(tmp_path: pathlib.Path) -> None:
     """The narrower case must keep working; the walk covers both."""
     mod = load_build()

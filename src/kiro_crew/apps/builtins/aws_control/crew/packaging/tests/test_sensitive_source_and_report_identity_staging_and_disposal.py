@@ -19,7 +19,13 @@ import pathlib
 import pytest
 
 from .sensitive_source_and_report_identity_helpers import _build, _posix_only
-from .test_producer import builder_source_text, load_build, make_crew, transaction_source
+from .test_producer import (
+    builder_source_text,
+    load_build,
+    make_crew,
+    requires_symlinks,
+    transaction_source,
+)
 
 
 def test_a_plan_written_under_a_file_refuses_instead_of_crashing(
@@ -639,6 +645,7 @@ def test_a_manifest_that_is_not_an_object_refuses_rather_than_crashing(
     assert "not an object" in str(caught.value)
 
 
+@requires_symlinks
 def test_a_refused_marker_write_does_not_strand_the_staging_tree(
     tmp_path: pathlib.Path,
 ) -> None:

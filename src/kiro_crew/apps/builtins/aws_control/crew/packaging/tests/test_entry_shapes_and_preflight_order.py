@@ -28,7 +28,7 @@ import pathlib
 
 import pytest
 
-from .test_producer import load_build, make_crew, sign_plan
+from .test_producer import load_build, make_crew, requires_symlinks, sign_plan
 
 _posix_only = pytest.mark.skipif(
     os.name != "posix",
@@ -139,6 +139,7 @@ def test_an_ordinary_rebuild_still_uses_the_aside_path(tmp_path: pathlib.Path) -
 # ---------------------------------------------------------------------------
 # T3
 # ---------------------------------------------------------------------------
+@requires_symlinks
 def test_the_report_preflight_judges_the_entry_before_reading_it(tmp_path: pathlib.Path) -> None:
     """A link at the report path must be decided WITHOUT reading through it.
 
