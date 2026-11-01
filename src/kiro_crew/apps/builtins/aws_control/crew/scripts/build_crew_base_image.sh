@@ -18,14 +18,14 @@
 # not folded in here.
 #
 # Usage:
-#   scripts/build_crew_base_image.sh [--tag TAG]
+#   src/kiro_crew/apps/builtins/aws_control/crew/scripts/build_crew_base_image.sh [--tag TAG]
 #
 #   --tag  image tag to build (default: kirocrew-crew-base:dev)
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-readonly RUNTIME_DIR="${REPO_ROOT}/src/kiro_crew/apps/builtins/aws_control/crew/runtime"
+readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../../../../.." && pwd)" # src/kiro_crew/apps/builtins/aws_control/crew/scripts
+readonly RUNTIME_DIR="$(dirname "${SCRIPT_DIR}")/runtime"
 readonly VENDOR_DIR="${RUNTIME_DIR}/vendor"
 
 TAG="kirocrew-crew-base:dev"
@@ -143,4 +143,4 @@ docker image inspect "${TAG}" --format '    id:   {{.Id}}
     arch: {{.Architecture}}'
 echo
 echo "This is the BASE image. Add one crew on top with:"
-echo "  scripts/build_crew_image.sh --base <repo@sha256:...> --bundle <bundle-dir>"
+echo "  src/kiro_crew/apps/builtins/aws_control/crew/scripts/build_crew_image.sh --base <repo@sha256:...> --bundle <bundle-dir>"

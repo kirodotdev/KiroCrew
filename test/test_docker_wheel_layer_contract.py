@@ -42,9 +42,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-_CREW_RUNTIME = (
-    ROOT / "src" / "kiro_crew" / "apps" / "builtins" / "aws_control" / "crew" / "runtime"
-)
+_CREW_TREE = ROOT / "src" / "kiro_crew" / "apps" / "builtins" / "aws_control" / "crew"
+_CREW_RUNTIME = _CREW_TREE / "runtime"
+#: The crew image lane's build-plan module, in the crew tree's ``scripts/``.
+_BUILD_PLAN = _CREW_TREE / "scripts" / "crew_image_build_plan.py"
 
 #: ``recipe path -> the build-context directory its single wheel is staged in``.
 #:
@@ -70,9 +71,9 @@ WHEEL_FREE: tuple[Path, ...] = (_CREW_RUNTIME / "Dockerfile.crew",)
 
 
 def _load_build_plan():
-    """The crew image lane's build-plan module, loaded from ``scripts/``.
+    """The crew image lane's build-plan module, loaded from the crew tree's ``scripts/``.
 
-    ``scripts/`` is not an importable package, so the module is loaded by file
+    That ``scripts/`` is not an importable package, so the module is loaded by file
     path -- the same way ``test/test_crew_image_build_plan.py`` loads it. It is
     registered in ``sys.modules`` before execution because ``@dataclass`` looks
     its own module up there while the class body runs.
@@ -81,9 +82,7 @@ def _load_build_plan():
     cached = sys.modules.get(name)
     if cached is not None:
         return cached
-    spec = importlib.util.spec_from_file_location(
-        name, ROOT / "scripts" / "crew_image_build_plan.py"
-    )
+    spec = importlib.util.spec_from_file_location(name, _BUILD_PLAN)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
@@ -95,7 +94,7 @@ def _instructions(dockerfile: Path) -> list[str]:
     """Logical Dockerfile instructions, continuations joined, comments dropped.
 
     A thin per-file wrapper over the single repository reader,
-    ``logical_instructions`` in ``scripts/crew_image_build_plan.py``: it reads
+    ``logical_instructions`` in ``crew/scripts/crew_image_build_plan.py``: it reads
     the recipe's text and classifies it through that one reader, so this ratchet
     and the crew image lane cannot classify the same recipe differently.
     """
@@ -218,6 +217,15 @@ _ALL_RECIPES: tuple[Path, ...] = tuple(RECIPES) + WHEEL_FREE
 _NAMED_SCRIPT = re.compile(r"scripts/[A-Za-z0-9_.-]+\.sh")
 
 
+def _citation_root(dockerfile: Path) -> Path:
+    """Where *dockerfile*'s ``scripts/`` citations resolve: its crew tree, or the root.
+
+    A crew recipe's producers sit in the crew tree's own ``scripts/``, beside the
+    ``runtime/`` it lives in; every other recipe cites the repository's.
+    """
+    return _CREW_TREE if dockerfile.is_relative_to(_CREW_RUNTIME) else ROOT
+
+
 @pytest.mark.parametrize("dockerfile", list(_ALL_RECIPES), ids=_ids(_ALL_RECIPES))
 def test_named_build_scripts_exist_and_are_executable(dockerfile: Path) -> None:
     """A script a recipe names as its producer must exist and be runnable.
@@ -237,14 +245,15 @@ def test_named_build_scripts_exist_and_are_executable(dockerfile: Path) -> None:
     """
     rel = dockerfile.relative_to(ROOT)
     named = sorted(set(_NAMED_SCRIPT.findall(dockerfile.read_text(encoding="utf-8"))))
-    missing = [p for p in named if not (ROOT / p).is_file()]
+    base = _citation_root(dockerfile)
+    missing = [p for p in named if not (base / p).is_file()]
     assert not missing, (
         f"{rel} names build script(s) that do not exist: {missing}. A recipe citing "
         "an absent producer cannot be built from a clean checkout, and no lane runs "
         "`docker build` to notice -- which is exactly how this subtree merged "
         "unbuildable. Create the script, or stop naming it."
     )
-    not_executable = [p for p in named if not os.access(ROOT / p, os.X_OK)]
+    not_executable = [p for p in named if not os.access(base / p, os.X_OK)]
     assert not not_executable, (
         f"{rel} names build script(s) that are not executable: {not_executable}. The "
         "recipe's own prose tells a reader to invoke them directly, so a "

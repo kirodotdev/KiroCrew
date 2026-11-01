@@ -363,6 +363,21 @@ when the platform will take the VM. Because teardown acts on the stored
 process choose which VM the next delete destroys, so the file is a write-protected
 target in `security/paths_lists.py`.
 
+**What the lane borrows from an app.** Two things the lane needs ship with the
+aws-control app, and `cloud/` reaches both through seams in `kiro_crew.apps.seams`
+(see `app-kit-platform.md`, "A core feature that needs an app's code asks a seam"),
+never by importing the app. The crew runtime (`crew_runtime` seam) is the Docker build context the recipe zips, and the bundle
+digest is computed by the bundle builder that ships beside it. `recipe.RUNTIME_DIR`,
+`BASE_DOCKERFILE`, `CREW_DOCKERFILE`, `MICROVM_DOCKERFILE`, `SSM_AGENT_CONFIG` and
+`CONTAINER_DIR` are resolved through that seam when they are read, not bound at
+import. With no provider, reading any of them and `bundle_digest_of` raise
+`RecipeRefused`, and `check_layout` still answers because it reads only the bundle.
+The sandbox-masked staging root that `api.staging_dir` cuts a secret's file under
+(`transfer_staging` seam) is the other one. With no provider it raises
+`RuntimeError` rather than falling back to the shared temp directory, which a
+same-UID agent could read. `test_cloud_microvm_recipe.py::TestTheRuntimeComesFromTheCrewRuntimeSeam`
+and `test_app_seams.py::TestCoreCallersWithNoProvider` pin both.
+
 ## Where launch state lives
 
 Two files, two owners. `cloud.json` is the OPERATOR's: they hand-write the `fargate` block

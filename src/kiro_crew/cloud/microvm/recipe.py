@@ -60,24 +60,64 @@ logger = logging.getLogger(__name__)
 #: failure arrives minutes later as a build error rather than here as a refusal.
 DOCKERFILE_NAME = "Dockerfile"
 
-#: The crew runtime's own directory, located from this file rather than by
-#: importing the AWS Control app, so reading a recipe does not pull that app's
-#: import graph into ``cloud``.
-RUNTIME_DIR = (
-    Path(__file__).resolve().parents[2] / "apps" / "builtins" / "aws_control" / "crew" / "runtime"
-)
+#: The crew runtime's files this lane reads, each relative to the runtime directory.
+#: That directory belongs to whichever app provides the ``crew_runtime`` seam
+#: (:func:`runtime_dir`), so each is resolved on access through :func:`__getattr__`
+#: rather than bound at import: reading a recipe must not pull the providing app's
+#: import graph into ``cloud``, and importing this module must keep working when no
+#: app provides one.
+#:
+#: ``BASE_DOCKERFILE`` -- the base recipe: the runtime, the AWS CLI, kiro-cli, every
+#: ``FROM`` pinned inside it. Reused from the Fargate lane rather than copied.
+#: ``CREW_DOCKERFILE`` -- the crew layer: the bundle, and nothing else. Also the
+#: Fargate lane's own.
+#: ``MICROVM_DOCKERFILE`` -- the MicroVM layer: the platform's prerequisites and the
+#: hook listener as PID 1. The ONLY recipe this lane adds, and it adds nothing of
+#: ours -- the serving code and the crew content are already in the image when it
+#: starts.
+#: ``SSM_AGENT_CONFIG`` -- the guest's SSM agent configuration, which travels in the
+#: zip.
+#: ``CONTAINER_DIR`` -- the container package the image serves from.
+_RUNTIME_FILES: dict[str, str] = {
+    "BASE_DOCKERFILE": "Dockerfile",
+    "CREW_DOCKERFILE": "Dockerfile.crew",
+    "MICROVM_DOCKERFILE": "Dockerfile.microvm",
+    "SSM_AGENT_CONFIG": "microvm-ssm-agent.json",
+    "CONTAINER_DIR": "container",
+}
 
-#: The base recipe: the runtime, the AWS CLI, kiro-cli, every ``FROM`` pinned
-#: inside it. Reused from the Fargate lane rather than copied.
-BASE_DOCKERFILE = RUNTIME_DIR / "Dockerfile"
 
-#: The crew layer: the bundle, and nothing else. Also the Fargate lane's own.
-CREW_DOCKERFILE = RUNTIME_DIR / "Dockerfile.crew"
+def runtime_dir() -> Path:
+    """The crew runtime's directory, from the app that provides the ``crew_runtime`` seam.
 
-#: The MicroVM layer: the platform's prerequisites and the hook listener as PID 1.
-#: The ONLY recipe this lane adds, and it adds nothing of ours -- the serving code
-#: and the crew content are already in the image when it starts.
-MICROVM_DOCKERFILE = RUNTIME_DIR / "Dockerfile.microvm"
+    Refuses when no app provides one: every recipe this lane builds is that runtime's
+    own, so there is nothing to substitute.
+    """
+    from kiro_crew.apps import seams
+
+    runtime = seams.crew_runtime()
+    if runtime is None:
+        raise RecipeRefused(
+            "no crew runtime is installed, so this lane has no recipe to build: the "
+            "remote-crew image is built from the crew runtime an app provides through "
+            "the crew_runtime seam (the aws-control app ships it)"
+        )
+    return runtime.runtime_dir
+
+
+def _runtime_path(name: str) -> Path:
+    """The runtime file :data:`_RUNTIME_FILES` names *name*, or the runtime dir itself."""
+    if name == "RUNTIME_DIR":
+        return runtime_dir()
+    return runtime_dir() / _RUNTIME_FILES[name]
+
+
+def __getattr__(name: str) -> Path:
+    """``RUNTIME_DIR`` and the :data:`_RUNTIME_FILES` names, resolved on access."""
+    if name == "RUNTIME_DIR" or name in _RUNTIME_FILES:
+        return _runtime_path(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 #: The POSIX user the crew runs as inside the image, and therefore the user every
 #: in-guest command must be wrapped in.
@@ -109,12 +149,6 @@ GUEST_RUN_AS = "crew"
 #: ``test_the_front_port_matches_the_image`` reads it back out of
 #: ``Dockerfile.microvm``, so a change in either place fails there.
 GUEST_FRONT_PORT = 8081
-
-#: The guest's SSM agent configuration, which travels in the zip.
-SSM_AGENT_CONFIG = RUNTIME_DIR / "microvm-ssm-agent.json"
-
-#: The container package the image serves from.
-CONTAINER_DIR = RUNTIME_DIR / "container"
 
 #: The crew layer's base indirection, which this lane replaces with the base's own
 #: layers. Matched as whole lines so a comment mentioning either cannot be taken
@@ -215,11 +249,16 @@ def base_recipe_digest(wheel: Path) -> str:
     """
     digest = hashlib.sha256()
     roots = [
-        BASE_DOCKERFILE,
-        CREW_DOCKERFILE,
-        MICROVM_DOCKERFILE,
-        CONTAINER_DIR,
-        SSM_AGENT_CONFIG,
+        *(
+            _runtime_path(name)
+            for name in (
+                "BASE_DOCKERFILE",
+                "CREW_DOCKERFILE",
+                "MICROVM_DOCKERFILE",
+                "CONTAINER_DIR",
+                "SSM_AGENT_CONFIG",
+            )
+        ),
         wheel,
     ]
     for root in roots:
@@ -249,9 +288,9 @@ def assemble_dockerfile(digest: str) -> str:
     crew layer that stops starting from a base reference breaks this build rather
     than being silently mis-assembled.
     """
-    base = BASE_DOCKERFILE.read_text(encoding="utf-8")
-    crew = CREW_DOCKERFILE.read_text(encoding="utf-8")
-    micro = MICROVM_DOCKERFILE.read_text(encoding="utf-8")
+    base = _runtime_path("BASE_DOCKERFILE").read_text(encoding="utf-8")
+    crew = _runtime_path("CREW_DOCKERFILE").read_text(encoding="utf-8")
+    micro = _runtime_path("MICROVM_DOCKERFILE").read_text(encoding="utf-8")
     if not _BASE_ARG.search(crew) or not _BASE_FROM.search(crew):
         raise RecipeRefused(
             "Dockerfile.crew no longer starts 'ARG BASE' / 'FROM ${BASE}'. This lane "
@@ -298,7 +337,7 @@ MAX_RECIPE_BYTES = 64 * 1024 * 1024
 
 #: Wheel members a headless crew never reads: the dashboard single-page app.
 #:
-#: ``scripts/build_crew_base_image.sh`` already settled that a crew image does not
+#: The crew runtime's ``build_crew_base_image.sh`` already settled that a crew image does not
 #: want these -- "this image is headless, the front process forwards a turn to the
 #: backend's API over loopback and never serves the interface" -- and it gets there
 #: by not BUILDING the assets first, relying on ``setup.py`` warning and continuing
@@ -328,7 +367,7 @@ RUNTIME_OWNED_PREFIXES = ("container/", "vendor/")
 def _refuse_runtime_names(bundle_dir: Path, members: list[Path]) -> None:
     """Raise :class:`RecipeRefused` if a bundle file would take a runtime name."""
     # The Dockerfile has its own, earlier refusal with a more specific message.
-    reserved = {DOCKERFILE_NAME, SSM_AGENT_CONFIG.name}
+    reserved = {DOCKERFILE_NAME, _RUNTIME_FILES["SSM_AGENT_CONFIG"]}
     for member in members:
         rel = member.relative_to(bundle_dir).as_posix()
         if rel in reserved or rel.startswith(RUNTIME_OWNED_PREFIXES):
@@ -351,23 +390,28 @@ class AssembledRecipe:
 def bundle_digest_of(bundle_dir: Path) -> str:
     """The bundle's digest, from ``packaging.build``'s own function.
 
-    Imported at call time rather than at module scope: ``cloud`` must not pull the
-    AWS Control app's packaging graph in just by being imported, and this is the
-    only function here that needs it.
+    Asked of the app that provides the ``crew_runtime`` seam, which ships the bundle
+    builder beside the runtime, and only when called: ``cloud`` must not pull that
+    app's packaging graph in just by being imported, and this is the only function
+    here that needs it. Refused when no app provides the seam.
 
     Delegated rather than computed, because this digest is half of the image
     cache's key. Two implementations of "what is this bundle" would be two
     functions deciding whether an image may be reused, and the looser one is the
     one that serves the wrong content.
     """
-    from kiro_crew.apps.builtins.aws_control.crew.packaging.build import (
-        bundle_digest as _bundle_digest,
-    )
+    from kiro_crew.apps import seams
 
+    runtime = seams.crew_runtime()
+    if runtime is None:
+        raise RecipeRefused(
+            "no crew runtime is installed, so no bundle digest can be computed: the "
+            "bundle builder ships with the app that provides the crew_runtime seam"
+        )
     if not bundle_dir.is_dir():
         raise RecipeRefused(f"no crew bundle at {bundle_dir}")
     try:
-        return _bundle_digest(bundle_dir)
+        return runtime.bundle_digest(bundle_dir)
     except Exception as exc:  # noqa: BLE001 - the owner's refusal, in our type
         # Re-raised as THIS module's type, not swallowed. ``packaging.build``
         # refuses a bundle it cannot sign -- a link it would have to follow, a
@@ -499,7 +543,10 @@ def assemble(
             "wheel built for a desktop. Refused here because the size alone would report a "
             "byte count and not this cause"
         )
-    for source in (BASE_DOCKERFILE, CREW_DOCKERFILE, MICROVM_DOCKERFILE, SSM_AGENT_CONFIG):
+    for source in (
+        _runtime_path(name)
+        for name in ("BASE_DOCKERFILE", "CREW_DOCKERFILE", "MICROVM_DOCKERFILE", "SSM_AGENT_CONFIG")
+    ):
         if not source.is_file():
             raise RecipeRefused(
                 f"no {source.name} at {source}: this lane builds the Fargate lane's own "
@@ -558,14 +605,16 @@ def _assemble_from_snapshot(
     # and makes "did the recipe change" unanswerable from the artifact.
     with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         _write_text(archive, DOCKERFILE_NAME, dockerfile)
-        _write(archive, SSM_AGENT_CONFIG.name, SSM_AGENT_CONFIG)
+        ssm_agent_config = _runtime_path("SSM_AGENT_CONFIG")
+        container_dir = _runtime_path("CONTAINER_DIR")
+        _write(archive, ssm_agent_config.name, ssm_agent_config)
         _write(archive, f"vendor/{wheel.name}", wheel)
         for member in sorted(
             path
-            for path in CONTAINER_DIR.rglob("*")
+            for path in container_dir.rglob("*")
             if path.is_file() and "__pycache__" not in path.parts
         ):
-            rel = member.relative_to(CONTAINER_DIR).as_posix()
+            rel = member.relative_to(container_dir).as_posix()
             _write(archive, f"container/{rel}", member)
         for member in bundle_members:
             _write_bundle_member(archive, bundle_dir, member)

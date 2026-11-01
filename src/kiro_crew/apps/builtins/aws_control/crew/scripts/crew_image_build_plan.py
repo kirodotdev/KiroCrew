@@ -5,7 +5,7 @@ WHY THIS EXISTS RATHER THAN TWO NAMES IN A WORKFLOW. The defect this lane closes
 is not "the crew image did not build" but "a check existed and covered one
 instance instead of the property". ``backend-test-crew-container`` imports the
 image's Python modules and runs them on the host, so a recipe naming a producer
-script that was never written stayed green all the way through review (#9223).
+script that was never written stayed green all the way through review.
 The wheel-layer ratchet is the same story from the other side: it pinned one
 file path, so a second recipe reintroduced the exact defect it guarded.
 
@@ -21,11 +21,13 @@ WHAT IS DERIVED, AND FROM WHAT EVIDENCE
   (``layer``); a concrete operand is self-contained (``base``). An operand
   interpolating a name NOT declared before ``FROM`` is refused: a build ``ARG``
   is out of scope where that puts it, so it expands to an empty string with no
-  error, which is the defect #10711 found in ``Dockerfile.crew``'s base label.
-* **producer** -- the single ``scripts/*.sh`` the recipe mentions in prose.
-  Nothing else in the tree records which command builds a recipe, so a mention is
-  the only evidence there is. Zero mentions and two mentions are both refused
-  rather than guessed.
+  error -- an unresolved base label reads as an empty string.
+* **producer** -- the single ``scripts/*.sh`` the recipe mentions in prose,
+  resolved against the crew tree (:data:`CREW_SUBPATH`), whose ``scripts/`` holds
+  the producers beside ``runtime/``. Nothing else in the tree records which command
+  builds a recipe, so a mention is the only evidence there is. Zero mentions and
+  two mentions are both refused rather than guessed. The plan names the producer
+  by its path from the repository root, which is how the workflow runs it.
 
 THE INVOCATION CONTRACT. A ``base`` producer is called ``<script> --tag TAG``
 and a ``layer`` producer ``<script> --base REPO@sha256:... --bundle DIR``. That
@@ -49,15 +51,20 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+#: The crew tree, from the repository root: this file sits in its ``scripts/``,
+#: beside the ``runtime/`` whose recipes it plans.
+CREW_SUBPATH = "src/kiro_crew/apps/builtins/aws_control/crew"
+
+ROOT = Path(__file__).resolve().parents[1 + len(Path(CREW_SUBPATH).parts)]
 
 #: The subtree whose recipes this lane is responsible for. One directory, not a
 #: repo-wide sweep: ``docker/Dockerfile`` is the gateway distribution and is
 #: already built by ``docker-smoke.yml``.
-RUNTIME_SUBPATH = "src/kiro_crew/apps/builtins/aws_control/crew/runtime"
+RUNTIME_SUBPATH = f"{CREW_SUBPATH}/runtime"
 
 #: A ``scripts/<name>.sh`` path cited anywhere in a recipe's text, comments
-#: included -- the citation IS prose, so the recipe is read raw here.
+#: included -- the citation IS prose, so the recipe is read raw here. Relative to
+#: the crew tree.
 NAMED_SCRIPT = re.compile(r"scripts/[A-Za-z0-9_.-]+\.sh")
 
 #: ``${NAME}`` or ``$NAME`` inside a ``FROM`` operand.
@@ -153,13 +160,13 @@ def _role_of(rel: str, operand: str, pre_args: set[str]) -> tuple[str, str]:
         raise PlanError(
             f"{rel}: FROM {operand} interpolates {sorted(interpolated)}; this lane can "
             "pin exactly one base argument to a digest. Teach "
-            "scripts/crew_image_build_plan.py how to supply the others."
+            f"{CREW_SUBPATH}/scripts/crew_image_build_plan.py how to supply the others."
         )
     return "layer", next(iter(interpolated))
 
 
 def _producer_of(rel: str, text: str, root: Path) -> str:
-    """The one ``scripts/*.sh`` the recipe mentions, checked runnable.
+    """The one ``scripts/*.sh`` the recipe mentions, checked runnable, from the root.
 
     Any mention counts, which is a real fragility: a recipe that refers to a
     second script in passing has two mentions and no way to say which one builds
@@ -181,7 +188,7 @@ def _producer_of(rel: str, text: str, root: Path) -> str:
             "Leave only the producer named in the recipe and refer to the others some other "
             "way -- by their own recipe, or in the script that uses them."
         )
-    producer = cited[0]
+    producer = f"{CREW_SUBPATH}/{cited[0]}"
     script = root / producer
     if not script.is_file():
         raise PlanError(
@@ -247,7 +254,7 @@ def discover_recipes(root: Path = ROOT) -> list[Path]:
 
 
 def cited_producers(root: Path = ROOT) -> dict[str, list[str]]:
-    """``recipe -> the scripts/*.sh paths it cites``, checking nothing.
+    """``recipe -> the scripts/*.sh paths it cites``, from the root, checking nothing.
 
     The trigger-coverage test reads this: a producer this lane actually runs has
     to be inside the workflow's ``paths`` filter, or editing that producer does
@@ -255,7 +262,10 @@ def cited_producers(root: Path = ROOT) -> dict[str, list[str]]:
     """
     return {
         recipe.relative_to(root).as_posix(): sorted(
-            set(NAMED_SCRIPT.findall(recipe.read_text(encoding="utf-8")))
+            {
+                f"{CREW_SUBPATH}/{cited}"
+                for cited in NAMED_SCRIPT.findall(recipe.read_text(encoding="utf-8"))
+            }
         )
         for recipe in discover_recipes(root)
     }

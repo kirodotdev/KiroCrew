@@ -4926,6 +4926,43 @@ Writers: `apps/routes.py`, `apps/routes_lifecycle.py`, `apps/routes_proxy.py`,
 `apps/routes_install.py`, `apps/routes_uninstall.py`, `apps/routes_enable.py`,
 `apps/routes_registry.py`.
 
+## 30. A core feature that needs an app's code asks a seam, and never imports the app
+
+`kiro_crew/apps/seams.py` is a registry of the things a core feature needs and only an
+app ships. Core names each need as a seam and asks for its provider when it runs. The
+app registers the provider. Core therefore never imports the app, and the app can leave
+this repository without core changing.
+
+| Seam | Provider protocol | Core caller | With no provider |
+|---|---|---|---|
+| `crew_runtime` | `CrewRuntime`: `runtime_dir`, `bundle_digest(dir)` | `cloud/microvm/recipe.py` | `RecipeRefused` (see `cloud.md`, "What the lane borrows from an app") |
+| `aws_account_policy` | `AwsAccountPolicy`: `resolve_consent_target()`, `configured_region(p)`, `is_sso_profile(p)` | `dashboard/handlers/aws_consent.py` (`s3` / `ce` cards), `dashboard/handlers/aws_project_profile.py` (the project pill) | the consent card names the CLI default chain; the pill probes in the default region and reports a failed probe as `unavailable` |
+| `transfer_staging` | `TransferStaging`: `pinned_staging(prefix)` | `cloud/microvm/api.py` `staging_dir` | `RuntimeError`, never the shared temp directory |
+
+A builtin app registers from a `seams.py` at its package root. The first lookup of any
+seam imports every such module once, for each name in `BUILTIN_NAMES`, found by file so
+that no other app's package is imported. A seam therefore answers the same in the
+gateway, a CLI process and a test. That module is imported by core callers that never
+load the app's backend, so it binds paths and small provider objects, and each provider
+method imports what it delegates to at call time. The aws-control package `__init__`
+serves `register_routes` lazily for the same reason. Any other in-process code, such as
+an installed app's `on_startup` hook, calls `seams.register` itself.
+
+A provider answers whether or not its app is enabled, because the core features above
+worked with aws-control switched off (its default). One app holds a seam: a second app
+registering it is refused with `ValueError`, so the answer cannot depend on import order.
+A broken provider module is logged and skipped. The one-time load holds its own lock,
+never the registry's, so a provider module registering from another thread cannot
+deadlock it; a seams module therefore only registers while it is imported, and never
+looks a seam up. The registry is process state and holds no per-caller data.
+
+`test_app_seams.py` pins the registry, the shipped providers, and each core caller's
+answer with no provider. `test_core_aws_control_decoupling.py` is the gate: no module
+under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
+`kiro_crew.apps.builtins.aws_control` in any form. The string constants there that still
+name the package are a pinned list that may only shrink (see `aws-control.md`,
+"Repository boundary").
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.

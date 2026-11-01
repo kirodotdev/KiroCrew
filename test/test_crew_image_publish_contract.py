@@ -4,7 +4,8 @@
 ``<repository>@sha256:<64 hex>``, and a digest exists only after a push. The
 build lane already pushes -- to a throwaway registry on ``127.0.0.1`` that dies
 with the job, which is what lets it run on a fork pull request with no secrets at
-all. ``scripts/publish_crew_base_image.sh`` is the durable half.
+all. The aws-control app's ``crew/scripts/publish_crew_base_image.sh`` is the durable
+half.
 
 Three properties are worth a ratchet, because breaking any of them is a small,
 plausible edit that nothing else would report:
@@ -48,8 +49,8 @@ from kiro_crew.cloud.fargate.taskdef import _DIGEST_REF_RE
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "publish_crew_base_image.sh"
-PRODUCER = ROOT / "scripts" / "build_crew_base_image.sh"
+SCRIPT = ROOT / "src/kiro_crew/apps/builtins/aws_control/crew/scripts/publish_crew_base_image.sh"
+PRODUCER = ROOT / "src/kiro_crew/apps/builtins/aws_control/crew/scripts/build_crew_base_image.sh"
 FORK_LANE = ROOT / ".github" / "workflows" / "crew-image-build.yml"
 
 #: A repository with no account id and no real namespace, so the fixture cannot
@@ -932,8 +933,9 @@ def test_a_nonce_that_could_not_be_read_stops_the_run_before_it_builds() -> None
 
 #: The producer stages its wheel into ONE fixed directory in the checkout, so the
 #: unique tag above does not make two publishes independent. The lock is scoped to
-#: exactly what is shared -- this checkout -- and sits beside that directory.
-PUBLISH_STAGING_RELATIVE = Path("src/kiro_crew/apps/builtins/aws_control/crew/runtime")
+#: exactly what is shared -- this checkout -- and sits beside that directory. Relative
+#: to the crew tree the script's ``scripts/`` sits in, which is ``tmp_path`` for a copy.
+PUBLISH_STAGING_RELATIVE = Path("runtime")
 PUBLISH_LOCK_NAME = ".publish-crew-base-image.lock"
 
 
