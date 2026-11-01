@@ -120,8 +120,8 @@ pointer. A shipped page named for the mate is drawn as before. The decision is m
 ONCE, by `dashboard_agentic.shows_suggestions` (template instance served, record `empty`,
 no page named for the slug, no package on screen): the read route sends it as
 `suggestions: true` and the website draws what that says, and `turn_block` asks the same
-function, with the same package lookup (`dashboard_agentic.bound_package`) and the same
-lock rule as the route. There is no field to write either: `dashboard_fields` says the
+function, with the same package lookup (`dashboard_agentic.bound_package`) as the
+route. There is no field to write either: `dashboard_fields` says the
 mate has no dashboard yet, `dashboard_write` is refused `no_instance`, and the
 profile's upkeep view shows nothing. A value written before a mate lost its default
 stays in the crew log; nothing here deletes or migrates it.
@@ -254,7 +254,7 @@ listing a chronology without opening every file.
 
 `GET /api/members/{slug}/dashboard` is the one route the frame reads, and its body is
 `{instance_version, template: {id, version}, html, manifest, state}` plus
-`state_reason` and `structure_locked`.
+`state_reason`.
 
 `?member=` is REQUIRED on every route, exactly as the briefing and rules reads require
 it. Slugification is lossy, so two crew names can reach one slug; an instance is one
@@ -380,14 +380,13 @@ the `staged_ms` the preview read returned; the route calls `apply_preview(...,
 expected_staged_ms=...)`, which refuses `PreviewChanged` (409 `preview_changed`)
 inside the instance lock when a different page was staged after the one shown. That
 is the button's version of `dashboard_apply`'s guarantee: what lands is what was
-drawn. Nothing staged answers 404 `no_preview` and a locked layout 423
-`dashboard_locked`. Discard posts `.../preview/discard` with the same `staged_ms`;
+drawn. Nothing staged answers 404 `no_preview`. Discard posts `.../preview/discard` with the same `staged_ms`;
 `discard_shown_preview` drops only that page, refuses `preview_changed` for one staged
 since, and answers ok when nothing is staged any more. The route reads back and
 answers 500 `dashboard_failed` if a page is still there. The `staged_ms` the host sends
 is the one of the document the frame has MOUNTED, never a newer read still being
 minted, so both buttons stay disabled until the frame shows the page they would act
-on. Both carry the lock route's gates: an internal-secret caller is
+on. Both are person-only: an internal-secret caller is
 refused `human_only` first, then the owner gate, then the CSRF middleware every
 cookie POST passes. On a successful Keep the host leaves preview mode at once
 (dropping `?dashboard=preview`) and refetches the live page, with one line saying
@@ -396,54 +395,23 @@ any other way (the agent's `dashboard_apply`, a discard, expiry), the preview vi
 hands over to the live page the same way, with a line that says so. Template
 previews only: a session's page has no person route.
 
-## The structure lock is the person's, and only theirs
+## There is no structure lock
 
-The person's structure lock freezes WHICH page the tab shows. They set it with the
-**Lock dashboard layout** switch on the mate's Profile tab (the settings
-rows under Permissions, Model and Effort); the Dashboard tab carries only a small
-**Layout locked — unlock on Profile** badge-button that opens the Profile tab when clicked, never a toggle. While it is set,
-`_commit` refuses every new version with `InstanceLocked`, so adopt, apply, edit
-and rollback all fail, and the agent surface answers `dashboard_locked` (423) with a
-sentence telling the agent to ask the person. The check sits in `_commit`, under the
-instance lock every writer already holds, so a lock set between a caller's read and
-its write still refuses it. Staging a preview and writing agentic values are not
-structure changes and keep working.
+A mate's page changes only through its own `dashboard_apply`, `dashboard_rollback` and
+the person's Keep, and every version stays on disk, so `dashboard_rollback` is how a
+change is undone. The person's structure lock that once froze the page, its
+**Lock dashboard layout** switch, its badge, its `POST /api/members/{slug}/dashboard/lock`
+route and its LOCKED turn-block line are gone.
 
-`set_structure_lock` is the only writer of the flag for a live mate, and
-`POST /api/members/{slug}/dashboard/lock` is its only caller: owner-gated, and it
-refuses an internal-secret caller (`human_only`) before anything else, because that
-caller is an MCP server acting for an agent. No MCP tool sets the lock.
+A `crew-panels/<slug>.dashboard-lock` file written before the removal is neither read
+nor rewritten, and no migration runs: `read` serves `instance.json`, every commit goes
+through, and the page in force is the record. While a lock held, `_commit` refused every
+version, so the record still names the page the lock held unless the mate's own shell
+rewrote `instance.json`; that version is still in `versions/`, so `dashboard_rollback`
+reaches it. A record written before the `package` key existed now follows the older
+package rule (`keeps_older_package_rule`) whether or not a lock file is beside it, as an
+unlocked record always did. Deleting a mate leaves such a file where it is.
 
-Deleting a mate (`DELETE /api/agents/{name}`) removes its lock file through
-`structure_lock_removal.remove_structure_lock`, so a later mate deriving the same slug does not start
-out locked to the old one's page. The slug comes from the config captured while the
-record existed, and the removal is decided the way the crew-log reclaim is: under
-`memory_store_namespace_lock` and the lock's own guard, and only while no crew in the
-roster on disk still derives that slug. A slug a live mate still claims keeps its
-lock. Only the lock file goes; its `.guard` file stays, because another writer may be
-holding it. A mate that never locked creates nothing in `crew-panels` on delete.
-
-The lock is a file, `crew-panels/<slug>.dashboard-lock`, and NOT a field of
-`instance.json`: `members/<slug>/` is writable by the mate's own sandboxed shell,
-so a flag there could be cleared by editing a file. `crew-panels` is masked in the
-sandbox, fenced by the file-tool gate and refused when aliased, and the gateway is its
-only reader and writer. Locking SNAPSHOTS the current record into that file, and
-while it exists `read` serves the snapshot, so copying an old version over
-`instance.json` cannot change the locked page. Only a missing file is unlocked; any
-other read error reads as locked, and a lock file with no readable snapshot serves
-the error state rather than `instance.json`. Unlocking removes the lock file and
-writes nothing under `members/<slug>/`, which the mate's shell can redirect.
-It is never part of a version, so a rollback cannot restore an old lock state, and
-it holds for a mate that never adopted. A lock change is NOT a history row: the
-history savepoint lives under `members/<slug>/`, and the lock file is the record.
-
-The lock is keyed by the member slug, which is the mate's immutable `member_id`
-wherever one is persisted, so a rename keeps it. It is no part of any DM session or
-of `members/<slug>/`, so a cleared chat, a new DM, a wiped member dashboard folder
-and a gateway restart all leave it set. The member record does not grow.
-While locked, the mate's `[DASHBOARD]` turn block carries a LOCKED line telling
-it not to apply, roll back or propose another page, while noting that previewing for
-the person to look at still works.
 ## Every commit syncs the upkeep helpers
 
 A fold field fills itself from the crew log; an agentic field is the mate's to
@@ -527,8 +495,8 @@ left out: a fold with no value yet is not a broken binding, and a fresh mate on 
 shipped page is in that state; once the fold has a value, a wrong path shows as
 `path_missing`. A `panel` field reads `fold_unseen` until the mate has published, since
 the empty record has none of a published record's paths. The line is absent when nothing
-fixable is left, so it leaves on the first turn after the fix. No read is made on a
-locked page or with `agent.crew_panel` off, where the mate cannot call the tools the line
+fixable is left, so it leaves on the first turn after the fix. No read is made with
+`agent.crew_panel` off, where the mate cannot call the tools the line
 names. A V1 mate (no `member_id`) carries its member section only at session start,
 resume or re-injection, so on its WARM turns `turn_message` adds the line alone through
 `dashboard_agentic.unresolved_notice`, under the same gates and the desk gate; a V2 mate's

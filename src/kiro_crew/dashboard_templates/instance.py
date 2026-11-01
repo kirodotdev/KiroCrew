@@ -44,7 +44,6 @@ to see, not a shape this module will write.
 from __future__ import annotations
 
 import contextvars
-import dataclasses
 import hashlib
 import json
 import logging
@@ -85,7 +84,6 @@ from kiro_crew.platform_compat import open_create_or_existing, release_lock, try
 __all__ = [
     "ACTIONS",
     "AUTHORED_PAGE_REFUSAL",
-    "LOCKED_REFUSAL",
     "DEFAULT_TEMPLATE_ID",
     "MAX_HISTORY_ROWS",
     "MAX_INSTANCE_HTML_BYTES",
@@ -102,7 +100,6 @@ __all__ = [
     "STATE_STALE",
     "Instance",
     "InstanceError",
-    "InstanceLocked",
     "InstanceRefused",
     "NothingStaged",
     "PACKAGE_TEMPLATE_ID",
@@ -127,7 +124,6 @@ __all__ = [
     "rollback",
     "session_instance_key",
     "session_preview_url",
-    "set_structure_lock",
     "stage_preview",
     "staged_preview",
     "versions",
@@ -216,27 +212,12 @@ class InstanceRefused(InstanceError):
     """A write was refused, with the reason a user can be told."""
 
 
-class InstanceLocked(InstanceRefused):
-    """A structure change was refused because the person locked this dashboard."""
-
-
 class NothingStaged(InstanceRefused):
     """An apply found no staged page: it was kept, discarded or expired."""
 
 
 class PreviewChanged(InstanceRefused):
     """An apply named a staged page that has since been replaced by another."""
-
-
-#: The ONE sentence the agent hears about the lock: as a structure change's refusal
-#: and on every turn in its ``[DASHBOARD]`` block. Only the person can clear the lock,
-#: from the crewmate's Profile card, so the one useful next step is to ask them.
-LOCKED_REFUSAL: Final[str] = (
-    "LOCKED by the person: the page layout is frozen. Do not apply, roll back "
-    "or propose a different page; if they want one, ask them to unlock it on your "
-    "Profile card. You can still preview a page for them to look at. "
-    "Your dashboard_write values and the folded numbers still update."
-)
 
 
 @dataclass(frozen=True)
@@ -260,10 +241,6 @@ class Instance:
     #: an empty or broken dashboard instead of rendering a blank frame.
     state_reason: str
     updated_ms: int
-    #: The person's structure lock, read from :func:`lock_path`. While set,
-    #: :func:`_commit` refuses every new version, so adopt, apply, edit and rollback
-    #: all answer :class:`InstanceLocked`.
-    structure_locked: bool = False
     #: The crewmate's own ``kind="dashboard"`` artifact this version put in force, and
     #: the artifact version it pinned. Empty and 0 when the template copy is in force.
     package_slug: str = ""
@@ -291,7 +268,6 @@ class Instance:
             "manifest": dict(self.manifest),
             "state": self.state,
             "state_reason": self.state_reason,
-            "structure_locked": self.structure_locked,
         }
 
 
@@ -338,7 +314,7 @@ def _package_field(raw: Mapping[str, Any]) -> tuple[str, int, str, bool]:
 def _page_snapshot_path(slug: str, digest: str) -> Path:
     """Where the gateway keeps one package page a crewmate put in force.
 
-    In ``crew-panels`` beside the person's lock, NOT under ``members/<slug>/``: that
+    In ``crew-panels``, NOT under ``members/<slug>/``: that
     tree is writable by the crewmate's own shell, and this file is the page that
     runs. The gateway is its only writer (:func:`apply_package`), so neither a later
     artifact write, an artifact deleted and saved again, nor the artifact store's
@@ -395,10 +371,9 @@ def keeps_older_package_rule(record: Instance) -> bool:
     """Whether a bound package is chosen by the rule from before packages were pinned.
 
     True only for a record that has no ``package`` key at all -- written before this
-    change -- and is NOT locked. A locked older record keeps the template copy the
-    person locked, for the page read and the write check alike.
+    change.
     """
-    return not record.package_slug and not record.package_released and not record.structure_locked
+    return not record.package_slug and not record.package_released
 
 
 #: Its own file, apart from the instance lock: a save never writes the instance record.
@@ -759,43 +734,11 @@ def _state_of(template_id: str, copied_version: int, manifest: Any, html: str) -
 
 
 def read(slug: str) -> Instance:
-    """One crewmate's dashboard instance, as the person's lock says it is.
+    """One crewmate's dashboard instance, as ``instance.json`` holds it.
 
-    While locked, the answer is the record SNAPSHOTTED into the lock file, not
-    ``instance.json``: that file is writable by the crewmate's own shell, so a copy of
-    an old version over it must not become the page the person locked.
+    A ``crew-panels/<slug>.dashboard-lock`` file left by the removed structure lock is
+    not read: the page in force is the record, and rollback is how a change is undone.
     """
-    snapshot = _lock_snapshot(slug)
-    if snapshot is None:
-        stored = _read_stored(slug)
-        # Asked AGAIN after the writable record is read: a lock set in between means
-        # that record may already be an agent's write made after the person locked.
-        # No lock now means none existed when the record was read, so it stands.
-        snapshot = _lock_snapshot(slug)
-        if snapshot is None:
-            return stored
-    if "record" not in snapshot:
-        # Present but unreadable. NOT a reason to read ``instance.json``, which an agent
-        # can write: the page is withheld as broken, and the person can still unlock.
-        return Instance(
-            slug=slug,
-            instance_version=0,
-            template_id="",
-            template_version=0,
-            html="",
-            manifest={},
-            state=STATE_ERROR,
-            state_reason="the dashboard is locked and its lock record cannot be read",
-            updated_ms=0,
-            structure_locked=True,
-        )
-    record = snapshot["record"]
-    stored = _instance_from_raw(slug, record if isinstance(record, dict) else None)
-    return dataclasses.replace(stored, structure_locked=True)
-
-
-def _read_stored(slug: str) -> Instance:
-    """The instance as ``instance.json`` holds it, with no regard to the lock."""
     return _instance_from_raw(slug, _read_record(slug))
 
 
@@ -1129,10 +1072,6 @@ def _commit(
     if unpinned_session:
         _refuse_linked_versions_dir(versions_dir)
     current = _read_record(slug) or {}
-    # Asked HERE, under the instance lock every caller already holds, so a lock set
-    # between a caller's own read and this write still refuses it.
-    if is_locked(slug):
-        raise InstanceLocked(LOCKED_REFUSAL)
     previous = current.get("instance_version")
     previous = previous if isinstance(previous, int) and previous > 0 else 0
     next_version = previous + 1
@@ -1317,17 +1256,14 @@ def _write_page_snapshot(slug: str, content: str) -> str:
 
 
 def _referenced_digests(slug: str) -> set[str]:
-    """Every page digest the current record, the lock and the kept versions pin.
+    """Every page digest the current record and the kept versions pin.
 
-    COMPLETE OR RAISES. A record, lock or version that cannot be listed or read may
+    COMPLETE OR RAISES. A record or version that cannot be listed or read may
     pin a page, so an incomplete scan raises (``OSError`` / :class:`InstanceError`)
     and the caller prunes nothing, rather than deleting a page still pinned.
     """
     found: set[str] = set()
-    lock = _lock_snapshot(slug)
-    if lock is not None and "record" not in lock:
-        raise InstanceError("the structure lock is unreadable, so its pin is unknown")
-    raws: list[Any] = [_read_record(slug), (lock or {}).get("record")]
+    raws: list[Any] = [_read_record(slug)]
     try:
         names = os.listdir(instance_dir(slug) / _VERSIONS_SUBDIR)
     except FileNotFoundError:
@@ -1345,7 +1281,7 @@ def _referenced_digests(slug: str) -> set[str]:
 
 
 def _prune_page_snapshots(slug: str) -> None:
-    """Drop the package pages no kept version, current record or lock still pins.
+    """Drop the package pages no kept version or current record still pins.
 
     Best effort: a snapshot left behind is inert, and one still pinned is never
     dropped, so a rollback reaches every page its kept versions name.
@@ -1395,8 +1331,6 @@ def apply_package(
         raise InstanceRefused("a package apply needs the package's slug and a version")
     if not isinstance(content, str) or not content:
         raise InstanceRefused("a package apply needs the package's stored content")
-    if is_locked(slug):
-        raise InstanceLocked(LOCKED_REFUSAL)
     # ONE critical section for the snapshot write, the commit that pins it and the
     # prune: a concurrent apply's prune cannot see the new snapshot before the record
     # that pins it, so it can never delete the page this apply is committing.
@@ -1567,108 +1501,6 @@ def rollback(slug: str, to_version: int, *, session_id: str = "") -> Instance:
             session_id=session_id,
             package={"slug": slug_v, "version": version_v, "digest": digest_v} if slug_v else None,
         )
-
-
-#: The lock file's suffix inside the crew-panels store. A slug is ``[a-z0-9-]``, so no
-#: published panel record (``<slug>.json``) can share a lock file's name.
-_LOCK_SUFFIX: Final[str] = ".dashboard-lock"
-
-
-def lock_path(slug: str) -> Path:
-    """Where the person's structure lock for *slug* lives. Present means locked.
-
-    NOT beside ``instance.json``: ``members/<slug>/`` is writable by the crewmate's own
-    sandboxed shell, so a flag there is one an agent could clear by editing a file.
-    The lock is an OWNER decision about what an agent may change, which is the class
-    the ``crew-panels`` store exists for: the sandbox masks that directory, the
-    file-tool gate fences it (``security.paths``), the launcher pre-creates it, and
-    :func:`kiro_crew.agent_panel.panel_dir` refuses an aliased name. The gateway is
-    its only reader and writer.
-    """
-    from kiro_crew.agent_panel import panel_dir
-
-    if not slug:
-        raise InstanceError("a dashboard instance needs a member slug")
-    if is_session_key(slug):
-        # A session's page has no crewmate and no Profile card to lock it from; its
-        # key also carries a ``:``, which is not a file name on every platform.
-        raise InstanceError("a session dashboard has no structure lock")
-    return panel_dir() / f"{slug}{_LOCK_SUFFIX}"
-
-
-def _lock_snapshot(slug: str) -> dict[str, Any] | None:
-    """The lock file's contents, or ``None`` when *slug* is unlocked.
-
-    FAIL-CLOSED: only a missing file is "unlocked". Any other failure -- a permission
-    error, a damaged file, an aliased store -- reads as locked with no snapshot, so a
-    store that cannot answer never lets an agent's change through, and the person
-    shown "locked" can unlock it from the Profile card. A session's page is never
-    locked: it has no lock path at all.
-    """
-    if is_session_key(slug):
-        return None
-    try:
-        text = lock_path(slug).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except Exception:
-        logger.warning("dashboard: the structure lock for %r is unreadable", slug, exc_info=True)
-        return {}
-    try:
-        raw = json.loads(text)
-    except ValueError:
-        return {}
-    return raw if isinstance(raw, dict) else {}
-
-
-def is_locked(slug: str) -> bool:
-    """Whether the person has locked *slug*'s page. Unreadable reads locked."""
-    return _lock_snapshot(slug) is not None
-
-
-#: The setter's own lock file, beside the lock in ``crew-panels``. Not the instance
-#: directory's ``.lock``: creating that would write under ``members/<slug>/``.
-_LOCK_GUARD_SUFFIX: Final[str] = ".dashboard-lock.guard"
-
-
-def set_structure_lock(slug: str, locked: bool) -> Instance:
-    """Set or clear the person's structure lock on *slug*'s dashboard.
-
-    The only writer of :func:`lock_path` for a live crewmate, reached only from the
-    owner-gated route: no MCP tool calls it, so an agent can never lift the lock
-    (``structure_lock_removal`` drops a deleted crewmate's). It is not in any version,
-    so a rollback cannot restore it, and it holds for a crewmate that never adopted.
-
-    EVERY write here is inside ``crew-panels``. Nothing is created, written or deleted
-    under ``members/<slug>/``, a tree the crewmate's shell can redirect, so neither a
-    lock nor an unlock can be steered into touching a file somewhere else. That is
-    also why a lock change is not a history row: the history savepoint lives in that
-    tree, and the lock file itself is the record of the lock.
-    """
-    if not isinstance(locked, bool):
-        raise InstanceRefused("locked must be true or false")
-    path = lock_path(slug)
-    with _locked(path.parent, lock_file=f"{slug}{_LOCK_GUARD_SUFFIX}"):
-        if is_locked(slug) != locked:
-            if locked:
-                # The record as it is NOW, which :func:`read` serves until the unlock.
-                try:
-                    record = _read_record(slug)
-                except InstanceError:
-                    raise InstanceRefused(
-                        "this dashboard's record cannot be read, so it cannot be locked"
-                    ) from None
-                snapshot = {"slug": slug, "at_ms": _now_ms(), "record": record}
-                atomic_write(path, json.dumps(snapshot, ensure_ascii=False), fsync=True)
-            else:
-                path.unlink()
-            fsync_dir(path.parent)
-    try:
-        current = read(slug)
-    except InstanceError:
-        # An unreadable record does not undo a lock change that already landed.
-        current = _empty(slug, "the record cannot be read")
-    return dataclasses.replace(current, structure_locked=locked)
 
 
 # --------------------------------------------------------------------------

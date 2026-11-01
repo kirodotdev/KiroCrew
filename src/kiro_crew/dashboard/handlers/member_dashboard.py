@@ -332,19 +332,14 @@ def _bound_package_slug(member: str) -> str:
         return ""
 
 
-def _package_in_force(slug: str) -> tuple[instance.PinnedPackage | None, bool, bool]:
-    """``(pinned page, older rule, locked)`` for *slug*, from its instance record.
+def _package_in_force(slug: str) -> tuple[instance.PinnedPackage | None, bool]:
+    """``(pinned page, older rule)`` for *slug*, from its instance record.
 
-    The write path asks the first two questions (``dashboard_package.read_package_model``),
-    so the page and the write check name one Model. The third is the person's layout lock,
-    which a package page reports exactly as a template page does. Blocking file IO.
+    The write path asks the same two questions (``dashboard_package.read_package_model``),
+    so the page and the write check name one Model. Blocking file IO.
     """
     record = instance.read(slug)
-    return (
-        instance.pinned_package(record),
-        instance.keeps_older_package_rule(record),
-        record.structure_locked,
-    )
+    return instance.pinned_package(record), instance.keeps_older_package_rule(record)
 
 
 async def _run(fn: Callable[[], Any]) -> Any:
@@ -359,8 +354,6 @@ def _refusal(exc: Exception) -> web.Response:
     again; ``*_failed`` is this gateway's state and a retry may work. Collapsing them
     would make a client either retry forever or give up on a transient fault.
     """
-    if isinstance(exc, instance.InstanceLocked):
-        return _bad("dashboard_locked", str(exc), status=423)
     if isinstance(exc, instance.InstanceRefused):
         return _bad("dashboard_refused", str(exc), status=409)
     if isinstance(exc, catalog.UnknownTemplate):
@@ -482,19 +475,16 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
     #: caller that NAMES a package asked for that package and still gets it; the tab
     #: never sends both.
     staged_only = request.query.get("preview") == "1" and not package_slug
-    # WHICH PAGE IS IN FORCE is the instance record's to say, lock included (`read`
-    # answers the lock's snapshot while the person has locked the layout). A record
-    # that pins a package is served from the gateway's own snapshot of the bytes the
-    # owner saved, so no later artifact write, delete-and-save or version pruning
-    # moves the page. A record that released packages, or an older record under the
-    # lock, serves its template copy. Only an older unlocked record keeps the rule of
-    # looking a package up by the crewmate's binding.
+    # WHICH PAGE IS IN FORCE is the instance record's to say. A record that pins a
+    # package is served from the gateway's own snapshot of the bytes the owner saved,
+    # so no later artifact write, delete-and-save or version pruning moves the page.
+    # A record that released packages serves its template copy. Only an older record
+    # keeps the rule of looking a package up by the crewmate's binding.
     pinned: instance.PinnedPackage | None = None
     older_rule = False
-    structure_locked = False
     if not staged_only:
         try:
-            pinned, older_rule, structure_locked = await _run(lambda: _package_in_force(slug))
+            pinned, older_rule = await _run(lambda: _package_in_force(slug))
         except Exception as exc:
             return _refusal(exc)
         if pinned is not None:
@@ -565,7 +555,6 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
             # split this route already makes for a slug it refuses above.
             asked_for=bool(request.query.get("dashboard", "")),
             pinned=pinned,
-            structure_locked=structure_locked,
         )
     if request.query.get("preview") == "1":
         # The STAGED page, which no version records. Served from the same route and
@@ -615,10 +604,8 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
     if record.state == instance.STATE_EMPTY:
         fallback = await _run(lambda: instance.default_instance(slug))
         if fallback is not None:
-            # The page named for an unadopted crewmate, or a root session's default, is
-            # served, and the person may have locked it: the lock is the stored
-            # record's, not the default's.
-            record = dataclasses.replace(fallback, structure_locked=record.structure_locked)
+            # The page named for an unadopted crewmate, or a root session's default.
+            record = fallback
         else:
             # NOTHING TO COMPOSE, so nothing is attempted. An empty record carries
             # `manifest={}`, which `parse_manifest` refuses, so `_render` would log a
@@ -660,7 +647,7 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
             composed_a_page = True
     # CONDITIONAL GET. The ETag is a STRONG validator over the whole serialized body,
     # not over a hand-listed set of inputs: `strong_content_etag` hashes the bytes, so
-    # it covers every field the body carries (the composed page, `structure_locked`,
+    # it covers every field the body carries (the composed page,
     # `state_reason`, the panel data) and cannot drift as a field is added -- a 304 then
     # means the client already holds these exact bytes, and the ~180 KB download is
     # skipped. `conditional_get` is the one implementation this repo uses for this (the
@@ -1065,48 +1052,6 @@ def _refuse_agent_caller(request: web.Request, operation: str, message: str) -> 
     return _bad("human_only", message, status=403)
 
 
-async def api_member_dashboard_lock(request: web.Request) -> web.Response:
-    """POST /api/members/{slug}/dashboard/lock?member=<name> -- the person's structure lock.
-
-    Body ``{"locked": true|false}``. While set, the store refuses every new page version,
-    so an agent's apply or rollback answers ``dashboard_locked`` until the person clears
-    it here. Values and previews keep working.
-
-    PERSON-ONLY, in two gates. An internal-secret caller is an MCP server acting for an
-    agent, and the lock exists to stop exactly that caller, so it is refused before
-    anything else is read. Then the owner gate, as for the read.
-    """
-    agent = _refuse_agent_caller(
-        request,
-        "members.dashboard_lock",
-        "only the person can lock or unlock a dashboard, from the crewmate's Profile card",
-    )
-    if agent is not None:
-        return agent
-    resolved = await _resolve(request)
-    if isinstance(resolved, web.Response):
-        return resolved
-    owner_denied = await _owner_only(request, "members.dashboard_lock")
-    if owner_denied is not None:
-        return owner_denied
-    slug, member = resolved
-    try:
-        body = await request.json()
-    except Exception:
-        return _bad("invalid_json", "invalid JSON body")
-    locked = body.get("locked") if isinstance(body, dict) else None
-    if not isinstance(locked, bool):
-        return _bad("validation_error", "locked must be true or false")
-    try:
-        record = await _run(lambda: instance.set_structure_lock(slug, locked))
-    except Exception as exc:
-        return _refusal(exc)
-    state = request.app.get("state")
-    if state is not None:
-        state.broadcast_ws("dashboard_instance_changed", {"slug": slug})
-    return web.json_response({"ok": True, "structure_locked": record.structure_locked})
-
-
 async def _staged_ms_from_body(request: web.Request) -> int | web.Response:
     """The ``staged_ms`` a Keep or Discard names, or the 400 to answer instead."""
     try:
@@ -1127,10 +1072,10 @@ async def api_member_dashboard_preview_apply(request: web.Request) -> web.Respon
     arguments while the person is asked in chat; a button has no such pause, so it names
     the page and the store refuses ``preview_changed`` if another was staged since.
 
-    The SAME writer as the agent's apply (:func:`instance.apply_preview`), so the lock,
-    the parity re-check and the one-shot discard are the store's and not this route's.
-    PERSON-ONLY, with the lock route's gates: an internal-secret caller is refused, then
-    the owner gate.
+    The SAME writer as the agent's apply (:func:`instance.apply_preview`), so the parity
+    re-check and the one-shot discard are the store's and not this route's.
+    PERSON-ONLY, in two gates: an internal-secret caller is refused, then the owner
+    gate.
     """
     agent = _refuse_agent_caller(
         request,
@@ -1221,12 +1166,11 @@ async def api_member_dashboard_preview_discard(request: web.Request) -> web.Resp
 
 
 def register_member_dashboard_routes(app: web.Application) -> None:
-    """Register the dynamic dashboard's read routes, its layout lock, the gap refetch
-    and the person's Keep / Discard of a staged page.
+    """Register the dynamic dashboard's read routes, the gap refetch and the person's
+    Keep / Discard of a staged page.
 
-    Six routes: a crewmate's read, a root session's read, the person's layout lock,
-    the member read's gap refetch, and the preview's apply and discard. The lock,
-    refetch and preview paths are strict suffixes of the member read path, so
+    Five routes: a crewmate's read, a root session's read, the member read's gap
+    refetch, and the preview's apply and discard. The refetch and preview paths are strict suffixes of the member read path, so
     aiohttp's own resolver separates them by METHOD; the
     session read's path is not a prefix of another route's pattern, so there is no
     ordering question here either.
@@ -1237,7 +1181,6 @@ def register_member_dashboard_routes(app: web.Application) -> None:
     """
     app.router.add_get("/api/members/{slug}/dashboard", api_member_dashboard)
     app.router.add_get("/api/chat/slots/{slot}/dashboard", api_session_dashboard)
-    app.router.add_post("/api/members/{slug}/dashboard/lock", api_member_dashboard_lock)
     app.router.add_post("/api/members/{slug}/dashboard/refetch", api_member_dashboard_refetch)
     app.router.add_post(
         "/api/members/{slug}/dashboard/preview/apply", api_member_dashboard_preview_apply
@@ -1675,17 +1618,12 @@ async def _serve_package(
     *,
     asked_for: bool = True,
     pinned: instance.PinnedPackage | None = None,
-    structure_locked: bool = False,
 ) -> web.Response:
     """Serve the ``kind="dashboard"`` artifact *package_slug* as this crewmate's page.
 
     *pinned* is the page the crewmate's instance record put in force, read from the
     gateway's snapshot (``instance.pinned_package``); ``None`` keeps the older rule for
     a record written before packages could be pinned -- the newest version a person cut.
-
-    *structure_locked* is the person's layout lock from the same record, carried into
-    the body as a template page carries it, so the Profile switch and the Dashboard's
-    lock badge read the lock that holds.
 
     *asked_for* is whether a CALLER named this slug. False means it came from the
     crewmate's own binding, and it changes one answer: a package with nothing to serve
@@ -1939,8 +1877,6 @@ async def _serve_package(
             "html": safe_view["html"],
             "manifest": _manifest_text_safe(package.get("model") or {}),
             "state": instance.STATE_LIVE,
-            # The person's layout lock, as a template page's body carries it.
-            "structure_locked": structure_locked,
             "rendered_html": html,
             # THE ALLOWLIST, named in the body so a reader of one response can see
             # exactly which fields this page can ever be sent.

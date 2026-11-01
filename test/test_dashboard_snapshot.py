@@ -732,7 +732,6 @@ def _live(monkeypatch, *, pinned: dict[str, Any] | None, package_slug: str = "da
     record = SimpleNamespace(
         package_slug=package_slug if pinned is not None else "",
         package_released=pinned is None,
-        structure_locked=False,
     )
     monkeypatch.setattr(instance_store, "read", lambda _slug: record)
     monkeypatch.setattr(
@@ -824,12 +823,12 @@ async def test_a_template_page_in_force_has_no_image(monkeypatch, ran, home):
 
 
 def _older_record(monkeypatch, *, cut_version: int, package: dict[str, Any] | None = None):
-    """An unlocked record from before pins: no package key, nothing released."""
+    """A record from before pins: no package key, nothing released."""
     from kiro_crew import artifacts, dashboard_agentic
     from kiro_crew.dashboard.handlers import member_dashboard
     from kiro_crew.dashboard_templates import instance as instance_store
 
-    record = SimpleNamespace(package_slug="", package_released=False, structure_locked=False)
+    record = SimpleNamespace(package_slug="", package_released=False)
     monkeypatch.setattr(instance_store, "read", lambda _slug: record)
     monkeypatch.setattr(instance_store, "pinned_package", lambda _r: None)
     monkeypatch.setattr(dashboard_agentic, "bound_package", lambda s: f"bound-{s}")

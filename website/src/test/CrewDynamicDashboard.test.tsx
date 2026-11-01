@@ -618,53 +618,15 @@ describe('the stored copy is never mounted', () => {
   })
 })
 
-/* The person's structure lock. The tab only SHOWS it, as a small read-only badge:
- * the switch that sets it is on the crewmate's Profile card
- * (CrewProfileSettings.test.tsx), so nothing here is clickable. */
-describe('the lock badge', () => {
-  it('draws a small Locked badge, and no control, when the gateway body says locked', async () => {
+/* The structure lock was removed. A body an older gateway still sends with
+ * `structure_locked: true` draws the page as it is, with no badge and no control. */
+describe('no lock badge', () => {
+  it('draws the page and no badge, even when an older gateway body says locked', async () => {
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ structure_locked: true }))
     mount()
-    const badge = await screen.findByTestId('crew-dashboard-lock-badge')
-    expect(badge).toHaveTextContent('Layout locked — unlock on Profile')
-    expect(badge).toHaveAccessibleName("Dashboard layout locked. Unlock it on the Profile tab.")
-    expect(screen.queryByRole('switch')).toBeNull()
-    expect(screen.queryByRole('button', { name: /lock/i })).toBeNull()
-  })
-
-  it('draws nothing about the lock while the page is unlocked', async () => {
-    vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
-    mount()
-    await screen.findByTestId('crew-dashboard-frame')
-    expect(screen.queryByTestId('crew-dashboard-lock-badge')).toBeNull()
-    expect(screen.queryByRole('switch')).toBeNull()
-  })
-
-  it.each([
-    ['broken', page({ state: 'error', rendered_html: undefined, structure_locked: true }), 'crew-dashboard-broken'],
-    ['empty', page({ state: 'empty', html: '', rendered_html: undefined, structure_locked: true }), 'crew-dashboard-none'],
-    ['unrenderable', page({ state: 'stale', rendered_html: undefined, structure_locked: true }), 'crew-dashboard-empty'],
-  ])('keeps the badge on a locked %s view, so the person can see why nothing changes', async (_name, body, testId) => {
-    vi.spyOn(api, 'memberDashboard').mockResolvedValue(body)
-    mount()
-    await screen.findByTestId(testId)
-    expect(screen.getByTestId('crew-dashboard-lock-badge')).toHaveTextContent('Layout locked — unlock on Profile')
-  })
-
-  it('draws no badge over a staged preview, which is not the page the lock holds', async () => {
-    vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ structure_locked: true }))
-    renderWithProviders(
-      <CrewDynamicDashboard target={{ kind: 'member', slug: 'oncall', member: 'oncall' }} displayName="On Call" preview />,
-    )
     expect(await screen.findByTestId('crew-dashboard-frame')).toBeInTheDocument()
     expect(screen.queryByTestId('crew-dashboard-lock-badge')).toBeNull()
-  })
-
-  it('reads a session page as never locked, whatever its body carries', async () => {
-    vi.spyOn(api, 'sessionDashboard').mockResolvedValue(page({ structure_locked: true }))
-    renderWithProviders(<CrewDynamicDashboard target={{ kind: 'session', slot: 'chat-7' }} displayName="Root" />)
-    expect(await screen.findByTestId('crew-dashboard-frame')).toBeInTheDocument()
-    expect(screen.queryByTestId('crew-dashboard-lock-badge')).toBeNull()
+    expect(screen.queryByText('Layout locked — unlock on Profile')).toBeNull()
   })
 })
 

@@ -227,7 +227,7 @@ from kiro_crew.dashboard.agent_admin.crew_removal import (  # noqa: F401
     _member_slug_is_claimed,
     _prune_private_copy_of_deleted_crew,
     _reclaim_deleted_member_crew_log,
-    _reclaim_deleted_member_dashboard_lock,
+    _reclaim_deleted_member_page_offer,
     _remove_goal_check_ins,
     api_kirocrew_agent_delete,
 )

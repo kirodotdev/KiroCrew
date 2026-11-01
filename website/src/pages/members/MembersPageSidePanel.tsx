@@ -526,7 +526,7 @@ export function MembersPageSidePanel({
   const workspaceLabel = t('pages.membersPage.profile_workspace')
   const viewTitles = useMemo(() => ({ files: workspaceLabel }), [workspaceLabel])
   const { roster, isMobile, rosterShown, beside, panelFillWidth } = layout
-  const { openProfile, schedGuardRef, schedAtStakeRef, closeDocked } = profileCard
+  const { closeDocked } = profileCard
   const { sidePanelX, sidePanelSlideRef, panelSlides } = drawers
   const { activeView, crewmateLabel } = rosterView
   const { activeSlot, activeThreadFailed, confirmedSlot, connected } = thread
@@ -570,13 +570,6 @@ export function MembersPageSidePanel({
           // chat box; the person sends it. The composer is revealed (focused on
           // desktop) so the result of the click is where the reader looks.
           onAct={activeSlot ? (text: string) => { suggestPaneDraft(activeSlot, text); revealComposer() } : undefined}
-          // Badge click opens the Profile tab directly so the person can unlock.
-          // Guard against an unsaved schedule form in the already-open card:
-          // openProfile() increments the nonce which re-mounts the panel.
-          onOpenProfileTab={() => {
-            if (!schedAtStakeRef.current()) { openProfile('profile'); return }
-            void schedGuardRef.current().then((ok) => { if (ok) openProfile('profile') })
-          }}
           preview={dashboardPreviewLink}
           onLeavePreview={leaveDashboardPreview}
         />
