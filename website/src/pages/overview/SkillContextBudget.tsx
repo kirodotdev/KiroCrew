@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Trans } from 'react-i18next'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Gauge, Loader2 } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, Gauge, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, Btn, Toggle, EmptyState } from '../../components/ui'
 import {
@@ -11,7 +11,7 @@ import {
   SelectContent,
   SelectItem,
 } from '../../components/ui/select'
-import type { SkillBudgetResponse, SkillBudgetRow } from '../../types'
+import type { Skill, SkillBudgetResponse, SkillBudgetRow } from '../../types'
 import { fmtBytes, fmtCompact, fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
@@ -41,7 +41,24 @@ const comparators: Record<SortKey, (a: SkillBudgetRow, b: SkillBudgetRow) => num
   },
 }
 
-export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
+export default function SkillContextBudget({
+  onBack,
+  skillsByKey,
+  onOpenSkill,
+}: {
+  onBack: () => void
+  /** The skill catalog keyed by the same `key` the budget rows carry, so a row
+   *  can show its skill's one-line description and open its detail. The budget
+   *  endpoint reports cost only; description and the detail view already live in
+   *  the skills list, so this is a pure frontend join — no new backend read. An
+   *  absent map (a mount before the list resolves) leaves rows cost-only, their
+   *  behaviour before this page gained the join. */
+  skillsByKey?: Map<string, Skill>
+  /** Open a skill's detail. Undefined when the host does not offer it, in which
+   *  case a row stays non-interactive — the join never invents an action the
+   *  surrounding page cannot honour. */
+  onOpenSkill?: (key: string) => void
+}) {
   const queryClient = useQueryClient()
   const [sortBy, setSortBy] = useState<SortKey>('cost')
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
@@ -193,6 +210,8 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
             failed={failedKey === row.key}
             canToggle={canToggle(row)}
             onFlip={flip}
+            description={skillsByKey?.get(row.key)?.description}
+            onOpenSkill={skillsByKey?.has(row.key) ? onOpenSkill : undefined}
           />
         ))}
 
@@ -210,6 +229,8 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
             failed={failedKey === row.key}
             canToggle={canToggle(row)}
             onFlip={flip}
+            description={skillsByKey?.get(row.key)?.description}
+            onOpenSkill={skillsByKey?.has(row.key) ? onOpenSkill : undefined}
             cold
           />
         ))}
@@ -229,6 +250,8 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
             failed={failedKey === row.key}
             canToggle={canToggle(row)}
             onFlip={flip}
+            description={skillsByKey?.get(row.key)?.description}
+            onOpenSkill={skillsByKey?.has(row.key) ? onOpenSkill : undefined}
             frozen
           />
         ))}
@@ -261,6 +284,8 @@ function BudgetRow({
   cold,
   frozen,
   failed,
+  description,
+  onOpenSkill,
 }: {
   row: SkillBudgetRow
   maxChars: number
@@ -270,19 +295,50 @@ function BudgetRow({
   cold?: boolean
   frozen?: boolean
   failed?: boolean
+  /** The skill's one-line description, joined from the skills list by key.
+   *  Undefined when the row has no matching skill; empty when the skill set no
+   *  description — both render as no description line rather than an empty one. */
+  description?: string
+  /** Open this row's skill detail, when the host offers it AND the join found
+   *  a matching skill. Undefined leaves the name as plain text. */
+  onOpenSkill?: (key: string) => void
 }) {
   const barPct = maxChars > 0 ? Math.max(0.5, ((row.chars ?? 0) / maxChars) * 100) : 0
   const inject = row.inject_on_trigger
+  const name = displayName(row.name)
+  const desc = description?.trim()
 
   return (
     <div
       className={`flex flex-wrap md:flex-nowrap items-center gap-x-3.5 gap-y-1 py-2 md:px-4 border-b border-border/50 hover:bg-bg-hover transition-colors ${frozen ? 'opacity-80' : ''}`}
     >
-      {/* Column 1: name + key */}
+      {/* Column 1: name (opens the skill) + description + key. The name is the
+       *  link rather than the whole row: the row already holds a toggle, so a
+       *  row-wide click target would swallow the control it sits beside. */}
       <div className="flex-1 min-w-0 basis-full md:basis-auto">
-        <div className={`text-[12.5px] truncate ${frozen ? 'text-muted' : 'text-text'}`}>
-          {displayName(row.name)}
-        </div>
+        {onOpenSkill ? (
+          <button
+            type="button"
+            onClick={() => onOpenSkill(row.key)}
+            aria-label={i18nT('pages.overview.skillsTab.budget_open_skill', { name })}
+            className={`group focus-ring-accent rounded-sm inline-flex items-center gap-1 text-[12.5px] max-w-full cursor-pointer text-left ${frozen ? 'text-muted' : 'text-text'} hover:text-accent focus-visible:text-accent transition-colors`}
+          >
+            <span className="truncate">{name}</span>
+            {/* The open cue is pointer-hover OR keyboard-focus: a tabbed-to name
+             *  must show it too, or a keyboard user never learns the name opens
+             *  the skill. */}
+            <ArrowUpRight size={12} className="shrink-0 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity" aria-hidden="true" />
+          </button>
+        ) : (
+          <div className={`text-[12.5px] truncate ${frozen ? 'text-muted' : 'text-text'}`}>
+            {name}
+          </div>
+        )}
+        {desc && (
+          <div className="text-[11px] text-muted truncate" title={desc}>
+            {desc}
+          </div>
+        )}
         <div className="text-[10.5px] text-muted font-mono truncate">
           {row.key}
           {row.folded_from && row.folded_from.length > 0 && (

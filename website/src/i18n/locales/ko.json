@@ -15145,6 +15145,7 @@
         "budget_group_frozen_detail": "{{count}}개 · {{chars}}을(를) 소비하고 있었습니다",
         "budget_header": "<total>{{total}}</total>자 · 최근 30일 · 상위 3개 = <pct>{{pct}}</pct>",
         "budget_if_fires": "실행되면 {{size}}",
+        "budget_open_skill": "{{name}} 열기",
         "budget_renamed": "(이름 변경됨)",
         "budget_sort": "정렬",
         "budget_sort_cost": "소비량 많은 순",

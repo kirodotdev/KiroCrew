@@ -15145,6 +15145,7 @@
         "budget_group_frozen_detail": "{{count}} · {{chars}} 曾在消耗",
         "budget_header": "<total>{{total}}</total> 字符 · 最近 30 天 · 前三名 = <pct>{{pct}}</pct>",
         "budget_if_fires": "{{size}} 如果触发",
+        "budget_open_skill": "打开 {{name}}",
         "budget_renamed": "(已重命名)",
         "budget_sort": "排序",
         "budget_sort_cost": "最大成本",

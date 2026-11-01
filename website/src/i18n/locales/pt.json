@@ -15679,6 +15679,7 @@
         "budget_group_frozen_detail": "{{count}} · {{chars}} estavam sendo gastos",
         "budget_header": "<total>{{total}}</total> caracteres · últimos 30 dias · top 3 = <pct>{{pct}}</pct>",
         "budget_if_fires": "{{size}} se disparar",
+        "budget_open_skill": "Abrir {{name}}",
         "budget_renamed": "(renomeado)",
         "budget_sort": "Ordenar",
         "budget_sort_cost": "Maior custo",

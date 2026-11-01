@@ -349,6 +349,12 @@ export default function SkillsTab() {
   const allFiltered = useMemo(() => [...localSkills, ...packageSkills], [localSkills, packageSkills])
   const selectedSkill = useMemo(() => skills.find(s => s.key === selectedKey) ?? null, [skills, selectedKey])
 
+  // Keyed by `key` so the Context budget view can join each cost row to its
+  // skill's description and detail. Built from the full (unfiltered) list: the
+  // budget is a separate surface and must resolve every row, not only the ones
+  // the Skills filter currently shows.
+  const skillsByKey = useMemo(() => new Map(skills.map(s => [s.key, s])), [skills])
+
   // Narrow viewport shows one pane at a time; a desktop shows both.
   const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
 
@@ -399,6 +405,36 @@ export default function SkillsTab() {
     setEditReadError('')
     userPickedRef.current = true
     setSelectedKey(s.key); setDetailEditing(false); openDetail()
+  }
+
+  // Open a skill's detail from the Context budget view.
+  //
+  // When a skill edit is open, Open returns to THAT edit with the draft intact
+  // rather than switching: the budget doorway must not be a way to lose an
+  // unsaved edit. It leaves the budget view and, on a phone where the editor is
+  // latched behind the hidden detail pane, reopens it (openDetail) exactly as
+  // selectSkill's latched branch does; on desktop the editor is already visible
+  // once the budget view is gone, so openDetail is a no-op there. Either way the
+  // selection, the editing flag and the filter are left untouched — Save or
+  // Cancel is the only way out of the edit, the same as a list-row click during
+  // an edit. (This is the button's own guard; selectSkill and list-click
+  // behaviour are unchanged.)
+  //
+  // With no edit open, it takes today's path: delegate to selectSkill so the
+  // in-flight-save no-op and error resets are inherited, first clearing the
+  // Skills filter ONLY when it hides the target (a budget skill may be filtered
+  // out, and the keep-a-valid-selection effect would otherwise swap in the
+  // filter's best match; a filter that already shows it is left untouched).
+  const openSkillFromBudget = (key: string) => {
+    const s = skillsByKey.get(key)
+    if (!s) return
+    hideBudget()
+    if (detailEditing) {
+      if (!showDetail) openDetail()
+      return
+    }
+    if (!allFiltered.some(x => x.key === key)) setSkillFilter('')
+    selectSkill(s)
   }
 
   /** One row in the left list. */
@@ -465,7 +501,16 @@ export default function SkillsTab() {
   </>)
 
   // Control plane: full-page budget view, deep-linkable via ?view=budget.
-  if (viewBudget) return <SkillContextBudget onBack={hideBudget} />
+  // The budget endpoint reports cost only; its rows carry the same `key` the
+  // skills list does, so the description and the detail view it links to are a
+  // pure frontend join against the already-loaded catalog — no new backend read.
+  if (viewBudget) return (
+    <SkillContextBudget
+      onBack={hideBudget}
+      skillsByKey={skillsByKey}
+      onOpenSkill={openSkillFromBudget}
+    />
+  )
 
   // One predicate for the Create button's `disabled` and its onClick guard, so
   // the two can never disagree — a keyboard activation that races the disabled

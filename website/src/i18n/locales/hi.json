@@ -15412,6 +15412,7 @@
         "budget_group_frozen_detail": "{{count}} · {{chars}} खर्च हो रहे थे",
         "budget_header": "<total>{{total}}</total> वर्ण · पिछले 30 दिन · शीर्ष 3 = <pct>{{pct}}</pct>",
         "budget_if_fires": "चलने पर {{size}}",
+        "budget_open_skill": "{{name}} खोलें",
         "budget_renamed": "(नाम बदला)",
         "budget_sort": "क्रमबद्ध करें",
         "budget_sort_cost": "सबसे अधिक लागत",
