@@ -470,7 +470,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // Only the live member read: a staged preview is a page the crewmate offered, and
   // a session's page has no crewmate to ask.
   const liveMember = target.kind === 'member' && !staged
-  const suggestions = liveMember && !isError && data?.suggestions === true
+  // Not gated on `isError`: a failed re-read keeps the last answer, and must not
+  // flip an unadopted crewmate's tab onto the default page that answer carries.
+  const suggestions = liveMember && data?.suggestions === true
   useEffect(() => { onPreviewGone?.(previewGone) }, [onPreviewGone, previewGone])
 
   // The person's layout lock, read off the same body the page comes from. This tab
@@ -684,7 +686,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const shownKey = shown ? pageKey(shown) : null
   const srcdoc = useMemo(
     () =>
-      shown && !isError
+      // NOT gated on `isError`: a failed background re-read keeps the page on
+      // screen under the behind band. Dropping the srcdoc here unmounted the frame,
+      // and the next good read built a new one -- a true reload.
+      shown
         // `linkBridge`: the sandbox withholds `allow-popups` and top navigation, so
         // a `_blank` or `_top` link would be a dead click. The shim hands it to
         // `useFrameLinkBridge` above, which checks the frame, URL and gesture.
@@ -709,7 +714,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           })
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the page, see above
-    [shownKey, docRev, isError, themeVars, theme, relayWheel],
+    [shownKey, docRev, themeVars, theme, relayWheel],
   )
   const mint = useSandboxDoc(srcdoc)
   const { pending, retry } = mint
@@ -1080,7 +1085,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     </div>
   ) : null
 
-  if (isLoading || awaitingFirstPage) {
+  // `!shown`: a new query key (a language switch) loads with nothing cached, and
+  // a page already on screen stays mounted through it. Unmounting it here meant a
+  // failed read for that key remounted the frame on its spent document url.
+  if ((isLoading && !shown) || awaitingFirstPage) {
     return (
       <div className="p-4 space-y-1.5" data-testid="crew-dashboard-loading" aria-hidden>
         <div className="h-3 rounded bg-bg-hover animate-pulse" />
@@ -1115,7 +1123,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     )
   }
 
-  if (isError) {
+  // Only when no page is on screen. A page already shown stays, under the behind
+  // band below, until the next good read clears it.
+  if (isError && !shown) {
     return (
       <div className="p-4 space-y-1.5">
         {/* No agent hand-off: this frame is the Members page's Dashboard tab, and
@@ -1287,7 +1297,28 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           refetch band below says the same thing more precisely, with a Retry; when it
           is up this one stands down rather than say it twice, but stays mounted so a
           drop seen meanwhile is not forgotten. */}
-      <CrewDashboardBehindBand readAt={dataUpdatedAt} staleAfterMs={DASHBOARD_BEHIND_AFTER_MS} hidden={Boolean(refetchError)} />
+      <CrewDashboardBehindBand readAt={dataUpdatedAt} staleAfterMs={DASHBOARD_BEHIND_AFTER_MS} hidden={Boolean(refetchError) || isError} />
+      {isError && !refetchError && (
+        // THE LATEST RE-READ FAILED, and the page from the last good one stays on
+        // screen. Removing it here was a true reload: the next good read built a
+        // brand-new frame. Cleared by the next good read.
+        <div
+          className="shrink-0 border-b border-border p-2 flex items-start gap-2"
+          data-testid="crew-dashboard-read-error-band"
+        >
+          {/* No hand-off: the Members page's unsaved Profile and crew-editor
+              drafts, as at the isError branch above. */}
+          <ErrorNotice
+            message={i18nT('pages.membersPage.dashboard_values_stale')}
+            className="flex-1 min-w-0"
+            testId="crew-dashboard-read-error"
+          />
+          <Btn disabled={isFetching} onClick={() => void refetch()} className="shrink-0" data-testid="crew-dashboard-read-error-retry">
+            <RotateCw className="lucide-inline" aria-hidden />
+            {i18nT('pages.membersPage.webview_retry')}
+          </Btn>
+        </div>
+      )}
       {refetchError && (
         <div
           className="shrink-0 border-b border-border p-2 flex items-start gap-2"
