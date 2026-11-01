@@ -58,7 +58,6 @@
   "src/test/App.navPinnedRail.test.tsx",
   "src/test/App.notificationSheetExit.test.tsx",
   "src/test/App.offlinePill.test.tsx",
-  "src/test/App.terminalEnabledFlag.test.tsx",
   "src/test/App.terminalHydrateReconcile.test.tsx",
   "src/test/App.terminalNavActive.test.tsx",
   "src/test/App.test.tsx",
