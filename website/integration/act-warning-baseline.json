@@ -28,7 +28,6 @@
   "src/test/AppRootCoverage.test.tsx",
   "src/test/ArtifactDeployPageCoverage.test.tsx",
   "src/test/ArtifactDetailPage.test.tsx",
-  "src/test/ArtifactDetailPageCoverage.test.tsx",
   "src/test/ArtifactPanelCoverage.test.tsx",
   "src/test/ArtifactsPageCoverage.test.tsx",
   "src/test/AssistantMessage.test.tsx",
