@@ -28,7 +28,6 @@
   "src/test/App.terminalHydrateReconcile.test.tsx",
   "src/test/App.terminalNavActive.test.tsx",
   "src/test/App.test.tsx",
-  "src/test/App.topbarAndShortcuts.test.tsx",
   "src/test/AppDetailPageCoverage.test.tsx",
   "src/test/AppRootCoverage.test.tsx",
   "src/test/ArtifactDeployPageCoverage.test.tsx",
