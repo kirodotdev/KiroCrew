@@ -68,44 +68,61 @@ describe('Done when, file kinds', () => {
 })
 
 describe('milestoneState', () => {
-  it('puts waiting on the person above an earlier done report', () => {
-    expect(milestoneState(item({ status: 'done' }), true)).toBe('blocked')
+  const R = { last_report_at: '2026-10-30T01:00:00Z' }
+  const ANSWERED = { decided_at: '2026-10-30T01:05:00Z', last_report_at: '2026-10-30T01:00:00Z' }
+
+  it('needs you: a pending approval, even above an earlier done report', () => {
+    expect(milestoneState(item({ status: 'done' }), true)).toBe('needs_you')
   })
 
-  it('reads a session working again as running', () => {
+  it('needs you: a blocked or question report whose reason names a person', () => {
+    expect(milestoneState(item({ status: 'blocked', reason: 'needs_human', ...R }), false)).toBe('needs_you')
+    expect(milestoneState(item({ status: 'question', reason: 'approval', outstanding: true, ...R }), false)).toBe('needs_you')
+    // Once the conductor answered, it is no longer on the person.
+    expect(milestoneState(item({ status: 'blocked', reason: 'needs_human', ...ANSWERED }), false)).toBe('waiting')
+  })
+
+  it('needs you ends once the person answered through the composer (a steer)', () => {
+    const report = { id: 'e1', ts: '2026-10-30T01:00:00Z', item_id: 'it_1', kind: 'report' as const, status: 'blocked' as const, text: '' }
+    const steer = { id: 'e2', ts: '2026-10-30T01:02:00Z', item_id: 'it_1', kind: 'steer' as const, status: null, text: '' }
+    // A question: the board's `outstanding` already counts the steer.
+    expect(milestoneState(item({ status: 'question', reason: 'needs_human', outstanding: false, ...R }), false)).toBe('waiting')
+    expect(milestoneState(item({ status: 'question', reason: 'needs_human', outstanding: false, alive: 'running', ...R }), false)).toBe('running')
+    // A blocked report: a steer after the newest report answers it.
+    expect(milestoneState(item({ status: 'blocked', reason: 'needs_human', events: [report, steer], ...R }), false)).toBe('waiting')
+    expect(milestoneState(item({ status: 'blocked', reason: 'needs_human', events: [steer, { ...report, ts: '2026-10-30T01:03:00Z' }], ...R }), false)).toBe('needs_you')
+  })
+
+  it('waiting: a question or blocked report the conductor still owns is not needs you', () => {
+    expect(milestoneState(item({ status: 'question', outstanding: true, ...R }), false)).toBe('waiting')
+    expect(milestoneState(item({ status: 'blocked', ...R }), false)).toBe('waiting')
+  })
+
+  it('waiting: an idle session after progress or an answered report', () => {
+    expect(milestoneState(item({ status: 'progress', ...R }), false)).toBe('waiting')
+    expect(milestoneState(item({ status: 'blocked', ...ANSWERED }), false)).toBe('waiting')
+    expect(milestoneState(item({ status: 'question', outstanding: false, ...ANSWERED }), false)).toBe('waiting')
+  })
+
+  it('stalled: a closed session on an open report, or the board stale / orphaned flag', () => {
+    expect(milestoneState(item({ status: 'progress', alive: 'closed' }), false)).toBe('stalled')
+    expect(milestoneState(item({ status: 'blocked', alive: 'closed', ...R }), false)).toBe('stalled')
+    expect(milestoneState(item({ status: 'progress', stale: true, ...R }), false)).toBe('stalled')
+    expect(milestoneState(item({ status: 'progress', orphaned: true, ...R }), false)).toBe('stalled')
+  })
+
+  it('running: a live turn, even after a done report or an answered one', () => {
     expect(milestoneState(item({ status: 'done', alive: 'running' }), false)).toBe('running')
+    expect(milestoneState(item({ status: 'progress', alive: 'running' }), false)).toBe('running')
+    expect(milestoneState(item({ status: 'blocked', alive: 'running', ...ANSWERED }), false)).toBe('running')
   })
 
-  it('maps the other states', () => {
+  it('done and next: as before', () => {
     expect(milestoneState(item({ state: 'accepted' }), false)).toBe('done')
     expect(milestoneState(item({ status: 'done' }), false)).toBe('done')
-    expect(milestoneState(item({ status: 'question', outstanding: true }), false)).toBe('blocked')
-    expect(milestoneState(item({ status: 'blocked', last_report_at: '2026-10-30T01:00:00Z' }), false)).toBe('blocked')
-    expect(milestoneState(item({ status: null, alive: 'closed' }), false)).toBe('next')
-  })
-
-  it('stops waiting on the person once the conductor answered', () => {
-    expect(milestoneState(item({ status: 'question', outstanding: false, decided_at: '2026-10-30T01:05:00Z', last_report_at: '2026-10-30T01:00:00Z', alive: 'running' }), false)).toBe('running')
-    expect(milestoneState(item({ status: 'blocked', decided_at: '2026-10-30T01:05:00Z', last_report_at: '2026-10-30T01:00:00Z', alive: 'running' }), false)).toBe('running')
-  })
-
-  it('reads an idle session as waiting, never running, whatever its last report', () => {
-    // Answered blocked, progress and answered question, with no live turn: the List shows Waiting.
-    expect(milestoneState(item({ status: 'blocked', decided_at: '2026-10-30T01:05:00Z', last_report_at: '2026-10-30T01:00:00Z' }), false)).toBe('waiting')
-    expect(milestoneState(item({ status: 'progress', last_report_at: '2026-10-30T01:00:00Z' }), false)).toBe('waiting')
-    expect(milestoneState(item({ status: 'question', outstanding: false, decided_at: '2026-10-30T01:05:00Z', last_report_at: '2026-10-30T01:00:00Z' }), false)).toBe('waiting')
-    // The same reports with a live turn still read as running.
-    expect(milestoneState(item({ status: 'progress', alive: 'running' }), false)).toBe('running')
-    // No report yet stays next.
-    expect(milestoneState(item({ status: null }), false)).toBe('next')
-  })
-
-  it('does not read a report left by a closed session as running', () => {
-    expect(milestoneState(item({ status: 'progress', alive: 'closed' }), false)).toBe('blocked')
-  })
-
-  it('reads a closed item as finished whatever its last report said', () => {
     expect(milestoneState(item({ status: 'question', outstanding: false, terminal: true, state: 'abandoned' }), false)).toBe('done')
+    expect(milestoneState(item({ status: null }), false)).toBe('next')
+    expect(milestoneState(item({ status: null, alive: 'closed' }), false)).toBe('next')
   })
 })
 
@@ -126,7 +143,7 @@ describe('Recap', () => {
 
   it('builds the milestone sentence', () => {
     expect(milestoneSentence(4, 8, ['Disk check', 'Decor team'], ['Launch-day checklist'])).toBe('4 of 8 done; Disk check and Decor team wait on you; Launch-day checklist is running.')
-    expect(milestoneSentence(5, 6, [], [], ['Supplies list'])).toBe('5 of 6 done; Supplies list is blocked.')
+    expect(milestoneSentence(5, 6, [], [], ['Supplies list'])).toBe('5 of 6 done; Supplies list has stalled.')
   })
 })
 
