@@ -244,6 +244,8 @@ describe('the hand-back bar', () => {
     await act(async () => { fireEvent.submit(note.closest('form')!) })
     expect(screen.getByTestId('browser-live-handback-note')).toHaveValue('Wrong password')
     expect(screen.getByRole('button', { name: "Didn't work" })).toHaveAttribute('aria-pressed', 'true')
+    // The draft answered this turn's takeover; another turn's bar starts empty.
+    expect(browserLiveStore.handBackDraft(S, 'another-turn')).toBeUndefined()
   })
 
   it('the header\'s Hand back and Esc in the note field say nothing', async () => {

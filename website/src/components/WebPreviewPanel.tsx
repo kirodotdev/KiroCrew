@@ -766,6 +766,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
               </div>
             ) : originsError ? (
               // A failed read is not "none configured": say it failed.
+              // No hand-off: the address bar above holds an unsaved draft URL.
               <ErrorNotice
                 variant="inline"
                 message={i18nT('components.webPreviewPanel.origins_unavailable')}

@@ -279,7 +279,7 @@ export function BrowserLiveLiveView({ turn, onScreen, canvasRef, onClaim, onRele
 
       {(!inControl || quick.scoped) && quick.askSlot}
 
-      {inControl && !quick.scoped && <BrowserLiveHandbackBar offered={turn.handbackOptions} onHandBack={onRelease} draft={browserLiveStore.handBackDraft(turn.sessionKey)} />}
+      {inControl && !quick.scoped && <BrowserLiveHandbackBar offered={turn.handbackOptions} onHandBack={onRelease} draft={browserLiveStore.handBackDraft(turn.sessionKey, turn.turnId)} />}
 
       {!inControl && turn.loop && <BrowserLiveLoopLine loop={turn.loop} className="px-3 py-2 border-t border-border" />}
 

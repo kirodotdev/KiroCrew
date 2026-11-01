@@ -315,7 +315,7 @@ class BrowserLiveStore {
   /** Per session, each mounted canvas's "release what you hold" (see `onHandBack`). */
   private handBackDrains = new Map<string, Set<() => Promise<unknown> | null>>()
   /** A hand-back note or choice whose release failed, so the bar that comes back shows it again. */
-  private handBackDrafts = new Map<string, BrowserHandbackSaid>()
+  private handBackDrafts = new Map<string, { turnId: string; said: BrowserHandbackSaid }>()
   /** Injected for tests; production uses the facade's methods. */
   private writes = {
     ack: (k: string, seq: number, stream: string) => api.browserLiveAck(k, seq, stream) as Promise<unknown>,
@@ -669,15 +669,17 @@ class BrowserLiveStore {
       this.handBackDrafts.delete(sessionKey)
       return true
     } catch (e) {
-      if (said) this.handBackDrafts.set(sessionKey, said)
+      if (said) this.handBackDrafts.set(sessionKey, { turnId: before.turnId, said })
       if (s.current?.turnId === before.turnId) this.setState(sessionKey, 'in_control', errorText(e))
       return false
     }
   }
 
   /** What the person said in a hand-back that failed to send, for the bar to restore. */
-  handBackDraft(sessionKey: string): BrowserHandbackSaid | undefined {
-    return this.handBackDrafts.get(sessionKey)
+  handBackDraft(sessionKey: string, turnId: string): BrowserHandbackSaid | undefined {
+    const draft = this.handBackDrafts.get(sessionKey)
+    // A later turn's bar starts empty: the draft answered that turn's takeover.
+    return draft?.turnId === turnId ? draft.said : undefined
   }
 
   /**

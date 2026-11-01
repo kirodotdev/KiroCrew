@@ -332,7 +332,7 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
 
           {mode === 'live' && (!inControl || quick.scoped) && quick.askSlot}
           {inControl && !quick.scoped && mode === 'live' && turn && (
-            <BrowserLiveHandbackBar offered={turn.handbackOptions} onHandBack={release} draft={browserLiveStore.handBackDraft(sessionKey)} className="shrink-0" />
+            <BrowserLiveHandbackBar offered={turn.handbackOptions} onHandBack={release} draft={browserLiveStore.handBackDraft(sessionKey, turn.turnId)} className="shrink-0" />
           )}
           {mode === 'live' && !inControl && turn?.loop && (
             <BrowserLiveLoopLine loop={turn.loop} className="px-3 py-2 border-t border-border shrink-0" />
