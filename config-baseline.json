@@ -98,6 +98,7 @@
         "tool_approval_timeout_secs": 600,
         "session_control": true,
         "session_manager_chain": false,
+        "peer_steer_loss_recovery": false,
         "member_dispatch": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
@@ -1522,6 +1523,20 @@
       "tags": [],
       "label": "Session Manager Chain",
       "help": "Let a session reach the whole line of sessions under it, not only the ones it manages directly. With it on, a lead that handed a worker to a conductor can still send to, read, stop and close that worker, and closing the conductor hands its workers to the lead. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.peer_steer_loss_recovery",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Peer Steer Loss Recovery",
+      "help": "Let a steer that is not typed into the session's own composer (another session's session_send or session_broadcast steer, or an automation's) cut into a running Claude Code, Codex, Goose, Pi or OpenCode turn. Those harnesses can drop a steer they accepted, so it counts as delivered only when the turn ends cleanly; a turn that is cancelled, fails or loses it to a denied approval puts it back as a queue card that runs as the next turn, so it can run twice. While it is on, a hard stop that drops another session's pending steer, on any harness, tells that session the steer may not have run. Off by default: such a steer queues for the next turn, and only the composer steers these harnesses.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

@@ -149,6 +149,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         MIRROR_IDENTITY_SEPARATOR,
         QUEUED_CONTAINMENT_META_KEY,
         SEND_DISCARD_HARD_STOP,
+        SEND_DISCARD_HARD_STOP_STEER,
         SEND_DISCARD_QUEUE_CANCEL,
         SEND_DROP_EXCERPT_CHARS,
         SEND_ORIGIN_META_KEY,
