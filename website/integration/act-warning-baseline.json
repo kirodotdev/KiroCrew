@@ -282,7 +282,6 @@
   "src/test/KiroCrewAgentsPage.schedDraftGuard.test.tsx",
   "src/test/KiroPrerequisiteGate.test.tsx",
   "src/test/KiroSignInCard.test.tsx",
-  "src/test/KnowledgeDetailViewCoverage.test.tsx",
   "src/test/KnowledgeGraphCoverage.test.tsx",
   "src/test/KnowledgeIndexCoverage.test.tsx",
   "src/test/LexicalComposerInput.test.tsx",
