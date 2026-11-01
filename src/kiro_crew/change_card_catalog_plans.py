@@ -1208,7 +1208,11 @@ def _template_server_preview(
         step(
             "POST",
             template_additions_path(p["template"]),
-            {"server": p["server"], "entry": p["entry"]},
+            {
+                "server": p["server"],
+                "entry": p["entry"],
+                **({"mount_only": True} if p.get("mount_only") else {}),
+            },
         )
     ]
 

@@ -183,6 +183,29 @@ class TestSpecEnvPathIsExpandedOnEmit:
         on_disk = json.loads(kiro_mcp.read_text(encoding="utf-8"))
         assert on_disk["mcpServers"]["wrapped"]["env"]["PATH"] == "/opt/shims"
 
+    def test_a_mount_only_addition_is_mounted_without_a_grant(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from kiro_crew import template_mcp_additions as tma
+
+        home = tmp_path / "record_home"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(tma, "config_dir", lambda: home)
+        binary = _make_exec(tmp_path, "approved-mcp")
+        tma.add_addition(
+            "kirocrew",
+            "approved",
+            {"command": binary},
+            approved_by="owner",
+            card_id="card-1",
+            mount_only=True,
+        )
+        cfg_dir = _bundled_defaults(tmp_path)
+        config = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers={})
+        assert config["mcpServers"]["approved"]["command"] == binary
+        assert "@approved" in config["tools"]
+        assert "@approved" not in config.get("allowedTools", [])
+
     def test_rebuild_is_stable(self, tmp_path: Path, monkeypatch) -> None:
         """install_agent runs on every start; the emitted PATH must not grow."""
         monkeypatch.setenv("PATH", os.pathsep.join([_abs("usr", "bin"), _abs("bin")]))

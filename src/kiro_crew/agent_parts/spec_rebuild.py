@@ -733,6 +733,16 @@ def rebuild_agent_config(
         # would name directories that were never searched.
         return resolved_command_casing(shutil.which(cmd, path=_search)) or None, _search
 
+    from kiro_crew import template_mcp_additions as _template_additions
+
+    _mount_only_added = _template_additions.merge_into_spec("kirocrew", config)
+    if _mount_only_added:
+        logger.info(
+            "kirocrew: merged mount-only MCP server(s) %s from the template additions record",
+            ", ".join(_mount_only_added),
+        )
+    _mount_only = _template_additions.mount_only_names("kirocrew")
+
     resolved = mcp_sources.resolve_mcp_servers(config, sources, _resolve_command)
     mounted = mcp_aliases.normalize_server_keys(config, resolved.unresolved)
 
@@ -740,7 +750,7 @@ def rebuild_agent_config(
     # These are explicitly installed by the user via AIM's installer or
     # manual mcp.json edits — unlike managed servers, they should always
     # be registered regardless of fresh/existing config state.
-    mcp_sources.sync_shared_server_refs(config, sources, mounted)
+    mcp_sources.sync_shared_server_refs(config, sources, mounted, mount_only=_mount_only)
     managed_mcp.register_managed_refs(config, fresh_install=fresh_install, gated_off=gated_off)
     guide_grant_pending = guide_platform.grant_guide_platform_once(
         config, fresh_install=fresh_install

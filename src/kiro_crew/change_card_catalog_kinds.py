@@ -623,6 +623,7 @@ KINDS: dict[str, KindDef] = {
                     "server": _STR,
                     "entry": {"type": "object"},
                     "origin": {"type": "object"},
+                    "mount_only": _BOOL,
                 },
                 ["template", "server", "entry", "origin"],
             ),
@@ -1509,12 +1510,17 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
     if kind == KIND_TEMPLATE_MCP_SERVER:
         from kiro_crew import template_mcp_additions as _additions
 
-        _only(p, {"template", "server", "entry", "origin"})
+        _only(p, {"template", "server", "entry", "origin", "mount_only"})
         out_srv: dict[str, Any] = {
             "template": _clean_str(p, "template", pattern=_TEMPLATE_NAME_RE),
             # One path segment of plain characters: the Undo names it in its path.
             "server": _clean_str(p, "server", pattern=_TEMPLATE_NAME_RE),
         }
+        if "mount_only" in p:
+            if not isinstance(p["mount_only"], bool):
+                raise _fail("invalid_param", "'mount_only' must be a boolean")
+            if p["mount_only"]:
+                out_srv["mount_only"] = True
         entry = p.get("entry")
         if not isinstance(entry, dict):
             raise _fail("invalid_param", "'entry' must be an object")
