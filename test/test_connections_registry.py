@@ -60,6 +60,9 @@ EXPECTED_LAUNCH_REGISTRY = {
     # Listed by both connector directories (ChatGPT's app directory and Claude's
     # connector directory); launch-gated until the manual gate, like batch 2.
     "todoist",
+    # TickTick's own hosted server (mcp.ticktick.com), documented for Claude,
+    # ChatGPT, Cursor and VS Code; launch-gated until the manual gate, like Todoist.
+    "ticktick",
 }
 # Tier 3: the vendor admits OAuth clients from an allowlist or waitlist, so no
 # amount of local verification can pass the gate until Kiro is admitted. They
@@ -89,6 +92,7 @@ LAUNCH_GATED = {
     "webflow",
     "zapier",
     "todoist",
+    "ticktick",
 } | VENDOR_APPROVAL_PENDING
 
 
@@ -217,6 +221,26 @@ def test_todoist_requests_deletes_but_never_whole_project_deletes():
     assert todoist["recommended_scopes"] == ["data:read_write", "data:delete"]
     assert "project:delete" not in todoist["recommended_scopes"]
     assert "archive the project instead" in todoist["gotcha_copy"]
+
+
+def test_ticktick_requests_both_scopes_and_admits_the_grant_can_write():
+    """TickTick's resource metadata publishes exactly tasks:read and tasks:write
+    and no read-only MCP endpoint exists, so the entry asks for both and the card
+    says so. The server's delete tools (tasks, tags, project groups, focus records,
+    comments) run at the user's own permission level, so the copy names them
+    rather than implying a task-only surface."""
+    (ticktick,) = [p for p in get_all_providers() if p["slug"] == "ticktick"]
+    assert ticktick["mcp_url"] == "https://mcp.ticktick.com"
+    assert ticktick["recommended_scopes"] == ["tasks:read", "tasks:write"]
+    assert "no read-only scope" in ticktick["gotcha_copy"]
+    assert "can write" in ticktick["gotcha_copy"]
+    for tool in ("delete_task", "delete_tag", "delete_project_group", "delete_focus", "delete_comment"):
+        assert tool in ticktick["gotcha_copy"], tool
+    assert ticktick["tool_aliases"] == {
+        "search": "ticktick_search",
+        "fetch": "ticktick_fetch",
+        "list_projects": "ticktick_list_projects",
+    }
 
 
 def test_client_id_is_optional_and_unset_for_every_launch_provider():

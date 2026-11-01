@@ -174,7 +174,16 @@ class TestToolAliases:
 
     def test_clause_count_word_matches(self, flat: str, entries: list[dict]) -> None:
         declaring = [e for e in entries if e.get("tool_aliases")]
-        words = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
+        words = {
+            1: "one",
+            2: "two",
+            3: "three",
+            4: "four",
+            5: "five",
+            6: "six",
+            7: "seven",
+            8: "eight",
+        }
         match = self._CLAUSE.search(flat)
         assert match, "the alias clause anchor is gone; see the sibling test's message"
         assert match.group("count").lower() == words.get(len(declaring)), (
