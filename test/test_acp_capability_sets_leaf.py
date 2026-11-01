@@ -40,6 +40,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_VIBE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_COMPACT,
@@ -216,6 +217,10 @@ def test_membership_is_unchanged_by_the_move() -> None:
     # deepseek joins for that same capture reason, in its strongest form: its
     # select's values are JSON-encoded ``[provider, model]`` pairs from its own live
     # catalog, which nothing can spell from a stored bare model name.
+    # vibe joins for the capture reason: its ``model`` select on ``session/new``
+    # is the list of aliases its own config/catalog resolved, and it is what
+    # ``session/set_config_option("model", ...)`` accepts (captured on
+    # mistral-vibe 3.0.3, test/fixtures/acp_frames/vibe/routing-live.jsonl).
     assert ACP_BACKENDS_ADVERTISED_MODEL_SELECTION == frozenset(
         {
             ACP_BACKEND_CLAUDE,
@@ -225,6 +230,7 @@ def test_membership_is_unchanged_by_the_move() -> None:
             ACP_BACKEND_GOOSE,
             ACP_BACKEND_DEEPSEEK,
             ACP_BACKEND_COPILOT,
+            ACP_BACKEND_VIBE,
         }
     )
     assert ACP_BACKENDS_SEED_LOCAL_SETTINGS == frozenset({ACP_BACKEND_CLAUDE})

@@ -96,6 +96,11 @@ const checked = (key: string) => within(page(key)).getByRole('radio', { checked:
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockApi.acpBackends.mockResolvedValue({ backends: [
+    { id: 'codex', policy_id: 'codex', selectable: true },
+    { id: 'kiro', policy_id: 'kiro-cli', selectable: true },
+    { id: 'vibe', policy_id: 'vibe', selectable: false },
+  ] })
   modelsState.isDegraded = false
   mockApi.memberDashboard.mockResolvedValue({ structure_locked: false })
   mockApi.memberDashboardLock.mockResolvedValue({ ok: true, structure_locked: true })
@@ -111,6 +116,25 @@ beforeEach(() => {
 afterEach(() => { cleanup(); hosts?.forEach((h) => h.remove()); localStorage.removeItem(PREVIEW_CREWMATE_HARNESS) })
 
 describe('CrewProfileSettings row and group', () => {
+  it('maps the real Kiro probe id to an explicit runtime pin rather than inheritance', async () => {
+    setup(member())
+    open('acp_backend')
+    await waitFor(() => expect(within(page('acp_backend')).getByRole('radio', { name: 'kiro-cli' })).toBeInTheDocument())
+    fireEvent.click(within(page('acp_backend')).getByRole('radio', { name: 'kiro-cli' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { acp_backend: '' }))
+  })
+  it('saves the member backend and clears it to inherit without changing the chat override', async () => {
+    setup(member(), 'member-oncall')
+    open('acp_backend')
+    await waitFor(() => expect(within(page('acp_backend')).getByRole('radio', { name: 'codex' })).toBeInTheDocument())
+    expect(within(page('acp_backend')).queryByRole('radio', { name: 'vibe' })).toBeNull()
+    fireEvent.click(within(page('acp_backend')).getByRole('radio', { name: 'codex' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { acp_backend: 'codex' }))
+    await waitFor(() => expect(within(page('acp_backend')).getByRole('radio', { name: 'Inherited' })).not.toBeDisabled())
+    fireEvent.click(within(page('acp_backend')).getByRole('radio', { name: 'Inherited' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { acp_backend: null }))
+    expect(mockApi.chatSlotModel).not.toHaveBeenCalled()
+  })
   it('shows one Settings row on the card, reading the ceiling and the model', () => {
     setup(member({ model: 'claude-opus-5', reasoning_effort: 'high' }), 'member-oncall', false, { openGroup: false })
     expect(settingsRow()).toHaveTextContent('Settings')

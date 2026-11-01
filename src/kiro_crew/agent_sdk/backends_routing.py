@@ -34,6 +34,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
 )
 
 # Backends on which a Side Chat turn may EXECUTE read-only tools under
@@ -386,6 +387,28 @@ ACP_BACKEND_ROUTING: dict = {
     ACP_BACKEND_OPENCODE: Routing.VERIFIED_SEEDED_SETTINGS,
     ACP_BACKEND_PI: Routing.VERIFIED_GATE_EXTENSION,
     ACP_BACKEND_GOOSE: Routing.VERIFIED_SEEDED_SETTINGS,
+    # Vibe resolves its WHOLE config from ``VIBE_*`` environment variables in a
+    # layer ABOVE its user and project TOML files (``vibe.core.config.layers.environment``,
+    # verified against the installed mistral-vibe 3.0.3), so Crew seeds the asking
+    # posture as environment variables on the spawn and reads the agent profile the
+    # harness resolved back off the ``modes`` block of the very ``session/new`` (or
+    # ``session/load``/``session/fork``) response that opens the session. The seed is
+    # not one variable but four, all clamped against the bypasses live captures at
+    # 2.26.0 showed (``bypass_tool_permissions`` and ``tools.<name>.permission =
+    # "always"`` completing writes with no permission request): ``VIBE_DEFAULT_AGENT=ask``
+    # pins the starting profile, ``VIBE_ENABLE_AUTO_APPROVE=false`` clamps the bypass
+    # flag itself (``_effective_bypass_tool_permissions`` ANDs it in) and removes every
+    # YOLO-safety profile from the picker, ``VIBE_BYPASS_TOOL_PERMISSIONS=false``
+    # overrides the config-file path, and ``VIBE_DISABLED_AGENTS`` removes the remaining
+    # auto-approving profiles (``accept-edits``, ``smart-approve``) so the advertised
+    # mode list is exactly ``ask``. The read-back requires both halves: current mode
+    # ``ask`` AND no other mode advertised, which a permissive config source outranking
+    # the seed would break. Live captures: ``test/fixtures/acp_frames/vibe/routing-live.jsonl``
+    # (3.0.3): a write asked and a rejected write left no file even with a hostile
+    # ``bypass_tool_permissions = true`` in the config file, while the same file with
+    # no seed auto-approved. Mode switches are client-to-agent calls only, so the
+    # model cannot move the session off ``ask`` itself.
+    ACP_BACKEND_VIBE: Routing.VERIFIED_SEEDED_SETTINGS,
     # deepseek reaches the same member as pi, and by the same reasoning: the harness
     # has no gate of its own that decides a TOOL CALL, so Crew loads one into it.
     # Its sandbox permits an in-policy
@@ -462,6 +485,15 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
 ACP_BACKEND_PERMISSION_SETTING: dict = {
     ACP_BACKEND_OPENCODE: ("permission", "ask"),
     ACP_BACKEND_GOOSE: ("GOOSE_MODE", "approve"),
+    # The PRIMARY of vibe's four seed variables: it names the agent profile the
+    # session starts in, and the harness reports that profile back in
+    # ``modes.currentModeId`` on the session-opening response, so this pair is what
+    # the seed writes, the read-back compares, and the refusal names. The three
+    # clamping companions (``VIBE_ENABLE_AUTO_APPROVE``, ``VIBE_BYPASS_TOOL_PERMISSIONS``,
+    # ``VIBE_DISABLED_AGENTS``) travel beside it in the adapter's spawn environment
+    # and are read back through the advertised-mode list, which must be exactly
+    # ``ask`` -- see ``acp/harness/vibe.py`` and ``AcpClient._verify_vibe_routing``.
+    ACP_BACKEND_VIBE: ("VIBE_DEFAULT_AGENT", "ask"),
 }
 
 

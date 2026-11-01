@@ -886,6 +886,25 @@ The lesson for a fifth onboarding is the order rather than the gate: review the 
 fixtures by hand BEFORE writing the corpus README, because that review is what finds
 whatever the scrubbers cannot name.
 
+## Worked example: Mistral Vibe
+
+The run to read for what a harness with a WHOLE config layer in its environment
+costs, and for why a mode read-back alone was not enough. It is in
+`ACP_BACKENDS_KNOWN` and it IS selectable.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_VIBE`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_VIBE`, policy name mapped, its own model-registry namespace `vibe`. |
+| 2 capability sets | Decided for every set. In the session MCP array (measured: the `session/new` array mounts a stdio element, captured at 3.0.3), the model channel, the advertised-model capture and the effort channel (`model` and `thinking` selects on `session/new`, both writable through `session/set_config_option`; effort spelling `thinking` in `EFFORT_CONFIG_OPTION_IDS`), the independent-setup set, and `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN` (enforced routing + `broker-only` projection, the pi shape). Out of steer, session sharing, ACP runtime, compaction sets, resume/load sets, internal sandbox, member dispatch/panel and the kiro-family sets. |
+| 3 spawn path | Done — one Python binary, `vibe-acp`, from the shared self-served ladder and its `ACP_BACKEND_LAUNCH` row; no adapter package, no Node floor. |
+| 4 handshake | Done — integer `1`, captured off vibe-acp's own wire. |
+| 5 auth declaration | Done — `own_credential_file`, `~/.vibe/.env` on the floor with `VIBE_HOME` re-anchored, `adapter_own_leaves` EMPTY by choice: the routing is enforced, so the mask hides the file from the whole tree, and Vibe resolves `MISTRAL_API_KEY` from the inherited process environment above that file (verified against the installed 3.0.3), so the child authenticates with no carve-out. Vibe does not scrub key-named variables from its own children, so the `host_vault` route is NOT available to it; the env-inherited key is the accepted path. Not retired by a host logout. |
+| 6 install probe | Done — `_probe_self_served` reads the launch row (`vibe-acp`, `pip install mistral-vibe` / `uv tool install mistral-vibe`). |
+| 7 selectability | **Selectable**, in `BASELINE_SELECTABLE_BACKENDS`; `NOT_SHIPPED_SELECTABLE` is empty again. Projection `BROKER_ONLY`: the array carries Crew's pooled stubs, not the spec's own servers or per-tool deny set. |
+| routing | `VERIFIED_SEEDED_SETTINGS`. The 2.26.0 captures showed why the obvious mechanism fails: an ACP `mode` option set to `ask` reads back as `ask`, yet `bypass_tool_permissions = true` and `tools.write_file.permission = "always"` in the config file each completed a write with NO `session/request_permission`. What closes it is the harness's own layer stack: `VIBE_*` environment variables resolve ABOVE user and project TOML (`vibe.core.config.layers.environment`), so Crew seeds `VIBE_DEFAULT_AGENT=ask`, `VIBE_ENABLE_AUTO_APPROVE=false` (clamps the bypass flag itself in `_effective_bypass_tool_permissions` and removes every YOLO-safety profile), `VIBE_BYPASS_TOOL_PERMISSIONS=false`, and `VIBE_DISABLED_AGENTS=["accept-edits","smart-approve","auto-approve"]`. The read-back rides the session's own connection: the `modes` block of the `session/new` (and `session/load`/`session/fork`) response must carry `currentModeId=ask` AND `availableModes` exactly `[ask]` — the second fact proves the clamp, not just the starting profile — and the session is refused otherwise (`AcpClient._verify_vibe_routing`). Mode switches are client-to-agent calls, so the model cannot move the session off `ask` itself. |
+| 8 live spill | Reached. `test/fixtures/acp_frames/vibe/routing-live.jsonl` (mistral-vibe **3.0.3**, scripted loopback model, isolated home): under the seed a `write_file` call raised `session/request_permission` and a `reject_once` answer failed it with no file on disk — including with `bypass_tool_permissions = true` + `default_agent = "auto-approve"` in the config file, which the env layer outranks; the same file without the seed auto-approved with no request. `session/set_config_option mode=accept-edits` is refused under the seed. |
+| residual | Two, both named. ACP v1 cannot require a prompt for a passive read, so the OS-boundary credential mask is the compensating control, as for codex. And a per-tool `permission = "always"` in the operator's OWN config still pre-approves that tool — the operator's grant, same posture as goose's `permission.yaml`; the seed removes the AGENT's ability to grant it (config writes route through the `ask` gate like any other tool call). |
+
 ### What a fourth harness cost
 
 Thirty-one files, all of them this harness's own: the corpus gate the fixture review

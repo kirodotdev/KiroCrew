@@ -74,6 +74,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.kiro_cli_bundle import KIRO_CLI_LOGIN_COMMAND, spawn_login_command
@@ -832,6 +833,50 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # GitHub CLI to fall back to), answers ``session/new`` with -32000
         # ``Authentication required`` and creates no session.
         signed_out_signature="Authentication required",
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_VIBE,
+        # Vibe stores its Mistral API key in ``~/.vibe/.env`` (written by
+        # ``vibe --setup`` or on first run). Environment variables take precedence
+        # over this file, but the file is where the key persists, so it belongs on
+        # the credential floor.
+        credential_leaves=(".vibe/.env",),
+        # ``VIBE_HOME`` relocates Vibe's whole home directory -- config, credentials
+        # and sessions together -- so it stands in for the leaf's parent.
+        home_override_env_vars=("VIBE_HOME",),
+        # The one leaf the mask must spare. The routing is now
+        # ``VERIFIED_SEEDED_SETTINGS`` (inside ``tool_gate.ENFORCED_ROUTINGS``), so
+        # ``adapter_hidden_credential_dirs`` hides the whole floor from the child
+        # unless this names the leaf the harness authenticates with. Vibe CAN also
+        # resolve ``MISTRAL_API_KEY`` from the inherited process environment above
+        # this file (verified against the installed mistral-vibe 3.0.3:
+        # ``load_dotenv_values`` never overrides an existing variable), but an
+        # operator who signed in with ``vibe setup`` has the key ONLY in this file,
+        # so the child needs the file readable. The vault route is NOT available:
+        # Vibe does not scrub key-named variables from the children its own ``bash``
+        # tool spawns (checked in the installed 3.0.3 -- no env scrub exists), so
+        # feeding the key from Crew's vault as an environment variable would put it
+        # in every shell the model runs, in every sandbox mode. The carve-out below
+        # carries the documented accepted risk instead: the model already holds the
+        # key's USE-power through the harness, and the exposure it adds is
+        # exfiltration via a shell reading the spared file -- the same trade the
+        # other four enforced harnesses (codex, opencode, pi, goose) carry.
+        adapter_own_leaves=(".vibe/.env",),
+        sign_in_remedy=(
+            "Mistral Vibe needs a Mistral API key — run vibe setup in a "
+            "terminal and enter your key, or set MISTRAL_API_KEY in your "
+            "environment. Get a key at https://console.mistral.ai."
+        ),
+        signed_out_message=(
+            "Mistral Vibe has no API key. Run vibe setup in a terminal and "
+            "enter your Mistral API key, or set MISTRAL_API_KEY in your "
+            "environment, then start a new chat."
+        ),
+        # Excluded deliberately: it signs in through its own credential file, so a
+        # ``kiro-cli logout`` says nothing about whether a running vibe session is
+        # still authenticated.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
     ),
 )
 

@@ -60,6 +60,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKEND_VIBE,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     session_config_drift_issue,
 )
@@ -240,6 +241,81 @@ def _verify_goose_routing(self: AcpClient, resp: dict) -> None:
     # read was verified against and no claim can be made from it.
     observed = current_mode if advertised else ""
     issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
+    if not issue:
+        return
+    try:
+        acp_tool_gate.enforce_runtime_routing(
+            self.backend,
+            issue,
+            remedy=acp_tool_gate.remediation_for(self.backend),
+        )
+    except acp_tool_gate.ToolGateUnroutable as exc:
+        # Translated to the ACP-layer type like the sibling refusal sites, and
+        # that is not cosmetic: ``ensure_ready`` catches ``AcpToolGateUnroutable``,
+        # so a bare gate exception would escape both of its handlers and skip
+        # ``_cleanup_failed_live_spawn`` -- leaving the refusal untyped and the
+        # failed spawn unreaped.
+        raise AcpToolGateUnroutable(str(exc)) from None
+
+
+def _verify_vibe_routing(self: AcpClient, resp: dict) -> None:
+    """Read Vibe's resolved agent profile back off the session response.
+
+    The environment seed (``VIBE_DEFAULT_AGENT=ask`` plus the auto-approve clamp
+    variables, written on the spawn by ``VibeLaunch.resolve_spawn``) governs the
+    session Vibe CREATES because Vibe resolves ``VIBE_*`` variables in a config
+    layer ABOVE its user and project TOML files. This read is the half that makes
+    the routing VERIFIED rather than seeded: the ``modes`` block of the very
+    response that opens, restores or forks the session reports the profile Vibe
+    actually resolved and the mode list it offers, on the session's own
+    connection -- no second child, and no window in which the session is live and
+    the posture unconfirmed. A precedence change in a future release therefore
+    surfaces as a refusal here rather than as a session that silently stops
+    asking.
+
+    TWO facts are required, not one. ``modes.currentModeId`` must be ``ask`` (the
+    primary seeded setting, judged through ``seeded_setting_issue``), AND the
+    advertised mode list must be exactly ``ask``: the clamp variables are what
+    remove ``auto-approve`` (YOLO profiles under ``enable_auto_approve = false``)
+    and ``accept-edits`` / ``smart-approve`` (the disabled-agents list) from that
+    list, so an available mode beyond ``ask`` means a config source outranked the
+    seed -- the exact bypass the 2.26.0 captures showed a mode read-back alone
+    cannot see (``bypass_tool_permissions = true`` completing writes while the
+    mode still read ``ask``). An omitted ``modes`` block is INDETERMINATE, not a
+    pass.
+
+    What this does NOT establish is that Vibe honours the profile per tool call;
+    that is the harness's own contract and no client-side read can prove it. The
+    frame corpus carries the observation of the emission
+    (``test/fixtures/acp_frames/vibe/routing-live.jsonl``: a write asked, and a
+    rejected write left no file, even with a hostile config file).
+
+    Raises ``AcpToolGateUnroutable`` when the asking posture is not in force.
+    """
+    if self.backend == ACP_BACKEND_VIBE:
+        _verify_vibe_routing_body(self, resp)
+
+
+def _verify_vibe_routing_body(self: AcpClient, resp: dict) -> None:
+    """The body of :func:`_verify_vibe_routing`, keyed on the POSITIVE identity
+    (harness-parity H5): ``== ACP_BACKEND_VIBE``, never ``!=``."""
+    from kiro_crew.acp.harness.vibe import VIBE_REQUIRED_MODE_IDS
+
+    ids, current_mode, advertised = parse_session_modes(resp)
+    # An omitted modes block is INDETERMINATE rather than a pass: this harness
+    # always reports one, so its absence means the response is not the shape this
+    # read was verified against and no claim can be made from it.
+    observed = current_mode if advertised else ""
+    issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
+    if not issue and advertised:
+        advertised_ids = {mode_id for mode_id in ids if isinstance(mode_id, str)}
+        if advertised_ids != set(VIBE_REQUIRED_MODE_IDS):
+            issue = (
+                f"the harness advertises modes {sorted(advertised_ids)!r} rather than "
+                f"exactly {sorted(VIBE_REQUIRED_MODE_IDS)!r}, so an auto-approving "
+                "profile is still selectable and a config source outranked Kiro "
+                "Crew's seed"
+            )
     if not issue:
         return
     try:

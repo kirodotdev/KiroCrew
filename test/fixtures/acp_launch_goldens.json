@@ -197,5 +197,22 @@
     },
     "spawn_label": "strands --acp-server --agent /opt/run/strands/agent.py",
     "stderr_label": "strands --acp-server --agent /opt/run/strands/agent.py"
+  "vibe": {
+    "argv": [
+      "/opt/bin/vibe-acp"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "PATH": "<augmented-path>",
+      "VIBE_BYPASS_TOOL_PERMISSIONS": "false",
+      "VIBE_DEFAULT_AGENT": "ask",
+      "VIBE_DISABLED_AGENTS": "[\"accept-edits\", \"smart-approve\", \"auto-approve\"]",
+      "VIBE_ENABLE_AUTO_APPROVE": "false"
+    },
+    "spawn_label": "vibe-acp",
+    "stderr_label": "vibe-acp"
   }
 }
