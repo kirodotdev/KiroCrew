@@ -55,6 +55,7 @@
     "open_session": "打开会话",
     "open_to_answer": "此视图无法核实该请求。请打开会话进行查看并回应。",
     "explicit_input": "只有你明确提交后，才会发送回答或审批决定。",
+    "session_only_options": "部分选项只能在会话中回复。",
     "recorded": "已记录你的回复。",
     "send_refused": "此会话未接受这个回答。",
     "send_unknown": "尚无法确认是否送达。回答已保留，请先检查会话再重试，以免重复发送。",

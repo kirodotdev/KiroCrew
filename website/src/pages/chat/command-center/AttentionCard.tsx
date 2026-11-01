@@ -265,6 +265,7 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
     {item.approval && <p className="text-[12px] text-warn">{t('commandCenter.approval_needed')}{item.approvalMode ? ` · ${t('commandCenter.permission_mode', { mode: t(APPROVAL_MODE_KEYS[item.approvalMode]) })}` : ''}</p>}
     {item.approval && item.approvalMode === 'normal' && <p className="text-[12px] text-muted">{t('commandCenter.normal_help')}</p>}
     {(item.approval || item.question) && <p className="text-[12px] text-muted">{t('commandCenter.explicit_input')}</p>}
+    {!!item.sessionOnlyOptions && <p className="text-[12px] text-muted">{t('commandCenter.session_only_options')}</p>}
     {/* No hand-off: retryable question failures retain the unsent answer draft,
         and a rejected submission's answer now sits in that session's composer,
         which the hand-off's prefill would overwrite. */}

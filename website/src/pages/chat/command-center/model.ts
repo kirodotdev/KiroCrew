@@ -3,6 +3,7 @@ import { isAwaitingSpawnApproval } from '../../../store/chatSlice'
 import { slotApprovalMode } from '../../../utils/slotApprovalMode'
 import type { ApprovalModeKey } from '../../../components/ApprovalModePicker'
 import { i18nT } from '../../../i18n/t'
+import { dispatchIsCommandShaped } from '../../../app-sdk/protocol/dispatchShape'
 import { fmtNumber } from '../../../i18n/format'
 import { slotChannelNamespace } from '../../../utils/channelOrigin'
 import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
@@ -78,6 +79,8 @@ export interface AttentionItem {
   /** On a conductor's own rollup item (All Dashboards): how many of its workers
    *  wait on a tool decision. */
   crewCount?: number
+  /** Follow-up options withheld from this card because sending them bare would run them. */
+  sessionOnlyOptions?: number
 }
 /** The command an approval asks about, as the transcript would title it. Empty
  * when the inventory carried no tool input to title. */
@@ -223,11 +226,15 @@ export function buildCommandCenter(source: CommandCenterSources) {
   // queued prompt may already be the answer: it writes no transcript row until
   // it runs, so `has_options` stays true and the ask must not be offered twice.
   for (const s of slots) {
-    // A model-authored label sent bare would be parsed as a slash command.
-    const labels = s.has_options ? (s.options || []).filter(label => label && !label.trimStart().startsWith('/')) : []
-    if (!labels.length || s.running || s.interrupted || (s.queue_depth ?? 0) > 0
+    // A model-authored label sent bare would RUN rather than say (see dispatchShape.ts), and
+    // this card sends a pick bare. The card stays even when every label is withheld, so the
+    // ask is never hidden; it says the rest are answered in the session.
+    const offered = s.has_options ? (s.options || []).filter(Boolean) : []
+    const labels = offered.filter(label => !dispatchIsCommandShaped(label))
+    if (!offered.length || s.running || s.interrupted || (s.queue_depth ?? 0) > 0
       || attention.some(a => a.slot === s.key && a.kind === 'question')) continue
-    addAttention({ id: `options:${s.key}:${s.options_ts || ''}:${labels.join('\u0000')}`, slot: s.key, kind: 'question',
+    addAttention({ id: `options:${s.key}:${s.options_ts || ''}:${offered.join('\u0000')}`, slot: s.key, kind: 'question',
+      sessionOnlyOptions: offered.length - labels.length,
       question: { slot: s.key, followUp: true, questions: [{ question: '', options: labels.map(label => ({ label })) }] } })
   }
   for (const s of slots) {
