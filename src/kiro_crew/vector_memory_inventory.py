@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from kiro_crew import memory_schema
+from kiro_crew.vector_memory_runtime import episodic_search as _episodic_search
 from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
 
 if TYPE_CHECKING:
@@ -36,11 +37,11 @@ def get_episodic_list(
 ) -> list[dict]:
     """Active episodes, with optional literal text/tag search before pagination."""
     query = _text_scoring._normalize_memory_search_query(q)
+    tag_params: tuple[object, ...]
     if tag_filter:
-        # Use JSON-quoted exact match to avoid substring false positives
-        # e.g. "cr" should not match "cron" or "datacraft"
-        tag_conds = " AND (" + " OR ".join(["tags LIKE ?" for _ in tag_filter]) + ")"
-        tag_params: tuple[object, ...] = tuple(f'%"{t.lower()}"%' for t in tag_filter)
+        # Whole-tag match on the stored JSON form, shared with the keyword search.
+        tag_sql, tag_params = _episodic_search.tag_filter_sql(tag_filter)
+        tag_conds = " AND " + tag_sql
     else:
         tag_conds = ""
         tag_params = ()
