@@ -43,6 +43,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.constants import reflow_and_label_glued_option_marker
 from kiro_crew.dashboard import chat_runner, openai_compat
+from kiro_crew.dashboard.chat_turn import turn_reply_seams
 from kiro_crew.dashboard.chat_utils import _build_stream_chunk
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact
 
@@ -338,6 +339,48 @@ class TestCredentialSplitAcrossABoundary:
         assert _TAIL not in sent and _HEAD not in sent, sent
 
 
+_PLAIN_ENDS = ("settled.", "playing.", "they've.", "Done.", "is.", "x.", "Okay.")
+_NOT_PLAIN_ENDS = (
+    _HEAD,
+    _HEAD + ".",
+    "SG.",
+    "eyJ.",
+    "IOSF.",
+    "settled",
+    "logs:",
+    "word?",
+    "ghp_.",
+    "Nonrepresentationalism.",
+    "path/to.",
+    "v1.2.",
+)
+#: What could follow the boundary: the rest of each credential family whose run
+#: can hold a ``.`` or follow one, and a bare key.
+_CONTINUATIONS = (
+    f"{_TAIL} after.",
+    _PARAM + _VALUE,
+    _PARAM[1:] + _VALUE,
+    "M" + "a" * 23 + ".abcdef." + "b" * 27,
+    "ey" + "J" + "hbGciOiJIUzI1NiJ9." + "ey" + "JzdWIiOiIxIn0.sig" + "0" * 30,
+    "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7dE9fG",
+    "//user:" + "pass@host",
+    "=" + _KEY,
+    _KEY,
+)
+
+
+@pytest.mark.parametrize("run", _PLAIN_ENDS)
+def test_a_plain_sentence_end_is_released_and_joins_no_credential(run: str) -> None:
+    assert turn_reply_seams._ends_plain_sentence(run)
+    for after in _CONTINUATIONS:
+        assert turn_reply_seams._stands_alone(run, after), (run, after)
+
+
+@pytest.mark.parametrize("run", _NOT_PLAIN_ENDS)
+def test_a_run_that_could_start_a_credential_is_still_held(run: str) -> None:
+    assert not turn_reply_seams._ends_plain_sentence(run)
+
+
 def test_a_held_run_goes_back_only_on_the_variant_it_was_cut_from() -> None:
     """A run goes back on the row it was cut from, in the content the row holds
     then, and on the variant shown at the cut; a row showing another variant
@@ -440,6 +483,32 @@ class TestHarmlessTextAcrossABoundary:
         assert _shown(record) == _saved(record)
         assert _chunks_after_boundary(record) == "The config says hi."
         assert mirrored == ["Let me check the config.\n\nThe config says hi."]
+
+    @pytest.mark.asyncio
+    async def test_the_last_word_of_a_sentence_shows_while_the_tool_runs(self, kind: str) -> None:
+        """A row ending a sentence before the boundary shows its last word at the
+        cut, not only once the model writes again after the tool or the prompt,
+        which can be minutes later."""
+        text = "I'll check whether they've settled."
+        record = await _turn(kind, text, "They have.")
+
+        frames = list(record.ws_frames)
+        cut = next(
+            i
+            for i, frame in enumerate(frames)
+            if frame.kind == "tool_call"
+            or (frame.kind == "chat_message" and frame.payload.get("role") == "permission")
+        )
+        before = frames[:cut]
+        assert "".join(f.payload["content"] for f in before if f.kind == "chat_chunk") == text
+        rows = [
+            f.payload["content"]
+            for f in before
+            if f.kind == "chat_message" and f.payload.get("role") == "assistant"
+        ]
+        assert rows == [text]
+        assert not record.frames("chat_message_update")
+        assert _saved(record) == [text, "They have."]
 
     @pytest.mark.asyncio
     async def test_a_turn_ending_at_the_boundary_keeps_its_last_word(self, kind: str) -> None:
