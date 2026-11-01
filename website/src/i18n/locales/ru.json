@@ -10730,6 +10730,13 @@
       "read_failed_title": "После этого обновления не удалось проверить версии удалённых команд",
       "unread": "От {{names}} пока нет версии, поэтому они тоже могут отставать."
     },
+    "kasEngineNotice": {
+      "downloading": "Загружается движок KAS {{productName}}. Чат начнётся, когда загрузка завершится.",
+      "downloading_progress": "Загружается движок KAS {{productName}} ({{percent}}). Чат начнётся, когда загрузка завершится.",
+      "failed_title": "Не удалось установить движок KAS {{productName}}",
+      "retry": "Повторить",
+      "retry_failed": "Повторная попытка не началась ({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Вход в Kiro истёк",
       "open_sign_in": "Открыть настройки входа",
@@ -14531,7 +14538,9 @@
         "installing_progress": "Установка KAS {{version}}: {{percent}} ({{done}} из {{total}})",
         "install_failed": "Не удалось начать установку движка KAS.",
         "save_failed": "Не удалось сохранить настройку движка KAS.",
-        "status_unavailable": "Не удалось получить состояние движка KAS."
+        "status_unavailable": "Не удалось получить состояние движка KAS.",
+        "route_auto_no_kiro_cli": "Kiro CLI не установлен, поэтому KAS работает на собственном движке {{productName}}.",
+        "route_auto_kiro_cli_signed_out": "В Kiro CLI не выполнен вход, поэтому KAS работает на собственном движке {{productName}}."
       },
       "kiroSignInCard": {
         "title": "Вход в Kiro",

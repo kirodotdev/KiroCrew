@@ -78,7 +78,7 @@ _BASE_SURFACE: dict[str, dict[str, str]] = {
         "_doctor_kas": "(issues: 'list[str]') -> 'None'",
         "_kas_relay_help": "(binary: 'str') -> 'str | None'",
         "_report_kas_backend": "(issues: 'list[str]') -> 'None'",
-        "_report_kas_bundle": "(issues: 'list[str]') -> 'None'",
+        "_report_kas_bundle": "(issues: 'list[str]', *, automatic: 'bool' = False) -> 'None'",
         "_report_kas_spec_permissions": "(issues: 'list[str]') -> 'None'",
         "_report_kas_tool_vocabulary": "(issues: 'list[str]') -> 'None'",
     },

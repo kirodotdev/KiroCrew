@@ -10577,6 +10577,13 @@
       "read_failed_title": "Impossible de vérifier les versions de tes équipages distants après cette mise à jour",
       "unread": "Pas encore de version de {{names}}, ils sont donc peut-être aussi en retard."
     },
+    "kasEngineNotice": {
+      "downloading": "Téléchargement du moteur KAS de {{productName}}. Ton chat démarre une fois le téléchargement terminé.",
+      "downloading_progress": "Téléchargement du moteur KAS de {{productName}} ({{percent}}). Ton chat démarre une fois le téléchargement terminé.",
+      "failed_title": "Impossible d'installer le moteur KAS de {{productName}}",
+      "retry": "Réessayer",
+      "retry_failed": "La nouvelle tentative n'a pas démarré ({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Connexion Kiro expirée",
       "open_sign_in": "Ouvrir les paramètres de connexion",
@@ -14297,7 +14304,9 @@
         "installing_progress": "Installation de KAS {{version}} : {{percent}} ({{done}} sur {{total}})",
         "install_failed": "Impossible de lancer l'installation du moteur KAS.",
         "save_failed": "Impossible d'enregistrer le réglage du moteur KAS.",
-        "status_unavailable": "Impossible de lire l'état du moteur KAS."
+        "status_unavailable": "Impossible de lire l'état du moteur KAS.",
+        "route_auto_no_kiro_cli": "Kiro CLI n'est pas installé, donc KAS utilise le moteur de {{productName}}.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI n'est pas connecté, donc KAS utilise le moteur de {{productName}}."
       },
       "kiroSignInCard": {
         "title": "Connexion Kiro",

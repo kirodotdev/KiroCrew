@@ -10271,6 +10271,13 @@
       "read_failed_title": "此次更新后无法检查远程团队的版本",
       "unread": "尚未收到 {{names}} 的版本，因此它们也可能已落后。"
     },
+    "kasEngineNotice": {
+      "downloading": "正在下载 {{productName}} 的 KAS 引擎。下载完成后对话即开始。",
+      "downloading_progress": "正在下载 {{productName}} 的 KAS 引擎（{{percent}}）。下载完成后对话即开始。",
+      "failed_title": "无法安装 {{productName}} 的 KAS 引擎",
+      "retry": "重试",
+      "retry_failed": "重试未能开始（{{reason}}）。"
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro 登录已失效",
       "open_sign_in": "打开登录设置",
@@ -13829,7 +13836,9 @@
         "installing_progress": "正在安装 KAS {{version}}：{{percent}}（{{done}} / {{total}}）",
         "install_failed": "无法开始安装 KAS 引擎。",
         "save_failed": "无法保存 KAS 引擎设置。",
-        "status_unavailable": "无法读取 KAS 引擎状态。"
+        "status_unavailable": "无法读取 KAS 引擎状态。",
+        "route_auto_no_kiro_cli": "未安装 Kiro CLI，因此 KAS 使用 {{productName}} 自带的引擎运行。",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI 未登录，因此 KAS 使用 {{productName}} 自带的引擎运行。"
       },
       "kiroSignInCard": {
         "title": "Kiro 登录",

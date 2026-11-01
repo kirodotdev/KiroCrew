@@ -51,6 +51,14 @@ KAS_PIN_VERSION = "0.66.33"
 #: sha256 of ``<base>/kas/<KAS_PIN_VERSION>/manifest.json`` as published.
 KAS_PIN_MANIFEST_SHA256 = "9cbd8dd91092b056ef61893614f6e4deec8b5694a3f6dcfcf9dddc2f659f604a"
 
+#: The engine and Node build keys the pinned manifest publishes, the matrix
+#: ``scripts/kas_bundle_publish.py`` builds. Read without the network, so a host
+#: outside it is known not to be installable before any download is tried.
+KAS_PIN_ENGINE_PLATFORMS = frozenset({"linux-x64", "linux-arm64", "darwin-universal", "win32-x64"})
+KAS_PIN_NODE_BUILDS = frozenset(
+    {"linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"}
+)
+
 #: Operator/developer override of the version the harness resolves.
 KAS_VERSION_OVERRIDE_ENV = "KIROCREW_KAS_VERSION"
 

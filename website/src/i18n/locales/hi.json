@@ -10424,6 +10424,13 @@
       "read_failed_title": "इस अपडेट के बाद तुम्हारे रिमोट क्रू के संस्करण जाँचे नहीं जा सके",
       "unread": "{{names}} से अभी तक कोई संस्करण नहीं मिला, इसलिए ये भी पीछे हो सकते हैं।"
     },
+    "kasEngineNotice": {
+      "downloading": "{{productName}} का KAS इंजन डाउनलोड हो रहा है। पूरा होने पर तुम्हारी चैट शुरू होगी।",
+      "downloading_progress": "{{productName}} का KAS इंजन डाउनलोड हो रहा है ({{percent}})। पूरा होने पर तुम्हारी चैट शुरू होगी।",
+      "failed_title": "{{productName}} का KAS इंजन इंस्टॉल नहीं हो सका",
+      "retry": "फिर से कोशिश करो",
+      "retry_failed": "दोबारा कोशिश शुरू नहीं हुई ({{reason}})।"
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro साइन-इन समाप्त हो गया",
       "open_sign_in": "साइन-इन सेटिंग्स खोलो",
@@ -14063,7 +14070,9 @@
         "installing_progress": "KAS {{version}} इंस्टॉल हो रहा है: {{percent}} ({{total}} में से {{done}})",
         "install_failed": "KAS इंजन का इंस्टॉलेशन शुरू नहीं हो सका।",
         "save_failed": "KAS इंजन की सेटिंग सेव नहीं हो सकी।",
-        "status_unavailable": "KAS इंजन की स्थिति पढ़ी नहीं जा सकी।"
+        "status_unavailable": "KAS इंजन की स्थिति पढ़ी नहीं जा सकी।",
+        "route_auto_no_kiro_cli": "Kiro CLI इंस्टॉल नहीं है, इसलिए KAS {{productName}} के अपने इंजन पर चलता है।",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI में साइन इन नहीं है, इसलिए KAS {{productName}} के अपने इंजन पर चलता है।"
       },
       "kiroSignInCard": {
         "title": "Kiro साइन-इन",

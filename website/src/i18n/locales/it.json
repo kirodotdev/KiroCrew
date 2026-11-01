@@ -10577,6 +10577,13 @@
       "read_failed_title": "Impossibile verificare le versioni dei tuoi equipaggi remoti dopo questo aggiornamento",
       "unread": "Nessuna versione ancora da {{names}}, quindi potrebbero essere anch'essi non aggiornati."
     },
+    "kasEngineNotice": {
+      "downloading": "Download del motore KAS di {{productName}} in corso. La chat inizia al termine.",
+      "downloading_progress": "Download del motore KAS di {{productName}} in corso ({{percent}}). La chat inizia al termine.",
+      "failed_title": "Impossibile installare il motore KAS di {{productName}}",
+      "retry": "Riprova",
+      "retry_failed": "Il nuovo tentativo non è partito ({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Accesso a Kiro scaduto",
       "open_sign_in": "Apri le impostazioni di accesso",
@@ -14297,7 +14304,9 @@
         "installing_progress": "Installazione di KAS {{version}}: {{percent}} ({{done}} di {{total}})",
         "install_failed": "Impossibile avviare l'installazione del motore KAS.",
         "save_failed": "Impossibile salvare l'impostazione del motore KAS.",
-        "status_unavailable": "Impossibile leggere lo stato del motore KAS."
+        "status_unavailable": "Impossibile leggere lo stato del motore KAS.",
+        "route_auto_no_kiro_cli": "Kiro CLI non è installato, quindi KAS usa il motore di {{productName}}.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI non ha eseguito l'accesso, quindi KAS usa il motore di {{productName}}."
       },
       "kiroSignInCard": {
         "title": "Accesso a Kiro",

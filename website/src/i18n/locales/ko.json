@@ -10271,6 +10271,13 @@
       "read_failed_title": "이번 업데이트 후 원격 크루의 버전을 확인할 수 없습니다",
       "unread": "{{names}}에서 아직 버전 정보가 없으므로 이들도 뒤처져 있을 수 있습니다."
     },
+    "kasEngineNotice": {
+      "downloading": "{{productName}}의 KAS 엔진을 다운로드하는 중입니다. 완료되면 채팅이 시작됩니다.",
+      "downloading_progress": "{{productName}}의 KAS 엔진을 다운로드하는 중입니다({{percent}}). 완료되면 채팅이 시작됩니다.",
+      "failed_title": "{{productName}}의 KAS 엔진을 설치할 수 없습니다",
+      "retry": "다시 시도",
+      "retry_failed": "다시 시도를 시작하지 못했습니다({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro 로그인이 만료됨",
       "open_sign_in": "로그인 설정 열기",
@@ -13829,7 +13836,9 @@
         "installing_progress": "KAS {{version}} 설치 중: {{percent}} ({{done}} / {{total}})",
         "install_failed": "KAS 엔진 설치를 시작할 수 없습니다.",
         "save_failed": "KAS 엔진 설정을 저장할 수 없습니다.",
-        "status_unavailable": "KAS 엔진 상태를 읽을 수 없습니다."
+        "status_unavailable": "KAS 엔진 상태를 읽을 수 없습니다.",
+        "route_auto_no_kiro_cli": "Kiro CLI가 설치되어 있지 않아 KAS가 {{productName}} 자체 엔진에서 실행됩니다.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI에 로그인되어 있지 않아 KAS가 {{productName}} 자체 엔진에서 실행됩니다."
       },
       "kiroSignInCard": {
         "title": "Kiro 로그인",
