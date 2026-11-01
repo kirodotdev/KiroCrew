@@ -144,7 +144,6 @@
   "src/test/ChatSidebarW3Coverage.test.tsx",
   "src/test/CodeReviewSageLabelFilter.test.tsx",
   "src/test/ConnectionsPage.coverage.test.tsx",
-  "src/test/CrewChatWindow.test.tsx",
   "src/test/CrewCompanionPet.coverage.test.tsx",
   "src/test/CrewStateAvatarPackCue.test.tsx",
   "src/test/DesignTweakHistoryCov80.test.tsx",

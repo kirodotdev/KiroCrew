@@ -165,7 +165,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  closeCrewWindow()
+  // Host subscribes to the store while the tree is still mounted here (RTL unmounts after this hook).
+  act(() => { closeCrewWindow() })
   vi.unstubAllGlobals()
   vi.clearAllMocks()
 })
@@ -299,6 +300,8 @@ describe('CrewChatWindow', () => {
         .mockResolvedValueOnce({ version_match: false, version: '', local_version: '0.9.0' })
         .mockResolvedValue({ version_match: true, version: '0.9.0', local_version: '0.9.0' })
       renderWindow()
+      // The tunnel-down answer reads as a mismatch; its notice is the first frame that answer renders.
+      await screen.findByText(/runs .* but this machine runs/, {}, PEER_ROW_WAIT)
       await waitFor(() => expect(mocks.instancesCapabilities).toHaveBeenCalledTimes(1))
       expect(mocks.crewPeerGet).not.toHaveBeenCalled()
       await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
