@@ -164,7 +164,6 @@ line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	src/kiro_crew/pr
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	subagent.py:131
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	types.py:596-605
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	worker_pool.py:49
-line-ref	docs/request-for-change/rfc-durable-run-coordinator.md	src/kiro_crew/mcp_tools/spawn.py:484-598
 line-ref	docs/request-for-change/rfc-durable-run-coordinator.md	src/kiro_crew/subagent_persistence.py:1-7
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	admission.py:154-156
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/admission.py:200
