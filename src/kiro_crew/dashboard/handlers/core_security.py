@@ -65,7 +65,9 @@ async def api_sel_events(request: web.Request) -> web.Response:
         return denial
 
     try:
-        limit = min(int(request.query.get("limit", "100")), 1000)
+        # Floor at 1 like the other paged dashboard reads: a zero or negative
+        # limit would otherwise serve an empty list for a log that has rows.
+        limit = max(1, min(int(request.query.get("limit", "100")), 1000))
     except (TypeError, ValueError):
         limit = 100
     # recent() reads the WHOLE audit-log file with blocking IO: it is one JSONL
