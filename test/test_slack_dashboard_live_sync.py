@@ -100,9 +100,7 @@ class TestBTheWindowRefreshDeliversBothRoles:
     def _surfaced_slot(self, tmp_path, monkeypatch, log):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
-        state.sessions.channel_key_for_stem = lambda stem: (
-            SLACK_KEY if stem == SLACK_STEM else ""
-        )
+        state.sessions.channel_key_for_stem = lambda stem: (SLACK_KEY if stem == SLACK_STEM else "")
         state.sessions.get_slack_link = MagicMock(return_value=(None, None))
         path = Path(log._dir)
         path.mkdir(parents=True, exist_ok=True)
@@ -194,9 +192,7 @@ class TestCTheMirrorIsResolvableInbound:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.sessions.get_slack_link = MagicMock(return_value=("1785370133.085469", "C777"))
-        state.sessions.channel_key_for_stem = lambda stem: (
-            SLACK_KEY if stem == SLACK_STEM else ""
-        )
+        state.sessions.channel_key_for_stem = lambda stem: (SLACK_KEY if stem == SLACK_STEM else "")
 
         state.get_or_create_slot(SLACK_STEM, linked_session_key=SLACK_KEY)
 
