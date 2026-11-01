@@ -36,7 +36,7 @@ describe('SourcesList — namespace in handleAdd', () => {
     // Wait for loading to finish (sources query resolves)
     const addBtn = await screen.findByText('+ Add Source')
     fireEvent.click(addBtn)
-    fireEvent.click(screen.getByText('Local Folder'))
+    fireEvent.click(await screen.findByRole('button', { name: /Add folder by path/ }))
     const input = screen.getByPlaceholderText(/Folder path/)
     fireEvent.change(input, { target: { value: '/tmp/docs' } })
     fireEvent.click(screen.getByText('Add Folder'))
@@ -66,7 +66,7 @@ describe('SourcesList — namespace in handleAdd', () => {
 
     const addBtn = await screen.findByText('+ Add Source')
     fireEvent.click(addBtn)
-    fireEvent.click(screen.getByText('Local Folder'))
+    fireEvent.click(await screen.findByRole('button', { name: /Add folder by path/ }))
     const input = screen.getByPlaceholderText(/Folder path/)
     fireEvent.change(input, { target: { value: '/tmp/docs' } })
     fireEvent.click(screen.getByText('Add Folder'))

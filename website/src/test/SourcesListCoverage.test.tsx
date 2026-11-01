@@ -414,7 +414,7 @@ describe('SourcesList — add-source dialog, file branch', () => {
   }
 
   const dropZone = () =>
-    screen.getByText('Drop files here or click to upload').closest('[role="button"]') as HTMLElement
+    screen.getByText('Drop files or a folder here, or click to choose files').closest('[role="button"]') as HTMLElement
 
   it('highlights the drop zone while a drag is over it and clears the highlight on leave', async () => {
     await openAddDialog()
@@ -436,7 +436,7 @@ describe('SourcesList — add-source dialog, file branch', () => {
 
     expect(onIngest).toHaveBeenCalledTimes(1)
     expect(onIngest.mock.calls[0][0]).toEqual([file])
-    expect(screen.queryByText('Drop files here or click to upload')).toBeNull()
+    expect(screen.queryByText('Drop files or a folder here, or click to choose files')).toBeNull()
   })
 
   it('ingests files chosen through the picker', async () => {
@@ -496,7 +496,8 @@ describe('SourcesList — add-source dialog, folder branch', () => {
     }
     const utils = renderList()
     fireEvent.click(await screen.findByText('+ Add Source'))
-    fireEvent.click(screen.getByText('Local Folder'))
+    // With a native picker the button opens it; without one it adds by path.
+    fireEvent.click(await screen.findByRole('button', { name: opts.folderPicker ? /Choose folder/ : /Add folder by path/ }))
     return utils
   }
 
@@ -517,8 +518,9 @@ describe('SourcesList — add-source dialog, folder branch', () => {
       },
     })
 
-    fireEvent.click(await screen.findByLabelText('Browse for a folder'))
+    // Choose folder opened the native picker straight away.
     expect(await screen.findByText('Opening...')).toBeTruthy()
+    expect(callsTo('/pick-folder', 'POST')).toHaveLength(1)
 
     releasePick({ path: '/home/user/notes' })
     await waitFor(() =>
@@ -531,7 +533,6 @@ describe('SourcesList — add-source dialog, folder branch', () => {
       extra: (path) => (path === '/pick-folder' ? { path: null } : { ok: true }),
     })
 
-    fireEvent.click(await screen.findByLabelText('Browse for a folder'))
     await waitFor(() => expect(callsTo('/pick-folder', 'POST')).toHaveLength(1))
     expect(screen.getByLabelText('Folder path')).toHaveProperty('value', '')
   })
@@ -622,7 +623,7 @@ describe('SourcesList — pending folder confirmation', () => {
     }
     const utils = renderList()
     fireEvent.click(await screen.findByText('+ Add Source'))
-    fireEvent.click(screen.getByText('Local Folder'))
+    fireEvent.click(await screen.findByRole('button', { name: /Add folder by path/ }))
     fireEvent.change(screen.getByLabelText('Folder path'), { target: { value: '/tmp/huge' } })
     fireEvent.click(screen.getByText('Add Folder'))
     return utils
