@@ -10,7 +10,8 @@
  *   result.offer (anything else)   -> unchanged  answered `result.error { code }`
  *   invocation.resize / .close / .error (current only) -> the callbacks
  *   deadline (no resize or accepted offer for `deadlineMs`) -> CANCELLED, `onDeadline()`
- *   cancel(reason)                 -> CANCELLED  posts `invoke.cancel { invocationId, reason }`
+ *   settle()                       -> OPEN       the deadline stops; offers, close and resize still work
+ *   cancel(reason) / dispose()     -> CANCELLED  posts `invoke.cancel { invocationId, reason }`
  *
  * The id is minted here (`crypto.randomUUID`); the frame cannot make one, and the
  * frame runtime freezes each invocation's controls with its id
@@ -21,13 +22,24 @@
  *
  * @module appFrame/invocation
  */
-import { offerRefusal, type InvocationMessage, type OfferKind } from './frameProtocol'
+import { offerRefusal, type InvocationMessage, type OfferKind, type OfferRefusal } from './frameProtocol'
 import { postToFrame } from './sandboxFrame'
 
 export type InvocationState = 'idle' | 'open' | 'done'
 
+export interface InvocationOptions {
+  /** The offer kinds this point draws a host button for; any other is
+   *  answered `result.error { code: 'not_allowed' }`. Default: copy and open. */
+  allowedKinds?: ReadonlySet<OfferKind>
+}
+
+const DEFAULT_KINDS: ReadonlySet<OfferKind> = new Set<OfferKind>(['copy', 'open'])
+
 export interface InvocationCallbacks {
-  onOffer(kind: OfferKind, value: string): void
+  /** An offer passed the shared checks. Return a code to refuse it anyway (the
+   *  point's own limit); it is then answered `result.error` and the deadline is
+   *  not extended. Return nothing to accept it. */
+  onOffer(kind: OfferKind, value: string): void | OfferRefusal
   onResize?(width: number, height: number): void
   onClose?(): void
   onError?(message: string): void
@@ -45,6 +57,8 @@ export class HostInvocation {
   readonly id = newInvocationId()
   state: InvocationState = 'idle'
   private lastSeq = 0
+  /** `settle()` was called: no deadline any more, still open. */
+  private settled = false
   private timer: ReturnType<typeof setTimeout> | undefined
 
   constructor(
@@ -53,6 +67,7 @@ export class HostInvocation {
     private readonly invokeType: string,
     private readonly deadlineMs: number,
     private readonly cb: InvocationCallbacks,
+    private readonly opts: InvocationOptions = {},
   ) {}
 
   /** Open the invocation: send the point's invoke message with this id and the deadline. */
@@ -61,6 +76,22 @@ export class HostInvocation {
     this.state = 'open'
     postToFrame(this.frame, { ...fields, type: this.invokeType, invocationId: this.id, deadlineMs: this.deadlineMs })
     this.arm()
+  }
+
+  /** The point got the answer it waited for: stop the deadline and nothing
+   *  else. The invocation stays OPEN, so later offers are still checked and
+   *  acked (without re-arming a deadline), `invocation.close` still reaches
+   *  `onClose`, and ending it with `cancel` or `dispose` still posts
+   *  `invoke.cancel`. Safe to call in any state. */
+  settle(): void {
+    if (this.state !== 'open') return
+    this.settled = true
+    this.clearTimer()
+  }
+
+  /** The host is tearing its surface down: `cancel('closed')`. */
+  dispose(): void {
+    this.cancel('closed')
   }
 
   /** End it without a result. Safe to call in any state. */
@@ -83,12 +114,17 @@ export class HostInvocation {
           return true
         }
         this.lastSeq = msg.seq
-        const refusal = offerRefusal(msg.kind, msg.value)
+        const allowed = this.opts.allowedKinds ?? DEFAULT_KINDS
+        const refusal = !msg.kind || !allowed.has(msg.kind) ? 'not_allowed' : offerRefusal(msg.kind, msg.value)
         if (refusal || !msg.kind) {
           postToFrame(this.frame, { type: 'result.error', ...base, code: refusal ?? 'not_allowed' })
           return true
         }
-        this.cb.onOffer(msg.kind, msg.value)
+        const pointRefusal = this.cb.onOffer(msg.kind, msg.value)
+        if (pointRefusal) {
+          postToFrame(this.frame, { type: 'result.error', ...base, code: pointRefusal })
+          return true
+        }
         postToFrame(this.frame, { type: 'result.ack', ...base })
         this.arm()
         return true
@@ -113,8 +149,14 @@ export class HostInvocation {
     }
   }
 
-  private arm(): void {
+  private clearTimer(): void {
     if (this.timer !== undefined) clearTimeout(this.timer)
+    this.timer = undefined
+  }
+
+  private arm(): void {
+    this.clearTimer()
+    if (this.settled) return
     this.timer = setTimeout(() => {
       if (this.state !== 'open') return
       this.cancel('deadline')
@@ -123,8 +165,7 @@ export class HostInvocation {
   }
 
   private finish(): void {
-    if (this.timer !== undefined) clearTimeout(this.timer)
-    this.timer = undefined
+    this.clearTimer()
     this.state = 'done'
   }
 }

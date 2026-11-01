@@ -28,6 +28,12 @@ describe('resolveLinkPreviews', () => {
     expect(resolveLinkPreviews([app({}, { hosts: ['.com', 'nodot'] })])).toEqual([])
   })
 
+  it('drops an IP literal or a loopback name, as the manifest refuses them', () => {
+    expect(resolveLinkPreviews([app({}, { hosts: ['127.0.0.1', '.10.0.0.8', 'app.localhost', '.localhost'] })])).toEqual([])
+    const [p] = resolveLinkPreviews([app({}, { hosts: ['127.0.0.1', '123.example.com'] })])
+    expect([...p.exact]).toEqual(['123.example.com'])
+  })
+
   it('uses the reverse-proxy base for a process-backed app', () => {
     const a = app()
     ;(a.manifest as Record<string, unknown>).backend = { entryPoint: 'server.py' }

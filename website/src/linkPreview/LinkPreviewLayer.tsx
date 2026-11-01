@@ -22,6 +22,7 @@ import { activeElementIsEditable, isEditableTarget } from '../utils/editableTarg
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { i18nT } from '../i18n/t'
 import { resolveLinkPreviews, providerFor, type ResolvedLinkPreview } from './linkPreviewRegistry'
+import { withoutQuery } from '../appFrame/hosts'
 import { currentTheme } from '../appFrame/sandboxFrame'
 import { FrameHost, mintFrame, type FrameHostOptions } from './linkPreviewFrames'
 import { resolveTextPreview, setLinkPreviewTextPatterns, setTextPatternsOff } from './textPatterns'
@@ -30,16 +31,9 @@ const HOVER_DELAY_MS = 300
 /** A provider whose frame failed to load or activate is tried again on a hover this long after. */
 export const RETRY_AFTER_MS = 30_000
 
-/** The URL a provider is shown by default: no query and no fragment, which can
- *  carry signed tokens or other secrets. `fullUrl` in the manifest opts out. */
-export function withoutQuery(href: string): string {
-  try {
-    const u = new URL(href)
-    return `${u.origin}${u.pathname}`
-  } catch {
-    return ''
-  }
-}
+// The URL a provider is shown by default (`fullUrl` opts out); shared with every
+// point that hands an app a link.
+export { withoutQuery } from '../appFrame/hosts'
 
 function selectProviders(d: unknown): ResolvedLinkPreview[] {
   const apps = Array.isArray(d) ? d : (d as { apps?: unknown[] })?.apps

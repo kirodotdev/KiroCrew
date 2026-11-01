@@ -40,6 +40,7 @@ from kiro_crew.apps.app_hosts import (  # noqa: F401
     host_refusal,
     is_public_suffix,
     normalize_host,
+    normalized_hosts,
 )
 
 #: Grant families this module derives, in the order they are stored.
@@ -86,11 +87,7 @@ def link_preview_grant_entries(contributes: Any) -> dict[str, list[str]]:
     if provider is not None:
         if provider.get("fullUrl") is True:
             full_url.append(FULL_URL_ENTRY)
-        raw_hosts = provider.get("hosts")
-        for h in raw_hosts if isinstance(raw_hosts, list) else []:
-            n = normalize_host(h) if isinstance(h, str) else None
-            if n and n not in hosts:
-                hosts.append(n)
+        hosts = normalized_hosts(provider.get("hosts"))
         raw_patterns = provider.get("textPatterns")
         for i, tp in enumerate(raw_patterns if isinstance(raw_patterns, list) else []):
             if isinstance(tp, dict) and isinstance(tp.get("pattern"), str):
