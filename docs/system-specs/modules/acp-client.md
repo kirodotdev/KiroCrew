@@ -1497,7 +1497,12 @@ The route validates a form's content against the row's fields BEFORE resolving t
 future (a refused value is a 400 the card shows inline, the ask stays open) and writes
 the validated answer onto the row, which the runner reads back and sends; its body cap
 (`ELICITATION_BODY_MAX_BYTES`) is sized from `PROPERTIES_MAX` × `STRING_VALUE_MAX_CHARS`,
-so every form the card can draw is answerable. Every other
+so every form the card can draw is answerable. The card (`pages/chat/ElicitationCard.tsx`)
+puts all three MCP answers in the person's hands: Submit / I've finished is `accept`,
+Decline is `decline`, and the X in its corner is `cancel` — the person putting the
+question away without choosing, which the server reads apart from an explicit no.
+The X is a corner dismiss rather than a third button beside Decline because the action
+row holds two actions and a dismiss is not a sibling of yes / no. Every other
 resolver of that registry speaks the permission vocabulary, and `read_elicitation_answer`
 lets none of its words mean `accept`: a reject button declines, and an approval CANCELS,
 URL ask or form, because it is not a person answering this question. A Stop rejects every

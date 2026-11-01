@@ -12756,6 +12756,7 @@
         "choose": "Auswählen…",
         "date_time_format": "Zeitformat: 2026-01-31T09:30:00Z",
         "decline": "Ablehnen",
+        "dismiss": "Schließen, ohne zu antworten",
         "done": "Ich bin fertig",
         "integer_not_whole": "{{field}} muss eine ganze Zahl sein.",
         "integer_too_large": "{{field}} ist zu groß, um exakt gesendet zu werden; höchstens 15 Ziffern.",
