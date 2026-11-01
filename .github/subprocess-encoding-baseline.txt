@@ -12,7 +12,6 @@
 #   python3 scripts/check_subprocess_encoding.py --update-baseline
 1 conftest.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/deps.py
-1 src/kiro_crew/dashboard/handlers/terminal.py
 2 test/test_cli_lazy_imports.py
 2 test/test_cli_manifest_signature.py
 2 test/test_config_baseline.py
