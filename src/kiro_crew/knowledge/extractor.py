@@ -25,8 +25,20 @@ EXTRACTION_PROMPT = """Extract structured information from this text chunk.
 
 Return valid JSON with:
 - title: short descriptive title for this chunk (5-10 words, specific to content)
-- entities: list of {{"name": str, "type": str, "description": str}}
+- entities: list of {{"name": str, "type": str, "description": str, "aliases": list[str]}}
   Types: person|service|api|concept|org|technology
+  Language rules:
+    * name MUST be the bare source-language canonical form of the entity
+      (e.g. "뮤직뱅크", NOT "뮤직뱅크 (Music Bank)")
+    * aliases contains established alternate names a user would naturally search for:
+      - official English name (for non-Latin entities, e.g. "Music Bank")
+      - common acronym (e.g. "BTS"), for lookup only, never as merge evidence
+      - widely used transliteration (e.g. "Nintendo" for "任天堂")
+    * Do NOT include parenthetical formatting variants as aliases
+      (e.g. "뮤직뱅크 (Music Bank)" is NOT a valid alias — "Music Bank" is)
+    * Latin-script names need no translation; aliases may include abbreviations for lookup
+    * Automatic alias-based identity reuse requires full names across scripts
+      (e.g. "뮤직뱅크" and "Music Bank"); short abbreviations never establish identity
 - relations: list of {{"source": str, "target": str, "type": str, "description": str}}
   Types: owns|uses|works_on|part_of|calls|depends_on
 - category: one of design_doc|runbook|meeting_notes|code_doc|presentation|report|policy|personal_notes|external_reference
@@ -34,7 +46,7 @@ Return valid JSON with:
 
 Rules:
 - Title must be specific to THIS chunk's content, not generic
-- Use canonical entity names (e.g. "DynamoDB" not "dynamo")
+- Use canonical entity names (e.g. "DynamoDB" not "dynamo", "뮤직뱅크" not "뮤직 뱅크")
 - Only extract explicitly mentioned entities
 - Relations must reference entities in your entities list
 
