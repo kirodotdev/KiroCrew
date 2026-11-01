@@ -828,6 +828,7 @@ def _probe_one_form(shell: str, brace_off: bool) -> bool:
             argv,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=5,
             env=_clean_cron_env(),
         )
