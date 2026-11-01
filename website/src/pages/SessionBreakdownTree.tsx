@@ -180,7 +180,7 @@ function SubNode({
         <ErrorNotice variant="inline" message={traceError} askAgent testId="session-breakdown-trace-error" />
         {typeof node.toolCount === 'number' && node.toolCount > 0 ? (
           <span className="font-mono text-[10px] text-muted shrink-0 tabular-nums">
-            {i18nT('pages.sessionBreakdown.tool_count', { count: fmtNumber(node.toolCount) })}
+            {i18nT('pages.sessionBreakdown.tool_count', { count: node.toolCount, n: fmtNumber(node.toolCount) })}
           </span>
         ) : null}
         <span className={`font-mono text-[10px] font-bold uppercase tracking-wider shrink-0 ${STATUS_CLASS[status]}`}>

@@ -371,5 +371,12 @@
   "pages.chatSidebar.crew_work_waiting",
   "pages.chatSidebar.crew_work_waiting_title",
   "pages.chatSidebar.crew_work_stalled",
-  "pages.chatSidebar.crew_work_stalled_title"
+  "pages.chatSidebar.crew_work_stalled_title",
+  "pages.sessionBreakdown.tool_count",
+  "pages.sessionStorage.refused_heading",
+  "apps.mochi.stats.drags",
+  "apps.mochi.stats.peeks",
+  "apps.mochi.stats.screenshots",
+  "apps.mochi.stats.walks",
+  "apps.mochi.stats.longest_chat"
 ]

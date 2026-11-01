@@ -4017,19 +4017,19 @@
       "stats": {
         "busiest_day": "가장 많이 대화한 날: {{date}} (메시지 {{count}}개)",
         "companion_days": "함께한 시간 {{time}}",
-        "drags": "{{count}}번 끌었습니다",
+        "drags_other": "{{n}}번 끌었습니다",
         "earliest_time": "가장 이른 시각: {{time}}에 기상",
         "first_use": "{{name}}과(와)의 이야기가 막 시작되었습니다",
         "latest_time": "가장 늦은 시각: {{time}}까지 깨어 있었습니다",
-        "longest_chat": "가장 긴 대화: 메시지 {{count}}개",
+        "longest_chat_other": "가장 긴 대화: 메시지 {{n}}개",
         "messages": "메시지 {{total}}개 ({{sent}}개 나 · {{received}}개 {{name}})",
         "mood_top": "기분",
-        "peeks": "{{count}}번 엿봤습니다",
-        "screenshots": "화면을 {{count}}번 봤습니다",
+        "peeks_other": "{{n}}번 엿봤습니다",
+        "screenshots_other": "화면을 {{n}}번 봤습니다",
         "streak": "({{streak}}일 연속)",
         "thinking_time": "{{time}} 동안 생각했습니다",
         "title": "추억",
-        "walks": "{{count}}걸음"
+        "walks_other": "{{n}}걸음"
       },
       "tip": {
         "bedtime": "이렇게 말해 보세요: ‘11시에 이제 쉬라고 알려 줘’",
@@ -16246,7 +16246,7 @@
       "status_error": "종료됨",
       "status_running": "실행 중",
       "title": "세션 분석",
-      "tool_count": "도구 {{count}}개",
+      "tool_count_other": "도구 {{n}}개",
       "unknown_agent": "하위 에이전트",
       "unknown_model": "알 수 없음"
     },
@@ -16290,7 +16290,7 @@
       "prev_page": "이전",
       "preview_sweep": "정리 미리 보기",
       "reclaim_by_age": "기간별 정리",
-      "refused_heading": "세션 {{count}}개를 이동하지 못했습니다",
+      "refused_heading_other": "세션 {{n}}개를 이동하지 못했습니다",
       "refused_in_use": "세션이 사용 중입니다",
       "refused_resumable": "아직 재개할 수 있습니다",
       "refused_too_fresh": "세션이 너무 최근입니다",
