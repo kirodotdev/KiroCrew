@@ -1011,6 +1011,12 @@ jobs:
           # list omits is a gate that can go red without reddening the PR.
           workflow_specs+=("issue-gate.yml|Issue Gate")
 
+          # False only for a fork PR into a non-default base, where no Stage-2
+          # fork lane can START (see below). Such a PR is held for a
+          # maintainer, and a lane whose trigger never ran is not scored as
+          # owed.
+          fork_lanes_eligible=true
+
           if [ "$FORK" = "true" ]; then
             # A fork head cannot run the repository's managed default-setup
             # CodeQL, so that lane stays ineligible. The AI code reviews DO run
@@ -1028,6 +1034,24 @@ jobs:
             # field is the workflow whose completion triggers the lane -- all
             # five fire on `Fast Gate` completing, so its newest run + attempt
             # for this head is what "current" means here (fast-gate.yml).
+            #
+            # Fast Gate carries the same `branches:` filter as CI, so on a
+            # stacked fork PR (for example a backport into a release branch)
+            # it never starts, and neither does any lane keyed on it. Such a
+            # PR is HELD for a maintainer instead: none of the pre-merge scan
+            # or review coverage a fork gets on the default branch runs while
+            # the base is another branch. If GitHub later retargets the PR to
+            # the default branch (as it does when a stacked PR's parent
+            # merges), the recompute on that event reads it as an ordinary
+            # fork PR and the hold lifts. The hold is a
+            # terminal `failure`, so the sweep does not re-fire it on age. The
+            # lanes stay in the spec list: a fork PR whose base was changed
+            # from the default branch keeps every verdict its lanes already
+            # posted at this head, a red one included. Only a lane whose
+            # trigger never ran for this head is moved to `skipped`, below.
+            if [ "$stacked" = "true" ]; then
+              fork_lanes_eligible=false
+            fi
             workflow_specs+=(
               # The scan reaches a fork through the same Stage-2 pattern: a fork
               # head gets no OIDC token, so fork-internal-content-scan.yml runs
@@ -1327,6 +1351,13 @@ jobs:
                     | max_by(.id) // empty
                   ' <<<"$pr_runs")"
                   if [ -z "$trun" ]; then
+                    if [ "$fork_lanes_eligible" = "false" ]; then
+                      # The trigger only runs on PRs to the default branch, so
+                      # on this base it never will: no review is owed, and
+                      # the maintainer hold below is what keeps the PR out.
+                      skipped+=("$label (only runs on PRs to $DEFAULT_BRANCH)")
+                      continue
+                    fi
                     # The trigger has not run for this head yet, so no review is
                     # owed and none can have reported. Pending, not passed.
                     pending+=("$label (not started)")
@@ -1801,6 +1832,17 @@ jobs:
               ;;
           esac
 
+          # A fork PR into a non-default base gets none of the Stage-2 scan
+          # and review coverage (see fork_lanes_eligible above) while its base
+          # is not the default branch, so it cannot pass on its own: a
+          # maintainer reviews it. This is a terminal `failure`, which
+          # the sweep re-fires only on new evidence, never on age.
+          fork_base_hold=false
+          if [ "$fork_lanes_eligible" = "false" ]; then
+            fork_base_hold=true
+            failed+=("fork PR into $BASE_REF needs maintainer review: the Stage-2 fork scan and reviews only run on PRs to $DEFAULT_BRANCH")
+          fi
+
           # Human review (issue #17049). A reviewer whose NEWEST review asks
           # for changes on THIS head blocks: nothing has been pushed since they
           # asked, so the revision they rejected is the one being judged. Only
@@ -1897,6 +1939,20 @@ jobs:
               description="${#awaiting_approval[@]} workflow(s) awaiting maintainer approval"
               if [ "${#passed[@]}" -eq 0 ] && [ "$transport_failed" = "false" ]; then
                 description="$description; none has run yet"
+              fi
+            fi
+            if [ "$fork_base_hold" = "true" ]; then
+              # The hold is always one of the blockers here, so name it rather
+              # than count it; any other blocker or approval wait is still
+              # counted. Fixed wording, not $BASE_REF, so the 140-char API
+              # limit holds whatever the branch is called.
+              others=$(( ${#blockers[@]} - 1 ))
+              description="fork PR into a non-default base needs maintainer review"
+              if [ "$others" -gt 0 ]; then
+                description="$description; $others other blocking item(s)"
+              fi
+              if [ "${#awaiting_approval[@]}" -gt 0 ]; then
+                description="$description; ${#awaiting_approval[@]} awaiting maintainer approval"
               fi
             fi
           elif [ "${#waiting[@]}" -gt 0 ]; then
@@ -2042,6 +2098,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
           SHA: ${{ steps.context.outputs.sha }}
+          BASE_REF: ${{ steps.context.outputs.base }}
           URL: ${{ steps.context.outputs.url }}
           TARGET_LABEL: ${{ steps.verdict.outputs.label }}
           STATUS_STATE: ${{ steps.verdict.outputs.status_state }}
@@ -2356,6 +2413,19 @@ jobs:
           # next monitored-workflow event) re-evaluates and republishes,
           # and no verdict is ever silently overwritten. The POST is
           # bounded (gh applies no HTTP timeout of its own).
+          #
+          # The verdict was scored for one base as well as one head: the base
+          # decides which lanes are owed and whether a fork PR is held for a
+          # maintainer. A base change keeps the SHA, so a verdict for the old
+          # base would land on the status that gates the PR. Read the base
+          # after every other read in this step, right before the POST; a run
+          # that evaluated an older base publishes nothing, and the run for
+          # the base change publishes instead.
+          current_base="$(gh_retry gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')"
+          if [ "$current_base" != "$BASE_REF" ]; then
+            echo "Ignoring publish for stale base $BASE_REF; PR #$PR now targets $current_base."
+            exit 0
+          fi
           jq -n \
             --arg state "$STATUS_STATE" \
             --arg target_url "$URL" \
