@@ -340,7 +340,8 @@ def _skill_view(
 
     ``skill://`` resources are dropped and the agent's skills are served through
     ``kirocrew-core``'s ``skill_search``, scoped to this registered file; every other
-    field is the app's own. One copy serves every workspace, so the view is built as
+    field is the app's own. Under registry mode the copy is left as authored and is
+    no search copy, as every projected view is. One copy serves every workspace, so the view is built as
     if the workspace lends inherited skill trees: the search tool is then present
     for an unmapped agent too, and a workspace that lends none leaves it with nothing
     to find. A spec the projection refuses a view for refuses the turn, with the
