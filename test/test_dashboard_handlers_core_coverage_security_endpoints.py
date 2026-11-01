@@ -52,6 +52,15 @@ class TestSelEndpoints:
         assert fake_sel.recent.call_args.kwargs["limit"] == 1000
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["0", "-5"])
+    async def test_events_floors_limit_at_1(self, fake_sel, raw: str) -> None:
+        # A log that holds rows, so an empty answer would hide them.
+        fake_sel.recent.side_effect = lambda **kw: [{"event": "e"}] * max(kw["limit"], 0)
+        resp = await core_mod.api_sel_events(self._owner_req(query={"limit": raw}))
+        assert json.loads(resp.body)["count"] == 1
+        assert fake_sel.recent.call_args.kwargs["limit"] == 1
+
+    @pytest.mark.asyncio
     async def test_events_falls_back_on_unparsable_limit(self, fake_sel) -> None:
         fake_sel.recent.side_effect = lambda **kw: [{"event": "e"}] * kw["limit"]
         resp = await core_mod.api_sel_events(self._owner_req(query={"limit": "many"}))
