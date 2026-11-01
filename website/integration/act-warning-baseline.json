@@ -59,7 +59,6 @@
   "src/test/ChatPage.previewExpandSessions.test.tsx",
   "src/test/ChatPage.responsivePanel.test.tsx",
   "src/test/ChatPage.sessionControls.test.tsx",
-  "src/test/ChatPage.sessionTabs.test.tsx",
   "src/test/ChatPage.sid.test.tsx",
   "src/test/ChatPage.steerKeyIdentity.test.tsx",
   "src/test/ChatPage.surfaceUnread.test.tsx",
