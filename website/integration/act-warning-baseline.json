@@ -97,7 +97,6 @@
   "src/test/MemberMemoryPanel.test.tsx",
   "src/test/MemoryStorePicker.test.tsx",
   "src/test/MochiSettingsPanel.coverage.test.tsx",
-  "src/test/NavHistoryArrows.test.tsx",
   "src/test/PendingQuestionCard.test.tsx",
   "src/test/ProjectDetailPageCoverage.test.tsx",
   "src/test/ProjectPicker.test.tsx",
