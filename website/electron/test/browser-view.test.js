@@ -331,6 +331,23 @@ test("manager: a page-driven navigation off loopback is vetoed and handed to the
   assert.strictEqual(h.events.length, before + 1);
 });
 
+test("manager: a loopback page that redirects off loopback is vetoed and handed to the host", () => {
+  const h = harness();
+  h.mgr.open("http://localhost:3000/");
+  let prevented = false;
+  const redirect = (url, isMainFrame) => h.view.webContents.handlers["will-redirect"]({
+    url, isMainFrame, preventDefault: () => { prevented = true; },
+  });
+  redirect("https://sso.example/authorize", true);
+  assert.strictEqual(prevented, true, "a 302 to an outside sign-in never renders in the view");
+  assert.deepStrictEqual(h.events.at(-1), ["open-external", { url: "https://sso.example/authorize" }]);
+  prevented = false;
+  redirect("http://127.0.0.1:3000/callback", true);
+  assert.strictEqual(prevented, false, "a redirect that stays on loopback loads");
+  redirect("https://ads.example/frame", false);
+  assert.strictEqual(prevented, false, "a subframe redirect is the page's own business");
+});
+
 // ── untrusted registration (permission gating) ──
 
 test("the embedded view's webContents is registered as untrusted", () => {

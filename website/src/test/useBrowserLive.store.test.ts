@@ -390,6 +390,8 @@ describe('replay rings are bounded per session', () => {
     const store = browserLiveStore as unknown as { sessions: Map<string, { turns: Map<string, { ring: { length: number } }> }> }
     const rings = [...store.sessions.get(S)!.turns.values()].map(t => t.ring.length)
     expect(rings).toEqual([0, 0, 1, 1])
+    // An emptied turn no longer claims a frame, so its card asks for the recorded thumbnail.
+    expect(browserLiveStore.sessionTurns(S).map(t => t.hasFrame)).toEqual([false, false, true, true])
   })
 })
 

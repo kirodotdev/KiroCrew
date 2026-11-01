@@ -943,7 +943,7 @@ async def test_an_idle_expiry_keeps_the_agent_op_behind_the_synthetic_releases()
     clock.t += lh.TAKEOVER_IDLE_S + 1
     assert h.in_control("chat-1") is True
     agent = asyncio.ensure_future(h.wait_for_release("chat-1", 30.0))
-    await relay.entered.wait()
+    await await_until(relay.entered, what="the relay to enter the op")
     # Inside the cleanup: the lock is shut, the agent waits, and card input is refused.
     assert h.in_control("chat-1") is True and not agent.done()
     with pytest.raises(LookupError, match="not_in_control"):
@@ -967,7 +967,7 @@ async def test_a_new_takeover_keeps_its_own_held_input_from_the_last_cleanup(hub
     await h.input_event("chat-1", {"type": "key", "action": "down", "key": "a", "code": "KeyA"})
     first = h.get("chat-1").held
     hand_back = asyncio.ensure_future(h.release("chat-1"))
-    await relay.entered.wait()
+    await await_until(relay.entered, what="the relay to enter the op")
     # The release owns the old held input; the session already holds a fresh one.
     assert h.get("chat-1").held is not first and not h.get("chat-1").held
     retake = asyncio.ensure_future(h.claim("chat-1"))
@@ -1035,8 +1035,8 @@ async def test_a_slow_input_in_flight_lands_and_is_released_before_the_lock_open
     await asyncio.sleep(lh.HELD_RELEASE_DEADLINE_S * 4)
     assert not release.done() and h.in_control("chat-1"), "opened with a press in flight"
     gate.set()
-    await down
-    assert await release == ""
+    await await_until(down, what="the key-down to finish")
+    assert await await_until(release, what="the release to finish") == ""
     assert h.in_control("chat-1") is False
     assert _types(relay.calls)[-2:] == ["rawKeyDown", "keyUp"]
 
@@ -1089,7 +1089,7 @@ async def test_closing_a_view_while_an_expiry_releases_waits_for_that_release() 
     h.turn_ended("chat-1")
     clock.t += lh.TAKEOVER_IDLE_S + 1
     h.in_control("chat-1")
-    await relay.entered.wait()
+    await await_until(relay.entered, what="the relay to enter the op")
     closing = asyncio.ensure_future(h.close_view("chat-1"))
     handing = asyncio.ensure_future(h.release("chat-1"))
     relay.gate.set()

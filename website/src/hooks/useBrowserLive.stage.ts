@@ -34,6 +34,11 @@ export interface BrowserStage {
   surface: BrowserStageSurface
   /** Bumped on every open, so a second Replay click restarts from the start. */
   nonce: number
+  /**
+   * The turn whose card opened the stage (`null`: the current turn's). That card
+   * hosts the sheet, so the turn picker moving `turnId` does not unmount it.
+   */
+  anchor: string | null
 }
 
 export interface BrowserStageOpen {
@@ -86,7 +91,7 @@ class BrowserStageStore {
     const host: BrowserStageHost | undefined = this.hosts[this.hosts.length - 1]
     const surface: BrowserStageSurface = !req.preferSheet && this.hosts.length > 0 ? 'panel' : 'sheet'
     this.nonce += 1
-    const stage: BrowserStage = { sessionKey, turnId: req.turnId, mode: req.mode, surface, nonce: this.nonce }
+    const stage: BrowserStage = { sessionKey, turnId: req.turnId, mode: req.mode, surface, nonce: this.nonce, anchor: req.turnId }
     this.stages.set(sessionKey, stage)
     this.notify()
     if (surface === 'panel' && host) host(sessionKey)

@@ -11,7 +11,8 @@ import BrowserLiveStage from './BrowserLiveStage'
  * The big view as a full-screen sheet: on a phone (where the side panel is not a
  * column beside the chat), and on any page with no side panel to open.
  *
- * Mounted by the card of the turn the stage shows, so there is one per stage.
+ * Mounted by the card that opened the stage (`BrowserStage.anchor`), so there is
+ * one per stage and picking another turn does not close it.
  * A Radix dialog: it owns the focus trap, focus restore and Escape. Escape while
  * the person holds the browser goes to the canvas first (which hands back) and
  * stops there, so one Esc never both hands back and closes the sheet.

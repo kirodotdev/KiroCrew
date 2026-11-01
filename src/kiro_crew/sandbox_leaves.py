@@ -277,6 +277,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # The conductor work ledger: a worker's full file toolset must not reach any
     # conductor's records except through the routes that check its binding.
     "work-ledger",
+    # Browser turn replays (``browser_harness.recording``): each chat's recorded
+    # frames and steps, logged-in pages included. Read only through the owner-only
+    # replay routes, which a sandboxed ``open()`` would skip.
+    "browser-recordings",
     # Every append-only per-unit crew log, crew and session alike (crew_log/store.py).
     # The design treats the crew log as the authority a conductor reads instead of
     # re-deriving, so an in-sandbox process able to write here could forge an

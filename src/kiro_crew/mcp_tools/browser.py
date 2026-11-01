@@ -710,6 +710,8 @@ _ASK_REFUSAL_HINT = {
     "input; username, text and otp a text input; widget a CAPTCHA frame or checkbox; "
     "action a button or link.",
     "disabled": "a target is disabled or read-only: do the step that enables it first.",
+    "too_short": "the otp box holds fewer characters than the code (one box per digit): "
+    f"{_TAKE_OVER}.",
     "too_large": f"the widget is bigger than a challenge box ({qa.WIDGET_MAX_W} x "
     f"{qa.WIDGET_MAX_H}): pick the CAPTCHA box itself, not the page.",
     "no_button_text": "the action target has no visible text for the user to check: pick "

@@ -194,6 +194,8 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
   }
   const view = viewFor(turn)
   const staged = !!stage && stageTurnId(stage, current?.turnId ?? null) === turn.turnId
+  // The card that opened the sheet keeps it, whichever turn the picker shows.
+  const hostsSheet = stage?.surface === 'sheet' && (stage.anchor ?? current?.turnId ?? null) === turn.turnId
   const grown = inControl && !staged
   const transition = reduce ? { duration: 0 } : { type: 'spring' as const, stiffness: 420, damping: 38 }
 
@@ -248,7 +250,7 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
         )}
       </motion.div>
       {/* The sheet surface of the stage, for this card's turn. */}
-      {staged && stage?.surface === 'sheet' && <BrowserLiveSheet sessionKey={sessionKey} />}
+      {hostsSheet && <BrowserLiveSheet sessionKey={sessionKey} />}
     </div>
   )
 }

@@ -36,15 +36,17 @@ export function handbackChoices(offered: readonly string[]): string[] {
   return DEFAULT_HANDBACK_CHOICES.map(key => i18nT(key))
 }
 
-export function BrowserLiveHandbackBar({ offered, onHandBack, className }: {
+export function BrowserLiveHandbackBar({ offered, onHandBack, draft, className }: {
   /** The agent's own choices (`handback_options`); empty for the defaults. */
   offered: readonly string[]
   onHandBack: (said?: BrowserHandbackSaid) => void
+  /** What a hand-back that failed to send said, shown again rather than lost. */
+  draft?: BrowserHandbackSaid
   className?: string
 }) {
   const choices = handbackChoices(offered)
-  const [choice, setChoice] = useState<string | null>(null)
-  const [note, setNote] = useState('')
+  const [choice, setChoice] = useState<string | null>(draft?.choice ?? null)
+  const [note, setNote] = useState(draft?.note ?? '')
   const noteId = useId()
   const ime = useImeGuard()
   const send = () => {

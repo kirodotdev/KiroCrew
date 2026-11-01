@@ -48,6 +48,7 @@ from typing import Any
 
 from kiro_crew.browser_harness.frames import FRAME_READ_CAP, split_frame_ref
 from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
+from kiro_crew.browser_snapshots import prune as prune_snapshots
 
 logger = logging.getLogger(__name__)
 
@@ -902,6 +903,8 @@ async def _screenshot(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
         )
     await _step(ctx, "Take a screenshot")
     path = _screenshot_path(ctx)
+    # The gateway is the directory's only writer, so it bounds it on each write.
+    await asyncio.to_thread(prune_snapshots, path.parent, time.time())
     await ctx.helper("screenshot", path=str(path))
     if not await asyncio.to_thread(path.exists):
         return refusal("screenshot_error", "the browser wrote no image")

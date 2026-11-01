@@ -30,7 +30,9 @@ transcript tail, and a watched pull request's typed facts plus a fixed-width
 fingerprint of its comment bodies, never their text). A ceiling sits beside them --
 ``history_budget_chars``, on prior turns. Absent reads as not consented in every
 case, so a record written before a scope existed authorizes exactly the text its
-owner reviewed and never a category added later.
+owner reviewed and never a category added later. The two browser scopes
+(``browser``, ``browser_images``) are the owner's deliberate exception: on by default
+under a standing consent, off only on a recorded no.
 
 The ``decisions`` section of ``config.json`` keeps the knobs that grant nothing on
 their own -- the sampling share and the provider -- so there is exactly one place
@@ -557,7 +559,10 @@ def save_enabled(
             (STATE_KEY_BROWSER_IMAGES, browser_images, KEEP_BROWSER_IMAGES),
         ):
             if not enabled:
-                if state.get(key) is not False:
+                # A no the caller sent is a no, whatever the switch reads now.
+                if value is False:
+                    state[key] = False
+                elif state.get(key) is not False:
                     state.pop(key, None)
             elif value is not keep_value:
                 state[key] = value

@@ -317,6 +317,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # straight off disk, and a corrupted record reads as ABSENT to the store —
     # silent loss the conductor cannot see. No legitimate file-tool reader.
     "work-ledger",
+    # Browser turn replays (``browser_harness.recording``): per-chat frames of the
+    # pages the agent and the person saw. Same model as the ledgers: only the
+    # owner-only replay routes read them, so no file-tool reader is legitimate.
+    "browser-recordings",
     # The cross-process work root (``work_root``). Not credentials either: the
     # hazard is WRITE, and it is specific to this root's deterministic keys. A key
     # is an issue or pull-request number so a later run can compute it again, so a

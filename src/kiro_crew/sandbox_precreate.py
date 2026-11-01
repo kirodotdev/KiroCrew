@@ -540,6 +540,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # list is either here or made at boot.
     "ledger",
     "work-ledger",
+    "browser-recordings",
     "cron-running",
     "workflow_library",
     "routing",

@@ -378,11 +378,18 @@ function createBrowserViewManager(deps) {
       // in that page to an outside site is handed to the host (the person's own
       // browser) instead of being rendered inside the view.
       if (typeof wc.on === "function") {
-        wc.on("will-navigate", (event, url) => {
+        const keepOnLoopback = (event, url) => {
           const safe = normalizeUrl(url);
           if (safe && isLoopbackUrl(safe)) return;
           event.preventDefault();
           if (safe) emit("open-external", { url: safe });
+        };
+        wc.on("will-navigate", keepOnLoopback);
+        // A loopback URL that answers with a redirect (an OAuth sign-in) never
+        // reaches `will-navigate` again; the same rule holds its main frame.
+        wc.on("will-redirect", (details) => {
+          if (!details || details.isMainFrame === false) return;
+          keepOnLoopback(details, details.url);
         });
         wc.on("did-navigate", (_event, url) => {
           currentUrl = url;

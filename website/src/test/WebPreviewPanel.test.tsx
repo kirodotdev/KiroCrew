@@ -477,6 +477,13 @@ describe('WebPreviewPanel', () => {
     expect(screen.queryByTestId('web-preview-origin-picks')).toBeNull()
   })
 
+  it('a failed origins read says it failed, not that none are configured', async () => {
+    kirocrewConfig.mockRejectedValue(new Error('503'))
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    expect(await screen.findByText(/Could not read the local preview list/)).toBeInTheDocument()
+    expect(screen.queryByTestId('web-preview-no-origins')).toBeNull()
+  })
+
   it('Ask Kiro stages a prompt naming the outside address', async () => {
     await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     const input = screen.getByLabelText('Preview URL')

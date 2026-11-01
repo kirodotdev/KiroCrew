@@ -409,7 +409,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   inode stays the same on a republish. It sits at the data-home root beside
     #:   writable siblings, so no enclosing directory mask can hold it and leaf-only
     #:   is the only hold available, the same as ``member-records``.
-    EXPECTED: dict[str, int] = {"standard": 303, "cc": 310, "strict": 311}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``browser-recordings`` -- every chat's browser turn replays
+    #:   (``browser_harness.recording``), read only through the owner-only replay
+    #:   routes. Masked whole beside ``browser-profile`` at the data-home root, so
+    #:   leaf-only is the only hold, like ``work-ledger``.
+    EXPECTED: dict[str, int] = {"standard": 306, "cc": 313, "strict": 314}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

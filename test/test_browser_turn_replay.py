@@ -984,3 +984,18 @@ async def test_a_delete_during_a_running_turn_leaves_nothing_behind(tmp_path: Pa
     rec.event(KEY, {"ts": 1, "op": "other", "actor": "agent"})
     await rec.flush()
     assert not (tmp_path / rc.RECORDINGS_DIRNAME / rc.session_dirname(KEY)).exists()
+
+
+async def test_the_recordings_root_is_hidden_from_every_sandbox_and_file_tool() -> None:
+    """Another chat's agent must not read or forge replays with a plain ``open()``.
+
+    The replay routes are owner-only, which a sandboxed shell or a file tool would
+    skip; the root is created on a session's first recorded turn, so it must also
+    be precreated for the mask to have a name to bind over.
+    """
+    from kiro_crew import sandbox
+    from kiro_crew.security.paths import sensitive_home_dirs
+
+    assert rc.RECORDINGS_DIRNAME in sandbox._CREW_HIDDEN_LEAVES
+    assert rc.RECORDINGS_DIRNAME in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+    assert any(Path(d).name == rc.RECORDINGS_DIRNAME for d in sensitive_home_dirs())

@@ -29,6 +29,9 @@ import { TICK_MS } from '../pages/chat/BrowserLiveTimeline'
  * to the card's own frames when the gateway has no recording.
  */
 
+// The stage is React.lazy in PreviewTabBody and reads its recording through a
+// query, so a find crosses a chunk load and a fetch: past Testing Library's 1 s.
+const LAZY_STAGE_TIMEOUT_MS = 5000
 const S = 'slot:abc'
 const T0 = 1_700_000_000_000
 const ev = (over: Record<string, unknown> = {}) => ({ session_key: S, turn_id: 't1', state: 'live', url: 'https://github.com/login', title: 'Sign in', browser: 'user_chrome', headless: false, steps: [], ...over })
@@ -128,7 +131,7 @@ describe('Expand moves the picture to the side panel', () => {
     // The Preview tab is in Agent browser mode, the local preview still mounted but inactive.
     expect(screen.getByTestId('preview-tab-body')).toHaveAttribute('data-mode', 'agent')
     expect(screen.getByTestId('local-preview')).toHaveAttribute('data-active', 'false')
-    expect(await screen.findByTestId('browser-live-stage')).toHaveAttribute('data-mode', 'live')
+    expect(await screen.findByTestId('browser-live-stage', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })).toHaveAttribute('data-mode', 'live')
     // Take over works in the big view just like the card.
     fireEvent.click(screen.getByTestId('browser-live-stage-take-over'))
     expect(writes.claim).toHaveBeenCalledWith(S)
@@ -176,11 +179,22 @@ describe('Expand moves the picture to the side panel', () => {
     render(wrap(card()))
     openMenuAndExpand()
     expect(browserStageStore.get(S)?.surface).toBe('sheet')
-    const sheet = await screen.findByTestId('browser-live-sheet')
-    expect(sheet).toContainElement(await screen.findByTestId('browser-live-stage'))
+    const sheet = await screen.findByTestId('browser-live-sheet', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })
+    expect(sheet).toContainElement(await screen.findByTestId('browser-live-stage', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS }))
     expect(screen.getByTestId('browser-live-staged')).toHaveTextContent(i18next.t('pages.chat.browserLiveCard.showing_full_screen'))
     fireEvent.keyDown(sheet, { key: 'Escape' })
     await waitFor(() => expect(browserStageStore.get(S)).toBeNull())
+  })
+
+  it('picking a turn that has no card here keeps the sheet open', async () => {
+    setMobile(true)
+    act(() => { browserLiveStore.applyEvent(ev()); browserLiveStore.applyFrame(frame(1)) })
+    render(wrap(card()))
+    openMenuAndExpand()
+    await screen.findByTestId('browser-live-sheet', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })
+    // The turn picker's own write: a server-listed older turn no card holds.
+    act(() => { browserStageStore.update(S, { turnId: 'older', mode: 'replay' }) })
+    expect(screen.getByTestId('browser-live-sheet')).toBeInTheDocument()
   })
 
   it('with no host (an embed) Expand also falls back to the sheet', async () => {
@@ -188,7 +202,7 @@ describe('Expand moves the picture to the side panel', () => {
     render(wrap(card()))
     openMenuAndExpand()
     expect(browserStageStore.get(S)?.surface).toBe('sheet')
-    expect(await screen.findByTestId('browser-live-sheet')).toBeInTheDocument()
+    expect(await screen.findByTestId('browser-live-sheet', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })).toBeInTheDocument()
   })
 })
 
@@ -204,7 +218,7 @@ describe('full screen', () => {
     act(() => { browserLiveStore.applyEvent(ev()); browserLiveStore.applyFrame(frame(1)) })
     const stage = browserStageStore.open(S, { turnId: null, mode: 'live' })
     render(wrap(<BrowserLiveStage sessionKey={S} stage={stage} active />))
-    const btn = await screen.findByTestId('browser-live-stage-fullscreen')
+    const btn = await screen.findByTestId('browser-live-stage-fullscreen', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })
     expect(btn).toHaveAttribute('aria-label', i18next.t('pages.chat.browserLiveStage.full_screen'))
     await act(async () => { fireEvent.click(btn) })
     expect(request).toHaveBeenCalled()
@@ -234,7 +248,7 @@ describe('the replay timeline', () => {
     })
     render(wrap(<>{card(false)}<PreviewTabBody sessionKey={S} active /></>))
     fireEvent.click(screen.getByTestId('browser-live-replay'))
-    await screen.findAllByTestId('browser-replay-marker')
+    await screen.findAllByTestId('browser-replay-marker', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })
   }
   const clock = () => screen.getByTestId('browser-replay-clock').textContent
 
@@ -328,7 +342,7 @@ describe('the replay timeline', () => {
     act(() => { browserLiveStore.applyEvent(ev()); browserLiveStore.applyFrame(frame(1)) })
     const stage = browserStageStore.open(S, { turnId: null, mode: 'live' })
     const { rerender } = render(wrap(<BrowserLiveStage sessionKey={S} stage={stage} active />))
-    await screen.findAllByTestId('browser-replay-marker')
+    await screen.findAllByTestId('browser-replay-marker', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })
     expect(screen.getByTestId('browser-live-stage')).toHaveAttribute('data-mode', 'live')
     expect(screen.queryByTestId('browser-replay-go-live')).toBeNull()
     fireEvent.click(screen.getAllByTestId('browser-replay-marker')[0])
@@ -357,7 +371,7 @@ describe('the replay timeline', () => {
     const stage = browserStageStore.open(S, { turnId: 't1', mode: 'replay' })
     render(wrap(<BrowserLiveStage sessionKey={S} stage={stage} active />))
     await waitFor(() => expect(api.browserLiveRecording).toHaveBeenCalled())
-    expect(await screen.findByTestId('browser-replay-canvas')).toBeInTheDocument()
+    expect(await screen.findByTestId('browser-replay-canvas', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })).toBeInTheDocument()
     expect(screen.getAllByTestId('browser-replay-marker').map(m => m.getAttribute('data-op'))).toEqual(['navigate', 'other'])
     expect(screen.getAllByTestId('browser-replay-step')[1]).toHaveTextContent('click Sign in')
   })
@@ -370,9 +384,9 @@ describe('replay request errors', () => {
     act(() => { browserLiveStore.applyEvent(ev()); browserLiveStore.applyFrame(frame(1)); browserLiveStore.applyEvent(ev({ state: 'done' })) })
     const stage = browserStageStore.open(S, { turnId: 't1', mode: 'replay' })
     render(wrap(<BrowserLiveStage sessionKey={S} stage={stage} active />))
-    expect(await screen.findByTestId('browser-live-stage-recording-error')).toHaveTextContent('Recording index offline')
-    expect(await screen.findByTestId('browser-live-stage-recordings-error')).toHaveTextContent('Recording list offline')
-    expect(await screen.findByTestId('browser-replay-canvas')).toBeInTheDocument()
+    expect(await screen.findByTestId('browser-live-stage-recording-error', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })).toHaveTextContent('Recording index offline')
+    expect(await screen.findByTestId('browser-live-stage-recordings-error', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })).toHaveTextContent('Recording list offline')
+    expect(await screen.findByTestId('browser-replay-canvas', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })).toBeInTheDocument()
   })
 
   it('shows failures even with no local turn or recording', async () => {
@@ -380,8 +394,8 @@ describe('replay request errors', () => {
     vi.mocked(api.browserLiveRecordings).mockRejectedValue(new Error('Recording list offline'))
     const stage = browserStageStore.open(S, { turnId: 't1', mode: 'replay' })
     render(wrap(<BrowserLiveStage sessionKey={S} stage={stage} active />))
-    expect(await screen.findByTestId('browser-live-stage-recording-error')).toHaveTextContent('Recording index offline')
-    expect(await screen.findByTestId('browser-live-stage-recordings-error')).toHaveTextContent('Recording list offline')
+    expect(await screen.findByTestId('browser-live-stage-recording-error', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })).toHaveTextContent('Recording index offline')
+    expect(await screen.findByTestId('browser-live-stage-recordings-error', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })).toHaveTextContent('Recording list offline')
   })
 
   it('treats the intentional missing-recording answer as a quiet fallback', async () => {
@@ -390,7 +404,7 @@ describe('replay request errors', () => {
     act(() => { browserLiveStore.applyEvent(ev()); browserLiveStore.applyFrame(frame(1)); browserLiveStore.applyEvent(ev({ state: 'done' })) })
     const stage = browserStageStore.open(S, { turnId: 't1', mode: 'replay' })
     render(wrap(<BrowserLiveStage sessionKey={S} stage={stage} active />))
-    expect(await screen.findByTestId('browser-replay-canvas')).toBeInTheDocument()
+    expect(await screen.findByTestId('browser-replay-canvas', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })).toBeInTheDocument()
     await waitFor(() => expect(qc.isFetching()).toBe(0))
     expect(screen.queryByTestId('browser-live-stage-recording-error')).toBeNull()
     expect(screen.queryByTestId('browser-live-stage-recordings-error')).toBeNull()

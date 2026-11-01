@@ -764,6 +764,13 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
                   </button>
                 ))}
               </div>
+            ) : originsError ? (
+              // A failed read is not "none configured": say it failed.
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('components.webPreviewPanel.origins_unavailable')}
+                className="max-w-[360px] text-left"
+              />
             ) : originsLoaded && (
               <div className="flex flex-col items-center gap-1.5 pt-1" data-testid="web-preview-no-origins">
                 <span className="text-[11px] text-muted max-w-[300px] leading-snug">

@@ -824,6 +824,23 @@ async def test_otp_takes_exactly_its_digits() -> None:
     assert page.written() == ["123456"]
 
 
+@pytest.mark.parametrize("max_length, refused", [(1, True), (5, True), (6, False), (-1, False)])
+async def test_an_otp_box_too_short_for_the_code_is_refused_at_ask_time(
+    max_length: int, refused: bool
+) -> None:
+    # One box per digit: inserting six digits into a maxlength=1 box keeps one and
+    # would still report "filled".
+    page = FakePage()
+    page.add("e7", type="text", maxLength=max_length)
+    hub, _rec = await _live(page)
+    otp = {"kind": "otp", "targets": ["otp=e7"], "reason": "r", "digits": 6}
+    out = await browser_ask.run_ask(hub, KEY, otp)
+    if refused:
+        assert out == {"ok": True, "outcome": "refused", "code": "too_short"}
+    else:
+        assert out["ok"] is True and "ask_id" in out
+
+
 async def test_an_otp_box_that_submits_itself_still_reads_as_filled() -> None:
     # The last digit submits and the page moves on: the code landed where it was
     # bound, so the card must not say "nothing was filled".
@@ -1129,6 +1146,7 @@ _REFUSAL_SAYS = {
     "hidden": "hidden or too small",
     "covered": "off screen",
     "wrong_type": "wrong element for its role",
+    "too_short": "fewer characters than the code",
     "disabled": "disabled or read-only",
     "too_large": "bigger than a challenge box",
     "no_button_text": "no visible text",

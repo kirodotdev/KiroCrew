@@ -11,7 +11,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { fmtDuration } from '../../i18n/format'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
-import type { BrowserKind, BrowserLiveStep, BrowserLiveTurn } from '../../hooks/useBrowserLive'
+import { browserLiveStore, type BrowserKind, type BrowserLiveStep, type BrowserLiveTurn } from '../../hooks/useBrowserLive'
 import type { BrowserHandbackSaid } from '../../api/client/browserLive'
 import type { FrameSize } from '../../hooks/useBrowserLive.input'
 import { useRecordedThumb } from '../../hooks/useBrowserLive.replay'
@@ -279,7 +279,7 @@ export function BrowserLiveLiveView({ turn, onScreen, canvasRef, onClaim, onRele
 
       {(!inControl || quick.scoped) && quick.askSlot}
 
-      {inControl && !quick.scoped && <BrowserLiveHandbackBar offered={turn.handbackOptions} onHandBack={onRelease} />}
+      {inControl && !quick.scoped && <BrowserLiveHandbackBar offered={turn.handbackOptions} onHandBack={onRelease} draft={browserLiveStore.handBackDraft(turn.sessionKey)} />}
 
       {!inControl && turn.loop && <BrowserLiveLoopLine loop={turn.loop} className="px-3 py-2 border-t border-border" />}
 

@@ -1080,7 +1080,11 @@ async def warm(point: str, *, session_key: str | None = None) -> bool:
         if point == JUDGE_POINT or not _sampled(point, session_key, cfg, consented=consented):
             return False
         provider = getattr(_decisions_config(cfg), "provider", None)
-        oracle = _oracle(LANE_ENDPOINT, provider, lane_model(cfg, lane=LANE_ENDPOINT))
+        model = lane_model(cfg, lane=LANE_ENDPOINT)
+        # The fleet's lists bind the HEAD too: a warm-up is a request to the endpoint.
+        if await asyncio.to_thread(_targets_denied, cfg, session_key, point, model, LANE_ENDPOINT):
+            return False
+        oracle = _oracle(LANE_ENDPOINT, provider, model)
         opener = getattr(oracle, "warm", None)
         if opener is None:
             return False

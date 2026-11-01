@@ -433,6 +433,7 @@ _INSPECT_JS = """function () {
     href: tag === 'a' && el.hasAttribute('href'),
     disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true',
     readOnly: el.readOnly === true,
+    maxLength: tag === 'input' ? el.maxLength : -1,
     visible: visible,
     covered: !(hit && (hit === el || el.contains(hit))),
     labelCovered: !!(hit && hit !== el && !el.contains(hit) && ownLabel(hit)),
@@ -1003,6 +1004,9 @@ async def bind_ask(
             continue
         if problem:
             raise AskError(problem)
+        if role == "otp" and 0 < int(info.get("maxLength") or -1) < spec.digits:
+            # One box per digit: the insert would keep the first and report filled.
+            raise AskError("too_short")
         x, y, w, h = (float(v) for v in info["rect"])
         typ = str(info.get("type") or "text")
         kind = _INPUT_KIND.get(role, "")

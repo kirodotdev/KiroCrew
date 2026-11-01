@@ -687,7 +687,9 @@ class TestPointName:
 
         Driven off the gate's own table so a point added with a new scope is covered
         without this test being touched, and with NO point exempted: the assertion is
-        universal or it is not a ratchet.
+        universal or it is not a ratchet. The browser scope is the owner's default-on
+        exception (``consented_browser``), so the input records its no explicitly;
+        every other scope stays absent.
 
         :data:`gate.JUDGE_POINT` reaches it by pinning the lane whose authority IS the
         scope. That point carries two lanes (``is_enabled`` resolves them through

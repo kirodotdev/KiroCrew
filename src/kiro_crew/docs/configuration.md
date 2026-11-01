@@ -684,7 +684,7 @@ edited on Settings → Browser and applies without a restart.
 | `browser.recording.max_total_mb` | The most replay all chats keep together, in MB; past it the oldest turns are removed first, whichever chat they belong to | `1024` |
 | `browser.credentials.enabled` | Start Kiro's own Chromium signed in to the sites your edition's sign-in provider serves. Unset follows the edition's default; with no provider it does nothing. Your own Chrome is never changed | unset |
 | `browser.credentials.domains` | The sites that sign-in may be used for (`example.com` covers its subdomains). Only a site both listed here and served by the provider is used. Empty follows the provider's default | `[]` |
-| `dashboard.browser_local_origins` | The loopback origins the side panel's Preview tab may open, each `host:port` with host `localhost`, `127.0.0.1` or `[::1]` (`localhost:5173` for a Vite dev server). The tab is for previewing your own dev server; the agent never drives it, and an outside URL is answered with "Open this in your Chrome, or ask Kiro". Empty keeps every address refused. Entries in any other shape are dropped | `[]` |
+| `dashboard.browser_local_origins` | The loopback origins the side panel's Preview tab may open, each `host:port` with host `localhost`, `127.0.0.1` or `[::1]` (`localhost:5173` for a Vite dev server). The tab is for previewing your own dev server; the agent never drives it, and an outside URL is answered with "Open this in your Chrome, or ask Kiro". The same list is the only way the agent's `browser` tool may open a loopback address, so listing an origin also opens it to the agent's browser (which may be your own Chrome). Empty keeps every address refused. Entries in any other shape are dropped | `[]` |
 
 ### Skills
 

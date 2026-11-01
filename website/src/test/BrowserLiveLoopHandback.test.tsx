@@ -234,6 +234,18 @@ describe('the hand-back bar', () => {
     expect(writes.release).toHaveBeenCalledWith(S, { choice: "Didn't work", note: 'It says the password is wrong' })
   })
 
+  it('a hand-back that fails to send comes back with what the person wrote', async () => {
+    writes.release.mockRejectedValueOnce(new Error('offline'))
+    live({ state: 'in_control' })
+    render(card())
+    fireEvent.click(screen.getByRole('button', { name: "Didn't work" }))
+    const note = screen.getByTestId('browser-live-handback-note')
+    fireEvent.change(note, { target: { value: 'Wrong password' } })
+    await act(async () => { fireEvent.submit(note.closest('form')!) })
+    expect(screen.getByTestId('browser-live-handback-note')).toHaveValue('Wrong password')
+    expect(screen.getByRole('button', { name: "Didn't work" })).toHaveAttribute('aria-pressed', 'true')
+  })
+
   it('the header\'s Hand back and Esc in the note field say nothing', async () => {
     live({ state: 'in_control' })
     render(card())

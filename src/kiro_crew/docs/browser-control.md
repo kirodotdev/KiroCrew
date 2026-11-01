@@ -120,7 +120,9 @@ rate, picks a quality, and controls the password mask (on by default).
 The side panel keeps one browser surface of its own: the **Preview** tab, for a
 local dev server the agent started for you. It opens only the origins listed
 under **Local preview origins**, and the agent does not drive it; an outside URL
-there answers "Open this in your Chrome, or ask Kiro". Once the chat has browsed,
+there answers "Open this in your Chrome, or ask Kiro". That list is also the only
+way the agent's `browser` tool may open a loopback address, so an origin listed for
+the tab is open to the agent's browser too. Once the chat has browsed,
 the tab has two modes, **Agent browser** (the expanded live view and replay) and
 **Local preview**; switching to Local preview brings the live view back to the
 chat.

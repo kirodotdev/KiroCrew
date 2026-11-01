@@ -314,6 +314,8 @@ class BrowserLiveStore {
   private heartbeat: ReturnType<typeof setInterval> | null = null
   /** Per session, each mounted canvas's "release what you hold" (see `onHandBack`). */
   private handBackDrains = new Map<string, Set<() => Promise<unknown> | null>>()
+  /** A hand-back note or choice whose release failed, so the bar that comes back shows it again. */
+  private handBackDrafts = new Map<string, BrowserHandbackSaid>()
   /** Injected for tests; production uses the facade's methods. */
   private writes = {
     ack: (k: string, seq: number, stream: string) => api.browserLiveAck(k, seq, stream) as Promise<unknown>,
@@ -340,7 +342,11 @@ class BrowserLiveStore {
   private evictRings(s: SessionRecord): void {
     const ids = [...s.turns.keys()]
     for (const id of ids.slice(0, Math.max(0, ids.length - REPLAY_RINGS_KEPT))) {
-      s.turns.get(id)?.ring.clear()
+      const t = s.turns.get(id)
+      if (!t || !t.hasFrame) continue
+      t.ring.clear()
+      // No frame is held now, so the card falls back to the recorded thumbnail.
+      s.turns.set(id, { ...t, hasFrame: false })
     }
   }
 
@@ -660,11 +666,18 @@ class BrowserLiveStore {
         const text = [choice, note].filter(Boolean).join(': ')
         window.dispatchEvent(new CustomEvent(BROWSER_HANDBACK_CHAT_EVENT, { detail: { slotKey: sessionKey, text } }))
       }
+      this.handBackDrafts.delete(sessionKey)
       return true
     } catch (e) {
+      if (said) this.handBackDrafts.set(sessionKey, said)
       if (s.current?.turnId === before.turnId) this.setState(sessionKey, 'in_control', errorText(e))
       return false
     }
+  }
+
+  /** What the person said in a hand-back that failed to send, for the bar to restore. */
+  handBackDraft(sessionKey: string): BrowserHandbackSaid | undefined {
+    return this.handBackDrafts.get(sessionKey)
   }
 
   /**
@@ -798,6 +811,7 @@ class BrowserLiveStore {
     this.anchors.clear()
     this.frameListeners.clear()
     this.handBackDrains.clear()
+    this.handBackDrafts.clear()
     this.notify()
   }
 }

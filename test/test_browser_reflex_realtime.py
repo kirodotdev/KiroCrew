@@ -567,6 +567,23 @@ def test_warm_opens_nothing_without_consent(monkeypatch):
     assert asyncio.run(gate.warm(decide_mod.POINT, session_key=SESSION)) is False
 
 
+@pytest.mark.parametrize("denied", [True, False])
+def test_warm_sends_no_head_to_an_endpoint_the_fleet_lists_deny(monkeypatch, denied):
+    opened: list[str] = []
+
+    async def opener() -> None:
+        opened.append("head")
+
+    cfg = SimpleNamespace(decisions=DecisionsConfig(provider=DecisionProviderConfig()))
+    monkeypatch.setattr(gate, "_snapshot", lambda: cfg)
+    monkeypatch.setattr(gate, "_consented_for", lambda *a, **k: True)
+    monkeypatch.setattr(gate, "_sampled", lambda *a, **k: True)
+    monkeypatch.setattr(gate, "_targets_denied", lambda *a, **k: denied)
+    monkeypatch.setattr(gate, "_oracle", lambda *a, **k: SimpleNamespace(warm=opener))
+    assert asyncio.run(gate.warm(decide_mod.POINT, session_key=SESSION)) is (not denied)
+    assert opened == ([] if denied else ["head"])
+
+
 # -- the page clock helper -------------------------------------------------------------
 
 

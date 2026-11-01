@@ -681,6 +681,21 @@ def test_cycling_consent_keeps_an_explicit_no_to_screenshots(seam):
     assert consent.consented_browser_images() is False
 
 
+@pytest.mark.parametrize("scope", ["browser", "browser_images"])
+def test_a_no_sent_while_consent_is_off_survives_turning_it_back_on(seam, scope):
+    # Two tabs: one turns consent off, the other's scope-only "no" lands after it.
+    from kiro_crew.decisions import consent
+
+    consent.save_enabled(True, endpoint=DECISION_PROVIDER_ENDPOINT_DEFAULT)
+    consent.save_enabled(False, endpoint=DECISION_PROVIDER_ENDPOINT_DEFAULT)
+    consent.save_enabled(
+        consent.KEEP_ENABLED, endpoint=DECISION_PROVIDER_ENDPOINT_DEFAULT, **{scope: False}
+    )
+    consent.save_enabled(True, endpoint=DECISION_PROVIDER_ENDPOINT_DEFAULT)
+    read = consent.consented_browser if scope == "browser" else consent.consented_browser_images
+    assert read() is False
+
+
 def test_screenshots_read_granted_when_absent_and_a_yes_returns_to_the_default(seam):
     from kiro_crew.decisions import consent
 

@@ -750,6 +750,9 @@ by a generic name table; an unknown op is `other`.
 **Storage.** `<data home>/browser-recordings/<sha256(slot key)[:32]>/<turn_id>/`
 with `meta.json` (atomic rewrite), `frames.jsonl`, `events.jsonl` and
 `frames/<i>.jpg`; directories 0700, files 0600, every file opened `O_NOFOLLOW`.
+The root is a `HIDDEN` crew-home leaf (sandbox-masked, precreated, and on the
+file-tool sensitive list), so another chat's agent cannot read or forge it
+outside the owner-only routes.
 `browser.recording.max_session_mb` (200) and `max_total_mb` (1024) cap the bytes;
 before each frame the oldest finished turns go first (the session's, then any
 session's); a running turn that alone cannot fit stops keeping frames and is
@@ -1047,7 +1050,9 @@ one, and logins happen during takeover.
 
 `browser_snapshots.py` names the one directory the `screenshot` op writes to:
 `<data-home>/browser-snapshots` (`snapshot_dir()`), derived from `config_dir()`
-so an isolated `KIROCREW_HOME` stays isolated. It is never inside a working
+so an isolated `KIROCREW_HOME` stays isolated. Each `screenshot` first prunes the
+directory's `shot-*.png` past a day or past the newest 200, sparing any younger
+than five minutes (`prune()`); the gateway is its only writer. It is never inside a working
 directory by construction, which is why `messaging/outbound_files.py` admits it
 as the second approved root for an inline image in a channel reply: a
 screenshot the agent just took can be sent, and admitting the directory grants

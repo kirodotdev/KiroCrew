@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from kiro_crew import browser_snapshots
 from kiro_crew.browser_harness import ops
 
 _METHOD_RE = re.compile(r"\.(\w+)\((.*)\)$", re.DOTALL)
@@ -564,6 +566,46 @@ def test_screenshot_with_no_file_is_an_error(fake: FakeBrowser) -> None:
 
 def test_screenshot_dir_is_a_fixed_leaf_of_the_home(tmp_path: Path) -> None:
     assert ops.screenshot_dir(tmp_path) == tmp_path / "browser-snapshots"
+
+
+def test_a_screenshot_prunes_old_shots_from_its_directory(fake: FakeBrowser) -> None:
+    shots = fake.tmp / "shots"
+    shots.mkdir(parents=True)
+    stale = shots / "shot-old.png"
+    stale.write_bytes(b"x")
+    os.utime(stale, (0, 0))  # 1970: past every age bound
+
+    def shoot(path: str) -> str:
+        Path(path).write_bytes(b"\x89PNG")
+        return path
+
+    fake.helpers["screenshot"] = shoot
+    assert run(ops.run_op("screenshot", {}, fake.ctx()))["ok"] is True
+    assert not stale.exists()
+
+
+def test_prune_keeps_a_day_and_two_hundred_shots_and_never_a_fresh_one(tmp_path: Path) -> None:
+    now = 10_000_000.0
+    hour = now - 3600
+    for i in range(205):
+        p = tmp_path / f"shot-h{i:03d}.png"
+        p.write_bytes(b"x")
+        os.utime(p, (hour - i, hour - i))
+    fresh = [tmp_path / f"shot-f{i}.png" for i in range(3)]
+    for p in fresh:
+        p.write_bytes(b"x")
+        os.utime(p, (now - 10, now - 10))
+    other = tmp_path / "notes.txt"
+    other.write_bytes(b"x")
+    os.utime(other, (0, 0))
+
+    browser_snapshots.prune(tmp_path, now)
+
+    left = sorted(p.name for p in tmp_path.glob("shot-*.png"))
+    assert all(p.exists() for p in fresh)  # inside the grace window, whatever the count
+    assert len(left) == browser_snapshots.MAX_FILES  # the fresh three count toward it
+    assert "shot-h196.png" in left and "shot-h197.png" not in left  # oldest go first
+    assert other.exists()  # only the op's own shots are pruned
 
 
 # --- tabs ---------------------------------------------------------------------

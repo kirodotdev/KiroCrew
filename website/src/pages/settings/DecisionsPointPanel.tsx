@@ -48,7 +48,7 @@ export interface DecisionsPointPanelProps {
   scopeOffered: boolean
   scopeDisabled: boolean
   onScopeChange: (value: boolean) => void
-  /** `browser.step`'s second scope: screenshots of the agent's tab, off until granted. */
+  /** `browser.step`'s second scope: screenshots of the agent's tab, on with the consent until turned off. */
   browserImages: boolean
   onBrowserImagesChange: (value: boolean) => void
   /** `model.route`'s tier map, the advertised models, and the labels for both. */

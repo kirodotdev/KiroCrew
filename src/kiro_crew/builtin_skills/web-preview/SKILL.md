@@ -38,7 +38,8 @@ Emit exactly this, on its own line, once the server is confirmed listening:
   preview** (exact `host:port` entries). An unlisted
   loopback address shows a one-click **Allow** in the tab itself, which writes
   the list; tell the user to click it the first time a new dev-server port is
-  used. You cannot write that list: config is read-only inside the sandbox.
+  used, and say that an allowed origin is also open to your `browser` tool. You
+  cannot write that list: config is read-only inside the sandbox.
 - The panel may rewrite the host it loads: `[::1]` becomes `127.0.0.1`, and
   `localhost` and `127.0.0.1` are swapped against each other for cookie
   isolation. Same server, different spelling — do not read the difference as a

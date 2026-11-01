@@ -573,7 +573,7 @@ async def test_a_takeover_during_an_op_cancels_it_and_answers_interrupted_with_h
     route = asyncio.ensure_future(
         mod.api_browser_op(_request({"op": "type", "args": {"text": "hello"}, "session_key": key}))
     )
-    await sup.parked.wait()
+    await await_until(sup.parked, what="the supervisor op to park")
     assert hub.op_fence(key).locked()
     claimed = await hub.claim(key)  # returns only once the op has left the fence
     assert claimed is True and hub.in_control(key) is True
