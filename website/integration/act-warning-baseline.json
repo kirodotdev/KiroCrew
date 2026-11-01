@@ -412,7 +412,6 @@
   "src/test/WebPreviewPanel.test.tsx",
   "src/test/WeekGridCoverage.test.tsx",
   "src/test/WelcomeView.test.tsx",
-  "src/test/WhatsAppPanel.test.tsx",
   "src/test/WidgetFrame.test.tsx",
   "src/test/WorkflowCompletionCard.test.tsx",
   "src/test/WorkflowRunCard.test.tsx",

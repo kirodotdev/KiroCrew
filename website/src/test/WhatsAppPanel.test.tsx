@@ -653,7 +653,9 @@ describe('WhatsAppPanel — group edits compose', () => {
     fireEvent.click(within(rowB).getByRole('combobox', { name: 'How the agent joins in' }))
     fireEvent.click(await screen.findByRole('option', { name: 'Off, keeping the entry' }))
     await waitFor(() => expect(saved.length).toBe(2))
-    release?.()
+    await act(async () => {
+      release?.()
+    })
 
     const second = saved[1].groups as Array<{ jid: string; mode: string }>
     expect(second.find(g => g.jid === 'a@g.us')?.mode).toBe('rules')
