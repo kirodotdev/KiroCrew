@@ -78,7 +78,6 @@
   "src/test/ArtifactsPageCoverage.test.tsx",
   "src/test/AssistantMessage.quote.test.tsx",
   "src/test/AssistantMessage.test.tsx",
-  "src/test/BottomTerminalPanel.cwd.test.tsx",
   "src/test/BottomTerminalPanel.hydrateGate.test.tsx",
   "src/test/BottomTerminalPanel.popout.test.tsx",
   "src/test/BottomTerminalPanel.rename.test.tsx",
