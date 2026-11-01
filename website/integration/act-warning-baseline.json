@@ -116,7 +116,6 @@
   "src/test/ProjectPicker.test.tsx",
   "src/test/ProjectPicker.windowsDrives.test.tsx",
   "src/test/ProjectsPage.test.tsx",
-  "src/test/ProjectsPageCoverage.test.tsx",
   "src/test/ProjectsPageWorkspaceShell.test.tsx",
   "src/test/RemoteCrewPanel.test.tsx",
   "src/test/SchedulePage.test.tsx",
