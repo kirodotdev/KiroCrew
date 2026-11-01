@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -184,6 +185,38 @@ class TestEvent:
         st = m.load()
         assert st["skipped"] == ["mate"]
         assert "widgets" in st["starter_clicked"]
+
+    @pytest.mark.asyncio
+    async def test_arrival_after_a_click_completes_the_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(m, "local_today", lambda: date(2026, 11, 2))
+        arrived = {"id": "slack", "action": "starter_arrived", "surface": "panel"}
+        resp = await api.api_milestones_event(_request(arrived))
+        assert resp.status == 200
+        assert "slack" not in m.load()["reached"]
+        await api.api_milestones_event(
+            _request({"id": "slack", "action": "starter_clicked", "surface": "panel"})
+        )
+        await api.api_milestones_event(_request(arrived))
+        st = m.load()
+        assert st["reached"]["slack"]["source"] == "arrived"
+        assert st["streak"]["last_day"] == "2026-11-02"
+
+    @pytest.mark.asyncio
+    async def test_arrival_for_a_usage_row_is_refused(self) -> None:
+        resp = await api.api_milestones_event(
+            _request({"id": "chats-opened", "action": "starter_arrived"})
+        )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_arrival_in_a_restricted_session_writes_nothing(self, _home: Path) -> None:
+        resp = await api.api_milestones_event(
+            _request({"id": "slack", "action": "starter_arrived"}, restricted=True)
+        )
+        assert resp.status == 200
+        assert not (_home / "milestones.json").exists()
 
 
 # ── Hook sites ──

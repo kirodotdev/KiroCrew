@@ -541,6 +541,98 @@ class TestManual:
         assert snap["features"] == {"done": 1, "total": 7}
 
 
+class TestArrival:
+    def test_arrival_after_a_click_completes_the_row_and_counts_the_day(
+        self, metrics: list
+    ) -> None:
+        today = date(2026, 11, 2)
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", today))
+        st = m.load()
+        assert st["reached"]["slack"]["source"] == "arrived"
+        assert "slack" not in st["counters"]
+        assert st["streak"] == {"current": 1, "best": 1, "last_day": "2026-11-02"}
+        snap = m.snapshot(today)
+        assert _items(snap, "features")["slack"]["state"] == "done"
+        assert snap["notices"] == []
+        assert snap["streak"] == {"current": 1, "best": 1}
+        assert (
+            m.M_REACHED,
+            {"group": "features", "milestone": "slack", "via": "arrived"},
+        ) in metrics
+
+    def test_arrival_without_a_click_does_nothing(self) -> None:
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 2)))
+        st = m.load()
+        assert "slack" not in st["reached"]
+        assert st["streak"]["last_day"] == ""
+
+    def test_arrival_long_after_the_click_does_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.testing.clock import ManualClock
+
+        clock = ManualClock()
+        clock.install(monkeypatch, m)
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        clock.advance(m._ARRIVAL_WINDOW_S + 1)
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 2)))
+        assert "slack" not in m.load()["reached"]
+        # Inside the window the same arrival counts, so the window is what refused it.
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        clock.advance(m._ARRIVAL_WINDOW_S - 1)
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 2)))
+        assert m.load()["reached"]["slack"]["source"] == "arrived"
+
+    def test_a_second_arrival_the_same_day_counts_nothing_more(self, metrics: list) -> None:
+        today = date(2026, 11, 2)
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", today))
+        first = m.load()
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", today))
+        st = m.load()
+        assert st["reached"] == first["reached"]
+        assert st["streak"] == first["streak"]
+        assert [a for n, a in metrics if n == m.M_REACHED] == [
+            {"group": "features", "milestone": "slack", "via": "arrived"}
+        ]
+
+    def test_arrival_on_the_next_day_extends_the_streak(self) -> None:
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 1)))
+        m.apply_now(m.op_starter_clicked("mate", "panel"))
+        m.apply_now(m.op_starter_arrived("mate", date(2026, 11, 2)))
+        assert m.load()["streak"] == {"current": 2, "best": 2, "last_day": "2026-11-02"}
+
+    def test_usage_milestones_keep_their_real_counters(self) -> None:
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 2)))
+        # A usage row has no starter, so it can never be completed by an arrival.
+        m.apply_now(m.op_starter_arrived("chats-opened", date(2026, 11, 2)))
+        st = m.load()
+        assert not [k for k in st["reached"] if k.startswith(("chats-opened", "turns-sent"))]
+        assert st["counters"] == {}
+        snap = m.snapshot(date(2026, 11, 2))
+        assert _items(snap, "sessions")["chats-opened"]["value"] == 0
+        assert _items(snap, "turns")["turns-sent"]["value"] == 0
+
+    def test_an_arrived_row_survives_a_reload(self, _home: Path) -> None:
+        m.apply_now(m.op_starter_clicked("slack", "panel"))
+        m.apply_now(m.op_starter_arrived("slack", date(2026, 11, 2)))
+        raw = json.loads((_home / "milestones.json").read_text())
+        assert raw["reached"]["slack"]["source"] == "arrived"
+        assert m.load()["reached"]["slack"]["source"] == "arrived"
+
+    def test_features_completed_by_arrivals_is_not_organic(self, metrics: list) -> None:
+        rows = m.feature_rows()
+        m.apply_now(m.op_starter_clicked(rows[0].id, "panel"))
+        m.apply_now(m.op_starter_arrived(rows[0].id, date(2026, 11, 2)))
+        for row in rows[1:]:
+            m.record(row.id)
+        assert [a for n, a in metrics if n == m.M_FEATURES_COMPLETED] == [{"via": "mixed"}]
+
+
 class TestReadModel:
     def test_missing_mate_is_unavailable_and_not_recommended(
         self, monkeypatch: pytest.MonkeyPatch

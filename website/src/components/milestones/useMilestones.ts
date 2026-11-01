@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import { keepPreviousData, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../../api/client'
 import type { MilestoneEventAction, MilestoneFeatureItem, MilestoneSurface, MilestoneUsageItem, Milestones } from '../../api/client/featureDiscovery'
 import { useAppDispatch, useAppSelector, store } from '../../store'
@@ -15,6 +15,7 @@ import { useAskingNavigate, useIsCurrentUrl, useMayLeaveForNavigation, useNaviga
 import { crewModeAgent, crewModeEnabled, gatewayRunsCrewMode } from '../../lib/crewMode'
 import { ApiError } from '../../api/apiError'
 import { appPathname } from '../../lib/basePath'
+import { isChatPath } from '../../hooks/notificationBanner'
 import { i18nT } from '../../i18n/t'
 import { BADGE_TIERS, DIRECT_SEND_ROWS, FEATURE_COPY, GETTING_STARTED_IDS, QUICK_ROWS, type BadgeKind } from './copy'
 
@@ -264,6 +265,95 @@ export function useMilestonesPanel(): PanelState {
   )
 }
 
+// ── Try today arrival ───────────────────────────────────────────────────────
+// A Try today "Try it" completes its row once the user really gets where it
+// leads: the row's page for a route row, the new chat for a prompt row. The
+// runner arms one pending arrival; `useTryTodayArrival`, mounted with the one
+// Explore panel in the shell, posts `starter_arrived` when the router shows
+// that place, and the server decides whether it counts.
+
+/** How long an armed arrival waits for its page; a chat create can take seconds. */
+export const ARRIVAL_WAIT_MS = 60_000
+
+interface PendingArrival {
+  id: string
+  /** A route row's page. */
+  route?: string
+  /** A prompt row's new chat. */
+  slotKey?: string
+  armedAt: number
+  /** The row's `starter_clicked` post: the arrival is sent after it settles,
+   *  because the server counts an arrival only after the click it recorded. */
+  clicked: Promise<unknown>
+}
+let pendingArrival: PendingArrival | null = null
+const arrivalListeners = new Set<() => void>()
+function setPendingArrival(next: PendingArrival | null) {
+  pendingArrival = next
+  arrivalListeners.forEach(l => l())
+}
+
+/** An arrival the server did not save (a failed write): kept so Explore can say
+ *  so and post it again, with no second chat and no second prompt. */
+export interface FailedArrival { id: string; sessionKey: string | undefined }
+let failedArrival: FailedArrival | null = null
+function setFailedArrival(next: FailedArrival | null) {
+  failedArrival = next
+  arrivalListeners.forEach(l => l())
+}
+
+/** Test seam: forget an arrival armed, or failed, in an earlier test. */
+export function __resetPendingArrival(): void { failedArrival = null; setPendingArrival(null) }
+
+function postArrival(queryClient: QueryClient, id: string, sessionKey: string | undefined): Promise<void> {
+  return api.milestoneEvent(id, 'starter_arrived', sessionKey, 'panel')
+    .then(() => { if (failedArrival?.id === id) setFailedArrival(null) }, () => setFailedArrival({ id, sessionKey }))
+    .finally(() => refreshMilestones(queryClient))
+}
+
+/** The arrival that failed to save, if any, and a retry that posts it again. */
+export function useFailedArrival(): { failed: FailedArrival | null; retry: () => Promise<void>; dismiss: () => void } {
+  const queryClient = useQueryClient()
+  const failed = useSyncExternalStore(
+    cb => { arrivalListeners.add(cb); return () => { arrivalListeners.delete(cb) } },
+    () => failedArrival,
+  )
+  const retry = useCallback(() => failed ? postArrival(queryClient, failed.id, failed.sessionKey) : Promise.resolve(), [failed, queryClient])
+  return { failed, retry, dismiss: useCallback(() => setFailedArrival(null), []) }
+}
+
+/** Does the router's location show *route* (its path, and every query value it names)? */
+export function locationShows(route: string, pathname: string, search: string): boolean {
+  const want = new URL(route, 'http://x')
+  if (want.pathname !== pathname) return false
+  const have = new URLSearchParams(search)
+  for (const [k, v] of want.searchParams) if (have.get(k) !== v) return false
+  return true
+}
+
+/** Post `starter_arrived` once the armed Try it's place is on screen. */
+export function useTryTodayArrival(): void {
+  const queryClient = useQueryClient()
+  const location = useLocation()
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  const pending = useSyncExternalStore(
+    cb => { arrivalListeners.add(cb); return () => { arrivalListeners.delete(cb) } },
+    () => pendingArrival,
+  )
+  useEffect(() => {
+    if (!pending) return
+    if (Date.now() - pending.armedAt > ARRIVAL_WAIT_MS) { setPendingArrival(null); return }
+    const arrived = pending.route
+      ? locationShows(pending.route, location.pathname, location.search)
+      : !!pending.slotKey && activeSlot === pending.slotKey && isChatPath(location.pathname)
+    if (!arrived) return
+    setPendingArrival(null)
+    const sessionKey = currentSessionKey()
+    // A failed save is kept (`useFailedArrival`): Explore shows it with a retry.
+    void pending.clicked.then(() => postArrival(queryClient, pending.id, sessionKey))
+  }, [pending, location.pathname, location.search, activeSlot, queryClient])
+}
+
 // ── Actions ─────────────────────────────────────────────────────────────────
 
 /** The marking write. It reads again once it settles. */
@@ -284,9 +374,11 @@ function inAppRoute(route: string | undefined): route is string {
  * Run a row's starter task: open a page, or open a new chat and put the
  * starter prompt in its composer. Only the two low-cost rows also send it
  * (`DIRECT_SEND_ROWS`); every other prompt waits for the user to press send.
- * Clicking completes nothing by itself: the row is done when the feature
- * actually happens. Resolves once the chat exists; rejects when it could not
- * be created.
+ * Clicking completes nothing by itself. With `completeOnArrival` (a Try today
+ * row) the row is done once the user gets there (`useTryTodayArrival`); a
+ * refused or abandoned navigation arms nothing. Any other row is done when the
+ * feature actually happens. Resolves once the chat exists; rejects when it
+ * could not be created.
  */
 export function useRunStarter() {
   const dispatch = useAppDispatch()
@@ -295,7 +387,7 @@ export function useRunStarter() {
   const stakeNow = useNavigationStakeNow()
   const isCurrentUrl = useIsCurrentUrl()
   const askingNavigate = useAskingNavigate()
-  return useCallback(async (item: MilestoneFeatureItem): Promise<void> => {
+  return useCallback(async (item: MilestoneFeatureItem, { completeOnArrival = false }: { completeOnArrival?: boolean } = {}): Promise<void> => {
     const starter = item.starter
     const copy = FEATURE_COPY[item.id]
     if (!starter || !copy) return
@@ -312,9 +404,12 @@ export function useRunStarter() {
     const agreedToLeave = !sameRoute && stakeNow()
     if (!sameRoute && !mayLeave()) return
     // Explore is the only place a starter runs; the new-chat card only opens it.
-    postMilestoneEvent(item.id, 'starter_clicked', 'panel')
+    const clicked = api.milestoneEvent(item.id, 'starter_clicked', currentSessionKey(), 'panel').catch(() => {})
+    const arm = (place: { route: string } | { slotKey: string }) => {
+      if (completeOnArrival) setPendingArrival({ id: item.id, ...place, armedAt: Date.now(), clicked })
+    }
     if (starter.kind === 'route') {
-      if (inAppRoute(starter.route)) navigate(starter.route)
+      if (inAppRoute(starter.route)) { arm({ route: starter.route }); navigate(starter.route) }
       return
     }
     const prompt = i18nT(copy.starterPrompt)
@@ -338,10 +433,13 @@ export function useRunStarter() {
       navigate(route, { state: { leaveGranted: true } })
       return true
     }
-    if (!send) { showCreatedChat(view, go); return }
+    // Armed before the navigate so the arrival is seen on the commit that
+    // shows the chat; a refused navigate disarms it again.
+    arm({ slotKey: view.slot.key })
+    if (!send) { if (!showCreatedChat(view, go) && completeOnArrival) setPendingArrival(null); return }
     // A direct send goes through the composer's `?autoSend=1` intake, which
     // sends the staged input at once, so nothing the user types can be lost.
-    if (!go(chatUrl)) return
+    if (!go(chatUrl)) { if (completeOnArrival) setPendingArrival(null); return }
     dispatch(stagePendingSend(prompt))
   }, [dispatch, navigate, mayLeave, stakeNow, isCurrentUrl, askingNavigate])
 }

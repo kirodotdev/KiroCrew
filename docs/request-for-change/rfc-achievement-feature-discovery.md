@@ -20,6 +20,7 @@ superseded-by: []
 - **Hard constraint:** the sign-in / first-run flow does not change. `website/src/components/OnboardingFlow.tsx` stays as it is.
 - **Naming:** the file name keeps the earlier word "achievement" so links stay stable. The internal keys, routes, metrics and state file use "milestone" (D14). The user-facing names changed on 2026-10-31 (D15).
 - **Amended 2026-10-31 (product owner):** section 8 renames the panel to "Explore", adds a daily "Try today" pick, keeps the existing suggestion cards on the new-chat page, puts the 15-second intro video at the top of the Explore panel, adds progress bars and a calm badge wall under "Your progress", lists the Ship 2 items (8.10), and gives the top-bar ring its own "Explore N/M" pill beside the readout capsule (8.7, D17). Where an earlier section disagrees with section 8, section 8 wins; those passages are marked "Replaced by section 8". Implementation: backend [#26512](https://github.com/kirodotdev/KiroCrew/pull/26512), frontend [#26488](https://github.com/kirodotdev/KiroCrew/pull/26488).
+- **Amended 2026-11-01 (product owner):** in Try today, "Try it" completes its row once the user lands where it leads, and that day counts toward the streak; Try today rows drop "Mark as done" (8.11, D18).
 
 ## One-page summary
 
@@ -51,7 +52,7 @@ Four quiet surfaces read this one table (D14). Surfaces 1–3 as written in this
 
 It is deterministic and never calls a model. The local file is user-editable; that is accepted for a personal tool, with no anti-cheat.
 
-**Decided.** D1: low-cost rows send directly, others prefill. D2: the daily task is a real Mate model turn. D3: the main switch defaults on (2026-10-29). D4–D8: one table, surfaces, rollout, open-question defaults, the Crew Mode signal. D9: local only. D10: count events. D11: manual marking. D12: streaks. D13: milestones first, features as a group. D14: quiet style and the "milestone" name (2026-10-30). D15: "Explore" naming, daily "Try today" pick, one entry card on the new-chat page. D16: the final Ship 1 Explore panel with progress bars and badges, and a Ship 2 list. D17: intro video only in Explore, the "Explore N/M" pill beside the readout capsule, and tiered badges (2026-10-31, section 8). See 7.1.
+**Decided.** D1: low-cost rows send directly, others prefill. D2: the daily task is a real Mate model turn. D3: the main switch defaults on (2026-10-29). D4–D8: one table, surfaces, rollout, open-question defaults, the Crew Mode signal. D9: local only. D10: count events. D11: manual marking. D12: streaks. D13: milestones first, features as a group. D14: quiet style and the "milestone" name (2026-10-30). D15: "Explore" naming, daily "Try today" pick, one entry card on the new-chat page. D16: the final Ship 1 Explore panel with progress bars and badges, and a Ship 2 list. D17: intro video only in Explore, the "Explore N/M" pill beside the readout capsule, and tiered badges (2026-10-31, section 8). D18: in Try today, "Try it" completes its row on arrival (2026-11-01, 8.11). See 7.1.
 
 **Still open.** Only Q7 (relationship to Feature Tips), deferred to the "Later" batch. See 7.2.
 
@@ -271,7 +272,7 @@ GET  /api/milestones
     "notices": ["widgets", "chats-opened:10"]               // due and not yet shown
   }
 
-POST /api/milestones/event          { "id": "widgets", "action": "starter_clicked" | "skipped" | "video_seen" | "notice_shown" | "panel_opened" }
+POST /api/milestones/event          { "id": "widgets", "action": "starter_clicked" | "starter_arrived" | "skipped" | "video_seen" | "notice_shown" | "panel_opened" }   // starter_arrived: 8.11
 POST /api/milestones/mark-done      { "id": "slack" }    // features group only, see 4.6
 POST /api/milestones/mark-all-done  {}                   // every open feature row, see 4.6
 POST /api/milestones/skip-all       {}                   // empty state "Don't show again", see 4.5
@@ -540,6 +541,7 @@ Product telemetry uses only the existing anonymous metrics counters (`metrics.ev
 | `organic` | A hook counted the event with no recent starter click (always for usage tiers and streaks) | Yes |
 | `backfill` | Credited once at upgrade | No |
 | `manual` | "Mark as done" or "Mark all as done" | No |
+| `arrived` | A Try today "Try it" landed on its page (8.11): a visit, not proven use | No |
 
 Success criteria (read 4 weeks after Ship 1):
 
@@ -609,6 +611,7 @@ Q4, Q5, Q6 and Q8 were closed by D7.
 
 - **D15 "Explore", "Try today" and one entry card.** Crew is a work tool, so the user-facing text drops game words. The panel is "Explore", with "Try today" (up to 3 untried features for today) and "Your progress" (streak and usage counts). The new-chat page keeps its suggestion cards and replaces only the last one with a "Try today" entry card. The top-bar ring shows a dot while "Try today" has something left; where it sits is set by D17. The Mate daily task stays out of Ship 1. See section 8.
 - **D16 Final Ship 1 Explore panel, and a Ship 2 list.** Top to bottom: a "Kiro Crew in 15 seconds" intro video card (the only home for that video; no startup popup, not on the new-chat page), Try today (quick untried features only), Your progress (a "Getting started" pair for the first days, a progress bar toward each next tier, and a badge wall), then the full feature list. Badges are Regular (quiet line icon) or Advanced (one calm color); only Ship 2's Hard tier is showy, because owner feedback said trophies felt like too much. The streak stays "a day you used Crew" in Ship 1. Ship 2 items are listed in 8.10. See 8.2–8.4 and 8.9–8.10.
+- **D18 "Try it" in Try today completes on arrival (2026-11-01).** What counts as done for a Try today row is simply "you went there": once its "Try it" lands on the row's page (a new chat for a prompt row, the page for a route row), the row is done and the day counts toward the streak. Try today rows lose "Mark as done", since "Try it" covers them. Getting started, the rest of the feature list and every usage milestone keep their real counters. See 8.11.
 - **D17 Final Ship 1 rulings on the video, the top-bar entry and badges.** Three rulings settle what the build shows:
   1. *Intro video.* The video lives only in the "Kiro Crew in 15 seconds" card at the top of the Explore panel. It is not on the new-chat page, and there is no standalone startup popup for it. The new-chat page keeps its suggestion cards, with a "Try today" card as the last one while untried features remain. See 8.2 and 8.6.
   2. *Top-bar entry.* The ring sits in its own pill beside the readout capsule, as its own button, not inside the capsule, so the capsule keeps at most two buttons per row. The pill shows the ring and the label "Explore N/M" (for example "Explore 2/7"), with the streak ("5-day streak") as smaller secondary text. A small dot shows while something is left to try. Clicking it opens Explore. This replaces D15's capsule placement. See 8.7.
@@ -653,7 +656,7 @@ A "Try it" button anywhere in the panel keeps the send modes in 4.5: only `widge
 - **Only quick rows.** Try today picks only feature rows a person can finish in a few minutes: `widgets`, `parallel-chats`, `mate`, `scheduled-task` and `slack`. `pr-watch` (needs a PR link and waits on CI) and `crew-mode` (spend has no upper bound) stay in the full list but are never picked. The quick list is a fixed constant in the client.
 - **Ring of rows.** The quick rows that are not `unavailable`, in `order`, as a ring. Its size `N` does not change when a row is done or skipped, so the starting point stays put for the whole day.
 - **Pick.** Take the day number `d` (days since 1970-01-01 in the user's local time zone, the same day rule as the streak in 3.3). Start at index `d mod N`, walk forward around the ring, and take the first 3 rows whose state is `open`. The same day and the same state always give the same pick, on every tab and after a reload.
-- **Drop out.** When a row becomes `done` (used, or "Mark as done") or `skipped` ("Skip" on its row), it leaves today's list at once. The other picked rows stay where they are, and the next `open` row further round the ring takes the free place, if there is one. So "Try today" holds fewer than 3 rows only when fewer than 3 quick rows are `open`.
+- **Drop out.** When a row becomes `done` (used, reached through its own "Try it", 8.11, or "Mark as done" elsewhere in the panel) or `skipped` ("Skip" on its row), it leaves today's list at once. The other picked rows stay where they are, and the next `open` row further round the ring takes the free place, if there is one. So "Try today" holds fewer than 3 rows only when fewer than 3 quick rows are `open`.
 - **Where it runs.** In the client, from the existing `GET /api/milestones` response (each feature row's `state`). No new server route, no new state field and no model turn. The server's `recommended` field is not used for this pick.
 - **Empty.** When no quick row is `open`, "Try today" shows nothing, the top-bar dot is off (8.7), and the new-chat page shows no entry card (8.6).
 
@@ -684,7 +687,7 @@ A "Try it" button anywhere in the panel keeps the send modes in 4.5: only `widge
 
 The badge tier is a fixed client-side table keyed by milestone id and tier value. It is derived from data the API already returns (`tiers_reached_at`, feature `state` and `done_at`), so it adds no server field.
 
-**Streak (Ship 1).** The streak keeps its rule from 3.3: a local day counts when the person sent at least one turn ("a day you used Crew").
+**Streak (Ship 1).** The streak keeps its rule from 3.3: a local day counts when the person sent at least one turn ("a day you used Crew"). A Try today arrival (8.11) also counts that day.
 
 ### 8.5 Notice wording
 
@@ -740,6 +743,16 @@ Listed only; each item gets its own design before it is built.
 | Morning-brief result card | Shows the latest result of the morning brief scheduled task |
 | Running at once | The peak counter in 3.3 |
 | Mate walkthrough and daily task | As in 4.8 |
+
+### 8.11 Amendment, 2026-11-01: "Try it" completes a Try today row (D18)
+
+Before this, "Try it" only opened a row's page or chat, and a Try today row was done only by real use or "Mark as done". The product owner ruled that, for Try today, going there is enough.
+
+- **When it counts.** After a Try today "Try it", the client waits up to a minute for the place it leads to: the row's page for a route row (path and query), or the new chat on a chat page for a prompt row. When the router shows it, the client posts `starter_arrived` for that row on `POST /api/milestones/event`. A click whose navigation the user refused (the leave guard), a create that never took the view, or a move elsewhere sends nothing.
+- **What the server checks.** The server counts an arrival only within 10 minutes of the same row's `starter_clicked`, which it stamped itself; the client sends no time and no count. It writes `reached` with `source: "arrived"`, adds the row to `noticed` (no notice: the user just did it), emits `reached` with `via: "arrived"`, and counts today for the streak as 3.3 does. A second arrival is a no-op: the row is already done and the day already counted. `features_completed` reports `mixed` when any row was reached this way.
+- **What it never touches.** Only feature rows are accepted (a usage id gets 400). Getting started rows, the rows Try today never picks, and every usage milestone and tier keep their real counters; their "Try it" does not complete them, and their "Mark as done" stays.
+- **Copy.** Try today shows one line under its heading: "Done once Try it takes you there. Today counts toward your streak." Its rows show "Try it" only.
+- **No new store.** The same state file, the same event route and one new `reached` source. No new route and no new state field.
 
 ## Appendix: what does not change
 
