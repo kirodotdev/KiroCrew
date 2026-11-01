@@ -21,10 +21,11 @@ from kiro_crew import enterprise_boot
 from kiro_crew import enterprise_sign_in as sign_in
 from kiro_crew import enterprise_signin_gateway as signin
 from kiro_crew.dashboard import routes as routes_pkg
+from kiro_crew.dashboard import token_auth_tokens as tokens
 from kiro_crew.dashboard.token_auth_tokens import generate_token
 from kiro_crew.platform import enterprise_policy_fetch as epf
 from kiro_crew.platform.context import PlatformCompositionError
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _NO_SIGN_IN = "no Kiro sign-in was found"
 _SIGNED_OUT = PlatformCompositionError(f"policy could not be loaded: {_NO_SIGN_IN}")
@@ -353,6 +354,33 @@ async def test_serves_on_loopback_only_until_a_sign_in_lands_then_frees_the_port
 
 
 @pytest.mark.asyncio
+async def test_a_fresh_link_is_printed_before_the_last_one_expires(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fast(monkeypatch)
+    monkeypatch.setattr(signin, "_SEEN_WAIT_SECS", 0.0)
+    # A margin as wide as the link window: every watch tick is past renewal.
+    monkeypatch.setattr(signin, "_LINK_MARGIN_SECS", float(tokens.LINK_WINDOW_SECS))
+    reads: list[int] = []
+
+    def read() -> bool:
+        reads.append(1)
+        return len(reads) > 2
+
+    monkeypatch.setattr(signin, "signed_in", read)
+    opened: list[str] = []
+    monkeypatch.setattr(signin.webbrowser, "open", opened.append)
+    task = asyncio.ensure_future(signin.serve_until_signed_in(0, "", no_open=True))
+    port = await await_until(task, what="the sign-in app to see the sign-in")
+    out = capsys.readouterr().out
+    links = re.findall(rf"http://127\.0\.0\.1:{port}\?token=\S+", out)
+    # The first link, then one per signed-out tick; each is new and none is opened.
+    assert len(links) == 3 and len(set(links)) == 3
+    assert out.count("New link:") == 2
+    assert opened == []
+
+
+@pytest.mark.asyncio
 async def test_the_page_is_told_to_start_again_before_the_app_stops(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -370,8 +398,10 @@ async def test_the_page_is_told_to_start_again_before_the_app_stops(
     monkeypatch.setattr(signin, "build_app", build)
     task = asyncio.ensure_future(signin.serve_until_signed_in(0, "", no_open=True))
     # The events exist once the app is built; the sign-in is seen on the first read.
-    while not apps:
-        await asyncio.sleep(0)  # flake-ok: yields to the app task until it has built the app
+    # A task that fails before the build ends the wait too, and re-raises here.
+    await async_wait_until(lambda: apps or task.done())
+    if not apps:
+        await task
     await await_until(apps[0][signin._SIGNED_IN_KEY], what="the sign-in to be seen")
     port = apps[0]["port"]
     async with aiohttp.ClientSession(base_url=f"http://127.0.0.1:{port}") as http:

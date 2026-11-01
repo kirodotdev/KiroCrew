@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import threading
+import time
 import webbrowser
 from types import SimpleNamespace
 from typing import Any
@@ -76,6 +77,8 @@ _WATCH_INTERVAL_SECS = 2.0
 _DRAIN_SECS = 1.0
 #: Longest wait for the page to read "signed in" before the app stops anyway.
 _SEEN_WAIT_SECS = 15.0
+#: Seconds before a printed link stops working at which a fresh one is printed.
+_LINK_MARGIN_SECS = 30.0
 
 _PREFIX_TAIL_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
@@ -298,8 +301,8 @@ async def serve_until_signed_in(
     socket closes with it. Returns the port served.
     """
     from kiro_crew import enterprise_sign_in as sign_in
+    from kiro_crew.dashboard import token_auth_tokens as tokens
     from kiro_crew.dashboard.boot_id import current_boot_id
-    from kiro_crew.dashboard.token_auth_tokens import MAX_SESSION_TTL_SECS, generate_token
     from kiro_crew.dashboard.urls import build_dashboard_url
     from kiro_crew.frontend import ensure_dev_dist_symlink
 
@@ -323,22 +326,33 @@ async def serve_until_signed_in(
         raise
     try:
         await web.SockSite(runner, sock).start()
-        # Bound to this process (the ``boot`` claim, carried into the session
-        # cookie): once the sign-in process exits, its session is worthless, and
-        # no other session in this data home is touched.
-        token = generate_token(
-            owner_id or "local-startup",
-            ttl_seconds=MAX_SESSION_TTL_SECS,
-            extra={"boot": current_boot_id()},
-        )
-        # The bound address itself, never ``localhost``: that name can resolve to
-        # ``::1``, where another process could listen and take the token.
-        url = build_dashboard_url(f"http://{BIND_HOST}:{port}", token)
+
+        def link() -> str:
+            # Bound to this process (the ``boot`` claim, carried into the session
+            # cookie): once the sign-in process exits, its session is worthless,
+            # and no other session in this data home is touched.
+            token = tokens.generate_token(
+                owner_id or "local-startup",
+                ttl_seconds=tokens.MAX_SESSION_TTL_SECS,
+                extra={"boot": current_boot_id()},
+            )
+            # The bound address itself, never ``localhost``: that name can resolve
+            # to ``::1``, where another process could listen and take the token.
+            return build_dashboard_url(f"http://{BIND_HOST}:{port}", token)
+
+        # A link is accepted only within ``LINK_WINDOW_SECS``. Someone who opens it
+        # later (``--no-open``, a headless start) gets the next one printed here.
+        renew_every = max(tokens.LINK_WINDOW_SECS - _LINK_MARGIN_SECS, 0.0)
+        url = link()
+        renew_at = time.monotonic() + renew_every
         print(f"🔑 Sign in to Kiro to start Kiro Crew: {url}", flush=True)
         if not no_open:
             threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
         while not await asyncio.to_thread(signed_in):
             await asyncio.sleep(_WATCH_INTERVAL_SECS)
+            if time.monotonic() >= renew_at:
+                url, renew_at = link(), time.monotonic() + renew_every
+                print(f"🔑 The last sign-in link is about to expire. New link: {url}", flush=True)
         # Only a sign-in the next start can use is published as success: a lapsed,
         # profile-less or unreadable one raises ``SignInError`` here instead, and
         # the page is never told "signed in".
