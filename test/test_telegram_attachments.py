@@ -170,6 +170,33 @@ class TestDispatchExtraction:
         assert len(received[0].attachments) == 1
         assert received[0].attachments[0]["mime_type"] == "video/mp4"
 
+    def test_gif_is_taken_once_as_the_animation(self):
+        """The Bot API sets ``document`` beside ``animation`` for one GIF.
+
+        Both describe the same file, so reading both downloads it twice and
+        hands the agent the same file twice in one turn.
+        """
+        client, received = self._make_client()
+        gif = {
+            "file_id": "gif1",
+            "file_unique_id": "g1",
+            "file_name": "funny.gif.mp4",
+            "mime_type": "video/mp4",
+            "file_size": 20000,
+        }
+        update = self._base_update(caption="lol", animation=dict(gif), document=dict(gif))
+        self._run(client, update)
+        assert len(received) == 1
+        assert [a["file_unique_id"] for a in received[0].attachments] == ["g1"]
+
+    def test_document_without_animation_is_still_taken(self):
+        client, received = self._make_client()
+        update = self._base_update(
+            document={"file_id": "d1", "file_unique_id": "u1", "file_name": "a.gif"},
+        )
+        self._run(client, update)
+        assert [a["file_unique_id"] for a in received[0].attachments] == ["u1"]
+
 
 # ── _to_attachment normalization ───────────────────────────────────────────────
 
