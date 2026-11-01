@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from local_asyncio_helpers import asyncio_with_sleep
 
 from conftest import requires_git
 from kiro_crew.taskrunner import Step, TaskRun
@@ -1272,8 +1273,7 @@ class TestGitCoord:
         from kiro_crew import git_coord
 
         monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", True)
-        # flake-ok: pre-existing rebind of the stdlib asyncio.sleep through git_coord.asyncio for one test, undone at teardown, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(git_coord.asyncio, "sleep", AsyncMock())  # no real delay
+        monkeypatch.setattr(git_coord, "asyncio", asyncio_with_sleep(AsyncMock()))  # no real delay
 
         calls = {"n": 0}
 
@@ -1317,8 +1317,7 @@ class TestGitCoord:
         from kiro_crew import git_coord
 
         monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", True)
-        # flake-ok: pre-existing rebind of the stdlib asyncio.sleep through git_coord.asyncio for one test, undone at teardown, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(git_coord.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(git_coord, "asyncio", asyncio_with_sleep(AsyncMock()))
 
         calls = {"n": 0}
 
@@ -1362,8 +1361,7 @@ class TestGitCoord:
         # POSIX: a reset failure is a genuine fault — no retry window.
         monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", False)
         sleep_mock = AsyncMock()
-        # flake-ok: pre-existing rebind of the stdlib asyncio.sleep through git_coord.asyncio for one test, undone at teardown, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(git_coord.asyncio, "sleep", sleep_mock)
+        monkeypatch.setattr(git_coord, "asyncio", asyncio_with_sleep(sleep_mock))
 
         calls = {"n": 0}
 

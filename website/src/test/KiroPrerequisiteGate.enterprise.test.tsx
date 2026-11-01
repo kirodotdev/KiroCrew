@@ -30,6 +30,7 @@ vi.mock('../api/client', async () => ({
     acpBackends: vi.fn(),
     acpBackendRecheck: vi.fn(),
     patchConfig: vi.fn(),
+    kasLoginStatus: vi.fn(),
   },
 }))
 
@@ -58,6 +59,70 @@ describe('KiroPrerequisiteGate enterprise login gate', () => {
     expect(kiroPrerequisiteIsBlocking(status({ ...locked, ready: true }))).toBe(true)
     expect(kiroPrerequisiteRefetchInterval(status({ ...locked, ready: true }))).toBe(5_000)
     expect(kiroPrerequisiteRefetchInterval(status({ ready: true }))).toBe(30_000)
+  })
+
+  it('shows Crew sign-in on a signed-out sign-in-only gateway, then waits for it to boot', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(
+      status({ ...locked, enterprise_sign_in_only: true }),
+    )
+    vi.mocked(api.kasLoginStatus).mockResolvedValue({
+      authenticated: false, provider: null, identity: null, transport: 'device',
+    })
+    const { unmount } = renderGate()
+    // Only an organisation sign-in can load the rules: Company SSO alone, already open.
+    // Lost-run bound: two chained queries (the prerequisite status, then the
+    // sign-in status the mounted KasLoginGate reads) resolve before this renders.
+    expect(await screen.findByTestId('kas-login-sso-form', undefined, { timeout: 10_000 })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue with Google' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue with GitHub' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+    unmount()
+
+    vi.mocked(api.kasLoginStatus).mockResolvedValue({
+      authenticated: true, provider: 'idc', identity: 'identity_center', transport: 'device',
+    })
+    renderGate()
+    // Same two-query chain as above, so the same lost-run bound.
+    expect(
+      await screen.findByRole('status', { name: 'Your crew is almost ready.' }, { timeout: 10_000 }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('tells the user to start Kiro Crew again once the sign-in landed, even after it exits', async () => {
+    vi.mocked(api.kiroPrerequisite)
+      .mockResolvedValueOnce(
+        status({
+          ...locked,
+          enterprise_sign_in_only: true,
+          enterprise_signed_in_restart: true,
+          enterprise_start_command: '/opt/kirocrew/bin/kirocrew gateway',
+        }),
+      )
+      .mockRejectedValue(new Error('Failed to fetch'))
+    // The sign-in screen's own cache still says signed out (a CLI sign-in).
+    vi.mocked(api.kasLoginStatus).mockResolvedValue({
+      authenticated: false, provider: null, identity: null, transport: 'device',
+    })
+    const { queryClient } = renderGate()
+    // Lost-run bound: the prerequisite query resolves before this renders.
+    expect(
+      await screen.findByTestId('enterprise-signed-in-restart', undefined, { timeout: 10_000 }),
+    ).toHaveTextContent('Signed in. Start Kiro Crew again.')
+    // The way to do it is on the page, since the sign-in app has exited.
+    expect(screen.getByTestId('enterprise-start-command')).toHaveTextContent(
+      '/opt/kirocrew/bin/kirocrew gateway',
+    )
+    expect(
+      screen.getByText('Run this in a terminal to start Kiro Crew, then open the link it prints.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('kas-login-sso-form')).not.toBeInTheDocument()
+    // The sign-in app has exited: polls fail, and the message stays.
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['kiro-prerequisite'] })
+    })
+    expect(screen.getByTestId('enterprise-signed-in-restart')).toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
   })
 
   it('shows the sign-in step instead of the dashboard for an established install', async () => {

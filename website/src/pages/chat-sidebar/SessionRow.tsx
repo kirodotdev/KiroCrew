@@ -32,6 +32,7 @@ import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatTag, SessionLink } from '../../types'
 import { hasLiveSessionWork } from '../chat/sessionLane'
+import { crewWorkCounts, useCrewWorkClock } from '../../lib/crewWork'
 import { isMemoryWait, queuedWaitText } from '../chat/subagentQueuedReason'
 import { focusSiblingSessionRow } from '../chat/sessionRowNav'
 import { fmtRelativeTime, slotActivityTs } from '../chat/sessionOrder'
@@ -52,7 +53,9 @@ import { SessionSourceChips } from './SessionSourceChips'
 import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
 import { summarizeCrewWorkers, crewRowCounts } from '../../lib/crewWorkers'
 import { CrewRowCounts } from './CrewRowCounts'
-import { CrewStateWord, crewStateWord, type CrewStateKind } from './CrewRowState'
+import { CrewStateWord, crewRowOwnState, type CrewRowOwnState, type CrewStateKind } from './CrewRowState'
+// Moved to ./CrewRowState with the state words; this path keeps serving its callers.
+export { crewRowOwnState, type CrewRowOwnState } from './CrewRowState'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 import { crewWaitingApprovals, openedSessionRunning } from '../chat/command-center/model'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -277,32 +280,6 @@ interface SessionRowProps {
  *  line of its own: the row's running and approval states outrank it (the caller
  *  passes them first), and with no workers yet it shows *fallback*, the last
  *  message line, so a crew card is as tall as any other row. */
-/** The Ultra Mode row's own state as one short word, from the row-state branch
- *  that won: what the person owes reads "Needs you", live work "Running", an
- *  interrupted turn "Paused", queued work "Waiting". The branch's own line
- *  stays in the tooltip. */
-export interface CrewRowOwnState { kind: CrewStateKind; word: string; title: string }
-
-const CREW_NEEDS_YOU_KEYS = new Set(['pending_approval', 'subagent_awaiting', 'crew_approval', 'needs_input', 'loop_waiting'])
-const CREW_RUNNING_KEYS = new Set(['running', 'goal_loop', 'subagents', 'snapshot_live_work', 'workflow', 'structured_monitor_action'])
-const CREW_WAITING_KEYS = new Set(['subagents_waiting', 'structured_monitor_passive'])
-
-function crewRowOwnKind(key: string, loopStalled: boolean): CrewStateKind | null {
-  // A stalled goal loop is a failure, not live work.
-  if (key === 'goal_loop' && loopStalled) return 'stalled'
-  if (CREW_NEEDS_YOU_KEYS.has(key)) return 'needs_you'
-  if (CREW_RUNNING_KEYS.has(key)) return 'running'
-  if (key === 'interrupted') return 'paused'
-  // Queued children and a passive monitor are unfinished, never "Done".
-  if (CREW_WAITING_KEYS.has(key)) return 'waiting'
-  return null
-}
-
-export function crewRowOwnState(key: string | undefined, title: string, loopStalled = false): CrewRowOwnState | null {
-  const kind = key ? crewRowOwnKind(key, loopStalled) : null
-  return kind ? { kind, word: crewStateWord(kind), title } : null
-}
-
 function CrewRootSummaryLine({ root, fallback, own = null }: { root: string; fallback: ReactNode; own?: CrewRowOwnState | null }) {
   // The server's groups (the worker list API), so the row, the panel and the
   // breadcrumb agree; the fallback until the list has answered. A failed poll
@@ -480,8 +457,15 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const crewWaiting = useAppSelector(st => crewRoot ? crewWaitingApprovals(st.dashboard.slots)[s.key] ?? 0 : 0)
   // A session this one opened (a dispatched worker) is mid-turn. Read only when
   // the loop-waiting row could fire, so other rows skip the slot scan.
-  const openedRunning = useAppSelector(st => (s.has_options && !s.running)
+  const openedRunning = useAppSelector(st => ((s.has_options || s.crew_work) && !s.running)
     ? openedSessionRunning(st.dashboard.slots, s.key) : false)
+  // This session's open ledger work, counted against the live rows: still moving,
+  // gone quiet, or waiting on a person. Only rows that conduct a ledger scan.
+  const crewWork = useAppSelector(st => s.crew_work && !s.running
+    ? crewWorkCounts(s.crew_work, st.dashboard.slots, Date.now()) : null, shallowEqual)
+  // A quiet board pushes nothing when an item's stale moment passes, so the row
+  // wakes itself at that moment and the selector above reads the clock again.
+  useCrewWorkClock(s.crew_work ? [s.crew_work] : [])
   // A Crew Mode root whose own turn is idle is still working while one of its
   // crew members runs; its Ultra Mode tag flows for either. Only crew roots scan.
   const crewWorking = useAppSelector(st => crewRoot && (hasLiveSessionWork(s) || openedSessionRunning(st.dashboard.slots, s.key)))
@@ -752,9 +736,22 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // Live work also means the loop is moving: a conductor ends most replies
     // with a courtesy `[OPTIONS:]` line, and while its sub-agents, workflow,
     // queue or dispatched workers run, that line is not a pause on the person.
-    const loopWaiting = (!!goalLoop || monitorOwnsRunning)
-      && !!s.has_options && !s.running && !s.interrupted
-      && !liveWorkSupersedesInterruption && !openedRunning
+    // Its ledger says the same: open work that still moves (a worker parked until
+    // the next check) or has gone quiet has its own reading below, so the line is
+    // not a pause on the person; an item that names the person (approval / needs
+    // a person) is one, with or without the line.
+    const crewIdle = !s.running && !s.interrupted && !liveWorkSupersedesInterruption && !openedRunning
+    // An item on the person outranks crew work still running elsewhere: that work
+    // does not answer it. Only the courtesy line needs the whole crew idle.
+    // That item is the ledger's, so it waits on the person with or without an armed
+    // patrol; a stopped patrol does not answer it either.
+    const loopWaiting = !s.running && !s.interrupted && ((crewWork?.person ?? 0) > 0
+      || ((!!goalLoop || monitorOwnsRunning) && crewIdle && !!s.has_options
+        && (crewWork?.moving ?? 0) + (crewWork?.stalled ?? 0) === 0))
+    // Nothing runs, but the ledger has open work: gone quiet, or moving on the
+    // next check. Both read as their own state, never as "Waiting on you".
+    const crewStalled = crewIdle && (crewWork?.stalled ?? 0) > 0
+    const crewMoving = crewIdle && (crewWork?.moving ?? 0) > 0
     // Ordinary sessions need the same reboot/error visibility as goal loops,
     // without claiming that an older interrupted parent turn has stopped live
     // child work. A goal loop keeps its richer cycle-specific treatment below;
@@ -887,11 +884,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 working row's "Loop N/M" verbatim made the two rows read as
                 the same state (UX span 03f52eaca7f7); the tooltip above
                 carries the full sentence. */}
-            <span className="truncate"><span className="font-medium crew-tone-warn">{i18nT('pages.chatSidebar.loop_waiting_on_you')}</span><span className="text-muted"> · {goalLoop
+            <span className="truncate"><span className="font-medium crew-tone-warn">{i18nT('pages.chatSidebar.loop_waiting_on_you')}</span><span className="text-muted">{goalLoop || monitorOwnsRunning ? ' · ' : ''}{goalLoop
               ? (goalLoop.maxCycles > 0
                 ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
                 : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: goalLoop.cycleCount }))
-              : i18nT('pages.chatSidebar.loop_waiting_monitor')}</span></span>
+              : monitorOwnsRunning ? i18nT('pages.chatSidebar.loop_waiting_monitor') : ''}</span></span>
           </div>
         ),
       },
@@ -905,6 +902,32 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           <div className={ROW_STATUS_LINE_CLS} title={monitorLabel}>
             <MonitorRadar actionRunning className="text-accent" />
             <span className="truncate font-medium">{monitorLabel}</span>
+          </div>
+        ),
+      },
+      {
+        // Nothing runs and an open ledger item has gone quiet with its next step
+        // not taken (`lib/crewWork.ts`, the ledger's own stale rule). Static warn:
+        // no work is moving, and the conductor's patrol is what picks it up.
+        key: 'crew_stalled',
+        when: crewStalled,
+        build: () => (
+          <div className={ROW_STATUS_LINE_CLS} title={i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })} data-testid="crew-work-stalled">
+            <TriangleAlert size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
+            <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.crew_work_stalled', { count: crewWork?.stalled ?? 0 })}</span>
+          </div>
+        ),
+      },
+      {
+        // Nothing runs, and the ledger's open work still moves: a worker parked
+        // until the next check, or a check waiting on CI. Muted and static, the
+        // same shape as children still queued: a wait, not work and not an ask.
+        key: 'crew_waiting',
+        when: crewMoving,
+        build: () => (
+          <div className={ROW_STATUS_LINE_MUTED_CLS} title={i18nT('pages.chatSidebar.crew_work_waiting_title', { count: crewWork?.moving ?? 0 })} data-testid="crew-work-waiting">
+            <Hourglass size={ROW_ICON_PX} className="shrink-0" aria-hidden />
+            <span className="truncate">{i18nT('pages.chatSidebar.crew_work_waiting', { count: crewWork?.moving ?? 0 })}</span>
           </div>
         ),
       },
@@ -1118,12 +1141,14 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         case 'subagent_awaiting': return subagentApprovalLabel
         case 'crew_approval': return i18nT('components.crewMode.summary_approval', { n: crewWaiting })
         case 'needs_input': return needsInputLabel
-        case 'loop_waiting': return `${i18nT('pages.chatSidebar.loop_waiting_on_you')} · ${goalLoop
+        case 'loop_waiting': return !goalLoop && !monitorOwnsRunning ? i18nT('pages.chatSidebar.loop_waiting_on_you') : `${i18nT('pages.chatSidebar.loop_waiting_on_you')} · ${goalLoop
           ? (goalLoop.maxCycles > 0
             ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
             : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: goalLoop.cycleCount }))
           : i18nT('pages.chatSidebar.loop_waiting_monitor')}`
         case 'interrupted': return i18nT('pages.chat.recoveryCard.turn_interrupted')
+        case 'crew_stalled': return i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })
+        case 'crew_waiting': return i18nT('pages.chatSidebar.crew_work_waiting_title', { count: crewWork?.moving ?? 0 })
         case 'goal_loop': return goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title')
           : [goalLoopLabel, goalLoopDetail].filter(Boolean).join(' · ')
         case 'structured_monitor_action':
@@ -1137,7 +1162,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       }
     }
     // The same branch, as a word and a tooltip for an Ultra Mode row.
-    const crewOwnState = crewRoot ? crewRowOwnState(rowStateEntry?.key, rowStateTitle(rowStateEntry?.key), goalLoopStalled) : null
+    const crewOwnState = crewRoot ? crewRowOwnState(rowStateEntry?.key, rowStateTitle(rowStateEntry?.key), goalLoopStalled, !!crewWorking) : null
     // The title-line live dot reads the WINNING branch of the resolver above, so
     // it can never disagree with the secondary line: it lights exactly when that
     // line says the session is working (a turn, started sub-agents, or reconnect

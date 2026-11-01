@@ -121,6 +121,78 @@ def _is_sign_in_command(args: argparse.Namespace) -> bool:
     )
 
 
+def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
+    """Gateway boot failed for *exc*: show the sign-in screen if nobody is signed in.
+
+    Returns, having done nothing, for any other failure and in an ``oss`` build.
+    Otherwise it exits: 0 once a sign-in landed (start again to load the rules),
+    as before on any failure (``kiro_crew.enterprise_signin_gateway``).
+    """
+    from kiro_crew import enterprise_signin_gateway as signin
+
+    # A test or scripted start (`--test-mode`, `--json-ready`) waits for a ready
+    # line, not a browser sign-in, so it gets the refusal exit as before.
+    if getattr(args, "test_mode", False) or getattr(args, "json_ready", False):
+        return
+    if not signin.applies(exc):
+        return
+    from kiro_crew.cli_gateway_boot import _resolve_gateway_args
+    from kiro_crew.config.loader_credentials import CRED_OWNER_ID
+    from kiro_crew.dashboard.urls import parse_dashboard_url
+
+    # The same checked flags the gateway itself starts with: a bad `--port`
+    # exits 2 with its usual message here too, before anything binds.
+    gw = _resolve_gateway_args(args)
+    cfg = KiroCrewConfig.load()
+    # Open a browser only when the normal gateway would: not with `--no-open` or
+    # `dashboard.auto_open_browser` off, and not on a headless SSH session, where
+    # a console browser would take over the terminal (service_boot.py).
+    is_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
+    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    no_open = (
+        bool(gw["no_open"])
+        or not cfg.dashboard.auto_open_browser
+        or (is_ssh and not has_display and sys.platform != "darwin")
+    )
+    _host, port = parse_dashboard_url(cfg.dashboard.url)
+    override = gw["port_override"]
+    if override is not None:
+        port = 0 if override == "auto" else int(override)
+    try:
+        owner_id = str(cfg.load_credentials(propagate=False).get(CRED_OWNER_ID, "") or "")
+    except Exception:
+        owner_id = ""
+    # One gateway per data home, the sign-in screen included: the same lock the
+    # gateway takes, held until this process exits.
+    try:
+        lock = GatewayLock(config_dir(), port=port or None, bind_address=signin.BIND_HOST).acquire()
+    except GatewayLockError as lock_err:
+        print(f"👻 {lock_err}", file=sys.stderr)
+        sys.exit(LIVE_HOLDER_EXIT_CODE if lock_err.live_holder else 1)
+    try:
+        signin.sign_in_then_exit(
+            exc, port=port, owner_id=owner_id, no_open=no_open, start_args=_restart_args(args)
+        )
+    finally:
+        lock.release()
+
+
+def _restart_args(args: argparse.Namespace) -> tuple[str, ...]:
+    """The `gateway` flags of this start that the restart must repeat.
+
+    The launch options only: one-shot ones (`--seed`, `--seed-replace`) are left out.
+    """
+    flags: list[str] = []
+    for flag in ("slack_only", "no_crons", "no_tunnel", "no_open"):
+        if getattr(args, flag, False):
+            flags.append("--" + flag.replace("_", "-"))
+    for flag in ("port", "approval"):
+        value = getattr(args, flag, None)
+        if value is not None:
+            flags += ["--" + flag, str(value)]
+    return tuple(flags)
+
+
 def _project_dir_file() -> Path:
     """Return the path to the saved project_dir file, respecting KIROCREW_HOME."""
     return config_dir() / "project_dir"
@@ -708,6 +780,10 @@ def main() -> None:
         # redaction. PluginAdmissionError subclasses PlatformCompositionError.
         if isinstance(exc, PlatformCompositionError):
             sign_in = _is_sign_in_command(args)
+            if args.command == "gateway":
+                # Enterprise build, nobody signed in: the sign-in screen runs and
+                # this exits (0 once signed in). Returns for any other failure.
+                _serve_sign_in_first(args, exc)
             if args.command != "doctor" and not sign_in:
                 # Enterprise build: governance rules that did not load stop Crew
                 # here, before any server binds, with what failed and the fix.

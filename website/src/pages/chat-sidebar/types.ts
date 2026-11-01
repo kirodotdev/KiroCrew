@@ -1,6 +1,6 @@
 /** View types the sidebar's owners share. `Slot` is the sidebar's narrowed view of a
  *  chat slot; the wire type is `ChatSlot` in ../../types. */
-import type { SessionLink, SourceProviderId } from '../../types'
+import type { CrewWorkFacts, SessionLink, SourceProviderId } from '../../types'
 import type { SessionAttribution } from '../../api/sharedCrew'
 
 export interface Slot {
@@ -79,6 +79,8 @@ export interface Slot {
   // Newest-reply-only by construction — any later turn that talks over the
   // marker clears it, so a superseded ask can never be resurrected (#10615).
   has_options?: boolean
+  /** This session's work ledger in brief (`ChatSlot.crew_work`). */
+  crew_work?: CrewWorkFacts
   // The transcript shows the last turn ending without a reply (trailing error
   // row or unanswered user row) — the state behind the composer's Resume
   // button. Always false while a turn runs. Read by the goal-loop subtitle so a

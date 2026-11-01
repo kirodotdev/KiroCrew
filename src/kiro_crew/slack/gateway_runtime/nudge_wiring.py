@@ -286,6 +286,13 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
 
             def _publish(frame: dict = _frame) -> None:
                 broadcast("autonudge_state", frame)
+                # A worker's loop is half of its conductor row's stale reading.
+                try:
+                    from kiro_crew.dashboard import crew_work
+
+                    crew_work.worker_loop_moved(str(frame.get("slot") or ""))
+                except Exception:  # pragma: no cover - a row refresh never costs the frame
+                    pass
 
             # Per-member event log: a member's DM-slot patrol started or
             # stopped. The log -- not the loop -- is what the Crew Members

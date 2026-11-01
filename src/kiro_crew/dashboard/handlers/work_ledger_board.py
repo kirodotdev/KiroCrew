@@ -261,6 +261,39 @@ def work_item_answered(item: work_ledger.WorkItem) -> bool:
     return work_ledger._decided_after_report(item) is not None
 
 
+def answered_since_report(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
+    """Whether *item*'s last report has been answered: the conductor's ``decide``
+    (:func:`work_item_answered`), or a ``decision`` / person's ``steer`` event at or
+    after that report on the item's event tail -- the answers :func:`_is_outstanding`
+    counts, so the conductor row and this board agree that the worker has its answer.
+
+    Stamps are seconds-precision, so when the tail holds the report itself the tail's
+    ORDER decides: only an answer recorded after the newest report answers it, and a
+    steer in the same second just before a new question does not."""
+    if work_item_answered(item):
+        return True
+    last_report = max(
+        (n for n, e in enumerate(events) if isinstance(e, dict) and e.get("kind") == "report"),
+        default=None,
+    )
+    if last_report is not None:
+        return any(
+            isinstance(e, dict) and e.get("kind") in _ANSWER_KINDS
+            for e in events[last_report + 1 :]
+        )
+    # Through ``work_ledger.parse_stamp``, which answers offset-aware datetimes only:
+    # a peer's report stamp may carry no offset, and an aware/naive compare raises.
+    reported = work_ledger.parse_stamp(item.last_report_at or "")
+    for event in events:
+        if not isinstance(event, dict) or event.get("kind") not in _ANSWER_KINDS:
+            continue
+        raw = event.get("ts")
+        stamp = work_ledger.parse_stamp(raw) if isinstance(raw, str) and raw else None
+        if stamp is not None and (reported is None or stamp >= reported):
+            return True
+    return False
+
+
 def closed_items(slot_key: str) -> list[dict[str, Any]]:
     """The closed items on thread *slot_key*'s own ledger, as this board reads them.
 

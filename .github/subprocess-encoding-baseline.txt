@@ -11,13 +11,11 @@
 # Refresh (after fixing something listed here):
 #   python3 scripts/check_subprocess_encoding.py --update-baseline
 1 conftest.py
-1 src/kiro_crew/apps/builtins/auto_improvement/backend/deps.py
 1 src/kiro_crew/apps/builtins/auto_improvement/profiles/github_repo/profile.py
 1 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
 9 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_recipe.py
 1 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/deps.py
-1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/record_template.py
 3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/verify_align.py
 1 src/kiro_crew/apps/builtins/md_notebook/server.py
 1 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py

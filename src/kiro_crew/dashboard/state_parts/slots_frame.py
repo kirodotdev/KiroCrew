@@ -904,7 +904,44 @@ def serialize_slots(
         )
     except Exception:  # pragma: no cover - a stamp fault must cost the stamp only
         logger.warning("Crew Mode rows not stamped", exc_info=True)
+    try:
+        _attach_crew_work(self, out)
+    except Exception:  # pragma: no cover - a summary fault must cost the summary only
+        logger.warning("Crew Mode work summaries not attached", exc_info=True)
     return out
+
+
+def _attach_crew_work(self: DashboardState, rows: list[dict]) -> None:
+    """Put each Crew Mode root's open-work summary on its row (``crew_work``).
+
+    Each live root's board is followed (its ``work`` fold kept current, and primed
+    once when nothing is held yet), so a restart does not leave its row on the old
+    reading until its ledger next moves; a root that left the frame is released.
+    The summary reads the held items against this frame's live slots. No I/O.
+    """
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard import crew_work
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.session_ledger_layout import ledger_key
+
+    roots: list[str] = []
+    for row in rows:
+        key = row.get("key")
+        if not isinstance(key, str) or not row.get(crew_mode.ROOT_FIELD):
+            continue
+        slot = self._slots.get(key)
+        if slot is None:
+            continue
+        roots.append(key)
+        # The ledger spelling of the session key first: the identity the board's
+        # entries are recorded under, and the one primed (``chat-7`` for a dashboard
+        # slot, the channel key for a channel one). The raw key is followed too.
+        session_key = effective_session_key(slot)
+        crew_work.follow(key, (ledger_key(session_key), session_key, key))
+        summary = crew_work.summary_for_state(key, self)
+        if summary is not None:
+            row[crew_work.CREW_WORK_FIELD] = summary
+    crew_work.retain(roots)
 
 
 def serialize_slot_views(

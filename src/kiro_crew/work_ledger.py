@@ -1151,6 +1151,7 @@ from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     max_depth,
     may_conduct,
     parse_stamp,
+    quiet_since,
 )
 from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _BINDINGS_DIR,
