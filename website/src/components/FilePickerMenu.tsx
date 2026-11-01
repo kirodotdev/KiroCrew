@@ -8,6 +8,8 @@ import ErrorNotice from './ErrorNotice'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { splitPathToken } from './composerTokens'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
+import { buildFileLabels } from '../utils/fileTokens'
+import { backslashIsSeparator, stripTrailingSeparators } from '../utils/pathBasename'
 import type { SendMode } from '../pages/chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
@@ -85,6 +87,41 @@ export function makeRelative(path: string, root: string): string {
 /** Normalize a possibly-absent kind from the search response. */
 export function resultKind(f: { kind?: FileKind }): FileKind {
   return f.kind === 'dir' ? 'dir' : 'file'
+}
+
+/**
+ * Per-row sub-line text for one result set.
+ *
+ * The row's sub-line cuts at the END (text-overflow ellipsis), which is right
+ * for a unique name. For rows that share a name (search matches basenames, so
+ * one answer can hold six README.md files) the cut lands inside their common
+ * parent chain and the rows read identical. Such a row instead shows the
+ * shortest trailing path that tells it apart, from `buildFileLabels` (the rule
+ * the attachment chips use), head-anchored with an ellipsis
+ * (`…/core/README.md`) so the distinguishing segment survives the cut.
+ * Unique-named rows keep the full path.
+ *
+ * `buildFileLabels` splits on `/` only, so a Windows-shaped path's `\` becomes
+ * `/` for the computation and `\` again for display, but only where
+ * `backslashIsSeparator` says `\` IS a separator (on POSIX it is a legal name
+ * character). Folder rows drop their trailing separator first.
+ */
+export function disambiguatedPaths(results: Array<{ path: string }>): Map<string, string> {
+  const norm = (p: string) => {
+    const s = stripTrailingSeparators(p)
+    return backslashIsSeparator(s) ? s.replace(/\\/g, '/') : s
+  }
+  const labels = buildFileLabels(results.map(r => norm(r.path)))
+  const out = new Map<string, string>()
+  for (const r of results) {
+    const n = norm(r.path)
+    const label = labels.get(n) ?? n
+    // A bare basename (unique name), or a label that had to widen to the whole
+    // path, adds nothing over the full path, so the row keeps it.
+    if (!label.includes('/') || label === n) { out.set(r.path, r.path); continue }
+    out.set(r.path, backslashIsSeparator(r.path) ? `…\\${label.replace(/\//g, '\\')}` : `…/${label}`)
+  }
+  return out
 }
 
 /**
@@ -171,6 +208,11 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     const above = anchorRef.current ? menuGeometry(anchorRef.current, raw.length, 48).above : false
     return bottomUpOrder(raw, above)
   }, [data, open, ready, anchorRef])
+
+  // Same-named rows show their shortest distinguishing tail (see
+  // `disambiguatedPaths`); keyed on the ordered results so it recomputes
+  // exactly when the rows do. Not used under `pathTail`, which shows folders.
+  const displayPaths = useMemo(() => disambiguatedPaths(results), [results])
 
   // Open the highlighted file in the viewer (the eye/preview action) instead of
   // inserting an @-mention. Shared by the Cmd/Ctrl+Enter path (via onChoose's
@@ -329,7 +371,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
               // rtl on the box puts the ellipsis at the START; the inner
               // ltr bdi keeps the path itself reading left to right.
               ? <div dir="rtl" data-testid="file-picker-row-folder" className="text-[11px] text-muted truncate text-left"><bdi dir="ltr">{rowFolder(f.path, rootRef.current)}</bdi></div>
-              : <div className="text-[11px] text-muted truncate">{f.path}</div>}
+              : <div className="text-[11px] text-muted truncate">{displayPaths.get(f.path) ?? f.path}</div>}
           </div>
           <span className="text-[11px] text-muted shrink-0 whitespace-nowrap">
             {isDir ? `${i18nT('components.filePickerMenu.folder_kind')} · ${formatAge(f.mtime)}` : `${formatSize(f.size)} · ${formatAge(f.mtime)}`}
