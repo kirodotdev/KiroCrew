@@ -291,9 +291,11 @@ class TestOnePromptImageRules:
         # what keeps this linear.
         text = (" /a" * 20000) + ".png~"
 
-        started = time.perf_counter()
+        # Thread CPU time, not wall time: a loaded runner that parks this thread
+        # does not count against the budget, a quadratic scan still does.
+        started = time.thread_time()
         blocks = build_prompt_blocks(text)
-        elapsed = time.perf_counter() - started
+        elapsed = time.thread_time() - started
 
         assert blocks == [{"type": "text", "text": text}]
         assert elapsed < 5.0, f"image-path scan took {elapsed:.3f}s"

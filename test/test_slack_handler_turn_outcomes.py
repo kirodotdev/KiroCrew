@@ -726,8 +726,7 @@ class TestStopReasonCancelled:
     """Phase 4: handler response to stopReason='cancelled'."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _ensure_reactions_enabled(self, monkeypatch):
+    def _ensure_reactions_enabled(self, _floor_monkeypatch):
         import dataclasses
 
         from kiro_crew.config.loader import KiroCrewConfig
@@ -740,7 +739,7 @@ class TestStopReasonCancelled:
                 cfg, slack=dataclasses.replace(cfg.slack, reactions_enabled=True)
             )
 
-        monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
+        _floor_monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
 
     @pytest.mark.asyncio
     async def test_handler_stop_reason_cancelled_skips_record_success(self):
@@ -889,8 +888,7 @@ class TestLiveTurnPresentationFailure:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _ensure_reactions_enabled(self, monkeypatch):
+    def _ensure_reactions_enabled(self, _floor_monkeypatch):
         import dataclasses
 
         from kiro_crew.config.loader import KiroCrewConfig
@@ -903,7 +901,7 @@ class TestLiveTurnPresentationFailure:
                 cfg, slack=dataclasses.replace(cfg.slack, reactions_enabled=True)
             )
 
-        monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
+        _floor_monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
 
     @pytest.mark.asyncio
     async def test_progress_card_raise_does_not_render_terminal_error(self):

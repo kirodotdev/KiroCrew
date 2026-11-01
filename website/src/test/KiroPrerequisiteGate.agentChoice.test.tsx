@@ -7,12 +7,13 @@
  * KiroPrerequisiteGate.test.tsx.
  */
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
-import type { QueryClient } from '@tanstack/react-query'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { defaultScheduler, notifyManager, type QueryClient } from '@tanstack/react-query'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import KiroPrerequisiteGate, {
   acpBackendsRefetchInterval,
 } from '../components/KiroPrerequisiteGate'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 
 vi.mock('../utils/clipboard', () => ({
   copyToClipboard: vi.fn().mockResolvedValue(true),
@@ -52,18 +53,47 @@ describe('KiroPrerequisiteGate agent choice', () => {
   )
   // The gate renders the app while the config/probe reads are in flight, so a
   // "dashboard is shown" assertion only means something once they have landed.
-  const settle = async () => {
-    await waitFor(() => expect(api.acpBackends).toHaveBeenCalled())
-    // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-    // nosemgrep: semgrep.kirocrew.test-promise-sleep -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-    await act(() => new Promise(resolve => setTimeout(resolve, 20)))
+  // A test that settles renders with query notifications on microtasks
+  // (`renderSettled`), so a read that lands inside act() has rendered, and run
+  // the effects it sets off, before act() resolves. Each pass lands every read in
+  // flight; a read that render enables (the probe waits on the config) is in
+  // flight for the next pass.
+  const renderSettled = () => {
+    notifyManager.setScheduler(queueMicrotask)
+    return render()
   }
+  // Lost-run ceilings for the waits that follow the gate's read chain (status,
+  // then config, then probe), in place of the default one second.
+  const GATE_READS_LAND = { timeout: 5000 }
+  const MARKER_POSTS_SETTLE = namedCeiling('MARKER_POSTS_SETTLE', 5000)
+  // Only the gate's own reads: the theme provider's reads never answer here.
+  const GATE_READS = [['kiro-prerequisite'], ['kirocrewConfig'], ['acpBackends']]
+  const gateQueries = (queryClient: QueryClient) =>
+    GATE_READS.map(queryKey => queryClient.getQueryCache().find({ queryKey, exact: true }))
+  const landReadsInFlight = (queryClient: QueryClient) =>
+    act(async () => {
+      await Promise.all(gateQueries(queryClient).map(query => query?.promise?.catch(() => undefined)))
+    })
+  const settle = async (queryClient: QueryClient) => {
+    await vi.waitFor(async () => {
+      await landReadsInFlight(queryClient)
+      expect(api.acpBackends).toHaveBeenCalled()
+      expect(gateQueries(queryClient).map(query => query?.state.fetchStatus)).toEqual(['idle', 'idle', 'idle'])
+    }, GATE_READS_LAND)
+  }
+  // A mutation counts as pending from mutate() until its mutationFn settles, so
+  // once none is pending every POST an effect started has reached the API mock.
+  const mutationsSettled = (queryClient: QueryClient) =>
+    waitFor(() => expect(queryClient.isMutating()).toBe(0), MARKER_POSTS_SETTLE)
 
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
     vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'kiro' } })
     vi.mocked(api.acpBackends).mockResolvedValue({ backends: [] })
+  })
+  afterEach(() => {
+    notifyManager.setScheduler(defaultScheduler)
   })
 
   it('shows the one-line Kiro CLI installer for a Linux or macOS host only', async () => {
@@ -670,9 +700,9 @@ describe('KiroPrerequisiteGate agent choice', () => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ platform }))
     vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'claude' } })
     vi.mocked(api.acpBackends).mockResolvedValue({ backends: [probe()] })
-    render()
+    const { queryClient } = renderSettled()
 
-    await settle()
+    await settle(queryClient)
     expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
     expect(screen.queryByText('Set up Kiro')).not.toBeInTheDocument()
   })
@@ -850,9 +880,9 @@ describe('KiroPrerequisiteGate agent choice', () => {
     vi.mocked(api.acpBackends).mockResolvedValue({
       backends: [probe({ id: 'codex', policy_id: 'codex' })],
     })
-    render()
+    const { queryClient } = renderSettled()
 
-    await settle()
+    await settle(queryClient)
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Get Kiro CLI' })).toBeInTheDocument()
     expect(acpBackendsRefetchInterval(status({ sandbox_backend_available: available }), true, probe())).toBe(30_000)
@@ -867,9 +897,9 @@ describe('KiroPrerequisiteGate agent choice', () => {
     vi.mocked(api.acpBackends).mockResolvedValue({
       backends: [probe({ id: backend, policy_id: backend })],
     })
-    render()
+    const { queryClient } = renderSettled()
 
-    await settle()
+    await settle(queryClient)
     expect(screen.queryByText('Dashboard loaded') !== null).toBe(backend === 'claude')
   })
 
@@ -894,9 +924,9 @@ describe('KiroPrerequisiteGate agent choice', () => {
     }))
     vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'claude' } })
     vi.mocked(api.acpBackends).mockResolvedValue({ backends: [probe()] })
-    render()
+    const { queryClient } = renderSettled()
 
-    await settle()
+    await settle(queryClient)
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Kiro CLI is installed but could not be verified' })).toBeInTheDocument()
   })
@@ -911,9 +941,9 @@ describe('KiroPrerequisiteGate agent choice', () => {
     vi.mocked(api.acpBackends).mockResolvedValue({
       backends: [probe({ id: 'kas', policy_id: 'kas', independent_setup: false })],
     })
-    render()
+    const { queryClient } = renderSettled()
 
-    await settle()
+    await settle(queryClient)
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Your Kiro CLI is out of date' })).toBeInTheDocument()
   })
@@ -973,9 +1003,9 @@ describe('KiroPrerequisiteGate agent choice', () => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ acp_supported: false }))
     vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'claude' } })
     vi.mocked(api.acpBackends).mockResolvedValue({ backends: [probe()] })
-    render()
+    const { queryClient } = renderSettled()
 
-    await settle()
+    await settle(queryClient)
     expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
   })
 
@@ -985,9 +1015,9 @@ describe('KiroPrerequisiteGate agent choice', () => {
     vi.mocked(api.acpBackends).mockResolvedValue({
       backends: [probe({ id: 'future', policy_id: 'future', independent_setup: false })],
     })
-    render()
+    const { queryClient } = renderSettled()
 
-    await settle()
+    await settle(queryClient)
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
   })
 
@@ -1000,9 +1030,9 @@ describe('KiroPrerequisiteGate agent choice', () => {
     }))
     vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'codex' } })
     vi.mocked(api.acpBackends).mockResolvedValue({ backends: [probe({ id: 'codex', policy_id: 'codex' })] })
-    render()
+    const { queryClient } = renderSettled()
 
-    await settle()
+    await settle(queryClient)
     expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
     expect(screen.queryByText('Kiro CLI update needed')).not.toBeInTheDocument()
   })
@@ -1126,15 +1156,20 @@ describe('KiroPrerequisiteGate agent choice', () => {
     const missing = () => probe({ installed: 'missing', install_command: 'npm install -g x' })
     // "Dashboard loaded" is painted while the probe is still in flight, so a
     // "did not fire" assertion means nothing until the probe has LANDED and
-    // the effect has had a turn on it.
+    // the effect has had a turn on it: the probe lands inside act(), which
+    // renders it and runs the effect, and any POST that effect started is then
+    // waited out.
     const probeLanded = async (queryClient: QueryClient) => {
-      await waitFor(() => expect(queryClient.getQueryState(BACKENDS_KEY)?.status).toBe('success'))
-      // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      // nosemgrep: semgrep.kirocrew.test-promise-sleep -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      await act(() => new Promise(resolve => setTimeout(resolve, 20)))
+      await vi.waitFor(async () => {
+        await landReadsInFlight(queryClient)
+        expect(queryClient.getQueryState(BACKENDS_KEY)?.status).toBe('success')
+      }, GATE_READS_LAND)
+      await mutationsSettled(queryClient)
     }
 
     beforeEach(() => {
+      // Every case here settles: see `renderSettled`.
+      notifyManager.setScheduler(queueMicrotask)
       vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'claude' } })
       vi.mocked(api.acpBackendRecheck).mockResolvedValue({ backend: probe() })
     })
@@ -1158,9 +1193,7 @@ describe('KiroPrerequisiteGate agent choice', () => {
       // Re-polls and re-renders with the same verdict do not repeat it.
       await act(() => queryClient.invalidateQueries({ queryKey: BACKENDS_KEY }))
       await act(() => queryClient.invalidateQueries({ queryKey: ['kiro-prerequisite'] }))
-      // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      // nosemgrep: semgrep.kirocrew.test-promise-sleep -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      await act(() => new Promise(resolve => setTimeout(resolve, 20)))
+      await mutationsSettled(queryClient)
       expect(api.acpBackendRecheck).toHaveBeenCalledTimes(1)
       expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
     })
@@ -1173,9 +1206,7 @@ describe('KiroPrerequisiteGate agent choice', () => {
       expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
       await waitFor(() => expect(api.acpBackendRecheck).toHaveBeenCalledWith('claude'))
       await act(() => queryClient.invalidateQueries({ queryKey: BACKENDS_KEY }))
-      // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      // nosemgrep: semgrep.kirocrew.test-promise-sleep -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      await act(() => new Promise(resolve => setTimeout(resolve, 20)))
+      await mutationsSettled(queryClient)
       expect(api.acpBackendRecheck).toHaveBeenCalledTimes(1)
     })
 
@@ -1193,9 +1224,7 @@ describe('KiroPrerequisiteGate agent choice', () => {
       vi.mocked(api.acpBackends).mockResolvedValue({ backends: [missing()] })
       await act(() => queryClient.invalidateQueries({ queryKey: BACKENDS_KEY }))
       expect(await screen.findByText(/is set to use Claude Code, which isn't ready/)).toBeInTheDocument()
-      // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      // nosemgrep: semgrep.kirocrew.test-promise-sleep -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      await act(() => new Promise(resolve => setTimeout(resolve, 20)))
+      await mutationsSettled(queryClient)
       expect(api.acpBackendRecheck).toHaveBeenCalledTimes(1)
 
       vi.mocked(api.acpBackends).mockResolvedValue({ backends: [probe()] })
@@ -1212,9 +1241,7 @@ describe('KiroPrerequisiteGate agent choice', () => {
       expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
       await probeLanded(queryClient)
       await act(() => queryClient.invalidateQueries({ queryKey: BACKENDS_KEY }))
-      // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      // nosemgrep: semgrep.kirocrew.test-promise-sleep -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      await act(() => new Promise(resolve => setTimeout(resolve, 20)))
+      await mutationsSettled(queryClient)
       expect(api.acpBackendRecheck).not.toHaveBeenCalled()
     })
 
@@ -1227,9 +1254,7 @@ describe('KiroPrerequisiteGate agent choice', () => {
       expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
       await waitFor(() => expect(api.acpBackendRecheck).toHaveBeenCalledTimes(1))
       await act(() => queryClient.invalidateQueries({ queryKey: BACKENDS_KEY }))
-      // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      // nosemgrep: semgrep.kirocrew.test-promise-sleep -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      await act(() => new Promise(resolve => setTimeout(resolve, 20)))
+      await mutationsSettled(queryClient)
       expect(api.acpBackendRecheck).toHaveBeenCalledTimes(1)
       expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
     })
@@ -1295,9 +1320,7 @@ describe('KiroPrerequisiteGate agent choice', () => {
       // Re-polls and re-renders with the same failed verdict do not repeat it.
       await act(() => queryClient.invalidateQueries({ queryKey: BACKENDS_KEY }))
       await act(() => queryClient.invalidateQueries({ queryKey: ['kiro-prerequisite'] }))
-      // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      // nosemgrep: semgrep.kirocrew.test-promise-sleep -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-      await act(() => new Promise(resolve => setTimeout(resolve, 30)))
+      await mutationsSettled(queryClient)
       expect(api.acpBackendRecheck).toHaveBeenCalledTimes(1)
       // Still visible, still one POST.
       expect(screen.getByTestId('kiro-gate-marker-write-error')).toBeInTheDocument()
