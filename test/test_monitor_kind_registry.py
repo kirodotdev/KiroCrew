@@ -37,7 +37,10 @@ class TestTheEntryAllowlistsShareOneAuthority:
     def test_the_validator_schemas_derive_the_same_values(self) -> None:
         from kiro_crew.validation import MONITOR_WATCH_SCHEMA
 
-        allowed = {field.name: field.allowed for field in MONITOR_WATCH_SCHEMA.fields}
+        allowed = {
+            field.name: field.allowed() if callable(field.allowed) else field.allowed
+            for field in MONITOR_WATCH_SCHEMA.fields
+        }
         assert allowed["kind"] == PULL_REQUEST_MONITOR_KINDS
         assert allowed["objective"] == frozenset({REVIEW_READY})
 

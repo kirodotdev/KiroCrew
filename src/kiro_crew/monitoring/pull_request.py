@@ -16,7 +16,6 @@ from kiro_crew.monitoring.models import (
     MAX_MONITOR_CONDITIONS,
     PULL_REQUEST_CHECK_FIELDS,
     PULL_REQUEST_MERGEABILITY,
-    PULL_REQUEST_MONITOR_KINDS,
     PULL_REQUEST_REVIEW_DECISIONS,
     PULL_REQUEST_STATES,
     PULL_REQUEST_SUPERSEDED_CHECK_FIELD,
@@ -29,6 +28,7 @@ from kiro_crew.monitoring.models import (
     MonitorSeverity,
     ProviderErrorKind,
 )
+from kiro_crew.monitoring.registry import is_pull_request_monitor_kind
 from kiro_crew.security import redact
 
 # Every state a provider may report, which is exactly the set of canonical check
@@ -210,7 +210,7 @@ class PullRequestFacts:
     pr_comment_body_digest: str = ""
 
     def __post_init__(self) -> None:
-        if self.kind not in PULL_REQUEST_MONITOR_KINDS:
+        if not is_pull_request_monitor_kind(self.kind):
             raise ValueError("kind is not a supported pull-request monitor")
         if not isinstance(self.target, str) or not self.target:
             raise ValueError("target must be a non-empty string")
