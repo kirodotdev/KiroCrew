@@ -247,7 +247,10 @@ async def test_start_attaches_a_relay_session_and_starts_at_the_top_rung() -> No
     method, params, sid = relay.calls[1]
     assert (method, sid) == ("Target.setAutoAttach", SESSION)
     assert params["flatten"] is True and params["waitForDebuggerOnStart"] is False
-    method, params, sid = relay.calls[2]
+    # The mask's isolated world is made before the first frame (screencast._mask_rects).
+    made = [m for m, _p, _s in relay.calls].index("Page.createIsolatedWorld")
+    assert relay.calls[made - 1][0] == "Page.getFrameTree" and made == 3
+    method, params, sid = relay.calls[made + 1]
     assert method == "Page.startScreencast" and sid == SESSION
     assert params == {
         "format": "jpeg",

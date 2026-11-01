@@ -752,6 +752,9 @@ class LiveStream:
         self._mask_boxes: list[Any] = []
         #: The mask query's isolated world per CDP session (``_mask_query``).
         self._mask_worlds: dict[str, int] = {}
+        #: The last ``_mask_query`` had to make its world: the document it read may
+        #: have replaced the one the frame in hand shows.
+        self._mask_new_world = False
         #: The recorder's mask for the frame in hand (see :meth:`_mask_rects`): a
         #: frame whose boxes did not come from its own answered query is never kept.
         self._mask_ok = False
@@ -804,6 +807,12 @@ class LiveStream:
             await enable_auto_attach(self.relay, self.session_id)
         except Exception:  # noqa: BLE001 - the stream runs without frame access
             logger.debug("live stream: frame auto-attach not enabled", exc_info=True)
+        try:
+            # Made before the first frame, so that frame's query reuses it; a world
+            # made later means the document changed under the frame (_mask_rects).
+            await self._make_mask_world(self.session_id)
+        except Exception:  # noqa: BLE001 - the first query makes it instead
+            logger.debug("live stream: mask world not made", exc_info=True)
         if self.visible or self._casts_hidden:
             await self._start_cast()
         if self._auto_control:
@@ -1176,6 +1185,11 @@ class LiveStream:
         self._mask_at = now
         try:
             reply = await self._mask_query(self.session_id)
+            # A world made for this query reads whatever document is there now; a
+            # navigation between the capture and the query (a submitted one-time
+            # code) leaves a frame of the old page that this answer says nothing
+            # about, so that frame is never recorded as masked.
+            new_world = self._mask_new_world
         except Exception:
             # Keep the last boxes rather than unmask on a transient failure.
             return clip_mask_rects(
@@ -1201,6 +1215,7 @@ class LiveStream:
             len(boxes) + len(frames) <= MASK_BOX_LIMIT
             and not partial
             and _same_scroll(value, scroll)
+            and not new_world
         ):
             opaque = clip_mask_rects(frames, self.scale, width, height, limit=MASK_BOX_LIMIT)
             self._rec_boxes = rects + opaque
@@ -1221,6 +1236,7 @@ class LiveStream:
         again once. Raises when no world can be had: the caller then keeps the last
         boxes and records no frame as masked.
         """
+        self._mask_new_world = False
         ctx = self._mask_worlds.get(sid)
         if ctx is not None:
             try:
@@ -1230,6 +1246,12 @@ class LiveStream:
             except Exception:  # noqa: BLE001 - the world went with a navigation
                 pass
             self._mask_worlds.pop(sid, None)
+        ctx = await self._make_mask_world(sid)
+        self._mask_new_world = True
+        return await self._mask_eval(sid, ctx)
+
+    async def _make_mask_world(self, sid: str) -> int:
+        """Make *sid*'s mask world in its current document and keep it."""
         tree = await self.relay.send("Page.getFrameTree", {}, sid)
         frame = ((tree.get("frameTree") or {}).get("frame") or {}) if isinstance(tree, dict) else {}
         frame_id = frame.get("id")
@@ -1244,7 +1266,7 @@ class LiveStream:
         if not isinstance(ctx, int):
             raise RuntimeError("mask: no isolated world")
         self._mask_worlds[sid] = ctx
-        return await self._mask_eval(sid, ctx)
+        return ctx
 
     async def _mask_eval(self, sid: str, ctx: int) -> Any:
         return await self.relay.send(

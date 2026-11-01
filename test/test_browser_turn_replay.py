@@ -251,6 +251,27 @@ async def test_every_recorded_frame_gets_its_own_box_query_never_a_cached_one() 
     assert all(r[3] for r in sink.recorded)
 
 
+async def test_a_frame_whose_page_navigated_before_its_box_query_is_not_kept_as_masked() -> None:
+    """A submitted one-time code navigates after Chrome captured the frame: the
+    query then reads the NEW document (its world had to be made again), which
+    says nothing about the old frame's fields, so that frame is never kept."""
+    stream, relay, sink = probe_stream(mask_passwords=True)
+    calls = {"n": 0}
+
+    def _evaluate() -> dict:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("Cannot find context with specified id")  # navigated
+        return {"result": {"value": []}}
+
+    relay.answers["Runtime.evaluate"] = _evaluate
+    await stream.start()
+    await relay.on_event(frame_event(jpeg(size=(1280, 800))))
+    await relay.on_event(frame_event(jpeg((1, 1, 1), size=(1280, 800))))
+    await relay.on_event(frame_event(jpeg((2, 2, 2), size=(1280, 800))))
+    assert [r[3] for r in sink.recorded] == [True, False, True]
+
+
 async def test_boxes_follow_the_frame_size_after_a_ladder_step() -> None:
     stream, relay, sink = probe_stream(mask_passwords=True)
     relay.answers["Runtime.evaluate"] = {"result": {"value": [[100, 100, 200, 30]]}}
