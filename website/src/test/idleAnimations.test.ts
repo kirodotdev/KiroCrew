@@ -16,7 +16,7 @@ import { join } from 'node:path'
  *  shorthand's `infinite` wins whenever the pulse rule comes later. */
 
 const SRC = join(__dirname, '..')
-const APP = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFileSync(join(SRC, f), 'utf8')).join('\n')
+const APP = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/topbar/resourcePostureChip.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFileSync(join(SRC, f), 'utf8')).join('\n')
 
 const INFINITE_UTILITIES = /\banimate-(pulse|ping|bounce)\b/
 const BOUNDED = '[animation-iteration-count:3]!'
@@ -37,7 +37,7 @@ function expectPulsesBounded(block: string) {
 
 describe('always-visible indicators do not animate forever', () => {
   it('resource posture badge: static for tight, bounded pulse for critical', () => {
-    const block = sliceAfter('key="resource-health"', 900)
+    const block = sliceAfter('data-testid="resource-health"', 900)
     expect(block).toContain("'bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none' : 'bg-warn'")
     expectPulsesBounded(block)
   })
@@ -62,7 +62,7 @@ describe('always-visible indicators do not animate forever', () => {
   })
 
   it('no always-visible indicator carries an unbounded infinite animation', () => {
-    for (const marker of ['key="conn"', 'key="resource-health"', 'function ActivityIndicator(']) {
+    for (const marker of ['key="conn"', 'data-testid="resource-health"', 'function ActivityIndicator(']) {
       const block = sliceAfter(marker, 1200)
       for (const cls of block.match(/'[^']*'|"[^"]*"/g) ?? []) {
         if (INFINITE_UTILITIES.test(cls)) expect(cls, `unbounded infinite animation near ${marker}: ${cls}`).toContain(BOUNDED)

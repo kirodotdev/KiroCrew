@@ -2,6 +2,7 @@ import { useEffect, useState, lazy, Suspense, type ReactNode } from 'react'
 import { TOPBAR_FOCUS_Z, TOPBAR_Z } from '../../lib/themeDecorLayer'
 import { kiroUsageSegment } from './kiroUsageReadout'
 import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
+import { ResourcePostureChip } from './resourcePostureChip'
 import { Bell, Fullscreen, Menu, Plug, Unplug } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { isWinElectron } from '../../lib/electron'
@@ -529,17 +530,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             // Resource pressure indicator — always visible when tight/critical
             if (sysMetrics?.posture && sysMetrics.posture !== 'ample' && sysMetrics.posture !== 'unknown') {
               segments.push(
-                <span
+                <ResourcePostureChip
                   key="resource-health"
-                  className={`${seg} flex items-center gap-1 text-[11px] ${sysMetrics.posture === 'critical' ? 'text-danger' : 'text-warn'}`}
-                  title={sysMetrics.posture === 'critical'
-                    ? i18nT('app.resource_posture_tooltip_critical', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })
-                    : i18nT('app.resource_posture_tooltip_tight', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })}
-                >
-                  <span aria-hidden="true" className={`inline-block w-2 h-2 rounded-full ${sysMetrics.posture === 'critical' ? 'bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none' : 'bg-warn'}`} />
-                  {!isMobile && <span className="font-medium">{sysMetrics.posture === 'critical' ? i18nT('app.resource_critical') : i18nT('app.resource_tight')}</span>}
-                  {!isMobile && sysMetrics.subagentCap != null && <span className="text-muted text-[10px]">· {i18nT('app.subagent_cap', { cap: String(sysMetrics.subagentCap) })}</span>}
-                </span>
+                  posture={sysMetrics.posture}
+                  availableGb={sysMetrics.availableGb}
+                  subagentCap={sysMetrics.subagentCap}
+                  seg={seg}
+                />
               )
             }
             if (!capsuleCollapsed) {
