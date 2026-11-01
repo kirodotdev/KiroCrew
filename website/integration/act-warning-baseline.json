@@ -84,7 +84,6 @@
   "src/test/DesignTweakHistoryCov80.test.tsx",
   "src/test/DesignTweakOverlayBridgeCov80.test.tsx",
   "src/test/DevFleetPage.test.tsx",
-  "src/test/DiffBlock.test.tsx",
   "src/test/EditableCodeBlock.editorActions.test.tsx",
   "src/test/ExportSessionItem.test.tsx",
   "src/test/FileChangeChipsAnim.test.tsx",

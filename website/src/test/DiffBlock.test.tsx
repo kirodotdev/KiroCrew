@@ -79,8 +79,14 @@ describe('DiffBlock', () => {
     expect(screen.getByText('generating diff…')).toBeInTheDocument()
   })
 
-  it('hides generating indicator when complete', () => {
-    render(<DiffBlock code={simpleDiff} complete={true} />)
+  it('hides generating indicator when complete', async () => {
+    const { container } = render(<DiffBlock code={simpleDiff} complete={true} />)
+    // Wait for the lazy Pierre chunk to replace the stand-in body, so the suspended
+    // resource finishes loading inside this test and not after it.
+    await waitFor(
+      () => expect(container.querySelectorAll('[data-diff-section] diffs-container')).toHaveLength(1),
+      { timeout: 5000 },
+    )
     expect(screen.queryByText('generating diff…')).not.toBeInTheDocument()
   })
 
@@ -367,7 +373,9 @@ describe('DiffBlock', () => {
       // The old verdict is keyed to the old header — button gone immediately
       // and it never comes back for the missing new path.
       expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
-      await new Promise(r => setTimeout(r, 10))
+      // The work in that window is the new header's own probe: wait for its request
+      // (the hook's verdict state settles while this wait polls), then look again.
+      await waitFor(() => expect(probedPaths(fetchMock)).toContain('other/place/thing.ts'))
       expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
     })
   })
