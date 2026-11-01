@@ -841,7 +841,7 @@ export function MembersPageProfileCard({
           className="h-full shrink-0 flex flex-col min-h-0 pb-2 pr-2 overflow-hidden"
           data-testid="crew-profile-docked"
         >
-          <div className="flex-1 min-h-0 rounded-2xl border border-border bg-bg-elevated shadow-lg overflow-hidden flex flex-col" style={{ width: profileCardW }} data-testid="crew-profile-card">{profilePanel}</div>
+          <div className="flex-1 min-h-0 rounded-2xl border border-border bg-bg-elevated shadow-lg overflow-hidden flex flex-col" style={{ width: profileCardW }} data-testid="crew-profile-card" data-crew-profile-card>{profilePanel}</div>
         </motion.aside>
       )}
     </AnimatePresence>
@@ -869,6 +869,7 @@ export function MembersPageProfileCard({
             exit={reduceMotion ? undefined : { opacity: 0 }}
             transition={{ duration: FACE_FLIGHT_SECS, ease: FACE_FLIGHT_EASE }}
             data-testid="crew-profile-card"
+            data-crew-profile-card
           >{profilePanel}</motion.div>
         </motion.div>
       )}
