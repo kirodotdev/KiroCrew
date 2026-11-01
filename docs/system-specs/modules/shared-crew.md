@@ -33,10 +33,33 @@ behaves as a single-operator Crew, and the direct tailnet listener binds nothing
 
 ### Release gate
 
-Shared Crew is behind one release gate until the owner ships it: the gateway
-environment variable `KIROCREW_SHARED_CREW_PREVIEW=1`
-(`shared_crew.preview.preview_enabled`, true only for exactly `1`). It is not a
-config field, so no Settings row, change card or `propose_change` path can set it.
+Shared Crew is behind one release gate until the owner ships it, the Feature
+preview (`shared_crew.preview.preview_enabled`). Either of two things turns it
+on: the gateway environment variable `KIROCREW_SHARED_CREW_PREVIEW=1` (true only
+for exactly `1`), or the owner's stored choice in the keystone
+`<data home>/shared_crew_preview.json` (`{"enabled": true}`, only a JSON `true`
+counts; a missing, unreadable or malformed file reads as off). It is not a config
+field and not a change-card or `FEATURE_PREVIEW_FLAGS` entry. The file is
+written only by the owner-only `PUT /api/shared-crew/preview`
+(`routes_preview`), and it is sealed like `decisions_consent.json`: on
+`_CREW_SECRET_LEAVES`, `sandbox._CREW_READONLY_LEAVES`,
+`_CREW_PRECREATE_READONLY_FILE_LEAVES` and `_CREW_CHILD_WITHHELD_LEAVES`, so an
+agent can neither write it nor edit its way to opening the Crew.
+
+The stored choice is read once when the gateway starts
+(`preview.snapshot_at_start`, taken on the first `preview_enabled()` call) and
+`preview_enabled()` answers from that snapshot, or from the variable, for the
+life of the process. Routes, the direct listener and the lifecycle hooks are wired
+at start, so a PUT applies on the next start.
+
+`GET` / `PUT /api/shared-crew/preview` are registered whether or not the preview
+is on (never 404 for the owner; a caller who is not the owner gets 403 through the
+invite routes' owner gate). The answer is `{enabled, active, env_override,
+restart_required}`: `enabled` the stored choice, `active` what this process runs,
+`env_override` true while the variable forces it on, `restart_required` true when
+the next start will answer differently. A PUT body is `{"enabled": bool}`; anything
+else is 400 `invalid_body`. Each PUT is written to the SEL
+(`shared_crew.preview.set`).
 
 - Gate off (the default): `config.sections_shared_crew.load_shared_crew_config`, the
   runtime's one reader of the section, returns `SharedCrewConfig()` whatever
@@ -48,7 +71,16 @@ config field, so no Settings row, change card or `propose_change` path can set i
 - Gate on: config decides, as every section below describes.
 
 `GET /api/shared-crew/capabilities` reports the gate as `shared_crew_preview` (true or false).
-Each field's help in the Settings schema says it requires the variable.
+Each field's help in the Settings schema says it needs Shared Crew turned on in Feature Previews.
+
+Advanced settings write through the existing config PATCH,
+`PATCH /api/config/kirocrew` with `{"path": "dashboard.shared_crew.<key>", "value": ...}`
+for `admission_enabled` and `tailnet_direct` (booleans) and `principal_concurrency`
+(1 to 256), `crew_concurrency` (0 to 1024), `typing_idle_seconds` (3 to 60)
+(integers; bounds from `SHARED_CREW_BOUNDS`). Advanced saves through the shared
+per-path optimistic overlay and its restart pills come from the config schema.
+`hard_limits` and `containment_enabled` are not in the editable set. The section reads as its
+defaults while the gate is off, and `tailnet_direct` takes effect on the next start.
 
 ## 2. Identity
 
@@ -88,7 +120,7 @@ Evidence, strongest first (`identity.derive_principal`):
 | Loopback peer forwarded by local `tailscale serve`, resolved and allowlisted by `tailnet.resolve_forwarded_peer` | `human` keyed by tailnet login; `machine` keyed by node for a tagged node | `tailscale_serve` |
 | Tailnet peer on the direct tailnet listener, admitted by daemon `whois` of its own TCP `ip:port` (`tailnet_direct.DirectGate`) | `human` keyed by tailnet login (the stable user id is an alias); `machine` keyed by node for a tagged node | `tailscale_listener` |
 | Tailnet peer reaching a widened bind on its tailnet address, no forwarding header, resolved by daemon `whois` of the socket address (`tailnet.resolve_direct_peer`) | `human` keyed by tailnet login; `machine` keyed by node | `tailscale_direct` |
-| Loopback socket with no forwarding header at all | `human`, the local operator, keyed by the token subject | `local_operator` |
+| Loopback socket with no forwarding header at all | `human`, the local operator, keyed by the token subject; labelled with this machine's name when the subject is one of the owner's (see Owner label) | `local_operator` |
 | Anything else auth admitted | `Principal.unknown()` | `none` |
 
 A tailnet principal's subject is the lowercased daemon login under provider
@@ -269,16 +301,60 @@ nothing.
 not a second decision. `correlation_id` is the client's `X-Correlation-Id` when it
 is a short plain token, else the server's `request_id`.
 
+### Owner label
+
+The owner is the person at this machine. `owner` holds who: the bootstrap
+subjects `local-app` and `local-startup`, the configured owner id
+(`owner.set_owner_subject`, set by `wiring.install` from `state.owner_id`; default
+`local-app`) and the owner's tailnet login (`access_set.owner_login`) are one
+person (`owner.owner_principal_ids`). Principal ids never change: they come from
+the token subject or the login alone.
+
+The label shown for the owner's local principals is this machine's name
+(`owner.machine_name`, applied in `identity.local_operator_principal` to the
+owner's subjects only): macOS `ComputerName` read once through the fixed path
+`/usr/sbin/scutil` (never `PATH`), else the Tailscale daemon's `Self.HostName`
+(`SelfNode.host_name`, published when the owner is learned), else the OS host
+name, else the token subject. It never raises. The `scutil` lookup never runs on an
+event-loop thread: `wiring.install` warms the cache on a daemon thread
+(`owner.warm_machine_name`), and a label read on the loop before it lands answers from
+the fallbacks. An owner who reaches the Crew
+through the direct listener keeps the tailnet identity `whois` named. Another
+local subject keeps its subject as its label.
+
 ### Observed collaborators
 
 `people` keeps a bounded in-memory record (`MAX_OBSERVED` principals, LRU) of the
 human and machine principals seen on authorized requests, with first and last
 sighting and a device count (a digest per node, at most `MAX_DEVICES`). Unknown
 and system principals are not recorded. `people.people_view` builds the People
-body: it merges that record with the creators recorded on persisted sessions. No
-route serves it yet. Each row names its `sources`
-(`observed`, `session_creator`), so an observation is never presented as
-membership; `directory.state` is `unavailable` because this build has no
+body: it merges that record with the creators recorded on persisted sessions
+and with the people the local Tailscale daemon lists, in that order, so a person
+keeps the first row they have. Each row names its `sources`
+(`observed`, `session_creator`, `tailscale_share`), so an observation is never
+presented as membership, and carries `is_owner` (the row's principal is one of
+`owner.owner_principal_ids`). An owner viewing always has a row, and the owner's
+local-token rows fold into one, matched by principal id because a creator read
+back from public attribution carries no provenance. Only the owner's People lists
+`tailscale_share` rows: the daemon names every user this machine can see, ordinary
+tailnet members included, so the route reads it for the owner alone and a
+collaborator's People never carries the login of someone who did not come in.
+`tailscale_share` rows
+(`tailscale_sharees`) are users who own a node in the daemon's `status` with peers
+(`tailnet_localapi.status_with_peers`, parsed by
+`tailnet_direct.parse_tailnet_users`) and who are not this machine's owner; a
+tagged node has no person and is skipped. The parser retains at most
+`MAX_TAILNET_USERS` people in first-seen peer order and logs one warning per
+status snapshot with the count of otherwise eligible people omitted by that cap.
+One row per retained user is keyed by tailnet login through
+`identity.tailnet_principal`, so the id is the one the same person gets
+when they connect and the row then merges into the observed one. An unobserved
+row has null `first_seen_at` and `last_seen_at`, `devices` 0 and
+`sessions_created` 0, and carries `tailscale_user_id` and, when the daemon gave a
+plain https one, `member.profile_pic_url`. They need no Tailscale API key and no
+`allowed_logins`. The daemon read runs off the event loop under a 6 s budget and is
+cached 15 s (`CACHE_TTL_SECS`); a failure yields no such rows and never fails the
+route. `directory.state` is `unavailable` because this build has no
 authoritative assigned-user directory. Per-person `usage` is `null`, and
 `usage_available` false, until the admission layer registers a reader
 (`people.register_usage_source`).
@@ -294,6 +370,19 @@ setup guidance and session list follow it, and the modes never mix:
 | `personal` | no setup path is available or degraded, and no principal but the local operator viewing has been seen (the operator's bootstrap subjects `local-app`, `local-startup` and the configured owner are the same person; session creators are matched by id, never by a stored provenance) | setup guidance with each adapter's honest status, personal Remote Control | no creator bylines, no All/Mine control |
 | `network` | a Tailscale path is on, or a network person or another operator has been seen | the share card with the Tailscale path's status (first on the page), who has been seen (labelled as seen), personal Remote Control | bylines, filter |
 | `invalid` | the tailnet login allowlist could not be read | one error state with the reason code | bylines, filter |
+
+The session list's bylines and filter, message bylines, decision attribution and
+presence chips are all part of the Shared Crew preview. They show only when the
+preview is on (`shared_crew_preview`), the mode is read and not `personal`, and
+someone besides the owner has joined: a non-owner People row this Crew saw on an
+authorized request since it started (`sources` holds `observed`;
+`sharedCrewUi.someoneJoined`). A row known only as a session's creator (a Slack
+sender), an unused invite or a directory entry has not joined. The observed list
+is in memory, so after a restart these surfaces return once a teammate connects
+again. One rule decides it for every surface
+(`sharedCrewMode.showsTeamAttribution`, read through `useTeamAttribution` and
+`useSharedCrewListView`); with the preview off the browser reads no mode or People
+for them. Until then the dashboard looks as it does for one person.
 
 A team configuration is refused (`crew_mode.team_config_problem`) with reason
 `network_identity_config_unreadable` while the tailnet login allowlist could not be
@@ -489,9 +578,10 @@ Machines page; nothing else changes.
 invited email (never the address) and the outcome.
 
 Share link. While the direct tailnet listener is active, People (`network` mode) and
-the phone dialog show its plain URL, `http://<magicdns-name>:<port>/` first and each
-tailnet address as a fallback, with a copy button. The note states that Tailscale
-access rules decide who opens it (`TailnetDirectLink`). The URL carries no token.
+the phone dialog show its plain URL in `capabilities.tailnet_direct.urls` order
+(`tailnet_direct.direct_urls`): the IPv4 tailnet address first, which needs no
+MagicDNS, then `http://<magicdns-name>:<port>/`, then the IPv6 address, with a copy
+button (`TailnetDirectLink`). The URL carries no token.
 The phone dialog keeps its token-carrying QR and sign-in link under an Advanced fold
 for devices without Tailscale. People adds the device-owner caveat under the list,
 and the macOS empty state (`platform_unprovable`) points at the direct link.
@@ -517,7 +607,20 @@ Missing human attribution is displayed as Unattributed on every surface (session
 list, filters, bylines, People, decisions and presence). Storage keeps the
 `unknown` principal kind and the `p_unknown` id; nothing is rewritten.
 
-A session with no `attribution` key reads as `legacy_missing` with an Unknown creator.
+A session with no `attribution` key reads as `legacy_missing`. A persisted one
+was made before sharing existed, so it is the owner's: its public attribution's
+`creator` is the owner principal (`owner.owner_principal`, labelled with this
+machine's name) while `availability` stays `legacy_missing`. This is display only.
+A legacy session that names a trigger keeps the trigger and no person. Two legacy
+values stay Unattributed instead (`attribution._owner_fallback_for_slot`,
+`_owner_fallback_for_meta`): a live slot nobody has stamped yet, and a
+channel-origin session (a `channel_origin` flag, a live channel session key, its
+persisted filename-stem spelling, the pre-migration bare Slack `thread_ts` stem, or
+a `linked_session_key` in any of those shapes), which a teammate may have started
+on Slack or Discord. The session
+list's `mine` filter includes legacy sessions for the owner (under any of the
+owner's ids, `owner.viewer_ids`), `unattributed` excludes them, and People counts
+them to the owner.
 It stays legacy: the codec never writes a legacy value back, no stamp replaces it,
 and nothing back-fills it, least of all from the current viewer. Attribution was on
 but no principal could be established reads as `unattributed`. A damaged attribution
@@ -588,15 +691,21 @@ user, and refuses an app token or an internal caller with 403, so it reaches no
 session the existing list does not.
 
 The `unattributed` filter (the older `unknown` value is accepted and echoed as
-`unattributed`) lists sessions with no human creator and no named trigger. A
-triggered session lists under All with its trigger. Filters change visibility
-only; every session stays reachable with All.
+`unattributed`) lists sessions with no human creator and no named trigger; a
+persisted legacy session has the owner as creator, so it is never listed there
+(a channel-origin legacy session is). A
+triggered session lists under All with its trigger. `mine` widens through every
+principal id naming the viewer. An explicit creator id normally matches only
+that id; when it names any local owner principal folded into the People row, it
+matches every local owner principal id represented by that row. Filters change
+visibility only; every session stays reachable with All.
 
 The browser shows All by default, Mine, each person seen and Unattributed, labels
 the verified viewer You, and remembers the choice per Crew in local storage keyed
 by the mode route's `crew_id` (`kc.shared-crew.creator-filter.<crew id>`). A
-personal Crew, or one that cannot attribute, hides the control and the bylines
-(`useSharedCrewListView`, `SharedCrewBylineContext`). A creator-filtered row
+personal Crew, one that cannot attribute, one with the preview off or one nobody
+else has joined hides the control and the bylines (`useSharedCrewListView`,
+`SharedCrewBylineContext`; see People and setup modes). A creator-filtered row
 matches its catalog key against the full local live-slot roster by normalized
 session identity, including slots outside the chat-only sidebar projection.
 A live crewmate conversation opens its owning surface through `opensElsewhereOf`;
@@ -1084,8 +1193,12 @@ request's verified actor. Every existing gate on the approve and answer routes r
 before the registry sees a response. A client that sends `response_id` gets 409
 `already_resolved` with the decision on a lost race; a client that sends none keeps
 the existing 404. A wait that ends through a path with no verified responder closes
-the decision with an Unknown responder, and an unanswered one closes as `expired` or
-`withdrawn`. Approval decision frames ride `broadcast_ws` like approval frames.
+the decision with an Unknown responder and `settled_by: "host"`, and an unanswered one
+closes as `expired` or `withdrawn`. `settled_by` (`person` or `host`) is on every
+decision: `host` when `settle_after_wait` resolved it (an approval mode such as trust
+or YOLO, the no-request-id path, a channel resolver) or the responder is not a
+verified human (an app token), `person` otherwise, an owner's dashboard click
+included. A record without the field reads as `person`. Approval decision frames ride `broadcast_ws` like approval frames.
 
 An agent question belongs to every collaborator. `collaborators.is_collaborator_request`
 admits the owner (`is_owner_dashboard_request`) and a dashboard-user session whose
@@ -1111,8 +1224,8 @@ creator included, carries the sender's name (`MessageByline`,
 `sharedCrewUi.bylineFor`), so a right-aligned message without a name is always the
 reader's own. Until the viewer read lands, the session's recorded creator stands in
 for the viewer (`sharedCrewUi.bylineSelfId`); with neither known nothing is
-labelled. A single-operator transcript is unchanged, and a personal Crew shows no
-bylines at all. An Unknown author reads as Unknown.
+labelled. A single-operator transcript is unchanged, and a personal Crew, one with
+the preview off or one nobody else has joined shows no bylines at all. An Unknown author reads as Unknown.
 
 ### Typing lease
 
@@ -1139,7 +1252,9 @@ Rules:
    or disconnect). A plain step down to `viewing` (the tab's typing hold ran out)
    keeps it: the draft is still there and the idle window decides.
 4. The idle window is `dashboard.shared_crew.typing_idle_seconds`, default 10,
-   clamped to 3..60 (`SHARED_CREW_BOUNDS`). A timer armed on the event loop at the
+   clamped to 3..60 (`SHARED_CREW_BOUNDS`). `typing_lease_for` reads it once,
+   when it builds the registry, so the field is marked restart-required and the
+   People Advanced row shows the restart badge. A timer armed on the event loop at the
    earliest lease's idle end (`arm_idle_timer`) ends it on time; the socket status
    tick's presence sweep also sweeps leases.
 5. The host enforces it. `chat_send._composer_locked_answer` runs before the
@@ -1275,7 +1390,8 @@ that never learned a revision sends none and is not compared.
 | `GET /api/shared-crew/capabilities` | `Capabilities` |
 | `GET /api/auth/me` | gains `principal` (`Principal.to_public_dict`) |
 | `GET /api/shared-crew/sessions?creator=&q=&cursor=&limit=` | `SessionPage`; each item carries `attribution` |
-| `GET /api/shared-crew/people` | observed collaborators with usage, and the directory state |
+| `GET /api/shared-crew/people` | observed collaborators with usage (`is_owner` per row, `tailscale_share` rows), and the directory state |
+| `GET` / `PUT /api/shared-crew/preview` `{enabled}` | owner only, registered with the preview off: `{enabled, active, env_override, restart_required}` (Release gate) |
 | `GET /api/shared-crew/capacity` | `CapacityResponse` for the viewer |
 | `GET /api/shared-crew/work?session_key=` | public `AcceptedWork` list |
 | `POST /api/shared-crew/work/{work_id}/cancel` `{expected_revision}` | the next `AcceptedWork`, or 409 with `current`; a planned task or schedule run is owner only (403 `owner_only`), as on its own cancel route |
@@ -1331,7 +1447,7 @@ The client never resubmits a send on its own.
 
 ## 7. UI states
 
-The sharing surfaces require `KIROCREW_SHARED_CREW_PREVIEW=1` on the gateway:
+The sharing surfaces require the Feature preview on the gateway (the variable or the owner's stored choice):
 the Settings > People tab (with its invite and share cards) and the
 direct tailnet link in the phone dialog render only while
 `GET /api/shared-crew/capabilities` reports `shared_crew_preview: true`
@@ -1562,7 +1678,7 @@ viewer's usage). A `hard_limits` host that lacks a prerequisite logs
 every admission and runtime start until it is fixed.
 
 Migration. Nothing is rewritten. Sessions created before Shared Crew read as
-`legacy_missing` with an Unknown creator; their messages have no author. New sessions
+`legacy_missing` (shown as the owner's, storage unchanged); their messages have no author. New sessions
 and messages carry `attribution` and `author` stamps. No creator is backfilled and no
 access is inferred from an author.
 

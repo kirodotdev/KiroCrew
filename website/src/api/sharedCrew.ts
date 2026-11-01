@@ -350,6 +350,19 @@ export interface SharedDecision {
   responder: PublicPrincipal | null
   outcome: string
   resolved_at: number | null
+  /** `host`: the gateway settled it (an approval mode such as trust or YOLO),
+   *  so no person decided. An older gateway omits it. */
+  settled_by?: 'person' | 'host'
+}
+
+/** `GET`/`PUT /api/shared-crew/preview`: the owner's Feature preview switch.
+ *  `enabled` is the stored choice, `active` what this gateway started with,
+ *  `env_override` true while `KIROCREW_SHARED_CREW_PREVIEW=1` forces it on. */
+export interface SharedCrewPreviewSetting {
+  enabled: boolean
+  active: boolean
+  env_override: boolean
+  restart_required: boolean
 }
 
 export type SharedCrewServerFrame =

@@ -16,8 +16,13 @@ const modeApi = vi.mocked(api.sharedCrewMode)
 const people = vi.mocked(api.sharedCrewPeople)
 
 const me = { id: 'p_me', kind: 'human' as const, display: { name: 'Me', login: '', captured_at: null } }
+const TEAMMATE = { principal: { id: 'p_tm', kind: 'human' as const, display: { name: 'Tam', login: '', captured_at: null } }, sources: ['observed' as const], is_viewer: false }
 // A channel-bridged message: stamped with the Unknown principal server-side.
 const BRIDGED = { author: { id: 'p_unknown', kind: 'unknown' as const, display: { name: '', login: '', captured_at: null } } }
+
+// The byline reads capabilities first; only then are the mode and People
+// queries enabled. Waits that span that chain get this ceiling.
+const CHAIN_TIMEOUT_MS = 5000
 
 function modeBody(mode: CrewModeResponse['mode']): CrewModeResponse {
   return {
@@ -48,22 +53,23 @@ function mount(modeSettles = true) {
 beforeEach(() => {
   vi.clearAllMocks()
   viewer.mockResolvedValue(me)
-  caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
-  people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [] })
+  // The Shared Crew preview on and a teammate joined; each case varies the mode.
+  caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available', shared_crew_preview: true })
+  people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [TEAMMATE] })
 })
 
 describe('MessageByline follows the Crew mode', () => {
   it('shows no byline in a personal Crew, even on an Unknown-stamped channel message', async () => {
     modeApi.mockResolvedValue(modeBody('personal'))
     mount()
-    await screen.findByTestId('settled')
+    await screen.findByTestId('settled', {}, { timeout: CHAIN_TIMEOUT_MS })
     expect(screen.queryByTestId('message-byline')).toBeNull()
   })
 
   it('shows no byline while the mode is still unknown', async () => {
     modeApi.mockReturnValue(new Promise(() => {}))
     mount(false)
-    await screen.findByTestId('settled')
+    await screen.findByTestId('settled', {}, { timeout: CHAIN_TIMEOUT_MS })
     expect(screen.queryByTestId('message-byline')).toBeNull()
   })
 
@@ -71,7 +77,7 @@ describe('MessageByline follows the Crew mode', () => {
     caps.mockResolvedValue(ALL_UNAVAILABLE)
     modeApi.mockResolvedValue(modeBody('network'))
     mount()
-    await screen.findByTestId('settled')
+    await screen.findByTestId('settled', {}, { timeout: CHAIN_TIMEOUT_MS })
     expect(screen.queryByTestId('message-byline')).toBeNull()
   })
 
@@ -82,9 +88,31 @@ describe('MessageByline follows the Crew mode', () => {
     } })
     modeApi.mockRejectedValue(new Error('mode unreadable'))
     mount(false)
-    await screen.findByTestId('settled')
+    await screen.findByTestId('settled', {}, { timeout: CHAIN_TIMEOUT_MS })
     await waitFor(() => expect(modeApi).toHaveBeenCalled())
     await waitFor(() => expect(screen.getByTestId('mode-failed')).toBeTruthy())
+    expect(screen.queryByTestId('message-byline')).toBeNull()
+  })
+
+  it('shows no byline in a network Crew with the Shared Crew preview off', async () => {
+    caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
+    modeApi.mockResolvedValue(modeBody('network'))
+    mount()
+    await screen.findByTestId('settled', {}, { timeout: CHAIN_TIMEOUT_MS })
+    await waitFor(() => expect(caps).toHaveBeenCalled(), { timeout: CHAIN_TIMEOUT_MS })
+    expect(screen.queryByTestId('message-byline')).toBeNull()
+  })
+
+  it.each([
+    ['no one besides the owner', []],
+    ['only the owner', [{ ...TEAMMATE, is_owner: true }]],
+    ['a session creator who never connected, such as a Slack sender', [{ ...TEAMMATE, sources: ['session_creator' as const] }]],
+  ])('shows no byline in a network Crew with %s', async (_who, rows) => {
+    people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: rows })
+    modeApi.mockResolvedValue(modeBody('network'))
+    mount()
+    await screen.findByTestId('settled', {}, { timeout: CHAIN_TIMEOUT_MS })
+    await waitFor(() => expect(people).toHaveBeenCalled(), { timeout: CHAIN_TIMEOUT_MS })
     expect(screen.queryByTestId('message-byline')).toBeNull()
   })
 

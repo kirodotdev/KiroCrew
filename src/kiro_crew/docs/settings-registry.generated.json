@@ -1150,6 +1150,13 @@
       "description": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message."
     },
     {
+      "id": "developer.shared-crew",
+      "label": "Shared Crew",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.shared-crew",
+      "description": "People tab, invites and shared sessions"
+    },
+    {
       "id": "developer.ultra-mode",
       "label": "Ultra Mode",
       "tab": "developer",

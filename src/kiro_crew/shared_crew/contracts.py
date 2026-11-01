@@ -288,7 +288,7 @@ class AttributionAvailability(str, enum.Enum):
     """Whether a session's creator is known."""
 
     RECORDED = "recorded"
-    #: The session predates attribution; the creator displays as Unattributed.
+    #: The session predates attribution; it displays as the owner's.
     LEGACY_MISSING = "legacy_missing"
     #: Attribution was on but no principal could be established at creation.
     UNATTRIBUTED = "unattributed"
@@ -555,18 +555,32 @@ class SessionQuery:
             creator=creator, search=(params.get("q") or "")[:256], cursor=cursor, limit=limit
         )
 
-    def matches(self, creator: Principal, viewer: Principal, *, triggered: bool = False) -> bool:
+    def matches(
+        self,
+        creator: Principal,
+        viewer: Principal,
+        *,
+        triggered: bool = False,
+        viewer_ids: frozenset[str] = frozenset(),
+        local_owner_ids: frozenset[str] = frozenset(),
+    ) -> bool:
         """Whether a session with *creator* passes the creator filter for *viewer*.
 
         *triggered* is a session a schedule, a webhook or the Crew started: it
-        names its trigger, so it is not Unattributed.
+        names its trigger, so it is not Unattributed. *viewer_ids* are the other
+        principal ids that name the viewer themself (the owner's local and
+        tailnet ids), so ``mine`` finds the owner's sessions under any of them.
+        *local_owner_ids* are the local principals folded into one People row;
+        selecting any of them matches sessions created under all of them.
         """
         if self.creator == CREATOR_ALL:
             return True
         if self.creator == CREATOR_UNATTRIBUTED:
             return creator.is_unknown and not triggered
         if self.creator == CREATOR_MINE:
-            return not viewer.is_unknown and creator.id == viewer.id
+            return not viewer.is_unknown and creator.id in ({viewer.id} | viewer_ids)
+        if self.creator in local_owner_ids:
+            return creator.id in local_owner_ids
         return creator.id == self.creator
 
 

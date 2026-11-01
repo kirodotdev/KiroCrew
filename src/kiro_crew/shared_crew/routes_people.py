@@ -73,7 +73,11 @@ def login_of(user_id: str) -> str:
     if user_id == access_set.owner_user_id() and access_set.owner_login():
         return access_set.owner_login()
     known = sorted(tailnet_live_allowlist.logins_for(user_id))
-    return known[0] if known else ""
+    if known:
+        return known[0]
+    from kiro_crew.shared_crew.tailscale_sharees import login_for
+
+    return login_for(user_id)
 
 
 async def _read_body(request: web.Request) -> dict[str, Any] | None:

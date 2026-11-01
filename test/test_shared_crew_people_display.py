@@ -16,12 +16,15 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.dashboard import tailnet_live_allowlist
 from kiro_crew.shared_crew import audit, routes_invites, routes_people
 from kiro_crew.shared_crew import tailscale_invite_store as store
 from kiro_crew.shared_crew.contracts import ACTOR_REQUEST_KEY, ActorContext, Provenance, Transport
 from kiro_crew.shared_crew.identity import local_operator_principal, tailnet_principal
+
+pytestmark = pytest.mark.usefixtures("host_isolation")
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 BOB = tailnet_principal("bob@example.com", "bob-laptop", Provenance.TAILSCALE_LISTENER)
@@ -345,6 +348,29 @@ def test_people_rows_say_who_is_here_and_where_by_the_tab_slot_key() -> None:
         "session_title": "Release plan",
     }
     assert "live" not in gone
+
+
+def test_people_owner_row_uses_presence_from_every_local_owner_id() -> None:
+    from kiro_crew.shared_crew.collab import Activity
+    from kiro_crew.shared_crew.presence import presence_for
+    from kiro_crew.shared_crew.routes_identity import _attach_live
+
+    state = SimpleNamespace()
+    startup = local_operator_principal("local-startup")
+    presence_for(state).report("c1", startup, "Owner_session", Activity.TYPING)
+    request = SimpleNamespace(app={"state": state})
+    body = {
+        "people": [
+            {"principal": local_operator_principal("local-app").to_public_dict(), "is_owner": True},
+            {"principal": {"id": "p_unrelated"}, "is_owner": False},
+        ]
+    }
+
+    _attach_live(request, body, [])  # type: ignore[arg-type]
+
+    owner, unrelated = body["people"]
+    assert owner["live"]["activity"] == "typing"
+    assert "live" not in unrelated
 
 
 @pytest.mark.asyncio

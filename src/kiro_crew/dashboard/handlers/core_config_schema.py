@@ -51,6 +51,7 @@ from kiro_crew.config.sections import (
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
     SESSION_SORT_MODES,
+    SHARED_CREW_BOUNDS,
     STRANDS_PROVIDER_CHOICES,
     TITLE_REFRESH_EVERY_TURNS_MAX,
     validate_strands_env_patch,
@@ -395,6 +396,31 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # need for roaming, and the loader resolves anything non-boolean back to the
     # bound default — so a malformed write cannot reopen the replay path.
     "dashboard.tailscale.bind_refresh_chains": {"type": "bool"},
+    # Shared Crew's advanced settings (Settings > People). The integer bounds are
+    # the loader's own (SHARED_CREW_BOUNDS), so the gate admits exactly the domain
+    # the loader accepts rather than a second copy. Without the Feature preview
+    # the gateway reads every one of these as its default
+    # (``shared_crew.preview``), so a stored value waits for the preview.
+    # ``tailnet_direct`` takes effect on the next gateway start. ``hard_limits``
+    # and ``containment_enabled`` stay config-file-only: they refuse work or
+    # start per-person cgroup slices, which this surface does not offer.
+    "dashboard.shared_crew.admission_enabled": {"type": "bool"},
+    "dashboard.shared_crew.tailnet_direct": {"type": "bool"},
+    "dashboard.shared_crew.principal_concurrency": {
+        "type": "int",
+        "min": SHARED_CREW_BOUNDS["principal_concurrency"][0],
+        "max": SHARED_CREW_BOUNDS["principal_concurrency"][1],
+    },
+    "dashboard.shared_crew.crew_concurrency": {
+        "type": "int",
+        "min": SHARED_CREW_BOUNDS["crew_concurrency"][0],
+        "max": SHARED_CREW_BOUNDS["crew_concurrency"][1],
+    },
+    "dashboard.shared_crew.typing_idle_seconds": {
+        "type": "int",
+        "min": SHARED_CREW_BOUNDS["typing_idle_seconds"][0],
+        "max": SHARED_CREW_BOUNDS["typing_idle_seconds"][1],
+    },
     # Local OTEL metric collection — the Privacy panel's recording switch. Safe
     # to expose where beacon_endpoint is not: turning this on writes JSONL under
     # ~/.kiro/crew/metrics. It is NOT unconditionally local, though —

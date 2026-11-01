@@ -18,6 +18,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.dashboard import revocation_gen, token_auth
 from kiro_crew.dashboard.routes import register_all
@@ -30,6 +31,8 @@ from kiro_crew.shared_crew.contracts import (
     SessionAttribution,
 )
 from kiro_crew.shared_crew.identity import local_operator_principal, tailnet_principal
+
+pytestmark = pytest.mark.usefixtures("host_isolation")
 
 STARTUP = local_operator_principal("local-startup")
 APP_ALIAS = local_operator_principal("local-app")

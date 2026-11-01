@@ -8,9 +8,9 @@ import UserMessage from '../UserMessage'
 import { QueuedSendLabel, queuedChatTurn } from './QueuedSendLabel'
 import { SessionCollabStrip } from './SessionCollabStrip'
 import { PresenceChips } from './PresenceChips'
-import { DecisionAttributionList } from './DecisionAttributionList'
+import { DecisionAttributionList, involvesOthers, visibleDecisions } from './DecisionAttributionList'
 import { refusalMessage, queuedReason } from './overloadCopy'
-import { alreadyResolvedDecision, requestedByLine, resolvedByLine, settledElsewhereLine } from '../../../components/chat-input/sharedDecision'
+import { alreadyResolvedDecision, resolvedByLine, settledElsewhereLine, waitingLine } from '../../../components/chat-input/sharedDecision'
 import { readSendReceipt } from '../../../utils/sendDelivery'
 
 vi.mock('../../../api/client', () => ({
@@ -220,25 +220,70 @@ describe('shared decisions', () => {
     outcome, resolved_at: state === 'resolved' ? 10 : null,
   })
 
-  it('names both the person whose turn asked and the person who answered', () => {
+  it('names the person who settled it in one sentence, with no requester tail', () => {
     mount(<DecisionAttributionList items={[decision('resolved', 'approved')]} />)
-    expect(screen.getByText('Approved by Bob')).toBeInTheDocument()
-    expect(screen.getByText(/asked during Alice's turn/)).toBeInTheDocument()
+    expect(screen.getByText('Bob approved')).toBeInTheDocument()
+    expect(screen.queryByText(/Alice|asked during|requested/)).toBeNull()
   })
 
-  it('lets a long responder name shrink so the requester stays on the row', () => {
+  it('lets a long responder name shrink on its one row', () => {
     mount(<DecisionAttributionList items={[decision('resolved', 'approved')]} />)
-    const head = screen.getByText('Approved by Bob')
+    const head = screen.getByText('Bob approved')
     expect(head).toHaveClass('truncate', 'min-w-0')
     expect(head).not.toHaveClass('shrink-0')
-    expect(head).toHaveAttribute('title', 'Approved by Bob')
+    expect(head).toHaveAttribute('title', 'Bob approved')
+  })
+
+  const question = (state: SharedDecision['state'], outcome = ''): SharedDecision => ({ ...decision(state, outcome), kind: 'question' })
+
+  it('names whose turn a pending decision waits on, and reads the viewer as you', () => {
+    expect(waitingLine(decision('pending'))).toBe("Alice's action awaits approval")
+    expect(waitingLine(question('pending'))).toBe("Kiro is waiting for Alice's answer")
+    expect(waitingLine(decision('pending'), 'p_a')).toBe('Your action awaits approval')
+    expect(waitingLine(question('pending'), 'p_a')).toBe('Kiro is waiting for your answer')
+    expect(waitingLine(decision('pending'), 'p_other')).toBe("Alice's action awaits approval")
+  })
+
+  it('reads every settled verdict, for a person and for the viewer', () => {
+    expect(resolvedByLine(decision('resolved', 'approved'))).toBe('Bob approved')
+    expect(resolvedByLine(decision('resolved', 'rejected'))).toBe('Bob rejected')
+    expect(resolvedByLine(question('resolved', 'answered'))).toBe('Bob answered')
+    expect(resolvedByLine(decision('resolved', 'approved'), 'p_b')).toBe('You approved')
+    expect(resolvedByLine(decision('resolved', 'rejected'), 'p_b')).toBe('You rejected')
+    expect(resolvedByLine(question('resolved', 'answered'), 'p_b')).toBe('You answered')
+  })
+
+  it('renders a pending row as the waiting sentence', () => {
+    mount(<DecisionAttributionList items={[decision('pending'), question('pending')].map((d, i) => ({ ...d, decision_id: `d${i}` }))} viewerId="p_a" />)
+    expect(screen.getByText('Your action awaits approval')).toBeInTheDocument()
+    expect(screen.getByText('Kiro is waiting for your answer')).toBeInTheDocument()
+  })
+
+  it('never lists a decision the gateway settled by its approval mode', () => {
+    const host: SharedDecision = { ...decision('resolved', 'approved'), settled_by: 'host', responder: null }
+    expect(visibleDecisions([host])).toEqual([])
+    const { container } = mount(<DecisionAttributionList items={[host]} viewerId="p_a" />)
+    expect(container).toBeEmptyDOMElement()
+    const person: SharedDecision = { ...decision('resolved', 'approved'), decision_id: 'd2', settled_by: 'person' }
+    expect(visibleDecisions([host, person]).map(d => d.decision_id)).toEqual(['d2'])
+  })
+
+  it('counts a session as shared only when a decision involves someone other than the viewer', () => {
+    expect(involvesOthers([decision('pending')], 'p_a')).toBe(false)
+    expect(involvesOthers([decision('resolved', 'approved')], 'p_a')).toBe(true)
+    expect(involvesOthers([decision('pending')], 'p_x')).toBe(true)
+    expect(involvesOthers([decision('pending')], '')).toBe(false)
+    const unknown = { id: 'p_unknown', kind: 'unknown' as const, display: { name: '', login: '', captured_at: null } }
+    expect(involvesOthers([{ ...decision('pending'), initiator: unknown }], 'p_a')).toBe(false)
+    const host: SharedDecision = { ...decision('resolved', 'approved'), settled_by: 'host' }
+    expect(involvesOthers([host], 'p_x')).toBe(false)
   })
 
   it('reads a lost race as the winning decision, not a failure', () => {
     const err = { status: 409, body: JSON.stringify({ code: 'already_resolved', decision: decision('resolved', 'rejected') }) }
     const won = alreadyResolvedDecision(err)
     expect(won?.responder?.display.name).toBe('Bob')
-    expect(resolvedByLine(won!)).toBe('Rejected by Bob')
+    expect(resolvedByLine(won!)).toBe('Bob rejected')
     expect(alreadyResolvedDecision({ status: 404, body: '{}' })).toBeNull()
     expect(alreadyResolvedDecision({ status: 409, body: 'not json' })).toBeNull()
   })
@@ -260,25 +305,83 @@ describe('shared decisions', () => {
     expect(screen.queryByText(/local-app/)).toBeNull()
   })
 
-  it('keeps the line in a shared Crew and reads the viewer as you', async () => {
+  const pendingFrom = (p: ReturnType<typeof person>): SharedDecision => ({ ...decision('pending'), initiator: p })
+
+  it('shows nothing for a solo session: only the viewer is in its decisions', async () => {
     vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
     vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
-    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [byLocal('local-app')] } as never)
+    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [byLocal('local-app'), pendingFrom(local('local-app'))] } as never)
+    const { qc } = mount(<SessionCollabStrip sessionKey="s1" />)
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'decisions', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'viewer'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
+    expect(screen.queryByTestId('session-collab-strip')).toBeNull()
+    expect(screen.queryByTestId('decision-attribution')).toBeNull()
+  })
+
+  /** The Shared Crew preview on and Bob joined: the state the strip shows in. */
+  const sharedAndJoined = () => {
+    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, presence: 'available', attribution: 'available', queueing: 'available', shared_crew_preview: true })
+    vi.mocked(api.sharedCrewPeople).mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [{ principal: person('p_b', 'Bob'), sources: ['observed'], is_viewer: false }] } as never)
+  }
+
+  it('shows the lines once a decision involves another person, and reads the viewer as you', async () => {
+    sharedAndJoined()
+    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
+    vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
+    const mine: SharedDecision = { ...byLocal('local-app'), decision_id: 'd1', responder: person('p_b', 'Bob') }
+    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [mine, { ...pendingFrom(local('local-app')), decision_id: 'd2' }] } as never)
     mount(<SessionCollabStrip sessionKey="s1" />)
-    expect(await screen.findByText('Approved by you', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
-    expect(screen.getByText(/asked during your turn/)).toBeInTheDocument()
+    expect(await screen.findByText('Bob approved', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
+    expect(screen.getByText('Your action awaits approval')).toBeInTheDocument()
     expect(screen.queryByText(/local-app/)).toBeNull()
   })
 
+  it('shows the lines when another person is present, even if every decision is the viewer\'s', async () => {
+    sharedAndJoined()
+    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
+    vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
+    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [{ principal: person('p_b', 'Bob'), session_key: 's1', activity: 'viewing', connections: 1, expires_at: 0 }] } as never)
+    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [pendingFrom(local('local-app'))] } as never)
+    mount(<SessionCollabStrip sessionKey="s1" />)
+    expect(await screen.findByText('Your action awaits approval', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['the Shared Crew preview is off', false, ['observed']],
+    ['nobody besides the owner joined', true, ['session_creator']],
+  ] as const)('shows no chips or lines while %s', async (_why, preview, sources) => {
+    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, presence: 'available', attribution: 'available', queueing: 'available', shared_crew_preview: preview })
+    vi.mocked(api.sharedCrewPeople).mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [{ principal: person('p_b', 'Bob'), sources: [...sources], is_viewer: false }] } as never)
+    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
+    vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
+    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [{ principal: person('p_b', 'Bob'), session_key: 's1', activity: 'viewing', connections: 1, expires_at: 0 }] } as never)
+    const mine: SharedDecision = { ...byLocal('local-app'), decision_id: 'd1', responder: person('p_b', 'Bob') }
+    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [mine] } as never)
+    const { qc } = mount(<SessionCollabStrip sessionKey="s1" />)
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'presence', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
+    expect(screen.queryByTestId('session-collab-strip')).toBeNull()
+    expect(screen.queryByText('Bob approved')).toBeNull()
+  })
+
+  it('shows no empty band when every decision was settled by the host', async () => {
+    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
+    vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
+    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [{ principal: person('p_b', 'Bob'), session_key: 's1', activity: 'viewing', connections: 1, expires_at: 0 }] } as never)
+    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [{ ...byLocal('local-app'), settled_by: 'host' as const }] } as never)
+    const { qc } = mount(<SessionCollabStrip sessionKey="s1" />)
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'decisions', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
+    expect(screen.queryByTestId('decision-attribution')).toBeNull()
+  })
+
   it.each(['local-app', 'local-startup'])('never names the local token subject %s', (name) => {
-    expect(resolvedByLine(byLocal(name))).toBe('Approved by Crew owner')
-    expect(requestedByLine(byLocal(name))).toBe("asked during Crew owner's turn")
-    expect(resolvedByLine(byLocal(name), 'p_local')).toBe('Approved by you')
+    expect(resolvedByLine(byLocal(name))).toBe('Crew owner approved')
+    expect(waitingLine({ ...byLocal(name), state: 'pending' })).toBe("Crew owner's action awaits approval")
+    expect(resolvedByLine(byLocal(name), 'p_local')).toBe('You approved')
   })
 
   it('names a teammate whose display name looks like the local token', () => {
     const mate = { ...byLocal('local-app'), responder: { id: 'p_t', kind: 'human' as const, display: { name: 'local-app', login: 'mate@example.com', captured_at: null } } }
-    expect(resolvedByLine(mate)).toBe('Approved by local-app')
+    expect(resolvedByLine(mate)).toBe('local-app approved')
   })
 
   it('tells a lost race without a name', () => {

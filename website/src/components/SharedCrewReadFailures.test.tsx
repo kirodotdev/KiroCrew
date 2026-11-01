@@ -29,7 +29,14 @@ vi.mock('../api/client', () => ({ api: {
   sharedCrewSendState: vi.fn(), sharedCrewTypingLease: vi.fn(), sharedCrewWork: vi.fn(),
   sharedCrewCapacity: vi.fn(), sharedCrewSessions: vi.fn(), sharedCrewAccess: vi.fn(),
   tailscaleInvites: vi.fn(), tailscaleUploadAvatar: vi.fn(), mobileConnectMethods: vi.fn(),
+  kirocrewConfig: vi.fn(), patchConfig: vi.fn(),
 } }))
+// People's Advanced section reads the config schema for its restart badges;
+// these tests are about Shared Crew reads, so the schema answers empty.
+vi.mock('./settingRef/useConfigSchema', () => {
+  const schema = new Map()
+  return { useConfigSchema: () => schema, useConfigSchemaQuery: () => ({ schema, error: null }) }
+})
 
 const person = (id: string) => ({ id, kind: 'human' as const, display: { name: id, login: '', captured_at: null } })
 const capabilities = { ...ALL_UNAVAILABLE, attribution: 'available' as const, presence: 'available' as const, queueing: 'available' as const,
@@ -82,6 +89,7 @@ beforeEach(() => {
   vi.mocked(api.tailscaleInvites).mockResolvedValue(invites)
   vi.mocked(api.sharedCrewAccess).mockResolvedValue(null)
   vi.mocked(api.mobileConnectMethods).mockResolvedValue({ methods: [] })
+  vi.mocked(api.kirocrewConfig).mockResolvedValue({} as never)
   vi.mocked(api.tailscaleUploadAvatar).mockResolvedValue({ avatar_id: 'picture' })
   vi.mocked(api.sharedCrewWork).mockResolvedValue({ items: [queued] } as never)
   vi.mocked(api.sharedCrewCapacity).mockResolvedValue(null)
@@ -289,54 +297,14 @@ describe('People read-only modes', () => {
   })
 })
 
-describe('Remote Control methods read', () => {
-  it.each(['personal', 'network'] as const)('reports an initial %s methods failure and retries without losing the invite draft', async currentMode => {
-    const qc = client()
-    qc.setQueryData(keys.mode, { ...mode, mode: currentMode })
-    vi.mocked(api.mobileConnectMethods).mockRejectedValue(new ApiError(503, 'methods failed', '{}'))
-    mount(<PeoplePanel />, qc)
-    const form = await enterInviteDraft()
-    const error = await screen.findByTestId('remote-control-error')
-    expect(error).toHaveTextContent('methods failed')
-    expect(within(error).queryByRole('button', { name: 'Ask the agent' })).toBeNull()
-    expect(screen.queryByTestId('remote-control-unavailable')).toBeNull()
-    vi.mocked(api.mobileConnectMethods).mockResolvedValue({ methods: [{ kind: 'login_link' }] } as never)
-    fireEvent.click(within(screen.getByTestId('remote-control-setup')).getByRole('button', { name: 'Try again' }))
-    await screen.findByRole('button', { name: 'Set up Remote Control' })
-    expect(screen.queryByTestId('remote-control-error')).toBeNull()
-    expectDraft(form)
-  })
-
-  it('keeps cached methods during a failed refresh, then shows unavailable only after a successful empty read', async () => {
-    const qc = client()
-    qc.setQueryData(['mobile-connect-methods'], { methods: [{ kind: 'login_link' }] })
-    mount(<PeoplePanel />, qc)
-    const form = await enterInviteDraft()
-    const open = await screen.findByRole('button', { name: 'Set up Remote Control' })
-    vi.mocked(api.mobileConnectMethods).mockRejectedValue(new Error('refresh failed'))
-    await refresh(qc, ['mobile-connect-methods'])
-    expect(await screen.findByTestId('remote-control-error')).toHaveTextContent('refresh failed')
-    expect(screen.getByRole('button', { name: 'Set up Remote Control' })).toBe(open)
-    expect(screen.queryByTestId('remote-control-unavailable')).toBeNull()
-    expectDraft(form)
-    vi.mocked(api.mobileConnectMethods).mockResolvedValue({ methods: [] })
-    fireEvent.click(within(screen.getByTestId('remote-control-setup')).getByRole('button', { name: 'Try again' }))
-    await screen.findByTestId('remote-control-unavailable')
-    expect(screen.queryByTestId('remote-control-error')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Set up Remote Control' })).toBeNull()
-    expectDraft(form)
-  })
-})
-
-it('does not claim Remote Control is unavailable while methods are still loading', async () => {
-  let finish!: (value: { methods: [] }) => void
-  vi.mocked(api.mobileConnectMethods).mockImplementation(() => new Promise(resolve => { finish = resolve }))
-  mount(<PeoplePanel />)
-  const card = await screen.findByTestId('remote-control-setup')
-  expect(within(card).getByRole('status')).toHaveTextContent('Checking remote access')
-  expect(screen.queryByTestId('remote-control-unavailable')).toBeNull()
-  await act(async () => { finish({ methods: [] }) })
-  expect(await screen.findByTestId('remote-control-unavailable')).toBeInTheDocument()
+it.each(['personal', 'network'] as const)('People has no Remote Control section in %s mode and never reads phone methods', async currentMode => {
+  const qc = client()
+  qc.setQueryData(keys.mode, { ...mode, mode: currentMode })
+  mount(<PeoplePanel />, qc)
+  await enterInviteDraft()
+  expect(screen.queryByTestId('remote-control-setup')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Set up Remote Control' })).toBeNull()
+  expect(api.mobileConnectMethods).not.toHaveBeenCalled()
 })
 
 describe('People invite read ownership', () => {

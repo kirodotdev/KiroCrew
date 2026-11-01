@@ -772,13 +772,17 @@ without an ordering hazard against `extensions.ts`.
 The core's own methods sit on the same helpers. They are defined by domain in
 `api/client/*.ts`, one module per product area (chat, memory, security, …), each
 a `create*Endpoints` factory that `client.ts` hands the transport it owns
-(`ClientTransport`, `api/client/transport.ts`): the five helpers, the three
-parsers, the shared `X-Session-Key` header, the session-expiry hooks a
+(`ClientTransport`, `api/client/transport.ts`): the five helpers, the parsers,
+the shared `X-Session-Key` header, the session-expiry hooks a
 method that reads its own response calls, and `withJournaledDeadline` (a
-deadline that also records a timed-out read in the error journal). The third parser
-(`jInstancesDisabled`) is core-only and deliberately absent from `ApiTransport`
-above: it opts one specific benign denial on one core route out of the error
-journal, which is not an edition's decision to make. None of them imports a
+deadline that also records a timed-out read in the error journal). The
+route-specific parsers (`jInstancesDisabled`, `jCrewBoard`, `jSlotEnvironment` and
+`jSharedCrewPreview`)
+are core-only and deliberately absent from `ApiTransport` above: each opts one
+specific benign denial on one core route out of the error journal (a disabled
+instances control plane's 403, a conductor with no ledger's 404 `no_ledger`, and
+the slot-environment read's and the Shared Crew preview read's 403 `owner_only`
+for a caller that is not the dashboard owner), which is not an edition's decision to make. None of them imports a
 runtime value
 from `client.ts` (the telemetry module takes the Kiro usage types defined there
 as types only), so the transport and its recovery keep one definition.

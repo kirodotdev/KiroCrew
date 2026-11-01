@@ -15,17 +15,19 @@
  *
  *  The surface follows the Crew's mode (`GET /api/shared-crew/mode`), and the
  *  modes never mix (`PeopleModes.tsx`): a personal Crew shows the setup empty
- *  state (`SharedAccessSetup`) and personal Remote Control; a network Crew shows
- *  the share card, the People list and Remote Control (`PeopleCrew.tsx`); a
- *  Console Crew shows read-only Team Access and its Console link only; an
- *  invalid team setup shows an error, never the personal surface. */
+ *  state (`SharedAccessSetup`); a network Crew shows the connect card and the
+ *  People list (`PeopleCrew.tsx`); a Console Crew shows read-only Team Access
+ *  and its Console link only; an invalid team setup shows an error, never the
+ *  personal surface. The owner of a personal or network Crew also gets a
+ *  collapsed Advanced section (`PeopleAdvanced.tsx`). */
 import { Users } from 'lucide-react'
 import { SettingsCard, SettingsSection } from '../../components/settings'
 import { Badge, Btn, ContentSkeleton, EmptyState } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { capabilityUsable, membershipPointer, principalInitials, principalName, sharedAccessConfigured, type PeopleRow, type PeopleSource } from '../../api/sharedCrewUi'
 import { SharedAccessSetup } from './SharedAccessSetup'
-import { ConsoleAccess, RemoteControlCard, TeamConfigInvalid } from './PeopleModes'
+import { ConsoleAccess, TeamConfigInvalid } from './PeopleModes'
+import { PeopleAdvanced } from './PeopleAdvanced'
 import { PeopleList, ShareHero, useCanInvite } from './PeopleCrew'
 import { TailscaleInvites } from './TailscaleInvites'
 import { avatarUrl } from '../../api/sharedCrewInvites'
@@ -63,9 +65,9 @@ function PersonRow({ row, usageAvailable }: { row: PeopleRow; usageAvailable: bo
         </div>
         {login && login !== name && <span className="text-[12px] text-muted truncate" title={login}>{login}</span>}
         <span className="text-[12px] text-muted">
-          {row.last_seen_at ? i18nT('sharedCrew.last_seen', { when: fmtDateTime(row.last_seen_at * 1000) }) : i18nT('sharedCrew.not_seen_live')}
+          {row.last_seen_at ? i18nT('sharedCrew.last_seen', { when: fmtDateTime(row.last_seen_at * 1000) }) : null}
           {(row.sessions_created ?? 0) > 0 && (
-            <><span aria-hidden>{'\u00A0·\u00A0'}</span>{i18nT('sharedCrew.sessions_created', { n: fmtNumber(row.sessions_created ?? 0) })}</>
+            <>{row.last_seen_at ? <span aria-hidden>{'\u00A0·\u00A0'}</span> : null}{i18nT('sharedCrew.sessions_created', { n: fmtNumber(row.sessions_created ?? 0) })}</>
           )}
         </span>
         {usageAvailable && row.usage && (
@@ -125,7 +127,7 @@ function PeopleContent({ capabilities, data, modeData }: {
       <div className="flex flex-col gap-4" data-testid="people-personal">
         <SharedAccessSetup capabilities={capabilities} />
         <TailscaleInvites />
-        <RemoteControlCard />
+        {canInvite && <PeopleAdvanced />}
       </div>
     )
   }
@@ -152,6 +154,7 @@ function PeopleContent({ capabilities, data, modeData }: {
   const attributionReason = capabilities.reasons?.attribution
   const adapters = modeData?.adapters ?? capabilities.setup_paths ?? {}
   const rows = data?.people ?? []
+  const viewerOwns = canInvite || rows.some(row => row.is_viewer && row.is_owner)
   const hero = <ShareHero direct={capabilities.tailnet_direct} tailscale={adapters.tailscale} people={rows} canInvite={canInvite} />
   if (!data || !capabilityUsable(capabilities.attribution)) {
     const unnamed = attributionReason === 'platform_unprovable' || attributionReason === 'daemon_same_user'
@@ -168,7 +171,7 @@ function PeopleContent({ capabilities, data, modeData }: {
           )}
           testId={unnamed ? 'people-unnamed' : 'people-unavailable'}
         />
-        <RemoteControlCard />
+        {viewerOwns && <PeopleAdvanced />}
       </div>
     )
   }
@@ -189,7 +192,7 @@ function PeopleContent({ capabilities, data, modeData }: {
           <p className="text-[13px] text-muted pt-1" data-testid="console-pointer">{i18nT('sharedCrew.access_console')}</p>
         )}
       />
-      <RemoteControlCard />
+      {viewerOwns && <PeopleAdvanced />}
     </div>
   )
 }

@@ -11,6 +11,7 @@ import json
 
 import pytest
 from chat_test_helpers import _make_state
+from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.dashboard import state as state_module
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
@@ -30,6 +31,7 @@ from kiro_crew.shared_crew.contracts import (
     Transport,
 )
 from kiro_crew.shared_crew.identity import tailnet_principal
+from kiro_crew.shared_crew.owner import owner_principal
 
 
 class _AttrSlot(_ChatSlot):
@@ -39,6 +41,8 @@ class _AttrSlot(_ChatSlot):
 def _actor(principal: Principal) -> ActorContext:
     return ActorContext(principal=principal, request_id="r-1", transport=Transport.HTTP)
 
+
+pytestmark = pytest.mark.usefixtures("host_isolation")
 
 ALICE = tailnet_principal("alice@example.com", "laptop.tail.ts.net", Provenance.TAILSCALE_SERVE)
 BOB = tailnet_principal("bob@example.com", "phone.tail.ts.net", Provenance.TAILSCALE_SERVE)
@@ -192,13 +196,33 @@ def test_a_damaged_attribution_reads_without_raising_and_never_names_someone_els
     assert value.creator.id != BOB.id
 
 
-def test_a_torn_metadata_line_lists_the_session_as_unknown(state):
+def test_a_torn_metadata_line_lists_the_session_as_legacy_and_the_owners(state):
     path = state.conversation_log._path("dashboard_torn")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"_type": "metadata", "attribution": {"creator": {"id": "p_', encoding="utf-8")
     rows = [r for r in state.conversation_log.list_sessions() if r["key"] == "dashboard_torn"]
     assert rows and rows[0]["attribution"]["availability"] == "legacy_missing"
-    assert rows[0]["attribution"]["creator"]["kind"] == "unknown"
+    assert rows[0]["attribution"]["creator"]["id"] == owner_principal().id
+    assert rows[0]["attribution"]["creator"]["kind"] == "human"
+
+
+def test_a_legacy_slot_shows_the_owner_but_stores_and_stamps_nothing():
+    slot = _AttrSlot("s-legacy")
+    attr.restore_from_metadata(slot, {})
+    public = attr.public_attribution_of_slot(slot)
+    assert public["availability"] == "legacy_missing"
+    assert public["creator"]["id"] == owner_principal().id
+    assert attr.metadata_value(slot) is None
+    # A later stamp never replaces a legacy value.
+    attr.stamp_creator(slot, _actor(ALICE))
+    assert attr.slot_attribution(slot).availability is AttributionAvailability.LEGACY_MISSING
+
+
+def test_a_legacy_session_that_names_a_trigger_keeps_the_trigger_and_no_person():
+    public = attr.public_attribution_from_meta({"created_by": "cron:abc12345"}, key="dashboard:t")
+    assert public["availability"] == "legacy_missing"
+    assert public["creator"]["kind"] == "unknown"
+    assert public["trigger"]["kind"] == "scheduled"
 
 
 def test_unknown_fields_inside_attribution_survive_a_read_and_write():

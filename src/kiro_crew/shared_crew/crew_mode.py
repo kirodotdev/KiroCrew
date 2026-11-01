@@ -33,6 +33,7 @@ from kiro_crew.shared_crew.access import tailnet_identity_config_unreadable
 from kiro_crew.shared_crew.codec import SCHEMA_VERSION
 from kiro_crew.shared_crew.contracts import CapabilityState, Principal, PrincipalKind, Provenance
 from kiro_crew.shared_crew.identity import PROVIDER_LOCAL, local_operator_principal
+from kiro_crew.shared_crew.owner import LOCAL_BOOTSTRAP_SUBJECTS
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +57,6 @@ _CONFIGURED_STATES = frozenset({CapabilityState.AVAILABLE.value, CapabilityState
 #: The ``workload_identity_ref`` the mode body and audit records carry: this
 #: build has no Crew workload identity.
 WORKLOAD_UNAVAILABLE = "unavailable"
-
-#: Token subjects of the gateway's machine-local bootstrap tokens, minted as
-#: ``owner_id or <subject>``: the one local operator when no owner is configured.
-LOCAL_BOOTSTRAP_SUBJECTS: tuple[str, ...] = ("local-app", "local-startup")
 
 
 @dataclass(frozen=True)

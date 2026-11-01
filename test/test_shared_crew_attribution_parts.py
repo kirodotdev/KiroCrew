@@ -12,6 +12,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.shared_crew import access
 from kiro_crew.shared_crew import attribution as attr
@@ -27,6 +28,8 @@ from kiro_crew.shared_crew.contracts import (
     Transport,
 )
 from kiro_crew.shared_crew.identity import local_operator_principal, tailnet_principal
+
+pytestmark = pytest.mark.usefixtures("host_isolation")
 
 ALICE = tailnet_principal("alice@example.com", "laptop", Provenance.TAILSCALE_SERVE)
 ANA = tailnet_principal(

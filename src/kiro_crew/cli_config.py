@@ -25,6 +25,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE
 from kiro_crew.config.sections import _migrate_workspaces, _sanitize_bot_name
+from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import (
     acked_superseded,
     adopt_coerced_keys,
@@ -326,10 +327,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             # takes precedence over the base file) cannot become the one way to
             # store `true` on a pinned host. Only the enable direction is refused
             # (tightest-wins), matching the PATCH 403 and the startup gate.
-            if (
-                key in ("dashboard.tailscale.enabled", "dashboard.tailscale.trust_identity")
-                and parsed is True
-            ):
+            if key in TAILNET_OPENING_PATHS and parsed is True:
                 from kiro_crew.dashboard import tailnet
 
                 if tailnet.is_governance_pinned_off(audit_tool="config_set_cli_tailnet"):

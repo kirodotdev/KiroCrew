@@ -203,6 +203,7 @@ const API_KEY_ORDER = [
   'tailscaleInvites', 'tailscaleConnect', 'tailscaleDisconnect', 'tailscaleCreateInvites', 'tailscaleResendInvite',
   'tailscaleRevokeInvite', 'tailscaleUploadAvatar', 'sharedCrewSetPersonDisplay',
   'sharedCrewAccess', 'sharedCrewAckFirstShare',
+  'sharedCrewPreview', 'sharedCrewSetPreview',
   'sharedCrewCancelWork',
 ]
 

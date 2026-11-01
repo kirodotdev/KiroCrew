@@ -6,18 +6,17 @@
  *  that login in. The name and picture are display only: who gets in is always
  *  the login Tailscale reports, even when they accepted from another account.
  *
- *  Without a connected Tailscale API key the card explains the manual path and
- *  links the admin console's Machines page, where the owner shares this machine
- *  by hand. The key is sent once and never shown again.
+ *  Without a connected Tailscale API key the card links the admin console's
+ *  Machines page, where the owner shares this machine by hand. The key is sent
+ *  once and never shown again.
  *
- *  The first invite, while nobody else has access, asks once per Crew
- *  (`useFirstShareGate`): that anyone Tailscale access rules let reach this
- *  machine gets in, that they will see every session and Crew memory, with
- *  real counts, that a laptop host loses them when it sleeps, and where
- *  sharing stops. */
+ *  After an invite is made, `CopyInviteMessage` copies the message to send with
+ *  it. The first invite, while nobody else has access, asks once per Crew
+ *  (`useFirstShareGate`) with one warning line: they will see every session and
+ *  Crew memory, with real counts. */
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, ExternalLink, Link2, Mail, RefreshCw, Trash2, UserPlus } from 'lucide-react'
+import { Check, Copy, ExternalLink, Link2, Mail, MessageSquare, RefreshCw, Trash2, UserPlus } from 'lucide-react'
 import { api } from '../../api/client'
 import {
   AVATAR_MAX_BYTES,
@@ -36,7 +35,9 @@ import {
   type TailscaleInvitesStatus,
 } from '../../api/sharedCrewInvites'
 import { invitesPinnedOff } from '../../api/sharedCrewUi'
-import { useSharedCrewCapabilities } from '../../hooks/sharedCrew/useSharedCrew'
+import { useSharedCrewCapabilities, useSharedCrewPeople } from '../../hooks/sharedCrew/useSharedCrew'
+import { tailnetDirectActive } from '../../components/TailnetDirectLink'
+import { buildInviteMessage, ownerDisplayName } from './inviteMessage'
 import { SettingsCard, SettingsSection } from '../../components/settings'
 import { headingTip } from './PeopleModes'
 import { Badge, Btn, Input, Toggle } from '../../components/ui'
@@ -52,7 +53,7 @@ import { useConfirm } from '../../components/ConfirmDialog'
 export const tailscaleInvitesKey = [...sharedCrewKeys.all, 'tailscale-invites'] as const
 export const sharedCrewAccessKey = [...sharedCrewKeys.all, 'access'] as const
 
-/** Who gets in, what they will see and where sharing stops, as the warning's body. */
+/** Who can open the Crew, what they will see, the laptop note and where to stop sharing. */
 function FirstShareBody({ share }: { share: FirstShare }) {
   const counted = share.sessions !== null && share.memory_items !== null
   return (
@@ -69,6 +70,34 @@ function FirstShareBody({ share }: { share: FirstShare }) {
         </p>
       )}
       <p className="m-0" data-testid="first-share-stop">{i18nT('sharedCrew.first_share_stop_tailscale')}</p>
+    </div>
+  )
+}
+
+/** Copies the message the owner sends with an invite: who invited them, how to
+ *  accept, and the Crew links. Renders nothing until the Crew has a link to
+ *  send. `inviteUrl` is a link invite's URL; without it the email line is used. */
+export function CopyInviteMessage({ inviteUrl = '', testId = 'invite-copy-message', primary = false }: { inviteUrl?: string; testId?: string; primary?: boolean }) {
+  const caps = useSharedCrewCapabilities({ fetchOnMount: false })
+  const people = useSharedCrewPeople(true, { fetchOnMount: false })
+  const [copied, setCopied] = useState<boolean | null>(null)
+  const direct = caps.capabilities.tailnet_direct
+  if (!tailnetDirectActive(direct)) return null
+  const copyMessage = async () => {
+    const text = buildInviteMessage({ owner: ownerDisplayName(people.data?.people ?? []), urls: direct.urls, inviteUrl })
+    let ok = false
+    try { ok = await copyToClipboard(text) } catch { ok = false }
+    setCopied(ok)
+    if (ok) setTimeout(() => setCopied(null), 2000)
+  }
+  return (
+    <div className="flex flex-col gap-1 min-w-0">
+      <Btn type="button" primary={primary} onClick={() => { void copyMessage() }} data-testid={testId}>
+        {copied ? <Check size={14} className="lucide-inline" aria-hidden /> : <MessageSquare size={14} className="lucide-inline" aria-hidden />}
+        {' '}{copied ? i18nT('sharedCrew.invite_copied') : i18nT('sharedCrew.invite_copy_message')}
+      </Btn>
+      {/* No hand-off: the invite draft and the People page around this button may hold unsaved input. */}
+      {copied === false && <ErrorNotice variant="inline" message={i18nT('sharedCrew.direct_link_copy_failed')} testId={`${testId}-error`} />}
     </div>
   )
 }
@@ -248,6 +277,7 @@ function InviteForm({ disabled }: { disabled: boolean }) {
   const [avatarErr, setAvatarErr] = useState('')
   const [avatarHint, setAvatarHint] = useState('')
   const [lastLink, setLastLink] = useState('')
+  const [sent, setSent] = useState(false)
   const [copied, setCopied] = useState<boolean | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const parsed = useMemo(() => parseEmails(emails), [emails])
@@ -262,6 +292,7 @@ function InviteForm({ disabled }: { disabled: boolean }) {
     onSuccess: res => {
       const link = res.invites.find(i => i.kind === 'link')?.invite_url ?? ''
       setLastLink(link)
+      setSent(res.invites.length > 0)
       setCopied(null)
       setEmails('')
       setAlias('')
@@ -322,7 +353,6 @@ function InviteForm({ disabled }: { disabled: boolean }) {
         <div className="flex items-center gap-2 min-w-0" data-testid="invite-link-options">
           <Toggle checked={reusable} onChange={setReusable} disabled={draftLocked} label={i18nT('sharedCrew.invite_reusable')} />
           <span className="text-[13px] text-text">{i18nT('sharedCrew.invite_reusable')}</span>
-          <span className="text-[12px] text-muted">{i18nT('sharedCrew.invite_reusable_help')}</span>
         </div>
       )}
       <div className="flex flex-wrap gap-3 items-end min-w-0">
@@ -336,7 +366,6 @@ function InviteForm({ disabled }: { disabled: boolean }) {
           <Btn type="button" onClick={() => fileRef.current?.click()} disabled={draftLocked || upload.isPending}>{i18nT('sharedCrew.invite_avatar')}</Btn>
         </div>
       </div>
-      <p className="text-[12px] text-muted">{i18nT('sharedCrew.invite_alias_help')}</p>
       <FieldHint code={avatarHint} id="invite-avatar-hint" />
       <ErrorLine code={avatarErr} testId="invite-avatar-error" />
       <Btn type="submit" primary className="self-start" disabled={!canSend || draftLocked || upload.isPending} data-testid="invite-send">
@@ -352,7 +381,13 @@ function InviteForm({ disabled }: { disabled: boolean }) {
           </Btn>
           {/* No hand-off: navigation leaves behind the unsaved invite draft (emails, name and picture). */}
           {copied === false && <ErrorNotice variant="inline" message={i18nT('sharedCrew.direct_link_copy_failed')} testId="invite-copy-error" />}
+          <CopyInviteMessage inviteUrl={lastLink} testId="invite-copy-link-message" />
           <span className="text-[12px] text-muted w-full">{i18nT('sharedCrew.invite_link_warning')}</span>
+        </div>
+      )}
+      {sent && !lastLink && (
+        <div className="flex flex-wrap items-center gap-2 min-w-0" data-testid="invite-email-result">
+          <CopyInviteMessage testId="invite-copy-email-message" />
         </div>
       )}
     </form>
@@ -474,12 +509,7 @@ export function TailscaleInvites() {
   // Missing routes and an initial owner-only refusal intentionally hide the card.
   if (!status && (!query.isError || code === 'owner_only')) return null
   return (
-    // The explanation sits in the heading's ⓘ; without a key it also says how to
-    // share this machine by hand.
-    <SettingsSection
-      title={i18nT('sharedCrew.invite_title')}
-      badge={headingTip(status && !status.connected ? `${i18nT('sharedCrew.invite_body')} ${i18nT('sharedCrew.invite_manual_body')}` : i18nT('sharedCrew.invite_body'), 'invite-tip')}
-    >
+    <SettingsSection title={i18nT('sharedCrew.invite_title')}>
       <InviteReadError query={query} testId="invite-load-error" askAgent={!status} />
       {status && <SettingsCard>
         <div className="flex flex-col gap-2 min-w-0" data-testid="tailscale-invites">

@@ -44,6 +44,16 @@ export function hidesTeamAttribution(mode: CrewMode): boolean {
   return mode === 'personal'
 }
 
+/** Whether the dashboard shows who did what: the creator filter, session and
+ *  message bylines, decision attribution and presence. Every one of these is
+ *  part of the Shared Crew preview, so all must hold: the preview is on, the
+ *  Crew can attribute, its mode is read and not personal, and someone besides
+ *  the owner has joined (`someoneJoined`). Until then the dashboard looks as it
+ *  does for one person. */
+export function showsTeamAttribution(s: { previewOn: boolean; attributes: boolean; mode: CrewMode | null; joined: boolean }): boolean {
+  return s.previewOn && s.attributes && s.mode !== null && !hidesTeamAttribution(s.mode) && s.joined
+}
+
 /** The Console URL to open, re-checked here: https to a named host, else none. */
 export function consoleUrl(resp: CrewModeResponse | null | undefined): string {
   if (!resp || resp.mode !== 'console' || resp.console?.state !== 'available') return ''
@@ -101,13 +111,30 @@ export function saveCreatorFilter(crewId: string, value: CreatorFilter): void {
   }
 }
 
+/** The local dashboard token's subjects (`kiro_crew.shared_crew.owner.
+ *  LOCAL_BOOTSTRAP_SUBJECTS`): the Crew's own operator, never a person's name. */
+const LOCAL_OPERATOR_NAMES: ReadonlySet<string> = new Set(['local-app', 'local-startup'])
+
+/** A person's name for display. The owner's principal carries this machine's
+ *  name; a gateway that could not read one still sends the token subject, which
+ *  reads as the Crew owner. A tailnet person always has a login, so a teammate
+ *  whose name looks like a token subject keeps it. `''` when nothing names them. */
+export function displayName(p: PublicPrincipal | null | undefined): string {
+  const name = principalName(p)
+  if (LOCAL_OPERATOR_NAMES.has(name) && !p?.display.login) return i18nT('sharedCrew.crew_owner')
+  return name
+}
+
 /** The label for a session's creator: "You" for the verified viewer, a
- *  person's name, the trigger behind unattended work, or Unattributed. */
+ *  person's name, the trigger behind unattended work, or Unattributed. A legacy
+ *  session (made before sharing existed) arrives with the Crew owner as its
+ *  creator, so it reads as the owner; only a creator nobody can name reads as
+ *  Unattributed. */
 export function creatorDisplay(attribution: SessionAttribution, viewerId?: string | null): string {
   const creator = attribution.creator
   if (!isUnknownPrincipal(creator) && creator.kind === 'human') {
     if (viewerId && creator.id === viewerId) return i18nT('sharedCrew.you')
-    return principalName(creator) || i18nT('sharedCrew.unattributed')
+    return displayName(creator) || i18nT('sharedCrew.unattributed')
   }
   const trigger = attribution.trigger
   if (trigger) {

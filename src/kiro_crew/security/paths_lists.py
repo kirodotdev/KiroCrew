@@ -629,6 +629,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``/api/decisions/consent`` handler is the only writer and opens the path
     # directly, not through this gate.
     "decisions_consent.json",
+    # The owner's Shared Crew preview switch. The record is what AUTHORIZES the
+    # Crew to open to other people on the next start, so an agent that could
+    # write it would share the owner's machine on the owner's behalf. The
+    # owner-only ``/api/shared-crew/preview`` handler is the only writer and
+    # opens the path directly, not through this gate.
+    "shared_crew_preview.json",
     "ssh_auth_sock_consent.json",
     # The owner's credential-redaction switch. Same class of control as the
     # consent records above: the record is what AUTHORIZES the credential scrubber

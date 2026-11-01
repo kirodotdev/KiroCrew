@@ -347,6 +347,24 @@ def credential_redaction_path() -> Path:
     return config_dir() / "credential_redaction.json"
 
 
+def shared_crew_preview_path() -> Path:
+    """Return path to shared_crew_preview.json -- the owner's Shared Crew preview switch.
+
+    A KEYSTONE for the same reason as :func:`decisions_consent_path`: turning
+    Shared Crew on opens this machine to other people, which is an
+    authorization, not a preference. Stored in the agent-writable ``config.json``
+    it would be one settings edit away for a prompt-injected agent. The leaf is
+    on ``security._CREW_SECRET_LEAVES`` for the tool path and the OS sandbox
+    mounts it read-only for the shell.
+
+    Holds ``{"enabled": bool}``. A missing, unreadable or malformed file reads
+    as OFF, so the fail direction is the shipped default. The only writer is the
+    owner-only ``PUT /api/shared-crew/preview`` handler, which opens the path
+    directly. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "shared_crew_preview.json"
+
+
 def ssh_auth_sock_consent_path() -> Path:
     """Return path to ssh_auth_sock_consent.json -- the SSH-agent forward consent.
 

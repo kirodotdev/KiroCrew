@@ -522,7 +522,7 @@ describe('MobileConnectModal direct tailnet link', () => {
     const advanced = screen.getByTestId('mobile-connect-advanced')
     expect(advanced.tagName).toBe('DETAILS')
     expect(advanced).not.toHaveAttribute('open')
-    expect(advanced.textContent).toMatch(/Advanced: sign-in links for devices without Tailscale/)
+    expect(advanced.textContent).toMatch(/Devices without Tailscale/)
     expect(mocks.tailnetMobileQr).not.toHaveBeenCalled()
     expect(mocks.mobileLoginLink).not.toHaveBeenCalled()
   })

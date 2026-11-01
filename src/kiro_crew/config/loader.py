@@ -902,6 +902,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         read_local_secret,
         registry_trust_path,
         resolve_agent_config_path,
+        shared_crew_preview_path,
         ssh_auth_sock_consent_path,
         workspace_dir_from_entry,
         workspace_root,

@@ -211,6 +211,7 @@ def test_shared_crew_slice_matches_each_lane_registrar() -> None:
         routes_identity,
         routes_invites,
         routes_people,
+        routes_preview,
     )
 
     def table(*registrars: Any) -> list[tuple[str, str, Any]]:
@@ -230,6 +231,7 @@ def test_shared_crew_slice_matches_each_lane_registrar() -> None:
         routes_admission.register,
         routes_collab.register,
         routes_capabilities.register,
+        routes_preview.register,
         routes_invites.register,
         routes_access.register,
         routes_people.register,

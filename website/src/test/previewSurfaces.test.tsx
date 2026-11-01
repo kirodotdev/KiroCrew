@@ -343,6 +343,8 @@ describe('Settings > Developer > Feature Previews', () => {
   beforeEach(() => {
     vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
+    // The Shared Crew card draws only for the owner; a 404 leaves it out of the census.
+    vi.spyOn(api, 'sharedCrewPreview').mockResolvedValue(null)
     vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue({
       enabled: false, endpoint: '', configured_endpoint: 'https://api.typesafe.ai/v1/systemone', permits: false,
     })

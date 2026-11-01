@@ -98,8 +98,10 @@ async def finish_access_set(resolution: tailnet_direct.DirectResolution | None =
 def _publish_owner(owner: tailnet_direct.SelfNode | None) -> None:
     if owner is not None and owner.login and owner.user_id:
         from kiro_crew.shared_crew import access_set
+        from kiro_crew.shared_crew import owner as owner_label
 
         access_set.set_owner(owner.login, owner.user_id)
+        owner_label.set_tailnet_host_name(owner.host_name)
 
 
 def _learn_owner_from_daemon() -> None:

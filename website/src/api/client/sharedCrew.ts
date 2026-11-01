@@ -8,7 +8,7 @@
  * Filtering, paging and counting happen on the server; the client sends the
  * query and renders the page it gets back.
  */
-import type { AcceptedWork, CapacityResponse, CreatorFilter, PublicPrincipal, SendState, SharedCrewCapabilities, TypingLease } from '../sharedCrew'
+import type { AcceptedWork, CapacityResponse, CreatorFilter, PublicPrincipal, SendState, SharedCrewCapabilities, SharedCrewPreviewSetting, TypingLease } from '../sharedCrew'
 import { isAcceptedWork } from '../sharedCrewUi'
 import type {
   DecisionsResponse,
@@ -36,7 +36,7 @@ export type CancelWorkResult =
   | { ok: true; work: AcceptedWork | null }
   | { ok: false; conflict: true; current: AcceptedWork | null; code: string }
 
-export function createSharedCrewEndpoints({ get, post, put, del, j }: ClientTransport) {
+export function createSharedCrewEndpoints({ get, post, put, del, j, jSharedCrewPreview }: ClientTransport) {
   const read = async <T,>(url: string): Promise<Maybe<T>> => {
     const r = await get(url)
     if (r.status === 404) return null
@@ -103,6 +103,15 @@ export function createSharedCrewEndpoints({ get, post, put, del, j }: ClientTran
     sharedCrewAckFirstShare: async (): Promise<void> => {
       await j(await post('/api/shared-crew/access/first-share/ack'))
     },
+    /** The owner's Shared Crew preview switch. A 404 reads as "not available";
+     *  a non-owner's 403 `owner_only` still throws but is not journaled. */
+    sharedCrewPreview: async (): Promise<Maybe<SharedCrewPreviewSetting>> => {
+      const r = await get('/api/shared-crew/preview')
+      if (r.status === 404) return null
+      return await jSharedCrewPreview(r) as SharedCrewPreviewSetting
+    },
+    sharedCrewSetPreview: async (enabled: boolean): Promise<SharedCrewPreviewSetting> =>
+      await j(await put('/api/shared-crew/preview', { enabled })) as SharedCrewPreviewSetting,
     /** Cancel exactly one work item at the revision the UI showed. A 409 is not
      *  an error: it carries the item's current state, which the UI adopts. */
     sharedCrewCancelWork: async (workId: string, expectedRevision: number): Promise<CancelWorkResult> => {

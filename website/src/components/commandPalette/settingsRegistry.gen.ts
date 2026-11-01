@@ -2000,6 +2000,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.shared-crew",
+    "label": "Shared Crew",
+    "labelKey": "sharedCrew.preview_title",
+    "description": "People tab, invites and shared sessions",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.ultra-mode",
     "label": "Ultra Mode",
     "labelKey": "pages.developer.featurePreviewsTab.crew_mode",
