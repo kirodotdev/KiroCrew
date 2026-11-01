@@ -190,7 +190,7 @@ def compaction_in_flight(sessions: Any, key: str) -> bool:
     them leaves a Stop that ended nothing having destroyed queued work. Callers:
     the dashboard stop and interrupt routes, Slack (events, handler,
     interactions), the shared ``messaging.commands.stop_running_turn`` (Discord,
-    Telegram, Teams), the Webex, WeCom and Weixin dispatchers, WhatsApp, and Spec
+    Telegram, Teams), the Webex, WeCom, Weixin and Feishu dispatchers, WhatsApp, and Spec
     Builder's Pause. Fail-soft
     to False and ``is True`` rather than truthiness: a manager double without the
     method, or one answering a truthy Mock, keeps the ordinary stop path.

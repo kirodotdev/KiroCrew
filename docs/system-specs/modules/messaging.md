@@ -83,6 +83,7 @@ legacy metadata do not override a canonical execution.
 | `messaging/tables.py` | `render_tables` + the `off`/`cards`/`grid`/`native`/`auto` policy contract and `display_width` — outbound Markdown-table rendering for a target that shows a pipe table as literal pipes (stdlib-only, pure) |
 | `messaging/status_reactions.py` | `PhaseReactionLadder` plus the turn-status line (`format_turn_status`): debounced phase-to-emoji swapping over an injected `ReactionSink`, a stall watchdog, tool-to-phase classification, and `merge_phase_emojis` for a user's overrides. Owns no channel API and no emoji vocabulary |
 | `messaging/commands.py` | The channel-neutral half of the shared chat commands — `/stop`'s cancel + lock ordering (`stop_running_turn`), `/yolo`'s grant ladder (`run_yolo_command`), and the dashboard-link TTL vocabulary (`parse_dashboard_ttl` / `format_ttl`). Returns reply TEXT and takes no address of any kind; `stop_running_turn` is the one exception and sends through an injected `deliver`, because its compaction decline may only arm an escalation once the warning has landed. Also the path-independent keyword commands as one copy of their reply text — `spawn`/`bg`, `cron list|remove|pause|resume`, `task run|status|cancel`, each `(text, service) -> reply | None` where `None` means "not this command, keep routing" (the `spawn` and `cron`/`task` families are `async`, because their service touch is a task-store or cron-store write and every caller is a channel handler on the gateway loop — `_spawn_off_loop` prefers `SubagentManager.spawn_async`). NOT the runtime stats line: both channels call `Stats().summary()` directly, because a one-liner with no parsing and no service to duck-type gains nothing from a shared copy. `spawn_task_reply` / `cron_remove_all_reply` are the already-parsed forms a channel whose own grammar carries the prefix calls. The services are duck-typed under `TYPE_CHECKING` because `subagent` and `taskrunner` both reach `slack` transitively |
+| `messaging/command_table.py` | A slash-command channel's vocabulary as data: `CommandSpec` (name, help text, extra aliases), `match_command` (exact whole-message match, `/name` case-insensitive) and `build_help_text`, so a channel's matcher and its `/help` card read one table and cannot drift. Weixin and Feishu use it; each keeps its own rows, header, footer and reply wording in its own `commands.py` |
 | `messaging/sessions_view.py` | The channel-neutral recent-sessions collector (`_collect_recent_sessions` + its off-loop form). Takes an explicit `sessions_dir` so a surface owning its own data-home override threads it in rather than shadowing this module's; `slack/sessions_view.py` does exactly that and keeps the Block Kit rendering |
 | `messaging/privacy_mode.py` | The `!temporary` / `!incognito` session privacy modes, keyed by **session key** — two bounded LRUs, the durable `SessionMap` flag, one `is_restricted` predicate, the token strippers, and the SEL audit with the channel as a parameter. See [Session privacy modes](#session-privacy-modes-privacy_modepy) |
 | `messaging/auto_title.py` | Conversation auto-titling — the claim-early LRU, the tool-free bounded background turn, the prompt, and the title-cleaning rules. Renaming the platform conversation is a caller-supplied callback. See [Auto-titling](#auto-titling-auto_titlepy) |
@@ -6931,8 +6932,21 @@ since chatter is not an access attempt. `FEISHU_APP_SECRET` is on the sandbox ag
 denylist.
 
 **Dispatch + rendering.** Turns ride the shared `TurnDriver`
-(`transport_dispatch.py` mirrors the WeCom dispatcher: `/new` (alias `/reset`), `/compact`
-command intercept, mid-turn messages fold into the running turn via steer
+(`transport_dispatch.py` mirrors the WeCom dispatcher: `/new` (alias `/reset`), `/compact`,
+`/agent`, `/stop` (alias `/cancel`) and `/help` command intercept, matched through
+`feishu/commands.py`'s `COMMANDS` table on the shared `messaging/command_table.py`
+shape Weixin also uses, so `/help` is rendered from the same rows the matcher reads.
+Only slash spellings are commands; a bare `停止` or `帮助` stays a prompt. `/stop` is
+intercepted before the busy check, so it is never steered into the reply it aborts,
+and mirrors the Weixin stop: `compaction_in_flight` decline first, `note_user_stop`
+before the busy check, a cooperative `cancel(wait_ack_timeout=0)` whose RETURNED
+outcome picks the reply, and the presser is the sender's `open_id`, not the route.
+The per-message `inbound_permitted("feishu", text=...)` check receives the
+mention-free body only when Feishu's own `parse_command` reads it as `stop`, so a
+bare `/stop` keeps the pure-cancel exemption on a channel governance has denied,
+while a cancel word another channel spells (`停止`, `!stop`) gets the strict gate
+instead of a pass into the busy path's steer.
+Mid-turn messages fold into the running turn via steer
 gated on `has_active_turn`, `/compact` under atomic `try_acquire`, soft/hard
 context-threshold notices as separate proactive messages). The soft notice is
 latched per route and released on BOTH the hard-threshold compaction and a
