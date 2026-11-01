@@ -185,7 +185,6 @@
   "src/test/ChatSidebar.folderAlignment.test.tsx",
   "src/test/ChatSidebar.folderEphemeralCreate.test.tsx",
   "src/test/ChatSidebar.folderNest.test.tsx",
-  "src/test/ChatSidebar.folderSearch.test.tsx",
   "src/test/ChatSidebar.folderSortMode.test.tsx",
   "src/test/ChatSidebar.goalLoop.test.tsx",
   "src/test/ChatSidebar.hapticTaps.test.tsx",
