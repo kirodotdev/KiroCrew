@@ -1087,6 +1087,37 @@ class TestCorruptSourceDB:
         out_text = capsys.readouterr().out
         assert "Source DB" in out_text or "Merge complete" in out_text
 
+    def test_refused_memory_merge_prints_no_success_tick(self, env, capsys, monkeypatch):
+        """A merge refused for a corrupt source memory.db imports nothing, so it must not tick memory."""
+        src, _, _, tmp_path = env
+        out = tmp_path / "tick_src_out"
+        out.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        tarball = _make_snapshot(src, out)
+
+        extract = tmp_path / "tick_extract"
+        extract.mkdir()
+        with tarfile.open(str(tarball)) as tar:
+            tar.extractall(extract, filter=lambda t, _d="": t)
+        snap = next(d for d in extract.iterdir() if d.name.startswith("kirocrew-snapshot-"))
+        (snap / "memory.db").write_bytes(b"corrupt data here")
+        corrupt_tar = tmp_path / "tick_corrupt.tar.gz"
+        with tarfile.open(str(corrupt_tar), "w:gz") as tar:
+            tar.add(str(snap), arcname=snap.name)
+
+        dst = tmp_path / "dst_tick"
+        _setup_fake_kirocrew(dst)  # a live memory.db exists, so the merge branch runs
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        capsys.readouterr()
+        ret = restore_main(
+            [str(corrupt_tar), "--mode", "merge", "--force", "--components", "memory"]
+            + unpinnable_argv()
+        )
+        out_text = capsys.readouterr().out
+        assert ret == 0
+        assert "skipping merge" in out_text
+        assert "✅ memory" not in out_text
+
 
 class TestGatewayRunningRefusal:
     def test_restore_refused_when_gateway_running(self, env, capsys, monkeypatch):
