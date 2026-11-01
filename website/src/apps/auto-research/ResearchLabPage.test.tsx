@@ -8,7 +8,7 @@
  * the confirmation on the resolved boolean.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
@@ -91,14 +91,14 @@ describe('ResearchLabPage report section copy', () => {
 
   it('copies the exact section text through the shared helper and confirms, then reverts', async () => {
     const buttons = await openReport()
-    fireEvent.click(buttons[0])
+    await act(async () => { fireEvent.click(buttons[0]) })
 
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('# Section one\n\nBody one.'))
     await waitFor(() =>
       expect(screen.getByText(i18nT('apps.autoResearch.researchLabPage.copied'))).toBeInTheDocument(),
     )
 
-    vi.advanceTimersByTime(1600)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600) })
     await waitFor(() => {
       expect(screen.queryByText(i18nT('apps.autoResearch.researchLabPage.copied'))).toBeNull()
     })
@@ -107,7 +107,7 @@ describe('ResearchLabPage report section copy', () => {
   it('renders no confirmation when the copy fails — the exact defect this fix closes', async () => {
     vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
     const buttons = await openReport()
-    fireEvent.click(buttons[0])
+    await act(async () => { fireEvent.click(buttons[0]) })
 
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalled())
     // Before the fix this assertion would fail: the old code rendered "Copied"
