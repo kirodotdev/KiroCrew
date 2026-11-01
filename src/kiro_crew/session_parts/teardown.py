@@ -143,6 +143,11 @@ async def flag_identity_stamp_mismatches(self: SessionManager, live: str) -> lis
     return await self._lifecycle_boundary().flag_identity_stamp_mismatches(live)
 
 
+def holds_kiro_process_of_unknown_account(self: SessionManager, live: str) -> bool:
+    """Whether a claimable Kiro-backed process's stamp proves neither *live* nor another account."""
+    return self._lifecycle_boundary().holds_kiro_process_of_unknown_account(live)
+
+
 async def _retire_kiro_subagent_runtimes(self: SessionManager, *, live: str = "") -> bool:
     """Retire idle companion runtimes that use Kiro's identity store.
 

@@ -267,6 +267,10 @@ class _Sessions:
         self.targeted.append(("try_acquire", key))
         return False
 
+    def is_retiring(self, key: str) -> bool:
+        self.targeted.append(("is_retiring", key))
+        return False
+
     def clear_queue(self, key: str, owned_by: Any = None) -> None:
         self.targeted.append(("clear_queue", key))
 

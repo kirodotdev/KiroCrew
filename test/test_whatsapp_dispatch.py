@@ -20,6 +20,7 @@ from kiro_crew.messaging.driver import APPROVAL_AUTO
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.whatsapp.commands import (
+    COMPACT_ACCOUNT_CHANGED_TEXT,
     COMPACT_AUTO_TEXT,
     COMPACT_BUSY_TEXT,
     COMPACT_FAILED_TEXT,
@@ -132,6 +133,13 @@ class FakeSessions:
 
     async def try_acquire(self, key: str) -> bool:
         return self._acquirable
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     def has_session(self, key: str) -> bool:
         return self._session_exists
@@ -1003,6 +1011,23 @@ def test_compact_command_on_a_busy_session_asks_for_a_retry():
     assert provider.compacts == 0
     assert [t for _, t in transport.sent] == [COMPACT_BUSY_TEXT]
     assert sessions.released == 0, "nothing was acquired, so nothing may be released"
+
+
+def test_compact_command_on_a_flagged_session_says_the_account_changed():
+    """A session the Kiro account check flagged is refused but stays registered.
+
+    No reply holds it, so the busy receipt would leave the operator retrying a
+    compaction that never comes: the next message restarts the conversation.
+    """
+    provider = FakeProvider()
+    d, _client, sessions, transport = _make(
+        provider=provider, acquirable=False, session_exists=True
+    )
+    sessions.retiring = True
+    asyncio.run(d.handle_message(_msg("/compact")))
+    assert provider.compacts == 0
+    assert [t for _, t in transport.sent] == [COMPACT_ACCOUNT_CHANGED_TEXT]
+    assert sessions.released == 0
 
 
 def test_compact_command_without_a_session_says_there_is_nothing_to_compact():

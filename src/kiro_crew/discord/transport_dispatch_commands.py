@@ -27,7 +27,11 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.discord.session_resume import ResumeReleaseError
-from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
+from kiro_crew.messaging.commands import (
+    COMPACT_ACCOUNT_CHANGED_TEXT,
+    compact_unsupported_backend,
+    compact_unsupported_reply,
+)
 from kiro_crew.messaging.link import rebind_conversation_location, release_conversation_location
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.session_map import ConversationOwnershipConflict
@@ -151,7 +155,9 @@ async def _handle_compact(
     assert self.client is not None
     session_key = resumed_key or self._session_key(user_id, thread_id)
     if not await self.sessions.try_acquire(session_key):
-        if self.sessions.has_session(session_key):
+        if self.sessions.is_retiring(session_key):
+            await self.client.send_message(channel_id, COMPACT_ACCOUNT_CHANGED_TEXT)
+        elif self.sessions.has_session(session_key):
             await self.client.send_message(
                 channel_id,
                 "⏳ Still working on your last message — try `!compact` " "once it finishes.",

@@ -118,6 +118,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_cancelled": ("function", False, "50fe52427d8c", "facade"),
     "is_continuable": ("function", False, "1eda252b53bd", "facade"),
     "is_provider_alive": ("function", True, "5ccb54f56604", "facade"),
+    "is_retiring": ("function", False, "1eda252b53bd", "facade"),
     "is_session_sharing_eligible": ("function", False, "3780bd272b7a", "companions"),
     "mapped_session_keys": ("function", False, "602c14087aa8", "facade"),
     "mapped_sid": ("function", False, "f1d40e624ae4", "facade"),
