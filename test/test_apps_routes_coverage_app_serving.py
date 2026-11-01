@@ -1,7 +1,7 @@
 """Coverage tests for the routes that open and serve an installed app.
 
 Pins ``POST /api/apps/{name}/open``, UI-file serving, dev mode, the app config routes,
-the app-secret cache, backend URL resolution, the reverse proxy's authorization gates
+the per-request app-secret read, backend URL resolution, the reverse proxy's authorization gates
 and signed forward, and that a client disconnecting mid-stream from a UI file or the
 proxy stays quiet.
 ``test_apps_routes_coverage.py`` holds install, registration and the app views, and
@@ -36,7 +36,6 @@ from kiro_crew.apps.manager import enable_app
 from kiro_crew.apps.routes import (
     _get_app_secret,
     _resolve_app_backend_url,
-    invalidate_app_secret_cache,
 )
 
 # ---------------------------------------------------------------------------
@@ -396,45 +395,40 @@ class TestAppConfig:
 # ---------------------------------------------------------------------------
 
 
-class TestAppSecretCache:
-    def test_missing_secret_is_not_cached(
+class TestAppSecretReads:
+    def test_missing_secret_is_observed_after_provisioning(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         home = _setup_env(tmp_path, monkeypatch)
         assert _get_app_secret(APP) == ""
-        # A secret provisioned after the first miss must still be picked up.
         app_dir = home / "apps" / APP
         app_dir.mkdir(parents=True, exist_ok=True)
         (app_dir / ".app_secret").write_text("s3cret\n", encoding="utf-8")
         assert _get_app_secret(APP) == "s3cret"
 
-    def test_cached_secret_survives_file_removal_until_invalidated(
+    def test_rotation_and_removal_are_observed_without_invalidation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         home = _setup_env(tmp_path, monkeypatch)
         app_dir = home / "apps" / APP
         app_dir.mkdir(parents=True, exist_ok=True)
         secret_file = app_dir / ".app_secret"
-        secret_file.write_text("cached-value", encoding="utf-8")
-        assert _get_app_secret(APP) == "cached-value"
+        secret_file.write_text("first", encoding="utf-8")
+        assert _get_app_secret(APP) == "first"
+        secret_file.write_text("second", encoding="utf-8")
+        assert _get_app_secret(APP) == "second"
         secret_file.unlink()
-        assert _get_app_secret(APP) == "cached-value"
-        invalidate_app_secret_cache(APP)
         assert _get_app_secret(APP) == ""
 
 
 class TestResolveAppBackendUrl:
-    def test_gateway_tracked_port_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(routes_mod, "get_app_backend_port", lambda n: 7712)
-        assert _resolve_app_backend_url(APP) == "http://127.0.0.1:7712"
-
     def test_no_manifest_is_unresolvable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(routes_mod, "get_app_backend_port", lambda n: None)
         monkeypatch.setattr(routes_mod, "get_app_manifest", lambda n: None)
         assert _resolve_app_backend_url(APP) is None
 
-    def test_self_managed_fixed_port_from_manifest(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(routes_mod, "get_app_backend_port", lambda n: None)
+    def test_managed_fixed_port_requires_tracked_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             routes_mod,
             "get_app_manifest",
@@ -443,10 +437,11 @@ class TestResolveAppBackendUrl:
                 mcpServers={},
             ),
         )
-        assert _resolve_app_backend_url(APP) == "http://127.0.0.1:7801"
+        assert _resolve_app_backend_url(APP) is None
 
-    def test_auto_port_falls_back_to_mcp_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(routes_mod, "get_app_backend_port", lambda n: None)
+    def test_managed_auto_port_never_falls_back_to_mcp_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             routes_mod,
             "get_app_manifest",
@@ -458,22 +453,21 @@ class TestResolveAppBackendUrl:
         monkeypatch.setattr(
             routes_mod, "resolve_mcp_backend_url", lambda servers: "http://127.0.0.1:7778"
         )
-        assert _resolve_app_backend_url(APP) == "http://127.0.0.1:7778"
+        assert _resolve_app_backend_url(APP) is None
 
-    def test_non_numeric_port_falls_back_instead_of_raising(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(routes_mod, "get_app_backend_port", lambda n: None)
+    def test_self_managed_app_uses_its_mcp_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             routes_mod,
             "get_app_manifest",
             lambda n: SimpleNamespace(
-                backend=SimpleNamespace(entryPoint="server.py", port="not-a-port"),
-                mcpServers={},
+                backend=SimpleNamespace(entryPoint="", port=""),
+                mcpServers={"x": {"url": "http://127.0.0.1:7778/mcp"}},
             ),
         )
-        monkeypatch.setattr(routes_mod, "resolve_mcp_backend_url", lambda s: None)
-        assert _resolve_app_backend_url(APP) is None
+        monkeypatch.setattr(
+            routes_mod, "resolve_mcp_backend_url", lambda servers: "http://127.0.0.1:7778"
+        )
+        assert _resolve_app_backend_url(APP) == "http://127.0.0.1:7778"
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +554,7 @@ class TestApiProxyAuthorization:
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)
         enable_app(APP)
-        monkeypatch.setattr(routes_mod, "_resolve_app_backend_url", lambda n: None)
+        monkeypatch.setattr(routes_mod, "_resolve_app_backend_url", lambda n, m=None: None)
         app = _make_app(app_identity=APP)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(f"/apps/{APP}/api/ping")
@@ -588,8 +582,7 @@ class TestApiProxyAuthorization:
         secret_file = home / "apps" / APP / ".app_secret"
         if secret_file.exists():
             secret_file.unlink()
-        invalidate_app_secret_cache(APP)
-        monkeypatch.setattr(routes_mod, "_resolve_app_backend_url", lambda n: "http://127.0.0.1:1")
+        monkeypatch.setattr(routes_mod, "_resolve_app_backend_url", lambda n, m=None: "http://127.0.0.1:1")
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/apps/{APP}/api/ping")
             assert resp.status == 502
@@ -605,8 +598,7 @@ class TestApiProxyAuthorization:
         _install(tmp_path)
         enable_app(APP)
         (home / "apps" / APP / ".app_secret").write_text("k", encoding="utf-8")
-        invalidate_app_secret_cache(APP)
-        monkeypatch.setattr(routes_mod, "_resolve_app_backend_url", lambda n: "http://127.0.0.1:1")
+        monkeypatch.setattr(routes_mod, "_resolve_app_backend_url", lambda n, m=None: "http://127.0.0.1:1")
         app = _make_app()
         _fail_proxy_backend_with(app, aiohttp.ClientError("refused"))
         async with TestClient(TestServer(app)) as client:
@@ -622,8 +614,7 @@ class TestApiProxyAuthorization:
         _install(tmp_path)
         enable_app(APP)
         (home / "apps" / APP / ".app_secret").write_text("k", encoding="utf-8")
-        invalidate_app_secret_cache(APP)
-        monkeypatch.setattr(routes_mod, "_resolve_app_backend_url", lambda n: "http://127.0.0.1:1")
+        monkeypatch.setattr(routes_mod, "_resolve_app_backend_url", lambda n, m=None: "http://127.0.0.1:1")
         app = _make_app()
         _fail_proxy_backend_with(app, asyncio.TimeoutError())
         async with TestClient(TestServer(app)) as client:
@@ -649,7 +640,6 @@ async def test_api_proxy_signs_and_forwards_to_backend(
     _install(tmp_path)
     enable_app(APP)
     (home / "apps" / APP / ".app_secret").write_text("proxy-key", encoding="utf-8")
-    invalidate_app_secret_cache(APP)
 
     seen: dict[str, Any] = {}
 
@@ -667,7 +657,7 @@ async def test_api_proxy_signs_and_forwards_to_backend(
         monkeypatch.setattr(
             routes_mod,
             "_resolve_app_backend_url",
-            lambda n: f"http://127.0.0.1:{backend_server.port}",
+            lambda n, m=None: f"http://127.0.0.1:{backend_server.port}",
         )
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post(
@@ -762,8 +752,16 @@ async def test_app_proxy_stream_client_disconnect_is_quiet(
     monkeypatch.setattr(routes_mod, "is_app_enabled", lambda name: True)
     monkeypatch.setattr(
         routes_mod,
+        "get_app_manifest",
+        lambda name: SimpleNamespace(
+            backend=SimpleNamespace(entryPoint="", signedPrincipal=False),
+            mcpServers={},
+        ),
+    )
+    monkeypatch.setattr(
+        routes_mod,
         "_resolve_app_backend_url",
-        lambda name: "http://127.0.0.1:7777",
+        lambda name, m=None: "http://127.0.0.1:7777",
     )
     monkeypatch.setattr(routes_mod, "_get_app_secret", lambda name: "proxy-secret")
 

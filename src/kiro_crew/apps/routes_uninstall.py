@@ -42,7 +42,6 @@ from kiro_crew.apps.routes_lifecycle import (
     _stop_backend_and_observe,
     _unregister_notification_channels,
 )
-from kiro_crew.apps.routes_proxy import invalidate_app_secret_cache
 from kiro_crew.apps.teardown import forget_app_hooks
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.executors import subprocess_executor
@@ -749,9 +748,8 @@ async def _run_uninstall(
                     # time this runs `uninstall_app` has already removed the app's
                     # files, so the uninstall is past being retried as a whole. An
                     # ENOSPC or a permission error here would raise straight out of
-                    # the handler and skip `invalidate_app_secret_cache`,
-                    # `_unregister_notification_channels` and `forget_app_hooks` --
-                    # and a surviving slot-close hook makes the removed app's
+                    # the handler and skip `_unregister_notification_channels`
+                    # and `forget_app_hooks` -- and a surviving slot-close hook makes the removed app's
                     # leftover tabs UNDISMISSABLE, which costs the user more than
                     # the pointer this write failed to persist. The CLI sibling
                     # states the same rule as `SessionPointerCleanup(failed=True)`.
@@ -790,7 +788,6 @@ async def _run_uninstall(
             error=result.error,
         )
         return web.json_response(result.to_dict(), status=400)
-    invalidate_app_secret_cache(name)
     _unregister_notification_channels(request, name)
     # Same reason as the line above, for the hook registries: uninstall is the
     # terminal path, so an entry left behind is a closure over a store this

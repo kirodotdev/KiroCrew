@@ -272,7 +272,7 @@ def register_app_routes(app: web.Application) -> None:
 # New work goes to the owner of its responsibility:
 #
 #   ``routes_lifecycle`` -- Steps install, update, uninstall, enable and disable share.
-#   ``routes_proxy`` -- The reverse proxy from an app's UI to its backend, and its secret cache.
+#   ``routes_proxy`` -- The reverse proxy from an app's UI to its backend.
 #   ``routes_static`` -- An installed app's UI bundle and the dev-mode toggle.
 #   ``routes_art`` -- The installed-art route, and the git blob proxy with its validators.
 #   ``routes_listing`` -- The app list, one app, its manifest and config, the publish providers.
@@ -302,6 +302,13 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    # Held by ``routes_proxy`` but defined in the backend package, so named from there.
+    from kiro_crew.apps.backend import (  # noqa: F401
+        BackendTargetLease,
+        acquire_adopted_app_backend_target,
+        acquire_app_backend_target,
+        release_app_backend_target,
+    )
     from kiro_crew.apps.point_grants import (  # noqa: F401
         point_grant_families,
     )
@@ -354,13 +361,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROXY_IDLE_TIMEOUT,
         _PROXY_STRIP_HEADERS,
         _PROXY_TIMEOUT,
-        _app_secret_cache,
         _end_relay_midbody,
         _get_app_secret,
         _is_event_stream,
         _proxy_principal,
         _resolve_app_backend_url,
-        invalidate_app_secret_cache,
     )
     from kiro_crew.apps.routes_registry import (  # noqa: F401
         _announce_app_updates,

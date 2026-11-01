@@ -250,14 +250,12 @@ class TestAppProxyNeverForwardsARelayHeader:
         )
         import kiro_crew.apps.backend as bmod
         import kiro_crew.apps.bridges as bridges_mod
-        from kiro_crew.apps.routes import _app_secret_cache
 
         kiro_agents = tmp_path / "kiro-agents"
         kiro_agents.mkdir()
         _floor_monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
         bmod._processes.clear()
         bmod._allocated_ports.clear()
-        _app_secret_cache.clear()
 
     @pytest.mark.asyncio
     async def test_a_relay_header_in_any_case_never_reaches_the_backend(
@@ -280,7 +278,7 @@ class TestAppProxyNeverForwardsARelayHeader:
         await site.start()
         port = backend_runner.addresses[0][1]
         monkeypatch.setattr(
-            routes, "_resolve_app_backend_url", lambda _name: f"http://127.0.0.1:{port}"
+            routes, "_resolve_app_backend_url", lambda _name, m=None: f"http://127.0.0.1:{port}"
         )
 
         @web.middleware

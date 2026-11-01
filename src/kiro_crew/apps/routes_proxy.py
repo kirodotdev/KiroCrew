@@ -1,7 +1,7 @@
 """The reverse proxy from an app's dashboard UI to its own backend (``/apps/{name}/api/``).
 
-Resolving the backend URL, the per-app secret cache the proxy signs with
-(``invalidate_app_secret_cache``), the principal claim it forwards, the hop-by-hop and
+Resolving the backend target (a lease on the tracked child for a gateway-managed
+app), the per-request app secret read the proxy signs with, the principal claim it forwards, the hop-by-hop and
 credential headers it strips, event-stream relaying and ``handle_app_api_proxy``.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
@@ -16,12 +16,18 @@ import hashlib
 import hmac as _hmac
 import logging
 import time
+from typing import Any
 
 import aiohttp
 import yarl
 from aiohttp import web
 
-from kiro_crew.apps.backend import get_app_backend_port
+from kiro_crew.apps.backend import (
+    BackendTargetLease,
+    acquire_adopted_app_backend_target,
+    acquire_app_backend_target,
+    release_app_backend_target,
+)
 from kiro_crew.apps.manager import (
     apps_dir,
     get_app_manifest,
@@ -69,30 +75,13 @@ def _is_event_stream(content_type: str) -> bool:
     return content_type.split(";", 1)[0].strip().lower() == "text/event-stream"
 
 
-# App secret cache — secrets don't change after install, no need to read
-# from disk on every proxied request.  Invalidated on install/uninstall.
-_app_secret_cache: dict[str, str] = {}
-
-
+# CLI install and reinstall can rotate this file from another process. Read it
+# for each request, off the event loop, so the gateway never signs with a stale
+# generation.
 def _get_app_secret(name: str) -> str:
-    """Read the app secret, using an in-memory cache.
-
-    Empty values are NOT cached — the secret may be provisioned after
-    the first proxy attempt (e.g. install-from-source race).
-    """
-    cached = _app_secret_cache.get(name)
-    if cached:
-        return cached
+    """Read the current app proxy secret from disk."""
     path = apps_dir() / name / ".app_secret"
-    secret = path.read_text().strip() if path.is_file() else ""
-    if secret:
-        _app_secret_cache[name] = secret
-    return secret
-
-
-def invalidate_app_secret_cache(name: str) -> None:
-    """Remove a cached secret (call on install/uninstall)."""
-    _app_secret_cache.pop(name, None)
+    return path.read_text().strip() if path.is_file() else ""
 
 
 _PROXY_HOP_HEADERS = frozenset(
@@ -146,30 +135,19 @@ _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
 )
 
 
-def _resolve_app_backend_url(name: str) -> str | None:
-    """Resolve the backend URL for an app.
+def _resolve_app_backend_url(name: str, manifest: Any | None = None) -> str | None:
+    """Resolve only a self-managed backend URL.
 
-    For gateway-managed apps: use the tracked backend port.
-    For self-managed apps: check manifest for backend.url or mcpServers URL.
+    A ``backend.entryPoint`` is gateway-managed and must be reached through a
+    tracked target lease. Apps without an entry point may use their declared
+    MCP URL because the gateway does not claim process ownership for them.
     """
-    # 1. Gateway-managed backend (spawned by backend.py)
-    port = get_app_backend_port(name)
-    if port:
-        return f"http://127.0.0.1:{port}"
-
-    # 2. Self-managed: check manifest for explicit backend URL
-    manifest = get_app_manifest(name)
-    if not manifest:
+    if manifest is None:
+        manifest = get_app_manifest(name)
+    if not manifest or manifest.backend.entryPoint:
         return None
 
-    # backend.routes field contains the base URL for some apps
-    if manifest.backend.entryPoint and manifest.backend.port != "auto":
-        try:
-            return f"http://127.0.0.1:{int(manifest.backend.port)}"
-        except ValueError:
-            pass
-
-    # 3. Fallback: derive from the MCP server URL (common for self-managed apps)
+    # Derive from the MCP server URL (common for self-managed apps)
     # e.g. crew-companion declares mcpServers."crew-companion".url =
     # "http://127.0.0.1:7778/mcp" -> the backend is at http://127.0.0.1:7778
     #
@@ -280,23 +258,13 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             status=403,
         )
 
-    # Resolve backend URL
-    backend_url = _resolve_app_backend_url(name)
-    if not backend_url:
-        return web.json_response(
-            {"error": f"app {name!r} has no reachable backend"},
-            status=502,
-        )
-
-    # Build target URL — preserve the exact wire encoding of path and query
-    # params so the gateway's HMAC signature matches what the backend sees on
-    # self.path. `request.query_string` is DECODED by aiohttp, so signing it causes
-    # HMAC verification to fail closed (401) whenever query parameters contain
+    # Preserve the exact wire encoding of path and query parameters so the
+    # gateway's HMAC signature matches what the backend sees on self.path.
+    # `request.query_string` is DECODED by aiohttp, so signing it causes HMAC
+    # verification to fail closed (401) whenever query parameters contain
     # percent-encodable characters like spaces, non-ASCII, or '+'.
     raw_qs = request.rel_url.raw_query_string
     target_path = f"/api/{path}" + (f"?{raw_qs}" if raw_qs else "")
-    target_url = yarl.URL(f"{backend_url}{target_path}", encoded=True)
-    wire_target = target_url.raw_path_qs
 
     # Forward headers (strip hop-by-hop, inject proxy auth)
     from kiro_crew.dashboard.relay_headers import is_relay_header
@@ -317,13 +285,54 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     # The HMAC is computed over "timestamp:method:path[?query]:sha256(body)"
     # using the app secret as key. Backend verifies by recomputing with its
     # copy of the secret and checking the timestamp is recent (±60s).
+    lease: BackendTargetLease | None = None
     try:
-        secret = _get_app_secret(name)
+        secret = await asyncio.to_thread(_get_app_secret, name)
         if not secret:
             return web.json_response(
                 {"error": f"app {name!r} has no secret — cannot authenticate proxy request"},
                 status=502,
             )
+        manifest = await asyncio.to_thread(get_app_manifest, name)
+        if not manifest:
+            return web.json_response(
+                {
+                    "code": "app_backend_unreachable",
+                    "error": f"app {name!r} has no reachable backend",
+                },
+                status=502,
+            )
+        backend_url: str | None
+        if manifest.backend.entryPoint:
+            # A gateway-managed backend is reached only through a lease on a
+            # live tracked child whose injected secret matches the one signed
+            # with here, never through an untracked manifest port.
+            lease = acquire_app_backend_target(name, secret)
+            if lease is None:
+                lease = acquire_adopted_app_backend_target(name)
+            if lease is None:
+                return web.json_response(
+                    {
+                        "code": "app_backend_unavailable",
+                        "error": f"app {name!r} backend is restarting",
+                    },
+                    status=503,
+                    headers={"Retry-After": "1"},
+                )
+            backend_url = f"http://127.0.0.1:{lease.port}"
+        else:
+            backend_url = _resolve_app_backend_url(name, manifest)
+            if not backend_url:
+                return web.json_response(
+                    {
+                        "code": "app_backend_unreachable",
+                        "error": f"app {name!r} has no reachable backend",
+                    },
+                    status=502,
+                )
+
+        target_url = yarl.URL(f"{backend_url}{target_path}", encoded=True)
+        wire_target = target_url.raw_path_qs
         ts = str(int(time.time()))
         body_hash = hashlib.sha256(body or b"").hexdigest()
         msg = f"{ts}:{request.method}:{wire_target}:{body_hash}"
@@ -341,40 +350,52 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             target=wire_target,
             body=body or b"",
         )
+
+        # Opt-in only: an app without ``backend.signedPrincipal`` receives no
+        # principal header. Signed inside this block so any failure releases the
+        # target lease below.
+        if manifest.backend.signedPrincipal:
+            principal_kind, owner_id = _proxy_principal(request)
+            try:
+                headers[PROXY_PRINCIPAL_HEADER] = sign_proxy_principal_claim(
+                    kind=principal_kind,
+                    owner_id=owner_id,
+                    method=request.method,
+                    target=wire_target,
+                    body=body or b"",
+                    secret=secret,
+                )
+            except ValueError as exc:
+                # The signer refuses a claim outside its one valid shape, such as an
+                # owner id with a control character. Forwarding the request without
+                # its claim would hand an opted-in backend a request it cannot
+                # classify, so refuse.
+                if lease is not None:
+                    release_app_backend_target(lease)
+                    lease = None
+                logger.warning("Failed to sign the principal claim for %s: %s", name, exc)
+                return web.json_response(
+                    {
+                        "code": "proxy_principal_sign_failed",
+                        "error": "proxy auth failed: cannot sign principal claim",
+                    },
+                    status=502,
+                )
     except OSError as exc:
+        if lease is not None:
+            release_app_backend_target(lease)
+            lease = None
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs the app name and the OSError only and never the secret value
         logger.warning("Failed to read app secret for %s: %s", name, exc)
         return web.json_response(
             {"error": "proxy auth failed: cannot read app secret"},
             status=502,
         )
-
-    # Opt-in only: an app without ``backend.signedPrincipal`` receives no principal
-    # header. Read off the loop, like the enablement gate above, because it is a file.
-    manifest = await asyncio.to_thread(get_app_manifest, name)
-    if manifest is not None and manifest.backend.signedPrincipal:
-        principal_kind, owner_id = _proxy_principal(request)
-        try:
-            headers[PROXY_PRINCIPAL_HEADER] = sign_proxy_principal_claim(
-                kind=principal_kind,
-                owner_id=owner_id,
-                method=request.method,
-                target=wire_target,
-                body=body or b"",
-                secret=secret,
-            )
-        except ValueError as exc:
-            # The signer refuses a claim outside its one valid shape, such as an owner
-            # id with a control character. Forwarding the request without its claim
-            # would hand an opted-in backend a request it cannot classify, so refuse.
-            logger.warning("Failed to sign the principal claim for %s: %s", name, exc)
-            return web.json_response(
-                {
-                    "code": "proxy_principal_sign_failed",
-                    "error": "proxy auth failed: cannot sign principal claim",
-                },
-                status=502,
-            )
+    except BaseException:
+        if lease is not None:
+            release_app_backend_target(lease)
+            lease = None
+        raise
 
     # Set once the relay has begun. The two handlers below consult it: after
     # the head has gone out, no status of the gateway's own can be sent any more.
@@ -407,6 +428,12 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
                     timeout=timeout,
                     allow_redirects=False,
                 ) as upstream:
+                    # The verified connection has transmitted the signed request.
+                    # A later stop may end response streaming, but cannot redirect
+                    # the request body to a listener that reuses the port.
+                    if lease is not None:
+                        release_app_backend_target(lease)
+                        lease = None
                     if _is_event_stream(upstream.headers.get("Content-Type", "")):
                         # A stream has no total. Lifted here rather than skipped
                         # up front because only the response says what it is, and
@@ -447,6 +474,9 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
         if resp is not None and resp.prepared:
             return _end_relay_midbody(request, resp)
         return web.json_response({"error": "backend timeout"}, status=504)
+    finally:
+        if lease is not None:
+            release_app_backend_target(lease)
 
 
 def _end_relay_midbody(request: web.Request, resp: web.StreamResponse) -> web.StreamResponse:

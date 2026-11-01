@@ -48,10 +48,7 @@ class TestUninstallAppSourcesCleanup:
 
         bmod._processes.clear()
         bmod._allocated_ports.clear()
-        # Clear secret cache
-        from kiro_crew.apps.routes import _app_secret_cache
 
-        _app_secret_cache.clear()
         self._home = home
 
     def _create_app(
