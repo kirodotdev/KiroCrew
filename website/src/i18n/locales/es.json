@@ -16979,6 +16979,7 @@
       "created_by_closed_named": "Creada por {{name}} (cerrada)",
       "created_by_closed_unnamed": "Creada por una sesión cerrada",
       "credits": "Créditos",
+      "sort_credit_hungry": "Hambriento de créditos",
       "done": "Listo",
       "expand_sessions": "Mostrar sesiones de {{name}}",
       "expand_tasks": "Mostrar tareas de {{name}}",

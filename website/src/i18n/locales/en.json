@@ -9499,6 +9499,7 @@
       "created_by_closed_named": "Created by {{name}} (closed)",
       "created_by_closed_unnamed": "Created by a closed session",
       "credits": "Credits",
+      "sort_credit_hungry": "Credit hungry",
       "done": "Done",
       "expand_sessions": "Expand sessions under {{name}}",
       "expand_tasks": "Expand tasks for {{name}}",

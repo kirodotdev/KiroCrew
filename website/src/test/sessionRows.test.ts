@@ -443,6 +443,46 @@ describe('buildTree', () => {
     expect(rows[0].subRows).toBeUndefined()
   })
 
+  it('rolls subagent task credits into the session, not into a nested session', () => {
+    const rows = buildTree(
+      [
+        session({ key: 'dashboard:conductor', credits: 5 }),
+        session({ key: 'dashboard:worker', credits: 7, parent: createdBy('dashboard:conductor') }),
+      ],
+      [
+        task({ id: 't-of-conductor', parent: 'dashboard:conductor', credits: 2 }),
+        task({ id: 't-of-worker', parent: 'dashboard:worker', credits: 3 }),
+      ],
+    )
+    const conductor = rows[0]
+    const worker = conductor.subRows?.find(r => r.id === 'dashboard:worker')
+    expect(conductor.creditsTotal).toBe(7)
+    expect(worker?.creditsTotal).toBe(10)
+    expect(conductor.subRows?.find(r => r.id === 't-of-conductor')?.creditsTotal).toBe(2)
+    expect(conductor.subRows?.find(r => r.id === 't-of-conductor')?.nested).toBe(true)
+  })
+
+  it('rolls a nested task chain into its session', () => {
+    const rows = buildTree(
+      [session({ key: 'dashboard:a', credits: 4 })],
+      [
+        task({ id: 't1', parent: 'dashboard:a', credits: 2, session_key: 'subagent:t1' }),
+        task({ id: 't2', parent: 'subagent:t1', credits: 3 }),
+      ],
+    )
+    expect(rows[0].creditsTotal).toBe(9)
+    expect(rows[0].subRows?.[0].creditsTotal).toBe(5)
+  })
+
+  it('keeps an unmeasured session and its unmeasured tasks null', () => {
+    const rows = buildTree(
+      [session({ key: 'dashboard:a', credits: null })],
+      [task({ id: 't1', parent: 'dashboard:a', credits: null })],
+    )
+    expect(rows[0].creditsTotal).toBeNull()
+    expect(rows[0].subRows?.[0].creditsTotal).toBeNull()
+  })
+
   it('does not follow a parent key that names no row in this payload', () => {
     const rows = buildTree(
       [session({ key: 'dashboard:worker', parent: createdBy('dashboard:not-here') })],

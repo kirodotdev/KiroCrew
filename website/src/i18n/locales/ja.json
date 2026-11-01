@@ -16341,6 +16341,7 @@
       "created_by_closed_named": "{{name}} が作成（終了済み）",
       "created_by_closed_unnamed": "終了済みのセッションが作成",
       "credits": "クレジット",
+      "sort_credit_hungry": "クレジット消費が多い順",
       "done": "完了",
       "expand_sessions": "{{name}} のセッションを展開する",
       "expand_tasks": "{{name}} のタスクを展開する",

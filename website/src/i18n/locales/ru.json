@@ -17298,6 +17298,7 @@
       "created_by_closed_named": "Создана сеансом {{name}} (закрыт)",
       "created_by_closed_unnamed": "Создана закрытым сеансом",
       "credits": "Кредиты",
+      "sort_credit_hungry": "Больше всего кредитов",
       "done": "Готово",
       "expand_sessions": "Показать сессии {{name}}",
       "expand_tasks": "Показать задачи {{name}}",
