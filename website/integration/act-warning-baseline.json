@@ -167,7 +167,6 @@
   "src/test/IssueRadarPrActions.test.tsx",
   "src/test/KiroAccountModal.test.tsx",
   "src/test/KiroCrewAgentsPage.schedDraftGuard.test.tsx",
-  "src/test/KnowledgeGraphCoverage.test.tsx",
   "src/test/LexicalComposerInput.test.tsx",
   "src/test/MarkdownPanel.test.tsx",
   "src/test/MarkdownPanel.watchVisibleTab.test.tsx",
