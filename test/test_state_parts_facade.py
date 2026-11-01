@@ -664,6 +664,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "color_index": ("value", "None"),
     "color_theme": ("value", "''"),
     "created_at": ("type", "builtins.str"),
+    "incarnation": ("type", "builtins.str"),
     "credential_evidence": ("type", "kiro_crew.security.credential_sources.CredentialEvidence"),
     "event": ("type", "asyncio.locks.Event"),
     "executor": ("value", "'local'"),
@@ -928,7 +929,7 @@ def test_no_bound_member_depends_on_the_class_body_it_left() -> None:
 def test_a_fresh_slot_has_every_base_default() -> None:
     slot = _ChatSlot("k")
     got = {name: _default_of(getattr(slot, name)) for name in _ChatSlot.__slots__}
-    for name in ("created_at", "tags_revision", "_dashboard_card_identity"):
+    for name in ("created_at", "tags_revision", "_dashboard_card_identity", "incarnation"):
         got[name] = ("type", "builtins.str")
     assert got == _BASE_SLOT_DEFAULTS
 

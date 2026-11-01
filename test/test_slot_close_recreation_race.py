@@ -1238,3 +1238,75 @@ async def test_cleanup_handover_persists_the_tail_and_the_held_notes(tmp_path) -
     ], "cleanup's hand-over dropped the original's unpersisted rows or its held note"
     assert not state.conversation_log.get_metadata(HKEY).get("closed")
     assert not original._deferred_notes, "the held note was left in memory on a dropped slot"
+
+
+def _app_hooks(monkeypatch, undone: list[str], park: tuple | None = None) -> None:
+    async def _told(_app: str, _slot_key: str) -> bool:
+        if park is not None:
+            park[0].set()
+            await park[1].wait()
+        return True
+
+    async def _undo(_app: str, slot_key: str) -> bool:
+        undone.append(slot_key)
+        return True
+
+    monkeypatch.setattr("kiro_crew.apps.teardown.notify_slot_closed", _told)
+    monkeypatch.setattr("kiro_crew.apps.teardown.notify_slot_close_undone", _undo)
+
+
+@pytest.mark.asyncio
+async def test_pre_pop_abort_keeps_the_app_dismissal_when_the_key_changed_owner(
+    tmp_path, monkeypatch
+) -> None:
+    """(c3) The PRE-POP abort arm owes the same ownership coupling as the persist arm.
+
+    A same-key resume landing inside the app hook's await makes ``pre_pop_check`` raise
+    ``target_replaced`` and unwind. Gated on ``slot._app`` alone the unwind resumes the
+    crew, whose watchdog aims the auto-approve grant through a bare
+    ``state.get_slot(name)`` -- at the USER-owned replacement now holding that key.
+    """
+    state = _state_with_slot(tmp_path)
+    original = state._slots[NAME]
+    original._app = "issue-radar"
+    undone: list[str] = []
+    entered, release = asyncio.Event(), asyncio.Event()
+    _app_hooks(monkeypatch, undone, park=(entered, release))
+
+    close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
+    await _reached(entered, close, seam="notify_slot_closed")
+    state._slots.pop(NAME, None)  # a resume SWAPS the mapping; the original is still listed
+    replacement = state.get_or_create_slot(NAME)
+    assert replacement is not original
+    release.set()
+    resp = await close
+
+    assert resp.status == 409
+    assert _json(resp)["code"] == "target_replaced"
+    assert state._slots.get(NAME) is replacement, "the abort arm clobbered the replacement"
+    assert undone == [], "the dismissed app worker was resumed onto the replacement's key"
+
+
+@pytest.mark.asyncio
+async def test_pre_pop_abort_still_undoes_the_dismissal_when_the_slot_is_ours(
+    tmp_path, monkeypatch
+) -> None:
+    """(c4) Key still ours: the abort DOES undo, so the gate cannot pass by never firing.
+
+    Driven through ``close_slot`` directly because the handler re-asserts the incarnation
+    at ENTRY too, refusing an unreplaced mismatch before any hook runs.
+    """
+    state = _state_with_slot(tmp_path)
+    original = state._slots[NAME]
+    original._app = "issue-radar"
+    undone: list[str] = []
+    _app_hooks(monkeypatch, undone)
+
+    def _refuse() -> None:
+        raise handlers.SlotCloseError("refused", code="target_replaced", status=409)
+
+    with pytest.raises(handlers.SlotCloseError):
+        await handlers.close_slot(state, original, NAME, pre_pop_check=_refuse)
+
+    assert state._slots.get(NAME) is original, "an aborted close popped the slot anyway"
+    assert undone == [NAME], "a slot that kept its key left its app worker paused"

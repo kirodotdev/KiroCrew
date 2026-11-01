@@ -60,7 +60,12 @@ describe('#19958 release-locally — the honest remaining path', () => {
     // The ONE call is the local wrapper close. No peer stop API is defined on the
     // mock, so any attempt to reach the peer session would have thrown above.
     expect(deleteChatSlot).toHaveBeenCalledTimes(1)
-    expect(deleteChatSlot).toHaveBeenCalledWith(expect.objectContaining({ key: 'local-wrapper' }))
+    // undefined: the thunk was handed an object, so no store row matches by key and
+    // the close names no instance.
+    expect(deleteChatSlot).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'local-wrapper' }),
+      undefined,
+    )
   })
 
   it('a peer session with NO local wrapper stays listed under its crew group', () => {
