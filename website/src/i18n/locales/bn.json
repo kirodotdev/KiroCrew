@@ -13229,6 +13229,8 @@
       "folder_order_reorder_note": "ফোল্ডার শুধু কাস্টম ক্রমে টেনে সাজানো যায়",
       "folder_order_switch_custom": "কাস্টম-এ যান",
       "folder_order_unstamped_note": "তারিখ রেকর্ড শুরু হওয়ার আগে তৈরি ফোল্ডারগুলোর কোনো তারিখ নেই; সেগুলো তোমার কাস্টম ক্রমে শেষে থাকে",
+      "folder_order_unread_first": "অপঠিত চ্যাট থাকা ফোল্ডার উপরে সরাও",
+      "folder_order_unread_first_note": "এটি চালু থাকলে ফোল্ডার টেনে সাজানো যায় না; সাজাতে এটি বন্ধ করো",
       "sort_sessions_by": "সেশন সাজানোর ভিত্তি",
       "sort_newest": "সবচেয়ে নতুন",
       "sort_oldest": "সবচেয়ে পুরোনো",

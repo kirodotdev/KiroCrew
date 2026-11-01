@@ -300,6 +300,8 @@ export interface SidebarScope {
   kindSections: KindSections | null
   setFoldersShelved: ReturnType<typeof useSessionFilterState>['setFoldersShelved']
   toggleFoldersShelved: ReturnType<typeof useSessionFilterState>['toggleFoldersShelved']
+  foldersUnreadFirst: ReturnType<typeof useSessionFilterState>['foldersUnreadFirst']
+  toggleFoldersUnreadFirst: ReturnType<typeof useSessionFilterState>['toggleFoldersUnreadFirst']
   toggleFilter: ReturnType<typeof useSessionFilterState>['toggleFilter']
   hiddenFilters: ReturnType<typeof useSessionFilterState>['hiddenFilters']
   toggleHideFilter: ReturnType<typeof useSessionFilterState>['toggleHideFilter']
@@ -352,6 +354,8 @@ export interface SidebarScope {
   // From `useFolderSort`
   folderSortRead: ReturnType<typeof useFolderSort>['folderSortRead']
   folderSortMode: ReturnType<typeof useFolderSort>['folderSortMode']
+  /** The mode order without the unread-first view. */
+  folderModeCompare: ReturnType<typeof useFolderSort>['folderCompare']
   folderCompare: ReturnType<typeof useFolderSort>['folderCompare']
   folderReorderable: ReturnType<typeof useFolderSort>['folderReorderable']
   folderDragWithheld: ReturnType<typeof useFolderSort>['folderDragWithheld']

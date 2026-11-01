@@ -158,7 +158,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
     setAutoTitleError, setFilterSortOpen, setFolderActionError, setFolderOfflineNotice, setManualOrderError, setModelFilterExcluded, setNewChatError,
     setPinnedOrderError, setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
     setToggleSaveFailed, showAllFolders, slotFilter, sortError, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
-    toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleSaveFailed,
+    toggleFolderFilter, toggleFoldersShelved, toggleFoldersUnreadFirst, foldersUnreadFirst, toggleHideFilter, toggleModelFilter, toggleSaveFailed,
     toggleTagFilter } = shell
   const field = (
         // Search with inline sort/filter control — the shared list-panel
@@ -590,6 +590,25 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>
+                {/* A view over the mode, kept in this browser: folders with an
+                    unread chat are drawn first. Only where folder rows are drawn,
+                    since the flat and conductor lanes show no folder to move. */}
+                {folderRowsDrawn && (
+                  <DropdownMenuItem
+                    role="menuitemcheckbox"
+                    aria-checked={foldersUnreadFirst}
+                    data-testid="folder-order-unread-first"
+                    onSelect={e => { e.preventDefault(); toggleFoldersUnreadFirst() }}
+                  >
+                    <span className="flex-1">{i18nT('pages.chatSidebar.folder_order_unread_first')}</span>
+                    {foldersUnreadFirst && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
+                  </DropdownMenuItem>
+                )}
+                {foldersUnreadFirst && folderRowsDrawn && (
+                  <div className="px-2 pt-0.5 pb-1.5 text-[11px] text-muted italic whitespace-normal max-w-[300px]" data-testid="folder-order-unread-first-note">
+                    {i18nT('pages.chatSidebar.folder_order_unread_first_note')}
+                  </div>
+                )}
                 {/* Outside Custom a folder drag can re-parent but not reorder
                     (the rows' droppable side is off). Said here, where the mode
                     is chosen, the same caption grammar as the stale control's
