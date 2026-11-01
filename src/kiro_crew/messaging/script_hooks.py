@@ -108,6 +108,21 @@ async def with_hook_context(message: str, injected: list[str]) -> str:
     return f"[Hook context]\n{safe}\n[End hook context]\n\n{message}"
 
 
+async def fire_stop_if_succeeded(turn: ScriptHookTurn, stop_reason: str, reply: str) -> None:
+    """Fire ``Stop`` with *reply* when *stop_reason* classifies ``succeeded``.
+
+    For a caller that streams without a ``TurnDriver`` and so judges the end of
+    its own turn; the driver applies the same rule. ``stop_reason_landed`` is that
+    one classifier read for a completion that was observed.
+    """
+    # circular import: turn_bracket -> agent_sdk -> acp.client, which is still
+    # initializing when kiro_crew.slack.handler loads this module.
+    from kiro_crew.messaging.turn_bracket import stop_reason_landed
+
+    if stop_reason_landed(stop_reason):
+        await fire_stop(turn, reply)
+
+
 async def fire_stop(turn: ScriptHookTurn, reply: str) -> None:
     """Fire ``Stop`` with the turn's channel-safe reply as its context."""
     store = get_global_hook_store()

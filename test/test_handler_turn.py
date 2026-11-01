@@ -934,6 +934,7 @@ _OWNER_COROUTINES = (
     ("turn", "_replay_abandoned"),
     ("turn", "book_failure"),
     ("turn", "clear_working_indicators"),
+    ("turn", "fire_stop_hooks"),
     ("permission_ladder", "_screen_tool_call"),
     ("permission_ladder", "_answer_permission_request"),
     ("permission_ladder", "_reject_orphaned_tool"),
