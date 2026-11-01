@@ -2,6 +2,7 @@ import { AGENT } from './constants'
 import { toApiError } from '../../api/apiError'
 import { indeterminate, sendTurn, type SendWire } from '../../chat-core/transport/sendTurn'
 import { i18nT } from '../../i18n/t'
+import { COMPOSER_UPLOAD_PATH, uploadComposerFiles } from '../../utils/composerUpload'
 import type { Scope, SlotData } from './types'
 
 // This app's own backend (mounted by the built-in at gateway startup). It does
@@ -125,12 +126,18 @@ export const designCritiqueApi = {
   deleteSlot: (slotKey: string): Promise<void> =>
     jsonFetch<void>('/api/chat/slots/' + encodeURIComponent(slotKey), { method: 'DELETE' }).catch(() => {}),
 
+  // The main composer's upload body, so a HEIC photo is converted to JPEG and
+  // an oversized screenshot downscaled before it is posted. A server refusal
+  // still throws the typed `ApiError` this app has always shown; a photo that
+  // cannot be converted throws its own reason.
   uploadFiles: async (files: File[]): Promise<{ paths: string[] }> => {
-    const fd = new FormData()
-    files.forEach(f => fd.append('file', f))
-    const up = await fetch('/api/upload/file', { method: 'POST', body: fd, credentials: 'same-origin' })
-    if (!up.ok) throw await toApiError(up)
-    return up.json()
+    const res = await uploadComposerFiles(files, async body => {
+      const up = await fetch(COMPOSER_UPLOAD_PATH, { method: 'POST', body, credentials: 'same-origin' })
+      if (!up.ok) throw await toApiError(up)
+      return up
+    })
+    if (res.error !== undefined) throw new Error(res.error)
+    return { paths: res.paths }
   },
 
   // STEP 1 — the backend clones (if needed), lists candidate screens, and probes
