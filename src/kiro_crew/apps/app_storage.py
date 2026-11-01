@@ -171,12 +171,17 @@ class AppStorage:
     def _read(self, path: Path, *, enveloped: bool) -> dict[str, Any] | str | None:
         """Load one value file. *enveloped* files carry their key beside the value.
 
-        Bytes that are not UTF-8 are corruption, not a value: ``read_text`` raises
+        Bytes that are not UTF-8 are corruption, not a value: ``decode`` raises
         ``UnicodeDecodeError``, which is a ``ValueError`` and so is caught here
         beside the JSON error rather than reaching the caller.
+
+        The read goes through ``read_bytes_with_retry`` (as ``_read_digest_key``
+        does) so a reader that loses to a concurrent tmp-file-plus-rename writer
+        -- a Windows sharing violation -- retries rather than being told the key
+        is absent while ``list_keys`` still reports it present.
         """
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(read_bytes_with_retry(path).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None  # corrupted file
         except OSError as exc:
