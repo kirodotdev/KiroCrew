@@ -215,7 +215,6 @@
   "src/test/SchedulePage.sessionOwner.test.tsx",
   "src/test/SchedulePage.test.tsx",
   "src/test/SelectToAsk.test.tsx",
-  "src/test/SelectionToolbar.composer.test.tsx",
   "src/test/SessionActionsMenu.folderOrder.test.tsx",
   "src/test/SessionGridViewCoverage.test.tsx",
   "src/test/SessionTitleControl.test.tsx",
