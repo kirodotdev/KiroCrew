@@ -32,7 +32,7 @@ The **Mates** row sits in the left rail, under Sessions, and opens
 | Description | One line about what it is for | no description shown |
 | Triggers (`triggers`) | Free text saying when work should go to it | never auto-selected; naming it still delegates to it |
 | Avatar | A ghost face with chosen traits, or an uploaded picture | a face derived from its name |
-| Session color | Tints the sessions it starts | no color of its own |
+| Session color (`session_color`) | Tints the sessions it starts. Set in the mate's config; the forms do not edit it | no color of its own |
 
 A per-session pick always wins over the mate's model and reasoning effort,
 and the mate's values win over the global defaults.
@@ -99,7 +99,7 @@ press
 **Create** and the mate is made at once. Below the avatar, **Advanced
 settings** unfolds the rest of the form in the same card: an optional
 **Goal**, and the workspace,
-model, triggers and session color. Folding it again keeps whatever you set
+model and triggers. Folding it again keeps whatever you set
 there. When a mate suggests a new mate, its link opens this same form
 with the suggested name and goal already filled in; nothing is created until
 you press **Create**. Creating opens the new mate's chat, and the mate
@@ -138,7 +138,7 @@ Beyond creating, the page edits mates in place. The Profile card's pencil,
 Mates page itself, and every configuration write goes through that dialog.
 The crew manager — **Customize → Mates** (`/capabilities?tab=crews`) —
 remains an alternative editor for an existing mate's name, template, model,
-reasoning effort, workspace, triggers, avatar and session color.
+reasoning effort, workspace, triggers and avatar.
 
 From the CLI:
 

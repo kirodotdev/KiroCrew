@@ -7889,7 +7889,6 @@
       "pin_unserved_resolves_to": "{{harness}} doesn't offer {{model}}, so this mate's sessions run on {{harness}}'s default model instead. Pick a model it offers, or set Model to Inherited.",
       "routing": "Routing",
       "save_changes": "Save changes",
-      "session_color_hint_member": "Sessions this mate starts use this color unless the session has a color of its own. Leave empty for no mate color.",
       "shared_lower": "shared",
       "memory_label_private": "Private to this crewmate",
       "memory_label_shared": "Shared",

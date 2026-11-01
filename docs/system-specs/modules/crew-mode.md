@@ -1543,7 +1543,7 @@ pick the create still carries that name-seeded icon as its `avatar` (frozen into
 a stored choice at create, never re-derived from a later rename), so a new mate
 is born an icon rather than wearing the name's ghost. The **Advanced settings** row unfolds inline below
 the avatar, in the same card: Goal and the crew
-editor fields (workspace, model, triggers, session colour), ending with a second
+editor fields (workspace, model, triggers), ending with a second
 Create. It is folded by default; `startExpanded` opens it unfolded, which is what
 the hero's Advanced link and the crew manager's door pass. Folding unmounts those
 fields but keeps their values, and every create sends them. The "+" menu holds no

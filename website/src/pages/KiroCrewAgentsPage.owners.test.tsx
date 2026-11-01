@@ -116,7 +116,6 @@ describe('KiroCrewAgentsPage owners', () => {
       'INHERIT_MODEL',
       'ModelField',
       'OWN_WORKSPACE',
-      'SessionColorField',
       'TriggersField',
       'WorkspaceField',
       'WorkspaceModal',

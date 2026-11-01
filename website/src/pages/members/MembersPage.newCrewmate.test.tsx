@@ -674,7 +674,7 @@ describe('New mate dialog', () => {
     // The body is sent; a value typed now would never reach it and would be
     // lost when success closes the dialog — so nothing under the form takes
     // input: one disabled fieldset covers the fields that have no `disabled`
-    // prop of their own (workspace / model / triggers / colour) as well.
+    // prop of their own (workspace / model / triggers) as well.
     expect(screen.getByTestId('crewmate-create-fieldset')).toBeDisabled()
     expect(triggers).toBeDisabled()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toBeDisabled()

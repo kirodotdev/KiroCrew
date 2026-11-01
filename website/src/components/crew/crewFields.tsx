@@ -7,7 +7,6 @@
  *  `KiroCrewAgentsPage.tsx` re-exports every name for its existing importers. */
 import { useState, useEffect } from 'react'
 import { api } from '../../api/client'
-import { FOLDER_COLOR_PALETTE } from '../folderColorCatalog'
 import { Btn, SendBtn, Input } from '../ui'
 import {
   Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle,
@@ -20,9 +19,6 @@ import { isAssistantMember } from '../../lib/assistantMember'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import ErrorNotice from '../ErrorNotice'
-
-// An example input value, independent of the display language.
-const HEX_COLOR_EXAMPLE = '#4f8ef7'
 
 /** Common shape returned by the agent/workspace mutation endpoints. */
 export interface AgentMutationResult {
@@ -424,107 +420,6 @@ export function TriggersField({ value, onChange, subject }: { value: string; onC
         onChange={e => onChange(e.target.value)}
         aria-label={i18nT('pages.kiroCrewAgentsPage.triggers')}
       />
-    </Field>
-  )
-}
-
-/** Session color picker for agent configuration. Sets the default session
- *  tint color for new sessions created with this agent. */
-export function SessionColorField({ value, onChange, subject }: { value: string; onChange: (v: string) => void; subject: FormSubject }) {
-  const HEX_RE = /^#[0-9a-f]{6}$/i
-  const [draft, setDraft] = useState(value || '')
-  // Re-sync the draft when the committed value changes from outside (e.g. the
-  // swatch, Clear, or opening the editor on a different crew).
-  useEffect(() => { setDraft(value || '') }, [value])
-  const commit = (raw: string) => {
-    const v = raw.trim().toLowerCase()
-    if (v === '') { onChange(''); setDraft('') }
-    else if (HEX_RE.test(v)) { onChange(v); setDraft(v) }
-    else { setDraft(value || '') } // invalid on blur → revert to committed
-  }
-  return (
-    <Field label={i18nT('pages.kiroCrewAgentsPage.session_color')} hint={subject === 'member' ? i18nT('pages.kiroCrewAgentsPage.session_color_hint_member') : i18nT('pages.kiroCrewAgentsPage.session_color_hint')}>
-      {/* Quick picks first, exact entry below — the order the session
-       *  right-click menu uses, so the two surfaces read the same way.
-       *
-       *  These are FOLDER_COLOR_PALETTE, the repo's existing fixed-hex identity
-       *  catalog, NOT the sidebar's generated palette. The sidebar's swatches
-       *  are a `color_index` into a palette derived from the theme accent, so
-       *  they re-derive when the theme changes; a crew's `session_color` is a
-       *  stored hex, so a swatch here has to commit exactly the literal it
-       *  shows and must not drift. That is the same job the folder catalog
-       *  already does, and reusing it keeps one visual language across folders,
-       *  tags and crews — as that file's own comment argues — instead of a
-       *  second preset list that would silently diverge from it. Read-only:
-       *  the catalog's KEEP IN SYNC contract with chat_folders.py governs
-       *  changes to its entries, and consuming it adds no such coupling.
-       *
-       *  The active ring is matched by hex, so a custom colour outside the
-       *  catalog correctly rings nothing.
-       *
-       *  No "no color" cell here: Clear already owns that, and two controls for
-       *  one action is worse than one. */}
-      <div className="mb-2 flex flex-wrap items-center gap-1.5">
-        {FOLDER_COLOR_PALETTE.map(({ value: c, label }) => {
-          const active = HEX_RE.test(value) && value.toLowerCase() === c
-          return (
-            <Btn
-              type="button"
-              key={c}
-              aria-label={label()}
-              aria-pressed={active}
-              title={label()}
-              // Btn, not a raw <button>, so the swatches inherit the standard
-              // press and disabled treatment. `p-0` and the sizing below win
-              // over Btn's own padding/radius/border because Btn twMerges
-              // `className` last; the inline background beats its
-              // `bg-transparent` (and its hover background) on specificity, so
-              // the dot keeps its colour in every state.
-              //
-              // `border-text-strong`, not `border-accent`: the accent is itself a
-              // purple in most themes, so an accent ring on the indigo and violet
-              // entries reads as no ring at all. The near-white ring is what
-              // SessionColorSwatches uses, and it separates from every hue here.
-              className={`h-5 w-5 p-0 cursor-pointer rounded-full border-2 transition-transform hover:brightness-125 swatch-cue ${active ? 'border-text-strong scale-110' : 'border-border'}`}
-              style={{ background: c }}
-              onClick={() => onChange(c)}
-            />
-          )
-        })}
-      </div>
-      <div className="flex items-center gap-2">
-        <Input
-          type="color"
-          value={value || HEX_COLOR_EXAMPLE}
-          onChange={e => onChange(e.target.value.toLowerCase())}
-          className="h-8 w-8 flex-none cursor-pointer p-0.5"
-          aria-label={i18nT('pages.kiroCrewAgentsPage.session_color')}
-        />
-        <Input
-          placeholder={HEX_COLOR_EXAMPLE}
-          value={draft}
-          onChange={e => {
-            const v = e.target.value.trim().toLowerCase()
-            setDraft(v)
-            // Live-commit only when the draft is a complete hex or cleared;
-            // partial values stay local so typing is never swallowed.
-            if (v === '' || HEX_RE.test(v)) onChange(v)
-          }}
-          onBlur={e => commit(e.target.value)}
-          className="flex-1 font-mono text-[13px]"
-          aria-label={i18nT('pages.kiroCrewAgentsPage.session_color_hex')}
-        />
-        {value && (
-          <Btn
-            type="button"
-            onClick={() => onChange('')}
-            className="text-[11px]"
-            aria-label={i18nT('pages.kiroCrewAgentsPage.session_color_clear')}
-          >
-            {i18nT('pages.kiroCrewAgentsPage.session_color_clear')}
-          </Btn>
-        )}
-      </div>
     </Field>
   )
 }
