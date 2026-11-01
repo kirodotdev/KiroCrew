@@ -6,7 +6,6 @@
   "src/apps/aws-control/shared.test.tsx",
   "src/apps/command-bar/CommandBarOverlay.artifacts.test.tsx",
   "src/apps/command-bar/CommandBarOverlay.test.tsx",
-  "src/apps/ops-mission-control/HandoverPanel.test.tsx",
   "src/apps/papyrus/CoAuthorPanel.cov80.test.tsx",
   "src/components/CommandPalette.test.tsx",
   "src/components/FilePickerMenu.cov80.test.tsx",
