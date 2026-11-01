@@ -461,7 +461,6 @@
   "src/test/useDrawerSwipe.test.ts",
   "src/test/useInstanceShortcuts.test.tsx",
   "src/test/useKeyboardShortcuts.test.tsx",
-  "src/test/useNativeBrowser.test.tsx",
   "src/test/useOptimisticConfigPaths.test.tsx",
   "src/test/usePanelTabs.terminalHydrate.test.ts",
   "src/test/useQueuedMessageActions.test.tsx",
