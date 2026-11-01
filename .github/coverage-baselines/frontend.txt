@@ -64,7 +64,6 @@ src/components/Strands.tsx 52.2   # 71/136
 src/components/notifications/NotificationDetailPanel.tsx 43.2   # 16/37
 src/hooks/useCronActions.ts 31.0   # 9/29
 src/hooks/usePopoutSync.ts 0.0   # 0/51
-src/hooks/useQuickSearchShortcut.ts 40.5   # 17/42
 src/lib/disintegrate.ts 0.0   # 0/54
 src/lib/embedded.ts 75.0   # 3/4
 src/main.tsx 0.0   # 0/26
