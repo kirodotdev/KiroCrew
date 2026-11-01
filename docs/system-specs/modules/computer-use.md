@@ -330,7 +330,7 @@ flipping one flag.
 
 ---
 
-## The 11-tool contract
+## The 12-tool contract
 
 Server `kirocrew-computer` (slash-free: kiro-cli splits an agent `@server`
 reference on `/`). All tools prefixed `computer_` so the GUI plane is
@@ -339,8 +339,9 @@ namespace-distinct from every other server's tools.
 | Tool | Required | Optional | Class |
 |---|---|---|---|
 | `computer_list_apps` | — | — | observe |
+| `computer_list_windows` | `app` | — | observe |
 | `computer_launch_app` | `app` (≤128) | — | mutate |
-| `computer_get_state` | `app` | `text_limit` (1..20000, d=500), `max_tree_nodes` (1..5000, d=1200), `max_tree_depth` (1..128, d=64), `screenshot` (bool, d from config) | observe |
+| `computer_get_state` | `app` | `window_id`, `text_limit` (1..20000, d=500), `max_tree_nodes` (1..5000, d=1200), `max_tree_depth` (1..128, d=64), `screenshot` (bool, d from config) | observe |
 | `computer_click` | `app` + **exactly one of** (`element_index` \| `x`+`y`) | `click_count` (1..3, d=1), `mouse_button` (`left`\|`right`\|`middle`, d=left), `click_method` (`auto`\|`accessibility`\|`app_post`\|`sky_click`\|`global`, d=auto) | mutate, pointer |
 | `computer_drag` | `app`, `from_x`, `from_y`, `to_x`, `to_y` | `mouse_button`, `click_method`, `steps` (1..512, d=1), `path` (`straight`\|`curved`, d=straight) | mutate, pointer |
 | `computer_type_text` | `app`, `text` (≤10000), `element_index` | — | mutate, keyboard, text_entry |
@@ -384,7 +385,8 @@ mandatory, not tidiness: an unregistered tool's arguments pass RAW through
 `_validate_args`, and a `ValidationError` raised inside a handler escapes the
 stdio loop and kills the server.
 
-`computer_list_apps` and `computer_get_state` are the observation tools;
+`computer_list_apps`, `computer_list_windows` and `computer_get_state` are the
+observation tools;
 `computer_end_turn` is control-plane (it drops Kiro Crew's *own* cached snapshots
 and touches no other application, so it is neither observe nor mutate). The
 class labels above are the code-owned `governance._CU_ACTION_CLASSES` table —
@@ -412,6 +414,113 @@ resolves no target, so `require_computer_use` could not see them. With those axe
 gone the function survives as a shape check: an app with neither a bundle id nor a
 display name is dropped because there is nothing to show. Terminals and password
 managers now appear in the list like everything else.
+
+### Window targeting (`computer_list_windows`, `window_id`)
+
+Every app-scoped tool (`computer_get_state` and the seven mutators) also takes an
+optional `window_id` (0..`MAX_WINDOW_ID`, a `uint32`), and `computer_list_windows`
+lists the ids. Before this the agent could reach exactly one window per app:
+`apps_macos.list_apps` collapses a process to its frontmost TITLED window, so a 66x20
+helper titled "Window" in front of Notes' document window won the collapse and the
+main window was unreachable however the user refocused it (#18543). Windows already
+listed one entry per top-level HWND, but `resolve_app` returns the first match by
+name, so a second window of the same app was reachable only by a title fragment.
+
+- **The driver checks the pairing, not the schema.** `resolve_window(app, id)`
+  accepts the id only if it is a live window of the RESOLVED application: the same
+  pid on macOS (CoreGraphics recycles window numbers across processes), the same pid
+  AND published identity on Windows (`_same_app` — `ApplicationFrameHost.exe` fronts
+  unrelated packaged apps under one pid, so a pid match would let a selector reach
+  Settings from HP Audio Control). Anything else is `ERR_WINDOW_NOT_FOUND`, naming
+  `computer_list_windows`. The returned ref is marked `AppRef.pinned_window`.
+- **The target policy answers before the window id does.** `tools._dispatch` defers
+  an `ERR_WINDOW_NOT_FOUND` like a stale index: it resolves the app without the
+  window, runs the target policy on it, and raises the window error only once the
+  call is authorized. Otherwise a denied app would answer "no window N" for a bad id
+  and the policy refusal for a good one, telling the caller which ids it holds.
+- **A pinned window is never substituted.** `snapshot_macos._select_window` normally
+  falls back from the window id to a title prefix, then `AXMain`, then `AXWindows[0]`.
+  For a pinned window only the id and (when the private id symbol answers `0` for
+  every window) the title prefix count, and the prefix only when exactly one window
+  carries it, because two same-titled windows cannot be told apart without ids.
+  The process's CoreGraphics window list also has to show exactly one window with
+  that prefix, and it has to be the pinned id (`_window_list_confirms_title`): if
+  the pinned window closed or was retitled between the two reads, the lone match
+  could be a sibling whose title starts with the same words, which the target
+  policy never checked.
+  Otherwise the walk refuses. The Windows walk already opens the HWND itself and
+  refuses a dead one. A pinned window is searched among every AX window, not only
+  the first `MAX_WINDOWS_TO_INSPECT` the default selection reads, because
+  `computer_list_windows` lists them all.
+- **A real-pointer gesture on a pinned window lands on that window.** A `global`
+  click or drag carries no window, so `apps_macos.pid_owns_point` is passed the
+  pinned `window_id` (`macos_driver._pinned_id`) and refuses a point whose topmost
+  window is a sibling of the same process. The app-scoped `app_post` click and drag,
+  which the app routes to its own front window at the point, check every point with
+  `apps_macos.pinned_window_tops_point` and refuse with `ERR_POINT_NOT_IN_WINDOW`.
+  Without a pinned window both rules stay per process.
+- **A pinned scroll does not fall back to a process-wide wheel event.** When the
+  element refuses the AX scroll action, `MacOSBackend.scroll` normally posts a wheel
+  event to the pid, which names no window, so the app can scroll a sibling while the
+  reply refreshes the pinned one. For a pinned window it refuses with
+  `ERR_PINNED_SCROLL_FALLBACK`, which points at `computer_press_key` and at the
+  unpinned call. The Windows scroll is element-scoped and has no such fallback.
+- **Keystrokes to a pinned macOS window need it in front.** `post_text` and
+  `post_key` go to the process, which hands them to its key window, and focusing an
+  element of a background window does not make that window key. So `type_text` and
+  `press_key` on a pinned window refuse with `ERR_PINNED_KEYS_NOT_FRONT` unless
+  `apps_macos.pinned_window_is_front` finds it the process's front-most
+  normal-layer window, before any focus change. Otherwise the keystrokes would reach
+  a sibling the target policy never judged, including one an operator pattern
+  denies. `set_value` writes the element itself and is unaffected. On Windows,
+  when an element is addressed, the driver reads focus back off that element before
+  `SendInput` and refuses if it did not move, so the keystrokes reach the window the
+  model named.
+- **The multi-window note counts only listed windows.** `tools._multi_window_note`
+  counts `tools._permitted_windows`, the same `policy.check_app` filter
+  `computer_list_windows` applies, so a sibling an operator pattern denies is neither
+  counted nor listed.
+- **A pinned snapshot reports only its own window's selection.** macOS reads the
+  selection from the application's `AXFocusedUIElement`, which can sit in a sibling
+  window, including one an operator pattern denies. `snapshot_macos._window_selection`
+  keeps the selection on a pinned window only when the focused element's `AXWindow`
+  is that window, and drops it when the owner cannot be read. The unpinned default
+  window keeps reporting the app's selection.
+- **A denied title anywhere in a macOS process still refuses it.** Input is per pid
+  on macOS, so `apps_macos.resolve_window` returns the denied sibling instead of the
+  requested window and `policy.check_app` refuses the call — the rule `list_apps`
+  already follows when it collapses. Windows keeps its per-window rule: identity and
+  input are per top-level window there, and `resolve_app` never consulted siblings.
+  Operator `extra_denied_apps` title patterns are, as before, matched against the
+  window being driven only; widening them to siblings would be a new restriction.
+- **Indices stay bound to their window.** The snapshot cache is already keyed by
+  `AppRef.window_key` (app, pid, window id), so an action resolves to the window it
+  names. An action that omits `window_id` resolves to the default window; when the
+  session's indices belong to another window of the same app, `service.cached` says
+  so with `ERR_OTHER_WINDOW_STATE` (via `SnapshotIndex.sibling_window_id`) instead of
+  the bare "call `computer_get_state` first", which would lead the model to snapshot
+  the default window and act on it. Only a window never snapshotted gets that wording:
+  `service.cached` reads the age before `SnapshotIndex.require` drops an expired
+  entry, so an expired snapshot keeps the "state is Ns old" refusal.
+- **Discoverability.** Every snapshot prints `Window id: N.` in its trailer, and
+  `computer_get_state` adds `MULTI_WINDOW_NOTE` when the app has more than one
+  window. The note names the app from desktop data and joins the reply after
+  the tree's redaction pass, so `_multi_window_note` runs it through
+  `policy.redact_result` itself. The note is advisory: a failed window-list read drops it rather than
+  failing the snapshot.
+- **The default is unchanged.** Without `window_id` the drivers pick the same window
+  as before. The issue's "prefer a main/focused document window" default was not
+  changed: a size or `AXMain` heuristic would hide legitimate small dialogs, and the
+  explicit selector plus the multi-window note is the fix the issue names first.
+
+`computer_list_windows` is classed `observe` in `_CU_ACTION_CLASSES` (it discloses
+the same window titles `computer_list_apps` does), declares the `window_titles`
+channel, and runs the target policy on the resolved app before enumerating; each
+listed window is then held to `policy.check_app` on its own title, so an operator's
+`extra_denied_apps` pattern hides a sibling window from the listing exactly as it hides
+it from `computer_list_apps`. `list_windows` and `resolve_window` are abstract on
+`ComputerUseBackend`, so every backend states how it enumerates and pins windows;
+`UnsupportedBackend` refuses both like its other methods.
 
 ### Result shape: text only, by construction
 
@@ -2408,7 +2517,7 @@ denylist and the observation ceiling apply. `doctor` remains the ungated way to 
 out *why* the feature is off: it reads the keystone and the TCC state only, never the
 window list.
 
-### `call` is a harness, not an eleventh tool
+### `call` is a harness, not a thirteenth tool
 
 `call` runs the existing tools through `tools.dispatch_tool` — **the same ordered
 chokepoint an agent call traverses**. The fail-closed primary enable, the
@@ -2440,7 +2549,7 @@ reply carries the `Error: ` prefix.
 
 `call` has **no MCP twin**, and that is the MCP-first rule being followed rather
 than bent: the rule exists so the model gets a structured tool instead of being
-told to shell out, and the model already has all eleven tools. A tool that runs other
+told to shell out, and the model already has all twelve tools. A tool that runs other
 tools would let a model launder one per-call gate decision into many.
 
 ### Deliberately not ported from the reference implementation

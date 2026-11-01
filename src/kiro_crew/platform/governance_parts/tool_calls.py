@@ -56,6 +56,9 @@ _CU_ACTION_TOOL_PREFIX = "computer_"
 _CU_ACTION_CLASSES: Dict[str, Tuple[str, ...]] = {
     # Observation only — no input is synthesized into any window.
     "list_apps": (CU_CLASS_OBSERVE,),
+    # Reads one app's window list (ids, titles, rects): the same data ``list_apps``
+    # discloses, narrowed to one application.
+    "list_windows": (CU_CLASS_OBSERVE,),
     "get_state": (CU_CLASS_OBSERVE,),
     # Control plane: drops Kiro Crew's OWN cached snapshots and touches no other
     # application, so it is neither observe nor mutate.  A read-only ceiling that

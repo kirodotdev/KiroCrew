@@ -25,9 +25,16 @@ Nothing in this module imports ctypes: all native work goes through
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from kiro_crew.computer_use import policy, windows_ffi
-from kiro_crew.computer_use.types import AppRef, ComputerUseError
+from kiro_crew.computer_use.types import (
+    ERR_WINDOW_NOT_FOUND,
+    TOOL_LIST_WINDOWS,
+    AppRef,
+    ComputerUseError,
+    WindowRef,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +259,66 @@ def resolve_app(query: str) -> AppRef:
     raise ComputerUseError(_ERR_NO_MATCH.format(query=query))
 
 
+def _same_app(candidate: AppRef, app: AppRef) -> bool:
+    """Whether *candidate* is another window of the application *app* names.
+
+    The pid AND the published identity, never the pid alone: a broker such as
+    ``ApplicationFrameHost.exe`` fronts unrelated packaged apps under one pid, and
+    :func:`_app_ref` gives each of those windows its own title as its identity.
+    Matching on the pid would let a window selector reach Settings from HP Audio
+    Control; matching on both keeps each hosted app its own one-window application.
+    """
+    return (
+        candidate.pid == app.pid
+        and candidate.bundle_id == app.bundle_id
+        and candidate.name == app.name
+    )
+
+
+def list_windows(app: AppRef) -> "tuple[WindowRef, ...]":
+    """The on-screen top-level windows of *app*, front to back.
+
+    The same entries :func:`list_apps` publishes — this module already lists one
+    entry per window — narrowed to *app*'s pid and identity (see :func:`_same_app`),
+    with each window's screen rect read inside the DPI scope so it shares the
+    coordinate space of the element frames.
+    """
+    out: list[WindowRef] = []
+    for ref in list_apps():
+        if not _same_app(ref, app):
+            continue
+        bounds = None
+        try:
+            with windows_ffi.dpi_awareness_scope():
+                bounds = windows_ffi.window_bounds(ref.window_id)
+        except Exception:
+            logger.debug("window bounds lookup failed for 0x%X", ref.window_id, exc_info=True)
+        out.append(WindowRef(window_id=ref.window_id, title=ref.window_title, bounds=bounds))
+    return tuple(out)
+
+
+def resolve_window(app: AppRef, window_id: int) -> AppRef:
+    """The window of *app* whose top-level HWND is *window_id*.
+
+    Raises :class:`ComputerUseError` naming ``computer_list_windows`` when no live
+    window of *app* has that handle — closed, never existed, or now another
+    application's (HWNDs are recycled). The returned ref carries THAT window's own
+    title, so the dispatcher's target policy judges the window that will be driven.
+
+    Unlike :func:`apps_macos.resolve_window`, a denied title on a SIBLING window does
+    not refuse this one. That is the existing Windows rule, not a new gap: identity
+    and input are per top-level window here (see the module docstring), and
+    :func:`resolve_app` already resolves to one window without consulting its
+    siblings.
+    """
+    for ref in list_apps():
+        if int(ref.window_id) == int(window_id) and _same_app(ref, app):
+            return replace(ref, pinned_window=True)
+    raise ComputerUseError(
+        ERR_WINDOW_NOT_FOUND.format(window_id=window_id, app=app.name, tool=TOOL_LIST_WINDOWS)
+    )
+
+
 def find_window_for(name: str) -> "AppRef | None":
     """The on-screen window of the app *name* identifies, or ``None``.
 
@@ -372,6 +439,8 @@ __all__ = [
     "find_window_for",
     "hwnd_owns_point",
     "list_apps",
+    "list_windows",
     "resolve_app",
+    "resolve_window",
     "window_bounds",
 ]
