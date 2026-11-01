@@ -399,7 +399,7 @@ async def probe_server(
         # reason the session does not share.
         if (
             os.path.isabs(server.command)
-            and os.path.isfile(server.command)
+            and await asyncio.to_thread(os.path.isfile, server.command)
             and os.access(server.command, os.X_OK)
         ):
             resolved = saved_command_casing(server.command)
