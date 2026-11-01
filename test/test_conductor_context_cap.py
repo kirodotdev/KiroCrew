@@ -44,9 +44,12 @@ def _forget_trims():
     # Read with a default so that, with the cap reverted, each test fails at its own
     # assertion rather than every one erroring here.
     trims = getattr(chat_runner, "_CONTEXT_CAP_TRIMS", {})
+    ratios = getattr(chat_runner, "_CONTEXT_CAP_CHARS_PER_TOKEN", {})
     trims.clear()
+    ratios.clear()
     yield
     trims.clear()
+    ratios.clear()
 
 
 class _Provider:
@@ -446,9 +449,10 @@ def snapshot_reads(monkeypatch) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_the_trimmed_cold_start_replays_the_note_the_snapshot_and_a_270k_tail(
+async def test_the_trimmed_cold_start_replays_the_note_the_snapshot_and_a_fallback_tail(
     tmp_path, snapshot_reads
 ):
+    """With no measured trim yet, the tail is 90K tokens at the fallback 1.6 chars each."""
     sessions = _Sessions(_Provider(412_000))
     state, slot = _conductor(tmp_path, sessions)
     _transcript(state)
@@ -460,9 +464,98 @@ async def test_the_trimmed_cold_start_replays_the_note_the_snapshot_and_a_270k_t
     assert seed.startswith(head)
     assert snapshot_reads == ["member-kirocrew-conductor"]
     tail = seed[len(head) :]
-    assert 260_000 < len(tail) <= 270_000
+    assert 140_000 < len(tail) <= 144_000
     assert tail.endswith("0699 " + "x" * 1_000)
     assert "search_chat_history" in chat_runner.CONTEXT_CAP_TRIM_NOTE
+
+
+def _tokens(text: str) -> int:
+    """A stand-in tokenizer: a CJK char is a token, three other chars are one."""
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    return cjk + (len(text) - cjk) // 3
+
+
+#: A conductor turn as R11 measured them: Chinese and English with a table, ~1.75
+#: chars per token under ``_tokens``.
+_MIXED_ROW = ("等待检查结果" * 60) + ("| PR | lane | state |\n|---|---|---|\n" * 18)[:640]
+#: What a trimmed session holds before its tail: KAS's start, the note and the message.
+_SEED_BASE = 57_000
+
+
+async def _landing(state, slot) -> int:
+    """The first reading of the session a trim seeded: its base plus the seed's tokens."""
+    return _SEED_BASE + _tokens(await _replay(state, slot))
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_chinese_transcript_trims_to_within_10_percent_of_low(
+    tmp_path, snapshot_reads
+):
+    """Each trim of a ~1.75 chars-per-token chat lands near 150K, not near 210K."""
+    low = chat_runner.CONTEXT_CAP_LOW_TOKENS
+    sessions = _Sessions(_Provider(412_000))
+    state, slot = _conductor(tmp_path, sessions)
+    for i in range(700):
+        state.conversation_log.append(KEY, "user" if i % 2 == 0 else "assistant", _MIXED_ROW)
+    assert await _check(state, slot) == "trimmed"
+    first = await _landing(state, slot)
+    # The next turn start reads the seeded session and measures the chat's ratio.
+    sessions.start_session(first, sid="sid-2")
+    assert await _check(state, slot) == "below_marks"
+    sessions.start_session(first + 120_000, sid="sid-2", idle_secs=3_600.0)
+    assert await _check(state, slot) == "trimmed"
+    second = await _landing(state, slot)
+
+    assert abs(first - low) <= low // 10
+    assert abs(second - low) <= low // 10
+
+
+@pytest.mark.asyncio
+async def test_a_measured_tail_is_never_longer_than_270k_chars(tmp_path, snapshot_reads):
+    """A reading that implies more than 3 chars per token is held to 3."""
+    sessions = _Sessions(_Provider(412_000))
+    state, slot = _conductor(tmp_path, sessions)
+    _transcript(state)
+    assert await _check(state, slot) == "trimmed"
+    await _replay(state, slot)
+    sessions.start_session(61_000, sid="sid-2")
+    assert await _check(state, slot) == "below_marks"
+    sessions.start_session(412_000, sid="sid-2")
+    assert await _check(state, slot) == "trimmed"
+
+    head = chat_runner.CONTEXT_CAP_TRIM_NOTE + "\n\n" + SNAPSHOT + "\n\n"
+    assert 260_000 < len((await _replay(state, slot))[len(head) :]) <= 270_000
+
+
+@pytest.mark.asyncio
+async def test_a_seed_never_delivered_measures_nothing(tmp_path, snapshot_reads):
+    """A reading of a session that does not hold the seed keeps the fallback tail."""
+    sessions = _Sessions(_Provider(412_000))
+    state, slot = _conductor(tmp_path, sessions)
+    _transcript(state)
+    assert await _check(state, slot) == "trimmed"
+    await _replay(state, slot)
+    sessions.start_session(61_000, sid="sid-2")
+    sessions.history_owed = True
+    await _check(state, slot)
+
+    assert KEY not in chat_runner._CONTEXT_CAP_CHARS_PER_TOKEN
+    assert chat_runner._context_cap_tail_chars(KEY) == 144_000
+
+
+@pytest.mark.asyncio
+async def test_a_reading_at_or_under_the_base_measures_nothing(tmp_path, snapshot_reads):
+    """A first reading no larger than the 60K base leaves the fallback, not the 3.0 top."""
+    sessions = _Sessions(_Provider(412_000))
+    state, slot = _conductor(tmp_path, sessions)
+    _transcript(state)
+    assert await _check(state, slot) == "trimmed"
+    await _replay(state, slot)
+    sessions.start_session(chat_runner.CONTEXT_CAP_SEED_BASE_TOKENS, sid="sid-2")
+    assert await _check(state, slot) == "below_marks"
+
+    assert KEY not in chat_runner._CONTEXT_CAP_CHARS_PER_TOKEN
+    assert chat_runner._context_cap_tail_chars(KEY) == 144_000
 
 
 @pytest.mark.asyncio

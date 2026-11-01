@@ -72,9 +72,10 @@ if TYPE_CHECKING:
         validate_file_path,
     )
     from kiro_crew.dashboard.chat_turn.context_cap import (
-        CONTEXT_CAP_TAIL_CHARS,
         _context_cap_seed_head,
+        _context_cap_tail_chars,
         _drop_context_cap_seed,
+        _note_context_cap_tail,
         _spend_context_cap_seed,
         _take_context_cap_seed,
     )
@@ -159,7 +160,7 @@ async def _session_replay_history(
             # The cold start a conductor context-cap trim began (context_cap)
             # replays a longer tail, behind the trim note and the ledger snapshot.
             _trim_seed = _take_context_cap_seed(session_key)
-            _budget = {"budget_chars": CONTEXT_CAP_TAIL_CHARS} if _trim_seed else {}
+            _budget = {"budget_chars": _context_cap_tail_chars(session_key)} if _trim_seed else {}
             # Merge the disk transcript and a frozen live-window tail
             # before one budget pass. Exclude this request by identity,
             # whether or not the periodic flush has persisted it yet, and
@@ -178,6 +179,7 @@ async def _session_replay_history(
                 or ""
             )
             if _trim_seed and compressed:
+                _note_context_cap_tail(session_key, len(compressed))
                 compressed = await _context_cap_seed_head(session_key) + compressed
             logger.info(
                 "Session replay: key=%s result=%s",

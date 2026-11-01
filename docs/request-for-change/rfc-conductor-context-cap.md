@@ -187,17 +187,17 @@ on the old session.
    row rules (user, assistant and inject rows, newest first; no tool rows; at
    most 500 user and assistant rows and 10 inject rows, each inject row
    clipped to 2,000 chars, and inject rows held to a quarter of the budget),
-   under a trim budget of **270,000 chars** instead of
-   the 80,000-char `_REPLAY_BUDGET_CHARS`. Every other cold start keeps
-   80,000.
+   under a trim budget of **90,000 tokens** turned into chars with the
+   chat's own chars per token (below), instead of the 80,000-char
+   `_REPLAY_BUDGET_CHARS`. Every other cold start keeps 80,000.
 5. The turn's own message.
 
 No model call is spent: the summary is ledger state on disk, and the tail is
 text already in the transcript.
 
 **Choosing N, the tail.** The budget fills the room LOW leaves:
-(150K − 55K base − about 5K for the note, the summary and the turn's message)
-× 3 chars per token ≈ 270,000 chars. R5 put that room at about 95K tokens,
+150K − 55K base − about 5K for the note, the summary and the turn's message
+= 90,000 tokens. R5 put that room at about 95K tokens,
 which is about 19 conductor turns of KAS context growth. That growth counts
 tool output, which the replay never carries, so a text tail reaches much
 further back. Measured on the same conductor DM transcript (822 turns since
@@ -216,6 +216,21 @@ replayable text is about 630 chars per turn at the p50 (564 on a patrol turn,
 with no Kiro Crew context, with a summary and a 330K-char text tail; it landed
 at 152K, and its credits matched the cost model (1.87 measured vs 1.93
 predicted).
+
+**Turning the 90,000 tokens into chars** (amended 2026-11-01). The budget
+was first a fixed 270,000 chars, at 3 chars per token. The conductor DM's
+mixed Chinese and English text with tables reads at about 1.65 chars per
+token, so its ten trims of 10-22 to 10-24 landed at 199K to 211K, not 150K
+(`research/crewmate-perf/R11-patrol-cost.md` section 4). The chars per token
+is now measured off the chat's own previous trim: the tail's chars over the
+first reading of the session that trim seeded, less the 60K base. That
+reading also holds the first turn's own growth, so the ratio reads a little
+low and a trim lands at or under LOW. A chat with no measured trim yet (its
+first trim, or the first after a gateway restart) uses 1.6. A measured ratio
+is held to 1.0 to 3.0, so a tail is never longer than the 270,000 chars it
+was. No tokenizer is added: the reading is the one Rules A and B already
+read. Replayed on those ten trims, the landings move from 199K–211K (p50
+204K) to 127K–143K (p50 136K).
 
 | | What happens to it |
 |---|---|
@@ -439,7 +454,8 @@ Both come before the implementation pull request opens.
 
 Exit criteria, each testable: a capped session over 400K at a turn start
 starts that turn on a new KAS session whose first prompt carries the note, the
-snapshot and a tail of at most 270,000 chars; a session over 200K after 300 s
+snapshot and a tail of at most 90,000 tokens at the chat's chars per token
+(at most 270,000 chars); a session over 200K after 300 s
 does the same; every check in 3.4 leaves the old session in place; the
 transcript on disk is byte-identical before and after a trim, apart from the
 notice row; and with `session.context_cap` off, no session changes behaviour.
