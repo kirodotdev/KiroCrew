@@ -100,6 +100,10 @@ const openAllTabs = () => act(() => {
  * box placed `chipLeft` px from the scroller's left edge, minus the scroller's
  * current scrollLeft, so a reveal that writes scrollLeft moves it.
  */
+/** Where a chip at 450 lands after a reveal: its right edge a fade width
+ *  (24px) short of the 300px scrollport's edge, so 450 + 100 - (300 - 24). */
+const REVEALED = 274
+
 function stubGeometry(chipLeft: number, widths: { fixed?: number; dynamic?: number } = {}) {
   const proto = window.HTMLElement.prototype
   const scrolled = new WeakMap<Element, number>()
@@ -214,7 +218,7 @@ describe('side panel "List all tabs" menu', () => {
     const ctl = renderPanel()
     const { writes } = stubGeometry(450)
     act(() => { ctl().openFile('/repo/it\'s "odd" [a]:b\\c.md', 'x', SLOT) })
-    expect(writes).toContain(250)
+    expect(writes).toContain(REVEALED)
   })
 
   it('leaves out a view the host withholds, in step with the chips', () => {
@@ -292,7 +296,7 @@ describe('side panel "List all tabs" menu', () => {
     const current = within(screen.getByRole('menu')).getAllByRole('menuitemradio').find(r => r.getAttribute('aria-checked') === 'true')!
     act(() => { fireEvent.click(current) })
     expect(writes.length).toBeGreaterThan(before)
-    expect(writes[writes.length - 1]).toBe(250)
+    expect(writes[writes.length - 1]).toBe(REVEALED)
   })
 })
 
@@ -304,8 +308,8 @@ describe('side panel reveal of the active tab', () => {
     const ctl = renderPanel()
     const { writes, scrolled } = stubGeometry(450)
     act(() => { ctl().openFile('/repo/a.md', 'a', SLOT) })
-    expect(writes).toContain(250)
-    expect(scrolled.get(dynamicScroller())).toBe(250)
+    expect(writes).toContain(REVEALED)
+    expect(scrolled.get(dynamicScroller())).toBe(REVEALED)
     expect(scrolled.get(fixedScroller()) ?? 0).toBe(0)
   })
 
@@ -321,7 +325,7 @@ describe('side panel reveal of the active tab', () => {
     act(() => { ctl().openFile('/repo/a.md', 'a', SLOT) })
     const { scrolled } = stubGeometry(450)
     act(() => { fireEvent.click(chip('files')) })
-    expect(scrolled.get(fixedScroller())).toBe(250)
+    expect(scrolled.get(fixedScroller())).toBe(REVEALED)
     expect(scrolled.get(dynamicScroller()) ?? 0).toBe(0)
   })
 
