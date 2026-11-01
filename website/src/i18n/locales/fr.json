@@ -2536,13 +2536,16 @@
           "repositories": "Dépôts"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "Impossible de vérifier s’il existe déjà une session de revue — nouvelle tentative à l’actualisation",
           "open_ai_code_review_session_for_this": "Ouvrir une session de revue de code par IA pour cette {{label}}",
           "resume_ai_code_review_session_for_this": "Reprendre la session de revue de code par IA pour cette {{label}}",
           "review": "Relire"
         },
         "settingsSection": {
+          "account": "Compte",
           "connect_repo": "Connecter un dépôt",
           "general": "Général",
+          "repositories": "Dépôts",
           "repository_settings": "Paramètres du dépôt",
           "gitlab_groups": "Groupes GitLab"
         },
@@ -2645,7 +2648,11 @@
       "connectRepoModal": {
         "close": "Fermer",
         "close_connect_dialog": "Fermer la boîte de dialogue de connexion",
+        "connect": "Connecter",
         "connect_a_repo": "Connecter un dépôt",
+        "connect_count_many": "Connecter {{count}}",
+        "connect_count_one": "Connecter {{count}}",
+        "connect_count_other": "Connecter {{count}}",
         "connecting": "Connexion de {{done}} sur {{total}}…"
       },
       "issueRadarPage": {
@@ -2660,6 +2667,14 @@
           "crew_sort_created": "Créée"
         },
         "links": {
+          "merge_request": "merge request",
+          "merge_request_title": "Merge request",
+          "merge_requests": "merge requests",
+          "merge_requests_title": "Merge requests",
+          "pull_request": "pull request",
+          "pull_request_title": "Pull request",
+          "pull_requests": "pull requests",
+          "pull_requests_title": "Pull requests",
           "read_only_here_apply_in_provider": "Lecture seule ici — les dépôts {{provider}} ne peuvent pas être modifiés depuis {{productName}} ; appliquez la modification dans {{provider}}",
           "tracked_items_work_items": "Éléments de travail",
           "tracked_items_issues": "Issues"
@@ -3205,6 +3220,10 @@
       "welcomeCarousel": {
         "back": "Retour",
         "carl_sagan": "— Carl Sagan",
+        "connect": "Connecter",
+        "connect_count_many": "Connecter {{count}}",
+        "connect_count_one": "Connecter {{count}}",
+        "connect_count_other": "Connecter {{count}}",
         "connecting_n_of_total": "Connexion de {{n}} sur {{total}}…",
         "next": "Suivant",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar lit ce que tes bots ont déjà trouvé au lieu de repartir de zéro.",

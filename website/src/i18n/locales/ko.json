@@ -2412,13 +2412,16 @@
           "repositories": "저장소"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "기존 리뷰 세션을 확인하지 못했습니다 — 새로 고칠 때 다시 시도합니다",
           "open_ai_code_review_session_for_this": "이 {{label}}에 대한 AI 코드 리뷰 채팅 세션 열기",
           "resume_ai_code_review_session_for_this": "이 {{label}}에 대한 AI 코드 리뷰 채팅 세션 재개",
           "review": "리뷰"
         },
         "settingsSection": {
+          "account": "계정",
           "connect_repo": "저장소 연결",
           "general": "일반",
+          "repositories": "저장소",
           "repository_settings": "저장소 설정",
           "gitlab_groups": "GitLab 그룹"
         },
@@ -2519,7 +2522,9 @@
       "connectRepoModal": {
         "close": "닫기",
         "close_connect_dialog": "연결 대화 상자 닫기",
+        "connect": "연결",
         "connect_a_repo": "저장소 연결",
+        "connect_count_other": "{{count}}개 연결",
         "connecting": "{{total}}개 중 {{done}}개 연결 중…"
       },
       "issueRadarPage": {
@@ -2534,6 +2539,14 @@
           "crew_sort_created": "생성됨"
         },
         "links": {
+          "merge_request": "머지 리퀘스트",
+          "merge_request_title": "머지 리퀘스트",
+          "merge_requests": "머지 리퀘스트",
+          "merge_requests_title": "머지 리퀘스트",
+          "pull_request": "풀 리퀘스트",
+          "pull_request_title": "풀 리퀘스트",
+          "pull_requests": "풀 리퀘스트",
+          "pull_requests_title": "풀 리퀘스트",
           "read_only_here_apply_in_provider": "여기서는 읽기 전용입니다 — {{provider}} 저장소는 {{productName}}에서 변경할 수 없습니다. {{provider}}에서 변경하세요",
           "tracked_items_work_items": "작업 항목",
           "tracked_items_issues": "이슈"
@@ -3059,6 +3072,8 @@
       "welcomeCarousel": {
         "back": "뒤로",
         "carl_sagan": "— Carl Sagan",
+        "connect": "연결",
+        "connect_count_other": "{{count}}개 연결",
         "connecting_n_of_total": "{{total}}개 중 {{n}}개 연결 중…",
         "next": "다음",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar는 처음부터 다시 시작하지 않고 봇이 이미 찾아낸 내용을 읽습니다.",

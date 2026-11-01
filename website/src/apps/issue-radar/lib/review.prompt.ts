@@ -13,7 +13,15 @@
 //
 // The issue-side twin is `investigate.prompt.ts`.
 import { type PullRequest, type RepoRef } from '../api'
-import { changeDiffCommand, changeViewCommand, providerTerms } from './links'
+import { changeDiffCommand, changeViewCommand, isGitlab, providerTerms } from './links'
+
+/** The change-request noun the agent reads, in English like the rest of this
+ * prompt. `providerTerms().changeRequest` is UI copy and follows the interface
+ * language, so it cannot be used here. Azure DevOps says "pull request" too.
+ * Mirrors `backend/provider.py:_TERMS`. */
+function promptChangeRequest(repoRef: RepoRef): string {
+  return isGitlab(repoRef) ? 'merge request' : 'pull request'
+}
 
 /** Build the seed prompt for reviewing a PR: identity + branch/lifecycle context
  * inline, with the DIFF deliberately left for the agent to fetch (a diff can be
@@ -28,6 +36,7 @@ export function buildReviewPrompt(
   repoRef: RepoRef, owner: string, repo: string, pr: PullRequest, aiLanguage: string = '',
 ): string {
   const terms = providerTerms(repoRef)
+  const changeRequest = promptChangeRequest(repoRef)
   const labels = pr.labels.length ? pr.labels.join(', ') : '(none)'
   const assoc =
     pr.author_association && pr.author_association !== 'NONE'
@@ -42,12 +51,12 @@ export function buildReviewPrompt(
         : 'open'
   const branches = pr.base && pr.head ? `${pr.base} ← ${pr.head}` : '(unknown branches)'
 
-  const context = `[Context] ${terms.providerName} ${terms.changeRequest} ${terms.sigil}${pr.number} in ${owner}/${repo}: "${pr.title}".
+  const context = `[Context] ${terms.providerName} ${changeRequest} ${terms.sigil}${pr.number} in ${owner}/${repo}: "${pr.title}".
 State: ${lifecycle} · ${branches} · opened by ${pr.author ?? 'unknown'}${assoc} · labels: ${labels}
 ${pr.url}`
 
-  const instructions = `[Instructions] Review this ${terms.changeRequest} and tell me what comments to leave. Do NOT save, record, or post anything — anywhere. Your entire output is a DRAFT for me to read and post myself.
-• Read the ${terms.changeRequest} and its full diff FIRST — run: ${changeViewCommand(repoRef, pr.number)}, then ${changeDiffCommand(repoRef, pr.number)}. This message intentionally omits the description and the diff; follow any linked issues the PR references.
+  const instructions = `[Instructions] Review this ${changeRequest} and tell me what comments to leave. Do NOT save, record, or post anything — anywhere. Your entire output is a DRAFT for me to read and post myself.
+• Read the ${changeRequest} and its full diff FIRST — run: ${changeViewCommand(repoRef, pr.number)}, then ${changeDiffCommand(repoRef, pr.number)}. This message intentionally omits the description and the diff; follow any linked issues the PR references.
 • Read the surrounding code before judging a change — a diff alone hides whether a call site, test, or invariant elsewhere breaks. Check that the change does what the description claims.
 • Look for: correctness bugs and edge cases, missing or inadequate tests, security issues (injection, auth/permission gaps, secret handling, unsafe subprocess or path use), performance traps, error handling, and consistency with this repo's existing conventions.
 • Skip what is already covered by existing review comments on the PR, and don't restate what the diff obviously does — only raise things worth a reviewer's words.
