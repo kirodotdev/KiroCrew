@@ -422,6 +422,63 @@ def test_no_worker_session_key_survives_the_render_mask():
     assert item["id"] == "it_1"
 
 
+class _Slots:
+    """A slot table with one running and one idle worker; any other key is gone."""
+
+    def __init__(self) -> None:
+        self.slots = {
+            "chat-run": SimpleNamespace(running=True),
+            "chat-idle": SimpleNamespace(running=False),
+        }
+
+    def get_slot(self, key):
+        return self.slots.get(key)
+
+    def slot_exists(self, key):
+        return key in self.slots
+
+
+def test_work_items_get_worker_facts_and_the_key_still_never_reaches_the_page():
+    """The goal-board tells working from waiting by whether the worker is mid-turn.
+
+    That fact needs the session key, which the page may not have, so it is derived
+    before the mask and only the words travel. A remote item and a value that is not
+    a work item list are left as they are.
+    """
+    long_ago = "2020-01-01T00:00:00+00:00"
+
+    def it(item_id, key, **over):
+        base = {"item_id": item_id, "state": "open", "status": "progress"}
+        base["worker_session_key"] = key
+        return {**base, "last_report_at": long_ago, "created_at": long_ago, **over}
+
+    value = [
+        it("a", "chat-run"),
+        it("b", "chat-idle", last_report_at="2999-01-01T00:00:00+00:00"),
+        it("c", "chat-idle"),
+        it("d", "chat-gone"),
+        it("e", None),
+        it("f", "chat-gone", state="accepted", status="done"),
+        it("g", "peer-key", worker_instance_id="peer-1"),
+    ]
+    out = routes.page_safe_for(_Slots())(value)
+    assert "chat-" not in json.dumps(out) and "peer-key" not in json.dumps(out)
+    facts = {row["item_id"]: (row.get("worker"), row.get("stale")) for row in out}
+    assert facts == {
+        "a": ("running", False),
+        "b": ("idle", False),
+        "c": ("idle", True),
+        "d": ("closed", True),
+        "e": ("closed", True),
+        "f": ("closed", False),
+        "g": (None, None),
+    }
+    # Not a work-item list: untouched apart from the mask, as before.
+    assert routes.page_safe_for(_Slots())({"worker_session_key": "chat-run", "x": 1}) == {"x": 1}
+    # No gateway state (the agent's own read): the plain mask.
+    assert routes.page_safe_for(None)(value) == routes._page_safe(value)
+
+
 def test_a_credential_in_a_fold_value_is_redacted_before_it_reaches_the_page():
     """Every string here is AGENT-AUTHORED and nothing before this read inspects it.
 

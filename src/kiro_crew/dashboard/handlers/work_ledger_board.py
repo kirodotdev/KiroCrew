@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -304,6 +305,47 @@ def _alive_of(state: DashboardState, worker_key: str) -> str:
     if _slot_open(state, worker_key) or _find_slot(state, worker_key) is not None:
         return "idle"
     return "closed"
+
+
+def with_worker_facts(value: Any, state: Any) -> Any:
+    """*value* with each LOCAL work item stamped ``worker`` and ``stale``.
+
+    The page may not see ``worker_session_key`` (``member_dashboard._page_safe`` drops
+    it), yet whether that worker is mid-turn is what tells "working" from "waiting".
+    So the two facts are derived here from the key, BEFORE the mask, and only the
+    derived words travel: ``worker`` is ``running`` / ``idle`` / ``closed``, ``stale``
+    is :func:`work_ledger.is_stale`. The word is :func:`_alive_of` and the liveness
+    behind ``stale`` is :func:`work_ledger.item_liveness`, both as the Crew page reads
+    them, so the two pages cannot disagree.
+
+    Only a list whose entries are work items (``item_id`` beside
+    ``worker_session_key``) is touched. A remote item has no slot here, so it is left
+    as it is and the page draws it as it always did. Memory reads only.
+    """
+    if state is None or not isinstance(value, list):
+        return value
+    out: list[Any] = []
+    for raw in value:
+        if not (isinstance(raw, Mapping) and "item_id" in raw and "worker_session_key" in raw):
+            out.append(raw)
+            continue
+        item = work_ledger.WorkItem.from_dict(dict(raw))
+        if item.worker_instance_id:
+            out.append(raw)
+            continue
+        running, closed, looping = work_ledger.item_liveness(
+            "",
+            item,
+            running=lambda k: _slot_running(state, k),
+            closed=lambda k: _slot_closed(state, k),
+            looping=_slot_looping,
+        )
+        stale = work_ledger.is_stale(
+            item, worker_running=running, worker_closed=closed, worker_looping=looping
+        )
+        worker = _alive_of(state, item.worker_session_key or "")
+        out.append({**raw, "worker": worker, "stale": stale})
+    return out
 
 
 def _remote_alive(running: bool, closed: bool) -> str:
