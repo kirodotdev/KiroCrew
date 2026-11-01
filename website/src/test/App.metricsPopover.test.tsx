@@ -222,7 +222,10 @@ describe('top-bar metrics control — collapsed band opens a popover', () => {
     expect(localStorage.getItem('mc-topbar-metrics')).toBe('1')
     fireEvent.mouseEnter(readout)
     await screen.findByRole('tooltip', { name: /System metrics/ })
-    fireEvent.click(readout)
+    // Hiding the readout changes the top bar's contents, so useTopbarCollapse's
+    // MutationObserver re-measures in a microtask after fireEvent's own act has
+    // closed. Keep the act scope open until that update has landed.
+    await act(async () => { fireEvent.click(readout) })
     expect(localStorage.getItem('mc-topbar-metrics')).toBe('0')
     // The click closes the card, and the pointer resting on the same control
     // raises no new mouseenter, so it does not reopen under the cursor.
@@ -402,7 +405,10 @@ describe('top-bar metrics control — collapsed band opens a popover', () => {
     expect(btn.getAttribute('aria-pressed')).toBe('false')
     expect(btn.getAttribute('aria-haspopup')).toBeNull()
 
-    fireEvent.click(btn)
+    // Expanding the readout changes the top bar's contents, so
+    // useTopbarCollapse's MutationObserver re-measures in a microtask after
+    // fireEvent's own act has closed; keep the act scope open until it lands.
+    await act(async () => { fireEvent.click(btn) })
 
     // Writes the preference and expands inline — no popover in this band.
     expect(localStorage.getItem('mc-topbar-metrics')).toBe('1')
