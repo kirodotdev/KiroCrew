@@ -387,6 +387,7 @@ from kiro_crew.dashboard.server_runtime.session_restore import (  # noqa: F401
 from kiro_crew.dashboard.server_runtime.skill_learning import (  # noqa: F401
     _auto_create_consolidator,
     _pending_skill_notification,
+    _register_lesson_change_hook,
     _register_pending_skill_hooks,
 )
 from kiro_crew.dashboard.server_runtime.static_assets import (  # noqa: F401
@@ -438,6 +439,7 @@ from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances import run_marker  # noqa: F401
 from kiro_crew.instances.registry import InstancesRegistry  # noqa: F401
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState  # noqa: F401
+from kiro_crew.lesson_events import set_lessons_changed_hook  # noqa: F401
 from kiro_crew.mate_config_migration import migrate_existing_crewmates
 from kiro_crew.mcp_gateway.socketsec import chmod_socket_0600  # noqa: F401
 from kiro_crew.metrics.http_metrics import (  # noqa: F401
@@ -768,6 +770,8 @@ async def start_dashboard(
 
     # --- Pending-skill approval notifications ---
     _register_pending_skill_hooks(state)
+    # --- Lesson-store change signal for apps that declare `lessons` ---
+    _register_lesson_change_hook(state)
 
     state._hook_store = ScriptHookStore()
     set_global_hook_store(state._hook_store)
