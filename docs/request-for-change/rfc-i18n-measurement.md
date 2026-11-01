@@ -97,7 +97,7 @@ suffix-key dialect makes easy to reach.
 Beta gate is "100% of the high-priority surface"; this is 100% everywhere.
 
 **Runtime-computed keys are effectively absent** — **exactly one dynamic site**
-(`website/src/surfaces/registry.ts:324`, `i18nT(s.labelKey)`) and zero
+(`website/src/surfaces/registry.ts::surfaceLabel`, `i18nT(s.labelKey)`) and zero
 template-literal keys, against roughly 5,700 `i18nT()` calls. Treat
 `node website/scripts/check-i18n-keys.mjs --report` as the authority on the total
 rather than any figure quoted here: independent AST scans of this tree disagree in
@@ -208,7 +208,7 @@ regression; it does not reach strings that were never catalog keys. Some of the
 40 construct LLM prompt text and fall outside the rule's scope, which governs
 user-facing strings (`formatArtifactCommentsMessage` in `website/src/components/CommentOverlay.tsx`),
 but user-visible ones are not — `website/src/App.tsx:499`, `website/src/App.tsx:619`,
-`website/src/components/InlineCommentOverlay.tsx:171`,
+`website/src/components/InlineCommentOverlay.tsx::InlineCommentOverlay`,
 `website/src/components/ArtifactFolderDeleteDialog.tsx:41`.
 
 **Message format is i18next's native dialect, not ICU.** Among the React i18n
@@ -252,7 +252,7 @@ in `website/electron/ipc-registrar.js`).
 ### Medium
 
 - A stored or server-provided tag that is not an exact `SUPPORTED_CODES` member is
-  **discarded** rather than negotiated (`website/src/i18n/detect.ts:133`), while the
+  **discarded** rather than negotiated (`website/src/i18n/detect.ts::resolveLanguage`), while the
   backend accepts any tag matching its own **conservative BCP-47 subset**
   (`src/kiro_crew/dashboard/handlers/core.py:299-307,377`). `dashboard.language='de-AT'`
   silently becomes browser-detected.
@@ -316,7 +316,7 @@ ever on the roadmap.
 **4. Migrate the 35 text-comparison `localeCompare` sites to `compareText`, and
 replace the other 4 with byte comparisons.** Those four compare ISO timestamps,
 where collation is the wrong tool entirely —
-`website/src/components/SessionGridView.tsx:214`,
+`website/src/components/SessionGridView.tsx::PlaceholderPane`,
 `website/src/pages/ArtifactDetailPage.tsx:49`, and both branches at
 `website/src/pages/ChatSidebar.tsx:560`. Pure adoption otherwise: the seam is
 built and tested with zero consumers. Note `localeFormatting.test.ts` is
