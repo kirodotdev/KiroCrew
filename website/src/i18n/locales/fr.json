@@ -10691,6 +10691,25 @@
       "reason": "Je ne peux pas exécuter ceci, mais toi, tu peux.",
       "run_unanswered": "Le terminal n'a pas répondu, alors copie-la dans l'application Terminal de ton ordinateur.",
       "title": "À lancer toi-même"
+    },
+    "messageActions": {
+      "popover_label": "{{app}} : {{title}}",
+      "item_label": "{{title}}, de {{app}}",
+      "item_from": "De {{app}}",
+      "text_unreadable": "Impossible de lire ce message, rien n'a donc été envoyé à {{app}}. Reviens jusqu'à lui et réessaie.",
+      "menu_load_failed": "Impossible de charger les actions des apps, il en manque peut-être dans ce menu.",
+      "menu_load_retry": "Recharger les actions des apps",
+      "close": "Fermer",
+      "loading": "Ouverture de {{app}}…",
+      "load_failed": "{{app}} ne s'est pas ouvert. Réessaie dans un instant.",
+      "app_error": "{{app}} n'a pas pu terminer.",
+      "copy": "Copier",
+      "copied": "Copié",
+      "copy_failed": "Impossible de copier",
+      "open_host": "Ouvrir {{host}}",
+      "grant_role_user": "{{title}} : tes propres messages aussi, pas seulement les réponses",
+      "grant_role_assistant": "{{title}} : réponses de l'assistant",
+      "grant_format_markdown": "{{title}} : le Markdown du message, avec les adresses des liens"
     }
   },
   "hooks": {
@@ -11076,6 +11095,7 @@
       "grants_reconsent_link_hosts": "Hôtes de liens : permet aux cartes de survol de l’app de voir les liens vers ces sites dans les messages du chat.",
       "grants_reconsent_link_patterns": "Motifs de texte : permet aux cartes de survol de l’app de voir le texte du chat qui correspond à ces motifs.",
       "grants_reconsent_link_full_url": "Adresses de lien complètes : les cartes de survol de l’app voient aussi la partie d’un lien après « ? » ou « # », qui peut contenir un code de connexion.",
+      "grants_reconsent_message_actions": "Actions sur les messages : ce que les éléments de menu de l'app sur les messages du chat peuvent lire.",
       "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant."
     },
     "appPage": {

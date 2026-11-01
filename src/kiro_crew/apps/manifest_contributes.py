@@ -814,6 +814,158 @@ class LinkPreviewConfig:
         return errors
 
 
+#: Message actions per app. Every action of every enabled app adds a row to each
+#: message's More menu, so the count is small.
+MAX_MESSAGE_ACTIONS_PER_APP = 2
+#: The longest message text an action can be handed, in UTF-16 units (what the
+#: dashboard measures). Also the default.
+MAX_MESSAGE_ACTION_CHARS = 32000
+#: The longest menu label, in UTF-16 units.
+_MAX_MESSAGE_ACTION_TITLE = 40
+#: Which messages an action may be offered on. Each role is its own grant: a user
+#: message can hold what the user pasted, an assistant reply what the agent read.
+MESSAGE_ACTION_ROLES = ("assistant", "user")
+#: How the message reaches the frame: the rendered plain text, or the markdown
+#: source. ``markdown`` is a wider grant (it carries link targets and anything the
+#: renderer hides).
+MESSAGE_ACTION_FORMATS = ("plain", "markdown")
+#: Popover bounds in CSS px, and the defaults.
+_MESSAGE_ACTION_POPOVER_WIDTH = (200, 480, 360)
+_MESSAGE_ACTION_POPOVER_HEIGHT = (120, 600, 480)
+_MESSAGE_ACTION_KEYS = frozenset({"id", "title", "entry", "roles", "format", "maxChars", "popover"})
+_POPOVER_KEYS = frozenset({"width", "maxHeight"})
+
+
+def _strict_int(value: Any) -> int | None:
+    """``value`` when it is a JSON integer (never a bool or a float), else None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+@dataclass
+class MessageActionConfig:
+    """A button on one chat message: the app gets that one message's text.
+
+    The host draws the item in the message's More menu, labelled with the app's
+    name. On a click it opens a popover anchored to the message and creates a
+    sandboxed, opaque-origin frame in it (``apps/app_frame.py``) that imports
+    ``entry`` and calls the module's ``activate(ctx)`` once; the returned handler's
+    ``invoke`` receives that message's text, as rendered plain text unless
+    ``format`` is ``markdown``. No other message, no session identity and no DOM
+    ever reach the frame. Copy and Open are buttons the host draws under the frame.
+
+    ``roles`` and ``format`` are grants (``apps/message_action_grants.py``): an
+    update that adds ``user`` or switches to ``markdown`` waits for the owner.
+    """
+
+    id: str = ""  # stable id, unique within the app
+    title: str = ""  # the menu label
+    # ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
+    entry: str = ""
+    roles: list[str] = field(default_factory=lambda: ["assistant"])
+    format: str = "plain"
+    maxChars: int = MAX_MESSAGE_ACTION_CHARS  # noqa: N815
+    popoverWidth: int = _MESSAGE_ACTION_POPOVER_WIDTH[2]  # noqa: N815
+    popoverMaxHeight: int = _MESSAGE_ACTION_POPOVER_HEIGHT[2]  # noqa: N815
+    #: Field names present with the wrong JSON type, and unknown keys. A wrong
+    #: type is refused, never coerced. Not serialized.
+    bad_fields: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        # Every field, defaults included: the serialized entry is signed, and what
+        # it grants (roles, format) must read the same whether or not it was spelled.
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.title:
+            d["title"] = self.title
+        if self.entry:
+            d["entry"] = self.entry
+        d["roles"] = list(self.roles)
+        d["format"] = self.format
+        d["maxChars"] = self.maxChars
+        d["popover"] = {"width": self.popoverWidth, "maxHeight": self.popoverMaxHeight}
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MessageActionConfig:
+        bad: list[str] = sorted(f"unknown key {k!r}" for k in set(data) - _MESSAGE_ACTION_KEYS)
+        out = cls()
+        for key in ("id", "title", "entry", "format"):
+            if key not in data:
+                continue
+            if isinstance(data[key], str):
+                setattr(out, key, data[key])
+            else:
+                bad.append(key)
+        if "roles" in data:
+            roles = data["roles"]
+            if isinstance(roles, list) and all(isinstance(r, str) for r in roles):
+                out.roles = list(roles)
+            else:
+                bad.append("roles")
+        if "maxChars" in data:
+            n = _strict_int(data["maxChars"])
+            if n is None:
+                bad.append("maxChars")
+            else:
+                out.maxChars = n
+        if "popover" in data:
+            pop = data["popover"]
+            if not isinstance(pop, dict) or set(pop) - _POPOVER_KEYS:
+                bad.append("popover")
+            else:
+                for key, attr in (("width", "popoverWidth"), ("maxHeight", "popoverMaxHeight")):
+                    if key not in pop:
+                        continue
+                    n = _strict_int(pop[key])
+                    if n is None:
+                        bad.append(f"popover.{key}")
+                    else:
+                        setattr(out, attr, n)
+        out.bad_fields = bad
+        return out
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.messageActions[{self.id or '?'}]"
+        for bad in self.bad_fields:
+            errors.append(
+                f"{where}: {bad}"
+                if bad.startswith("unknown")
+                else f"{where}: {bad} has the wrong type"
+            )
+        if not self.id:
+            errors.append("contributes.messageActions: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        if not self.title:
+            errors.append(f"{where}: missing title")
+        elif _mirrored_len(self.title) > _MAX_MESSAGE_ACTION_TITLE:
+            got = _mirrored_len(self.title)
+            errors.append(f"{where}: title exceeds {_MAX_MESSAGE_ACTION_TITLE} characters ({got})")
+        if not self.entry:
+            errors.append(f"{where}: missing entry")
+        if not self.roles:
+            errors.append(f"{where}: roles must list at least one of {list(MESSAGE_ACTION_ROLES)}")
+        for role in self.roles:
+            if role not in MESSAGE_ACTION_ROLES:
+                errors.append(f"{where}: unknown role {role!r}")
+        if len(set(self.roles)) != len(self.roles):
+            errors.append(f"{where}: roles repeats an entry")
+        if self.format not in MESSAGE_ACTION_FORMATS:
+            errors.append(f"{where}: format must be one of {list(MESSAGE_ACTION_FORMATS)}")
+        if not 1 <= self.maxChars <= MAX_MESSAGE_ACTION_CHARS:
+            errors.append(f"{where}: maxChars must be 1 to {MAX_MESSAGE_ACTION_CHARS}")
+        for name, value, (lo, hi, _default) in (
+            ("popover.width", self.popoverWidth, _MESSAGE_ACTION_POPOVER_WIDTH),
+            ("popover.maxHeight", self.popoverMaxHeight, _MESSAGE_ACTION_POPOVER_HEIGHT),
+        ):
+            if not lo <= value <= hi:
+                errors.append(f"{where}: {name} must be {lo} to {hi}")
+        # `entry` traversal is checked in `AppManifest.validate` (needs the app root).
+        return errors
+
+
 @dataclass
 class FileMenuWhen:
     """Declarative visibility predicate for a contributed file-menu row.
@@ -1032,6 +1184,11 @@ class Contributes:
     #: reasoning as the flags above. Not serialized.
     bad_link_previews: bool = False
     dropped_link_previews: int = 0
+    messageActions: list[MessageActionConfig] = field(default_factory=list)  # noqa: N815
+    #: ``messageActions`` present but not a list / entries that were not objects.
+    #: Same reasoning as the flags above. Not serialized.
+    bad_message_actions: bool = False
+    dropped_message_actions: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -1056,6 +1213,8 @@ class Contributes:
         kept_previews = [p for p in previews if p]
         if kept_previews:
             d["linkPreviews"] = kept_previews
+        if self.messageActions:
+            d["messageActions"] = [a.to_dict() for a in self.messageActions]
         return d
 
     @classmethod
@@ -1089,7 +1248,14 @@ class Contributes:
         item_entries = items_raw if isinstance(items_raw, list) else []
         previews_raw = data.get("linkPreviews", [])
         preview_entries = previews_raw if isinstance(previews_raw, list) else []
+        actions_raw = data.get("messageActions", [])
+        action_entries = actions_raw if isinstance(actions_raw, list) else []
         return cls(
+            messageActions=[
+                MessageActionConfig.from_dict(a) for a in action_entries if isinstance(a, dict)
+            ],
+            bad_message_actions="messageActions" in data and not isinstance(actions_raw, list),
+            dropped_message_actions=sum(1 for a in action_entries if not isinstance(a, dict)),
             linkPreviews=[
                 LinkPreviewConfig.from_dict(p) for p in preview_entries if isinstance(p, dict)
             ],
@@ -1234,4 +1400,28 @@ class Contributes:
             )
         for preview in self.linkPreviews:
             errors.extend(preview.validate())
+        if self.bad_message_actions:
+            errors.append(
+                "contributes.messageActions must be an array -- a non-array value passes "
+                "as empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor any button"
+            )
+        if self.dropped_message_actions:
+            errors.append(
+                f"contributes.messageActions: {self.dropped_message_actions} entr"
+                f"{'y' if self.dropped_message_actions == 1 else 'ies'} must be an object"
+            )
+        if len(self.messageActions) > MAX_MESSAGE_ACTIONS_PER_APP:
+            errors.append(
+                f"contributes.messageActions: {len(self.messageActions)} actions exceeds the "
+                f"limit of {MAX_MESSAGE_ACTIONS_PER_APP}"
+            )
+        action_ids: set[str] = set()
+        for action in self.messageActions:
+            errors.extend(action.validate())
+            if action.id:
+                if action.id in action_ids:
+                    # The id keys the grant and the frame's point: two would share both.
+                    errors.append(f"contributes.messageActions: duplicate id {action.id!r}")
+                action_ids.add(action.id)
         return errors

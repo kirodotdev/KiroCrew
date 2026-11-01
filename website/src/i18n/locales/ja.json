@@ -10369,6 +10369,25 @@
       "reason": "私はこれを実行できませんが、ご自身では実行できます。",
       "run_unanswered": "ターミナルが応答しなかったため、お使いのコンピューターのターミナルアプリにコピーしてください。",
       "title": "ご自身で実行してください"
+    },
+    "messageActions": {
+      "popover_label": "{{app}}：{{title}}",
+      "item_label": "{{title}}（{{app}}）",
+      "item_from": "{{app}} から",
+      "text_unreadable": "このメッセージを読み取れなかったため、{{app}} には何も送信されませんでした。メッセージまでスクロールして、もう一度お試しください。",
+      "menu_load_failed": "アプリのアクションを読み込めなかったため、このメニューに一部が表示されていない可能性があります。",
+      "menu_load_retry": "アプリのアクションを再読み込み",
+      "close": "閉じる",
+      "loading": "{{app}} を開いています…",
+      "load_failed": "{{app}} を開けませんでした。少し待ってからもう一度お試しください。",
+      "app_error": "{{app}} はこの操作を完了できませんでした。",
+      "copy": "コピー",
+      "copied": "コピーしました",
+      "copy_failed": "コピーできませんでした",
+      "open_host": "{{host}} を開く",
+      "grant_role_user": "{{title}}：返信だけでなく、あなた自身のメッセージも",
+      "grant_role_assistant": "{{title}}：アシスタントの返信",
+      "grant_format_markdown": "{{title}}：メッセージの Markdown（リンクのアドレスを含む）"
     }
   },
   "hooks": {
@@ -10750,6 +10769,7 @@
       "grants_reconsent_link_hosts": "リンクのホスト: チャットメッセージ内のこれらのサイトへのリンクを、アプリのホバーカードが見られるようにします。",
       "grants_reconsent_link_patterns": "テキストパターン: これらのパターンに一致するチャットのテキストを、アプリのホバーカードが見られるようにします。",
       "grants_reconsent_link_full_url": "リンクの完全なアドレス: アプリのホバーカードは、リンクの ? や # 以降の部分も見られます。ここにはサインイン用のコードが含まれることがあります。",
+      "grants_reconsent_message_actions": "メッセージアクション：チャットメッセージ上のアプリのメニュー項目が読み取れる内容。",
       "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。"
     },
     "appPage": {

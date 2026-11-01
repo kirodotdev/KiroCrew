@@ -12,6 +12,7 @@ import { CodeCommentContext, holdCodeBlock, holdCodeChip, type CodeLineAnnotatio
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { APPROVAL_COMMAND_TAG } from '../lib/approvalNotificationBody'
+import { holdVisibleCodeText } from '../utils/visibleText'
 
 /** A block taller than this repeats its action row at the bottom, so copying
  *  or editing never costs a scroll back to the top. Fixed rather than
@@ -336,6 +337,13 @@ export const CodeBlock = memo(function CodeBlock(
       return <ThreadChip meta={m} active={commenting.ctx.activeId === m.id} onActivate={commenting.ctx.onActivate} />
     }
     : undefined
+  // A reader of the block's visible text (utils/visibleText) gets exactly this
+  // code: the highlighter draws it in a shadow root, with line numbers and buttons
+  // around it, none of which is the code.
+  useEffect(() => {
+    const el = nearRef.current
+    return el ? holdVisibleCodeText(el, code) : undefined
+  }, [code])
   // Each routed thread's fallback anchor is this block, so a sidebar click on
   // a thread whose chip is not mounted yet still scrolls here.
   useEffect(() => {

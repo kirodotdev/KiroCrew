@@ -10691,6 +10691,25 @@
       "reason": "Yo no puedo ejecutar esto, pero tú sí.",
       "run_unanswered": "El terminal no respondió, así que cópialo en la aplicación Terminal de tu ordenador.",
       "title": "Ejecútalo tú"
+    },
+    "messageActions": {
+      "popover_label": "{{app}}: {{title}}",
+      "item_label": "{{title}}, de {{app}}",
+      "item_from": "De {{app}}",
+      "text_unreadable": "No se pudo leer este mensaje, así que no se envió nada a {{app}}. Vuelve a desplazarte hasta él e inténtalo de nuevo.",
+      "menu_load_failed": "No se pudieron cargar las acciones de apps, así que puede que falten algunas en este menú.",
+      "menu_load_retry": "Volver a cargar las acciones de apps",
+      "close": "Cerrar",
+      "loading": "Abriendo {{app}}…",
+      "load_failed": "{{app}} no se abrió. Inténtalo de nuevo en un momento.",
+      "app_error": "{{app}} no pudo terminar esto.",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "copy_failed": "No se pudo copiar",
+      "open_host": "Abrir {{host}}",
+      "grant_role_user": "{{title}}: también tus propios mensajes, no solo las respuestas",
+      "grant_role_assistant": "{{title}}: respuestas del asistente",
+      "grant_format_markdown": "{{title}}: el Markdown del mensaje, con las direcciones de los enlaces"
     }
   },
   "hooks": {
@@ -11076,6 +11095,7 @@
       "grants_reconsent_link_hosts": "Hosts de enlaces: permite que las tarjetas de la app vean enlaces a estos sitios en los mensajes del chat.",
       "grants_reconsent_link_patterns": "Patrones de texto: permite que las tarjetas de la app vean el texto del chat que coincide con estos patrones.",
       "grants_reconsent_link_full_url": "Direcciones de enlace completas: las tarjetas de la app también ven la parte de un enlace tras ? o #, que puede contener un código de inicio de sesión.",
+      "grants_reconsent_message_actions": "Acciones de mensaje: lo que pueden leer las opciones de menú de la app en los mensajes del chat.",
       "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos."
     },
     "appPage": {

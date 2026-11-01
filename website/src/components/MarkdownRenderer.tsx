@@ -1343,7 +1343,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   }, [content, smooth, revealIdle])
 
   if (rawMode) {
-    return <pre className="text-[13px] font-mono whitespace-pre-wrap break-words leading-relaxed text-muted">{content}</pre>
+    // The raw view is the message's content too: its source is what a message action reads.
+    return <pre data-message-body="" className="text-[13px] font-mono whitespace-pre-wrap break-words leading-relaxed text-muted">{content}</pre>
   }
 
   // Root class drives the per-char entrance keyframe (.ft-word descendants
@@ -1378,6 +1379,9 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       onClick={handleClick}
       data-image-scope=""
       data-tip-flow=""
+      // The message's own content: what an app's message action reads as plain
+      // text (messageActions/messageText.ts). Anything else in a bubble is not.
+      data-message-body=""
       // Chat messages only: the one place an app's link preview listens.
       data-link-preview-scope={textPreviews ? '' : undefined}
       // Authored content: nothing in it is a control a guide points at.
