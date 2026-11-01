@@ -84,7 +84,6 @@
   "src/test/FolderConfigModal.test.tsx",
   "src/test/FolderPanel.test.tsx",
   "src/test/FollowUpCard.test.tsx",
-  "src/test/InstanceTabBar.test.tsx",
   "src/test/InstancesViewport.test.tsx",
   "src/test/IssueRadarConnectHosts.test.tsx",
   "src/test/KiroAccountModal.test.tsx",
