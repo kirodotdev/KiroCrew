@@ -31,7 +31,6 @@
   "src/test/App.topbarAndShortcuts.test.tsx",
   "src/test/AppDetailPageCoverage.test.tsx",
   "src/test/AppRootCoverage.test.tsx",
-  "src/test/ArtifactDeployPageCoverage.test.tsx",
   "src/test/ArtifactDetailPage.test.tsx",
   "src/test/ArtifactDetailPageCoverage.test.tsx",
   "src/test/ArtifactPanelCoverage.test.tsx",
