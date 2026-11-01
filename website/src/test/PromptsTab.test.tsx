@@ -210,7 +210,7 @@ describe('PromptsTab authoring', () => {
 
     await waitFor(() => expect(mockApi.updatePrompt).toHaveBeenCalledWith(
       // The 4th argument is the edit base: the hash the detail read handed out,
-      // presented back so the server can refuse a save over someone else's edit.
+      // presented back so the server can refuse a save over an edit by another writer.
       'my-prompt', 'global', '---\ndescription: mine\n---\n\nedited body', 'a'.repeat(64),
     ))
   })
@@ -665,6 +665,7 @@ describe('PromptsTab feedback', () => {
     await waitFor(() => expect(create).toBeDisabled())
     expect(mockApi.createPrompt).toHaveBeenCalledTimes(1)
     release({ ok: true })
+    await waitFor(() => expect(screen.queryByPlaceholderText('my-prompt-name')).not.toBeInTheDocument())
   })
 
   it('shows the list and detail panes side by side, with a selection', async () => {
@@ -755,6 +756,8 @@ describe('PromptsTab in-flight writes', () => {
     fireEvent.click(await screen.findByText('Edit'))
 
     fireEvent.click(screen.getByRole('option', { name: /other/ }))
+    await waitFor(() => expect(mockApi.promptDetail).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('option', { name: /other/ })).toHaveAttribute('aria-selected', 'true'))
     expect(confirmSpy).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })
@@ -829,6 +832,7 @@ describe('PromptsTab in-flight writes', () => {
     await waitFor(() => expect(screen.getByText('Cancel')).toBeDisabled())
     expect(screen.getByPlaceholderText('my-prompt-name')).toBeInTheDocument()
     release({ ok: true })
+    await waitFor(() => expect(screen.queryByPlaceholderText('my-prompt-name')).not.toBeInTheDocument())
   })
 })
 
