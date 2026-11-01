@@ -171,7 +171,7 @@ export function goalScope(text: string): string {
   return m ? m[1].trim() : ''
 }
 
-type MilestoneState = 'done' | 'blocked' | 'running' | 'next'
+type MilestoneState = 'done' | 'blocked' | 'running' | 'waiting' | 'next'
 
 export function milestoneState(item: WorkBoardItem, waiting: boolean): MilestoneState {
   // A closed item is finished whatever its last report said. Then waiting on
@@ -188,7 +188,10 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   if (item.alive === 'closed' && (item.status === 'progress' || item.status === 'blocked' || item.status === 'question')) return 'blocked'
   const decided = !!item.decided_at && (!item.last_report_at || item.decided_at >= item.last_report_at)
   if (item.status === 'blocked' && !decided) return 'blocked'
-  if (item.status === 'progress' || item.status === 'blocked' || item.status === 'question') return 'running'
+  // Only a live turn reads as running (above): an idle session whose last
+  // report was progress, or an answered blocked / question, is waiting to be
+  // resumed, as the List shows it.
+  if (item.status === 'progress' || item.status === 'blocked' || item.status === 'question') return 'waiting'
   if (item.status === 'done') return 'done'
   return 'next'
 }
@@ -209,6 +212,7 @@ const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   done: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--ok)_18%,transparent)] crew-tone-ok"><Check size={12} strokeWidth={3} /></span>,
   blocked: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
   running: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--aim)_18%,transparent)] ultra-accent"><Loader size={12} className="motion-safe:animate-spin" /></span>,
+  waiting: <span className="block w-5 h-5 rounded-full border-[1.5px] border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
   next: <span className="block w-5 h-5 rounded-full border-[1.5px] border-dashed border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
 }
 
@@ -220,6 +224,12 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
       <span className="truncate">{firstSentence(item.summary)}</span>
       {item.pr != null && <span className="shrink-0 ultra-accent">{i18nT('components.crewMode.ultra_ms_pr', { n: item.pr })}</span>}
       {link && <a className="shrink-0 ultra-accent hover:underline" href={link[1]} target="_blank" rel="noreferrer">· {link[0]}</a>}
+    </>
+  } else if (state === 'waiting') {
+    const said = firstSentence(item.summary)
+    sub = <>
+      <span className="shrink-0">{i18nT('commandCenter.worker_group_waiting')}</span>
+      {said && <span className="truncate" title={said}>· {said}</span>}
     </>
   } else {
     const text = state === 'blocked' ? waitingOn

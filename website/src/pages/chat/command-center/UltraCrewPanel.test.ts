@@ -86,7 +86,18 @@ describe('milestoneState', () => {
 
   it('stops waiting on the person once the conductor answered', () => {
     expect(milestoneState(item({ status: 'question', outstanding: false, decided_at: '2026-10-30T01:05:00Z', last_report_at: '2026-10-30T01:00:00Z', alive: 'running' }), false)).toBe('running')
-    expect(milestoneState(item({ status: 'blocked', decided_at: '2026-10-30T01:05:00Z', last_report_at: '2026-10-30T01:00:00Z' }), false)).toBe('running')
+    expect(milestoneState(item({ status: 'blocked', decided_at: '2026-10-30T01:05:00Z', last_report_at: '2026-10-30T01:00:00Z', alive: 'running' }), false)).toBe('running')
+  })
+
+  it('reads an idle session as waiting, never running, whatever its last report', () => {
+    // Answered blocked, progress and answered question, with no live turn: the List shows Waiting.
+    expect(milestoneState(item({ status: 'blocked', decided_at: '2026-10-30T01:05:00Z', last_report_at: '2026-10-30T01:00:00Z' }), false)).toBe('waiting')
+    expect(milestoneState(item({ status: 'progress', last_report_at: '2026-10-30T01:00:00Z' }), false)).toBe('waiting')
+    expect(milestoneState(item({ status: 'question', outstanding: false, decided_at: '2026-10-30T01:05:00Z', last_report_at: '2026-10-30T01:00:00Z' }), false)).toBe('waiting')
+    // The same reports with a live turn still read as running.
+    expect(milestoneState(item({ status: 'progress', alive: 'running' }), false)).toBe('running')
+    // No report yet stays next.
+    expect(milestoneState(item({ status: null }), false)).toBe('next')
   })
 
   it('does not read a report left by a closed session as running', () => {
