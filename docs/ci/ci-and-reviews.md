@@ -687,7 +687,7 @@ yet decided: install from a committed constraints file, or set
 | `frontend-coverage-merge` | Merges the frontend coverage shards so the gate reads one report. **CodeBuild-hosted runner** (pilot, below) except for forks. Skipped on a backend-only diff (`only_backend`) |
 | `cfn-lint` | Lints the artifact-deploy templates with a pinned `cfn-lint`. **Runs on the CodeBuild-hosted runner** (pilot, below) except for fork PRs |
 | `linux-packaging` | "Linux Packaging (build + smoke-install)". Builds all three Linux desktop formats from one backend tree through `packaging/build-desktop.sh`, then installs them in their target distros with `scripts/smoke-linux-packages.sh`. Path-filtered on the packaging surface |
-| `wheel-closure` | "Install Requires Wheel Closure (x86_64 / aarch64)". Resolves `setup.cfg`'s `install_requires` as wheels only at the manylinux2014 / `manylinux_2_17` floor for CPython 3.12 (`scripts/ci/install_requires_closure.py` evaluates each environment marker for the target arch, since pip evaluates markers against the runner, then `pip download --only-binary=:all:`), so a sdist-only dependency that the wheel-only installers (`cli.sh`, `install.sh`, the self-update venv) would refuse on old glibc fails here instead of only on users' hosts. Path-filtered on `setup.cfg`, `pyproject.toml` and that script; hosted off the fleet (the `kirocrew-runners` group here, `ubuntu-latest` in a fork). Advisory: not a required check |
+| `wheel-closure` | "Install Requires Wheel Closure (x86_64 / aarch64)". Resolves `setup.cfg`'s `install_requires` as wheels only at the manylinux2014 / `manylinux_2_17` floor for CPython 3.12 (`scripts/ci/install_requires_closure.py` evaluates each environment marker for the target arch, since pip evaluates markers against the runner, then `pip download --only-binary=:all:`), so a sdist-only dependency that the wheel-only installers (`cli.sh`, `install.sh`, the self-update venv) would refuse on old glibc fails here instead of only on users' hosts. Path-filtered on `setup.cfg`, `pyproject.toml` and that script. **Runs on the CodeBuild-hosted runner** at default compute, through the `changes` resolver, so a run the fleet does not admit takes the `kirocrew-runners` group here and `ubuntu-latest` in a fork. Advisory: not a required check |
 | `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
 | `bundle-size` | "Bundle Size Gate". Builds the frontend with `--mode analyze` (which is the only build that emits `dist/bundle-report.json`) and then runs TWO checks over that one build: per-chunk ceilings from `website/scripts/check-bundle-size.mjs`, with a 500 KB default for any chunk not named there, and an acyclic-graph check from `website/scripts/check-chunk-cycles.mjs`. The job name is narrower than its scope on purpose — it is a required check, so renaming it would silently stop satisfying branch protection. **An acyclic chunk graph is a deliberate invariant and the cycle check has no allowlist**, unlike the size ceilings: a chunk cycle has no valid initialization order, so a body can run against a binding that is still uninitialized and blank the page before React mounts, and whether a given cycle does that is not decidable from the chunk graph. Fix the chunking rather than waiving it. Skipped on a backend-only diff, which cannot change the bundle |
 | `i18n-render` | "i18n Render Gate (en-XA, head vs base)". Runs `npm run i18n:render` in `website/`: builds the SPA in DEV mode for HEAD and for the base commit, renders every surface under the `en-XA` pseudolocale in Chromium and fails on any per-surface increase. No gateway, no token, no backend. Default-size Linux runner, skipped on a backend-only diff. Its own job because the ~13 minutes of CPU it takes on a hosted 4-vCPU runner starved the `e2e` Playwright suite past its ceiling on fork PRs. Details: [i18n-gates.md](i18n-gates.md) |
@@ -1445,13 +1445,17 @@ the affected line.
 **The `ci.yml` lanes reach the group by LABEL too, for the same reason.** Jobs
 in `ci.yml` that were pinned to a default hosted runner now reach the
 group through its `kirocrew-linux-4-core` label instead of through group
-targeting: `wheel-closure`, `native-redaction-gate`,
-`backend-test-kernel-lock-owner`, `e2e-private-namespace`, and the Linux leg of
-each of the two matrix lanes `backend-test-ipv6` and `new-test-stability`.
+targeting: `native-redaction-gate`, `backend-test-kernel-lock-owner`,
+`e2e-private-namespace`, and the Linux leg of each of the two matrix lanes
+`backend-test-ipv6` and `new-test-stability`. `wheel-closure` was here too and
+has moved to the fleet: it now reads the `changes` resolver, which reaches this
+same group on its own non-admitted branch, so the destination a rejected run
+takes is unchanged and only the admitted one moved. Its rollback is therefore
+the fleet-preserving one, not the whole-line replacement the lanes below take.
 
 What puts `ci.yml` in this group is that it also runs **in a contributor's own
 repository** -- a push to the fork's `main`, or a pull request opened inside the
-fork -- so the four single-OS lanes take the same expression as the four above:
+fork -- so the three single-OS lanes take the same expression as the four above:
 
 ```yaml
 runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
@@ -1459,12 +1463,12 @@ runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-cor
 
 As above, this is about a fork running its own copy, not about a fork pull
 request against this repository: that `pull_request` run executes in the base
-repository, so `github.repository` matches and all six lanes do land on the
+repository, so `github.repository` matches and all five lanes do land on the
 group, against `kirocrew-linux-4-core`'s `maximum_runners: 200`. A
 `merge_group` run does the same.
 
 The rename exposure the group form avoids is real and accepted here: renaming
-the definition again breaks all six of these lines at once, where a group
+the definition again breaks all five of these lines at once, where a group
 reference would have survived it.
 
 **The two matrix lanes keep their `name:` and their `os:` values unchanged**, so
@@ -1480,14 +1484,14 @@ runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/K
 The Windows leg falls through to `matrix.os` and is untouched; a Windows group
 is a separate change.
 
-**These six can hold merges.** They are `ci.yml` jobs on the `pull_request`
+**These five can hold merges.** They are `ci.yml` jobs on the `pull_request`
 path, `pr-readiness.yml` carries `ci.yml|CI` in its `workflow_specs` and
 `ci.yml` in `MONITORED_LANES`, and `merge-queue-readiness.yml` polls it too, so
 one of them queued against the group's cap is merge latency. They are also
 new PR-time occupancy, which is what **Capacity** below says to measure before
 adding, so the rollback rule applies with full force: roll the affected line
 back at once rather than waiting for a queue to clear. **The two shapes roll
-back differently.** The four single-OS lanes return to
+back differently.** The three single-OS lanes return to
 `runs-on: ubuntu-latest`. The two matrix lanes return to
 `runs-on: ${{ matrix.os }}`, the recipe `e2e-boot-matrix` and
 `denial-differential` already use above. Writing `ubuntu-latest` on a matrix
@@ -1497,17 +1501,19 @@ pins the whole expression. On `new-test-stability` nothing reads that line, so
 `New-test stability (windows-latest)` would report green from a Linux VM and no
 check would say otherwise.
 
-**Three of the six are pinned by a routing test, and three are not.**
+**Three of the five are pinned by a routing test, and two are not.**
 `test_ci_ipv6_routing.py`, `test_ci_kernel_owner_routing.py` and
 `test_ci_nonroot_boundary.py` assert the whole expression for
 `backend-test-ipv6`, `backend-test-kernel-lock-owner` and
 `e2e-private-namespace`, fork branch included, so dropping the
 `|| 'ubuntu-latest'` on one of those three lines reds that test rather than
 stranding fork runs on a label no runner a fork can see carries. No test reads
-the `runs-on` of `wheel-closure`, `native-redaction-gate` or
-`new-test-stability`, so the same edit on those three lines is silent. Removing
-the fallback from each line in turn reds exactly one test for the first three
-and nothing for the last three.
+the `runs-on` of `native-redaction-gate` or `new-test-stability`, so the same
+edit on those two lines is silent. Removing the fallback from each line in turn
+reds exactly one test for the first three and nothing for the last two.
+`wheel-closure` used to be in that unpinned set and no longer is: its move to
+the resolver put it in `test_ci_fleet_routing_expression_parity.py`'s consumer
+map, which pins its complete expression including its hosted fallback.
 
 **One site cannot use the group, and uses the label instead:** `ci.yml`'s
 `changes` resolver, whose `linux_runner` and `linux_runner_large` outputs carry
