@@ -10,7 +10,6 @@
   "src/components/LinkedSurfacesSection.cov80.test.tsx",
   "src/components/LinkedSurfacesSection.menuKeyboard.test.tsx",
   "src/components/SketchDialog.test.tsx",
-  "src/components/WidgetFrame.cov80.test.tsx",
   "src/pages/members/DeployMyCrew.test.tsx",
   "src/pages/members/MembersPage.newCrewmate.test.tsx",
   "src/pages/members/MembersPage.schedules.test.tsx",

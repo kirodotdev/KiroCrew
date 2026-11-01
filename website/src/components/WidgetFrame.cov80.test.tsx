@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import WidgetFrame, {
@@ -69,7 +69,7 @@ describe('staggeredBuildWait', () => {
 })
 
 describe('WidgetFrame toolbar actions', () => {
-  it('downloads the widget as a sanitized .html filename', () => {
+  it('downloads the widget as a sanitized .html filename', async () => {
     const click = vi.fn()
     const create = document.createElement.bind(document)
     vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
@@ -78,7 +78,8 @@ describe('WidgetFrame toolbar actions', () => {
       return el
     })
 
-    wrap(<WidgetFrame html="<p>zzq</p>" title={'zzq/report:1*'} />)
+    const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title={'zzq/report:1*'} />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
     fireEvent.click(
       screen.getByRole('button', { name: i18nT('components.widgetFrame.download_as_html') }),
     )
@@ -89,9 +90,10 @@ describe('WidgetFrame toolbar actions', () => {
     expect(document.querySelector('a[download]')).toBeNull()
   })
 
-  it('opens a standalone wrapper document in a new tab', () => {
+  it('opens a standalone wrapper document in a new tab', async () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
-    wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
 
     fireEvent.click(
       screen.getByRole('button', { name: i18nT('components.widgetFrame.open_in_new_tab') }),
@@ -99,8 +101,9 @@ describe('WidgetFrame toolbar actions', () => {
     expect(open).toHaveBeenCalledWith('blob:zzq-widget', '_blank')
   })
 
-  it('expands, then collapses again from the backdrop', () => {
+  it('expands, then collapses again from the backdrop', async () => {
     const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
 
     fireEvent.click(screen.getByRole('button', { name: i18nT('components.widgetFrame.expand') }))
     const backdrop = container.querySelector('.fixed.inset-0')!
@@ -172,11 +175,12 @@ describe('WidgetFrame toolbar actions', () => {
     expect(iframe.style.height).toBe(before)
   })
 
-  it('revokes both action blob URLs once their grace window elapses', () => {
+  it('revokes both action blob URLs once their grace window elapses', async () => {
     vi.useFakeTimers()
     try {
       vi.spyOn(window, 'open').mockReturnValue(null)
       wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+      await settleMint()
       fireEvent.click(
         screen.getByRole('button', { name: i18nT('components.widgetFrame.open_in_new_tab') }),
       )
@@ -385,8 +389,9 @@ describe('WidgetFrame artifact star', () => {
     createArtifact = vi.spyOn(api, 'createArtifact').mockResolvedValue({} as never)
   })
 
-  it('disables the star for a widget with no slug context', () => {
-    wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+  it('disables the star for a widget with no slug context', async () => {
+    const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
     expect(star()).toBeDisabled()
     expect(star()).toHaveAttribute(
       'title',
@@ -518,9 +523,10 @@ describe('WidgetFrame artifact star', () => {
     expect(notice).toHaveTextContent('zzq-unpin-broke')
   })
 
-  it('an explicit slug renders as starred before the probe resolves', () => {
+  it('an explicit slug renders as starred before the probe resolves', async () => {
     vi.spyOn(api, 'artifact').mockReturnValue(new Promise(() => {}) as never)
-    wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" slug="zzq-explicit" />)
+    const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" slug="zzq-explicit" />)
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
     expect(screen.getByRole('button', {
       name: i18nT('components.widgetFrame.remove_artifact_from_library', { name: 'zzq-explicit' }),
     })).toBeInTheDocument()
