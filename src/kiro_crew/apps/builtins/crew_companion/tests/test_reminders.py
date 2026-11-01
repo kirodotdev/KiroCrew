@@ -257,9 +257,7 @@ class TestSerialisation:
 
     def test_round_trips_a_reminder_through_camel_case_json(self):
         r = rem(recurrence=Recurrence(90))
-        back = reminder_from_dict(
-            file_to_dict(ReminderFile(reminders=(r,)))["reminders"][0]
-        )
+        back = reminder_from_dict(file_to_dict(ReminderFile(reminders=(r,)))["reminders"][0])
         assert back == r
 
     def test_a_corrupt_row_does_not_lose_the_others(self):
@@ -284,9 +282,7 @@ class TestSerialisation:
 
     def test_breathe_budget_survives_a_round_trip(self):
         f = ReminderFile(breathe_budget=BreatheBudget("2026-07-31", 2))
-        assert file_from_dict(file_to_dict(f)).breathe_budget == BreatheBudget(
-            "2026-07-31", 2
-        )
+        assert file_from_dict(file_to_dict(f)).breathe_budget == BreatheBudget("2026-07-31", 2)
 
     def test_parses_the_z_suffix_on_python_3_10(self):
         """`datetime.fromisoformat` only accepted 'Z' from 3.11, and CI runs 3.10.
