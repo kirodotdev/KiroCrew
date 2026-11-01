@@ -6,7 +6,7 @@
  * the board. jsdom has no layout, so the strip's scroll geometry is stubbed.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -213,10 +213,11 @@ describe('chat sidebar — board lane strip edge cues', () => {
         { id: 'col-d', name: 'Shipped', tag_ids: [D], mode: 'any', order: 3 },
       ])
     })
-    // The same strip node, now holding the fourth lane.
+    // The same strip node, now holding the fourth lane. The act above only holds
+    // for as long as some other update keeps it open, so wait for each value read.
     expect(screen.getByTestId('column-strip')).toBe(strip)
-    expect(strip.children).toHaveLength(4)
-    expect(screen.getByTestId('column-strip-cue-right')).toBeInTheDocument()
+    await waitFor(() => expect(strip.children).toHaveLength(4))
+    expect(await screen.findByTestId('column-strip-cue-right')).toBeInTheDocument()
     expect(screen.queryByTestId('column-strip-cue-left')).toBeNull()
   })
 })
