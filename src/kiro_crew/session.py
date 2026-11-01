@@ -826,6 +826,11 @@ class SessionManager:
     _has_pending_injection = _sweeps._has_pending_injection
     set_idle_compaction_probe = _sweeps.set_idle_compaction_probe
     _idle_compaction_blocker = _sweeps._idle_compaction_blocker
+    set_live_slot_resolver = _sweeps.set_live_slot_resolver
+    set_conversation_log = _sweeps.set_conversation_log
+    _unanswered_turn_age = _sweeps._unanswered_turn_age
+    _mark_turn_failed = _sweeps._mark_turn_failed
+    _get_conversation_log = _sweeps._get_conversation_log
     _expire_idle_hook = _sweeps._expire_idle_hook
     _bg_drain_reap_hook = _sweeps._bg_drain_reap_hook
     _released_sessions_hook = _sweeps._released_sessions_hook
@@ -860,6 +865,7 @@ class SessionManager:
         cfg: KiroCrewConfig,
         provider_factory: ProviderFactory | None = None,
         session_map: SessionMap | None = None,
+        conversation_log: Any | None = None,
     ):
         self._cfg = cfg
         # Baseline for adopt-on-change (see _sync_autocompact_pct). Captured here
@@ -895,6 +901,11 @@ class SessionManager:
         # Installed by the dashboard (set_idle_compaction_probe); None means no
         # chat can be shown idle, so no idle compaction runs.
         self._idle_compaction_probe: "Callable[[str], str | None] | None" = None
+        # Installed by the dashboard once its state exists (set_live_slot_resolver);
+        # None means "no dashboard, inspect tail on disk".
+        self._live_slot_resolver: "Callable[[str], Any | None] | None" = None
+        # Installed by the dashboard or creator; None falls back to ConversationLog().
+        self._conversation_log: Any | None = conversation_log
         # Both cold-start widths are restart settings. Built on the gateway boot
         # path and the event loop, so "auto" is sized from the cached host
         # reading only (the floors until it exists); widen_cold_start_queues
