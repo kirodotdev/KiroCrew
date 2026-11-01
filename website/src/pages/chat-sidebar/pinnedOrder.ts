@@ -34,8 +34,8 @@ export function usePinnedSessionOrder({ localSlots, sortKey }: {
   // Pinned membership AND the order inside the pinned section live on the
   // gateway: each slot row carries `pin_rank` (see utils/pinnedSessionOrder.ts
   // and dashboard/pinned_session_order.py). Rows with no rank follow the
-  // ranked ones in the sidebar's own sort, so a person who never reordered
-  // keeps the plain sort.
+  // ranked ones in the sidebar's own sort. The first-load seed below ranks
+  // them even when nobody reordered (see usePinnedOrderAuthority).
   //
   // Both collections read `localSlots`, NOT the merged `allRows`: pin state and
   // pin order are local sidebar metadata keyed by local slot key, and a peer row
@@ -177,8 +177,8 @@ type PinnedOrderState = ReturnType<typeof usePinnedSessionOrder>['orderState']
  *  shows. Only an unranked gateway adopts it (`only_if_unset`), so a second
  *  browser cannot overwrite a newer shared order. As on `main`, it waits for
  *  the slots, the tag columns and any pin write in flight, and a board view
- *  does not seed the natural order: a board's projection is not the order the
- *  person sees in the list. */
+ *  with no old local order does not seed the natural order: a board's
+ *  projection is not the order the person sees in the list. */
 export function usePinnedOrderAuthority({ orderState, slotsLoaded, tagColumnsSettled, boardProjection }: {
   orderState: PinnedOrderState
   slotsLoaded: boolean
