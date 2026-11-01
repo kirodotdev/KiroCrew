@@ -216,7 +216,7 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     # Config → config.json under "slack" (staged, applied only after Phase 1).
     path = config_path()
     try:
-        data = json.loads(read_config_text(path)) if path.exists() else {}
+        data = json.loads(read_config_text(path)) if await asyncio.to_thread(path.exists) else {}
         if not isinstance(data, dict):
             raise ValueError("config.json is not a JSON object")
     except Exception:
