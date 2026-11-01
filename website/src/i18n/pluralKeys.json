@@ -202,6 +202,7 @@
   "pages.chatSidebar.remote_sessions_not_shown_in_board_view",
   "pages.chatSidebar.running_session",
   "pages.chatSidebar.session",
+  "pages.chatSidebar.session_failed_to_archive",
   "pages.chatSidebar.session_failed_to_switch",
   "pages.chatSidebar.show_hidden_folder",
   "pages.chatSidebar.show_hidden_folders_from_board",

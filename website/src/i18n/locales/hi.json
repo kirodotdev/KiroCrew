@@ -13191,6 +13191,8 @@
       "search_older_sessions": "पुराने सत्र खोजें…",
       "search_sessions": "सत्र खोजें…",
       "session_dropped_into_itself": "सेशन को उसी में नहीं छोड़ा जा सकता… उसी में… उसी में…",
+      "session_failed_to_archive_one": "{{count}} सत्र आर्काइव करने में विफल रहा",
+      "session_failed_to_archive_other": "{{count}} सत्र आर्काइव करने में विफल रहे",
       "session_failed_to_switch_one": "{{count}} सत्र बदलने में विफल रहा",
       "session_failed_to_switch_other": "{{count}} सत्र बदलने में विफल रहे",
       "session_one": "{{count}} सत्र",

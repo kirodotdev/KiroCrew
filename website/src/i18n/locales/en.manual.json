@@ -6162,6 +6162,8 @@
       "last_7_days": "Last 7 Days",
       "dashboard_source": "Dashboard",
       "connected_to": "Connected to {{label}}",
+      "session_failed_to_archive_one": "{{count}} session failed to archive",
+      "session_failed_to_archive_other": "{{count}} sessions failed to archive",
       "session_failed_to_switch_one": "{{count}} session failed to switch",
       "session_failed_to_switch_other": "{{count}} sessions failed to switch",
       "session_source": "Session",
