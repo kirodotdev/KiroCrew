@@ -14445,17 +14445,21 @@
         "edit": "संपादित करें",
         "entities_count": "एंटिटी ({{count}})",
         "entities_in_this_chunk": "इस चंक की एंटिटी:",
+        "error_no_reason": "अनुरोध बिना किसी कारण के विफल हुआ।",
         "export": "एक्सपोर्ट करें",
         "item_not_found": "आइटम नहीं मिला",
+        "load_failed": "यह आइटम लोड नहीं हो सका",
         "match_score": "मेल: {{type}} (स्कोर: {{score}})",
         "no_tags": "कोई टैग नहीं",
         "permanently_delete_this_item": "इस आइटम को हमेशा के लिए हटाएं?",
         "related_items_count": "संबंधित आइटम ({{count}})",
+        "related_load_failed": "संबंधित आइटम लोड नहीं हो सके",
         "relations_count": "संबंध ({{count}})",
         "save": "सहेजें",
         "shared": "साझा",
         "summary": "सारांश",
         "tag1_tag2_tag3": "tag1, tag2, tag3",
+        "tags_save_failed": "टैग सहेजे नहीं जा सके",
         "unarchive": "संग्रह से हटाएं"
       },
       "embeddingStatus": {
@@ -14538,7 +14542,12 @@
         "stats_relations_other": "{{count}} संबंध",
         "stats_sources_one": "{{count}} स्रोत",
         "stats_sources_other": "{{count}} स्रोत",
-        "page_of": "{{pages}} में से पेज {{page}}"
+        "page_of": "{{pages}} में से पेज {{page}}",
+        "list_load_failed": "नॉलेज आइटम लोड नहीं हो सके",
+        "bulk_archive_failed": "चयनित आइटम संग्रहित नहीं हो सके",
+        "bulk_delete_failed": "चयनित आइटम हटाए नहीं जा सके",
+        "entity_items_load_failed": "इस एंटिटी के आइटम लोड नहीं हो सके",
+        "error_no_reason": "अनुरोध बिना किसी कारण के विफल हुआ।"
       },
       "itemCard": {
         "copied": "कॉपी हो गया!",
@@ -14570,7 +14579,9 @@
         "no_source": "कोई स्रोत नहीं",
         "page_of": "{{pages}} में से पेज {{page}}",
         "prev": "← पिछला",
-        "unknown_source": "अज्ञात स्रोत"
+        "unknown_source": "अज्ञात स्रोत",
+        "error_no_reason": "अनुरोध बिना किसी कारण के विफल हुआ।",
+        "load_failed": "इस स्रोत के आइटम लोड नहीं हो सके"
       },
       "sourcesList": {
         "add_folder": "फ़ोल्डर जोड़ें",

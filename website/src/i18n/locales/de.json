@@ -14445,17 +14445,21 @@
         "edit": "bearbeiten",
         "entities_count": "Entitäten ({{count}})",
         "entities_in_this_chunk": "Entitäten in diesem Abschnitt:",
+        "error_no_reason": "Die Anfrage ist ohne Angabe eines Grundes fehlgeschlagen.",
         "export": "Exportieren",
         "item_not_found": "Element nicht gefunden",
+        "load_failed": "Element konnte nicht geladen werden",
         "match_score": "Treffer: {{type}} (Bewertung: {{score}})",
         "no_tags": "Keine Tags",
         "permanently_delete_this_item": "Dieses Element endgültig löschen?",
         "related_items_count": "Verwandte Elemente ({{count}})",
+        "related_load_failed": "Verwandte Elemente konnten nicht geladen werden",
         "relations_count": "Beziehungen ({{count}})",
         "save": "speichern",
         "shared": "gemeinsam",
         "summary": "Zusammenfassung",
         "tag1_tag2_tag3": "tag1, tag2, tag3",
+        "tags_save_failed": "Tags konnten nicht gespeichert werden",
         "unarchive": "Aus dem Archiv holen"
       },
       "embeddingStatus": {
@@ -14538,7 +14542,12 @@
         "stats_relations_other": "{{count}} Beziehungen",
         "stats_sources_one": "{{count}} Quelle",
         "stats_sources_other": "{{count}} Quellen",
-        "page_of": "Seite {{page}} von {{pages}}"
+        "page_of": "Seite {{page}} von {{pages}}",
+        "list_load_failed": "Wissenselemente konnten nicht geladen werden",
+        "bulk_archive_failed": "Ausgewählte Elemente konnten nicht archiviert werden",
+        "bulk_delete_failed": "Ausgewählte Elemente konnten nicht gelöscht werden",
+        "entity_items_load_failed": "Elemente dieser Entität konnten nicht geladen werden",
+        "error_no_reason": "Die Anfrage ist ohne Angabe eines Grundes fehlgeschlagen."
       },
       "itemCard": {
         "copied": "Kopiert!",
@@ -14570,7 +14579,9 @@
         "no_source": "Keine Quelle",
         "page_of": "Seite {{page}} von {{pages}}",
         "prev": "← Zurück",
-        "unknown_source": "Unbekannte Quelle"
+        "unknown_source": "Unbekannte Quelle",
+        "error_no_reason": "Die Anfrage ist ohne Angabe eines Grundes fehlgeschlagen.",
+        "load_failed": "Elemente dieser Quelle konnten nicht geladen werden"
       },
       "sourcesList": {
         "add_folder": "Ordner hinzufügen",

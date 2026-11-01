@@ -4,6 +4,8 @@ import { ChevronLeft, Copy, Download, Archive, X, RefreshCw, AlertCircle, Link2,
 import { Card, Btn, Badge, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import ErrorNotice from '../../components/ErrorNotice'
+import { errMessage } from '../../utils/thunkError'
 import { knowledgeApi } from './api'
 import { typeBadgeVariant, formatDate, useCopy } from './helpers'
 import type { KnowledgeItem, Entity } from './types'
@@ -21,16 +23,35 @@ function highlightEntities(text: string, entities: Entity[], onEntityClick?: (na
     : part)
 }
 
+/** The server's reason for a failed request, or a plain line when it gave none. */
+function failureText(error: unknown): string {
+  return errMessage(error) || i18nT('pages.knowledge.detailView.error_no_reason')
+}
+
 function RelatedItems({ itemId, entities }: { itemId: string; entities: Entity[] }) {
-  const { data: related = [] } = useQuery({
+  const { data: related = [], isError, error } = useQuery({
     queryKey: ['knowledge-related', itemId],
     queryFn: () => knowledgeApi<(KnowledgeItem & { shared_entities?: number })[]>(`/items/${itemId}/related`),
     enabled: (entities?.length ?? 0) > 0,
   })
 
-  if (!related.length) return null
+  // A failed read is not "no related items": say so instead of hiding the card,
+  // and over a list from an earlier read, say the list may be out of date.
+  const notice = (
+    <ErrorNotice
+      askAgent
+      className="mb-3"
+      testId="knowledge-related-error"
+      title={i18nT('pages.knowledge.detailView.related_load_failed')}
+      message={isError ? failureText(error) : ''}
+    />
+  )
+
+  if (!related.length) return notice
 
   return (
+    <>
+    {notice}
     <Card className="!mb-3">
       <div className="text-[13px] font-semibold text-text-strong mb-2">{i18nT('pages.knowledge.detailView.related_items_count', { count: related.length })}</div>
       <div className="space-y-1">
@@ -44,6 +65,7 @@ function RelatedItems({ itemId, entities }: { itemId: string; entities: Entity[]
         ))}
       </div>
     </Card>
+    </>
   )
 }
 
@@ -60,6 +82,8 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const close = () => {
     setEditing(false)
+    // A closed editor has no save to explain, so its failure goes with it.
+    saveMutation.reset()
     // Only take back focus the unmount dropped: a save can resolve after the
     // user has already moved on to another control, and that control keeps it.
     requestAnimationFrame(() => {
@@ -95,6 +119,7 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
   }
 
   return (
+    <>
     <div className="flex items-center gap-2">
       <Tag size={11} className="text-muted shrink-0" />
       <input aria-label={i18nT('pages.knowledge.detailView.comma_separated_tags')} value={value} onChange={e => setValue(e.target.value)} placeholder={i18nT('pages.knowledge.detailView.tag1_tag2_tag3')}
@@ -105,6 +130,16 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
         className="text-[11px] text-accent bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.detailView.save')}</button>
       <button onClick={close} className="text-[11px] text-muted bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.detailView.cancel')}</button>
     </div>
+    {/* No hand-off: the tag field holds the unsaved tag draft. */}
+    <ErrorNotice
+      variant="inline"
+      className="mt-1"
+      testId="knowledge-tags-save-error"
+      title={i18nT('pages.knowledge.detailView.tags_save_failed')}
+      message={saveMutation.isError ? failureText(saveMutation.error) : ''}
+      onDismiss={() => saveMutation.reset()}
+    />
+    </>
   )
 }
 
@@ -116,7 +151,7 @@ function isMarkdownContent(item: KnowledgeItem): boolean {
 
 export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: string; onBack: () => void; onEntityClick?: (name: string) => void }) {
   const queryClient = useQueryClient()
-  const { data: item, isLoading: loading } = useQuery({
+  const { data: item, isLoading: loading, isError: loadFailed, error: loadError } = useQuery({
     queryKey: ['knowledge-item', itemId],
     queryFn: () => knowledgeApi<KnowledgeItem>(`/items/${itemId}`),
   })
@@ -169,11 +204,34 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
   }
 
   if (loading) return <ContentSkeleton />
+  // A failed read is not a missing item: "not found" in front of an outage
+  // sends the user looking for an item that is still there.
+  if (loadFailed && !item) {
+    return (
+      <div className="animate-rise">
+        <button onClick={onBack} className="flex items-center gap-1 text-muted hover:text-text text-[13px] mb-3 bg-transparent border-none cursor-pointer"><ChevronLeft size={14} /> {i18nT('pages.knowledge.detailView.back_to_list')}</button>
+        <ErrorNotice
+          askAgent
+          testId="knowledge-item-load-error"
+          title={i18nT('pages.knowledge.detailView.load_failed')}
+          message={failureText(loadError)}
+        />
+      </div>
+    )
+  }
   if (!item) return <div className="text-muted text-sm">{i18nT('pages.knowledge.detailView.item_not_found')}</div>
 
   return (
     <div className="animate-rise">
       <button onClick={onBack} className="flex items-center gap-1 text-muted hover:text-text text-[13px] mb-3 bg-transparent border-none cursor-pointer"><ChevronLeft size={14} /> {i18nT('pages.knowledge.detailView.back_to_list')}</button>
+      {/* A failed refresh over the cached item: what is below may be out of date. */}
+      <ErrorNotice
+        askAgent
+        className="mb-3"
+        testId="knowledge-item-load-error"
+        title={i18nT('pages.knowledge.detailView.load_failed')}
+        message={loadFailed ? failureText(loadError) : ''}
+      />
       <h2 className="text-lg font-bold text-text-strong mb-1">{item.title}</h2>
       <div className="flex items-center gap-2 mb-2">
         <Badge variant={typeBadgeVariant(item.item_type)}>{item.item_type.replace(/_/g, ' ')}</Badge>
