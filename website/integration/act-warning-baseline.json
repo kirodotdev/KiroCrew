@@ -269,7 +269,6 @@
   "src/test/MarkdownPanel.watchVisibleTab.test.tsx",
   "src/test/MarkdownPanelCoverage.test.tsx",
   "src/test/MarkdownPanelMoreCoverage.test.tsx",
-  "src/test/MarkdownRenderer.blockedLink.test.tsx",
   "src/test/MarkdownRenderer.inlineCodeCopy.test.tsx",
   "src/test/MarkdownRenderer.mermaid.test.tsx",
   "src/test/MarkdownRenderer.mermaidConfig.test.tsx",
