@@ -644,11 +644,12 @@ def push_lineage_patch(self: DashboardState) -> None:
     live = {row["key"] for row in rows}
     for key in [k for k in sent if k not in live]:
         del sent[key]
-    stamps = _crew_stamps(self, rows)
+    stamps, mate_stamps = _crew_stamps(self, rows)
     changed: list[dict[str, Any]] = []
     for row in rows:
         crew = stamps.get(row["key"], _NO_CREW)
-        value = (row.get("parent"), bool(row.get("lineage_pending")), crew)
+        mate = mate_stamps.get(row["key"], _NO_MATE)
+        value = (row.get("parent"), bool(row.get("lineage_pending")), crew, mate)
         before = sent.get(row["key"])
         if before == value:
             continue
@@ -658,6 +659,9 @@ def push_lineage_patch(self: DashboardState) -> None:
         # its two stamps ride along only when they moved.
         if crew != (before[2] if before is not None and len(before) > 2 else _NO_CREW):
             patch["crew_root"], patch["crew_mode_root"] = crew
+        # The same for a mate tree's two stamps (inert: no client reads them yet).
+        if mate != (before[3] if before is not None and len(before) > 3 else _NO_MATE):
+            patch["mate_root"], patch["mate_dispatched_by"] = mate
         changed.append(patch)
     if not changed:
         return
@@ -767,10 +771,14 @@ def push_slot_removed(self: DashboardState, key: str) -> None:
 
 #: A row outside every Crew Mode tree: no root to name, not a root itself.
 _NO_CREW: tuple[str, bool] = ("", False)
+#: A row outside every mate tree: no ``mate_root``, no ``mate_dispatched_by``.
+_NO_MATE: tuple[str, str] = ("", "")
 
 
-def _crew_stamps(self: DashboardState, rows: list[dict[str, Any]]) -> dict[str, tuple[str, bool]]:
-    """Each live row's Crew Mode stamps (``crew_mode.live_stamps``), or none on a fault.
+def _crew_stamps(
+    self: DashboardState, rows: list[dict[str, Any]]
+) -> tuple[dict[str, tuple[str, bool]], dict[str, tuple[str, str]]]:
+    """Each live row's Crew Mode and mate stamps (``crew_mode.live_stamp_rows``).
 
     *rows* are :meth:`_lineage_rows` with their ``parent`` attached, so the stamps
     read the same edges the full frame reads. A fault costs the stamps only, as it
@@ -780,14 +788,19 @@ def _crew_stamps(self: DashboardState, rows: list[dict[str, Any]]) -> dict[str, 
 
     keys = {row["key"] for row in rows}
     try:
-        return crew_mode.live_stamps(
+        stamped = crew_mode.live_stamp_rows(
             {k: s for k, s in list(self._slots.items()) if k in keys},
             {row["key"]: row.get("parent") for row in rows},
             settled=crew_mode.lineage_is_settled(),
         )
     except Exception:  # pragma: no cover - a stamp fault must cost the stamp only
         logger.warning("Crew Mode stamps not restated", exc_info=True)
-        return {}
+        return {}, {}
+    crew = {
+        key: (str(row.get(crew_mode.WORKER_FIELD) or ""), bool(row.get(crew_mode.ROOT_FIELD)))
+        for key, row in stamped.items()
+    }
+    return crew, {key: crew_mode.mate_stamps_of(row) for key, row in stamped.items()}
 
 
 def _has_slot_patch_clients(self: DashboardState) -> bool:
