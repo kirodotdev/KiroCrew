@@ -178,7 +178,6 @@
   "src/test/ChatSidebar.digitBadges.test.tsx",
   "src/test/ChatSidebar.effectiveAgent.test.tsx",
   "src/test/ChatSidebar.emptyFolderNoBody.test.tsx",
-  "src/test/ChatSidebar.filterSuspend.test.tsx",
   "src/test/ChatSidebar.flatBoard.test.tsx",
   "src/test/ChatSidebar.flatFolderFilter.test.tsx",
   "src/test/ChatSidebar.flatView.test.tsx",
