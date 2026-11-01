@@ -558,7 +558,7 @@ async def _clone_build_app_locked(
                     f"retained at: {stale_path}"
                 )
                 continue
-            if stale_path.exists():
+            if await asyncio.to_thread(stale_path.exists):
                 await _rmtree_force_settled(pkg_dir)
                 try:
                     await asyncio.to_thread(stale_path.rename, pkg_dir)
