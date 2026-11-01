@@ -31,7 +31,6 @@
 1 src/kiro_crew/dashboard/messaging_api/run_views.py
 1 src/kiro_crew/dashboard/messaging_api/webex_settings.py
 1 src/kiro_crew/dashboard/server.py
-2 src/kiro_crew/frontend.py
 1 src/kiro_crew/mcp_gateway/resolve_once.py
 2 src/kiro_crew/slack/handler_runtime/commands.py
 2 src/kiro_crew/voice_reply.py
