@@ -403,7 +403,19 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   inode stays the same on a republish. It sits at the data-home root beside
     #:   writable siblings, so no enclosing directory mask can hold it and leaf-only
     #:   is the only hold available, the same as ``member-records``.
-    EXPECTED: dict[str, int] = {"standard": 299, "cc": 306, "strict": 307}
+    #:
+    #: One entry per tier for the default home's ``run`` under a relocated data
+    #: home (``sandbox_workspace.prime_voice_runtime_sandbox_paths``):
+    #:
+    #: * ``$HOME/.kiro/crew/run`` -- where every gateway leaves its run-dir pointer,
+    #:   whatever its data home, and the token mint follows that pointer to a
+    #:   launcher it runs outside the sandbox. Sealed read-only so an agent cannot
+    #:   plant one. Only the ``$HOME/.kiro/crew`` spelling is added: the relocated
+    #:   home's own ``run`` is already counted. It sits at the default home's root
+    #:   beside writable siblings, so no enclosing directory mask can hold it and
+    #:   leaf-only is the only hold available. The pointer is published by a rename
+    #:   INSIDE it, so the directory's own inode stays the same on a republish.
+    EXPECTED: dict[str, int] = {"standard": 300, "cc": 307, "strict": 308}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
