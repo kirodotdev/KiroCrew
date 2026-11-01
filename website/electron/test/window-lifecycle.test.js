@@ -1120,6 +1120,7 @@ describe("dashboard window wiring order", () => {
     assert.deepEqual(events, [
       "view.on:did-finish-load",
       "win.on:swipe",
+      "view.on:input-event",
       "win.on:closed",
       "win.on:resize",
       "win.on:closed",

@@ -328,6 +328,7 @@ function createWindowLifecycle(options) {
     // The trackpad's real finger-down / finger-up, so a two-finger drag in the
     // dashboard releases on the lift-off instead of a guessed gap (macOS only).
     armScrollTouch(view.webContents, {
+      platform,
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
     });
 
