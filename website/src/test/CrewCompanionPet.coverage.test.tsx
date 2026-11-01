@@ -18,6 +18,7 @@ import { waitFor, fireEvent, act } from '@testing-library/react'
 
 import { PENDING_PATH, PRESENCE_PATH } from '../apps/crew-companion/constants'
 import type { SessionWatchOptions } from '../apps/crew-companion/sessionWatch'
+import { namedCeiling } from './namedCeiling'
 
 // The theme adopt is a real same-origin read in production; here it just resolves so
 // the bootstrap gets as far as `createRoot`.
@@ -115,9 +116,19 @@ let setActiveCb: ((active: boolean, x?: number, y?: number, isDragging?: boolean
 let bubbleActionCb: ((a: unknown) => void) | null = null
 let windowCommandCb: ((cmd: unknown) => void) | null = null
 let rehydrateSlotCb: ((slot: unknown) => void) | null = null
+// The real socket delivers these from outside React and each one sets overlay state, so the tests that call them
+// by hand do it through act (the mock hands the tests this wrapped copy, not the overlay's own callbacks).
+const inAct = <A extends unknown[]>(fn: ((...args: A) => void) | undefined) =>
+  fn && ((...args: A) => { act(() => { fn(...args) }) })
 vi.mock('../apps/crew-companion/sessionWatch', () => ({
   watchSessions: (opts: SessionWatchOptions) => {
-    watch = opts
+    watch = {
+      ...opts,
+      onDone: inAct(opts.onDone)!,
+      onApproval: inAct(opts.onApproval),
+      onApprovalResolved: inAct(opts.onApprovalResolved),
+      onFireQueued: inAct(opts.onFireQueued),
+    }
     return () => {}
   },
 }))
@@ -233,10 +244,15 @@ async function mountPet(): Promise<void> {
   host.id = 'companion-root'
   document.body.appendChild(host)
   vi.resetModules()
-  await import('../apps/crew-companion/pet')
+  // The entry's bootstrap calls createRoot(host).render() from a promise callback right after the import
+  // evaluates. Keep that inside act so the root's first render is part of the mount, not a late update.
+  await act(async () => { await import('../apps/crew-companion/pet') })
   // The bootstrap awaits the theme before createRoot and the root renders through
   // React's scheduler, so wait for the companion rather than counting ticks.
   await waitFor(() => expect(document.querySelector('.cc-pet')).not.toBeNull())
+  // The companion sits at opacity 0 until the saved position arrives: useDrag reads it 300ms after mount, then
+  // sets the position and the ready flag. Wait for that flip so it cannot land in a test's own window later.
+  await waitFor(() => expect(petEl().style.opacity).toBe('1'), namedCeiling('PET_POSITION_LOADED', 5000))
 }
 
 function petEl(): HTMLElement {
@@ -300,7 +316,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  for (const root of roots.splice(0)) root.unmount()
+  act(() => { for (const root of roots.splice(0)) root.unmount() })
   document.querySelectorAll('#companion-root').forEach((n) => n.remove())
   vi.unstubAllGlobals()
   vi.clearAllMocks()
@@ -604,7 +620,11 @@ describe('the "Open session" call to action', () => {
     fireEvent.click(cta()!)
     // Longer than the 300ms exit animation, so a bubble still on screen after
     // this was never asked to leave rather than being caught mid-animation.
-    await new Promise((r) => setTimeout(r, 500))
+    // Held as a wait that must time out: the window stays real-time, and the avatar's own timers that fire inside
+    // it (the eye squash) land in the wait's scope instead of after a barrier.
+    await expect(
+      waitFor(() => expect(document.querySelector('.cc-bubble-wrap')!.className).toContain('cc-bubble-out'), { timeout: 500 }),
+    ).rejects.toThrow(/cc-bubble-out/)
 
     expect(document.querySelector('.cc-bubble-body')?.textContent).toBe('Run the migration')
     expect(document.querySelector('.cc-bubble-wrap')?.className).not.toContain('cc-bubble-out')
@@ -654,8 +674,10 @@ describe('the "Open session" call to action', () => {
     // A now reports success -- for a notification that is no longer on screen.
     release()
     // Longer than the 300ms exit animation, so a bubble still up after this was
-    // never asked to leave rather than being caught mid-animation.
-    await new Promise((r) => setTimeout(r, 500))
+    // never asked to leave rather than being caught mid-animation. A wait that must time out, as above.
+    await expect(
+      waitFor(() => expect(document.querySelector('.cc-bubble-wrap')!.className).toContain('cc-bubble-out'), { timeout: 500 }),
+    ).rejects.toThrow(/cc-bubble-out/)
 
     expect(document.querySelector('.cc-bubble-text')?.textContent).toBe(bText)
     expect(document.querySelector('.cc-bubble-wrap')?.className).not.toContain('cc-bubble-out')
@@ -806,7 +828,7 @@ describe('pointer and keyboard on the companion', () => {
     api.setFocusable.mockClear()
     // Blur / Escape / its own ✕ — the panel closes without going through closePanel.
     await waitFor(() => expect(panelClosedCbs.length).toBeGreaterThan(0))
-    panelClosedCbs[panelClosedCbs.length - 1]()
+    act(() => { panelClosedCbs[panelClosedCbs.length - 1]() })
     await waitFor(() => expect(api.setFocusable).toHaveBeenCalledWith(false))
   })
 })
