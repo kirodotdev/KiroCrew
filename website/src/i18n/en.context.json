@@ -1058,6 +1058,17 @@
     "sharedCrew.first_share_stop_tailscale": "First-share warning: where to stop sharing while Tailscale access rules decide; Invites is the invite list heading on the same page.",
     "sharedCrew.first_share_laptop": "Laptop warning: sleep cuts teammates off; Crew keeps it awake while they are connected.",
     "sharedCrew.first_share_laptop_no_keep_awake": "Laptop warning when this computer cannot be kept awake.",
-    "sharedCrew.direct_link_note": "Direct-link access follows Tailscale access rules; Tailscale alone decides who opens the link."
+    "sharedCrew.direct_link_note": "Direct-link access follows Tailscale access rules; Tailscale alone decides who opens the link.",
+    "components.terminalFindBar.find": "Placeholder text in the terminal scrollback search input; the VERB 'find', as in find-in-page.",
+    "components.terminalFindBar.search_scrollback": "Accessible label for the terminal find input. 'Scrollback' is the terminal's output buffer above the viewport.",
+    "components.terminalFindBar.no_results": "Shown in the terminal find bar when the search term matches nothing.",
+    "components.terminalFindBar.match_count": "Terminal find bar position readout, e.g. '3 of 12'. {{index}} is the current match, {{total}} the match count.",
+    "components.terminalFindBar.match_overflow": "Terminal find bar readout when there are too many matches to track a position; shows just the total count.",
+    "components.terminalFindBar.previous_match": "Terminal find bar button: jump to the previous search match.",
+    "components.terminalFindBar.next_match": "Terminal find bar button: jump to the next search match.",
+    "components.terminalFindBar.close_search": "Terminal find bar button: close the search bar.",
+    "components.bottomTerminalPanel.fullscreen": "Menu item: expand the terminal panel to fill the dashboard area.",
+    "components.bottomTerminalPanel.exit_fullscreen": "Menu item: restore the terminal panel from fullscreen to its previous size.",
+    "components.bottomTerminalPanel.find": "Terminal overflow-menu item: open the find bar to search the active terminal's scrollback; the VERB 'find', as in find-in-page."
   }
 }

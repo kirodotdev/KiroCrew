@@ -6505,7 +6505,10 @@
       "move_panel_to_bottom": "Mover panel abajo",
       "more_actions": "Más acciones",
       "close_failed": "No se pudo detener el shell de este terminal en el servidor. Se limpiará automáticamente.",
-      "closing_terminal": "Cerrando terminal…"
+      "closing_terminal": "Cerrando terminal…",
+      "fullscreen": "Pantalla completa",
+      "exit_fullscreen": "Salir de pantalla completa",
+      "find": "Buscar"
     },
     "tabCloseMenu": {
       "close_all_terminals": "Cerrar todos los terminales",
@@ -10690,6 +10693,16 @@
         "tool_search_label": "Búsqueda de herramientas",
         "tool_search_description": "Cargar especificaciones de herramientas MCP diferidas bajo demanda."
       }
+    },
+    "terminalFindBar": {
+      "find": "Buscar",
+      "search_scrollback": "Buscar en el historial del terminal",
+      "no_results": "Sin resultados",
+      "match_count": "{{index}} de {{total}}",
+      "match_overflow": "{{total}} coincidencias",
+      "previous_match": "Coincidencia anterior",
+      "next_match": "Coincidencia siguiente",
+      "close_search": "Cerrar búsqueda"
     },
     "runYourselfCard": {
       "copy_failed": "No se pudo copiar, así que selecciona el comando y cópialo a mano.",

@@ -6273,7 +6273,10 @@
       "move_panel_to_bottom": "패널을 아래로 이동",
       "more_actions": "추가 작업",
       "close_failed": "서버에서 이 터미널의 셸을 중지할 수 없습니다. 자동으로 정리됩니다.",
-      "closing_terminal": "터미널을 닫는 중…"
+      "closing_terminal": "터미널을 닫는 중…",
+      "fullscreen": "전체 화면",
+      "exit_fullscreen": "전체 화면 종료",
+      "find": "찾기"
     },
     "tabCloseMenu": {
       "close_all_terminals": "모든 터미널 닫기",
@@ -10364,6 +10367,16 @@
         "tool_search_label": "도구 검색",
         "tool_search_description": "지연된 MCP 도구 사양을 필요할 때 로드합니다."
       }
+    },
+    "terminalFindBar": {
+      "find": "찾기",
+      "search_scrollback": "터미널 스크롤백 검색",
+      "no_results": "결과 없음",
+      "match_count": "{{total}}개 중 {{index}}번째",
+      "match_overflow": "{{total}}개 일치",
+      "previous_match": "이전 일치",
+      "next_match": "다음 일치",
+      "close_search": "검색 닫기"
     },
     "runYourselfCard": {
       "copy_failed": "복사하지 못했으니 명령을 선택해 직접 복사하세요.",
