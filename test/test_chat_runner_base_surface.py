@@ -513,11 +513,15 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "function",
             "(buf: 'list[str]', text: 'str', total: 'int', cap: 'int' = 40000, hard: 'int' = 80000) -> 'int'",
         ),
-        ("_native_card_feed", "function", "(card_output, card_id: 'str') -> 'str'"),
+        (
+            "_native_card_feed",
+            "function",
+            "(card_output, card_id: 'str', info: \"'dict | None'\" = None) -> 'str'",
+        ),
         (
             "_native_subagent_sync",
             "function",
-            "(state, slot, subagents, tracker, card_output=None) -> 'None'",
+            "(state, slot, subagents, tracker, card_output=None, card_output_len=None, streams=None) -> 'None'",
         ),
         (
             "_register_native_card",
@@ -528,7 +532,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_native_subagent_close_all",
             "function",
-            "(state, slot, tracker, card_output=None, error: 'str | None' = None) -> 'None'",
+            "(state, slot, tracker, card_output=None, error: 'str | None' = None, *, card_output_len: \"'dict[str, int] | None'\", streams: \"'dict[str, dict[str, StreamRedactor]] | None'\") -> 'None'",
         ),
         (
             "_retain_terminal_native",

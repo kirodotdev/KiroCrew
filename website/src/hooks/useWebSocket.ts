@@ -6,7 +6,7 @@ import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, trigge
 import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseSubagentToolResult, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, queueEntryAttachments, isTerminalWorkflowStatus,
   forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
   takeSideQueueEditForClose,
 } from '../store/chatSlice'
@@ -637,8 +637,27 @@ export function useWebSocket() {
             break
           }
           case 'subagent_tool':
-            dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string }))
+            // A tool frame follows the text the agent streamed before the call:
+            // land that text first so the transcript keeps the chat's order.
+            buffers.flushSubagentChunks()
+            dispatch(sseSubagentTool(data as unknown as Parameters<typeof sseSubagentTool>[0]))
             break
+          case 'subagent_tool_result':
+            // A result whose call has no row yet creates one (the call's opening
+            // frame predates the child's admission): land the reasoning or text
+            // buffered before it first, as the tool frame does, or the new row
+            // sits above the words that preceded it.
+            buffers.flushSubagentChunks()
+            dispatch(sseSubagentToolResult(data as { slot: string; id: string; tool_call_id: string; output?: string; status?: string }))
+            break
+          case 'subagent_thinking': {
+            // Reasoning streams token by token like the answer, so it rides the
+            // same coalesced buffer; the buffer lands a run of the other kind
+            // first, so the transcript keeps the wire's order.
+            const { slot: thinkSlot, id: thinkId, text: thinkText } = data as { slot: string; id: string; text: string }
+            if (thinkSlot && thinkId && thinkText) buffers.bufferSubagentChunk(thinkSlot, thinkId, thinkText, 'thinking')
+            break
+          }
           case 'subagent_stalled':
             dispatch(sseSubagentStalled(data as { slot: string; id: string; stalled: boolean; idle_secs?: number }))
             break
@@ -653,7 +672,7 @@ export function useWebSocket() {
             // Flush any buffered chunks before the done event, so the final
             // streaming text is visible before the agent transitions to done.
             buffers.flushSubagentChunks()
-            dispatch(sseSubagentDone(data as { slot: string; id: string; elapsed: number; credits?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; label?: string; model?: string; requested_model?: string; batch_id?: string; result?: string }))
+            dispatch(sseSubagentDone(data as unknown as Parameters<typeof sseSubagentDone>[0]))
             break
           case 'app_reload':
             emitAppReload(data as { app: string })
@@ -661,7 +680,7 @@ export function useWebSocket() {
           case 'subagent_snapshot': {
             // Clear any buffered chunks for this agent — the snapshot's streaming
             // field is authoritative and already includes any in-flight text.
-            const snapData = data as { id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; batch_id?: string; streaming: string; last_tool: string; last_tool_call_id?: string; started: number; tool_count?: number; stalled?: boolean }
+            const snapData = data as unknown as Parameters<typeof sseSubagentSnapshot>[0]
             buffers.dropSubagentKey(snapData.slot, snapData.id)
             dispatch(sseSubagentSnapshot(snapData))
             break
@@ -673,7 +692,7 @@ export function useWebSocket() {
             for (const u of updates) {
               if (typeof u.attempt === 'number' && u.slot && u.id) buffers.flushSubagentKey(u.slot, u.id)
             }
-            dispatch(sseSubagentBatchUpdate(data as { updates: { id: string; slot: string; tool?: string; tool_count?: number; stalled?: boolean; attempt?: number }[] }))
+            dispatch(sseSubagentBatchUpdate(data as unknown as Parameters<typeof sseSubagentBatchUpdate>[0]))
             break
           }
           case 'subagent_batch_chunks':

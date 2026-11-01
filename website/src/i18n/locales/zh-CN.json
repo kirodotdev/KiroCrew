@@ -11434,7 +11434,6 @@
         "model_label": "模型：{{model}}",
         "model_downgraded": "请求 {{requested}}，实际 {{resolved}}",
         "model_effective": "正在 {{model}} 上运行（后端选择模型）",
-        "tool_calls": "工具调用",
         "tool_calls_not_listed_other": "更早的 {{count}} 个调用未显示",
         "waiting_for_output": "等待输出…",
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队",
@@ -11450,7 +11449,14 @@
         "artifacts_load_failed": "无法加载本次会话的产物",
         "library_load_failed": "无法加载产物库",
         "artifact_save_failed": "无法保存产物",
-        "workflow_runs_load_failed": "无法加载工作流运行"
+        "workflow_runs_load_failed": "无法加载工作流运行",
+        "live_activity": "实时活动",
+        "full_result": "完整结果",
+        "tool_call_failed": "工具调用失败",
+        "tool_call_failed_no_output": "未返回任何输出。",
+        "ask_agent_about_failed_call": "向代理询问此次失败的调用",
+        "untitled_call": "未命名的工具调用",
+        "transcript_steps_not_listed_other": "更早的 {{count}} 个步骤未显示"
       },
       "assistantMessage": {
         "applied_to_tasks": "已应用到任务",

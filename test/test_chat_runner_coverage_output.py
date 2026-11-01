@@ -946,7 +946,7 @@ class TestNativeSubagentCards:
         state, slot = _state(tmp_path), _slot()
         tracker = {"open": {"started": 0.0, "done": False, "task": "t", "agent": "a"}}
 
-        chat_runner._native_subagent_close_all(state, slot, tracker)
+        chat_runner._native_subagent_close_all(state, slot, tracker, card_output_len={}, streams={})
 
         assert tracker["open"]["done"] is True
         assert tracker["open"]["error"] is None

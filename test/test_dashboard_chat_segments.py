@@ -766,20 +766,236 @@ class TestRunChatNativeSubagentAttribution:
         assert spawns[0]["agent"] == "gpu-multiagent-explorer"
         assert spawns[0]["task"] == "explore acp"
 
-        # Tool call + output streamed onto the card.
+        # The flat tool_call refines the admitted call's row (full title on the
+        # wire, count unmoved); text streams as chunks; the output lands on the
+        # call's result row, through the same route as a child-tagged result.
+        tools = [d for t, d in calls if t == "subagent_tool" and d.get("id") == card]
+        assert [d["tool"] for d in tools] == ["read", "Reading foo.py:1"]
+        assert [d["tool_count"] for d in tools] == [1, 1]
         chunks = [
             d.get("text", "") for t, d in calls if t == "subagent_chunk" and d.get("id") == card
         ]
         joined = "".join(chunks)
-        assert "Reading foo.py:1" in joined  # full tool title from flat tool_call
-        assert "file body XYZ" in joined  # real tool output
         assert "thinking out loud" in joined  # sub-agent text (agent_message_chunk)
-
+        assert "Reading foo.py:1" not in joined  # a title is a row, not a chunk
+        assert "file body XYZ" not in joined
+        results = [
+            d["output"]
+            for t, d in calls
+            if t == "subagent_tool_result" and d.get("id") == card and "output" in d
+        ]
         # Dedupe: the duplicate tool_result must NOT double-print the output.
-        assert joined.count("file body XYZ") == 1
+        assert results == ["file body XYZ"]
 
         # Done fires once with the accumulated feed as result (not the sentinel).
         dones = [d for t, d in calls if t == "subagent_done" and d.get("id") == card]
         assert len(dones) == 1
-        assert "Reading foo.py:1" in dones[0]["result"]
-        assert "file body XYZ" in dones[0]["result"]
+        assert "\u2192 Reading foo.py:1\nfile body XYZ\n" in dones[0]["result"]
+        assert dones[0]["result"].count("\u2192 ") == 1  # the call named once
+
+    @pytest.mark.asyncio
+    async def test_a_flat_copy_of_a_childs_call_names_its_one_result_row(
+        self, tmp_path, monkeypatch
+    ):
+        """On a wire that copies a child's calls onto the parent stream, the
+        parent-tagged ``tool_call`` is a REFINEMENT of the call the activity
+        frame admitted (kiro-cli announces the bare tool name on the child
+        channel and the command-bearing title on the copy), not a second
+        call. It refines the row's title on the wire and the feed files the
+        call's output under that one title, once: a reader of the finished
+        card's result must not see the call named twice, nor its output
+        filed under the stale bare name while the full title sits above it
+        as a line of its own."""
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_SUBAGENT_ACTIVITY,
+            EVENT_SUBAGENT_LIST,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        def _sub(status):
+            return {
+                "sessionId": "sess-1",
+                "sessionName": "explorer",
+                "role": "gpu-multiagent-explorer",
+                "agentName": "gpu-multiagent-explorer",
+                "initialQuery": "explore acp",
+                "status": {"type": status, "message": ""},
+            }
+
+        events = [
+            LLMEvent(kind=EVENT_SUBAGENT_LIST, subagents=[_sub("working")]),
+            LLMEvent(
+                kind=EVENT_SUBAGENT_ACTIVITY,
+                sub_session_id="sess-1",
+                tool_call_id="tc-1",
+                title="read",
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Reading foo.py:1",
+                tool_kind="read",
+                tool_call_id="tc-1",
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="tc-1",
+                tool_output="file body XYZ",
+                tool_final=True,
+            ),
+            LLMEvent(kind=EVENT_SUBAGENT_LIST, subagents=[_sub("terminated")]),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "explore the codebase with 1 subagent")
+
+        calls = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
+        card = "native:sess-1"
+
+        # The finished feed names the call once, by its refined title, with
+        # its output under it.
+        dones = [d for t, d in calls if t == "subagent_done" and d.get("id") == card]
+        assert len(dones) == 1
+        result = dones[0]["result"]
+        assert result.count("\u2192 ") == 1, result
+        assert "\u2192 Reading foo.py:1\nfile body XYZ\n" in result, result
+        assert "\u2192 read\n" not in result, result
+        # The copy refines the admitted call's row rather than opening a
+        # second one: two tool frames for the one id, the second carrying
+        # the full title, and the count moved once.
+        tools = [d for t, d in calls if t == "subagent_tool" and d.get("id") == card]
+        assert [d["tool_call_id"] for d in tools] == ["tc-1", "tc-1"]
+        assert [d["tool"] for d in tools] == ["read", "Reading foo.py:1"]
+        assert [d["tool_count"] for d in tools] == [1, 1]
+        # The title is not a chunk: the feed is the result the parent reads,
+        # and a title line there is the result row's job.
+        chunks = [
+            d.get("text", "") for t, d in calls if t == "subagent_chunk" and d.get("id") == card
+        ]
+        assert "".join(chunks) == ""
+
+    @pytest.mark.asyncio
+    async def test_child_tagged_frames_alone_drive_the_card(self, tmp_path, monkeypatch):
+        """kiro-cli 2.31 tags a native child's frames with the CHILD's session
+        id, so the handle re-tags them all as EVENT_SUBAGENT_ACTIVITY and the
+        flat tool_call/tool_result arms never see them. The activity arm must
+        drive the card on its own: a tool frame per call (so the card leaves
+        "Starting…"), a result frame per output, a thinking frame, and the
+        accumulated feed as the done ``result``."""
+        from kiro_crew.acp.types import (
+            SUBAGENT_ACTIVITY_THINKING,
+            SUBAGENT_ACTIVITY_TOOL_RESULT,
+        )
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_SUBAGENT_ACTIVITY,
+            EVENT_SUBAGENT_LIST,
+            LLMEvent,
+        )
+
+        def _sub(status):
+            return {
+                "sessionId": "sess-2",
+                "sessionName": "reviewer",
+                "role": "code-reviewer",
+                "agentName": "code-reviewer",
+                "initialQuery": "review the commit",
+                "status": {"type": status, "message": "Running"},
+            }
+
+        events = [
+            LLMEvent(kind=EVENT_SUBAGENT_LIST, subagents=[_sub("working")]),
+            LLMEvent(
+                kind=EVENT_SUBAGENT_ACTIVITY,
+                sub_session_id="sess-2",
+                activity=SUBAGENT_ACTIVITY_THINKING,
+                text="plan the review",
+            ),
+            # bare name (extension spelling), then the command-bearing title
+            LLMEvent(
+                kind=EVENT_SUBAGENT_ACTIVITY,
+                sub_session_id="sess-2",
+                tool_call_id="tc-9",
+                title="shell",
+            ),
+            LLMEvent(
+                kind=EVENT_SUBAGENT_ACTIVITY,
+                sub_session_id="sess-2",
+                tool_call_id="tc-9",
+                title="Running: git log -1",
+                tool_kind="execute",
+                tool_input='{"command": "git log -1"}',
+            ),
+            LLMEvent(
+                kind=EVENT_SUBAGENT_ACTIVITY,
+                sub_session_id="sess-2",
+                activity=SUBAGENT_ACTIVITY_TOOL_RESULT,
+                tool_call_id="tc-9",
+                tool_output="commit abc123",
+            ),
+            LLMEvent(
+                kind=EVENT_SUBAGENT_ACTIVITY,
+                sub_session_id="sess-2",
+                activity=SUBAGENT_ACTIVITY_TOOL_RESULT,
+                tool_call_id="tc-9",
+                tool_output="commit abc123",
+                tool_status="completed",
+                tool_final=True,
+            ),
+            LLMEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sess-2", text="Looks good."),
+            LLMEvent(kind=EVENT_SUBAGENT_LIST, subagents=[_sub("terminated")]),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s2")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "review with the native reviewer")
+
+        calls = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
+        card = "native:sess-2"
+
+        tools = [d for t, d in calls if t == "subagent_tool" and d.get("id") == card]
+        assert [d["tool"] for d in tools] == ["shell", "Running: git log -1"], (
+            "the card's only progress signal is the tool frame; without it the "
+            "card reads Starting… for the whole run"
+        )
+        assert [d["tool_count"] for d in tools] == [1, 1]
+        assert all(d["tool_call_id"] == "tc-9" and d["slot"] == "s2" for d in tools)
+        assert "git log -1" in tools[1]["input"]
+
+        results = [d for t, d in calls if t == "subagent_tool_result" and d.get("id") == card]
+        # The content-only frame projects nothing; the terminal frame carries
+        # the output and the status together.
+        assert [d.get("output") for d in results] == ["commit abc123"]
+        assert results[0]["status"] == "completed"
+
+        thinking = [d for t, d in calls if t == "subagent_thinking" and d.get("id") == card]
+        # The reasoning stream is rolling-redacted: the chunk's trailing word is
+        # withheld until the tool call ends the segment, then emitted whole.
+        assert [d["text"] for d in thinking] == ["plan the ", "review"]
+        assert "".join(d["text"] for d in thinking) == "plan the review"
+
+        chunks = [d["text"] for t, d in calls if t == "subagent_chunk" and d.get("id") == card]
+        # Same rolling redaction on the text stream: "good." has no terminator,
+        # so it is withheld until the roster frame ends the child.
+        assert chunks == ["Looks ", "good."]
+
+        dones = [d for t, d in calls if t == "subagent_done" and d.get("id") == card]
+        assert len(dones) == 1
+        # The feed files the output under the call's title with kiro-cli's
+        # "Running: " status word stripped: it is read on the finished card.
+        assert dones[0]["result"] == "\u2192 git log -1\ncommit abc123\nLooks good."

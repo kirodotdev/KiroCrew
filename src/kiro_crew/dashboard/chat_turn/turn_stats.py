@@ -610,6 +610,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
         _native_tracker,
         _native_card_output,
         error=None if _landed_normally else NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        card_output_len=turn._native_card_output_len,
+        streams=turn._native_streams_red,
     )
     _u = event.usage
     if monitor_completion is not None and is_monitor_completion_evidence(

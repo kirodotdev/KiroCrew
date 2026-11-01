@@ -5179,7 +5179,15 @@
         "artifacts_load_failed": "Couldn't load this session's artifacts",
         "library_load_failed": "Couldn't load the artifact library",
         "artifact_save_failed": "Couldn't save the artifact",
-        "workflow_runs_load_failed": "Couldn't load the workflow runs"
+        "workflow_runs_load_failed": "Couldn't load the workflow runs",
+        "live_activity": "Live activity",
+        "full_result": "Full result",
+        "tool_call_failed": "Tool call failed",
+        "tool_call_failed_no_output": "No output was returned.",
+        "ask_agent_about_failed_call": "Ask the agent about this failed call",
+        "untitled_call": "Unnamed tool call",
+        "transcript_steps_not_listed_one": "{{count}} earlier step not shown",
+        "transcript_steps_not_listed_other": "{{count}} earlier steps not shown"
       },
       "assistantMessage": {
         "speak_message": "Read message aloud",

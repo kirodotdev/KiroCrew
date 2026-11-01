@@ -11968,7 +11968,6 @@
         "model_label": "Модель: {{model}}",
         "model_downgraded": "Запрошено {{requested}}, использовано {{resolved}}",
         "model_effective": "Работает на {{model}} (бэкэнд выбирает модель)",
-        "tool_calls": "Вызовы инструментов",
         "tool_calls_not_listed_few": "{{count}} более ранних вызова не показаны",
         "tool_calls_not_listed_many": "{{count}} более ранних вызовов не показаны",
         "tool_calls_not_listed_one": "{{count}} более ранний вызов не показан",
@@ -11987,7 +11986,17 @@
         "artifacts_load_failed": "Не удалось загрузить артефакты этой сессии",
         "library_load_failed": "Не удалось загрузить библиотеку артефактов",
         "artifact_save_failed": "Не удалось сохранить артефакт",
-        "workflow_runs_load_failed": "Не удалось загрузить запуски рабочих процессов"
+        "workflow_runs_load_failed": "Не удалось загрузить запуски рабочих процессов",
+        "live_activity": "Текущая активность",
+        "full_result": "Полный результат",
+        "tool_call_failed": "Вызов инструмента не удался",
+        "tool_call_failed_no_output": "Вывод не был возвращён.",
+        "ask_agent_about_failed_call": "Спросить агента об этом неудачном вызове",
+        "untitled_call": "Вызов инструмента без имени",
+        "transcript_steps_not_listed_one": "{{count}} более ранний шаг не показан",
+        "transcript_steps_not_listed_few": "{{count}} более ранних шага не показаны",
+        "transcript_steps_not_listed_many": "{{count}} более ранних шагов не показаны",
+        "transcript_steps_not_listed_other": "{{count}} более ранних шага не показаны"
       },
       "assistantMessage": {
         "applied_to_tasks": "Применено к задачам",

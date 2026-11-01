@@ -11612,7 +11612,6 @@
         "model_label": "Modell: {{model}}",
         "model_downgraded": "Angefordert {{requested}}, bereitgestellt {{resolved}}",
         "model_effective": "Läuft auf {{model}} (Backend wählt das Modell)",
-        "tool_calls": "Tool-Aufrufe",
         "tool_calls_not_listed_one": "{{count}} früherer Aufruf nicht angezeigt",
         "tool_calls_not_listed_other": "{{count}} frühere Aufrufe nicht angezeigt",
         "waiting_for_output": "Warten auf Ausgabe…",
@@ -11629,7 +11628,15 @@
         "artifacts_load_failed": "Artefakte dieser Sitzung konnten nicht geladen werden",
         "library_load_failed": "Artefaktbibliothek konnte nicht geladen werden",
         "artifact_save_failed": "Artefakt konnte nicht gespeichert werden",
-        "workflow_runs_load_failed": "Workflow-Ausführungen konnten nicht geladen werden"
+        "workflow_runs_load_failed": "Workflow-Ausführungen konnten nicht geladen werden",
+        "live_activity": "Live-Aktivität",
+        "full_result": "Vollständiges Ergebnis",
+        "tool_call_failed": "Werkzeugaufruf fehlgeschlagen",
+        "tool_call_failed_no_output": "Es wurde keine Ausgabe zurückgegeben.",
+        "ask_agent_about_failed_call": "Agent zu diesem fehlgeschlagenen Aufruf fragen",
+        "untitled_call": "Unbenannter Tool-Aufruf",
+        "transcript_steps_not_listed_one": "{{count}} früherer Schritt nicht angezeigt",
+        "transcript_steps_not_listed_other": "{{count}} frühere Schritte nicht angezeigt"
       },
       "assistantMessage": {
         "applied_to_tasks": "Auf Aufgaben angewendet",
