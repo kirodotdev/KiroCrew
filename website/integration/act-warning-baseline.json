@@ -292,7 +292,6 @@
   "src/test/MarkdownRenderer.contextmenu.test.tsx",
   "src/test/MarkdownRenderer.folderChip.test.tsx",
   "src/test/MarkdownRenderer.inlineCodeCopy.test.tsx",
-  "src/test/MarkdownRenderer.lightboxCopy.test.tsx",
   "src/test/MarkdownRenderer.mermaid.test.tsx",
   "src/test/MarkdownRenderer.mermaidConfig.test.tsx",
   "src/test/MarkdownRenderer.mermaidEnlarge.test.tsx",
