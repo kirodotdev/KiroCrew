@@ -7208,7 +7208,9 @@
       "slides_rendering": "Renderizando diapositivas…",
       "slides_rendering_hint": "La primera vez que se ve una presentación, la máquina donde se ejecuta {{productName}} la convierte; normalmente tarda unas decenas de segundos y se detiene a los 3 minutos. Las siguientes veces es instantáneo.",
       "slides_thumbstrip": "Diapositivas",
-      "slides_truncated": "Límite de diapositivas alcanzado en {{n}}; el resto de la presentación no se muestra."
+      "slides_truncated": "Límite de diapositivas alcanzado en {{n}}; el resto de la presentación no se muestra.",
+      "light_background": "Fondo claro",
+      "dark_background": "Fondo oscuro"
     },
     "folderColorNames": {
       "amber": "Ámbar",

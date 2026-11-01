@@ -6950,7 +6950,9 @@
       "slides_rendering": "슬라이드 렌더링 중…",
       "slides_rendering_hint": "프레젠테이션을 처음 볼 때 {{productName}}이(가) 실행되는 컴퓨터가 변환을 수행하며, 보통 수십 초가 걸리고 3분이 지나면 중단됩니다. 이후에는 즉시 표시됩니다.",
       "slides_thumbstrip": "슬라이드",
-      "slides_truncated": "슬라이드가 {{n}}번째에서 상한에 도달했습니다. 나머지는 표시되지 않습니다."
+      "slides_truncated": "슬라이드가 {{n}}번째에서 상한에 도달했습니다. 나머지는 표시되지 않습니다.",
+      "light_background": "밝은 배경",
+      "dark_background": "어두운 배경"
     },
     "folderColorNames": {
       "amber": "호박색",

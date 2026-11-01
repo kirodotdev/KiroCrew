@@ -7079,7 +7079,9 @@
       "slides_rendering": "Folien werden gerendert …",
       "slides_rendering_hint": "Beim ersten Anzeigen einer Präsentation wandelt der Rechner, auf dem {{productName}} läuft, sie um; das dauert meist einige Dutzend Sekunden und bricht nach 3 Minuten ab. Spätere Anzeigen erfolgen sofort.",
       "slides_thumbstrip": "Folien",
-      "slides_truncated": "Folienlimit bei {{n}} erreicht; der Rest der Präsentation wird nicht angezeigt."
+      "slides_truncated": "Folienlimit bei {{n}} erreicht; der Rest der Präsentation wird nicht angezeigt.",
+      "light_background": "Heller Hintergrund",
+      "dark_background": "Dunkler Hintergrund"
     },
     "folderColorNames": {
       "amber": "Bernstein",
