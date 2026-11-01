@@ -163,10 +163,10 @@ def _holding_slots(slot_dir: pathlib.Path, count: int) -> Iterator[subprocess.Po
         """
     )
     proc = subprocess.Popen(
-        [sys.executable, "-c", code],
+        [sys.executable, "-X", "utf8", "-c", code],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        text=True,
+        text=True, encoding="utf-8",
     )
     try:
         ready = _read_ready_line(proc, _HOLDER_READY_SECONDS)
