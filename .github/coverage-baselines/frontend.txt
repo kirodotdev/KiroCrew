@@ -25,7 +25,6 @@ src/apps/crew-companion/petdexImport.ts 10.4   # 5/48
 src/apps/crew-companion/useWalking.ts 28.3   # 17/60
 src/apps/design-critique/api.ts 0.0   # 0/30
 src/apps/issue-radar/components/PrFiltersSection.tsx 0.0   # 0/16
-src/apps/issue-radar/components/ReviewButton.tsx 0.0   # 0/17
 src/apps/issue-radar/views/ComingSoon.tsx 0.0   # 0/2
 src/apps/issue-radar/views/OverviewView.tsx 29.5   # 23/78
 src/apps/issue-radar/views/SettingsView.tsx 0.0   # 0/3
