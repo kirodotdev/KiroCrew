@@ -635,7 +635,12 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#: Raised by 320, from 33,723 for ``shell_normalizer._xargs_reconstructed_commands``:
+#: an xargs kill payload is rebuilt from every command that feeds its pipeline, with
+#: producer words flattened past glued separators, and the lexical half of that reading
+#: (separators, stages, operand words) lives in ``shell_normalizer_xargs`` with its own
+#: header and the re-export block. Deny-only: no allow widened.
+_PACKAGE_LINE_BUDGET = 34_043
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
