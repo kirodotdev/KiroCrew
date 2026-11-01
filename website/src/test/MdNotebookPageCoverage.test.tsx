@@ -171,11 +171,18 @@ async function mount() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   })
-  return render(
-    <QueryClientProvider client={client}>
-      <MdNotebookPage />
-    </QueryClientProvider>,
-  )
+  // The mount effect calls `listVaults`, and its continuation sets vaults, auth and the active
+  // vault a microtask after render's own act scope has closed. Rendering inside an async act
+  // keeps that load chain in scope for every test that mounts through here.
+  let view!: ReturnType<typeof render>
+  await act(async () => {
+    view = render(
+      <QueryClientProvider client={client}>
+        <MdNotebookPage />
+      </QueryClientProvider>,
+    )
+  })
+  return view
 }
 
 /** Mount and open `One.md`, so the pane holds a note. */
