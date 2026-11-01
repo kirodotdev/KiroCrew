@@ -560,8 +560,10 @@ describe('CommandPalette — render', () => {
     expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
 
     localStorage.setItem('mc-chat-config', JSON.stringify({ simplifiedToolNames: false }))
-    window.dispatchEvent(new Event('mc-config-changed'))
-    rerender(<CommandPalette open onClose={vi.fn()} />)
+    await act(async () => {
+      window.dispatchEvent(new Event('mc-config-changed'))
+      rerender(<CommandPalette open onClose={vi.fn()} />)
+    })
 
     await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
   })
