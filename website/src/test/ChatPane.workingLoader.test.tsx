@@ -17,6 +17,11 @@ import notificationsReducer from '../store/notificationsSlice'
  * suite covers that): the footer must exist exactly when the pane's per-slot
  * stream state says a turn is running and text is not actively arriving. */
 
+// The footer draws its loader at random per turn; pin the pose carousel.
+vi.mock('../components/GhostGames', async importOriginal => ({
+  ...await importOriginal<typeof import('../components/GhostGames')>(),
+  pickLoaderChoice: () => 'carousel',
+}))
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
     <div data-testid="virtuoso">{data?.map((d: unknown, i: number) => <div key={i}>{itemContent(i, d)}</div>)}</div>
