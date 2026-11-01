@@ -287,7 +287,6 @@
   "src/test/KnowledgeIndexCoverage.test.tsx",
   "src/test/LexicalComposerInput.test.tsx",
   "src/test/LibraryPageLaunchpad.test.tsx",
-  "src/test/LinkPreview.test.tsx",
   "src/test/MarkdownPanel.binaryCard.test.tsx",
   "src/test/MarkdownPanel.revealLine.test.tsx",
   "src/test/MarkdownPanel.test.tsx",
