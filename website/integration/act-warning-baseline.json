@@ -146,7 +146,6 @@
   "src/test/WorkspacePickerCoverage.test.tsx",
   "src/test/approvalFocusShortcut.test.tsx",
   "src/test/chatPins.test.tsx",
-  "src/test/notificationConstructorGuard.test.ts",
   "src/test/toolDisclosureKey.renderSite.test.tsx",
   "src/test/useAgentSync.defaultLabel.test.tsx",
   "src/test/useAgentSync.recencyOrder.test.tsx",
