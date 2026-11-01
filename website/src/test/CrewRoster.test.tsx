@@ -573,8 +573,8 @@ describe('crew editor — opening', () => {
     // editor sheet. This door asks for every setting up front, so its
     // Advanced settings are already unfolded in the same card.
     expect(within(sheet).getByPlaceholderText('e.g. Radar or Dr. Eggbot')).toBeInTheDocument()
-    // Unfolded, the card ends its Advanced settings with a second Create too.
-    expect(within(sheet).getAllByRole('button', { name: 'Create mate' })).toHaveLength(2)
+    // Unfolded, the card still has one Create: the sticky footer's (#26894).
+    expect(within(sheet).getAllByRole('button', { name: 'Create mate' })).toHaveLength(1)
     expect(within(sheet).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     expect(within(sheet).getByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     expect(within(sheet).queryByRole('combobox', { name: 'Built from' })).toBeNull()
