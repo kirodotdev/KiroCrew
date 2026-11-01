@@ -1449,16 +1449,20 @@ configure `mcp_gateway.stub_servers` to include `kirocrew-core` and
 trust root there; the Codex dashboard mount does not relax those masks. Global Codex MCP entries
 are not a substitute for this session mount.
 
-### opencode work-ledger stub mount
+### Single-binary work-ledger stub mount
 
-The opencode mirror (`providers/mirrors/opencode.py`) withholds every
-identity-bound Crew server, from both the spec-described half of the array and
-the pooled broker stubs. The work ledger (`kirocrew-work`) is admitted only as
+The single-binary mirrors (opencode, goose, copilot, deepseek and strands) place
+their array through `place_single_binary_array` in
+`providers/mirrors/opencode.py`, which withholds every identity-bound Crew
+server, from both the spec-described half of the array and the pooled broker
+stubs. The work ledger (`kirocrew-work`) is admitted only as
 the gateway's broker stub, and only in its exact shape: a stdio element running
 the broker stub module under one `--server kirocrew-work`, whose `env` is
 exactly one stub-token pair equal to this session's nonempty token. It still
-passes the `tools` allowlist and `disabled`, and a switched-off tool keeps the
-stub mounted only while its deny rule is in force. A spec-described work-ledger
-entry, an unbound or foreign stub, and every other identity-bound server stay
-withheld. The admission is opt-in on the shared `place_single_binary_array`, so
-goose, copilot and deepseek are unchanged.
+passes the `tools` allowlist and `disabled`. A switched-off tool keeps the
+stub mounted on opencode only while its deny rule is in force; goose, copilot,
+deepseek and strands withhold a narrowed server whole, the stub included. A
+spec-described work-ledger entry, an unbound or foreign stub, and every other
+identity-bound server stay withheld. The admission is the same on every
+single-binary harness: the stub's credential is the token gatewayd checks on
+every call, not anything the harness carries.
