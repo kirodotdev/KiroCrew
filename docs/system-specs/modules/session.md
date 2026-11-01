@@ -3093,11 +3093,48 @@ state a close compensates is not all scoped the same way.
   metadata, its flush stamps no id and its save retires nothing, so a
   downgrade-deliver-reupgrade cycle replays already-delivered notes as
   duplicates — bounded harm, and the chosen at-least-once direction, but the
-  invariant silently does not hold across versions.) The pre-save
+  invariant silently does not hold across versions.) A close flushes the hold before
+  its archive save, so each held note's visible row reaches the transcript a History
+  resume reads; that path does not read `deferred_notes`, so before the flush a note
+  the DELETE had answered 200 for left no row there. A note with no context half is
+  retired by its row's `meta.noteId` in the same write. A note that still owes a
+  context half is flushed differently while the slot is closing (`slot._closing`):
+  its row carries `meta.noteRowFor` instead of `noteId`, so no save retires the
+  durable entry, and the note stays in the hold marked `rowCommitted` with its context
+  intact. The entry is the same `deferred_notes` entry the `/note` POST wrote; no new
+  entry type is added. A restore that finds a `noteRowFor` row for an entry marks it
+  `rowCommitted` (`drop_committed_restored_notes`), and a later non-closing flush
+  delivers only its context to `_pending_context`, appends no second row, and records
+  the id in `_dropped_note_ids` so the next full save retires it. An aborted close
+  keeps the marked note, so the next turn's flush delivers its context. The flush
+  in the save that COMMITS a close (`_close_slot`, the cleanup sweep and
+  `_persist_handover_tail`) passes `retain=False`: it treats a `rowCommitted` note
+  like a non-closing flush and records its id in `_dropped_note_ids`, so that save
+  retires the entry. Any flush that delivers a `rowCommitted` note also renames its
+  row's `noteRowFor` to `noteId` and marks the slot dirty, so the written row carries
+  the retirement too. The hand-over's `rows_only` save keeps the replacement's
+  `deferred_notes` and so retires nothing from `_dropped_note_ids`; without the
+  rename a restart would mark the surviving entry `rowCommitted` and hand the closed
+  slot's context to the replacement's next turn. The context half is then dropped with the closed slot, as
+  the cleanup sweep already did before this change: a History resume never reads
+  the hold, and a kept entry would reach whichever turn next runs after a
+  startup-shaped restore (`adopt_closed`, or a restart once the session is reopened),
+  and count toward the hold ceiling meanwhile. `_note_delivered_live` and
+  `_note_row_committed` accept `noteRowFor` as well as `noteId`, so a `/note` POST
+  whose hold write fails after a closing flush keeps the note and its context rather
+  than discarding it and inviting a retry that duplicates the row. Version skew: an
+  older gateway ignores `noteRowFor` and `rowCommitted`, never retires such an entry,
+  and replays its row on restore, so a downgrade with a closing-window entry on disk
+  shows that note's row twice. The archival flush a close runs after the pop appends its rows
+  with `broadcast=False`: live delivery routes by slot name, and by then a
+  replacement may hold the name. When the archive save then fails and the slot takes
+  its name back, the restore arm delivers those rows live, since the tab never saw
+  them. The pre-save
   exits need no store failure to reach it either; they return before the save is
   attempted, in a window that opens while a turn is in flight. So every hand-over
   exit routes through `_persist_handover_tail(state, name, slot)`, which flushes
-  held notes into the window and writes it with **`closed=False`**. Those rows
+  held notes into the window, also with `broadcast=False` because the replacement
+  holds the name, and writes it with **`closed=False`**. Those rows
   belong on the ORIGINAL's own transcript whether or not the replacement shares it;
   what must not happen is the archive flag and the session teardown, not the write.
   The
