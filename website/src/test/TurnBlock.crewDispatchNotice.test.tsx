@@ -2,7 +2,7 @@
  * The Crew Mode dispatch notice is never folded away with the tool steps that
  * surround it: it exists to make a mid-turn `session_create` visible, so a
  * collapsed turn (the default `collapseAllSteps`) still shows the notice row
- * and its "Open Crew tab" button in place, between the steps before and after.
+ * and its "Open Board" button in place, between the steps before and after.
  *
  * Regression for the review finding on PR #25932: the row matches none of
  * `isVisibleInline`'s predicates, so without an `isAlwaysVisible` exemption it
@@ -37,7 +37,7 @@ describe('a collapsed turn', () => {
     const messages: ChatMessage[] = [
       { role: 'user', content: 'dispatch a reviewer', ts: `${++seq}` },
       tool(), dispatchNotice(), tool(),
-      text('I started a reviewer crew member; it is listed in the Crew tab of the side panel.'),
+      text('I started a reviewer crew member; it is listed on the Board in the side panel.'),
     ]
     const items = applyRunningState(groupDisplayItems(messages), false)
     const turn = items.find(i => i.kind === 'turn')
