@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -48,6 +48,7 @@ Object.defineProperty(window, 'matchMedia', {
   value: vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
 })
 
+import { api } from '../api/client'
 import ChatPane from '../components/ChatPane'
 import { ThemeProvider } from '../hooks/useTheme'
 
@@ -92,8 +93,11 @@ function mount(props: Partial<React.ComponentProps<typeof ChatPane>> = {}, slot:
  * draws), on mobile it renders the toggle inline. Any other pane, and a pane
  * outside split view, starts its row at its own inset. */
 describe('ChatPane focus dim', () => {
-  it('never mounts the dim overlay outside split view', () => {
+  it('never mounts the dim overlay outside split view', async () => {
     const { container } = mount()
+    // The pane reads its slot on mount. Waiting on that read lets the update it
+    // schedules land inside the wait instead of after the test.
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
     expect(container.querySelector('[data-pane-dim]')).toBeNull()
   })
 
