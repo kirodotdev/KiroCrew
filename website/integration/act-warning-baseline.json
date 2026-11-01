@@ -268,7 +268,6 @@
   "src/test/FollowUpCard.test.tsx",
   "src/test/InstanceTabBar.test.tsx",
   "src/test/InstancesViewport.test.tsx",
-  "src/test/IssueRadarConnectFlow.test.tsx",
   "src/test/IssueRadarConnectHosts.test.tsx",
   "src/test/IssueRadarIssueDetailCoverage.test.tsx",
   "src/test/IssueRadarPrActions.test.tsx",
