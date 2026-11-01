@@ -37,7 +37,6 @@
   "src/test/App.topbarAndShortcuts.test.tsx",
   "src/test/AppDetailPageCoverage.test.tsx",
   "src/test/AppRootCoverage.test.tsx",
-  "src/test/ApprovalModePicker.menuKeyboard.test.tsx",
   "src/test/ArtifactDeployPageCoverage.test.tsx",
   "src/test/ArtifactDetailPage.anchoredComments.test.tsx",
   "src/test/ArtifactDetailPage.test.tsx",
