@@ -92,7 +92,9 @@ class _LiveServer:
 
 async def _spawn_live_server(*server_args: str) -> _LiveServer:
     process = await asyncio.create_subprocess_exec(
-        sys.executable, str(SERVER_PATH), *server_args,
+        sys.executable,
+        str(SERVER_PATH),
+        *server_args,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -205,9 +207,7 @@ async def test_the_interception_stamps_the_producing_stubs_agent(
         await live.aclose()
 
 
-async def test_two_agents_sharing_one_backend_stamp_their_own_renders(
-    apps_flag_on, spool_tmp
-):
+async def test_two_agents_sharing_one_backend_stamp_their_own_renders(apps_flag_on, spool_tmp):
     """One backend, two attached stubs, two agents, two correctly-labelled renders.
 
     The case a PoolKey field could not represent, and the reason the value is
