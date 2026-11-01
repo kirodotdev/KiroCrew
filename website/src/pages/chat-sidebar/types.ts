@@ -99,6 +99,11 @@ export interface Slot {
   agent?: string
   /** `member` when this is a crewmate's chat (wire `ChatSlot.agent_kind`). */
   agent_kind?: 'member' | 'template' | ''
+  /** The installed app that OWNS this session, or null/absent for a person's
+   *  own chat (wire `ChatSlot.app`). Read by the folder "Close sessions and
+   *  delete" action, which keeps an app-owned session the same way the folder
+   *  cleanup refuses an app caller. */
+  app?: string | null
   // The agent that will actually answer, when it is NOT `agent`. The backend
   // stores `agent` verbatim — it is the user's intent, and rewriting it on disk
   // was destructive — and reports the divergence here instead. "" / absent means
