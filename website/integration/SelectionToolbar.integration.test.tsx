@@ -272,7 +272,7 @@ describe('SelectionToolbar', () => {
     expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
   })
 
-  it('calls copyToClipboard via useSelectionActions copy action', () => {
+  it('calls copyToClipboard via useSelectionActions copy action', async () => {
     // Mock clipboard. happy-dom defines navigator.clipboard as getter-only, so
     // a plain assignment throws; defineProperty (configurable) replaces it.
     const writeText = vi.fn().mockResolvedValue(undefined)
@@ -294,7 +294,9 @@ describe('SelectionToolbar', () => {
     fireEvent.mouseUp(document, { clientX: 100, clientY: 50 })
     act(() => { vi.advanceTimersByTime(60) })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    })
     expect(writeText).toHaveBeenCalledWith('Hello World')
     expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
   })

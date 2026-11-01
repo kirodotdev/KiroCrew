@@ -2,7 +2,6 @@
   "integration/ChatFooter.integration.test.tsx",
   "integration/ChatPageSearch.integration.test.tsx",
   "integration/MarkdownPanelComment.integration.test.tsx",
-  "integration/SelectionToolbar.integration.test.tsx",
   "integration/SkillsTab.integration.test.tsx",
   "integration/StopEvent.integration.test.tsx",
   "integration/SubagentProgressBar.integration.test.tsx",
