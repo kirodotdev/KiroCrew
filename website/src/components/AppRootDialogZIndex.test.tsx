@@ -9,7 +9,7 @@
  * rail toggle (App.tsx, z-[61]), and the focus-mode top chrome / mac drag strips
  * (inline zIndex 62 / 63). A dialog overlay left on the chat-pane ceiling (z-50)
  * paints UNDER all of that — the bug #15754 fixed for MobileConnectModal and
- * #15776 fixes for the three remaining App-root dialogs.
+ * #15776 fixes for the remaining App-root dialogs.
  *
  * This test pins that contract at the SOURCE level, the same technique
  * `MobileConnectModal.test.tsx` uses: jsdom paints nothing, so the only sound
@@ -83,11 +83,10 @@ function chatChromeCeiling(): number {
   return Math.max(...flyout, ...peek, ...inlineZ)
 }
 
-// The three App-root dialogs #15776 moves off z-50. Each returns its overlay
+// The App-root dialogs #15776 moves off z-50. Each returns its overlay
 // as one or more `fixed inset-0 z-[N]` divs rendered inside the App shell root.
 const APP_ROOT_DIALOGS: Array<{ name: string; file: string }> = [
   { name: 'UpdateModal', file: 'UpdateModal.tsx' },
-  { name: 'StartupVideoModal', file: 'StartupVideoModal.tsx' },
   { name: 'UpdateFoundModal', file: 'UpdateFoundModal.tsx' },
 ]
 

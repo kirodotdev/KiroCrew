@@ -69,7 +69,8 @@ import MilestonesMenuItem from './MilestonesMenuItem'
 import MilestonesSheet from './MilestonesSheet'
 import MilestoneNoticeToast, { __resetMilestoneNotices } from './MilestoneNoticeToast'
 import { __resetMilestonesRouteMissing, closeMilestonesPanel, earnedBadges, gettingStarted, openMilestonesPanel, tryToday } from './useMilestones'
-import { INTRO_VIDEO_ID, INTRO_VIDEO_POSTER, INTRO_VIDEO_SRC } from './ExploreIntroVideo'
+import { __resetExploreVideoPick, pickExploreVideo } from './ExploreIntroVideo'
+import type { FeatureVideo } from '../../api/client/featureDiscovery'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 
@@ -147,6 +148,17 @@ const prefillNow = () => JSON.parse(sessionStorage.getItem('kirocrew_prefill') ?
 /** The Feature Videos verdicts the mocked server holds, keyed by video id. */
 let videoVerdicts: Record<string, { status: 'seen' | 'dismissed'; ts: number }> = {}
 
+/** A clip as the server lists it: on disk, under the release folder. */
+function clip(id: string, title = `Clip ${id}`): FeatureVideo {
+  return {
+    id, feature: id, title, description: 'd', duration_s: 15, doc: 'dashboard.md',
+    src: `/feature-videos/1.0.0/${id}.mp4`, poster: `/feature-videos/1.0.0/${id}.jpg`,
+  }
+}
+
+/** The clips the mocked server's manifest carries. */
+let videoPool: FeatureVideo[] = []
+
 beforeEach(() => {
   sessionStorage.removeItem('kirocrew_prefill')
   store.dispatch(setPendingInput(null))
@@ -156,6 +168,12 @@ beforeEach(() => {
   vi.spyOn(api, 'milestoneEvent').mockResolvedValue({})
   vi.spyOn(api, 'milestoneMarkDone').mockResolvedValue({})
   videoVerdicts = {}
+  videoPool = [clip('kiro-crew-intro', 'Kiro Crew in 15 seconds')]
+  __resetExploreVideoPick()
+  // Like the server: only the clips with no verdict are listed.
+  vi.spyOn(api, 'featureVideoLibrary').mockImplementation(async () => ({
+    enabled: true, videos: videoPool.filter(v => !videoVerdicts[v.id]),
+  }))
   vi.spyOn(api, 'featureVideoStatus').mockImplementation(async () => ({
     enabled: true, cached: 0, total: 0, downloading: null, release: '', state: { ...videoVerdicts },
   }))
@@ -340,13 +358,40 @@ describe('new-chat page', () => {
   })
 })
 
-describe('"Kiro Crew in 15 seconds" card', () => {
+describe('pickExploreVideo', () => {
+  it('draws only from the clips it is given, at random', () => {
+    const videos = [clip('a'), clip('b'), clip('c')]
+    __resetExploreVideoPick()
+    expect(pickExploreVideo(videos, () => 0)?.id).toBe('a')
+    __resetExploreVideoPick()
+    expect(pickExploreVideo(videos, () => 0.5)?.id).toBe('b')
+    __resetExploreVideoPick()
+    expect(pickExploreVideo(videos, () => 0.999)?.id).toBe('c')
+  })
+
+  it('keeps its pick for the page session instead of drawing again', () => {
+    const videos = [clip('a'), clip('b'), clip('c')]
+    __resetExploreVideoPick()
+    expect(pickExploreVideo(videos, () => 0.5)?.id).toBe('b')
+    expect(pickExploreVideo(videos, () => 0)?.id).toBe('b')
+    expect(pickExploreVideo([...videos].reverse(), () => 0.999)?.id).toBe('b')
+  })
+
+  it('draws again once its clip is finished, and gives nothing when all are', () => {
+    __resetExploreVideoPick()
+    expect(pickExploreVideo([clip('a'), clip('b')], () => 0)?.id).toBe('a')
+    expect(pickExploreVideo([clip('b'), clip('c')], () => 0.999)?.id).toBe('c')
+    expect(pickExploreVideo([])).toBeNull()
+  })
+})
+
+describe('Explore video card', () => {
   const openPanel = async () => {
     act(() => openMilestonesPanel())
     return screen.findByTestId('milestones-try-today')
   }
 
-  it('sits at the top of Explore with the bundled clip, and never on the new-chat page', async () => {
+  it('sits at the top of Explore with a listed clip, and never on the new-chat page', async () => {
     suggestions()
     vi.spyOn(api, 'milestones').mockResolvedValue(payload())
     renderWith(<><WelcomeView setInput={vi.fn()} /><MilestonesSheet /></>)
@@ -358,14 +403,79 @@ describe('"Kiro Crew in 15 seconds" card', () => {
     expect(card.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     fireEvent.click(screen.getByTestId('explore-intro-video-watch'))
     const player = screen.getByTestId('explore-intro-video-player')
-    expect(player.getAttribute('src')).toBe('/app-assets/feature-videos/kiro-crew-intro.mp4')
-    expect(player.getAttribute('poster')).toBe('/app-assets/feature-videos/kiro-crew-intro.jpg')
+    // Played verbatim from where the server landed it, never a bundled path.
+    expect(player.getAttribute('src')).toBe('/feature-videos/1.0.0/kiro-crew-intro.mp4')
+    expect(player.getAttribute('poster')).toBe('/feature-videos/1.0.0/kiro-crew-intro.jpg')
   })
 
-  it('ships the clip and poster it points at', () => {
-    const pub = path.resolve(__dirname, '../../../public')
-    expect(existsSync(path.join(pub, INTRO_VIDEO_SRC))).toBe(true)
-    expect(existsSync(path.join(pub, INTRO_VIDEO_POSTER))).toBe(true)
+  it('shows only a clip that is not finished, picked at random', async () => {
+    videoPool = [clip('done-1'), clip('open-1'), clip('done-2'), clip('open-2')]
+    videoVerdicts = { 'done-1': { status: 'seen', ts: 1 }, 'done-2': { status: 'dismissed', ts: 1 } }
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.999)
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesSheet />)
+    await openPanel()
+    const card = await screen.findByTestId('explore-intro-video')
+    expect(card.textContent).toContain('Clip open-2')
+    expect(random).toHaveBeenCalled()
+  })
+
+  it('keeps the same clip when Explore is closed and opened again', async () => {
+    videoPool = [clip('a'), clip('b'), clip('c')]
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    const { unmount } = renderWith(<MilestonesSheet />)
+    await openPanel()
+    expect((await screen.findByTestId('explore-intro-video')).textContent).toContain('Clip b')
+    unmount()
+    act(() => closeMilestonesPanel())
+    random.mockReturnValue(0)
+    renderWith(<MilestonesSheet />)
+    await openPanel()
+    expect((await screen.findByTestId('explore-intro-video')).textContent).toContain('Clip b')
+  })
+
+  it('is hidden when every clip is finished', async () => {
+    videoPool = [clip('a'), clip('b')]
+    videoVerdicts = { a: { status: 'seen', ts: 1 }, b: { status: 'dismissed', ts: 1 } }
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesSheet />)
+    await openPanel()
+    await waitFor(() => expect(api.featureVideoLibrary).toHaveBeenCalled())
+    await act(async () => {})
+    expect(screen.queryByTestId('explore-intro-video')).toBeNull()
+  })
+
+  it('shows a clip that landed after Explore was first opened', async () => {
+    videoPool = []
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    // One client for both opens, cached forever, as in the app (queryClient.ts).
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    const mount = () => render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={['/chat']}><MilestonesSheet /></MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    const { unmount } = mount()
+    await openPanel()
+    await waitFor(() => expect(api.featureVideoLibrary).toHaveBeenCalledTimes(1))
+    await act(async () => {})
+    expect(screen.queryByTestId('explore-intro-video')).toBeNull()
+    unmount()
+    act(() => closeMilestonesPanel())
+    // The background download lands a clip; reopening Explore reads the list again.
+    videoPool = [clip('kiro-crew-intro', 'Kiro Crew in 15 seconds')]
+    mount()
+    await openPanel()
+    expect((await screen.findByTestId('explore-intro-video')).textContent).toContain('Kiro Crew in 15 seconds')
+  })
+
+  it('ships no bundled intro clip or poster', () => {
+    const pub = path.resolve(__dirname, '../../../public/app-assets/feature-videos')
+    expect(existsSync(path.join(pub, 'kiro-crew-intro.mp4'))).toBe(false)
+    expect(existsSync(path.join(pub, 'kiro-crew-intro.jpg'))).toBe(false)
   })
 
   it('is gone for good once closed', async () => {
@@ -375,12 +485,13 @@ describe('"Kiro Crew in 15 seconds" card', () => {
     fireEvent.click(await screen.findByTestId('explore-intro-video-close'))
     await waitFor(() => expect(screen.queryByTestId('explore-intro-video')).toBeNull())
     // Recorded in the Feature Videos state, not in this browser's storage.
-    await waitFor(() => expect(api.featureVideoFeedback).toHaveBeenCalledWith(INTRO_VIDEO_ID, 'dismissed', undefined))
+    await waitFor(() => expect(api.featureVideoFeedback).toHaveBeenCalledWith('kiro-crew-intro', 'dismissed', undefined))
     expect(Object.keys(localStorage).filter(k => k.includes('intro'))).toEqual([])
     unmount()
     act(() => closeMilestonesPanel())
     renderWith(<MilestonesSheet />)
     await openPanel()
+    await act(async () => {})
     expect(screen.queryByTestId('explore-intro-video')).toBeNull()
   })
 
@@ -390,34 +501,29 @@ describe('"Kiro Crew in 15 seconds" card', () => {
     await openPanel()
     fireEvent.click(await screen.findByTestId('explore-intro-video-watch'))
     fireEvent.ended(screen.getByTestId('explore-intro-video-player'))
-    await waitFor(() => expect(api.featureVideoFeedback).toHaveBeenCalledWith(INTRO_VIDEO_ID, 'seen', undefined))
-    // The player stays up for the rest of this view, even after the record refreshes.
+    await waitFor(() => expect(api.featureVideoFeedback).toHaveBeenCalledWith('kiro-crew-intro', 'seen', undefined))
+    // The player stays up for the rest of this view, even after the list refreshes.
     await act(async () => {})
     expect(screen.getByTestId('explore-intro-video-player')).toBeTruthy()
     unmount()
     act(() => closeMilestonesPanel())
     renderWith(<MilestonesSheet />)
     await openPanel()
-    expect(screen.queryByTestId('explore-intro-video')).toBeNull()
-  })
-
-  it('stays away when this machine already has a verdict for the clip', async () => {
-    videoVerdicts[INTRO_VIDEO_ID] = { status: 'dismissed', ts: 1 }
-    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
-    renderWith(<MilestonesSheet />)
-    await openPanel()
     await act(async () => {})
     expect(screen.queryByTestId('explore-intro-video')).toBeNull()
   })
 
-  it('shows the card with an error when the saved verdicts cannot be read', async () => {
-    vi.mocked(api.featureVideoStatus).mockRejectedValue(new Error('offline'))
+  it('shows the card with an error when the clip list cannot be read', async () => {
+    vi.mocked(api.featureVideoLibrary).mockRejectedValue(new Error('offline'))
     vi.spyOn(api, 'milestones').mockResolvedValue(payload())
     renderWith(<MilestonesSheet />)
     await openPanel()
     const notice = await screen.findByTestId('explore-intro-video-status-error')
-    expect(notice.textContent).toContain(enManual.components.startupVideoModal.media_failed)
-    expect(screen.getByTestId('explore-intro-video')).toBeTruthy()
+    expect(notice.textContent).toContain(enManual.milestones.video_failed)
+    // Close only hides it: there is no clip to record a verdict for.
+    fireEvent.click(screen.getByTestId('explore-intro-video-close'))
+    await waitFor(() => expect(screen.queryByTestId('explore-intro-video')).toBeNull())
+    expect(api.featureVideoFeedback).not.toHaveBeenCalled()
   })
 
   it('keeps the card up with an error when closing cannot be saved, and Close tries again', async () => {
@@ -432,7 +538,7 @@ describe('"Kiro Crew in 15 seconds" card', () => {
     fireEvent.click(screen.getByTestId('explore-intro-video-close'))
     await waitFor(() => expect(screen.queryByTestId('explore-intro-video')).toBeNull())
     expect(vi.mocked(api.featureVideoFeedback).mock.calls.map(c => c[1])).toEqual(['dismissed', 'dismissed'])
-    expect(videoVerdicts[INTRO_VIDEO_ID]?.status).toBe('dismissed')
+    expect(videoVerdicts['kiro-crew-intro']?.status).toBe('dismissed')
   })
 
   it('shows a failed "watched" save once, without retrying on every frame, and Close saves it', async () => {
@@ -458,7 +564,7 @@ describe('"Kiro Crew in 15 seconds" card', () => {
     fireEvent.click(await screen.findByTestId('explore-intro-video-watch'))
     fireEvent.error(screen.getByTestId('explore-intro-video-player'))
     // Through the shared ErrorNotice, not a bare status line.
-    expect(screen.getByTestId('explore-intro-video-error').textContent).toContain(enManual.components.startupVideoModal.media_failed)
+    expect(screen.getByTestId('explore-intro-video-error').textContent).toContain(enManual.milestones.video_failed)
   })
 })
 

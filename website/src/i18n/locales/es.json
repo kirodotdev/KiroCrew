@@ -9071,26 +9071,6 @@
       "drag_to_select_the_screen_region_to_capture": "Arrastra para seleccionar la región de la pantalla que quieres capturar",
       "screen_capture_drag_the_area_you_want_it_attache": "Captura de pantalla: arrastra el área que quieras; se adjunta automáticamente al soltar"
     },
-    "meetYourMatesIntro": {
-      "sample_line_1": "Anoche encontré una prueba inestable y la arreglé.",
-      "sample_line_2": "El PR está listo. ¿Quieres que lo fusione?",
-      "sample_merge": "Fusionarlo",
-      "sample_show_first": "Muéstramelo antes"
-    },
-    "startupVideoModal": {
-      "close": "Cerrar",
-      "crewmates_description": "Encuentran el trabajo, lo hacen y solo te preguntan cuando te necesitan.",
-      "crewmates_title": "Conoce a tus compañeros.",
-      "got_it": "Entendido",
-      "media_failed": "No se pudo cargar el vídeo de la función",
-      "new_tag": "Nuevo",
-      "not_now": "Ahora no",
-      "share": "Compartir",
-      "share_description": "Convierte este vídeo de la función en una tarjeta que puedes publicar donde quieras.",
-      "share_include_title": "Incluir el título del vídeo",
-      "streaming": "Se reproduce en línea",
-      "try_now": "Probar ahora"
-    },
     "tagManagerList": {
       "adopt_tag": "Configurar permisos de agente",
       "adopting_tag": "Configurando…",
@@ -21564,7 +21544,6 @@
     "streak_short_many": "Racha de {{count}} días",
     "indicator_label_streak_other": "Explorar: {{done}} de {{total}} funciones probadas, racha de {{count}} días",
     "try_today_entry_other": "Prueba hoy: {{count}} funciones nuevas",
-    "intro_video_title": "{{productName}} en 15 segundos",
     "your_progress": "Tu progreso",
     "streak_short_other": "Racha de {{count}} días",
     "notice_count_one": "{{count}} novedad en Explorar",
@@ -21587,6 +21566,7 @@
     "intro_video_close": "Cerrar video",
     "try_today": "Prueba hoy",
     "notice_count_many": "{{count}} novedades en Explorar",
-    "notice_one": "Logrado: {{title}}"
+    "notice_one": "Logrado: {{title}}",
+    "video_failed": "No se pudo cargar el vídeo de la función"
   }
 }

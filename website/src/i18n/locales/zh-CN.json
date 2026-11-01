@@ -8781,26 +8781,6 @@
       "drag_to_select_the_screen_region_to_capture": "拖动以选择要截取的屏幕区域",
       "screen_capture_drag_the_area_you_want_it_attache": "屏幕截图 — 拖出你想要的区域；松开后自动附加"
     },
-    "meetYourMatesIntro": {
-      "sample_line_1": "我昨晚发现了一个不稳定的测试，并修好了。",
-      "sample_line_2": "PR 已经准备好了。要我合并吗？",
-      "sample_merge": "合并",
-      "sample_show_first": "先给我看看"
-    },
-    "startupVideoModal": {
-      "close": "关闭",
-      "crewmates_description": "它们会自己找到要做的事、动手完成，只在需要你时才来问你。",
-      "crewmates_title": "认识你的队友。",
-      "got_it": "知道了",
-      "media_failed": "无法加载功能视频",
-      "new_tag": "新",
-      "not_now": "暂不",
-      "share": "共享",
-      "share_description": "把这个功能视频变成可以发布到任何地方的分享卡片。",
-      "share_include_title": "包含视频标题",
-      "streaming": "在线播放",
-      "try_now": "立即试试"
-    },
     "tagManagerList": {
       "adopt_tag": "设置代理权限",
       "adopting_tag": "正在设置…",
@@ -20766,7 +20746,6 @@
     "getting_started_result": "第一个完成的成果",
     "badges": "徽章",
     "notice_one": "达成：{{title}}",
-    "intro_video_title": "15 秒了解 {{productName}}",
     "intro_video_close": "关闭视频",
     "streak_short_other": "连续 {{count}} 天",
     "getting_started": "入门",
@@ -20789,7 +20768,8 @@
     "indicator_label_streak_other": "探索：已试过 {{done}}/{{total}} 个功能，连续 {{count}} 天",
     "intro_video_save_failed": "无法保存你已看过或关闭此视频。请重试。",
     "intro_video_watch": "观看",
-    "try_today": "今天试试"
+    "try_today": "今天试试",
+    "video_failed": "无法加载功能视频"
   },
   "milestone": {
     "streak_best": {

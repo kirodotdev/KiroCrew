@@ -65,7 +65,6 @@ import { formatShortcut, shortcutDefFromChord, useShortcutBindings } from '../ho
 import { shortcutEntry } from '../lib/shortcutRegistry'
 import { ariaKeyshortcutsFor, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
 import type { MobileRosterBarState } from '../components/MobileNavRailContext'
-import { useStartupVideo } from './boot/startupVideo'
 import { i18nT } from '../i18n/t'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useGuideGate, useGuidePredicate } from '../guide/guidePredicates'
@@ -379,7 +378,6 @@ export function useAppShell() {
   const firstRun = useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, themeBootReady, markOnboarded })
   // Decided once per document: the URL does not change under a mounted App.
   const lookPreviewFrame = isLookPreviewFrame()
-  const { showAgentImport, showPrivacy, showOnboarding } = firstRun
   // Capture Electron update lifecycle events app-wide so UpdateModal fires on
   // any page, not just after the user has opened Settings > About.
   useUpdateSubscription()
@@ -835,12 +833,7 @@ export function useAppShell() {
   useDashboardHealthProbe(forceReconnect)
 
   const updateFlow = useUpdateFlow()
-  const { updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, changelogDecided, updateError, setUpdateError } = updateFlow
-
-  const startupVideo = useStartupVideo({
-    showChangelog, changelogDecided, updateAvailable, showOnboarding, showAgentImport, showPrivacy,
-    importOnboarded, privacyAcked, onboarded, themeBootReady,
-  })
+  const { updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError, setUpdateError } = updateFlow
 
   // Browser tab title badge — sums every built-in surface's badge (chat,
   // orchestrated, notifications, secretary, ...) plus the orthogonal
@@ -969,7 +962,7 @@ export function useAppShell() {
     kiroUsageState, usageSegmentHidden, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
-    setShowUpdateModal, showChangelog, updateError, setUpdateError, startupVideo, reportProblemOpen,
+    setShowUpdateModal, showChangelog, updateError, setUpdateError, reportProblemOpen,
     setReportProblemOpen, requestFeature, toggleNav, effectiveCollapsed, closeMobileNav, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
     membersBarPending, mobileNavOpen,

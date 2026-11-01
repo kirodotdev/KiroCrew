@@ -117,6 +117,32 @@ The tool enforces immutability on the folder it signs; the bucket side is yours.
 for example with S3 Object Lock on every uploaded release object. Versioning alone
 preserves old bytes but does not prevent replacing the current key.
 
+## The Kiro Crew intro
+
+The "Kiro Crew in 15 seconds" clip is a manifest entry like any other; the package
+does not bundle it. The dashboard shows feature videos only in the video card at
+the top of Explore, which plays one unfinished clip at random. A verified manifest
+replaces the built-in list, so every release's `catalog.json` should carry the
+intro entry for as long as the intro should stay on offer:
+
+```json
+{
+  "id": "kiro-crew-intro",
+  "feature": "kiro-crew",
+  "title": "Kiro Crew in 15 seconds",
+  "description": "A short tour of what Kiro Crew does.",
+  "doc": "dashboard.md",
+  "used_when": [],
+  "min_version": "",
+  "duration_s": 15.0
+}
+```
+
+Keep the id `kiro-crew-intro`: a verdict a user already recorded against it then
+keeps the clip retired. The source clip is English only. Put it in the release
+folder as `kiro-crew-intro.mp4` with a still frame as `kiro-crew-intro.jpg`, then
+run [Sign](#sign), [Verify](#verify) and [Upload](#upload) as for any clip.
+
 ## Size limits
 
 Every limit is the dashboard's own number: `_SIGNED_PAYLOAD_MAX_BYTES`,

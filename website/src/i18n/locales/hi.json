@@ -8926,26 +8926,6 @@
       "drag_to_select_the_screen_region_to_capture": "कैप्चर करने के लिए स्क्रीन का क्षेत्र चुनने के लिए ड्रैग करें",
       "screen_capture_drag_the_area_you_want_it_attache": "स्क्रीन कैप्चर — जो क्षेत्र चाहिए उसे ड्रैग करें; छोड़ने पर यह स्वतः अटैच हो जाता है"
     },
-    "meetYourMatesIntro": {
-      "sample_line_1": "मुझे रात में एक अस्थिर टेस्ट मिला और मैंने उसे ठीक कर दिया।",
-      "sample_line_2": "PR तैयार है। क्या मैं इसे मर्ज कर दूँ?",
-      "sample_merge": "मर्ज करो",
-      "sample_show_first": "पहले मुझे दिखाओ"
-    },
-    "startupVideoModal": {
-      "close": "बंद करें",
-      "crewmates_description": "वे काम खुद ढूँढते हैं, उसे करते हैं, और केवल ज़रूरत पड़ने पर ही तुमसे पूछते हैं।",
-      "crewmates_title": "अपने साथियों से मिलो।",
-      "got_it": "समझ गया",
-      "media_failed": "फ़ीचर वीडियो लोड नहीं हो सका",
-      "new_tag": "नया",
-      "not_now": "अभी नहीं",
-      "share": "साझा करो",
-      "share_description": "इस फ़ीचर वीडियो को शेयर कार्ड बनाओ जिसे कहीं भी पोस्ट कर सकते हो।",
-      "share_include_title": "वीडियो का शीर्षक शामिल करो",
-      "streaming": "ऑनलाइन चलता है",
-      "try_now": "अभी आज़माओ"
-    },
     "tagManagerList": {
       "adopt_tag": "एजेंट अनुमतियाँ सेट अप करो",
       "adopting_tag": "सेट अप हो रहा है…",
@@ -21156,11 +21136,11 @@
     "notice_count_one": "एक्सप्लोर में {{count}} नई बात",
     "your_progress": "तुम्हारी प्रगति",
     "all_tried": "तुमने यहाँ की सारी सुविधाएँ आज़मा लीं।",
-    "intro_video_title": "15 सेकंड में {{productName}}",
     "group_streak": "लगातार दिन",
     "try_it": "आज़माओ",
     "getting_started": "शुरुआत",
-    "intro_video_save_failed": "तुमने यह वीडियो देखा या बंद किया, यह सेव नहीं हो सका। फिर से कोशिश करो।"
+    "intro_video_save_failed": "तुमने यह वीडियो देखा या बंद किया, यह सेव नहीं हो सका। फिर से कोशिश करो।",
+    "video_failed": "फ़ीचर वीडियो लोड नहीं हो सका"
   },
   "milestone": {
     "parallel_chats": {

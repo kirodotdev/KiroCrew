@@ -8926,26 +8926,6 @@
       "drag_to_select_the_screen_region_to_capture": "ক্যাপচার করার জন্য স্ক্রিনের অংশটি ড্র্যাগ করে নির্বাচন করুন",
       "screen_capture_drag_the_area_you_want_it_attache": "স্ক্রিন ক্যাপচার — আপনি যে অংশটি চান সেটি ড্র্যাগ করুন; ছেড়ে দিলেই তা স্বয়ংক্রিয়ভাবে সংযুক্ত হবে"
     },
-    "meetYourMatesIntro": {
-      "sample_line_1": "রাতে আমি একটি অস্থির টেস্ট খুঁজে পেয়ে ঠিক করেছি।",
-      "sample_line_2": "PR প্রস্তুত। মার্জ করে দেব?",
-      "sample_merge": "মার্জ করো",
-      "sample_show_first": "আগে আমাকে দেখাও"
-    },
-    "startupVideoModal": {
-      "close": "বন্ধ করুন",
-      "crewmates_description": "তারা কাজ খুঁজে নেয়, সেটা করে, আর কেবল তোমার দরকার হলেই জিজ্ঞেস করে।",
-      "crewmates_title": "তোমার সঙ্গীদের সাথে পরিচিত হও।",
-      "got_it": "বুঝেছি",
-      "media_failed": "ফিচার ভিডিওটি লোড করা যায়নি",
-      "new_tag": "নতুন",
-      "not_now": "এখন না",
-      "share": "ভাগ করো",
-      "share_description": "এই ফিচার ভিডিওকে শেয়ার কার্ডে পরিণত করো যা যেকোনো জায়গায় পোস্ট করা যায়।",
-      "share_include_title": "ভিডিওর শিরোনাম যোগ করো",
-      "streaming": "অনলাইনে চলে",
-      "try_now": "এখনই চেষ্টা করো"
-    },
     "tagManagerList": {
       "adopt_tag": "এজেন্টের অনুমতি সেট আপ করো",
       "adopting_tag": "সেট আপ করা হচ্ছে…",
@@ -21145,7 +21125,6 @@
     "getting_started_brief": "সকালের ব্রিফ সেট করো",
     "group_streak": "টানা দিন",
     "try_today": "আজ চেষ্টা করো",
-    "intro_video_title": "15 সেকেন্ডে {{productName}}",
     "getting_started": "শুরু করা",
     "all_tried": "এখানকার সব ফিচার তুমি চেষ্টা করে ফেলেছ।",
     "close": "এক্সপ্লোর বন্ধ করো",
@@ -21160,7 +21139,8 @@
     "try_today_none": "নিচের \"শুরু করা\" থেকে শুরু করো।",
     "intro_video_save_failed": "তুমি ভিডিওটা দেখেছ বা বন্ধ করেছ, সেটা সেভ করা যায়নি। আবার চেষ্টা করো।",
     "streak_short_other": "টানা {{count}} দিন",
-    "try_today_entry_other": "আজ চেষ্টা করো: {{count}}টি নতুন ফিচার"
+    "try_today_entry_other": "আজ চেষ্টা করো: {{count}}টি নতুন ফিচার",
+    "video_failed": "ফিচার ভিডিওটি লোড করা যায়নি"
   },
   "milestone": {
     "chats_opened": {

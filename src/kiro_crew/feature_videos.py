@@ -20,15 +20,13 @@ That makes ELIGIBILITY deterministic:
   asset, or a hosted clip the background pass has downloaded and sha256-verified.
   Nothing the browser plays has bytes this gateway did not check first.
 
-WHICH of several equally-eligible clips gets shown is RANDOM (:func:`select_next`).
-Not because order starves a clip — it does not, since a verdict is permanent and
-each launch retires the clip it showed, so a fixed order reaches the whole library
-too. The draw is about the LIBRARY rather than one install: publication order is
-the same for everyone, so a deterministic pick shows every install the same first
-clip, and the newest entry is the last thing anybody sees. Drawing uniformly
-spreads first impressions across the set, which is what makes early feedback on a
-new clip arrive at all. Nothing about ELIGIBILITY is random, so a video the user
-has retired, or one for a feature they already use, still cannot appear.
+The one place a clip is shown is the video card at the top of the dashboard's
+Explore panel. ``GET /api/feature-videos/library`` lists every eligible clip, and
+the card draws one of them at random and keeps that pick for the page session.
+Random, because publication order is the same for
+everyone: a fixed pick would show every install the same first clip. Nothing about
+ELIGIBILITY is random, so a video the user has retired, or one for a feature they
+already use, still cannot appear.
 
 Both statuses a user can record (``seen`` / ``dismissed``) are PERMANENT. There
 is no snooze, because a feature intro is not a recurring nudge: once it has been
@@ -41,12 +39,10 @@ same-origin. There is deliberately no third shape: handing the browser a CDN url
 would play bytes the sha256 pin never saw and follow redirects the gateway's own
 opener refuses, so an uncached hosted clip is simply not offered until the
 download pass has landed it. A verified manifest REPLACES the bundled catalog
-(:func:`_offer_pool`), so on the launch where a manifest has arrived but no clip
-has landed yet, nothing is offered: the download runs in the background, and the
-next launch shows what it landed. That is the deliberate trade — one quiet launch,
-never a clip whose bytes this gateway did not check. The one exception is a
-bundled ``default_on`` intro (the Crewmates intro): it is offered beside hosted
-clips and on that quiet launch too, because it stands in for a first-run step.
+(:func:`eligible_offers`), so while a manifest has arrived but no clip has landed
+yet, nothing is offered: the download runs in the background, and the card shows
+what it landed once it has. That is the deliberate trade — a short wait, never a
+clip whose bytes this gateway did not check.
 """
 
 from __future__ import annotations
@@ -56,7 +52,6 @@ import json
 import logging
 import math
 import os
-import random
 import re
 import threading
 import time
@@ -80,7 +75,6 @@ from kiro_crew.dashboard.handlers._shared import (
     _is_restricted_session,
     read_bounded_json,
 )
-from kiro_crew.dashboard.handlers.members import _member_name_is_addressable
 from kiro_crew.sel import sel
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 
@@ -159,27 +153,6 @@ class VideoEntry:
     #: Minimum running version, or ``""`` for no floor. A clip recorded against
     #: a feature that does not exist on this build must not be offered.
     min_version: str = ""
-    #: In-dashboard route for the intro's "Try now" button, or ``""`` for none.
-    #: An entry with a route renders "Not now" / "Try now" instead of "Got it",
-    #: and "Not now" hands a "New" tag to the rail item for that route.
-    cta_route: str = ""
-    #: Offered whatever ``dashboard.feature_videos_enabled`` says. For a launch
-    #: intro that stands in for a first-run chapter, which never had that switch;
-    #: saved configs carry the switch's default ``false``, so "the operator turned
-    #: it off" cannot be told apart from "never touched". Bundled catalog only.
-    default_on: bool = False
-    #: The dashboard component that IS this intro, or ``""`` for a clip. A
-    #: rendered intro ships no media: ``src`` and ``poster`` are empty, nothing is
-    #: fetched, and the dashboard draws the component it knows under this name
-    #: (``StartupVideoModal`` resolves it). Everything else -- the one-launch
-    #: offer, the ``seen``/``dismissed`` verdict, ``used_when`` and ``default_on``
-    #: -- is the same plumbing a clip rides. Bundled catalog only.
-    component: str = ""
-    #: Offered by ``/next``, the startup popup. ``False`` for a clip the dashboard
-    #: shows somewhere of its own (the Explore panel's intro card): it stays in
-    #: the catalog so ``/feedback`` records its ``seen``/``dismissed`` verdict,
-    #: but the popup never picks it. Bundled catalog only.
-    startup: bool = True
 
     # No ``payload()`` here on purpose. A catalog entry is not what reaches a
     # client: the client-facing shape is :meth:`Offer.payload`, which carries the
@@ -232,9 +205,9 @@ def validate_asset_path(value: object) -> str:
     return ""
 
 
-#: A dashboard-internal route an intro's "Try now" button opens: lowercase path
-#: segments and an optional flat query. No scheme, host, ``//`` or ``..``, so a
-#: catalog value can only move the user inside this dashboard.
+#: A dashboard-internal route a milestone starter opens (``milestones.py``):
+#: lowercase path segments and an optional flat query. No scheme, host, ``//`` or
+#: ``..``, so a catalog value can only move the user inside this dashboard.
 _CTA_ROUTE_RE = re.compile(r"(/[a-z0-9-]+)+(\?[a-z0-9_-]+=[a-z0-9_-]+(&[a-z0-9_-]+=[a-z0-9_-]+)*)?")
 
 
@@ -243,19 +216,12 @@ def _entry_is_valid(entry: VideoEntry) -> bool:
     reason = ""
     if not entry.id or len(entry.id) > _VIDEO_ID_MAX_CHARS:
         reason = "id missing or too long"
-    elif entry.component and (entry.src or entry.poster):
-        # A rendered intro has no media. A path here would be fetched by nothing
-        # and checked by nothing, so its presence is a catalog mistake, not a
-        # harmless extra.
-        reason = f"component intro {entry.component!r} names media"
-    elif not entry.component and not validate_asset_path(entry.src):
+    elif not validate_asset_path(entry.src):
         reason = f"unsafe src {entry.src!r}"
-    elif not entry.component and not validate_asset_path(entry.poster):
+    elif not validate_asset_path(entry.poster):
         reason = f"unsafe poster {entry.poster!r}"
     elif entry.doc not in TIP_DOC_ALLOWLIST:
         reason = f"doc {entry.doc!r} is not in the tips doc allowlist"
-    elif entry.cta_route and not _CTA_ROUTE_RE.fullmatch(entry.cta_route):
-        reason = f"unsafe cta_route {entry.cta_route!r}"
     elif entry.min_version:
         try:
             parse_version(entry.min_version)
@@ -298,44 +264,6 @@ CATALOG: tuple[VideoEntry, ...] = (
         doc="monitor-loops.md",
         used_when=("sel_event_seen:monitor_start",),
     ),
-    # The launch intro to Mates. Not a clip: the dashboard renders
-    # the poster-style "Meet your Mates." dialog (``MeetYourMatesIntro``) for
-    # this ``component``, so there is no media to ship, fetch or 404.
-    VideoEntry(
-        id="crewmates",
-        feature="crewmates",
-        # The dashboard shows translated copy for this id (StartupVideoModal's
-        # INTRO_COPY); keep the two English texts the same.
-        title="Meet your Mates.",
-        description="They find the work, do it, and ask only when they need you.",
-        src="",
-        poster="",
-        duration_s=0.0,
-        doc="crew-members.md",
-        # Anyone who already has a Mate of their own, or who finished the
-        # retired Meet CrewMates flow, has been introduced. Every install creates
-        # the first Mate itself, so that one does not count (``crewmates_exist``).
-        # And with Mate deleted there is no chat for "Try now" to open
-        # (``mate_missing``).
-        used_when=("crewmates_exist", "crewmates_onboarded", "mate_missing"),
-        cta_route=f"/members?member={ASSISTANT_MEMBER_NAME}",
-        default_on=True,
-        component="crewmates",
-    ),
-    # "Kiro Crew in 15 seconds", the card at the top of the Explore panel (RFC
-    # 8.2). Explore is its only home, so the startup popup never offers it; the
-    # entry exists so the card's watched/closed verdict lands in this state file.
-    VideoEntry(
-        id="kiro-crew-intro",
-        feature="kiro-crew",
-        title="Kiro Crew in 15 seconds",
-        description="A short tour of what Kiro Crew does.",
-        src=f"{ASSET_PREFIX}kiro-crew-intro.mp4",
-        poster=f"{ASSET_PREFIX}kiro-crew-intro.jpg",
-        duration_s=15.0,
-        doc="dashboard.md",
-        startup=False,
-    ),
 )
 
 
@@ -374,21 +302,15 @@ def offerable() -> tuple[VideoEntry, ...]:
     """The entries that may be SHOWN: valid, and with both media files on disk.
 
     "Asset shipped" is a precondition of "on offer", enforced here rather than
-    trusted to the client. The dialog opens on the JSON answer alone and its
-    ``<video>`` is ``preload="none"``, so nothing is fetched -- and no media error
-    can fire -- until the user presses play. An entry whose clip is not shipped
-    would therefore open a dialog around a blank player, and the natural "Got it"
-    writes a PERMANENT verdict, retiring the real intro before anyone saw it.
-    Dropping such an entry here keeps it on offer for the launch after its clip
-    lands, which is the recoverable outcome.
+    trusted to the client. The Explore card shows on the JSON answer alone and
+    fetches nothing until the user presses Watch. An entry whose clip is not
+    shipped would show a card around a blank player, and the natural Close writes
+    a PERMANENT verdict, retiring the real clip before anyone saw it. Dropping such
+    an entry here keeps it on offer once its clip lands, which is the recoverable
+    outcome.
     """
     kept: list[VideoEntry] = []
     for entry in catalog():
-        # A rendered intro has no files to be on disk: the dashboard bundle that
-        # answers this request is the one that draws it.
-        if entry.component:
-            kept.append(entry)
-            continue
         missing = [p for p in (entry.src, entry.poster) if not _asset_exists(p)]
         if missing:
             logger.info(
@@ -458,40 +380,14 @@ def _probe_artifacts_nonempty() -> bool:
     return False
 
 
-def _probe_crewmates_exist() -> bool:
-    """True when the roster holds a crewmate the user made themselves.
-
-    The main ``default`` agent and the first Mate (``ASSISTANT_MEMBER_NAME``) do
-    not count: every install carries both without anyone asking for a Mate, so
-    counting them would retire the intro on every install. Reads the same config
-    ``GET /api/members`` builds its rows from, and applies the same
-    addressable-name filter, so a deleted or unaddressable entry does not count
-    either.
-    """
-    return any(
-        name not in ("default", ASSISTANT_MEMBER_NAME) and _member_name_is_addressable(name)
-        for name in KiroCrewConfig.load().agents
-    )
-
-
 def _probe_mate_missing() -> bool:
     """True when the first Mate is gone from the roster.
 
-    The intro's "Try now" opens Mate's chat and its "New" tag points at the same
-    chat. An operator who deleted Mate (it is never re-created) would be sent to
-    a roster notice about a member that is gone, so the intro is withheld
-    instead. The deletion itself is left alone.
+    The milestone rows that open Mate's chat read this (``available_when``): an
+    operator who deleted Mate (it is never re-created) would be sent to a roster
+    notice about a member that is gone. The deletion itself is left alone.
     """
     return ASSISTANT_MEMBER_NAME not in KiroCrewConfig.load().agents
-
-
-def _probe_crewmates_onboarded() -> bool:
-    """True when the retired Meet CrewMates flow was finished or dismissed here.
-
-    Reads the VALUE, not presence (``config_key_set``): saved configs carry the
-    key with its default ``false``, and presence would retire the intro for all.
-    """
-    return bool(KiroCrewConfig.load().dashboard.crewmates_onboarded)
 
 
 def _probe_sel_event_seen(tool_name: str) -> bool:
@@ -656,8 +552,6 @@ def _probe_config_key_set(dotted: str) -> bool:
 _PROBES: dict[str, Callable[[], bool]] = {
     "tips_feedback_exists": _probe_tips_feedback_exists,
     "artifacts_nonempty": _probe_artifacts_nonempty,
-    "crewmates_exist": _probe_crewmates_exist,
-    "crewmates_onboarded": _probe_crewmates_onboarded,
     "mate_missing": _probe_mate_missing,
     "mate_thread_has_user_turn": _probe_mate_thread_has_user_turn,
 }
@@ -838,13 +732,15 @@ def _version_ok(min_version: str, running: str) -> bool:
 
 #: How many recently-offered ids stay acceptable for a verdict. Bounded because
 #: this is the ONE thing keeping the state file's key set closed: a verdict may name
-#: a known clip or one of the last few offered, and nothing else. 64 is far more
-#: than the one dialog a user can have open, and small enough that the set cannot
-#: become a store.
-_ISSUED_ID_LIMIT = 64
+#: a known clip or one of the last few offered, and nothing else. It holds at
+#: least one whole library answer (a manifest carries at most
+#: ``_MAX_ENTRIES`` clips), so listing the library never evicts an id it just
+#: offered, and every id in it came from a shipped catalog or a signed manifest,
+#: so the set cannot become a store.
+_ISSUED_ID_LIMIT = max(64, manifest_mod._MAX_ENTRIES)
 
-#: Ids ``/next`` has handed out, newest last. A clip can leave the catalog between
-#: ``/next`` and the user's click — a background manifest refresh replaces the
+#: Ids ``/library`` has handed out, newest last. A clip can leave the catalog between
+#: ``/library`` and the user's click — a background manifest refresh replaces the
 #: catalog, and the clip they are looking at may not be in the new one. Without this
 #: the feedback POST answers 400 and the verdict is DISCARDED, so the permanent
 #: "do not show me this again" the user just expressed is lost and the clip returns.
@@ -857,7 +753,7 @@ _issued_lock = threading.Lock()
 
 
 def _remember_issued(video_id: str) -> None:
-    """Record that ``/next`` offered *video_id*, evicting the oldest past the cap."""
+    """Record that ``/library`` offered *video_id*, evicting the oldest past the cap."""
     if not video_id:
         return
     with _issued_lock:
@@ -877,14 +773,6 @@ def _forget_issued(video_id: str) -> None:
     """Drop *video_id* once its verdict is recorded — the row on disk supersedes it."""
     with _issued_lock:
         _issued_ids.pop(video_id, None)
-
-
-#: The selector's randomness source, as an instance rather than the ``random``
-#: module functions, so a test can pin it (``monkeypatch.setattr(fv, "_rng",
-#: random.Random(0))``) without reseeding global randomness for everything else
-#: in the process. Not ``secrets``: which intro clip plays is not a secret, and a
-#: CSPRNG here would imply it was.
-_rng = random.Random()
 
 
 @dataclass(frozen=True)
@@ -915,8 +803,6 @@ class Offer:
     doc: str
     min_version: str
     used_when: tuple[str, ...]
-    cta_route: str = ""
-    component: str = ""
 
     def payload(self) -> dict[str, object]:
         """The client-facing shape.
@@ -935,17 +821,11 @@ class Offer:
             "duration_s": self.duration_s,
             "doc": self.doc,
             "min_version": self.min_version,
-            "cta_route": self.cta_route,
-            "component": self.component,
         }
 
 
-def _bundled_offers(default_on_only: bool = False) -> tuple[Offer, ...]:
-    """Offers from the static catalog — the fallback for a manifest-less install.
-
-    *default_on_only* keeps just the entries marked ``default_on``: what may be
-    shown while the kill switch is off.
-    """
+def _bundled_offers() -> tuple[Offer, ...]:
+    """Offers from the static catalog — the fallback for a manifest-less install."""
     return tuple(
         Offer(
             id=entry.id,
@@ -958,11 +838,8 @@ def _bundled_offers(default_on_only: bool = False) -> tuple[Offer, ...]:
             doc=entry.doc,
             min_version=entry.min_version,
             used_when=entry.used_when,
-            cta_route=entry.cta_route,
-            component=entry.component,
         )
         for entry in offerable()
-        if entry.startup and (entry.default_on or not default_on_only)
     )
 
 
@@ -974,9 +851,9 @@ def _hosted_offers(manifest: "manifest_mod.VideoManifest") -> tuple[Offer, ...]:
     browser fetches itself, would play bytes the sha256 pin never checked and
     follow redirects the gateway's own opener refuses; the manifest's signature
     and host pin would then be guarding the metadata while the media went
-    unverified. The manifest replaces the bundled catalog, so a launch on which
-    nothing has landed yet offers nothing; the pass runs in the background and
-    the next launch shows what it landed.
+    unverified. The manifest replaces the bundled catalog, so while nothing has
+    landed yet nothing is offered; the pass runs in the background and the
+    Explore card shows what it landed once it has.
     """
     cached: list[Offer] = []
     for entry in manifest.entries:
@@ -1016,51 +893,20 @@ def _eligible(offer: Offer, st: FeatureVideoState, running_version: str) -> bool
     return not any(probe_fires(signal) for signal in offer.used_when)
 
 
-def _offer_pool(running_version: str, default_on_only: bool = False) -> tuple[Offer, ...]:
-    """Every clip eligible right now. Blocking (reads state, stats files).
+def eligible_offers(running_version: str) -> tuple[Offer, ...]:
+    """Every clip eligible right now, for the Explore card. Blocking (reads
+    state, stats files).
 
     One place decides which catalog is in force. A verified manifest REPLACES the
     static catalog rather than extending it: mixing them would offer a bundled
     clip and its hosted successor as two videos, and a user retiring one would
     still be shown the other. The cost is stated in the module docstring: a
-    manifest whose clips have not landed yet offers nothing that launch. Bundled
-    ``default_on`` entries are the exception: they join the pool either way.
+    manifest whose clips have not landed yet offers nothing until they do.
     """
     st = load_state()
-    if default_on_only:
-        offers = _bundled_offers(default_on_only=True)
-        return tuple(o for o in offers if _eligible(o, st, running_version))
     current = cache_mod.feature_video_cache().current_manifest()
-    if current is None:
-        offers = _bundled_offers()
-    else:
-        # A manifest is assembled by hand per release, so it can omit a default-on
-        # intro; that intro stands in for a first-run chapter, not a library clip.
-        hosted = _hosted_offers(current)
-        hosted_ids = {o.id for o in hosted}
-        offers = hosted + tuple(
-            o for o in _bundled_offers(default_on_only=True) if o.id not in hosted_ids
-        )
+    offers = _bundled_offers() if current is None else _hosted_offers(current)
     return tuple(o for o in offers if _eligible(o, st, running_version))
-
-
-def select_next(
-    running_version: str,
-    default_on_only: bool = False,
-    blocked_routes: frozenset[str] = frozenset(),
-) -> "Offer | None":
-    """One eligible clip at random, or None. Blocking — call off the loop.
-
-    Every candidate is on disk already, so the pick costs no egress and no
-    spinner. Within the pool the pick is uniform — see the module docstring for
-    why order stopped being the right rule once the library grew.
-    """
-    pool = [
-        o
-        for o in _offer_pool(running_version, default_on_only)
-        if not o.cta_route or o.cta_route.split("?")[0] not in blocked_routes
-    ]
-    return _rng.choice(pool) if pool else None
 
 
 def known_video_ids() -> set[str]:
@@ -1085,48 +931,36 @@ def _enabled() -> bool:
     return bool(KiroCrewConfig.load().dashboard.feature_videos_enabled)
 
 
-async def api_feature_videos_next(request: web.Request) -> web.Response:
-    """GET /api/feature-videos/next — the next intro clip to play, or null.
+async def api_feature_videos_library(request: web.Request) -> web.Response:
+    """GET /api/feature-videos/library — every clip the Explore card may show.
 
-    Returns ``{"video": <offer-without-used_when> | null, "enabled": <bool>}``,
-    where the offer's ``src`` is same-origin: every clip offered is on this
-    machine already.
+    Returns ``{"videos": [<offer-without-used_when>, ...], "enabled": <bool>}``.
+    Every offer's ``src`` is same-origin, because every clip offered is on this
+    machine already. The card draws one at random and keeps it for the page
+    session; an empty list hides the card.
 
-    ``enabled`` is reported even when it is false, rather than a 204: the
-    settings panel and the modal both need to tell "the operator turned this
-    off" apart from "nothing left to show", and a bodiless response cannot.
-
-    Nothing about downloads is reported here. Whether this install may pull clip
-    bytes decides what the background pass lands, never what this route offers,
-    and the settings panel reads it from ``/status``. The frontend's
-    ``FeatureVideoNext.download_enabled`` is optional, and absent reads as off.
+    ``enabled`` is the ``dashboard.feature_videos_enabled`` kill switch. With it
+    off the list is empty, and the flag says why.
     """
     state: DashboardState = request.app["state"]
     loop = asyncio.get_running_loop()
-
-    # With the switch off, only ``default_on`` intros are offered.
     enabled = await loop.run_in_executor(None, _enabled)
 
-    # A temporary or incognito session shows no intro. The modal records
-    # permanent state for the whole instance, and a session the user opened
-    # precisely so it would leave no trace must not write that — the same reason
-    # tips do not fetch in a temporary session.
-    if _is_restricted_session(state, request):
-        return web.json_response({"video": None, "enabled": enabled})
+    # A temporary or incognito session shows no clip. The card records permanent
+    # state for the whole instance, and a session the user opened precisely so it
+    # would leave no trace must not write that — the same reason tips do not
+    # fetch in a temporary session.
+    if not enabled or _is_restricted_session(state, request):
+        return web.json_response({"videos": [], "enabled": enabled})
 
-    # The client names the pages it cannot open (a preview that is off). An intro
-    # whose CTA lands there is left out before the pick, not discarded after it.
-    blocked = frozenset(r for r in request.query.get("blocked_routes", "").split(",") if r)
-    entry = await loop.run_in_executor(
-        None, select_next, kiro_crew.__version__, not enabled, blocked
-    )
-    if entry is not None:
-        # The catalog can change under the open dialog, so the id is remembered
+    offers = await loop.run_in_executor(None, eligible_offers, kiro_crew.__version__)
+    for offer in offers:
+        # The catalog can change under the open card, so the id is remembered
         # until its verdict lands (:data:`_issued_ids`). Otherwise a refresh between
         # here and the user's click makes the feedback POST a 400 and throws away a
         # verdict they will not be asked for again.
-        _remember_issued(entry.id)
-    return web.json_response({"video": entry.payload() if entry else None, "enabled": enabled})
+        _remember_issued(offer.id)
+    return web.json_response({"videos": [o.payload() for o in offers], "enabled": enabled})
 
 
 async def api_feature_videos_status(request: web.Request) -> web.Response:
@@ -1150,7 +984,7 @@ async def api_feature_videos_status(request: web.Request) -> web.Response:
     Only ``state`` is history. It is gated by ``_blocks_reads_session`` rather
     than ``_is_restricted_session``: that is the product's own read/write split,
     not a looser gate — incognito withholds WRITES, and a temporary session
-    withholds reads as well. ``/next`` uses the broader predicate because reaching
+    withholds reads as well. ``/library`` uses the broader predicate because reaching
     it leads to a permanent write, while this route only reads, so an incognito
     session still renders its own settings panel and only a read-blocking session
     is served an empty map.
@@ -1193,13 +1027,13 @@ async def api_feature_videos_feedback(request: web.Request) -> web.Response:
 
     Both statuses are terminal: there is no snooze, so a recorded video is never
     offered again. The id must name a known clip (:func:`known_video_ids`, the union
-    of the static catalog and the current manifest) OR one ``/next`` offered
+    of the static catalog and the current manifest) OR one ``/library`` offered
     recently (:data:`_issued_ids`) — an id from neither is a client bug, and
     accepting it would let an unbounded set of keys accumulate in the state file
     forever. Those two checks together are the only id validation, and both are
     strictly tighter than any length or shape bound.
 
-    The second check exists because the catalog can change under an open dialog: a
+    The second check exists because the catalog can change under an open card: a
     background manifest refresh replaces it, and without this check the
     user's verdict on the clip in front of them would 400 and be discarded — after
     which the clip comes back, which is the one thing a permanent verdict promises
@@ -1233,7 +1067,7 @@ async def api_feature_videos_feedback(request: web.Request) -> web.Response:
 
     # The write side needs the SAME gate the read side has, not just a symmetric
     # gesture: this is where the permanent, instance-wide row is actually
-    # created, so gating only /next would leave the trace a restricted session
+    # created, so gating only /library would leave the trace a restricted session
     # exists to avoid one POST away. Reported as success because nothing the
     # client did was wrong — the session simply keeps no state.
     if _is_restricted_session(state, request):

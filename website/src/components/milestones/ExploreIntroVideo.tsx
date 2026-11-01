@@ -3,42 +3,67 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Play, X } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { api } from '../../api/client'
-import type { FeatureVideoStatus } from '../../api/client/featureDiscovery'
+import type { FeatureVideo, FeatureVideoLibrary } from '../../api/client/featureDiscovery'
 import { useAppSelector } from '../../store'
 import Glass from '../Glass'
 import ErrorNotice from '../ErrorNotice'
 import { recordError } from '../../utils/errorReport'
 
-/** The clip's Feature Videos catalog id (`feature_videos.py`, kept out of the
- *  startup popup). Its `seen` / `dismissed` verdict is what retires this card. */
-export const INTRO_VIDEO_ID = 'kiro-crew-intro'
-
-/** The clip and its poster ship with the dashboard (`public/app-assets/feature-videos/`). */
-export const INTRO_VIDEO_SRC = '/app-assets/feature-videos/kiro-crew-intro.mp4'
-export const INTRO_VIDEO_POSTER = '/app-assets/feature-videos/kiro-crew-intro.jpg'
-
-/** Share of the clip after which it counts as watched, as in the startup intro. */
+/** Share of the clip after which it counts as watched. */
 const SEEN_AT = 0.8
 
+/** How often an open Explore with no clip listed asks again. */
+const LIBRARY_POLL_MS = 60_000
+
+/** The clip this page session drew. Module state, so closing and reopening
+ *  Explore shows the same clip until it is finished; a reload draws again. */
+let sessionPick: string | null = null
+
+/** Test seam: forget the page session's pick. */
+export function __resetExploreVideoPick() {
+  sessionPick = null
+}
+
 /**
- * "Kiro Crew in 15 seconds": a slim card at the top of Explore with one short
- * bundled video. It shows until the clip is watched or the card is closed, and
- * that verdict is the same permanent Feature Videos record the startup intros
- * use (RFC 8.2), so it holds on this machine across browsers. Fixed layout,
- * i18n text only.
+ * One clip from *videos*, the unfinished ones the server listed. The first call
+ * draws at random; later calls keep that clip while it is still listed, and
+ * draw again only once it is finished (gone from the list).
+ */
+export function pickExploreVideo(videos: FeatureVideo[], random: () => number = Math.random): FeatureVideo | null {
+  if (videos.length === 0) return null
+  const kept = videos.find(v => v.id === sessionPick)
+  if (kept) return kept
+  const drawn = videos[Math.min(videos.length - 1, Math.floor(random() * videos.length))]
+  sessionPick = drawn.id
+  return drawn
+}
+
+/**
+ * The video card at the top of Explore, the one place feature videos show. It
+ * plays one clip drawn at random from the ones this machine has not finished
+ * (`GET /api/feature-videos/library`) and is hidden when none are left. Watching
+ * or closing records the clip's permanent Feature Videos verdict (RFC 8.2), so
+ * it holds on this machine across browsers. Fixed layout; the clip's title is
+ * manifest data.
  */
 export default function ExploreIntroVideo({ className }: { className?: string }) {
   const qc = useQueryClient()
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
   // The slot's key reaches the server's restricted-session gates, as in Settings.
   const sessionKey = activeSlot ? `dashboard:${activeSlot}` : undefined
-  // Same query key as the Settings readout, so a verdict here refreshes both.
-  const statusQ = useQuery<FeatureVideoStatus>({
-    queryKey: ['featureVideoStatus', sessionKey],
-    queryFn: () => api.featureVideoStatus(sessionKey),
+  // Read fresh each time Explore opens, and every minute while it is open with
+  // nothing listed: the background download lands clips without telling the
+  // page. The pick survives a refresh (`sessionPick`).
+  const libraryQ = useQuery<FeatureVideoLibrary>({
+    queryKey: ['featureVideoLibrary', sessionKey],
+    queryFn: () => api.featureVideoLibrary(sessionKey),
+    refetchOnMount: 'always',
+    refetchInterval: q => (q.state.data && q.state.data.enabled && q.state.data.videos.length === 0 ? LIBRARY_POLL_MS : false),
   })
   const [closed, setClosed] = useState(false)
-  const [playing, setPlaying] = useState(false)
+  // The clip being played. Held, so the list refreshing after its `seen` verdict
+  // cannot swap the player for another clip mid-play.
+  const [held, setHeld] = useState<FeatureVideo | null>(null)
   const [failed, setFailed] = useState(false)
   const [saveFailed, setSaveFailed] = useState(false)
   // `seenSent`: the clip played far enough to count as watched. `saved`: a
@@ -46,16 +71,19 @@ export default function ExploreIntroVideo({ className }: { className?: string })
   // failed write is retried there, never in a loop from playback events.
   const seenSent = useRef(false)
   const saved = useRef(false)
-  // Hidden until the record is read, so a retired card never flashes in. A
-  // failed read shows the card with its error rather than hiding it.
-  const done = !statusQ.isError && (!statusQ.data || Boolean(statusQ.data.state?.[INTRO_VIDEO_ID]?.status))
-  if ((done && !playing) || closed) return null
-  const title = i18nT('milestones.intro_video_title')
-  const record = (status: 'seen' | 'dismissed'): Promise<boolean> =>
-    api.featureVideoFeedback(INTRO_VIDEO_ID, status, sessionKey).then(
+  if (closed) return null
+  // Hidden until the list is read, so a finished card never flashes in. A failed
+  // read shows the card with its error rather than hiding it.
+  const video = held ?? (libraryQ.data ? pickExploreVideo(libraryQ.data.videos) : null)
+  if (!video && !libraryQ.isError) return null
+  const playing = held !== null
+  const record = (id: string, status: 'seen' | 'dismissed'): Promise<boolean> =>
+    api.featureVideoFeedback(id, status, sessionKey).then(
       () => {
         saved.current = true
         setSaveFailed(false)
+        // The Settings readout shares the verdict map, so both refresh.
+        void qc.invalidateQueries({ queryKey: ['featureVideoLibrary'] })
         void qc.invalidateQueries({ queryKey: ['featureVideoStatus'] })
         return true
       },
@@ -72,18 +100,19 @@ export default function ExploreIntroVideo({ className }: { className?: string })
     )
   // Watched: record it, but leave the player up so the clip can finish.
   const seen = () => {
-    if (seenSent.current) return
+    if (!video || seenSent.current) return
     seenSent.current = true
-    void record('seen')
+    void record(video.id, 'seen')
   }
   // The card goes only once its verdict is saved; a failed save keeps it up
-  // with the error, and the next Close tries again.
+  // with the error, and the next Close tries again. With no clip (the list
+  // failed to load) there is no verdict to save.
   const close = () => {
-    if (saved.current) {
+    if (!video || saved.current) {
       setClosed(true)
       return
     }
-    void record(seenSent.current ? 'seen' : 'dismissed').then(ok => { if (ok) setClosed(true) })
+    void record(video.id, seenSent.current ? 'seen' : 'dismissed').then(ok => { if (ok) setClosed(true) })
   }
   return (
     <Glass variant="panel" radius={16} className={className} data-testid="explore-intro-video">
@@ -91,13 +120,13 @@ export default function ExploreIntroVideo({ className }: { className?: string })
         <span aria-hidden="true" className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center bg-accent-subtle text-accent">
           <Play size={14} />
         </span>
-        <span className="flex-1 min-w-0 truncate text-[13px] font-semibold text-text-strong">{title}</span>
-        {!playing && !failed && (
+        <span className="flex-1 min-w-0 truncate text-[13px] font-semibold text-text-strong">{video?.title}</span>
+        {video && !playing && !failed && (
           <button
             type="button"
             data-testid="explore-intro-video-watch"
             className="shrink-0 text-[13px] font-medium text-accent hover:underline bg-transparent border-none cursor-pointer"
-            onClick={() => setPlaying(true)}
+            onClick={() => setHeld(video)}
           >
             {i18nT('milestones.intro_video_watch')}
           </button>
@@ -114,9 +143,9 @@ export default function ExploreIntroVideo({ className }: { className?: string })
         </button>
       </div>
       {/* The panel holds no draft, so handing a failure to the agent loses nothing. */}
-      {statusQ.isError && (
+      {libraryQ.isError && !video && (
         <div className="mt-2">
-          <ErrorNotice message={i18nT('components.startupVideoModal.media_failed')} variant="inline" askAgent testId="explore-intro-video-status-error" />
+          <ErrorNotice message={i18nT('milestones.video_failed')} variant="inline" askAgent testId="explore-intro-video-status-error" />
         </div>
       )}
       {saveFailed && (
@@ -126,19 +155,19 @@ export default function ExploreIntroVideo({ className }: { className?: string })
       )}
       {failed && (
         <div className="mt-2">
-          <ErrorNotice message={i18nT('components.startupVideoModal.media_failed')} variant="inline" askAgent testId="explore-intro-video-error" />
+          <ErrorNotice message={i18nT('milestones.video_failed')} variant="inline" askAgent testId="explore-intro-video-error" />
         </div>
       )}
-      {playing && !failed && (
+      {video && playing && !failed && (
         <div className="mt-2">
-          {/* The bundled clip carries no captions track. */}
+          {/* Feature clips carry no captions track. */}
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
           <video
             data-testid="explore-intro-video-player"
             className="w-full rounded-lg bg-bg aspect-video"
-            src={INTRO_VIDEO_SRC}
-            poster={INTRO_VIDEO_POSTER}
-            aria-label={title}
+            src={video.src}
+            poster={video.poster}
+            aria-label={video.title}
             controls
             playsInline
             autoPlay
@@ -148,12 +177,11 @@ export default function ExploreIntroVideo({ className }: { className?: string })
             }}
             onEnded={seen}
             onError={e => {
-              // Journaled the way the startup intro journals the same failure.
               const err = e.currentTarget.error
               recordError({
                 source: 'api',
-                message: i18nT('components.startupVideoModal.media_failed'),
-                endpoint: INTRO_VIDEO_SRC,
+                message: i18nT('milestones.video_failed'),
+                endpoint: video.src,
                 code: err ? String(err.code) : undefined,
                 detail: err?.message || undefined,
               })

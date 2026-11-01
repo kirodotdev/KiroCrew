@@ -41,10 +41,6 @@ const DIALOGS: Record<string, { file: string; overlay: RegExp }> = {
     // full-app install surface which is already a z-[100] takeover.
     overlay: /className="fixed inset-0 z-(?:\[(\d+)\]|(\d+)) bg-bg\/80 backdrop-blur-xs flex items-center justify-center animate-rise"\n\s*role="button"/,
   },
-  StartupVideoModal: {
-    file: 'components/StartupVideoModal.tsx',
-    overlay: /className="fixed inset-0 z-(?:\[(\d+)\]|(\d+)) bg-bg\/80 backdrop-blur-xs flex items-center justify-center"\n\s*role="presentation"/,
-  },
   UpdateFoundModal: {
     file: 'components/UpdateFoundModal.tsx',
     overlay: /className="fixed inset-0 z-(?:\[(\d+)\]|(\d+)) bg-bg\/80 backdrop-blur-xs flex items-center justify-center animate-rise"\n\s*role="presentation"/,

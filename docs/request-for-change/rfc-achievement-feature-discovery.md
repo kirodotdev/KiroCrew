@@ -20,6 +20,7 @@ superseded-by: []
 - **Hard constraint:** the sign-in / first-run flow does not change. `website/src/components/OnboardingFlow.tsx` stays as it is.
 - **Naming:** the file name keeps the earlier word "achievement" so links stay stable. The internal keys, routes, metrics and state file use "milestone" (D14). The user-facing names changed on 2026-10-31 (D15).
 - **Amended 2026-10-31 (product owner):** section 8 renames the panel to "Explore", adds a daily "Try today" pick, keeps the existing suggestion cards on the new-chat page, puts the 15-second intro video at the top of the Explore panel, adds progress bars and a calm badge wall under "Your progress", lists the Ship 2 items (8.10), and gives the top-bar ring its own "Explore N/M" pill beside the readout capsule (8.7, D17). Where an earlier section disagrees with section 8, section 8 wins; those passages are marked "Replaced by section 8". Implementation: backend [#26512](https://github.com/kirodotdev/KiroCrew/pull/26512), frontend [#26488](https://github.com/kirodotdev/KiroCrew/pull/26488).
+- **Amended 2026-11-01 (product owner):** feature videos show only in the Explore panel's top video card, which plays one random unfinished clip; the startup popup is removed; the intro clip ships through the signed CDN manifest, not inside the package (8.11, D18).
 
 ## One-page summary
 
@@ -51,7 +52,7 @@ Four quiet surfaces read this one table (D14). Surfaces 1–3 as written in this
 
 It is deterministic and never calls a model. The local file is user-editable; that is accepted for a personal tool, with no anti-cheat.
 
-**Decided.** D1: low-cost rows send directly, others prefill. D2: the daily task is a real Mate model turn. D3: the main switch defaults on (2026-10-29). D4–D8: one table, surfaces, rollout, open-question defaults, the Crew Mode signal. D9: local only. D10: count events. D11: manual marking. D12: streaks. D13: milestones first, features as a group. D14: quiet style and the "milestone" name (2026-10-30). D15: "Explore" naming, daily "Try today" pick, one entry card on the new-chat page. D16: the final Ship 1 Explore panel with progress bars and badges, and a Ship 2 list. D17: intro video only in Explore, the "Explore N/M" pill beside the readout capsule, and tiered badges (2026-10-31, section 8). See 7.1.
+**Decided.** D1: low-cost rows send directly, others prefill. D2: the daily task is a real Mate model turn. D3: the main switch defaults on (2026-10-29). D4–D8: one table, surfaces, rollout, open-question defaults, the Crew Mode signal. D9: local only. D10: count events. D11: manual marking. D12: streaks. D13: milestones first, features as a group. D14: quiet style and the "milestone" name (2026-10-30). D15: "Explore" naming, daily "Try today" pick, one entry card on the new-chat page. D16: the final Ship 1 Explore panel with progress bars and badges, and a Ship 2 list. D17: intro video only in Explore, the "Explore N/M" pill beside the readout capsule, and tiered badges (2026-10-31, section 8). D18: every feature video only in Explore, one random unfinished clip, no startup popup, intro via the CDN manifest (2026-11-01, 8.11). See 7.1.
 
 **Still open.** Only Q7 (relationship to Feature Tips), deferred to the "Later" batch. See 7.2.
 
@@ -62,7 +63,7 @@ It is deterministic and never calls a model. The local file is user-editable; th
 | First-run flow | `website/src/components/OnboardingFlow.tsx` | Unchanged. This design only takes effect after it ends |
 | Empty chat page | `website/src/pages/chat/page/ChatEmptyState.tsx` | Surface 2 changes this |
 | Top bar | `website/src/shell/topbar/shellHeader.tsx` (the notification bell lives here) | Surface 1's indicator sits next to the bell |
-| Feature Videos | `src/kiro_crew/feature_videos.py`, `GET /api/feature-videos/next` (`api_feature_videos_next` in `dashboard/routes/realtime.py`) | Reuse the clips and the `seen/dismissed` state; its `used_when` probes are used only for the one-time backfill (4.4) |
+| Feature Videos | `src/kiro_crew/feature_videos.py`, `GET /api/feature-videos/library` (`api_feature_videos_library` in `dashboard/routes/realtime.py`; replaced `/next` on 2026-11-01, 8.11) | Reuse the clips and the `seen/dismissed` state; its `used_when` probes are used only for the one-time backfill (4.4) |
 | Feature Tips | `src/kiro_crew/tips.py` | Model-generated; kept. The milestone table never goes through a model |
 | Mate first welcome | `src/kiro_crew/dashboard/mate_welcome.py`, copy in `src/kiro_crew/crewmate_prompts.json` | Surface 4 reuses `dispatch_hidden_turn` and the copy table |
 | Mate check-ins (daily/weekly) | `src/kiro_crew/dashboard/goal_reminder.py` | Surface 4 follows its hidden-turn pattern; does not reuse its hosted cron (see 4.8) |
@@ -376,7 +377,7 @@ Things you can try
 - "Skip" adds the row to `skipped` and the next one moves up.
 - "Don't show again" calls `POST /api/milestones/skip-all`, which marks every remaining new-feature row skipped. The empty state immediately returns to today's page; the panel keeps showing true progress, and features used later still count. It differs from "Mark all as done" in the panel (4.6), which marks rows done instead.
 - The "Start a new chat" button and the error message stay as they are.
-- *(Replaced by section 8.2: the intro video is a card at the top of the Explore panel.)* The clip reuses the `StartupVideoModal` player component; watching it records `seen` in the Feature Videos state under the same video id, so the startup modal does not play it again.
+- *(Replaced by section 8.2 and 8.11: the video card at the top of the Explore panel; there is no startup modal.)* The clip reuses the `StartupVideoModal` player component; watching it records `seen` in the Feature Videos state under the same video id, so the startup modal does not play it again.
 - Cards use a fixed layout filled only with text (i18n strings); no model output is rendered.
 
 **How a starter task reaches the composer.** The existing channel: `createSlot(...)` creates a chat, then `dispatch(setPendingInput(text))`, and `usePendingInputIntake` (`launchIntake.ts`) puts the text into the new chat's composer and lights up `prefillHint`.
@@ -614,6 +615,10 @@ Q4, Q5, Q6 and Q8 were closed by D7.
   2. *Top-bar entry.* The ring sits in its own pill beside the readout capsule, as its own button, not inside the capsule, so the capsule keeps at most two buttons per row. The pill shows the ring and the label "Explore N/M" (for example "Explore 2/7"), with the streak ("5-day streak") as smaller secondary text. A small dot shows while something is left to try. Clicking it opens Explore. This replaces D15's capsule placement. See 8.7.
   3. *Badges (amends D14).* Your progress has a tiered badge wall, and each usage row shows a progress bar. The Regular tier uses quiet line icons; the Advanced tier uses one calm color; the showy style of the hardest tier is Ship 2. The overall style stays quiet. See 8.4 and 8.10.
 
+**2026-11-01, product owner:**
+
+- **D18 Feature videos only in Explore (amends D16, D17 and 8.2).** Every feature video shows only in the video card at the top of the Explore panel; the startup popup (`StartupVideoModal`) is removed for all clips, along with the Meet your Mates dialog and the rail "New" tag that only it set. The card plays one clip drawn at random from those this machine has not finished (no `seen` / `dismissed` verdict), keeps that pick for the page session, and is hidden when none are left. The "Kiro Crew in 15 seconds" intro is distributed like every other clip, through the signed CDN manifest, and is no longer bundled in the package. See 8.11.
+
 ## 8. Amendment, 2026-10-31 (product owner)
 
 This section records D15, D16 and D17. Where an earlier section disagrees with it, this section wins. The local file, the API routes, switches, metrics and the security rules in sections 3–5 do not change, except for the one new counter in 8.4.
@@ -642,7 +647,7 @@ The panel opens from the top-bar ring (8.7). Its parts, in order:
 | 3 | Your progress: Getting started, progress bars, badge wall | 8.4, 8.5 |
 | 4 | The full feature list, with "Try it" and "Mark as done" as in 4.6 | 4.6 |
 
-**Intro video card.** One "Kiro Crew in 15 seconds" card plays the 15-second intro video. It stays until the person watches it or closes it, and then it is gone for good. That choice is stored locally, in the same Feature Videos `seen` / `dismissed` state on this machine (the local `feature_videos_state.json`). When the clip is not available on this install, the card is not shown. This card is the only home for the intro video: it is not on the new-chat page (8.6), and it is not shown through the standalone startup popup (`StartupVideoModal`). Other feature clips keep their current startup behavior.
+**Intro video card.** One "Kiro Crew in 15 seconds" card plays the 15-second intro video. It stays until the person watches it or closes it, and then it is gone for good. That choice is stored locally, in the same Feature Videos `seen` / `dismissed` state on this machine (the local `feature_videos_state.json`). When the clip is not available on this install, the card is not shown. This card is the only home for the intro video: it is not on the new-chat page (8.6), and it is not shown through the standalone startup popup (`StartupVideoModal`). *(Amended by D18 on 2026-11-01: the card shows any unfinished feature clip, and there is no startup popup for any clip. See 8.11.)*
 
 A "Try it" button anywhere in the panel keeps the send modes in 4.5: only `widgets` and `parallel-chats` send at once, the Mate row opens its page, and every other row only fills the composer.
 
@@ -741,10 +746,17 @@ Listed only; each item gets its own design before it is built.
 | Running at once | The peak counter in 3.3 |
 | Mate walkthrough and daily task | As in 4.8 |
 
+### 8.11 Amendment, 2026-11-01: feature videos only in Explore (D18)
+
+- **One home.** Feature videos show only in the video card at the top of the Explore panel. The startup popup (`StartupVideoModal`), its launch sequencing gate, the Meet your Mates dialog it drew, and the rail "New" tag its "Not now" set are removed. `GET /api/feature-videos/next`, the popup's pick, is removed; `GET /api/feature-videos/library` lists every eligible clip instead. `/status`, `/feedback` and `/fetch-all` stay.
+- **Which clip.** The card draws one clip at random from the listed ones: on disk, no `seen` / `dismissed` verdict, version floor met, and no `used_when` probe firing (the existing eligibility rules). The pick stays the same for the page session (closing and reopening Explore shows the same clip) and is drawn again only when that clip is finished. When nothing is listed, the card is hidden. Watching 80% records `seen`; closing records `dismissed`.
+- **Where the intro comes from.** The "Kiro Crew in 15 seconds" clip ships through the signed CDN manifest like every other clip (`scripts/feature-videos/`), and is no longer a static asset in the package. A clip is played only once the gateway has downloaded and sha256-checked it, so the card follows the existing `dashboard.feature_videos_enabled` switch and `capabilities.feature_videos_download` ceiling. The source clip is English only.
+- **What does not change.** The `seen` / `dismissed` state file and its meaning, the manifest format and signing, the download pass, and the Settings cache readout.
+
 ## Appendix: what does not change
 
 - `website/src/components/OnboardingFlow.tsx`: unchanged.
-- `feature_videos.py` selection rules and `seen/dismissed` semantics: unchanged; it only gains probes, which the milestone backfill also uses.
+- `feature_videos.py` eligibility rules and `seen/dismissed` semantics: unchanged; it gains probes, which the milestone backfill also uses. Where the clip is shown and who draws it changed on 2026-11-01 (8.11).
 - `session_pulse_counter.py`: unchanged; the milestone counter only shares its call site.
 - Mate first welcome: only one line of copy appended after `welcome.offer_tools`; the flow and the one-time marker are unchanged.
 - Crew Mode: its toggle, stamp and lock rules are unchanged; it is only read at turn start.
