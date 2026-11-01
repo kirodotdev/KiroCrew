@@ -387,6 +387,7 @@ describe('FileBrowserRail refresh', () => {
       // two different answers to one query.
       ['file-grep', DIR],
     ])
+    await waitFor(() => expect(refresh).not.toHaveAttribute('aria-disabled'))
   })
 
   it('refetches both polling queries and locks the button until they land', async () => {
@@ -465,9 +466,12 @@ describe('FileBrowserRail refresh', () => {
     await waitFor(() => expect(btn).toHaveAttribute('aria-disabled', 'true'))
     expect(spy).toHaveBeenCalledTimes(3)
 
+    // The 20ms window runs on a fake clock installed after the last real-timer wait.
+    vi.useFakeTimers()
     fireEvent.click(btn)
     fireEvent.click(btn)
-    await new Promise(r => setTimeout(r, 20))
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
+    vi.useRealTimers()
     expect(spy).toHaveBeenCalledTimes(3)
 
     releases.splice(0).forEach(r => r())
@@ -899,11 +903,13 @@ describe('FileBrowserRail search-mode toggle', () => {
   it('asks for nothing below the two-character floor', async () => {
     mount()
     fireEvent.click(screen.getByLabelText('Search file contents'))
+    // The debounce is run past on a fake clock, installed after the render settled.
+    vi.useFakeTimers()
     fireEvent.change(screen.getByLabelText('Search in files…'), { target: { value: 'n' } })
     // The hint stands in for the results list, so an empty rail never reads as
     // "searched and found nothing".
     expect(screen.getByText(/at least two characters/i)).toBeInTheDocument()
-    await new Promise(r => setTimeout(r, 320))
+    await act(async () => { await vi.advanceTimersByTimeAsync(CONTENT_DEBOUNCE_MS + 1) })
     expect(H.fileGrep).not.toHaveBeenCalled()
   })
 
