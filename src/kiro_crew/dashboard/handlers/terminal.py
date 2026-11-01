@@ -158,7 +158,7 @@ def _proc_cwd(pid: int) -> str | None:
     try:
         out = subprocess.run(
             [lsof, "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True, text=True, encoding="utf-8", timeout=2,
         ).stdout
         for line in out.splitlines():
             if line.startswith("n") and len(line) > 1:
