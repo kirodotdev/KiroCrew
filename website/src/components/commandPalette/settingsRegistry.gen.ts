@@ -1964,6 +1964,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.remote-dispatch",
+    "label": "Remote dispatch",
+    "labelKey": "pages.developer.featurePreviewsTab.remote_dispatch",
+    "description": "Runs Ultra Mode tasks on your other connected machines (Settings > Remote Crew), not only on this one. Each task's progress still shows on this chat's Board. A machine with this off takes no tasks from other machines. If no other machine is connected or has room, the task does not run here; it waits until you ask again.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    },
+    "configKey": "work_ledger.remote_dispatch"
+  },
+  {
     "id": "developer.reply-threads-on-mate-chat-messages",
     "label": "Reply threads on mate chat messages",
     "labelKey": "pages.settings.crewmatesSection.reply_threads",

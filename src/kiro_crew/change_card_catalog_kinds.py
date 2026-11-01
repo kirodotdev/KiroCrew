@@ -195,6 +195,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     "dashboard.shared_crew.tailnet_direct": (False, True),
     "skills.approval_required": (True, False),
     "telemetry.beacon_enabled": (False, True),
+    # On, a conductor may run sessions on a connected remote crew (``crew=``) and
+    # this crew answers its headroom and takes bound work items.
+    "work_ledger.remote_dispatch": (False, True),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen

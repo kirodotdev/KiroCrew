@@ -14421,7 +14421,11 @@
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "Permite que un chat entregue tareas a un equipo y las siga en un tablero.",
         "explore": "Explorar",
-        "explore_desc": "Añade Explorar a la barra superior: funciones para probar, tu progreso y una tarjeta «Prueba hoy» en un chat nuevo."
+        "explore_desc": "Añade Explorar a la barra superior: funciones para probar, tu progreso y una tarjeta «Prueba hoy» en un chat nuevo.",
+        "remote_dispatch": "Despacho remoto",
+        "remote_dispatch_desc": "Ejecuta las tareas de Ultra Mode en tus otras máquinas conectadas (Settings > Remote Crew), no solo en esta. El progreso de cada tarea sigue apareciendo en el Board de este chat. Una máquina con esto desactivado no acepta tareas de otras máquinas. Si no hay otra máquina conectada o con espacio, la tarea no se ejecuta aquí; espera hasta que la pidas de nuevo.",
+        "remote_dispatch_save_failed": "No se pudo guardar el despacho remoto. Inténtalo de nuevo.",
+        "remote_dispatch_load_failed": "No se pudo leer el ajuste de despacho remoto."
       },
       "kasBundleCard": {
         "toggle_label": "Ejecutar KAS con el motor propio de {{productName}}",

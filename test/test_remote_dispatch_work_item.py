@@ -417,14 +417,28 @@ async def test_preview_off_ignores_even_an_invalid_work_item(state, preview):
 
 
 @pytest.mark.asyncio
-async def test_preview_off_answers_404_on_both_routes_even_for_a_bound_slot(state, preview):
+async def test_preview_off_answers_both_routes_as_if_they_did_not_exist(state, preview):
+    """Off, the routes answer exactly what an unregistered path does: no typed code
+    that would tell a caller the preview is installed."""
     _, created = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
     slot = created["key"]
     preview["on"] = False
-    assert (await _call(state, "GET", f"/api/chat/slots/{slot}/work-item"))[0] == 404
-    patched = await _call(state, "PATCH", f"/api/chat/slots/{slot}/work-item", {"decision": "x"})
-    assert patched[0] == 404
-    assert (await _call(state, "GET", "/api/chat/slots/chat-none/work-item"))[0] == 404
+    async with TestClient(TestServer(_app(state))) as client:
+
+        async def _raw(method: str, path: str, body: Any = None) -> tuple[int, str]:
+            resp = await client.request(method, path, json=body)
+            return resp.status, await resp.text()
+
+        absent = await _raw("GET", f"/api/chat/slots/{slot}/no-such-route")
+        assert absent[0] == 404
+        assert await _raw("GET", f"/api/chat/slots/{slot}/work-item") == absent
+        patch_absent = await _raw(
+            "PATCH", f"/api/chat/slots/{slot}/no-such-route", {"decision": "x"}
+        )
+        patched = await _raw("PATCH", f"/api/chat/slots/{slot}/work-item", {"decision": "x"})
+        assert patched == patch_absent
+        assert "work_item" not in patched[1]
+        assert await _raw("GET", "/api/chat/slots/chat-none/work-item") == absent
 
 
 @pytest.mark.asyncio

@@ -421,6 +421,11 @@ async def peer_call(
             content_type="application/json" if data is not None else "",
         ) as upstream:
             ctype = (upstream.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json" and int(upstream.status) == 404:
+                # A route the crew does not serve (an older crew, or one with the
+                # remote-dispatch preview off) answers aiohttp's plain 404. It is
+                # still a 404: callers branch on the status, and no body is read.
+                return 404, None
             if ctype != "application/json":
                 raise CrewCallError(
                     502, "proxy_content_type_refused", "that crew answered with a non-JSON reply"

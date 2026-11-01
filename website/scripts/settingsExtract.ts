@@ -226,6 +226,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // The built-in KAS engine card, which FeaturePreviewsSection mounts from
   // pages/developer: its `agent.kas_bundle` switch is a Developer-tab row.
   'KasBundleCard.tsx': DEVELOPER_PREVIEWS,
+  // The conductor remote-dispatch card FeaturePreviewsSection mounts: its
+  // `work_ledger.remote_dispatch` switch is a Developer-tab row.
+  'RemoteDispatchCard.tsx': DEVELOPER_PREVIEWS,
   // The per-app model rows ChatPanel's Model page mounts. Each row is labelled
   // with the app's own name, a dynamic label the extractor skips, so the file
   // yields no entry today; mapped so a static control added to it lands on the
