@@ -12,6 +12,7 @@ from app_bridges_helpers import app_env_fixture  # noqa: F401
 from app_bridges_helpers import _make_app_source
 
 from kiro_crew import platform_compat
+from kiro_crew.apps import app_skill_links
 from kiro_crew.apps.bridges import (
     RegistrationResult,
     _deregister_agents,
@@ -23,6 +24,7 @@ from kiro_crew.apps.bridges import (
     _safe_link_name,
     deregister_app,
     load_app_cron_defs,
+    reconcile_app_skills,
     refresh_app_agents,
     register_app,
 )
@@ -559,6 +561,278 @@ class TestSkillRegistration:
 
         assert not (app_dir_path / "my-skill").exists(), "the app symlink is gone"
         assert (app_dir_path / "real.md").is_file(), "the real file survives"
+
+
+# ---------------------------------------------------------------------------
+# App-skill provenance sidecar (.app-skill-links.json)
+# ---------------------------------------------------------------------------
+
+
+def _install_skill_app(tmp_path, app_env, *, app_name, skill_name):
+    """Install an app declaring one skill and return its installed root.
+
+    An app skill is linked into the skills root as a symlink, so unlike a
+    built-in or managed skill it has no directory of its own to carry a
+    provenance dotfile. These tests pin the sidecar that records its owner.
+    """
+    src = _make_app_source(tmp_path, name=app_name, skills=[f"skills/{skill_name}"])
+    (src / "skills" / skill_name).mkdir(parents=True, exist_ok=True)
+    (src / "skills" / skill_name / "SKILL.md").write_text(f"# {skill_name}\n")
+    install_app(src)
+    return app_env["home"] / "apps" / app_name
+
+
+def _manifest_for(app_root):
+    return AppManifest.from_json_file(app_root / APP_MANIFEST_FILENAME)
+
+
+class TestAppSkillLinksProvenance:
+    def test_discovery_skips_the_sidecar_dotfile(self):
+        """The sidecar must never read as a skill: discovery skips dot-entries."""
+        from kiro_crew.skills_discovery import _skippable_skill_dir
+
+        assert app_skill_links.LINKS_FILENAME.startswith(".")
+        assert _skippable_skill_dir(app_skill_links.LINKS_FILENAME)
+
+    def test_register_records_namespaced_and_flat_owner(self, tmp_path, app_env):
+        app_root = _install_skill_app(
+            tmp_path, app_env, app_name="owner-app", skill_name="my-skill"
+        )
+        _register_skills("owner-app", _manifest_for(app_root), app_root)
+
+        skills_root = app_env["home"] / "skills"
+        owners = app_skill_links.read_links(skills_root)
+        assert owners["owner-app/my-skill"] == "owner-app"
+        assert owners["my-skill"] == "owner-app", "the flat link is recorded too"
+
+        # The file is a valid versioned JSON object, written where a plain script
+        # (no running gateway) can read it.
+        raw = json.loads((skills_root / app_skill_links.LINKS_FILENAME).read_text())
+        assert raw["format"] == app_skill_links.LINKS_FORMAT
+        assert raw["links"]["my-skill"] == {"app": "owner-app"}
+
+    def test_deregister_drops_the_owner_entries(self, tmp_path, app_env):
+        app_root = _install_skill_app(
+            tmp_path, app_env, app_name="owner-app", skill_name="my-skill"
+        )
+        _register_skills("owner-app", _manifest_for(app_root), app_root)
+        skills_root = app_env["home"] / "skills"
+        assert app_skill_links.read_links(skills_root)  # non-empty before
+
+        _deregister_skills("owner-app")
+
+        assert app_skill_links.read_links(skills_root) == {}
+
+    def test_flat_link_owner_moves_to_the_second_app(self, tmp_path, app_env):
+        a_root = _install_skill_app(tmp_path, app_env, app_name="app-one", skill_name="shared")
+        _register_skills("app-one", _manifest_for(a_root), a_root)
+        b_root = _install_skill_app(tmp_path, app_env, app_name="app-two", skill_name="shared")
+        _register_skills("app-two", _manifest_for(b_root), b_root)
+
+        owners = app_skill_links.read_links(app_env["home"] / "skills")
+        # Both namespaced links are owned by their own app; the single flat link
+        # belongs to whichever app registered last.
+        assert owners["app-one/shared"] == "app-one"
+        assert owners["app-two/shared"] == "app-two"
+        assert owners["shared"] == "app-two"
+
+    def test_reconcile_rebuilds_from_disk_after_corruption(self, tmp_path, app_env):
+        a_root = _install_skill_app(tmp_path, app_env, app_name="app-one", skill_name="shared")
+        _register_skills("app-one", _manifest_for(a_root), a_root)
+        b_root = _install_skill_app(tmp_path, app_env, app_name="app-two", skill_name="shared")
+        _register_skills("app-two", _manifest_for(b_root), b_root)
+        skills_root = app_env["home"] / "skills"
+
+        # A crash mid-write, an upgrade, or a hand edit can leave the file
+        # unreadable; the rebuild must restore it from the links on disk.
+        (skills_root / app_skill_links.LINKS_FILENAME).write_text("{ not json")
+
+        reconcile_app_skills("app-one")
+        reconcile_app_skills("app-two")
+
+        owners = app_skill_links.read_links(skills_root)
+        assert owners == {
+            "app-one/shared": "app-one",
+            "app-two/shared": "app-two",
+            "shared": "app-two",
+        }
+
+    def test_a_missing_file_never_blocks_registration(self, tmp_path, app_env):
+        app_root = _install_skill_app(
+            tmp_path, app_env, app_name="owner-app", skill_name="my-skill"
+        )
+        skills_root = app_env["home"] / "skills"
+        # No file on disk yet; reading yields an empty map, not an error.
+        assert app_skill_links.read_links(skills_root) == {}
+
+        registered = _register_skills("owner-app", _manifest_for(app_root), app_root)
+
+        assert registered == ["owner-app/my-skill"], "registration still succeeds"
+        assert app_skill_links.read_links(skills_root)["my-skill"] == "owner-app"
+
+    def test_an_unknown_format_is_ignored(self, tmp_path, app_env):
+        skills_root = app_env["home"] / "skills"
+        skills_root.mkdir(parents=True, exist_ok=True)
+        (skills_root / app_skill_links.LINKS_FILENAME).write_text(
+            json.dumps({"format": 999, "links": {"x/y": {"app": "x"}}})
+        )
+        # A future/unknown format is treated as absent rather than parsed on a guess.
+        assert app_skill_links.read_links(skills_root) == {}
+
+    def test_a_non_utf8_file_is_treated_as_empty_not_raised(self, tmp_path, app_env):
+        """A UTF-16 / invalid-UTF-8 sidecar must not escape read_links.
+
+        The decode error is a ValueError, not an OSError; if it escaped it would
+        abort reconciliation before the rebuild that repairs the file, and every
+        restart would repeat the failure.
+        """
+        skills_root = app_env["home"] / "skills"
+        skills_root.mkdir(parents=True, exist_ok=True)
+        # Content that is valid UTF-16 but not valid UTF-8.
+        payload = '{"format": 1, "links": {}}'.encode("utf-16")
+        (skills_root / app_skill_links.LINKS_FILENAME).write_bytes(payload)
+
+        assert app_skill_links.read_links(skills_root) == {}
+
+    def test_rebuild_survives_a_non_utf8_file_and_repairs_it(self, tmp_path, app_env):
+        a_root = _install_skill_app(tmp_path, app_env, app_name="app-one", skill_name="s1")
+        _register_skills("app-one", _manifest_for(a_root), a_root)
+        skills_root = app_env["home"] / "skills"
+        (skills_root / app_skill_links.LINKS_FILENAME).write_bytes("garbage".encode("utf-16"))
+
+        # Reconcile must not raise on the undecodable file, and must rewrite it
+        # from the links on disk (namespaced plus the flat link registration made).
+        reconcile_app_skills("app-one")
+
+        assert app_skill_links.read_links(skills_root) == {
+            "app-one/s1": "app-one",
+            "s1": "app-one",
+        }
+
+    def test_rebuild_keeps_a_namespaced_skill_named_like_a_reserved_flat_name(
+        self, tmp_path, app_env
+    ):
+        """`<app>/auto` is a real namespaced link and must survive a rebuild.
+
+        Registration reserves a name like `auto` only for the FLAT link; it
+        always creates the namespaced `<app>/auto` link. The rebuild scan must
+        not apply the flat-link reservation to the namespaced link, or every
+        reconcile would silently drop a valid, app-owned entry.
+        """
+        a_root = _install_skill_app(tmp_path, app_env, app_name="auto-app", skill_name="auto")
+        _register_skills("auto-app", _manifest_for(a_root), a_root)
+        skills_root = app_env["home"] / "skills"
+
+        reconcile_app_skills("auto-app")
+
+        owners = app_skill_links.read_links(skills_root)
+        assert owners["auto-app/auto"] == "auto-app"
+
+    def test_set_owners_abandons_rather_than_erases_on_an_unreadable_base(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """A transient read error must not let a merge overwrite real entries.
+
+        `set_owners` reads the current file, merges, and writes. If the read
+        turned a transient EACCES/EIO into an empty map, the merge would publish
+        just the new entries over everything on disk. The strict update-read
+        raises instead, so the mutation is abandoned and the file is untouched.
+        """
+        skills_root = app_env["home"] / "skills"
+        skills_root.mkdir(parents=True, exist_ok=True)
+        app_skill_links.write_links(skills_root, {"existing-app/s": "existing-app"})
+        before = (skills_root / app_skill_links.LINKS_FILENAME).read_text()
+
+        real_read_text = Path.read_text
+
+        def deny_the_sidecar(self, *args, **kwargs):
+            if self.name == app_skill_links.LINKS_FILENAME:
+                raise PermissionError("transient")
+            return real_read_text(self, *args, **kwargs)
+
+        # Scope the patch to the one call; the assertions run with it reverted.
+        with monkeypatch.context() as mp:
+            mp.setattr(Path, "read_text", deny_the_sidecar)
+            app_skill_links.set_owners(skills_root, {"new-app/s2": "new-app"})
+
+        # The prior content is intact; the new entry was not written over it.
+        assert (skills_root / app_skill_links.LINKS_FILENAME).read_text() == before
+        assert app_skill_links.read_links(skills_root) == {"existing-app/s": "existing-app"}
+
+    def test_deregister_keeps_a_shared_flat_link_owned_by_another_app(self, tmp_path, app_env):
+        """Deregistering A must not erase B's ownership of a flat link B now holds.
+
+        A and B both ship `shared`. B registered last, so the flat `shared` link
+        and its owner belong to B. Deregistering A rebuilds the sidecar from the
+        links on disk rather than dropping the names A removed, so B's live flat
+        entry survives.
+        """
+        a_root = _install_skill_app(tmp_path, app_env, app_name="app-a", skill_name="shared")
+        _register_skills("app-a", _manifest_for(a_root), a_root)
+        b_root = _install_skill_app(tmp_path, app_env, app_name="app-b", skill_name="shared")
+        _register_skills("app-b", _manifest_for(b_root), b_root)
+        skills_root = app_env["home"] / "skills"
+        assert app_skill_links.read_links(skills_root)["shared"] == "app-b"
+
+        _deregister_skills("app-a")
+
+        owners = app_skill_links.read_links(skills_root)
+        assert "app-a/shared" not in owners, "A's own namespaced entry is gone"
+        assert owners.get("app-b/shared") == "app-b", "B's namespaced entry survives"
+        assert owners.get("shared") == "app-b", "the live flat link still names B"
+
+    def test_rebuild_abandons_rather_than_writes_a_partial_scan(self, tmp_path, app_env):
+        """An enumeration error during the scan must not publish a partial map.
+
+        If listing an installed app's namespace fails mid-rebuild, writing what
+        was gathered would drop that app's entries while its links are still on
+        disk. The scan raises instead, and rebuild leaves the previous file.
+        """
+        a_root = _install_skill_app(tmp_path, app_env, app_name="keep-app", skill_name="s1")
+        _register_skills("keep-app", _manifest_for(a_root), a_root)
+        skills_root = app_env["home"] / "skills"
+        before = app_skill_links.read_links(skills_root)
+        assert before["keep-app/s1"] == "keep-app"
+
+        def scan_that_fails(_root):
+            raise PermissionError("transient enumeration error")
+
+        # rebuild must SWALLOW the scan error (not raise) and leave the file
+        # untouched; a reconcile that raised here would abort the app's boot
+        # reconcile before the rest of its resources settle.
+        app_skill_links.rebuild(skills_root, scan_that_fails)  # must not raise
+
+        assert app_skill_links.read_links(skills_root) == before
+
+    def test_a_user_link_folder_is_not_recorded_as_an_app(self, tmp_path, app_env):
+        """A user's own folder of links must not be labelled app-owned.
+
+        `_scan_app_skill_owners` takes a top-level directory as an app namespace
+        only when an app of that name is installed. A user who links their own
+        skills under `skills/personal/` has no app `personal`, so the rebuild
+        must record nothing for it — else a backup script skips the user's own
+        skills, the case this feature exists to prevent.
+        """
+        a_root = _install_skill_app(tmp_path, app_env, app_name="real-app", skill_name="s1")
+        _register_skills("real-app", _manifest_for(a_root), a_root)
+        skills_root = app_env["home"] / "skills"
+
+        # A user-made folder of links to a real skill dir, named like no app.
+        target = tmp_path / "my-drafts" / "notes"
+        (target).mkdir(parents=True)
+        (target / "SKILL.md").write_text("# notes\n")
+        personal = skills_root / "personal"
+        personal.mkdir()
+        platform_compat.symlink_or_junction(str(target), str(personal / "notes"))
+
+        reconcile_app_skills("real-app")
+
+        owners = app_skill_links.read_links(skills_root)
+        # The real app's links are recorded (namespaced + flat); the user's own
+        # folder and its link are recorded for no app.
+        assert owners == {"real-app/s1": "real-app", "s1": "real-app"}, owners
+        assert "personal/notes" not in owners
+        assert "notes" not in owners
 
 
 # ---------------------------------------------------------------------------
