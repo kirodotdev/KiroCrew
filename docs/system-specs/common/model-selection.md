@@ -405,19 +405,25 @@ and `same_registered_model` refuses to fold one onto the other -- a pin never
 resolves to its neighbour with a different context window. Two ids the registry
 cannot both place are unknown, not different, and fold on spelling alone.
 
-`resolve_wire_model_id` has one fallback past the spelling fold. An adapter can
-advertise a bare family alias (`fable`, `opus`) where a session stored the dotted
+`resolve_wire_model_id` has two fallbacks past the spelling fold. First, an
+adapter can advertise a bare family alias (`fable`, `opus`) where a session stored the dotted
 provider id, and those share no normalized key. When the key compare misses, an
 advertised id that is a VERSION-LESS alias of the stored id's own registry entry
 is accepted. Versioned aliases never qualify: an entry also lists substitution
 aliases (`claude-haiku-4.5` under Sonnet), and an adapter advertising one is
-serving that other model.
+serving that other model. Second, on `claude_code` a bare `opus` or `sonnet` that
+matched nothing takes the newest advertised id of its family, as `to_provider_id`
+does below.
 
 On the `claude_code` provider, `to_provider_id` sends a bare family alias (`opus`,
 `sonnet`, `haiku`, `fable`; `CLAUDE_CODE_PASSTHROUGH_ALIASES`) unchanged only when
 the claude backend advertised that alias, so the adapter resolves its own current
-model rather than the registry's versioned id. With a cold cache, or a backend that
-advertises only versioned ids, the registry fold applies.
+model rather than the registry's versioned id. A bare `opus` or `sonnet` the backend
+does not advertise takes the newest advertised id of its family, compared by
+`claude-<family>-<major>[-<minor>]` (a trailing date is not a minor; a 1M spelling
+wins a tie), so a versioned-only list is never sent a model it does not serve. With
+a cold cache, or a list with no id of the family, the registry fold applies. A cold
+start carries the raw alias to the wire, where `resolve_wire_model_id` resolves it.
 
 Three more sites apply the same rule on the wire, and one on the picker:
 `AcpClient._apply_startup_model`, the shared-runtime cold start in

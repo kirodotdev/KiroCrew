@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical model registry. Source of truth for Python (model_registry.py) and frontend (modelRegistry.ts). Canonical keys are versioned+capability. providers maps canonical -> per-provider id: 'claude_code' is the claude-agent-acp id (global.anthropic.*[1m]), 'acp' is the kiro-cli id (bare dotted, e.g. 'claude-opus-4.8', as advertised by 'kiro-cli chat --list-models'). window = context tokens. Aliases include each provider id's bare (prefix-stripped) form, e.g. 'claude-opus-4-8[1m]', because claude-agent-acp advertises bare ids without the 'global.anthropic.' prefix; listing them lets from_provider_id fold the advertised rows onto the canonical key so the dropdown does not show duplicates. A bare alias such as 'opus' may repeat on a newer row; the alias index keeps the first row that lists it, so a newer row goes after the row that owns its bare alias.",
+  "_comment": "Canonical model registry. Source of truth for Python (model_registry.py) and frontend (modelRegistry.ts). Canonical keys are versioned+capability. providers maps canonical -> per-provider id: 'claude_code' is the claude-agent-acp id (global.anthropic.*[1m]), 'acp' is the kiro-cli id (bare dotted, e.g. 'claude-opus-4.8', as advertised by 'kiro-cli chat --list-models'). window = context tokens. Aliases include each provider id's bare (prefix-stripped) form, e.g. 'claude-opus-4-8[1m]', because claude-agent-acp advertises bare ids without the 'global.anthropic.' prefix; listing them lets from_provider_id fold the advertised rows onto the canonical key so the dropdown does not show duplicates. A bare family alias such as 'opus' belongs to one claude_code row only: the newest model, as Claude Code resolves it; the alias index keeps the first row that lists it.",
   "fable-5-1m": {
     "display": "Fable 5 (1M context)",
     "description": "Most intelligent, demanding reasoning and agentic work",
@@ -26,7 +26,7 @@
     "default": true,
     "supports_effort": true,
     "_comment_aliases": "claude-opus-4.6/-4.6-1m stay listed here as claude_code aliases ONLY so claude-agent-acp (which lacks a distinct Opus 4.6) folds them onto Opus 4.8. On the 'acp' (kiro) path Opus 4.6 is a DISTINCT real model with its own canonical entry (opus-4.6-1m) above.",
-    "aliases": ["opus", "claude-opus-4.8", "claude-opus-4-8[1m]", "claude-opus-4.6", "claude-opus-4.6-1m"],
+    "aliases": ["claude-opus-4.8", "claude-opus-4-8[1m]", "claude-opus-4.6", "claude-opus-4.6-1m"],
     "providers": { "claude_code": "global.anthropic.claude-opus-4-8[1m]", "acp": "claude-opus-4.8" }
   },
   "opus-4.8": {
@@ -79,7 +79,6 @@
     "supports_effort": true,
     "_comment_aliases": "claude-sonnet-4.5/-4/haiku-4.5 stay listed as claude_code aliases ONLY so claude-agent-acp (which lacks those distinct models) still folds them onto Sonnet 4.6 for dropdown dedup + graceful downgrade. On the 'acp' (kiro) path they are DISTINCT real models with their own canonical entries above (haiku-4.5/sonnet-4.5/sonnet-4, 200K) — declared first so the per-provider acp index maps each kiro id to itself, not to this 1M canonical. See from_provider_id / _registry_window (provider-aware).",
     "aliases": [
-      "sonnet",
       "claude-sonnet-4.6",
       "claude-sonnet-4.6-1m",
       "claude-sonnet-4-6[1m]",

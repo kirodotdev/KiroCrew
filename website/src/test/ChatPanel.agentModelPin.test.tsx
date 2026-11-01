@@ -258,13 +258,13 @@ describe('ChatPanel — default agent model pin notice', () => {
   })
 
   it('is hidden when the resolved model is the global default under another spelling', async () => {
-    // `claude-opus-4.8`, `opus` and the provider id `claude-opus-4-8[1m]` are
+    // `claude-opus-4.8` and the provider spellings `claude-opus-4-8[1m]` are
     // one registry entry; a raw string compare would notice here.
     kirocrewConfigMock.mockImplementationOnce(() =>
       Promise.resolve({ agent: { model: 'claude-opus-4.8', reasoning_effort: '' } }) as never
     )
-    seedAgent('opus')
-    seedResolved('claude-opus-4-8[1m]')
+    seedAgent('claude-opus-4-8[1m]')
+    seedResolved('claude-opus-4.8')
     wrap()
     await settled()
     expect(screen.queryByTestId('agent-model-pin-notice')).toBeNull()
