@@ -462,7 +462,6 @@
   "src/test/useOptimisticConfigPaths.test.tsx",
   "src/test/usePanelTabs.terminalHydrate.test.ts",
   "src/test/useQueuedMessageActions.test.tsx",
-  "src/test/useRefreshScheduler.test.tsx",
   "src/test/useSessionActions.test.tsx",
   "src/test/useSessionControls.query.test.tsx",
   "src/test/useTheme.authReplay.test.tsx",
