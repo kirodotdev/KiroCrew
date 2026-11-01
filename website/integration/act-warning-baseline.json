@@ -274,7 +274,6 @@
   "src/test/IssueRadarConnectHosts.test.tsx",
   "src/test/IssueRadarIssueDetailCoverage.test.tsx",
   "src/test/IssueRadarPrActions.test.tsx",
-  "src/test/IssueRadarPrDetailCoverage.test.tsx",
   "src/test/IssueRadarSessionTitle.test.ts",
   "src/test/JobForm.minimalContext.test.tsx",
   "src/test/JobForm.scriptCommand.test.tsx",
