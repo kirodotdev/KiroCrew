@@ -121,7 +121,9 @@ def omc(tmp_path, monkeypatch):
 
     config: dict[str, Any] = {}
     monkeypatch.setattr(ls, "read_config", lambda: dict(config))
-    monkeypatch.setattr(providers, "set_top_level", lambda key, value: config.__setitem__(key, value))
+    monkeypatch.setattr(
+        providers, "set_top_level", lambda key, value: config.__setitem__(key, value)
+    )
 
     # The audit sink is an assertion target here, never a real write.
     audit = MagicMock()
@@ -1061,9 +1063,7 @@ async def test_pull_merges_and_reports_success(omc):
 @pytest.mark.asyncio
 async def test_pull_treats_an_empty_remote_as_the_normal_first_use(omc):
     omc.enable()
-    omc.git.aligned().when(
-        "fetch", rc=128, err="fatal: couldn't find remote ref main\n"
-    )
+    omc.git.aligned().when("fetch", rc=128, err="fatal: couldn't find remote ref main\n")
     ok, detail = await ls.pull()
     assert ok is True
     assert detail == "remote has no ledger branch yet (first sync will create it)"
