@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         _TurnExit,
     )
     from kiro_crew.dashboard.chat_turn.turn_stats import _FirstVisibleClock
+    from kiro_crew.dashboard.deny_override import DenyOverrideOffer
     from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
     from kiro_crew.dashboard.responsive_chat import ResponsiveTurn
     from kiro_crew.execution_context import ExecutionContext
@@ -126,6 +127,7 @@ class _ChatTurn:
     _declined_grant_notices: "dict[str, str]"
     _deferred_cut_text: "str"
     _deferred_options_expiry: "bool"
+    _deny_override: "DenyOverrideOffer | None"
     _dir_consumed_out: "dict[str, str]"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"
@@ -197,6 +199,7 @@ class _ChatTurn:
     _saw_terminal_event: "bool"
     _saw_text_chunk: "bool"
     _seen_tool_identity: "dict[str, tuple[str, str]]"
+    _session_deny_waivers: "frozenset[str]"
     #: Built on the turn's first tool call (the provider is known by then).
     _undelivered_watch: "Any"
     _session_stop_gen_at_entry: "int"

@@ -8,6 +8,7 @@ import json
 from typing import TYPE_CHECKING, Literal
 
 from kiro_crew.dashboard.chat_utils import _tool_identity_fields, slack_mirror_is_paused
+from kiro_crew.dashboard.deny_override import override_decision
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_TIMEOUT,
@@ -57,7 +58,15 @@ if TYPE_CHECKING:
         _reject_invalid_tool,
         _steer_policy_notice,
     )
-    from kiro_crew.dashboard.chat_turn.tool_approval import _pre_tool_hooks_should_block
+    from kiro_crew.dashboard.chat_turn.tool_approval import (
+        _deny_override_card_meta,
+        _deny_waiver_kwargs,
+        _note_override_used,
+        _override_waivers,
+        _pre_tool_hooks_should_block,
+        _refuse_overridden_call,
+        _rejudge_overridden_call,
+    )
     from kiro_crew.dashboard.chat_turn.tool_rows import _tool_meta
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _wt_note_approved
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
@@ -265,6 +274,11 @@ async def _on_permission_prompt(
     if _command_grantable and _base and _safe_base == _base:
         perm_meta["base_command"] = _safe_base
         perm_meta["trust_base_grantable"] = "1"
+    # A deny-rules refusal the person may override (tool_approval): the card
+    # names the rule and offers no standing grant.
+    _deny_override = getattr(turn, "_deny_override", None)
+    if _deny_override is not None:
+        _deny_override_card_meta(perm_meta, _deny_override)
     # A decline known before the row exists is born into the row. Spec:
     # docs/system-specs/modules/app-notifications.md, "Sound events" (permission row).
     if tool_approval_timeout_secs() <= 0:
@@ -313,6 +327,8 @@ async def _on_permission_prompt(
         # recorded and the future popped exactly as the
         # interactive path does it.
         "resolved" not in perm_meta
+        # An override is answered on the dashboard alone.
+        and _deny_override is None
         and slot._slack_linked
         and slot._slack_channel
         and slot._slack_thread_ts
@@ -549,6 +565,10 @@ async def _on_permission_prompt(
         _host_cancelled = True
         raise
     finally:
+        if _deny_override is not None:
+            # Only the owner's own override click approves this card; every
+            # other answer, a trust sweep's "approved" included, refuses.
+            outcome, _deny_override.scope = override_decision(outcome)
         if _approval_card is not None:
             try:
                 slot.append("error", _approval_card, "msg msg-err")
@@ -670,11 +690,31 @@ async def _on_permission_prompt(
                     "Failed to clean up linked Slack approval message",
                     exc_info=True,
                 )
+    if _deny_override is not None and outcome != "approved":
+        # Declined, timed out, or answered by anything but an override click: the
+        # call is refused as the policy refusal it was, never as a person's
+        # "User denied", and it starts no batch cascade, as before the card.
+        await _refuse_overridden_call(
+            turn, event, _deny_override.reason, why="deny_override_declined"
+        )
+        return _Flow.CONTINUE
     if outcome == "approved_trust_reads":
         slot._trust_reads = True
         # A person chose this slot's mode: its creator's changes stop reaching it.
         slot._posture_inherited = False
         outcome = "approved"
+    if outcome == "approved" and _deny_override is not None:
+        # The click lets the named rule step aside, not the whole gate: judge the
+        # call again with its key waived, so any other rule still refuses. A
+        # session override is kept on the slot first, as the person chose.
+        if _deny_override.scope == "session":
+            slot._deny_waivers.add(_deny_override.key)
+        _still_denied = await _rejudge_overridden_call(turn, event, _deny_override)
+        if _still_denied is not None:
+            await _refuse_overridden_call(
+                turn, event, _still_denied, why="deny_override_still_denied"
+            )
+            return _Flow.CONTINUE
     if outcome == "approved":
         try:
             validated_tool = _validate_tool_name(
@@ -758,7 +798,15 @@ async def _on_permission_prompt(
             # in _on_permission_request tests it.
             if event.is_shell and cmd:
                 await asyncio.to_thread(pin_human_approval, cmd)
-            approval_sent = await client.approve_tool(event.request_id)
+            # The transport floor judges the call again, so it gets the keys the
+            # gate was judged with: an override's, or the session's overrides
+            # (none for almost every call, which then goes exactly as before).
+            _floor_waivers = (
+                {"deny_waivers": _override_waivers(slot, _deny_override)}
+                if _deny_override is not None
+                else _deny_waiver_kwargs(turn)
+            )
+            approval_sent = await client.approve_tool(event.request_id, **_floor_waivers)
             if approval_sent is False:
                 sel().log_tool_invocation(
                     session_key=session_key,
@@ -771,6 +819,10 @@ async def _on_permission_prompt(
                 )
                 return _Flow.CONTINUE
             _wt_note_approved(turn, event)
+            if _deny_override is not None:
+                # Written only once the transport took the approval: the line says
+                # a call ran with a security rule stepped aside.
+                _note_override_used(slot, _deny_override)
             _approved_title = _redact_display_text(event.title)
             slot.append("tool", f"✅ {_approved_title}", "msg msg-tool", meta=_tool_meta(event))
             sel().log_tool_invocation(
@@ -781,7 +833,15 @@ async def _on_permission_prompt(
                 tool_kind=event.tool_kind,
                 outcome="approved",
                 request_id=event.request_id,
-                metadata={"reason": "interactive"},
+                metadata=(
+                    {"reason": "interactive"}
+                    if _deny_override is None
+                    else {
+                        "reason": "deny_override",
+                        "scope": _deny_override.scope,
+                        "rule": _redact_display_text(_deny_override.key),
+                    }
+                ),
             )
     else:
         # Explain WHY when the command tripped the read-only safety

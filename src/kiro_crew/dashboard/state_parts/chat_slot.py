@@ -120,6 +120,7 @@ class _ChatSlot:
         "_member_approval_seeded",
         "_trusted_patterns",
         "_trusted_pattern_deadlines",
+        "_deny_waivers",
         "_titled",
         "_title_origin",
         "_title_epoch",
@@ -495,6 +496,7 @@ class _ChatSlot:
     _member_approval_seeded: bool
     _trusted_patterns: set[str]
     _trusted_pattern_deadlines: dict[str, GrantDeadline]
+    _deny_waivers: set[str]
     _hook_continuation_depth: int
     _on_message: object | None
     _on_row: object | None

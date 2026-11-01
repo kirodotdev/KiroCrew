@@ -265,6 +265,7 @@ async def approve_tool(
     always: bool = False,
     deadline: GrantDeadline | None = None,
     withdraw_if: Callable[[], bool] | None = None,
+    deny_waivers: frozenset[str] = frozenset(),
 ) -> bool:
     """Approve a pending session/request_permission.
 
@@ -290,6 +291,10 @@ async def approve_tool(
     written, the request's records are put back, and
     :class:`~kiro_crew.permission_floor.ApprovalWithdrawn` is raised. Under
     the lock it is read before ``deadline``.
+
+    ``deny_waivers`` reach the floor's gate unchanged: the deny-rule keys a
+    person overrode on the dashboard card for this call
+    (:func:`~kiro_crew.permission_floor.refusal_for`).
     """
     # An instance allocated without ``__init__`` may keep no event map until
     # the builder creates it; read it as empty, so it is judged like any
@@ -306,7 +311,14 @@ async def approve_tool(
     if gate_event is None:
         reason: str | None = permission_floor.REASON_NO_EVENT
     else:
-        reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
+        # The keyword travels only when a person overrode a rule, so every other
+        # approval asks the floor exactly as before.
+        if deny_waivers:
+            reason = await asyncio.to_thread(
+                permission_floor.refusal_for, gate_event, deny_waivers=deny_waivers
+            )
+        else:
+            reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
     if reason is not None:
         # A refusal drops any mediated-secret grant an earlier approval minted for
         # this call id, now: ``reject_tool`` below pops the gate event again, finds

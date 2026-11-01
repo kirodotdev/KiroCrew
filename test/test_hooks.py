@@ -557,8 +557,18 @@ class TestHookGateKwargs:
     # asking, on whose behalf, in which mode) rather than the tool call. Every
     # other keyword parameter is derived from the event, and the completeness
     # test below demands the helper emit exactly those.
+    # ``deny_waivers`` is the surface's too: the deny-rule keys a person overrode on
+    # the dashboard card for this call or session, never read off the event.
     SURFACE_KWARGS = frozenset(
-        {"session_key", "agent", "app", "resolved_agent", "classifier_only", "trust_reads"}
+        {
+            "session_key",
+            "agent",
+            "app",
+            "resolved_agent",
+            "classifier_only",
+            "trust_reads",
+            "deny_waivers",
+        }
     )
 
     # The gate's event-derived parameters and the event attribute each reads.
@@ -836,6 +846,7 @@ class TestHookGateKwargs:
             "app": "p",
             "classifier_only": True,
             "trust_reads": True,
+            "deny_waivers": frozenset({"<key>"}),
         }
         HookManager().on_tool_call(
             probe.title, resolved_agent="kirocrew", **surface, **hook_gate_kwargs(probe)

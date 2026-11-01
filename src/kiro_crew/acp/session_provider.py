@@ -951,16 +951,20 @@ class AcpSessionProvider(LLMProvider):
         always: bool = False,
         deadline: GrantDeadline | None = None,
         withdraw_if: Callable[[], bool] | None = None,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> bool:
         """Approve a pending tool permission request. Accepts an explicit
         option_id (signature parity with AcpClient.approve_tool); falls back to
         allow_always/allow_once from `always`. A ``deadline`` is passed on to
         the handle, which raises ``GrantEnded`` rather than send once it passes.
-        *withdraw_if* is the handle's (see AcpSessionHandle.approve_tool)."""
+        *withdraw_if* and *deny_waivers* are the handle's (see
+        AcpSessionHandle.approve_tool)."""
         resolved = option_id or ("allow_always" if always else "allow_once")
         withdrawal: dict[str, Any] = {}
         if withdraw_if is not None:
             withdrawal["withdraw_if"] = withdraw_if
+        if deny_waivers:
+            withdrawal["deny_waivers"] = deny_waivers
         if deadline is None:
             return await self._guarded(
                 self._handle.approve_tool(request_id, option_id=resolved, **withdrawal)

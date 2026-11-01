@@ -10371,6 +10371,14 @@
       "reason": "我不能运行这条命令，但你可以。",
       "run_unanswered": "终端没有响应，请把它复制到你电脑上的终端应用里。",
       "title": "请你自己运行"
+    },
+    "denyOverride": {
+      "blocked": "一条安全规则阻止了这条命令。",
+      "rule_label": "规则：{{rule}}",
+      "warning": "允许后，这条命令仍会运行，只跳过这一条规则。请先看清命令。",
+      "override": "仍然允许",
+      "allow_once": "允许一次 — 仅这条命令",
+      "allow_session": "在此聊天中允许 — 这条规则，直到你关闭聊天或 {{productName}} 重启"
     }
   },
   "hooks": {

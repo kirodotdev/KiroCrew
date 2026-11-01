@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.deny_override import DENY_OVERRIDE_ACTIONS, is_deny_override_card
+
 if TYPE_CHECKING:
     import time
 
@@ -717,9 +719,10 @@ def _sweep_pending_approvals(
     """Approve *slot*'s pending tool prompts after a ``trust`` / ``yolo`` grant."""
     _elicitations = _pending_elicitation_ids(slot)
     for aid, fut in list(slot._approval_futures.items()):
-        if aid in _elicitations:
-            # A server's own question to the person: a trust tier is
-            # not an answer to it, and the card stays open.
+        if aid in _elicitations or _is_deny_override_card(slot, aid):
+            # A server's own question to the person, or a security-rule
+            # override: a trust tier is not an answer to either, and the card
+            # stays open.
             continue
         if not fut.done():
             fut.set_result("approved")
@@ -880,6 +883,85 @@ def _deny_trust_pattern(name: str, request_id: str, action: str, code: str) -> w
     return web.json_response({"error": errors[code], "code": code}, status=400)
 
 
+def _is_deny_override_card(owner: Any, request_id: str) -> bool:
+    """Whether *owner*'s pending card for *request_id* is a deny-rule override card."""
+    return is_deny_override_card(owner.messages, request_id)
+
+
+def _deny_override_answer_refusal(
+    request: web.Request,
+    owner: Any,
+    request_id: Any,
+    fut: Any,
+    action: Any,
+    *,
+    from_app: bool,
+    delegated: bool,
+    strict_native: bool,
+) -> web.Response | None:
+    """Refuse an answer a deny-rule override card may not take, else ``None``.
+
+    An override card is answered by :data:`DENY_OVERRIDE_ACTIONS` or a rejection,
+    and its allow decisions come only from the owner's own dashboard session: not
+    an app's session grant, not a Crew Mode conductor's card, not an invited
+    person and not a loopback caller. The two decisions answer no other card.
+
+    An allow decision must also name the card instance it was clicked on
+    (``origin: "native"`` with the row's ``request_mid``, checked against the
+    slot's live instance before this runs): request ids recur when a session's
+    connection is replaced, and a stale card must not approve the command a
+    newer card under the same id shows.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    live = isinstance(request_id, str) and bool(request_id) and fut is not None and not fut.done()
+    override_card = live and _is_deny_override_card(owner, request_id)
+    wants_override = isinstance(action, str) and action in DENY_OVERRIDE_ACTIONS
+    if not (override_card or wants_override):
+        return None
+    code = ""
+    if wants_override and not override_card:
+        code = "deny_override_not_offered"
+    elif override_card and not wants_override and action not in ("rejected", "rejected_once"):
+        code = "deny_override_card_answer"
+    elif wants_override and (
+        from_app
+        or delegated
+        or request.get("internal_auth") is True
+        or not is_owner_dashboard_request(request)
+    ):
+        code = "deny_override_owner_only"
+    elif wants_override and not strict_native:
+        code = "deny_override_instance_required"
+    if not code:
+        return None
+    try:
+        sel().log_api_access(
+            caller=f"dashboard:{owner.key}",
+            operation=f"tool_approval:{action}",
+            outcome="denied",
+            resources=str(request_id or ""),
+            error=code,
+        )
+    except Exception:
+        logger.warning("SEL audit failed for refused deny override %s", request_id, exc_info=True)
+    errors = {
+        "deny_override_not_offered": "this approval does not offer a deny-rule override",
+        "deny_override_card_answer": (
+            "a security-rule override card is answered with allow once, "
+            "allow for this session, or reject"
+        ),
+        "deny_override_owner_only": "only the dashboard owner can override a security rule",
+        "deny_override_instance_required": (
+            "a security-rule override must name the card it answers (origin and request_mid)"
+        ),
+    }
+    return web.json_response(
+        {"error": errors[code], "code": code},
+        status=403 if code == "deny_override_owner_only" else 400,
+    )
+
+
 def _elicitation_not_an_approval() -> web.Response:
     """Not a tool approval: the question is the MCP server's and only the
     dashboard owner answers it, through the elicitation route."""
@@ -960,7 +1042,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             or not request_id
             or not isinstance(request_mid, str)
             or not request_mid
-            or action not in ("approved", "rejected", "rejected_once")
+            # A security-rule override's two decisions are instance-bound by
+            # design (``_deny_override_answer_refusal`` requires it).
+            or (
+                action not in ("approved", "rejected", "rejected_once")
+                and not (isinstance(action, str) and action in DENY_OVERRIDE_ACTIONS)
+            )
         ):
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
@@ -1068,6 +1155,22 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         state_fut = state._approval_futures.get(request_id) if request_id else None
         if state_fut and not state_fut.done():
             return _deny_trust_pattern(name, request_id, original_action, "approval_not_slot_owned")
+    # A deny-rule override card (``kiro_crew.dashboard.deny_override``) takes only
+    # its own two allow decisions, from the owner's dashboard alone, or a
+    # rejection; and those two decisions answer no other card. Checked before any
+    # side effect, so a refused answer changes nothing.
+    _override_refusal = _deny_override_answer_refusal(
+        request,
+        owner,
+        request_id,
+        fut,
+        original_action,
+        from_app=bool(request_app),
+        delegated=bool(delegated),
+        strict_native=strict_native,
+    )
+    if _override_refusal is not None:
+        return _override_refusal
     # Trust: auto-approve remaining tools for this slot. The approval policy MUST
     # be keyed by the OWNER's EFFECTIVE session key — a linked cron/workflow or
     # channel-surfaced slot runs under ``linked_session_key``, not
@@ -1198,9 +1301,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             state.push_slots_update()
         action = "approved"
     resolved = (
-        action if action in ("approved", "approved_trust_reads", "rejected_once") else "rejected"
+        action
+        if action in ("approved", "approved_trust_reads", "rejected_once")
+        or (isinstance(action, str) and action in DENY_OVERRIDE_ACTIONS)
+        else "rejected"
     )
-    approved = resolved in ("approved", "approved_trust_reads")
+    approved = resolved in ("approved", "approved_trust_reads") or resolved in DENY_OVERRIDE_ACTIONS
     if not fut or fut.done():
         # Distinguish ambiguous (multiple pending) from truly empty
         if not request_id and slot._approval_futures:
@@ -1263,7 +1369,11 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 else owner.messages
             ),
             request_id,
-            original_action if original_action in ("trust", "trust_reads") else resolved,
+            (
+                original_action
+                if original_action in ("trust", "trust_reads")
+                else "approved" if resolved in DENY_OVERRIDE_ACTIONS else resolved
+            ),
         ):
             owner._dirty = True
     # Broadcast first to ensure frontend is unblocked

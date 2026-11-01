@@ -89,6 +89,7 @@ def refusal_for(
     agent: str = "",
     app: str = "",
     security_only: bool = True,
+    deny_waivers: frozenset[str] = frozenset(),
 ) -> str | None:
     """The gate's refusal reason for approving ``event``, or ``None`` to allow.
 
@@ -109,6 +110,11 @@ def refusal_for(
     callers run it off the event loop. Fails CLOSED: a gate that cannot be built
     or consulted refuses the approval rather than letting an unjudged call
     through.
+
+    ``deny_waivers`` are the deny-rule refusal keys a person overrode on the
+    dashboard approval card for this call; the gate applies them exactly as the
+    dashboard's own judgement did (``HookManager.judge``). Only that card's
+    approval passes any.
     """
     try:
         manager = hooks_mod.HookManager(
@@ -121,6 +127,7 @@ def refusal_for(
                 session_key=session_key,
                 agent=agent,
                 app=app,
+                deny_waivers=deny_waivers,
                 **hook_gate_kwargs(event),
             )
     except Exception:

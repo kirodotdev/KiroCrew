@@ -210,6 +210,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _apply_inherited_postures,
     _approval_target_required,
     _deny_approval_mode,
+    _deny_override_answer_refusal,
     _deny_trust_pattern,
     _elicitation_not_an_approval,
     _end_trust_scope,
@@ -217,6 +218,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _get_pattern_from_pending,
     _grant_deadline,
     _internal_session_approval_refusal,
+    _is_deny_override_card,
     _pending_elicitation_ids,
     _still_owning,
     _sweep_pending_approvals,
@@ -451,6 +453,10 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 )
 from kiro_crew.dashboard.default_session_folder import (  # noqa: F401
     resolve_default_session_folder,
+)
+from kiro_crew.dashboard.deny_override import (  # noqa: F401
+    DENY_OVERRIDE_ACTIONS,
+    is_deny_override_card,
 )
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _SLOT_SCOPED_TRUST_MODES,

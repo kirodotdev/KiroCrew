@@ -11,6 +11,13 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
 from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool, open_construct_at_end
+from kiro_crew.dashboard.deny_override import (
+    DENY_OVERRIDE_META_KEY,
+    DenyOverrideOffer,
+    client_accepts_deny_waivers,
+    override_offer_key,
+    slot_deny_waivers,
+)
 from kiro_crew.dashboard.state import DENY_CAUSE_POLICY
 from kiro_crew.deny_guidance import (
     DENY_CLASS_AWS_CREDENTIAL,
@@ -30,6 +37,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.name_grant import log_decline, shell_command_for_event, should_log_decline
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.security.deny_waiver import deny_key_description
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.tool_gate_busy import hook_gate_busy
 from kiro_crew.trust_patterns import GrantEnded, approval_command
@@ -443,6 +451,13 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
+    # Set only by a deny-rules refusal this request may override (below), and read
+    # by _on_permission_prompt's card; every request starts with none.
+    turn._deny_override = None
+    # The rules a person overrode for this session on the deny card, if any apply
+    # to this request (``deny_override``): the gate and every transport approval
+    # of the request below carry the same keys.
+    turn._session_deny_waivers = _session_deny_waivers(slot, event, client)
     # Drain the key as soon as its permission decision begins. The
     # stream handles one decision at a time, so one bounded key is
     # enough for every approval arm below and in _on_permission_prompt;
@@ -557,6 +572,9 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             # nothing else, and the auto-approve it yields walks the
             # same hook branch below -- PreToolUse hooks and all.
             trust_reads=bool(slot._trust_reads),
+            # The rules a person overrode for this session on the deny card,
+            # passed only when there are any (``deny_override``).
+            **_deny_waiver_kwargs(turn),
         )
         if tool_result.action == TOOL_DENY:
             # Surface WHY: carry the deny reason into the pill so
@@ -567,6 +585,23 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             _deny_title = _redact_display_text(event.title)
             _deny_msg, _ = redact_exfiltration_urls(_deny_reason)
             _deny_msg, _ = redact_credentials(_deny_msg)
+            # A deny-rules refusal in a session a person drives from the dashboard
+            # goes to the approval card instead, every approval mode included:
+            # returning here skips every auto-approve rung below, so trust and
+            # YOLO never answer it. The card's own answer decides
+            # (_on_permission_prompt); an ineligible refusal is unchanged.
+            _override_key = (
+                override_offer_key(tool_result, slot, event)
+                if client_accepts_deny_waivers(client)
+                else None
+            )
+            if _override_key is not None:
+                turn._deny_override = DenyOverrideOffer(
+                    key=_override_key,
+                    reason=_deny_msg,
+                    detail=deny_key_description(_override_key),
+                )
+                return None
             # Audit FIRST, before any wire I/O for this decision
             # (see _reject_hook_blocked): a stalled ACP reader
             # cancels this coroutine at the turn deadline, and an
@@ -750,7 +785,9 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                         refusal_notices=_refusal_notices,
                     )
                     return _Flow.CONTINUE
-                approval_sent = await client.approve_tool(event.request_id)
+                approval_sent = await client.approve_tool(
+                    event.request_id, **_deny_waiver_kwargs(turn)
+                )
                 if approval_sent is False:
                     sel().log_tool_invocation(
                         session_key=session_key,
@@ -868,7 +905,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             _safe_native_crew_debug_title(event.title),
             event.request_id,
         )
-        approval_sent = await client.approve_tool(event.request_id)
+        approval_sent = await client.approve_tool(event.request_id, **_deny_waiver_kwargs(turn))
         if approval_sent is False:
             sel().log_tool_invocation(
                 session_key=session_key,
@@ -1051,7 +1088,9 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 )
                 return _Flow.CONTINUE
             if _tp_deadline is None:
-                approval_sent = await client.approve_tool(event.request_id)
+                approval_sent = await client.approve_tool(
+                    event.request_id, **_deny_waiver_kwargs(turn)
+                )
             else:
                 # A timed grant backs this approval: the transport
                 # checks its deadline again after the floor and, if it
@@ -1059,7 +1098,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 # falls through to the normal prompt in _on_permission_prompt.
                 try:
                     approval_sent = await client.approve_tool(
-                        event.request_id, deadline=_tp_deadline
+                        event.request_id, deadline=_tp_deadline, **_deny_waiver_kwargs(turn)
                     )
                 except GrantEnded:
                     approval_sent = None
@@ -1153,7 +1192,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                     state=state,
                 )
                 return _Flow.CONTINUE
-            approval_sent = await client.approve_tool(event.request_id)
+            approval_sent = await client.approve_tool(event.request_id, **_deny_waiver_kwargs(turn))
             if approval_sent is False:
                 sel().log_tool_invocation(
                     session_key=session_key,
@@ -1252,7 +1291,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 return _Flow.CONTINUE
         # always=False — Kiro Crew owns trust scope; per-call request_permission
         # is required for PreToolUse hooks to run on every tool invocation.
-        approval_sent = await client.approve_tool(event.request_id)
+        approval_sent = await client.approve_tool(event.request_id, **_deny_waiver_kwargs(turn))
         if approval_sent is False:
             sel().log_tool_invocation(
                 session_key=session_key,
@@ -1283,3 +1322,141 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         )
         return _Flow.CONTINUE
     return None
+
+
+# ── Deny-rule override card (kiro_crew.dashboard.deny_override) ──
+#
+# The turn's side of the card: its fields, the second judgement an allow gets, and
+# the refusal when the card is declined or that judgement still denies. Here, beside
+# the gate consultation and the policy refusal they mirror, so each guarded construct
+# keeps its one home (test_chat_runner_composition_contract.py).
+
+#: Card fields an override card never carries: each offers a standing grant, and
+#: no grant but the override itself may come from this card.
+_OVERRIDE_WITHHELD_FIELDS = (
+    "trust_grantable",
+    "trust_command_grantable",
+    "trust_command_key",
+    "trust_base_grantable",
+    "base_command",
+    "is_read_only",
+)
+
+
+def _session_deny_waivers(slot: Any, event: Any, client: Any) -> frozenset[str]:
+    """The session overrides that apply to *event*: none unless *client* can carry them.
+
+    Set on the turn once per request (``turn._session_deny_waivers``), so the gate
+    and every transport approval of that request read the same keys.
+    """
+    if not client_accepts_deny_waivers(client):
+        return frozenset()
+    return slot_deny_waivers(slot, event)
+
+
+def _deny_waiver_kwargs(turn: Any) -> dict[str, frozenset[str]]:
+    """``{"deny_waivers": ...}`` for the gate or the transport floor, else ``{}``.
+
+    The request's session overrides (``turn._session_deny_waivers``). Empty when
+    there are none, so every other call reaches the gate and the floor exactly as
+    before. A session override has to reach the floor too: it judges the call
+    again on approval, and without the keys it would refuse what the gate let by.
+    """
+    waivers = getattr(turn, "_session_deny_waivers", None) or frozenset()
+    return {"deny_waivers": waivers} if waivers else {}
+
+
+def _deny_override_card_meta(perm_meta: dict[str, str], offer: DenyOverrideOffer) -> None:
+    """Turn *perm_meta* into an override card's: the rule named, no grant offered."""
+    for field in _OVERRIDE_WITHHELD_FIELDS:
+        perm_meta.pop(field, None)
+    shown, _ = redact_exfiltration_urls(offer.key)
+    shown, _ = redact_credentials(shown)
+    # Non-empty on every card: the approve route reads the field as the marker.
+    perm_meta[DENY_OVERRIDE_META_KEY] = shown or "?"
+    perm_meta["deny_override_reason"] = offer.reason
+    if offer.detail:
+        detail, _ = redact_exfiltration_urls(offer.detail)
+        detail, _ = redact_credentials(detail)
+        perm_meta["deny_override_detail"] = detail
+
+
+def _override_waivers(slot: Any, offer: DenyOverrideOffer) -> frozenset[str]:
+    """The keys an allowed override call is judged with: the slot's and the card's."""
+    return frozenset(getattr(slot, "_deny_waivers", None) or ()) | {offer.key}
+
+
+async def _rejudge_overridden_call(
+    turn: _ChatTurn, event: Any, offer: DenyOverrideOffer
+) -> str | None:
+    """Judge *event* again with the override's keys; the refusal if it still denies.
+
+    The same gate call the request first met, so every other tier and every
+    other rule still applies, and each waiver it uses writes its audit event or
+    refuses.
+    """
+    slot = turn.slot
+    builder = turn.state.context_builder
+    if builder is None:
+        # No gate to judge it again: the first refusal stands.
+        return offer.reason
+    result = await run_in_tool_gate_pool(
+        builder.hooks.on_tool_call,
+        event.title,
+        on_queue_timeout=hook_gate_busy,
+        session_key=turn.session_key,
+        agent=slot.agent or "",
+        app=slot._app or "",
+        **hook_gate_kwargs(event),
+        resolved_agent=read_effective_agent(turn.client),
+        trust_reads=bool(slot._trust_reads),
+        deny_waivers=_override_waivers(slot, offer),
+    )
+    if result.action == TOOL_DENY:
+        return (result.reason or "blocked").strip()
+    return None
+
+
+async def _refuse_overridden_call(turn: _ChatTurn, event: Any, reason: str, *, why: str) -> None:
+    """Refuse a call an override card was offered for, as the policy refusal it was.
+
+    Used when the card is declined, times out or gets any answer but an allow
+    (*why* ``deny_override_declined``), and when an allowed call's second
+    judgement still denies on another rule (``deny_override_still_denied``). The
+    agent reads the rule's refusal, as it does for a refusal no card was offered
+    for, rather than kiro-cli's "User denied tool execution".
+    """
+    slot = turn.slot
+    _refusal_notices = turn._refusal_notices
+    _refusal_reasons = turn._refusal_reasons
+    title = _redact_display_text(event.title)
+    message = _redact_display_text(reason)
+    sel().log_tool_invocation(
+        session_key=turn.session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=title,
+        tool_kind=event.tool_kind,
+        outcome="denied",
+        request_id=event.request_id,
+        error="hook_deny",
+        metadata={"reason": why},
+    )
+    await _steer_policy_notice(turn.client, title, message, _refusal_notices, slot, turn.state)
+    await _reject_attributed(turn.client, event.request_id, attribution="steered")
+    slot.append("tool", f"🚫 {title} — {message}", "msg msg-tool", meta=_tool_meta(event))
+    turn.state.broadcast_ws(
+        "activity_event",
+        {"slot": slot.key, "kind": "permission", "text": f"Blocked: {title} — {message}"},
+    )
+    _refusal_reasons.append((title, message))
+
+
+def _note_override_used(slot: Any, offer: DenyOverrideOffer) -> None:
+    """Show in the transcript that a person let a security rule step aside."""
+    shown = _redact_display_text(offer.key)
+    if offer.scope == "session":
+        text = f"⚠️ Security rule {shown} overridden for the rest of this session."
+    else:
+        text = f"⚠️ Security rule {shown} overridden for this one call."
+    slot.append("system", text, "msg msg-info")
