@@ -8,8 +8,8 @@
  * and there is no other Crew Mode state. The composer exists only for an open
  * session, so this reads the session itself, never a pending pick.
  *
- * The task board is the side panel's existing Dashboard view (`command-center`),
- * whose Overview is the session's own Dynamic Dashboard. It is opened the way
+ * The task board is the side panel's Board view (`workers`, the session's crew
+ * of worker chats). It is opened the way
  * every other caller outside the panel opens a view (open the panel, then
  * `openView`), and only for a ROOT session (`isRootSession`): any other session
  * has no Overview of its own, and the gateway would refuse the read.
@@ -68,7 +68,7 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
   const taskBoardOffered = (crewModeEligible || crewModeOn) && isRootSession(currentSlot)
   const openTaskBoard = useCallback(() => {
     dispatch(openActivityPanel())
-    openView('command-center')
+    openView('workers')
   }, [dispatch, openView])
   // The chats whose switch to the conductor is in flight, by slot key: a press in
   // another chat while one is in flight must not drop the first chat's hold. The

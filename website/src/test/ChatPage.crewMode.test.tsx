@@ -564,6 +564,8 @@ describe('Ultra Mode on ChatPage', () => {
     expect(screen.queryByTestId('crew-mode-sample-question')).toBeNull()
     fireEvent.click(screen.getByTestId('crew-mode-open-board'))
     await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
+    // The Board tab is the one the button promises, not the Dashboard.
+    expect(screen.getAllByRole('tab').find(t => t.getAttribute('aria-selected') === 'true')?.textContent).toContain('Board')
   })
 
   it('is absent mid-chat while the mode is off', async () => {
