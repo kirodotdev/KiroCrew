@@ -351,6 +351,7 @@ keystone paths are still refused). The CLI is the stricter of the two.
 | `kirocrew app install /path/to/app-dir` | Install app from local directory (needs app.json) |
 | `kirocrew app enable NAME` | Enable an installed app (an app that asks to control your chats is allowed in the dashboard only) |
 | `kirocrew app disable NAME` | Disable an installed app |
+| `kirocrew app update NAME [--source DIR]` | Update an installed app in place from its source directory (the one recorded at install unless `--source` names another), keeping its data and enabled state. Needs a running gateway; with none reachable it changes nothing |
 | `kirocrew app uninstall NAME` | Uninstall an app and preserve its data directory |
 | `kirocrew app uninstall NAME --purge-data` | Uninstall and explicitly delete the app data directory |
 | `kirocrew app info NAME` | Show app details |

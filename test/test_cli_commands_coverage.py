@@ -14,7 +14,8 @@ Follows the style already established by ``test_cli.py`` (``argparse.Namespace``
 
 The handlers are split by topic across sibling files: agent, workspace, security
 and policy in ``test_cli_commands_coverage_agent_security.py``; learn, memory,
-artifact, pod, telemetry and eval in ``test_cli_commands_coverage_memory_eval.py``.
+artifact, pod, telemetry and eval in ``test_cli_commands_coverage_memory_eval.py``;
+the app ``update`` verb in ``test_cli_commands_coverage_app_update.py``.
 The fakes more than one of them uses live in ``cli_commands_coverage_helpers.py``.
 """
 
