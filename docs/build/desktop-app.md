@@ -1579,9 +1579,23 @@ ones the packager never reads). The body is optional JSON:
 {
   "managedBy": "your package manager's name",
   "checkCommand": "the command that prints an available version",
-  "updateCommand": "the command that applies it"
+  "updateCommand": "the command that applies it",
+  "relaunchPath": "optional: the executable to relaunch after a successful apply"
 }
 ```
+
+`relaunchPath` is for an install whose launch path changes with each version,
+such as a version-pinned payload behind a stable launch link. After a
+successful apply the app normally calls Electron's `app.relaunch()`, which
+re-runs the path the app was started as. A macOS app opened from the Dock was
+started as its version's own payload path, so it came back on the version the
+apply had just replaced, and the dashboard kept offering Restart to update
+([#22774](https://github.com/kirodotdev/KiroCrew/issues/22774)). With
+`relaunchPath` set, the app relaunches that executable instead, with the same
+arguments. The value must be absolute or start with `~/`, which is the
+account's home read from the account entry, not from `HOME`. Anything else is
+ignored. A `relaunchPath` that is not on disk at relaunch time falls back to
+the bare relaunch, because relaunching a missing file brings nothing back.
 
 A marker without `updateCommand` turns the updater off, and About shows the
 "updates are managed by …" message naming `managedBy`. A marker with
@@ -1639,7 +1653,8 @@ KIROCREW_MANAGED_INSTALL_MARKER=/path/to/marker.json bash packaging/build-deskto
 ```
 
 `build-desktop.sh` validates the file (a JSON object of string fields
-`managedBy` / `updateCommand` / `checkCommand`, under 8 KiB, with an
+`managedBy` / `updateCommand` / `checkCommand`, plus an optional absolute or
+`~/` `relaunchPath`, under 8 KiB, with an
 `updateCommand` — a marker that disables updates while offering none fails the
 build rather than shipping silently) and copies it to
 `website/electron/EXTERNALLY-MANAGED`, which electron-builder packs **into
