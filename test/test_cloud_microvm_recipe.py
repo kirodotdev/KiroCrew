@@ -40,6 +40,26 @@ BASE = "arn:aws:lambda:us-east-1:123456789012:microvm-image/al2023-base"
 #: :func:`base_recipe_digest` is what says which base content.
 
 
+class _FakeRuntime:
+    """A ``crew_runtime`` seam provider serving *runtime_dir*, with no bundle builder."""
+
+    def __init__(self, runtime_dir: Path) -> None:
+        self.runtime_dir = runtime_dir
+
+    def bundle_digest(self, bundle_dir: Path) -> str:
+        raise AssertionError("this fixture runtime has no bundle builder")
+
+
+def _provide_runtime(monkeypatch, runtime_dir: Path) -> None:
+    """Serve *runtime_dir* through the ``crew_runtime`` seam for one test."""
+    from kiro_crew.apps import seams
+
+    seams.crew_runtime()  # the shipped providers load first, so this one replaces theirs
+    monkeypatch.setitem(
+        seams._providers, seams.SEAM_CREW_RUNTIME, ("test", _FakeRuntime(runtime_dir))
+    )
+
+
 @pytest.fixture(autouse=True)
 def _clean_staging():
     recipe_module.forget_all()
@@ -687,9 +707,12 @@ class TestTheConcatenatedDockerfile:
     def test_it_refuses_a_crew_layer_it_does_not_recognise(self, tmp_path, monkeypatch):
         """A silently mis-assembled recipe is a build that succeeds and produces
         the wrong image, so an unrecognised shape fails here instead."""
-        fake = tmp_path / "Dockerfile.crew"
-        fake.write_text("FROM scratch\nCOPY manifest.json /\n")
-        monkeypatch.setattr(recipe_module, "CREW_DOCKERFILE", fake)
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        for name in ("Dockerfile", "Dockerfile.microvm"):
+            (runtime / name).write_bytes((recipe_module.RUNTIME_DIR / name).read_bytes())
+        (runtime / "Dockerfile.crew").write_text("FROM scratch\nCOPY manifest.json /\n")
+        _provide_runtime(monkeypatch, runtime)
         with pytest.raises(RecipeRefused, match="no longer starts"):
             recipe_module.assemble_dockerfile("sha256:deadbeef")
 
@@ -1036,9 +1059,9 @@ class TestTheBaseDigestLocatesEachFileAndNotJustItsName:
     built from the old tree. The digest is half the image's name, and nothing
     compares further once the name matches.
 
-    ``CONTAINER_DIR`` is pointed at a fixture tree here rather than at the real
-    one, because the property is about the walk and the real tree cannot be
-    rearranged inside a test.
+    ``CONTAINER_DIR`` is a fixture tree here rather than the real one, served
+    through a fixture runtime that carries the real recipes beside it, because the
+    property is about the walk and the real tree cannot be rearranged inside a test.
     """
 
     @pytest.fixture()
@@ -1050,13 +1073,19 @@ class TestTheBaseDigestLocatesEachFileAndNotJustItsName:
         two are indistinguishable, so the stream says nothing about where either
         of them is.
         """
-        root = tmp_path / "container"
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        for name in ("Dockerfile", "Dockerfile.crew", "Dockerfile.microvm"):
+            (runtime / name).write_bytes((recipe_module.RUNTIME_DIR / name).read_bytes())
+        ssm = recipe_module.SSM_AGENT_CONFIG
+        (runtime / ssm.name).write_bytes(ssm.read_bytes())
+        root = runtime / "container"
         (root / "front").mkdir(parents=True)
         (root / "microvm").mkdir(parents=True)
         (root / "front" / "__init__.py").write_text("")
         (root / "microvm" / "__init__.py").write_text("")
         (root / "microvm" / "hooks.py").write_text("def run(): ...\n")
-        monkeypatch.setattr(recipe_module, "CONTAINER_DIR", root)
+        _provide_runtime(monkeypatch, runtime)
         return root
 
     def test_moving_a_package_file_changes_the_digest(self, container, wheel):
@@ -1235,3 +1264,42 @@ class TestTheRecipeStampsTheGuestsPins:
         assert b"123456789012" not in blob
         assert b"ENV SMC_MICROVM_ACCOUNT" not in blob
         assert b"SMC_MICROVM_REGION=" not in blob
+
+
+class TestTheRuntimeComesFromTheCrewRuntimeSeam:
+    """The runtime is the one an app provides, so ``cloud`` never imports that app."""
+
+    def test_the_shipped_runtime_is_the_directory_the_lane_always_read(self):
+        """The aws-control app provides it, as the app's ``crew/runtime`` directory."""
+        from kiro_crew.apps import seams
+
+        assert seams.provider_app(seams.SEAM_CREW_RUNTIME) == "aws-control"
+        src = Path(recipe_module.__file__).resolve().parents[2]
+        expected = src / "apps" / "builtins" / "aws_control" / "crew" / "runtime"
+        assert recipe_module.RUNTIME_DIR == expected
+        assert recipe_module.CREW_DOCKERFILE == expected / "Dockerfile.crew"
+        assert recipe_module.CONTAINER_DIR == expected / "container"
+
+    def test_with_no_provider_every_runtime_read_is_refused(self, monkeypatch, bundle):
+        """A missing runtime is a refusal naming the cause, never a substitute path."""
+        from kiro_crew.apps import seams
+
+        seams.crew_runtime()
+        monkeypatch.delitem(seams._providers, seams.SEAM_CREW_RUNTIME)
+        for name in ("RUNTIME_DIR", "CREW_DOCKERFILE", "CONTAINER_DIR"):
+            with pytest.raises(RecipeRefused, match="no crew runtime is installed"):
+                getattr(recipe_module, name)
+        with pytest.raises(RecipeRefused, match="no crew runtime is installed"):
+            bundle_digest_of(bundle)
+
+    def test_the_layout_check_needs_no_runtime(self, monkeypatch, bundle):
+        """Checking a bundle reads only the bundle, so it answers without the app."""
+        from kiro_crew.apps import seams
+
+        seams.crew_runtime()
+        monkeypatch.delitem(seams._providers, seams.SEAM_CREW_RUNTIME)
+        check_layout(bundle)
+
+    def test_an_unknown_name_is_still_an_attribute_error(self):
+        with pytest.raises(AttributeError):
+            recipe_module.NOT_A_RUNTIME_FILE  # noqa: B018

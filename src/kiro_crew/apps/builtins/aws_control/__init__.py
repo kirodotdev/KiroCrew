@@ -23,12 +23,31 @@ service enum now so the consent cards can be confirmed per account before the
 first billable call ever ships.
 """
 
-# Required re-export: dashboard/server.py's startup route registration imports
-# the PACKAGE and checks hasattr(_mod, "register_routes") — the same convention
-# crew_companion/__init__.py and issue_radar/__init__.py follow (the call site
-# is the `for _builtin_name in BUILTIN_NAMES` loop). Routes are registered at
-# STARTUP, not on enable, which is why every handler carries its own enabled
-# check and answers 403 while the app is off.
-from kiro_crew.apps.builtins.aws_control.backend.routes import (  # noqa: F401
-    register_routes,
-)
+# Bound on first access rather than at import. ``seams.py`` is imported by core
+# callers that never load the app's backend (``kiro_crew.apps.seams`` imports it on
+# the first seam lookup, from a CLI process as much as from the gateway), and
+# importing a submodule runs this file first, so an eager import here would pull the
+# whole backend into every one of them.
+#
+# The name is still served the way the gateway asks for it: dashboard/routes/system.py's
+# startup route registration imports the PACKAGE and checks
+# hasattr(_mod, "register_routes") -- the same convention crew_companion/__init__.py and
+# issue_radar/__init__.py follow (the call site is the `for _builtin_name in
+# BUILTIN_NAMES` loop). Routes are registered at STARTUP, not on enable, which is why
+# every handler carries its own enabled check and answers 403 while the app is off.
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kiro_crew.apps.builtins.aws_control.backend.routes import (  # noqa: F401
+        register_routes,
+    )
+
+
+def __getattr__(name: str) -> Any:
+    if name == "register_routes":
+        from kiro_crew.apps.builtins.aws_control.backend import routes
+
+        return routes.register_routes
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

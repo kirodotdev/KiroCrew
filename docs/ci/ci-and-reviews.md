@@ -2895,15 +2895,17 @@ runs them on the HOST, so the recipes that merged in #9223 each named a producer
 that was not in the tree and every check stayed green — the image could not be built from
 a clean checkout, and no gate said so.
 
-It does not name the two recipes. `scripts/crew_image_build_plan.py` asks the tree which
-`Dockerfile*` exist under the crew runtime directory and derives each one's role and
-producer from the recipe's own text — a pre-`FROM` `ARG` interpolated by the `FROM` is a
-digest-pinned layer, a concrete `FROM` is a base, and the producer is the `scripts/*.sh`
-the recipe cites — then refuses anything it cannot account for, including a `FROM` that
-interpolates an out-of-scope `ARG` and would silently expand to an empty string. So a
-third recipe added later is built or reds the lane, rather than being as uncovered as
-these two were. `test_crew_image_build_plan.py` holds the cheap half of that reasoning on
-every pull request with no Docker at all.
+It does not name the two recipes. The planner,
+`src/kiro_crew/apps/builtins/aws_control/crew/scripts/crew_image_build_plan.py`, asks
+the tree which `Dockerfile*` exist under the crew runtime directory and derives each
+one's role and producer from the recipe's own text — a pre-`FROM` `ARG` interpolated by
+the `FROM` is a digest-pinned layer, a concrete `FROM` is a base, and the producer is the
+`scripts/*.sh` the recipe cites, in the crew tree's own `scripts/` — then refuses
+anything it cannot account for, including a `FROM` that interpolates an out-of-scope
+`ARG` and would silently expand to an empty string. So a third recipe added later is
+built or reds the lane, rather than being as uncovered as these two were.
+`test_crew_image_build_plan.py` holds the cheap half of that reasoning on every pull
+request with no Docker at all.
 
 The crew layer's base is referenced by digest, and only a push produces a repository
 digest, so the lane runs a throwaway `registry:2` on `127.0.0.1`: real digest, no
@@ -2913,7 +2915,9 @@ weekly `schedule` because that path set cannot be complete — the build reaches
 PyPI and the pinned kiro-cli tarball. Measured cold: ~100 seconds of build for a 1.5 GB
 image. Like `docker-smoke.yml` it is absent from `pr-readiness.yml`'s lane list: that file
 resolves lanes by workflow file and a lane reading "(not started)" freezes the verdict at
-pending, which a paths-filtered lane would do on most PRs.
+pending, which a paths-filtered lane would do on most PRs. Everything the lane builds and
+runs belongs to the aws-control app, so the workflow leaves the repository with that app;
+Kiro Crew core does not depend on it.
 
 ## The AI review ladder
 

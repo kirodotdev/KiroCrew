@@ -7,6 +7,48 @@ builtin is declared by `kiro_crew.apps.builtins` and mounted by
 `aws_control.backend.routes.register_routes`; the dashboard surface is
 `website/src/apps/aws-control/`.
 
+## Repository boundary
+
+The whole app is meant to leave this repository intact: `backend/`, `hooks.py`,
+`crew/packaging/` (the bundle builder), `crew/runtime/` (the container runtime) and
+`crew/scripts/` (the image producers and planner). Kiro Crew core does not import any
+of it. The three core features that need the app's code ask the seams in
+`kiro_crew.apps.seams` (`app-kit-platform.md`, "A core feature that needs an app's
+code asks a seam"), and `seams.py` at the package root fills all three: `crew_runtime` from `crew/runtime/` and `crew/packaging/build.py`,
+`aws_account_policy` from `backend/accounts.py`, and `transfer_staging` from
+`backend/storage.py`. Each provider method looks its target up on the owning module at
+call time, so a patch of that module reaches core's callers. The package `__init__`
+serves `register_routes` lazily, so importing `seams.py` does not load the backend.
+
+`test_core_aws_control_decoupling.py` keeps it that way. No core module or script
+imports the app. The core string constants that still name the package are pinned in
+`KNOWN_NAME_REFERENCES`, and each is deleted in the change that removes the app. They
+are the `aws_control.conversation_export` row of the sensitive-store read allowlist in
+`hooks.py`, and the `security_posture*.py` rows that exempt or classify the app's
+files. Neither is a seam: an app must not add itself to the read allowlist, and the
+posture tables are core's audit of the app's code.
+
+These leave with the app, and until then this repository runs them at the app's paths:
+
+* `.github/workflows/crew-image-build.yml`, which runs `crew/scripts/crew_image_build_plan.py`
+  and the producers it derives. A recipe cites its producer as `scripts/<name>.sh`, and
+  the planner resolves that against the crew tree, so the recipes' text is unchanged.
+* The `ci.yml` crew-container lane (`container_tests/`, `container/requirements.txt`) and
+  the `--cov` rows for `crew/packaging`.
+* The `setup.cfg` `package_data` rows and the `MANIFEST.in` rules that ship the crew
+  runtime in the wheel, and the `.gitignore` rule for a wheel staged in `vendor/`.
+
+These stay in core because they protect a path on disk, not app code. They are keyed by
+the app's name and are correct only while the app is installed as `aws-control`: the
+`apps/aws-control/data` and `aws-control-staging` sandbox leaves (`sandbox_leaves.py`,
+`security/paths_lists.py`, `sandbox_precreate.py`, `sandbox_aliases.py`), and the `s3` and
+`ce` services in `aws_consent.GATED_SERVICES`.
+
+Two core test files still load the app's planner for its Dockerfile reader
+(`logical_instructions`): `test_docker_wheel_layer_contract.py` and
+`test_docker_kas_bundle.py`, which also check the gateway's own `docker/Dockerfile`.
+Those checks need a core copy of the reader before the app leaves.
+
 ## Access boundary
 
 Every AWS Control route passes `routes._guarded`. It refuses a disabled app and
