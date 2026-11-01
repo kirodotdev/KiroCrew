@@ -292,7 +292,6 @@ test/test_bench_injection_cause.py
 test/test_bench_pinned_parent.py
 test/test_bench_retrieval_stats.py
 test/test_bench_round10.py
-test/test_bench_round15.py
 test/test_bench_round16.py
 test/test_bench_round17.py
 test/test_bench_round18.py
