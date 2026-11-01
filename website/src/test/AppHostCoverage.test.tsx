@@ -243,6 +243,20 @@ describe('AppHost — hosting a real bundle', () => {
     await settleBundle()
     expect(hosted().appVersion).toBe('0.9.0')
   })
+
+  it('hands the app a self-update bridge bound to its own record', async () => {
+    renderHost(appRecord({
+      lifecycle: 'app',
+      update: { available: true, latestVersion: '1.3.0', checkedAt: null },
+    }))
+    await settleBundle()
+    const requestUpdateFn = sdk.props?.requestUpdateFn as () => Promise<unknown>
+    // The record's lifecycle reached the bridge: a self-managed app is refused
+    // before any dialog, with the manifest version as the unchanged one.
+    expect(await requestUpdateFn()).toEqual({
+      status: 'failed', version: '1.2.3', error: 'lifecycle_not_gateway',
+    })
+  })
 })
 
 describe('AppHost — the bridges handed to a hosted app', () => {

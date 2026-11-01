@@ -25,6 +25,7 @@ import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription } from './appstore/appManifest'
 import { withBase } from '@/lib/basePath'
 import { useAppSlotPush } from '../utils/appSlotPush'
+import { useAppSelfUpdate } from './appSelfUpdate'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -42,6 +43,9 @@ export interface AppHostProps {
      *  same answer. Absent whenever no cache has seen this app, so the SDK
      *  publishes nothing rather than an unfounded "up to date". */
     update?: AppUpdate
+    /** Who manages this app's updates; only `gateway` apps may ask the host to
+     *  update them (`useAppUpdate`). Absent reads as `gateway`, the default. */
+    lifecycle?: string
     manifest?: {
       name?: string
       version?: string
@@ -288,6 +292,14 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
   const navigateFn = useCallback((path: string) => navigate(path), [navigate])
   // Own-slot change signals from the dashboard socket (appSlotPush.ts).
   const slotPush = useAppSlotPush(app.name)
+  // `useAppUpdate().requestUpdate()`, bound here to the app this host mounted.
+  const selfUpdate = useAppSelfUpdate({
+    name: app.name,
+    label: appDisplayName(app),
+    version: app.manifest?.version || app.version || '0.0.0',
+    update: app.update,
+    lifecycle: app.lifecycle,
+  }, active)
 
   // Kept explicit rather than relying on the SDK's default, which is byte-identical:
   // `AppHostCoverage` asserts this bridge's behaviour at the surface that owns it,
@@ -318,6 +330,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
         notifyFn={notifyFn}
         sessionKey={sessionKey}
         slotPush={slotPush}
+        requestUpdateFn={selfUpdate.requestUpdate}
       >
         {/* Delayed and shaped: nothing for the first 300 ms, then the layout the
             manifest declares in `ui.loading` (default "page"). See AppLoadingFallback. */}
@@ -328,6 +341,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
           <LazyApp />
         </Suspense>
       </AppApiProvider>
+      {selfUpdate.dialog}
     </AppErrorBoundary>
   )
 }

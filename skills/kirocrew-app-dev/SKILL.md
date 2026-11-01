@@ -370,7 +370,7 @@ of asking for arbitrary filesystem traversal.
 - `react/jsx-runtime` (_jsx, _jsxs, Fragment)
 - `react-dom`
 - `@kirocrew/app-sdk` — hooks (`useAppApi`, `useAppEvents`, `useTheme`, `useAppInfo`,
-  `useNavigate`, `useNotify`, `useNavBadge`, `useChatLauncher`, `useChatSession`), the
+  `useAppUpdate`, `useNavigate`, `useNotify`, `useNavBadge`, `useChatLauncher`, `useChatSession`), the
   `ChatEmbed` / `ChatPanel` / `ChatMessageList` components, the transcript's row
   **registry** (`defaultMessageRenderers`, `mergeRenderers`, `resolveRenderer`,
   `ToolCallPill`), and the chat **marker protocol** (`parseOptions`,

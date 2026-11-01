@@ -27,12 +27,12 @@ import { AppIdentityProvider, useAppIdentity, type AppOrigin } from './identity'
 import { AppQueryClientProvider } from './appQueryClient'
 // The scoped-API layer, kept in its own module so it is NOT published on this
 // barrel -- see the header of ./scopedApi for why.
-import { useCtx, AppScopedApiProvider, type AppApi, type AppInfo, type AppUpdate } from './scopedApi'
+import { useCtx, AppScopedApiProvider, type AppApi, type AppInfo, type AppUpdate, type AppUpdateResult } from './scopedApi'
 import type { SlotPush } from './slotPush'
 // Re-exported as TYPES: the barrel<->vendor-stub parity gate counts value
 // exports, and a type vanishes at runtime, so an app author keeps these names
 // without the stub needing an entry it could not provide.
-export type { AppApi, AppApiError, AppInfo, AppPermissions, AppUpdate } from './scopedApi'
+export type { AppApi, AppApiError, AppInfo, AppPermissions, AppUpdate, AppUpdateResult } from './scopedApi'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -305,6 +305,29 @@ export function useAppInfo(): AppInfo {
   return useCtx().info
 }
 
+/**
+ * Ask the host to update THIS app to its newest published version.
+ *
+ * `requestUpdate()` opens a host-owned confirmation dialog; the app cannot skip
+ * or restyle it, and cannot name another app, because the host bound the call
+ * to the app it mounted. On confirm the host calls the gateway's app update
+ * endpoint, then offers the user a reload, since the open page still runs
+ * the old bundle. Resolves once the user has answered and the update settled.
+ * Call it from a click handler: like a popup, the dialog needs a recent user
+ * gesture, so a call on mount resolves `failed` with `no_user_gesture`. A host
+ * that cannot update apps resolves `failed` with `unsupported`.
+ */
+export function useAppUpdate(): { requestUpdate: () => Promise<AppUpdateResult> } {
+  const { requestUpdate, info } = useCtx()
+  const run = useCallback(
+    () => requestUpdate
+      ? requestUpdate()
+      : Promise.resolve<AppUpdateResult>({ status: 'failed', version: info.version, error: 'unsupported' }),
+    [requestUpdate, info.version],
+  )
+  return { requestUpdate: run }
+}
+
 /** Navigate to a KiroCrew route (host-controlled). */
 export function useNavigate(): (path: string) => void {
   return useCtx().navigate
@@ -412,6 +435,7 @@ export function AppApiProvider({
   notifyFn,
   sessionKey,
   slotPush,
+  requestUpdateFn,
   origin = 'external',
   children,
 }: {
@@ -449,6 +473,9 @@ export function AppApiProvider({
   sessionKey?: string
   /** The host's per-slot change signal; forwarded to the scoped layer. */
   slotPush?: SlotPush
+  /** The host's self-update bridge for this app; forwarded to the scoped
+   *  layer, which publishes it to `useAppUpdate`. */
+  requestUpdateFn?: () => Promise<AppUpdateResult>
   origin?: AppOrigin
   children: ReactNode
 }) {
@@ -466,6 +493,7 @@ export function AppApiProvider({
     notifyFn,
     sessionKey,
     slotPush,
+    requestUpdateFn,
     children,
   })
   if (existing) return scoped

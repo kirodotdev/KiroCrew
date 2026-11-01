@@ -5939,6 +5939,17 @@
       "this_app_is_disabled": "此应用已停用",
       "this_app_provides_agents_and_skills_but_no_visua": "此应用提供代理和技能，但没有可视界面。\n            请在聊天中使用它的代理。"
     },
+    "appSelfUpdate": {
+      "ask_title": "更新 {{name}}？",
+      "ask_body": "{{name}} 将从 {{installed}} 更新到 {{version}}。更新期间其后端会重启，数据会保留。",
+      "update_now": "更新",
+      "updating": "正在更新 {{name}}…",
+      "failure_title": "更新失败",
+      "failure_summary": "无法更新 {{name}}",
+      "reload_title": "已安装版本 {{version}}",
+      "reload_body": "此页面仍在运行 {{name}} 的旧版本。重新加载以使用新版本。",
+      "reload_now": "立即重新加载"
+    },
     "approvalCard": {
       "actions_group": "审批操作",
       "approval_no_longer_pending": "这条审批已过期或已被处理 — 代理不再等待它。",

@@ -6147,6 +6147,17 @@
       "this_app_is_disabled": "Questa app è disattivata",
       "this_app_provides_agents_and_skills_but_no_visua": "Questa app fornisce agenti e skill ma nessuna interfaccia visiva.\n            Usa i suoi agenti dalla chat."
     },
+    "appSelfUpdate": {
+      "ask_title": "Aggiornare {{name}}?",
+      "ask_body": "{{name}} verrà aggiornata da {{installed}} a {{version}}. Il backend si riavvia durante l'aggiornamento e i dati vengono conservati.",
+      "update_now": "Aggiorna",
+      "updating": "Aggiornamento di {{name}}…",
+      "failure_title": "Aggiornamento non riuscito",
+      "failure_summary": "Impossibile aggiornare {{name}}",
+      "reload_title": "La versione {{version}} è installata",
+      "reload_body": "Questa pagina usa ancora la versione precedente di {{name}}. Ricaricala per usare quella nuova.",
+      "reload_now": "Ricarica ora"
+    },
     "approvalCard": {
       "actions_group": "Azioni di approvazione",
       "approval_no_longer_pending": "Questa approvazione è scaduta o è già stata decisa — l’agente non la sta più aspettando.",

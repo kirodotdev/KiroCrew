@@ -4296,6 +4296,17 @@
       "this_app_is_disabled": "This app is disabled",
       "this_app_provides_agents_and_skills_but_no_visua": "This app provides agents and skills but no visual interface.\n            Use its agents from chat."
     },
+    "appSelfUpdate": {
+      "ask_title": "Update {{name}}?",
+      "ask_body": "{{name}} will update from {{installed}} to {{version}}. Its backend restarts during the update, and its data is kept.",
+      "update_now": "Update",
+      "updating": "Updating {{name}}…",
+      "failure_title": "Update failed",
+      "failure_summary": "Could not update {{name}}",
+      "reload_title": "Version {{version}} is installed",
+      "reload_body": "This page is still running the previous version of {{name}}. Reload it to use the new one.",
+      "reload_now": "Reload now"
+    },
     "approvalCard": {
       "actions_group": "Approval actions",
       "approve": "Approve",
