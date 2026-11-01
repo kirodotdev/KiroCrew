@@ -25,7 +25,6 @@
 2 test/test_config_baseline.py
 1 test/test_config_paths.py
 1 test/test_connections_tool_aliases.py
-2 test/test_ensure_python_symlink.py
 2 test/test_installer_node_floor.py
 6 test/test_ios_simulator_preview_skill.py
 2 test/test_issue_triage_workflow.py
