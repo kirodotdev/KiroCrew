@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import channel_history, platform_compat
+from kiro_crew import channel_history, jsonl_util, platform_compat
 from kiro_crew.channel_history import ChannelHistory
 
 
@@ -818,11 +818,14 @@ class TestObserveFileBounding:
             6 * (channel_history.HISTORY_MAX_TEXT_CHARS + 3 * channel_history.HISTORY_MAX_ID_CHARS)
             + 1024
         )
+        # The shared framer reads ahead in fixed _FRAME_CHUNK blocks, so a single
+        # read may reach that size; it must never reach the oversized line.
+        read_bound = max(record_cap + 2, jsonl_util._FRAME_CHUNK)
         path = tmp_path / "C1.jsonl"
         now = time.time()
         before = json.dumps({"user": "alice", "text": "before", "ts": now}).encode()
         after = json.dumps({"user": "bob", "text": "after", "ts": now}).encode()
-        path.write_bytes(before + b"\n" + b"x" * (record_cap * 8) + b"\n" + after + b"\n")
+        path.write_bytes(before + b"\n" + b"x" * (read_bound * 4) + b"\n" + after + b"\n")
 
         history = ChannelHistory(observe_max_entries=10, history_dir=tmp_path)
         real_open = history._open_observe_file
@@ -871,8 +874,8 @@ class TestObserveFileBounding:
         assert [entry.text for entry in history._channels["C1"]] == ["before", "after"]
         assert history._live_records["C1"] == 3
         assert (
-            peak_read <= record_cap + 2
-        ), f"history load materialized a {peak_read}-byte read; record cap is {record_cap}"
+            peak_read <= read_bound
+        ), f"history load materialized a {peak_read}-byte read; read bound is {read_bound}"
         oversized_warnings = [
             record.getMessage()
             for record in caplog.records
