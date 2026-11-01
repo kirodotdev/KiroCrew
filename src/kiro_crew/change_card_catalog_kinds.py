@@ -321,6 +321,10 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         "session_environments.coder_url",
         "session_environments.sprites_profiles",
         "session_environments.boxd_profiles",
+        # A Fargate profile picks the AWS identity, task definition and network
+        # a session's commands run under, and the gateway sends git credentials
+        # to that task.
+        "session_environments.fargate_profiles",
     }
 )
 

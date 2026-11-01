@@ -5,11 +5,14 @@ Archive stops it and stamps ``deletion_due_at``; a reopen clears the stamp, and
 Sprites and boxd sessions keep one VM each (``session_environments/persistent_vm.py``);
 their archive, sweep and shutdown (``session_environments/retention.py``) run
 from here, under the same per-session lifecycle lock and generation.
+An AWS Fargate task is the workspace itself, so archiving stops it at once
+(``session_environments/retention.py``), with no retention window.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -163,9 +166,16 @@ def feed_notifier(state: Any) -> Optional[Notify]:
 
 
 async def warn_unsaved_work(
-    session_keys: tuple[str, ...], notify: Optional[Notify], *, survives_stop: bool = True
+    session_keys: tuple[str, ...],
+    notify: Optional[Notify],
+    *,
+    survives_stop: bool = True,
+    ephemeral: bool = False,
 ) -> None:
-    """Notify about unsaved work in running workspaces, before any stop; bounded, never raises."""
+    """Notify about unsaved work in running workspaces, before any stop; bounded, never raises.
+
+    For an ``ephemeral`` (AWS Fargate) workspace the files go with the stop itself.
+    """
     if notify is None:
         return
     from kiro_crew.coder.session_browse import unsaved_work
@@ -180,7 +190,12 @@ async def warn_unsaved_work(
             logger.debug("Unsaved-work check failed for %s", key, exc_info=True)
             continue
         if summary:
-            try:
+            if ephemeral:
+                body = (
+                    f"Its AWS Fargate task held {summary}, which existed only in that task. "
+                    "Archiving stops the task, and its files go with it."
+                )
+            else:
                 if survives_stop:
                     advice = "Reopen the session and commit or push before its retention runs out."
                 else:
@@ -189,10 +204,9 @@ async def warn_unsaved_work(
                         "own stop deadline or the retention deletion), so reopen the session "
                         "and commit or push now."
                     )
-                notify(
-                    "Archived session has unsaved remote work",
-                    f"Its workspace holds {summary}, which exists only on that machine. {advice}",
-                )
+                body = f"Its workspace holds {summary}, which exists only on that machine. {advice}"
+            try:
+                notify("Archived session has unsaved remote work", body)
             except Exception:  # noqa: BLE001 -- a failed notice never fails the archive
                 logger.warning("Could not publish the unsaved-work notice", exc_info=True)
 
@@ -203,19 +217,23 @@ async def _archive(
     try:
         environments = await _environments()
         persistent = await vm_retention._persistent_environments()
+        fargate = await vm_retention._fargate_environments()
         for key, lifecycle, generation in requests:
             async with lifecycle.lock:
                 if generation != lifecycle.generation:
                     continue
+                has_task = await vm_retention._fargate_task_recorded(fargate, key)
                 survives = (
                     True
                     if environments is None
                     else await _binding_survives_stop(environments, key)
                 )
-                await warn_unsaved_work((key,), notify, survives_stop=survives)
+                await warn_unsaved_work((key,), notify, survives_stop=survives, ephemeral=has_task)
                 # A resume requested during the remote probe supersedes this close.
                 if generation != lifecycle.generation:
                     continue
+                if has_task:
+                    await vm_retention._archive_fargate(fargate, key)
                 if environments is not None:
                     try:
                         await _archive_session(environments, key)
@@ -325,8 +343,9 @@ async def stop_on_shutdown_enabled() -> bool:
 
 async def stop_for_shutdown() -> dict[str, int]:
     """Stop every owned remote environment, stamping nothing so a reopen resumes;
-    stop-destroys-files ones count as ``skipped`` and a boxd machine is hibernated.
-    A sprite needs no call: it idles by itself, with no compute charge and its
+    stop-destroys-files ones and every Fargate task (its row and secret survive
+    for reconnect) count as ``skipped``, and a boxd machine is hibernated. A
+    sprite needs no call: it idles by itself, with no compute charge and its
     filesystem kept (https://docs.sprites.dev, "Automatic Idle Behavior"). Never
     raises."""
     counts = {"coder": 0, "boxd": 0, "skipped": 0}
@@ -360,13 +379,18 @@ async def stop_for_shutdown() -> dict[str, int]:
     async def boxd() -> None:
         await vm_retention.hibernate_boxd_for_shutdown(counts)
 
+    async def fargate() -> None:
+        await vm_retention.count_fargate_for_shutdown(counts)
+
     async def guarded(name: str, step: Callable[[], Any]) -> None:
         try:
             await step()
         except Exception:  # noqa: BLE001 -- shutdown must not fail on one provider
             logger.warning("Shutdown: could not stop %s session environments", name, exc_info=True)
 
-    await asyncio.gather(guarded("Coder", coder), guarded("boxd", boxd))
+    await asyncio.gather(
+        guarded("Coder", coder), guarded("boxd", boxd), guarded("Fargate", fargate)
+    )
     if counts["skipped"]:
         logger.info(
             "Shutdown: left %d session environment(s) running: stopping their compute "
@@ -457,14 +481,33 @@ async def sweep_due(environments: Any, *, now: Optional[datetime] = None) -> int
     return deleted
 
 
-async def sweep_once() -> int:
-    """One sweep on the live config: Sprites and boxd VMs, then Coder (0 without
-    it); registry-only unless a row is due, so an idle gateway makes no remote call."""
-    deleted = await vm_retention._sweep_persistent()
+async def sweep_once(*, keep_alive: bool = True) -> int:
+    """One sweep on the live config: keep live Fargate tasks alive and retry their
+    stops, then Sprites and boxd VMs, then Coder (0 without it); registry-only
+    unless a row is due, so an idle gateway makes no remote call.
+
+    A Fargate failure (its registry fails closed) never stops another provider.
+    ``keep_alive=False`` leaves the heartbeat to :func:`run_sweeper`'s own loop.
+    """
+    if keep_alive:
+        await vm_retention.keep_alive_once()
+    stopped = await vm_retention.retry_fargate_stops()
+    deleted = stopped + await vm_retention._sweep_persistent()
     environments = await _environments()
     if environments is None:
         return deleted
     return deleted + await sweep_due(environments)
+
+
+async def _keep_alive_loop(interval: float) -> None:
+    """The Fargate heartbeat, on its own clock.
+
+    Slow stop retries or a slow Coder sweep must never delay it: a live task
+    that goes 900 s without a touch idle-exits and deletes its files.
+    """
+    while True:
+        await vm_retention.keep_alive_once()
+        await asyncio.sleep(interval)
 
 
 async def run_sweeper(
@@ -474,10 +517,20 @@ async def run_sweeper(
 ) -> None:
     """Run retention sweeps until cancelled. Failures are logged; the loop never dies."""
     await asyncio.sleep(initial_delay)
+    heartbeat = asyncio.create_task(_keep_alive_loop(interval))
+    try:
+        await _sweep_forever(interval)
+    finally:
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
+
+
+async def _sweep_forever(interval: float) -> None:
     last_error = ""
     while True:
         try:
-            deleted = await sweep_once()
+            deleted = await sweep_once(keep_alive=False)
             if deleted:
                 logger.info("Archived session workspaces deleted: %d", deleted)
             last_error = ""

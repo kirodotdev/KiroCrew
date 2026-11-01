@@ -3,7 +3,8 @@ machine exec`` or the Sprites exec API: read-only ``--browse``, a separate
 ``--write`` that refuses a stale ``expected``, the browse mode's read-only
 ``stats`` (:func:`session_health`), and an interactive shell. Browsing never
 autostarts a stopped workspace (a terminal may wake a sprite or a boxd machine);
-requests go on stdin.
+requests go on stdin. An AWS Fargate session is reached through its task's
+bootstrap instead, which never launches a task.
 """
 
 from __future__ import annotations
@@ -50,7 +51,8 @@ class WorkdirChanged(LookupError):
 
 @dataclass(frozen=True)
 class _Target:
-    #: A ``CoderShell``, ``BoxdShell`` or ``SpritesShell``.
+    #: A ``CoderShell``, ``BoxdShell``, ``SpritesShell`` or, for an AWS Fargate
+    #: task, a ``FargateShell``.
     shell: Any
     workdir: str
     binding_id: str
@@ -138,7 +140,8 @@ async def _ask(target: _Target, mode: str, request: dict[str, Any]) -> dict[str,
 
     async def once() -> bytes:
         if not isinstance(target.shell, (CoderShell, *vm_browse._command_shell_types())):
-            # A shell with no dial command (a sprite's exec API) runs it itself.
+            # A shell with no dial command (a sprite's exec API, a Fargate task's
+            # bootstrap) runs it itself.
             return await asyncio.wait_for(target.shell.run(command, payload), _BROWSE_TIMEOUT)
         return await run_collect(
             target.shell.argv(command),

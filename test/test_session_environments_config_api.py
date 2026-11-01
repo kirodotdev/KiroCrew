@@ -171,6 +171,36 @@ class TestApi:
             assert resp.status == 400 and (await resp.json())["code"] == "unknown_profile"
             assert "session_environments" not in _stored(config_file)
 
+    async def test_a_fargate_list_leaf_may_not_drop_the_default_profile(self, config_file):
+        """As for the Sprites and boxd lists: a leaf write of the Fargate list that
+        removes the saved default is refused, so new chats never run locally."""
+        fargate = {
+            "id": "aws-dev",
+            "name": "AWS development",
+            "aws_profile": "sandbox",
+            "region": "us-east-1",
+            "cluster": "dev",
+            "task_definition": "session-dev:1",
+            "subnets": ["subnet-12345678"],
+            "security_groups": ["sg-12345678"],
+            "assign_public_ip": False,
+            "workdir": "/workspace",
+        }
+        async with _api() as client:
+            section = {
+                "coder_url": "",
+                "profiles": [],
+                "fargate_profiles": [fargate],
+                "default_profile": "aws-dev",
+            }
+            assert (await _patch(client, "session_environments", section)).status == 200
+            resp = await _patch(client, "session_environments.fargate_profiles", [])
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "unknown_profile"
+            stored = _stored(config_file)["session_environments"]
+            assert stored["fargate_profiles"] == [fargate]
+            assert stored["default_profile"] == "aws-dev"
+
     async def test_leaf_paths_update_one_scalar_and_keep_the_profiles(self, config_file):
         async with _api() as client:
             section = {"coder_url": "", "profiles": [_profile()]}

@@ -134,12 +134,13 @@ def _session_environment_key_validators() -> dict[str, Any]:
         "default_profile": validate_default_profile,
         "sprites_profiles": _keep_vm_profiles("sprites_profiles"),
         "boxd_profiles": _keep_vm_profiles("boxd_profiles"),
+        "fargate_profiles": _keep_vm_profiles("fargate_profiles"),
         "stop_on_shutdown": validate_stop_on_shutdown,
     }
 
 
 def _keep_vm_profiles(key: str) -> Callable[[object], list[dict[str, Any]]]:
-    """The saved Sprites or boxd profiles the loader keeps, entry by entry.
+    """The saved Sprites, boxd or Fargate profiles the loader keeps, entry by entry.
 
     The loader drops a malformed or duplicate entry and keeps every valid one, so
     an omitted list is carried the same way: one hand-edited entry does not take
@@ -149,10 +150,15 @@ def _keep_vm_profiles(key: str) -> Callable[[object], list[dict[str, Any]]]:
     from kiro_crew.config.session_environments import (
         SessionEnvironmentsError,
         load_boxd_profiles,
+        load_fargate_profiles,
         load_sprites_profiles,
     )
 
-    load = {"sprites_profiles": load_sprites_profiles, "boxd_profiles": load_boxd_profiles}[key]
+    load = {
+        "sprites_profiles": load_sprites_profiles,
+        "boxd_profiles": load_boxd_profiles,
+        "fargate_profiles": load_fargate_profiles,
+    }[key]
 
     def keep(value: object) -> list[dict[str, Any]]:
         if not isinstance(value, list):
@@ -175,8 +181,8 @@ def _keep_omitted_session_environment_keys(saved: object, value: dict) -> dict:
     the loader reads it: a profile list keeps each entry the loader keeps, a value
     it would not accept at all (a hand edit) is not carried, and a saved default profile
     that no profile list of the merged section has is dropped rather than kept
-    dangling. Profile lists are merged first, so a default naming a kept Sprites
-    or boxd profile survives a save that omitted that list."""
+    dangling. Profile lists are merged first, so a default naming a kept Sprites,
+    boxd or Fargate profile survives a save that omitted that list."""
     from kiro_crew.config.session_environments import (
         SECTION_OPTIONAL_KEYS,
         SessionEnvironmentsError,
@@ -209,6 +215,7 @@ def _profile_ids(section: dict) -> set[str]:
     id that is not a string, say) names no profile and cannot fail the write."""
     from kiro_crew.config.session_environments import (
         load_boxd_profiles,
+        load_fargate_profiles,
         load_session_environments,
         load_sprites_profiles,
     )
@@ -216,7 +223,12 @@ def _profile_ids(section: dict) -> set[str]:
     _coder_url, coder = load_session_environments(section)
     return {
         item["id"]
-        for item in (*coder, *load_sprites_profiles(section), *load_boxd_profiles(section))
+        for item in (
+            *coder,
+            *load_sprites_profiles(section),
+            *load_boxd_profiles(section),
+            *load_fargate_profiles(section),
+        )
     }
 
 
@@ -612,6 +624,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             if path_key in (
                 "session_environments.sprites_profiles",
                 "session_environments.boxd_profiles",
+                "session_environments.fargate_profiles",
             ):
                 # A list may not drop the profile the saved default names: every
                 # new chat would then run locally, and the next whole save fail.

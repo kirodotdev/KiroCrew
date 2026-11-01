@@ -416,9 +416,10 @@ async def test_check_endpoint_reports_sign_in_and_each_profile(tmp_path, monkeyp
             "coder": {"ok": False, "error": "no Coder URL is saved"},
             "profiles": [],
             "git": git,
-            # No Sprites or boxd profile: their rows are empty, never omitted.
+            # No Sprites, boxd or Fargate profile: their rows are empty, never omitted.
             "sprites": [],
             "boxd": [],
+            "fargate": [],
         }
         body = await (await client.post("/check")).json()
         # Coder's own words, not a guess that it is a sign-in problem (a timeout
@@ -430,6 +431,7 @@ async def test_check_endpoint_reports_sign_in_and_each_profile(tmp_path, monkeyp
             "git": git,
             "sprites": [],
             "boxd": [],
+            "fargate": [],
         }
         fake.signed_in = True
         body = await (await client.post("/check")).json()
@@ -552,6 +554,22 @@ async def test_workspaces_endpoint_lists_owned_rows_and_reports_an_unreadable_re
         resp = await client.get("/ws")
         assert resp.status == 500 and (await resp.json())["code"] == "workspaces_unreadable"
         assert str(tmp_path) not in (await resp.json())["error"]
+
+
+@sync
+async def test_an_unreadable_fargate_registry_is_reported_not_listed_as_empty(
+    tmp_path, monkeypatch
+):
+    async with _client(tmp_path, monkeypatch) as client:
+        # Its tasks may still be running and billing; an empty list would hide them.
+        path = tmp_path / "fargate" / "session-tasks.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json")
+        resp = await client.get("/ws")
+        assert resp.status == 500
+        body = await resp.json()
+        assert body["code"] == "workspaces_unreadable" and "workspaces" not in body
+        assert str(tmp_path) not in body["error"]
 
 
 @pytest.mark.parametrize("provider", ["sprites", "boxd"])
