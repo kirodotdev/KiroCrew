@@ -230,6 +230,7 @@ describe('dependency direction', () => {
     'chatStream.ts': ['attention.ts', 'browserEvents.ts'],
     'composerCards.ts': ['attention.ts', 'retiredIds.ts'],
     'connection.ts': ['gatewayConnectivity.ts'],
+    'foldWatch.ts': ['serverState.ts'],
     'reconnectCatchUp.ts': ['bundleReload.ts', 'gatewayConnectivity.ts', 'serverState.ts'],
     'serverState.ts': ['browserEvents.ts'],
     'slotList.ts': ['idleRowRefresh.ts'],

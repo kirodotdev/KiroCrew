@@ -119,7 +119,7 @@ function mount(
  * `mount` runs the script in a fresh `new Function`, so every piece of module state
  * the page keeps -- which rows are expanded, which drawer is open, what each row
  * looked like last time -- starts empty. That is a page LOAD. What the host actually
- * does is replace the field bag and post a message, which the page's existing script
+ * does is replace the field bag and fire `kirocrew-dashboard`, which the page's script
  * hears and re-renders from. Only this second thing can show that a refresh leaves
  * an expanded row expanded, because only this second thing has the state to lose.
  */
@@ -131,7 +131,7 @@ function refresh(
   api.fields = fields
   if (extra.written_at) api.written_at = extra.written_at
   if (extra.last_user_at !== undefined) api.last_user_at = extra.last_user_at
-  window.dispatchEvent(new MessageEvent('message', { data: { type: 'kirocrew:fields' } }))
+  window.dispatchEvent(new Event('kirocrew-dashboard'))
 }
 
 const text = (sel: string) => document.querySelector(sel)?.textContent?.trim() ?? ''

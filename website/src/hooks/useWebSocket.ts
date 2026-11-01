@@ -56,6 +56,7 @@ import {
   handleDashboardMoved,
   handleMemberProjection,
   handleMembersSubscribed,
+  handleSlotFoldMoved,
   handleSourceStatus,
   handleThreadReply,
   invalidateRefreshQueries,
@@ -786,6 +787,10 @@ export function useWebSocket() {
             // ancestors were re-read when it first arrived.
             const outcome = applySlotFoldFrame(queryClient, frame, (next, replayed) => pull(next, replayed, [next.slot]))
             pull(frame, outcome, roots)
+            // Even on `stale`: that means the work BOARD already holds this
+            // revision (its own poll can land first), not that the separately
+            // cached Overview does.
+            handleSlotFoldMoved(queryClient, roots)
             break
           }
           case 'slot_projection': {
@@ -821,7 +826,8 @@ export function useWebSocket() {
               // moved -- the push is an optimisation, never the only channel.
               if (seedFoldedProjection(queryClient, read.frame.slot, read.frame)) seededRoot = read.frame.slot
             }
-            for (const root of teamRoots(store.getState().dashboard.slots, data.slot)) {
+            const roots = teamRoots(store.getState().dashboard.slots, data.slot)
+            for (const root of roots) {
               if (root === seededRoot) continue
               const key = ['command-center', root, 'work']
               const inFlight = queryClient.getQueryCache().find({ queryKey: key, exact: true })
@@ -829,6 +835,7 @@ export function useWebSocket() {
                 void inFlight.promise.catch(() => undefined).finally(() => { void queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false }) })
               } else queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false })
             }
+            handleSlotFoldMoved(queryClient, roots)
             break
           }
           case 'workflow_run_event': {
