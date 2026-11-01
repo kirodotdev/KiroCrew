@@ -363,11 +363,19 @@ def _targets_denied(
 
     try:
         jev = lane == LANE_JEV
+        endpoint = configured_endpoint(config) if jev else None
+        if endpoint is not None:
+            from kiro_crew.decisions.impl_sagemaker import is_sagemaker_endpoint, policy_endpoint
+
+            # The ceiling is asked about the AWS host the request reaches, not the
+            # endpoint name; an address that names no host raises and denies below.
+            if is_sagemaker_endpoint(endpoint):
+                endpoint = policy_endpoint(endpoint)
         return targets_denied(
             session_key or DASHBOARD_SURFACE_KEY,
             point=point,
             model=model if jev else None,
-            endpoint=configured_endpoint(config) if jev else None,
+            endpoint=endpoint,
         )
     except Exception as exc:
         logger.debug("decisions: %s target check failed (%s)", point, type(exc).__name__)
@@ -692,6 +700,12 @@ def _oracle(lane: str, provider: Any, model: str = "") -> Any:
         # anything: without it the call inherits whatever the boot-time runner
         # captured. The inherit sentinel is not a model to ask for.
         return LlmOracle(model="" if model == JUDGE_MODEL_DEFAULT else model)
+    # A ``sagemaker://`` endpoint is the same System One request sent through
+    # SageMaker's InvokeEndpoint with SigV4 instead of over HTTP with a key.
+    from kiro_crew.decisions.impl_sagemaker import SageMakerOracle, is_sagemaker_endpoint
+
+    if is_sagemaker_endpoint(getattr(provider, "endpoint", "")):
+        return SageMakerOracle(provider)
     from kiro_crew.decisions.impl_jev import JevOracle
 
     return JevOracle(provider)
