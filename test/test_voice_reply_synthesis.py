@@ -640,6 +640,37 @@ class TestSynthesizePolly:
         _patch_aws_on_path(monkeypatch)
 
     @pytest.mark.asyncio
+    async def test_the_aws_child_gets_no_python_interpreter_settings(self, monkeypatch) -> None:
+        """A Python ``aws`` (aws-cli v1) must not import the gateway's packages.
+
+        The voice list (``chat_voice``) already drops ``_PYTHON_ENV_PREFIXES`` from
+        its ``aws`` child. Synthesis spawns the same ``aws`` for the same user, so
+        with the launcher's ``PYTHONPATH`` inherited, voice listing succeeds but
+        synthesis still dies with ``SyntaxError``. An inherited environment
+        (``env=None``) is read as the gateway's own, which is what the child gets.
+        """
+        monkeypatch.setenv("PYTHONPATH", "/bundle/site-packages")
+        monkeypatch.setenv("PYTHONHOME", "/bundle")
+        monkeypatch.setenv("KC_UNRELATED_SETTING", "kept")
+        proc = _mock_subprocess(returncode=0)
+        seen: dict = {}
+
+        async def fake_exec(*cmd, **kwargs):
+            seen["env"] = kwargs.get("env")
+            with open(cmd[-1], "wb") as f:
+                f.write(b"x" * 200)
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await _synthesize_polly("<speak>hi</speak>")
+        assert result is not None
+        os.unlink(result)
+        env = dict(os.environ) if seen["env"] is None else seen["env"]
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert env.get("KC_UNRELATED_SETTING") == "kept"
+
+    @pytest.mark.asyncio
     async def test_invalid_engine_falls_back_to_default(self, tmp_path) -> None:
         proc = _mock_subprocess(returncode=0)
 
