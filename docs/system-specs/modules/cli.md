@@ -726,6 +726,16 @@ whose request is not idempotent does not advise a blind retry: `spawn run` and
 nonce the gateway may already have consumed, so its busy line points at the
 dashboard rather than inviting a re-run.
 
+A gateway that answers with an error status is running, and its JSON body says
+why. `kirocrew logout` and `kirocrew cron trigger` read that reason through
+`loopback_http.http_error_reason`: at most 4096 bytes of the body, its `error`
+string (or its `code` string when `error` is missing or blank), with control
+characters dropped and a 200-character cap. The line becomes `HTTP <code>:
+<reason>`, for example `❌ Failed to revoke sessions: HTTP 500: could not persist
+session revocation; logout not completed`, so a revocation the gateway could not
+persist is not mistaken for a refused secret. An HTML, empty or non-JSON body
+keeps the bare `HTTP <code>`.
+
 The contract exists because stdout is parsed, not just read by a human. The
 remote-mint path (`kiro_crew.instances.token_mint.mint_remote_token`) runs
 `kirocrew token` on a remote host over SSH and regex-extracts the JWT from its
