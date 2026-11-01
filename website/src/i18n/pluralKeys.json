@@ -350,5 +350,12 @@
   "components.searchResultsList.showing_matches",
   "apps.issueRadar.views.settings.repoSettings.first_issue_friendly_count",
   "pages.overview.vectorMemoryCard.showing_semantic",
-  "pages.overview.vectorMemoryCard.showing_semantic_filtered"
+  "pages.overview.vectorMemoryCard.showing_semantic_filtered",
+  "milestone.chats_opened.tier",
+  "milestone.streak_best.tier",
+  "milestones.indicator_label_streak",
+  "milestones.streak_days",
+  "milestones.notice_count",
+  "milestones.try_today_entry",
+  "milestones.streak_short"
 ]

@@ -168,6 +168,15 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
           isActive,
         )
         refreshSessionControlStatusesAfterTurn(queryClient, data.slot, isActive)
+        // Milestones are counted at turn start and when a feature happens, so
+        // the end of the turn in view is when a new one can be due (RFC 4.3).
+        // Only when something has read them: with no milestones query in the
+        // cache (Explore off, or never mounted) there is nothing to refresh.
+        // "In view" includes a thread a non-chat page shows (the Mate DM on
+        // Members), not only the active chat (`isSlotOnScreen`).
+        if (isSlotOnScreen(data.slot) && !reconnectingRef.current && queryClient.getQueryCache().find({ queryKey: ['milestones'], exact: false })) {
+          void queryClient.invalidateQueries({ queryKey: ['milestones'] })
+        }
       }
     },
   }), [dispatch, queryClient, reconnectingRef])

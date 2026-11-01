@@ -218,6 +218,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     dashboard?: {
       recent_tint_count?: number
       show_unread_dot?: boolean
+      milestones_enabled?: boolean
       terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
     }
   }
@@ -269,6 +270,34 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     onFailure: () => setUnreadDotError(i18nT('pages.settings.displayPanel.show_unread_dot_save_failed')),
     onSupersede: () => setUnreadDotError(null),
   }))
+
+  // Explore (RFC "Milestones for New-User Feature Discovery" 4.9): the main
+  // switch. Default on; only a literal `false` is off. Shown only when the
+  // gateway's config carries the key: an older gateway refuses the write, and
+  // a toggle that can only fail is worse than none.
+  const milestonesSupported = typeof mcQ.data?.dashboard?.milestones_enabled === 'boolean'
+  const shownMilestones = overlay.shown('dashboard.milestones_enabled', mcQ.data?.dashboard?.milestones_enabled !== false)
+  const [milestonesError, setMilestonesError] = useState<string | null>(null)
+  const milestonesMutOpts = (path: 'dashboard.milestones_enabled') => {
+    const opts = overlay.mutationOpts<boolean>({
+      queryKey: ['kirocrewConfig'],
+      mutationFn: (value: boolean) => api.patchConfig(path, value),
+      path: () => path,
+      displayValue: v => v,
+      applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, path, value),
+      onFailure: () => setMilestonesError(i18nT('pages.settings.displayPanel.milestones_save_failed')),
+      onSupersede: () => setMilestonesError(null),
+    })
+    return {
+      ...opts,
+      // The indicator, panel and empty state read the switch through the milestones route.
+      onSettled: (...args: Parameters<typeof opts.onSettled>) => {
+        opts.onSettled(...args)
+        void qc.invalidateQueries({ queryKey: ['milestones'] })
+      },
+    }
+  }
+  const milestonesMut = useMutation(milestonesMutOpts('dashboard.milestones_enabled'))
 
   // Default shell for the built-in terminal — persisted server-side
   // (dashboard.terminal.shell) because the SHELL is spawned by the gateway
@@ -606,6 +635,19 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             onChange={setLiquidGlass}
           />
           <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
+          {milestonesSupported && (
+          <SettingsToggle
+            configKey="dashboard.milestones_enabled"
+            label={i18nT('pages.settings.displayPanel.milestones')}
+            hint={i18nT('pages.settings.displayPanel.milestones_hint')}
+            checked={shownMilestones}
+            onChange={v => milestonesMut.mutate(v)}
+            disabled={milestonesMut.isPending || !mcQ.isSuccess}
+          />
+          )}
+          {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
+              on this panel that navigation would discard. */}
+          <ErrorNotice message={milestonesError} variant="inline" />
         </SettingsCard>
       </SettingsSection>
       {/* Desktop app only: shown once the main process answers for the main

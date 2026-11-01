@@ -8361,7 +8361,10 @@
         "retrying_theme_list": "Retrying…",
         "show_unread_dot": "Show unread dot on session cards",
         "show_unread_dot_save_failed": "Could not save the unread dot setting.",
-        "recent_tint_save_failed": "Could not save the recent-session highlight count."
+        "recent_tint_save_failed": "Could not save the recent-session highlight count.",
+        "milestones": "Explore",
+        "milestones_hint": "Show Explore in the top bar and a Try today card on a new chat.",
+        "milestones_save_failed": "Could not save the Explore setting. Try again."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",
@@ -10486,5 +10489,94 @@
     "apply_replace_n": "Replace directions and add {{count}}",
     "current_directions": "Current directions (will be replaced): {{directions}}",
     "done_replaced": "Behavior directions replaced."
+  },
+  "milestone": {
+    "widgets": {
+      "title": "First widget",
+      "blurb": "Turn your data into a card you can click",
+      "starter_prompt": "Make a widget that shows my calendar for this week",
+      "action": "Make a widget"
+    },
+    "scheduled_task": {
+      "title": "First scheduled task",
+      "blurb": "Runs on time, like a morning brief",
+      "starter_prompt": "Every morning, give me a brief",
+      "action": "Schedule a task"
+    },
+    "mate": {
+      "title": "Met the Mate",
+      "blurb": "A teammate who helps you get started",
+      "starter_prompt": "Introduce me to the Mate",
+      "action": "Meet the Mate, your guide"
+    },
+    "parallel_chats": {
+      "title": "First parallel chats",
+      "blurb": "Split one task across chats",
+      "starter_prompt": "Open two chats at once: one researches, one writes an outline",
+      "action": "Run two chats at once"
+    },
+    "slack": {
+      "title": "Slack connected",
+      "blurb": "Hand me work from Slack too",
+      "starter_prompt": "Connect Crew to my Slack",
+      "action": "Connect Slack"
+    },
+    "pr_watch": {
+      "title": "First PR watch",
+      "blurb": "Hear when CI goes green or a review comes in",
+      "starter_prompt": "Watch the PR I paste next and tell me when CI goes green.",
+      "action": "Watch a pull request"
+    },
+    "crew_mode": {
+      "title": "Used Ultra Mode",
+      "blurb": "A few teammates work on one goal together",
+      "starter_prompt": "Split the task I describe next across a few teammates working in parallel.",
+      "action": "Try Ultra Mode"
+    },
+    "chats_opened": {
+      "title": "Chats opened",
+      "tier_one": "{{count}} chat",
+      "tier_other": "{{count}} chats"
+    },
+    "turns_sent": {},
+    "streak_best": {
+      "title": "Best streak",
+      "tier_one": "{{count}}-day streak",
+      "tier_other": "{{count}}-day streak"
+    }
+  },
+  "milestones": {
+    "title": "Explore",
+    "close": "Close Explore",
+    "indicator_label": "Explore: {{done}} of {{total}} features tried",
+    "group_streak": "Streak",
+    "streak_days_one": "{{count}} day · best {{best}}",
+    "streak_days_other": "{{count}} days · best {{best}}",
+    "try_it": "Try it",
+    "mark_as_done": "Mark as done",
+    "notice_one": "Reached: {{title}}",
+    "load_failed": "Could not load Explore.",
+    "indicator_label_streak_one": "Explore: {{done}} of {{total}} features tried, {{count}}-day streak",
+    "indicator_label_streak_other": "Explore: {{done}} of {{total}} features tried, {{count}}-day streak",
+    "try_today": "Try today",
+    "your_progress": "Your progress",
+    "all_tried": "You've tried every feature here.",
+    "try_today_entry_one": "Try today: {{count}} new feature",
+    "try_today_entry_other": "Try today: {{count}} new features",
+    "notice_count_one": "{{count}} new in Explore",
+    "notice_count_other": "{{count}} new in Explore",
+    "intro_video_title": "{{productName}} in 15 seconds",
+    "intro_video_watch": "Watch",
+    "intro_video_close": "Close video",
+    "intro_video_save_failed": "Could not save that you watched or closed this video. Try again.",
+    "getting_started": "Getting started",
+    "getting_started_result": "A first finished result",
+    "getting_started_brief": "Set up a morning brief",
+    "badges": "Badges",
+    "try_today_none": "Start with Getting started below.",
+    "streak_short_one": "{{count}}-day streak",
+    "streak_short_other": "{{count}}-day streak",
+    "pill_count": "Explore {{done}}/{{total}}",
+    "more_to_try": "Also worth a look"
   }
 }

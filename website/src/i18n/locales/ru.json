@@ -15252,6 +15252,7 @@
       },
       "sourcesList": {
         "add_folder": "Добавить папку",
+        "add_folder_by_path": "Добавить папку по пути",
         "add_source": "+ Добавить источник",
         "add_source_2": "Добавить источник",
         "adding": "Добавление...",
@@ -15262,17 +15263,22 @@
         "browse_for_a_folder": "Выбрать папку",
         "cancel": "Отмена",
         "cancel_rename": "Отменить переименование",
+        "choose_files": "Выбрать файлы",
+        "choose_folder": "Выбрать папку",
         "chunks_embedded_so_far": "{{chunks}} фрагментов векторизовано на данный момент",
         "collapse_folder_details": "Свернуть подробности папки",
         "confirm": "Подтвердить",
         "confirm_scan": "Подтвердить сканирование",
         "default": "по умолчанию",
         "deleting": "Удаление...",
-        "drop_files_here_or_click_to_upload": "Перетащите файлы сюда или нажмите для загрузки",
+        "drop_files_or_a_folder_here": "Перетащи сюда файлы или папку либо нажми, чтобы выбрать файлы",
         "empty_0_supported_files": "пусто (0 поддерживаемых файлов)",
         "estimated_requests_still_needed_to_finish_indexi": "Оценка запросов Kiro, которые ещё нужны, чтобы завершить индексацию этого источника.",
         "expand_folder_details": "Развернуть подробности папки",
         "failed": "ошибка",
+        "files_and_folders": "Файлы и папки",
+        "folder_drop_needs_path": "Введи выше полный путь к этой папке. Здесь его нельзя узнать при перетаскивании.",
+        "folder_picker_failed": "Не удалось открыть выбор папки. Введи путь к папке вручную.",
         "failed_to_add_source": "Не удалось добавить источник",
         "files_failed_count_few": "{{count}} с ошибкой",
         "files_failed_count_many": "{{count}} с ошибкой",
@@ -15291,8 +15297,6 @@
         "kiro_requests_left": "~{{calls}} запросов Kiro до завершения",
         "max_file_size": "Не более {{max}} MB на файл.",
         "max_file_size_unavailable": "Не удалось получить ограничение размера. Загружать всё равно можно: сервер проверяет каждый файл.",
-        "local_file": "Локальный файл",
-        "local_folder": "Локальная папка",
         "manual": "○ вручную",
         "name_optional": "Название (необязательно)",
         "namespace": "Пространство имён:",
@@ -18332,7 +18336,10 @@
         "theme_experience": "Оформление",
         "theme_experience_sounds": "Звуки",
         "theme_experience_overlays": "Оверлеи",
-        "theme_experience_persona": "Персона"
+        "theme_experience_persona": "Персона",
+        "milestones_hint": "Показывать обзор в верхней панели и карточку «Попробуй сегодня» в новом чате.",
+        "milestones": "Обзор",
+        "milestones_save_failed": "Не удалось сохранить настройку обзора. Попробуй ещё раз."
       },
       "importPanel": {
         "agent_data": "Данные агента",
@@ -21915,5 +21922,107 @@
     "take_over_typing": "Перехватить",
     "take_over_typing_label": "Перехватить ввод у {{name}}. Черновик этого человека останется у него.",
     "take_over_failed": "Не удалось перехватить ввод."
+  },
+  "milestone": {
+    "streak_best": {
+      "tier_few": "{{count}} дня подряд",
+      "tier_many": "{{count}} дней подряд",
+      "title": "Лучшая серия",
+      "tier_one": "{{count}} день подряд",
+      "tier_other": "{{count}} дня подряд"
+    },
+    "crew_mode": {
+      "starter_prompt": "Раздели задачу, которую я опишу дальше, между несколькими товарищами, работающими параллельно.",
+      "action": "Попробовать Ultra Mode",
+      "blurb": "Несколько товарищей вместе работают над одной целью",
+      "title": "Ultra Mode попробован"
+    },
+    "slack": {
+      "starter_prompt": "Подключи Crew к моему Slack",
+      "action": "Подключить Slack",
+      "blurb": "Давай мне задачи и из Slack",
+      "title": "Slack подключён"
+    },
+    "parallel_chats": {
+      "action": "Запустить два чата сразу",
+      "blurb": "Раздели одну задачу на несколько чатов",
+      "title": "Первые параллельные чаты",
+      "starter_prompt": "Открой два чата сразу: один исследует, другой пишет план"
+    },
+    "chats_opened": {
+      "tier_other": "{{count}} чата",
+      "tier_few": "{{count}} чата",
+      "tier_many": "{{count}} чатов",
+      "title": "Открыто чатов",
+      "tier_one": "{{count}} чат"
+    },
+    "widgets": {
+      "action": "Сделать виджет",
+      "blurb": "Преврати данные в карточку, по которой можно нажать",
+      "title": "Первый виджет",
+      "starter_prompt": "Сделай виджет с моим календарём на эту неделю"
+    },
+    "scheduled_task": {
+      "title": "Первая задача по расписанию",
+      "starter_prompt": "Каждое утро давай мне сводку",
+      "action": "Запланировать задачу",
+      "blurb": "Запускается вовремя, например утренняя сводка"
+    },
+    "pr_watch": {
+      "action": "Следить за пул-реквестом",
+      "blurb": "Узнай, когда CI станет зелёным или придёт ревью",
+      "title": "Первое наблюдение за PR",
+      "starter_prompt": "Следи за PR, который я вставлю дальше, и скажи, когда CI станет зелёным."
+    },
+    "mate": {
+      "title": "Знакомство с Mate",
+      "starter_prompt": "Познакомь меня с Mate",
+      "action": "Познакомиться с Mate, твоим гидом",
+      "blurb": "Товарищ по команде, который поможет начать"
+    }
+  },
+  "milestones": {
+    "more_to_try": "Ещё стоит посмотреть",
+    "intro_video_close": "Закрыть видео",
+    "try_today_entry_other": "Попробуй сегодня: {{count}} новой функции",
+    "indicator_label_streak_many": "Обзор: опробовано {{done}} из {{total}} функций, {{count}} дней подряд",
+    "try_today_none": "Начни с «Первых шагов» ниже.",
+    "streak_short_one": "{{count}} день подряд",
+    "notice_count_other": "{{count}} новости в обзоре",
+    "notice_one": "Достигнуто: {{title}}",
+    "your_progress": "Твой прогресс",
+    "try_today_entry_one": "Попробуй сегодня: {{count}} новая функция",
+    "getting_started_result": "Первый готовый результат",
+    "getting_started_brief": "Настроить утреннюю сводку",
+    "intro_video_title": "{{productName}} за 15 секунд",
+    "indicator_label": "Обзор: опробовано {{done}} из {{total}} функций",
+    "streak_days_other": "{{count}} дня · рекорд {{best}}",
+    "close": "Закрыть обзор",
+    "pill_count": "Обзор {{done}}/{{total}}",
+    "indicator_label_streak_few": "Обзор: опробовано {{done}} из {{total}} функций, {{count}} дня подряд",
+    "group_streak": "Серия",
+    "streak_short_many": "{{count}} дней подряд",
+    "try_it": "Попробовать",
+    "all_tried": "Ты попробовал все функции здесь.",
+    "indicator_label_streak_other": "Обзор: опробовано {{done}} из {{total}} функций, {{count}} дня подряд",
+    "intro_video_watch": "Смотреть",
+    "indicator_label_streak_one": "Обзор: опробовано {{done}} из {{total}} функций, {{count}} день подряд",
+    "streak_days_few": "{{count}} дня · рекорд {{best}}",
+    "getting_started": "Первые шаги",
+    "mark_as_done": "Отметить выполненным",
+    "try_today_entry_few": "Попробуй сегодня: {{count}} новые функции",
+    "badges": "Значки",
+    "try_today": "Попробуй сегодня",
+    "try_today_entry_many": "Попробуй сегодня: {{count}} новых функций",
+    "streak_short_other": "{{count}} дня подряд",
+    "notice_count_one": "{{count}} новость в обзоре",
+    "streak_short_few": "{{count}} дня подряд",
+    "load_failed": "Не удалось загрузить обзор.",
+    "intro_video_save_failed": "Не удалось сохранить, что ты посмотрел или закрыл это видео. Попробуй ещё раз.",
+    "streak_days_one": "{{count}} день · рекорд {{best}}",
+    "title": "Обзор",
+    "notice_count_few": "{{count}} новости в обзоре",
+    "streak_days_many": "{{count}} дней · рекорд {{best}}",
+    "notice_count_many": "{{count}} новостей в обзоре"
   }
 }

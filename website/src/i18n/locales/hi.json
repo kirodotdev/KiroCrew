@@ -14746,6 +14746,7 @@
       },
       "sourcesList": {
         "add_folder": "फ़ोल्डर जोड़ें",
+        "add_folder_by_path": "पथ से फ़ोल्डर जोड़ो",
         "add_source": "+ स्रोत जोड़ें",
         "add_source_2": "स्रोत जोड़ें",
         "adding": "जोड़ा जा रहा है...",
@@ -14756,17 +14757,22 @@
         "browse_for_a_folder": "फ़ोल्डर ब्राउज़ करें",
         "cancel": "रद्द करें",
         "cancel_rename": "नाम बदलना रद्द करें",
+        "choose_files": "फ़ाइलें चुनो",
+        "choose_folder": "फ़ोल्डर चुनो",
         "chunks_embedded_so_far": "अब तक {{chunks}} चंक एम्बेड किए गए",
         "collapse_folder_details": "फ़ोल्डर विवरण समेटें",
         "confirm": "पुष्टि करें",
         "confirm_scan": "स्कैन की पुष्टि करें",
         "default": "डिफ़ॉल्ट",
         "deleting": "हटाया जा रहा है...",
-        "drop_files_here_or_click_to_upload": "फ़ाइलें यहाँ छोड़ें या अपलोड करने के लिए क्लिक करें",
+        "drop_files_or_a_folder_here": "फ़ाइलें या कोई फ़ोल्डर यहाँ छोड़ो, या फ़ाइलें चुनने के लिए क्लिक करो",
         "empty_0_supported_files": "खाली (0 समर्थित फ़ाइल)",
         "estimated_requests_still_needed_to_finish_indexi": "इस स्रोत की इंडेक्सिंग पूरी करने के लिए अनुमानित रूप से इतने Kiro अनुरोध और चाहिए।",
         "expand_folder_details": "फ़ोल्डर विवरण खोलें",
         "failed": "विफल",
+        "files_and_folders": "फ़ाइलें और फ़ोल्डर",
+        "folder_drop_needs_path": "ऊपर इस फ़ोल्डर का पूरा पथ लिखो। यहाँ छोड़े गए फ़ोल्डर से इसे पढ़ा नहीं जा सकता।",
+        "folder_picker_failed": "फ़ोल्डर चुनने वाला नहीं खुल सका। इसके बजाय फ़ोल्डर का पथ लिखो।",
         "failed_to_add_source": "स्रोत जोड़ने में विफल",
         "files_failed_count_one": "{{count}} विफल",
         "files_failed_count_other": "{{count}} विफल",
@@ -14783,8 +14789,6 @@
         "kiro_requests_left": "पूरा करने में ~{{calls}} Kiro अनुरोध और लगेंगे",
         "max_file_size": "हर फ़ाइल अधिकतम {{max}} MB.",
         "max_file_size_unavailable": "आकार सीमा लोड नहीं हो सकी। तुम फिर भी अपलोड कर सकते हो; सर्वर हर फ़ाइल की जाँच करता है।",
-        "local_file": "लोकल फ़ाइल",
-        "local_folder": "लोकल फ़ोल्डर",
         "manual": "○ मैनुअल",
         "name_optional": "नाम (वैकल्पिक)",
         "namespace": "नेमस्पेस:",
@@ -17696,7 +17700,10 @@
         "theme_experience": "अनुभव",
         "theme_experience_sounds": "ध्वनियाँ",
         "theme_experience_overlays": "ओवरले",
-        "theme_experience_persona": "पर्सोना"
+        "theme_experience_persona": "पर्सोना",
+        "milestones": "एक्सप्लोर",
+        "milestones_hint": "ऊपर की बार में एक्सप्लोर और नई चैट में \"आज आज़माओ\" कार्ड दिखाओ।",
+        "milestones_save_failed": "एक्सप्लोर की सेटिंग सेव नहीं हो सकी। फिर कोशिश करो।"
       },
       "importPanel": {
         "agent_data": "एजेंट डेटा",
@@ -21211,5 +21218,93 @@
     "take_over_typing": "अपने हाथ में लो",
     "take_over_typing_label": "{{name}} से टाइप करना अपने हाथ में लो। उनका ड्राफ़्ट उन्हीं के पास रहेगा।",
     "take_over_failed": "टाइप करना अपने हाथ में नहीं लिया जा सका।"
+  },
+  "milestones": {
+    "notice_one": "पूरा हुआ: {{title}}",
+    "badges": "बैज",
+    "notice_count_other": "एक्सप्लोर में {{count}} नई बातें",
+    "try_today": "आज आज़माओ",
+    "intro_video_close": "वीडियो बंद करो",
+    "getting_started_result": "पहला पूरा हुआ नतीजा",
+    "try_today_entry_other": "आज आज़माओ: {{count}} नई सुविधाएँ",
+    "try_today_entry_one": "आज आज़माओ: {{count}} नई सुविधा",
+    "title": "एक्सप्लोर",
+    "streak_short_one": "लगातार {{count}} दिन",
+    "load_failed": "एक्सप्लोर लोड नहीं हो सका।",
+    "more_to_try": "ये भी देखो",
+    "try_today_none": "नीचे \"शुरुआत\" से शुरू करो।",
+    "streak_short_other": "लगातार {{count}} दिन",
+    "streak_days_one": "{{count}} दिन · सबसे अच्छा {{best}}",
+    "intro_video_watch": "देखो",
+    "indicator_label": "एक्सप्लोर: {{total}} में से {{done}} सुविधाएँ आज़माईं",
+    "close": "एक्सप्लोर बंद करो",
+    "streak_days_other": "{{count}} दिन · सबसे अच्छा {{best}}",
+    "indicator_label_streak_other": "एक्सप्लोर: {{total}} में से {{done}} सुविधाएँ आज़माईं, लगातार {{count}} दिन",
+    "indicator_label_streak_one": "एक्सप्लोर: {{total}} में से {{done}} सुविधाएँ आज़माईं, लगातार {{count}} दिन",
+    "pill_count": "एक्सप्लोर {{done}}/{{total}}",
+    "getting_started_brief": "सुबह की ब्रीफ़ सेट करो",
+    "mark_as_done": "पूरा मार्क करो",
+    "notice_count_one": "एक्सप्लोर में {{count}} नई बात",
+    "your_progress": "तुम्हारी प्रगति",
+    "all_tried": "तुमने यहाँ की सारी सुविधाएँ आज़मा लीं।",
+    "intro_video_title": "15 सेकंड में {{productName}}",
+    "group_streak": "लगातार दिन",
+    "try_it": "आज़माओ",
+    "getting_started": "शुरुआत",
+    "intro_video_save_failed": "तुमने यह वीडियो देखा या बंद किया, यह सेव नहीं हो सका। फिर से कोशिश करो।"
+  },
+  "milestone": {
+    "parallel_chats": {
+      "starter_prompt": "एक साथ दो चैट खोलो: एक रिसर्च करे, दूसरी रूपरेखा लिखे",
+      "title": "पहली साथ-साथ चैट",
+      "action": "दो चैट एक साथ चलाओ",
+      "blurb": "एक काम को कई चैट में बाँटो"
+    },
+    "crew_mode": {
+      "action": "Ultra Mode आज़माओ",
+      "starter_prompt": "जो काम मैं आगे बताऊँ, उसे कुछ साथियों में बाँट दो, ताकि सब साथ-साथ उस पर काम कर सकें।",
+      "title": "Ultra Mode इस्तेमाल किया",
+      "blurb": "कुछ साथी मिलकर एक लक्ष्य पर काम करते हैं"
+    },
+    "chats_opened": {
+      "title": "खोली गई चैट",
+      "tier_other": "{{count}} चैट",
+      "tier_one": "{{count}} चैट"
+    },
+    "scheduled_task": {
+      "starter_prompt": "हर सुबह मुझे एक ब्रीफ़ दो",
+      "title": "पहला शेड्यूल किया गया काम",
+      "blurb": "समय पर चलता है, जैसे सुबह का सार",
+      "action": "एक काम शेड्यूल करो"
+    },
+    "widgets": {
+      "title": "पहला विजेट",
+      "action": "एक विजेट बनाओ",
+      "blurb": "अपने डेटा को क्लिक करने लायक कार्ड बनाओ",
+      "starter_prompt": "एक विजेट बनाओ जो इस हफ़्ते का मेरा कैलेंडर दिखाए"
+    },
+    "pr_watch": {
+      "action": "एक पुल रिक्वेस्ट पर नज़र रखो",
+      "blurb": "CI हरा होने या रिव्यू आने पर पता चले",
+      "starter_prompt": "जो PR मैं आगे चिपकाऊँ, उस पर नज़र रखो और CI हरा होने पर बताओ।",
+      "title": "पहला PR वॉच"
+    },
+    "mate": {
+      "action": "अपने गाइड Mate से मिलो",
+      "blurb": "एक साथी जो शुरुआत में मदद करता है",
+      "starter_prompt": "मुझे Mate से मिलवाओ",
+      "title": "Mate से मिले"
+    },
+    "slack": {
+      "title": "Slack जुड़ा",
+      "blurb": "Slack से भी मुझे काम दो",
+      "action": "Slack जोड़ो",
+      "starter_prompt": "Crew को मेरे Slack से जोड़ो"
+    },
+    "streak_best": {
+      "tier_one": "लगातार {{count}} दिन",
+      "tier_other": "लगातार {{count}} दिन",
+      "title": "सबसे लंबी लगातार अवधि"
+    }
   }
 }

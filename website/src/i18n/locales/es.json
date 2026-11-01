@@ -14999,6 +14999,7 @@
       },
       "sourcesList": {
         "add_folder": "Añadir carpeta",
+        "add_folder_by_path": "Añadir carpeta por ruta",
         "add_source": "+ Añadir fuente",
         "add_source_2": "Añadir fuente",
         "adding": "Añadiendo…",
@@ -15009,17 +15010,22 @@
         "browse_for_a_folder": "Buscar una carpeta",
         "cancel": "Cancelar",
         "cancel_rename": "Cancelar el cambio de nombre",
+        "choose_files": "Elegir archivos",
+        "choose_folder": "Elegir carpeta",
         "chunks_embedded_so_far": "{{chunks}} fragmentos con embeddings hasta ahora",
         "collapse_folder_details": "Contraer los detalles de la carpeta",
         "confirm": "Confirmar",
         "confirm_scan": "Confirmar el análisis",
         "default": "predeterminado",
         "deleting": "Eliminando...",
-        "drop_files_here_or_click_to_upload": "Arrastra archivos aquí o haz clic para subirlos",
+        "drop_files_or_a_folder_here": "Suelta archivos o una carpeta aquí, o haz clic para elegir archivos",
         "empty_0_supported_files": "vacía (0 archivos compatibles)",
         "estimated_requests_still_needed_to_finish_indexi": "Solicitudes de Kiro que se estima que aún faltan para terminar de indexar esta fuente.",
         "expand_folder_details": "Expandir los detalles de la carpeta",
         "failed": "fallido",
+        "files_and_folders": "Archivos y carpetas",
+        "folder_drop_needs_path": "Escribe arriba la ruta completa de esta carpeta. Aquí no se puede leer al soltarla.",
+        "folder_picker_failed": "No se pudo abrir el selector de carpetas. Escribe la ruta de la carpeta.",
         "failed_to_add_source": "No se pudo añadir la fuente",
         "files_failed_count_many": "{{count}} con errores",
         "files_failed_count_one": "{{count}} con error",
@@ -15037,8 +15043,6 @@
         "kiro_requests_left": "~{{calls}} solicitudes de Kiro para terminar",
         "max_file_size": "Máx. {{max}} MB por archivo.",
         "max_file_size_unavailable": "No se pudo cargar el límite de tamaño. Puedes subir archivos igualmente; el servidor comprueba cada archivo.",
-        "local_file": "Archivo local",
-        "local_folder": "Carpeta local",
         "manual": "○ manual",
         "name_optional": "Nombre (opcional)",
         "namespace": "Espacio de nombres:",
@@ -18014,7 +18018,10 @@
         "theme_experience": "Experiencia",
         "theme_experience_sounds": "Sonidos",
         "theme_experience_overlays": "Superposiciones",
-        "theme_experience_persona": "Persona"
+        "theme_experience_persona": "Persona",
+        "milestones_save_failed": "No se pudo guardar el ajuste de Explorar. Inténtalo de nuevo.",
+        "milestones_hint": "Muestra Explorar en la barra superior y una tarjeta «Prueba hoy» en un chat nuevo.",
+        "milestones": "Explorar"
       },
       "importPanel": {
         "agent_data": "Datos del agente",
@@ -21563,5 +21570,100 @@
     "take_over_typing": "Tomar el control",
     "take_over_typing_label": "Tomar el control de la escritura de {{name}}. Su borrador se queda con esa persona.",
     "take_over_failed": "No se pudo tomar el control de la escritura."
+  },
+  "milestone": {
+    "pr_watch": {
+      "blurb": "Entérate cuando la CI se ponga en verde o llegue una revisión",
+      "action": "Vigila una pull request",
+      "title": "Primer PR vigilado",
+      "starter_prompt": "Vigila el PR que pego a continuación y avísame cuando la CI se ponga en verde."
+    },
+    "slack": {
+      "action": "Conecta Slack",
+      "title": "Slack conectado",
+      "starter_prompt": "Conecta Crew a mi Slack",
+      "blurb": "Pídeme trabajo también desde Slack"
+    },
+    "widgets": {
+      "starter_prompt": "Crea un widget que muestre mi calendario de esta semana",
+      "title": "Primer widget",
+      "action": "Crea un widget",
+      "blurb": "Convierte tus datos en una tarjeta que puedes pulsar"
+    },
+    "streak_best": {
+      "tier_one": "Racha de {{count}} día",
+      "title": "Mejor racha",
+      "tier_many": "Racha de {{count}} días",
+      "tier_other": "Racha de {{count}} días"
+    },
+    "chats_opened": {
+      "tier_many": "{{count}} chats",
+      "tier_other": "{{count}} chats",
+      "tier_one": "{{count}} chat",
+      "title": "Chats abiertos"
+    },
+    "mate": {
+      "title": "Conociste al Mate",
+      "starter_prompt": "Preséntame al Mate",
+      "blurb": "Un compañero que te ayuda a empezar",
+      "action": "Conoce al Mate, tu guía"
+    },
+    "crew_mode": {
+      "title": "Usaste Ultra Mode",
+      "starter_prompt": "Reparte la tarea que describo a continuación entre varios compañeros que trabajen en paralelo.",
+      "blurb": "Varios compañeros trabajan juntos en un objetivo",
+      "action": "Prueba Ultra Mode"
+    },
+    "scheduled_task": {
+      "title": "Primera tarea programada",
+      "action": "Programa una tarea",
+      "starter_prompt": "Cada mañana, dame un resumen",
+      "blurb": "Se ejecuta a su hora, como un resumen matutino"
+    },
+    "parallel_chats": {
+      "starter_prompt": "Abre dos chats a la vez: uno investiga y otro escribe un esquema",
+      "title": "Primeros chats en paralelo",
+      "blurb": "Divide una tarea en varios chats",
+      "action": "Ejecuta dos chats a la vez"
+    }
+  },
+  "milestones": {
+    "notice_count_other": "{{count}} novedades en Explorar",
+    "group_streak": "Racha",
+    "indicator_label": "Explorar: {{done}} de {{total}} funciones probadas",
+    "getting_started_brief": "Configura un resumen matutino",
+    "intro_video_save_failed": "No se pudo guardar que viste o cerraste este video. Inténtalo de nuevo.",
+    "indicator_label_streak_one": "Explorar: {{done}} de {{total}} funciones probadas, racha de {{count}} día",
+    "all_tried": "Ya probaste todas las funciones de aquí.",
+    "badges": "Insignias",
+    "streak_short_one": "Racha de {{count}} día",
+    "streak_days_other": "{{count}} días · mejor {{best}}",
+    "streak_short_many": "Racha de {{count}} días",
+    "indicator_label_streak_other": "Explorar: {{done}} de {{total}} funciones probadas, racha de {{count}} días",
+    "try_today_entry_other": "Prueba hoy: {{count}} funciones nuevas",
+    "intro_video_title": "{{productName}} en 15 segundos",
+    "your_progress": "Tu progreso",
+    "streak_short_other": "Racha de {{count}} días",
+    "notice_count_one": "{{count}} novedad en Explorar",
+    "try_today_none": "Empieza por «Primeros pasos», abajo.",
+    "getting_started_result": "Un primer resultado terminado",
+    "try_today_entry_one": "Prueba hoy: {{count}} función nueva",
+    "pill_count": "Explorar {{done}}/{{total}}",
+    "mark_as_done": "Marcar como hecho",
+    "streak_days_one": "{{count}} día · mejor {{best}}",
+    "intro_video_watch": "Ver",
+    "streak_days_many": "{{count}} días · mejor {{best}}",
+    "close": "Cerrar Explorar",
+    "try_it": "Probar",
+    "try_today_entry_many": "Prueba hoy: {{count}} funciones nuevas",
+    "load_failed": "No se pudo cargar Explorar.",
+    "more_to_try": "También vale la pena",
+    "indicator_label_streak_many": "Explorar: {{done}} de {{total}} funciones probadas, racha de {{count}} días",
+    "title": "Explorar",
+    "getting_started": "Primeros pasos",
+    "intro_video_close": "Cerrar video",
+    "try_today": "Prueba hoy",
+    "notice_count_many": "{{count}} novedades en Explorar",
+    "notice_one": "Logrado: {{title}}"
   }
 }

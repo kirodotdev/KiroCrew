@@ -206,7 +206,7 @@ isolated agent home) -- or through content the gateway itself installs at boot, 
 the packaged built-in skills the Skills tab lists.
 
 The home is a `mktemp` directory, so no scenario can spell its path. Where a flow needs
-the tester to TYPE a path -- the Knowledge "Add Source > Local Folder" form, whose
+the tester to TYPE a path -- the Knowledge "Add Source > Add folder by path" form, whose
 native picker is macOS-only -- `boot.sh` stages the three markdown files under
 `scripts/gui-user-test/knowledge-notes/` at the fixed path
 `/tmp/kirocrew-gui-user-test/team-notes`: mode 0700, recorded in `target.paths` as

@@ -136,7 +136,7 @@ class TestShippedScenarios:
                 assert '"Up to date"' in exp, f"expectation demands the in-flight badge: {exp}"
         guard = [s for s in sc.steps if "already listed" in s and "add nothing" in s]
         assert guard, "no step tells a retry to leave an already-listed source alone"
-        add_step = next(i for i, s in enumerate(sc.steps) if 'Click "Local Folder"' in s)
+        add_step = next(i for i, s in enumerate(sc.steps) if 'Click "Add folder by path"' in s)
         assert sc.steps.index(guard[0]) < add_step, "the guard must come before the add"
         assert '"Up to date"' in sc.steps[-1], "the wait must stop on the settled badge"
 

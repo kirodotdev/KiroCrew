@@ -2155,6 +2155,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.explore",
+    "label": "Explore",
+    "labelKey": "pages.settings.displayPanel.milestones",
+    "hint": "Show Explore in the top bar and a Try today card on a new chat.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "configKey": "dashboard.milestones_enabled"
+  },
+  {
     "id": "display.external-terminal-app",
     "label": "External terminal app",
     "labelKey": "pages.settings.displayPanel.terminal_external_app",

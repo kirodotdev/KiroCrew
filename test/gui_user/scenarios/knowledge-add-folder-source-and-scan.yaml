@@ -48,7 +48,7 @@ preconditions:
 steps:
   - You are on the Customize page with its Knowledge tab selected; the pane header reads "Knowledge" with "Documents and sources your agent can search when answering" beneath it. Under that header is a row of view tabs (List View, Graph View, Sources, Settings). Click the "Sources" tab.
   - Make sure the sources list has exactly one row named "Team notes" for /tmp/kirocrew-gui-user-test/team-notes. If that row is already listed (an earlier attempt added it), add nothing and do not click "+ Add Source" -- the same folder cannot be added twice. If its badge reads "Awaiting confirmation", click the "Confirm" button on that row once. Then go straight to the last step (the wait).
-  - Only if no row for that folder path is listed yet, click the "+ Add Source" button on the right. A form titled "Add Source" opens with two type buttons, "Local File" and "Local Folder". Click "Local Folder".
+  - Only if no row for that folder path is listed yet, click the "+ Add Source" button on the right. A form titled "Add Source" opens with a dashed drop area and, under it, the buttons "Choose files" and "Add folder by path". Click "Add folder by path".
   - Click into the field whose placeholder reads "Name (optional)" and type exactly "Team notes".
   - Click into the field whose placeholder reads "Folder path (e.g., /home/user/notes)" and type exactly "/tmp/kirocrew-gui-user-test/team-notes".
   - Click the "Add Folder" button at the bottom right of the form.
