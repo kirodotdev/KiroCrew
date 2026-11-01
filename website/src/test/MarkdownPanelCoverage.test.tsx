@@ -17,9 +17,10 @@
  * nothing inside them is queryable here. What IS queryable — and what these
  * tests are about — is the panel's own chrome around them.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { forwardRef, useImperativeHandle, createRef } from 'react'
 import { render, screen, fireEvent, waitFor, act, within, createEvent } from '@testing-library/react'
+import { namedCeiling } from './namedCeiling'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PierreEditorHandle } from '../pierre'
@@ -371,6 +372,15 @@ function openPanelMenu() {
   fireEvent.click(screen.getAllByTestId('markdown-panel-more-options')[0])
 }
 
+/** Prepare a "nothing happens within 20ms" window on a mounted panel. The mount-time queries land
+ *  first, on real timers; the caller then fires its chord and advances the fake clock inside
+ *  act(), so no late query update falls outside the window. */
+async function settleThenFakeTimers() {
+  await waitFor(() => expect(qc.isFetching()).toBe(0))
+  vi.useFakeTimers()
+  onTestFinished(() => { vi.useRealTimers() })
+}
+
 /** The panel inside the local Crew's overlay root, hidden as if a remote Crew were showing. */
 const behindCrew = (hidden: boolean, content: string) => (
   <LocalOverlayRoot hidden={hidden}>
@@ -617,8 +627,9 @@ describe('MarkdownPanel — save and cancel', () => {
   it('ignores Cmd+S from the rendered preview, which has nothing to save', async () => {
     const onSave = vi.fn(async () => {})
     mountDirty({ onSave })
+    await settleThenFakeTimers()
     fireEvent.keyDown(document, { key: 's', metaKey: true })
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     expect(onSave).not.toHaveBeenCalled()
   })
 
@@ -634,9 +645,10 @@ describe('MarkdownPanel — save and cancel', () => {
     // (no savedBaseline mismatch), so this is the fall-through case.
     mountPanel({ filePath: '/tmp/module.ts', content: 'export const a = 1\n', onSave })
     const evt = new KeyboardEvent('keydown', { key: 's', metaKey: true, cancelable: true, bubbles: true })
-    document.dispatchEvent(evt)
+    await settleThenFakeTimers()
+    act(() => { document.dispatchEvent(evt) })
     expect(evt.defaultPrevented).toBe(true)
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     expect(onSave).not.toHaveBeenCalled()
   })
 
@@ -645,7 +657,7 @@ describe('MarkdownPanel — save and cancel', () => {
     mountDirty({ onSave })
     fireEvent.click(screen.getByText('Edit'))
     const evt = new KeyboardEvent('keydown', { key: 's', metaKey: true, cancelable: true, bubbles: true })
-    document.dispatchEvent(evt)
+    act(() => { document.dispatchEvent(evt) })
     expect(evt.defaultPrevented).toBe(true)
     await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
   })
@@ -657,7 +669,7 @@ describe('MarkdownPanel — save and cancel', () => {
     mountDirty({ onSave })
     fireEvent.click(screen.getByText('Edit'))
     const evt = new KeyboardEvent('keydown', { key: 'S', metaKey: true, cancelable: true, bubbles: true })
-    document.dispatchEvent(evt)
+    act(() => { document.dispatchEvent(evt) })
     expect(evt.defaultPrevented).toBe(true)
     await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
   })
@@ -672,9 +684,10 @@ describe('MarkdownPanel — save and cancel', () => {
       { wrapper },
     )
     const evt = new KeyboardEvent('keydown', { key: 's', metaKey: true, cancelable: true, bubbles: true })
-    document.dispatchEvent(evt)
+    await settleThenFakeTimers()
+    act(() => { document.dispatchEvent(evt) })
     expect(evt.defaultPrevented).toBe(false)
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     expect(onSave).not.toHaveBeenCalled()
   })
 
@@ -687,8 +700,9 @@ describe('MarkdownPanel — save and cancel', () => {
     fireEvent.click(screen.getByText('Edit'))
     const evt = new KeyboardEvent('keydown', { key: 's', metaKey: true, cancelable: true, bubbles: true })
     evt.preventDefault()
-    document.dispatchEvent(evt)
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await settleThenFakeTimers()
+    act(() => { document.dispatchEvent(evt) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     expect(onSave).not.toHaveBeenCalled()
   })
 })
@@ -791,6 +805,9 @@ describe('MarkdownPanel — diff chrome', () => {
     openPanelMenu() // the trigger toggles, so this closes it again
 
     fireEvent.click(screen.getAllByLabelText('Toggle diff view')[0])
+    // The outline rail's DOM observer reacts to the diff replacing the preview; wait for that. The diff is the lazy
+    // Pierre chunk, so the wait carries an explicit ceiling.
+    await screen.findByTestId('pierre-diff', {}, namedCeiling('PIERRE_DIFF_CHUNK', 5000))
     openPanelMenu()
     const split = screen.getByRole('menuitemcheckbox', { name: /Split view/ })
     expect(split).toHaveAttribute('aria-checked', 'true')

@@ -68,7 +68,6 @@
   "src/test/KiroAccountModal.test.tsx",
   "src/test/KiroCrewAgentsPage.schedDraftGuard.test.tsx",
   "src/test/LexicalComposerInput.test.tsx",
-  "src/test/MarkdownPanelCoverage.test.tsx",
   "src/test/McpAppFrame.test.tsx",
   "src/test/McpManagement.test.tsx",
   "src/test/McpRowSignIn.test.tsx",
