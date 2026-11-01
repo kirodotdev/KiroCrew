@@ -395,7 +395,6 @@
   "src/test/ToolCallLine.labelClamp.test.tsx",
   "src/test/ToolCallLine.mcpAppAbsent.test.tsx",
   "src/test/ToolCallLine.shellActivityThreshold.test.tsx",
-  "src/test/ToolCallLine.shellPurposeLabel.test.tsx",
   "src/test/ToolCallLine.test.tsx",
   "src/test/ToolCallLine.truncationMarker.test.tsx",
   "src/test/ToolCallLine.wait.test.tsx",
