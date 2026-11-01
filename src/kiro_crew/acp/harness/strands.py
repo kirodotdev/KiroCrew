@@ -880,7 +880,11 @@ class StrandsLaunch(ProcessAdapter):
         # this harness left out (another harness's) never ran, so it is not kept.
         session._model = strands_launched_model(model_args) or DEFAULT_MODEL
         # The session's projected array, translated into the launch file. The wire
-        # array stays empty: the CLI refuses a non-empty one in project mode.
+        # array stays empty: the CLI refuses a non-empty one in project mode. This
+        # launch reads the spec as it is now, so an MCP change marked before this
+        # point is applied by it; a mark landing after the read survives
+        # (``acp/relaunch_reload.py``).
+        session._mcp_relaunch_pending = False
         await session._prepare_session_mcp()
         kept, _pruned = await asyncio.to_thread(prune_unstartable, session._session_mcp_servers())
         document = strands_mcp_config(kept)

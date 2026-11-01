@@ -3,6 +3,7 @@ import { screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import FilePathMenu from '../components/FilePathMenu'
+import { i18nT } from '../i18n/t'
 import {
   consumeChatHandoff,
   installSoftNavigate,
@@ -12,7 +13,7 @@ import {
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true }))
 const platformEnv = vi.hoisted(() => ({ value: 'other' as 'other' | 'darwin' | 'windows' }))
 const editorEnv = vi.hoisted(() => ({
   enabled: false,
@@ -20,7 +21,11 @@ const editorEnv = vi.hoisted(() => ({
 }))
 
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+  useBranding: () => ({
+    botName: 'Test', avatar: '',
+    directLocal: brandingEnv.directLocal,
+    desktopLauncher: brandingEnv.desktopLauncher,
+  }),
 }))
 
 // The reveal label is platform-aware (names Finder / File Explorer on the
@@ -61,6 +66,7 @@ import { copyToClipboard } from '../utils/clipboard'
 beforeEach(() => {
   vi.clearAllMocks()
   brandingEnv.directLocal = true
+  brandingEnv.desktopLauncher = true
   platformEnv.value = 'other'
   editorEnv.enabled = false
   editorEnv.open.mockResolvedValue({ ok: true })
@@ -74,6 +80,7 @@ beforeEach(() => {
 
 afterEach(() => {
   brandingEnv.directLocal = true
+  brandingEnv.desktopLauncher = true
   platformEnv.value = 'other'
   editorEnv.enabled = false
   __resetNavSeamForTests()
@@ -181,18 +188,15 @@ describe('FilePathMenu', () => {
     })
   })
 
-  // A direct-local HEADLESS session (e.g. SSH loopback) is still directLocal, so
-  // the Open/Reveal rows render — but files.py has no desktop to drive and
-  // degrades the action to a clipboard copy (`{ copy }`). The row must
-  // acknowledge that copy through the same inline "Path copied" swap the Copy
-  // row uses, rather than silently copying under a "Show in file manager" label.
-  describe('reveal/open degrades to a clipboard copy (headless direct-local)', () => {
-    it('acknowledges the copy with "Path copied" instead of a silent no-op', async () => {
-      ;(api.revealPath as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        ok: true,
-        copy: TEST_PATH,
-      })
+  // The reported case: a direct-local browser (an `ssh -L` tunnel reads as one)
+  // on a gateway host with no desktop launcher, a headless Linux box. Every
+  // reveal or open there could only be answered with a clipboard copy, so
+  // "Show in file manager" copied the path and the Copy row read "Path copied".
+  // Neither native row is offered on such a host.
+  describe('a direct-local session whose gateway host has no desktop launcher', () => {
+    beforeEach(() => { brandingEnv.desktopLauncher = false })
 
+    it('offers neither native row, only Copy path', async () => {
       renderWithProviders(
         <FilePathMenu filePath={TEST_PATH}>
           <span data-testid="trigger">report.md</span>
@@ -202,29 +206,58 @@ describe('FilePathMenu', () => {
       rightClick(screen.getByTestId('trigger'))
 
       await waitFor(() => {
-        expect(screen.getByText('Show in file manager')).toBeInTheDocument()
+        expect(screen.getByText('Copy path')).toBeInTheDocument()
       })
-      fireEvent.click(screen.getByText('Show in file manager'))
-
-      // The backend degraded to a copy: the path is written and the menu's Copy
-      // row flips to the "Path copied" acknowledgment (menu stays open on select).
-      await waitFor(() => {
-        expect(copyToClipboard).toHaveBeenCalledWith(TEST_PATH)
-      })
-      await waitFor(() => {
-        expect(screen.getByText('Path copied')).toBeInTheDocument()
-      })
+      expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
+      expect(screen.queryByText('Open with default app')).not.toBeInTheDocument()
+      expect(api.revealPath).not.toHaveBeenCalled()
     })
 
-    it('flips to the copy-failed wording when the clipboard write fails', async () => {
-      // A degrade that could not reach the clipboard must not be acknowledged as
-      // a copy — the row would claim success while the clipboard still holds the
-      // previous contents.
-      ;(copyToClipboard as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false)
-      ;(api.revealPath as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        ok: true,
-        copy: TEST_PATH,
-      })
+    it('hides the native rows for a directory too, as in the report', async () => {
+      renderWithProviders(
+        <FilePathMenu filePath="/home/user/project/reports" kind="dir">
+          <span data-testid="trigger">reports</span>
+        </FilePathMenu>,
+      )
+
+      rightClick(screen.getByTestId('trigger'))
+
+      const rows = await screen.findAllByRole('menuitem')
+      expect(rows.map(r => r.getAttribute('aria-label'))).toEqual(['Copy path'])
+    })
+  })
+
+  // The other half of the pair: the same direct-local session on a host that
+  // can open a file manager keeps both rows, so the gate hides them only where
+  // they could never work.
+  it('keeps both native rows on a direct-local host that can open a file manager', async () => {
+    brandingEnv.desktopLauncher = true
+    renderWithProviders(
+      <FilePathMenu filePath={TEST_PATH}>
+        <span data-testid="trigger">report.md</span>
+      </FilePathMenu>,
+    )
+
+    rightClick(screen.getByTestId('trigger'))
+
+    const rows = await screen.findAllByRole('menuitem')
+    expect(rows.map(r => r.getAttribute('aria-label'))).toEqual([
+      'Open with default app',
+      'Show in file manager',
+      'Copy path',
+    ])
+  })
+
+  // A host WITH a launcher can still fail to start it, and the backend then
+  // answers the clipboard fallback (`{ copy }`). The menu says so in its notice
+  // and never dresses the copy up as the Copy row's own "Path copied", which is
+  // what made the reveal row read as if it were wired to Copy.
+  describe('a reveal or open the host could only answer with a copy', () => {
+    it.each([
+      ['Show in file manager', 'reveal'],
+      ['Open with default app', 'open'],
+    ])('"%s" says the path was copied instead, and leaves the Copy row alone', async (row, action) => {
+      vi.mocked(api.revealPath).mockResolvedValueOnce({ ok: true, copy: TEST_PATH })
 
       renderWithProviders(
         <FilePathMenu filePath={TEST_PATH}>
@@ -233,18 +266,55 @@ describe('FilePathMenu', () => {
       )
 
       rightClick(screen.getByTestId('trigger'))
+      fireEvent.click(await screen.findByText(row))
 
-      await waitFor(() => {
-        expect(screen.getByText('Show in file manager')).toBeInTheDocument()
-      })
-      fireEvent.click(screen.getByText('Show in file manager'))
-
-      await waitFor(() => {
-        expect(screen.getByText('Couldn’t copy the path')).toBeInTheDocument()
-      })
+      const notice = await screen.findByTestId('file-path-menu-error')
+      expect(notice).toHaveTextContent(i18nT('components.filePathMenu.reveal_copied_instead'))
+      expect(api.revealPath).toHaveBeenCalledWith(TEST_PATH, action)
+      expect(copyToClipboard).toHaveBeenCalledWith(TEST_PATH)
       expect(screen.queryByText('Path copied')).not.toBeInTheDocument()
+      expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeInTheDocument()
     })
 
+    it('reports the plain failure when the clipboard write fails too', async () => {
+      // Nothing reached the clipboard, so the notice must not claim a copy: the
+      // user would paste whatever was there before.
+      vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
+      vi.mocked(api.revealPath).mockResolvedValueOnce({ ok: true, copy: TEST_PATH })
+
+      renderWithProviders(
+        <FilePathMenu filePath={TEST_PATH}>
+          <span data-testid="trigger">report.md</span>
+        </FilePathMenu>,
+      )
+
+      rightClick(screen.getByTestId('trigger'))
+      fireEvent.click(await screen.findByText('Show in file manager'))
+
+      const notice = await screen.findByTestId('file-path-menu-error')
+      expect(notice).toHaveTextContent(i18nT('components.filePathMenu.reveal_failed'))
+      expect(notice).not.toHaveTextContent(i18nT('components.filePathMenu.reveal_copied_instead'))
+      expect(screen.queryByText('Path copied')).not.toBeInTheDocument()
+      expect(screen.queryByText('Couldn’t copy the path')).not.toBeInTheDocument()
+    })
+
+    it('says nothing when the file manager opened', async () => {
+      renderWithProviders(
+        <FilePathMenu filePath={TEST_PATH}>
+          <span data-testid="trigger">report.md</span>
+        </FilePathMenu>,
+      )
+
+      rightClick(screen.getByTestId('trigger'))
+      fireEvent.click(await screen.findByText('Show in file manager'))
+
+      await waitFor(() => expect(api.revealPath).toHaveBeenCalledWith(TEST_PATH, 'reveal'))
+      expect(copyToClipboard).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('file-path-menu-error')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('Copy path acknowledgment', () => {
     it('flips the Copy row to the failed wording when the write returns false', async () => {
       // Same defect, second site: `copyPath`'s try/catch only ever saw the
       // throwing branch, so a `false` return read as success.

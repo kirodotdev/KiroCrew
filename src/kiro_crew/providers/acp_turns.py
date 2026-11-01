@@ -21,6 +21,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import relaunch_reload
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.types import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
@@ -166,6 +167,10 @@ async def _ready_confirmed_session(self: AcpProvider) -> None:
     """
     if isinstance(self._client, AcpClient):
         await self._client.ensure_ready()
+        # A pending MCP change on a relaunch-reload harness is applied here, before
+        # the prompt and before the confirmation, so the relaunched session is the
+        # one confirmed and prompted. A no-op with no mark set.
+        await relaunch_reload.apply_pending_mcp_relaunch(self._client)
         await self._client.confirm_member_projection()
 
 

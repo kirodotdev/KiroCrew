@@ -550,8 +550,14 @@ async def run_wheel_apply(
     artifact_base: str,
     state: DashboardState | None = None,
     held_lock_fd: int | None = None,
+    refuse_if_unattended_off: bool = False,
 ) -> WheelApplyOutcome:
     """Run one shadow apply on the update worker and report how it ended.
+
+    *refuse_if_unattended_off* is for a routine install nobody asked for: it is
+    refused at the swap, as ``deferred``, when the security policy has turned
+    unattended installs off since the caller decided to install. A person's
+    approve and a floor's mandatory update leave it False.
 
     ``busy`` at once, without queueing, when this process already runs one,
     unless the caller holds the update lock (*held_lock_fd*, a lock it took with
@@ -589,6 +595,23 @@ async def run_wheel_apply(
         loop.call_soon_threadsafe(_arm_deadline)
         _push("pulling", f"Applying update to v{version}…")
 
+    snapshot = memory_snapshot_hook(lambda message: _push("building", message))
+
+    def _refuse_if_unattended_turned_off() -> None:
+        if refuse_if_unattended_off:
+            from kiro_crew.platform.update_governance import unattended_apply_allowed
+
+            if not unattended_apply_allowed():
+                raise WheelUpdateNotReady("the security policy turned off unattended installs")
+
+    def _before_promote() -> None:
+        # Read at the swap, after the download and build: before the memory copy
+        # so a refused install spends none, and after it so a policy that landed
+        # while it ran still decides. The engine promotes next with no wait.
+        _refuse_if_unattended_turned_off()
+        snapshot()
+        _refuse_if_unattended_turned_off()
+
     call = functools.partial(
         wheel_engine.apply_wheel_update,
         channel=channel,
@@ -599,7 +622,7 @@ async def run_wheel_apply(
         cancel=cancel,
         on_locked=_on_locked,
         preflight=check_memory_ready,
-        before_promote=memory_snapshot_hook(lambda message: _push("building", message)),
+        before_promote=_before_promote,
         held_lock_fd=held_lock_fd,
     )
 

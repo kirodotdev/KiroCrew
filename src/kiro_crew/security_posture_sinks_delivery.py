@@ -128,6 +128,14 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "the transformed body is re-scanned before Discord receives it.",
     ),
     (
+        "Discord steer chip",
+        "discord/renderer_text.py",
+        "The quoted chip of a user's own mid-turn steer words. Backslash escapes "
+        "inserted for Discord markup would split a credential before the send-time "
+        "scan, while Discord renders the backslash away, so the chip text is "
+        "redacted in its display form before any escape goes in.",
+    ),
+    (
         "Teams rendered message text",
         "teams/renderer.py",
         "Every LLM-authored string this channel sends, re-scanned in the form Teams "

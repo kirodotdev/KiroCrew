@@ -273,6 +273,7 @@ LOCAL_ONLY_CORE_TOOLS: frozenset[str] = frozenset(
         "file_send",  # reads a file off this machine's disk
         "browser",  # drives this machine's browser panel
         "pod_up",  # boots a gateway from a worktree on this machine
+        "pod_restart",  # and boots it again in place
         "pod_down",  # and deletes that pod's data directory here
         "task_run",  # reads its spec off this machine's disk and runs with local tools
         # Each ctx.agent() step is a fresh session here, not the caller's environment.

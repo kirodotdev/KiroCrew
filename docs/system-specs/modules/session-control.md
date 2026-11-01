@@ -2464,9 +2464,33 @@ A remote row adds `worker_instance_id`, `crew_state`, `crew_down_since`, `pendin
 
 ### Wave 5: the hub picks the crew
 
-With the switch on, `session_create(work_item=)` without `crew` places the item (`dashboard/handlers/remote_placement.py`). The caller passes the same owner checks as `crew=`. A registered crew is eligible when its tunnel is `connected`, its `major.minor` matches, and a fresh `GET api/chat/headroom` shows `mem_free_gb` and `disk_free_gb` of at least one estimate each (`work_ledger.remote_dispatch_memory_gb`, default 2, and `remote_dispatch_disk_gb`, default 10) and `load_per_cpu` under 1.0. A crew whose route answers 404, whose memory or disk reading is missing, or whose version and headroom reads take over 5 s is skipped; a missing `load_per_cpu` does not skip it, as the peer gate also passes an unknown load. The item is checked open and unbound on the caller's ledger before any crew is probed (`unknown_item`, `item_closed`, `already_bound`).
+With the switch on, `session_create(work_item=)` without `crew` places the item (`dashboard/handlers/remote_placement.py`). The caller passes the same owner checks as `crew=`. A registered crew is eligible when its tunnel is `connected`, its `major.minor` matches, and a fresh `GET api/chat/headroom` shows `mem_free_gb` and `disk_free_gb` of at least one estimate each (`work_ledger.remote_dispatch_memory_gb`, default 5, and `remote_dispatch_disk_gb`, default 5; see Wave 6) and `load_per_cpu` under 1.0. A crew whose route answers 404, whose memory or disk reading is missing, or whose version and headroom reads take over 5 s is skipped; a missing `load_per_cpu` does not skip it, as the peer gate also passes an unknown load. The item is checked open and unbound on the caller's ledger before any crew is probed (`unknown_item`, `item_closed`, `already_bound`).
 
 Reservations: each open item on any ledger here bound to a worker on that crew (`work_ledger.open_remote_bindings`, a `done` worker kept open included) and each work-item create to that crew still in flight on this hub (placed, or named with `crew=`) reserve one estimate. The choice and the in-flight count are taken under one lock, so two dispatches at once never both rank the same crew first. The hub picks the crew whose scarcer of memory and disk, after reservations and counted in estimates, is largest (ties by instance id). A `crew_busy` reply moves on to the next crew. The 15 s limit is best effort: once 15 s have passed since placement began, no new crew is tried. A create already started (its config load, board-lock wait and peer POST included) runs to the end, so it can outlast the tool's 30 s wait and bind after the caller gave up; the next `work_ledger_read` shows the binding. A probe that fails in any way skips that crew; any other refusal ends the placement, because that create may have reached the peer. With no crew left the reply is `crew_none_available` (503) and the item stays open and unbound. A retry must come from a turn the owner sends: like every `crew=` call, placement refuses a patrol or loop wake (`crew_owner_unverifiable`). A placed reply carries `placed: true` and the crew it chose. With the switch off the create route never enters this path.
+
+### Wave 6: estimate defaults
+
+The two estimates are measured, not guessed. Both stay config keys; a missing or non-positive value uses the default. They are read only with the switch on.
+
+| Key | Old | New | Basis |
+|---|---|---|---|
+| `remote_dispatch_memory_gb` | 2 | 5 | largest worker session tree measured, full suite aside |
+| `remote_dispatch_disk_gb` | 10 | 5 | ~2x one self-contained clone with dependencies |
+
+Method, 2026-11-01, Linux, 48 CPUs, 184 GB, kiro-cli 2.37.0. Memory: every live `kiro-cli acp` session tree (the session root and all its descendants: the agent runtime, its MCP servers, and any build or test it ran) was sampled every 10 s for 10 minutes, 23 sessions. GB here is GiB, as the headroom reading uses. Per-process `VmRSS` and `RssAnon` come from `/proc/<pid>/status`; PSS was not readable across sandboxed sessions, so `RssAnon` (private memory) is the shared-page-free figure. Peak tree size per session, in GB, over the 22 sessions that did not run the full suite:
+
+| | median | p90 | max |
+|---|---|---|---|
+| `RssAnon` | 1.1 | 2.4 | 4.2 |
+| `VmRSS` | 1.7 | 2.9 | 5.0 |
+
+The memory gate compares free memory with the estimate alone, with no floor on top, so the default is set to the largest session, not the p90.
+
+An idle session with few MCP servers is 0.6 GB; one with the usual MCP servers is 1.4 to 2.9 GB. One session running the full test suite under xdist reached 102 GB (26 test workers at about 4 GB each). That run is left out on purpose: the suite sizes its own worker count from the host's free memory (`resource_status`), so no per-worker constant can cover it; the next create's live memory reading sees what such a run leaves free.
+
+Disk: a fresh `git clone --filter=blob:none` of the repository is 983 MB (356 MB of it `.git`), `website/node_modules` after `npm ci` is 869 MB, and an existing worktree's backend virtualenv is 430 MB (sizes from `du`): 2.3 GB for one self-contained worker. The default doubles that for build output, test temp files and repository growth.
+
+Why fixed defaults and not a peer-reported per-worker figure: a fixed default changes two numbers and no wire format, older peers and hubs agree on it, and the peer gate already reads live free memory and disk on every create, so a worker that outgrows the estimate shrinks the headroom the next create on that crew is checked against. A peer-reported average would add a reply field, sampling state on the peer and a trust question about a number the hub cannot check, for a ranking the peer gate overrides anyway.
 
 ## Configuration
 

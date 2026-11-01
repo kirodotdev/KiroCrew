@@ -233,9 +233,10 @@ mounts anything.
 5. Not through the mirror: pushed with `session/set_config_option` after
    `session/new` (on `goose`, from the provider and model selects the harness
    advertises there).
-6. Not the mirrors' own wording: three of the four give this field a reason the
-   code does not support. See the note below the table, and
-   [#12215](https://github.com/kirodotdev/KiroCrew/issues/12215).
+6. `claude`, `codex` and `opencode` give this field the shared `no-reader`
+   reason (`RESOURCES_NO_READER`); `goose` rules it `withheld` too, with a reason
+   saying no channel is advertised for them. See the note
+   below the table.
 7. `codex` and `opencode` keep a narrowed CONTROL-PLANE server mounted;
    withholding `kirocrew-core` would leave the session unable to report back at
    all. `codex` refuses the call at the permission request
@@ -277,15 +278,17 @@ context rather than as config — `context.py`'s `_skills_injection_plan` return
 `bool(globs) or not is_custom`, with no backend condition, so Crew injects the
 mapped set on every backend, as a bounded directory plus each `always: true`
 body. The `file://` steering
-block is the half that reaches nothing: it is gated on `is_cc`, which is
+load is the half that never runs: it is gated on `is_cc`, which is
 `is_claude_code(provider_type)`, true only for `provider=claude_code` and never for
 an `acp_backend`. `claude_code.py`, `codex.py` and `opencode.py` give `withheld`
-the reason that STEERING FILES are injected as context text instead, which is the
-one thing that does not happen here; `goose.py`'s reason is already right, and says
-no channel is advertised for them.
-Correcting those three strings, and deciding whether a spec author should be
-WARNED rather than left to read this page, is tracked in
-[#12215](https://github.com/kirodotdev/KiroCrew/issues/12215). The ruling stays
+the shared reason `RESOURCES_NO_READER` (`providers/mirrors/base.py`), which opens
+with this page's class name, `no-reader`; `goose.py`'s reason says no channel is
+advertised for them. A new session of a custom agent on a backend whose mirror
+rules `resources` `withheld` or `no-channel` gets one notice row naming the spec's
+`file://` entries (`spec_steering_read_nowhere` in
+`src/kiro_crew/agent_sdk/spec_hooks.py`). The default agent gets no row, because
+its steering trees reach these harnesses by other routes. Injecting the steering
+itself is a separate, open decision. The ruling stays
 **no-reader** rather than context-instead because it is a statement about the
 harness: what reaches the session on the skill half is Crew's own injected
 directory, not the key the mirror declined to project.
@@ -365,8 +368,9 @@ is the part worth knowing before you switch:
   it, and `no-channel` on `claude` and `codex`. Neither URI scheme is loaded natively, but a mapped
   `skill://` still arrives as Crew's injected skill directory, per the note above,
   so an agent whose skills come from its spec keeps them on a mirrored harness. A
-  `file://` steering glob is the one that silently reaches nothing
-  ([#12215](https://github.com/kirodotdev/KiroCrew/issues/12215)). `prompt`
+  `file://` steering glob is not loaded from the spec; a custom agent's new
+  session gets a notice row saying so. The same file still arrives if folder
+  steering or a crew member's essentials carry it. `prompt`
   survives as context text.
 
 So a spec written for kiro-cli degrades predictably rather than silently, as long

@@ -171,6 +171,11 @@ _PERMANENT_EXCEPTIONS = {
     # the AWS webhook allowlist to check, so a fleet dispatch would queue until it
     # was rejected. Neither fires on a pull request or declares merge_group.
     ("merge-queue-ruleset.yml", "check"),
+    # The same no-actor reason, reached by a workflow_run completion rather than a
+    # schedule: the event names the finished run, never a collaborator. It takes
+    # the group by LABEL, not `group:`, because the trigger carries no
+    # head-repository guard and a fork's own watched workflows fire it in the fork.
+    ("scheduled-failure-watch.yml", "surface"),
     # Dispatch-only, and never fleet-routed. The allowlist reason above does not
     # apply: a workflow_dispatch does carry an actor, which is why pages.yml can
     # route one to the fleet through the same actor predicate.
@@ -207,9 +212,13 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("fork-workflow-guard.yml", "strip-stale-override"): {"group": "kirocrew-runners"},
     ("issue-summary.yml", "summarize"): _GROUP_LABEL_EXPR,
     ("issue-triage.yml", "triage"): _GROUP_LABEL_EXPR,
+    # The AI-review override handler: same `issue_comment` trigger and the same
+    # actor-allowlist reason for staying off the fleet as the two above.
+    ("ai-review-human-override.yml", "record"): _GROUP_LABEL_EXPR,
     ("nightly.yml", "version"): _GROUP_LABEL_EXPR,
     ("ci-runner-watchdog.yml", "watchdog"): {"group": "kirocrew-runners"},
     ("merge-queue-ruleset.yml", "check"): {"group": "kirocrew-runners"},
+    ("scheduled-failure-watch.yml", "surface"): _GROUP_LABEL_EXPR,
     # These dispatchable jobs use the group label upstream, but a personal
     # fork cannot reach the org group and must retain the hosted fallback.
     ("memory-benchmark.yml", "accept"): (
@@ -285,8 +294,11 @@ _DISPATCH_MERGE_GROUP_WORKFLOWS = {"main-ratchet-audit.yml"}
 # The fleet-routed workflows that declare a `merge_group` trigger.
 _MERGE_GROUP_WORKFLOWS = {"ci.yml", "fast-gate.yml", "build.yml"}
 # merge_group-triggered workflows with no fleet route: the queue's required
-# check (a hosted poll), the OIDC content scan (a reusable-workflow call) and
-# the hosted Python client suite.
+# check (a poll), the OIDC content scan (a reusable-workflow call) and the Python
+# client suite. "No fleet route" is what this list means, and it is the only
+# thing it means: the poll and the client suite both carry the
+# `kirocrew-runners` group's label in this repository, so a group label does not
+# remove an entry from this list.
 _MERGE_GROUP_HOSTED_WORKFLOWS = {
     "merge-queue-readiness.yml",
     "internal-content-scan-gate.yml",

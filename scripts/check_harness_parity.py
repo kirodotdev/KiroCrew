@@ -429,6 +429,9 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # Strands CLI 0.2.3: the -32603 a disposed backend answers, then a load in a
     # second process.
     "ACP_BACKENDS_RELOAD_DISPOSED_SESSION": None,
+    # Strands CLI 0.2.3: a second process with a changed --mcp-config loads the
+    # same session; the added server's tool is offered, a withdrawn one's is not.
+    "ACP_BACKENDS_MCP_RELAUNCH_RELOAD": None,
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or

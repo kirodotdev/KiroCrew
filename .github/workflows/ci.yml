@@ -2046,8 +2046,9 @@ jobs:
           done
 
   # The job where Linux mount-namespace tests EXECUTE rather than skip. They need
-  # unprivileged user namespaces (unshare NEWNS), which ubuntu-24.04 restricts via
-  # AppArmor -- the same restriction codex-review.yml clears for its bwrap sandbox.
+  # unprivileged user namespaces (unshare NEWNS), which the hosted Ubuntu image
+  # restricts via AppArmor -- the same restriction codex-review.yml clears for its
+  # bwrap sandbox.
   # Without this job the ~/.kiro/crew sensitive-path keystone has no CI coverage at all,
   # even though branch protection treats breaking it as a blocking offence.
   #
@@ -2073,7 +2074,17 @@ jobs:
     name: Backend Tests (namespace sandbox)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}
-    runs-on: ubuntu-24.04
+    # An ordinary hosted VM is the requirement stated above, and the
+    # `kirocrew-runners` group is that same VM with no job container, on a cap
+    # this organization owns rather than the enterprise-shared standard pool. A
+    # fork cannot reach an organization group, so it stays hosted-standard.
+    #
+    # The group serves one Linux image and follows `latest`, so this lane no
+    # longer names a version. The two verification steps below are what make
+    # that safe: they fail the job by name if an image ever stops granting the
+    # namespaces, instead of letting every guarded test skip and the gate go
+    # green having asserted nothing.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       KIROCREW_TMP_RESIDUE_STRICT: "1"

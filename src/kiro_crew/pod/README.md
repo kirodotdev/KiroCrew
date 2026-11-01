@@ -262,7 +262,14 @@ drop-in that replaces the template's `ExecStart` with the resolved checkout's
 own `.venv/bin/kirocrew`; it refuses to fall back to a global install that may
 not understand the requested seed. `pod down` removes that drop-in and reloads
 systemd as part of its zero-residue guarantee. `MemoryMax`/`CPUQuota` cap a
-runaway pod; `Restart=on-failure` self-heals.
+runaway pod at 4G and 200% by default; `pod up <wt> --memory 16G --cpu 800%`
+records `MEMORY=` / `CPU=` in the pod's env file and the drop-in carries them for
+that pod alone. Memory is capped at 80% of host RAM (the agents slice ceiling) and
+CPU at the host CPU count. `pod restart <wt>` stops the unit, keeps the HOME, and
+starts it again with the current drop-in, so a new ceiling applies without
+reclaiming anything. On Windows `pod restart` refuses before stopping anything,
+because the Windows start will not boot over the home and run record its stop keeps.
+`Restart=on-failure` self-heals.
 
 The unit has **no `ExecStopPost` teardown hook**, on purpose. systemd runs
 `ExecStopPost` *before* the final kill of the unit's cgroup, so a hook that
@@ -403,7 +410,7 @@ service-manager mechanics differ.
 | Elevation | none | none | none |
 | Logs | `journalctl --user` | files | files |
 | Restart on crash | `Restart=on-failure` | `KeepAlive` | **none** |
-| Memory / CPU ceiling | `MemoryMax` + `CPUQuota` (cgroup) | **not enforced** | memory + process cap (Job object); **no CPU cap** |
+| Memory / CPU ceiling | `MemoryMax` + `CPUQuota` (cgroup), per pod via `--memory` / `--cpu` | **not enforced** (recorded) | memory + process cap (Job object, from `resource_limits`; `--memory` recorded, not enforced); **no CPU cap** |
 | `pod api` / `pod token` | yes | yes | `token` yes, `api` **no** (needs an AF_UNIX dashboard socket) |
 
 Every backend keeps earlier starts' output: launchd and the Windows wrapper

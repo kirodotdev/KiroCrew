@@ -265,6 +265,19 @@ describe('Ultra Mode Crew tab', () => {
     expect(next).not.toHaveTextContent('Starts after')
   })
 
+  it('Status: an idle worker whose last report was progress reads Waiting, with no spinner or "moving" pulse', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'p1', title: 'Menu', summary: 'Drafted the menu. More soon.' })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const row = await screen.findByTestId('ultra-milestone')
+    expect(row.getAttribute('data-state')).toBe('waiting')
+    expect(row).toHaveTextContent('Waiting')
+    expect(row).toHaveTextContent('Drafted the menu.')
+    expect(row).not.toHaveTextContent('now')
+    expect(screen.queryByTestId('ultra-pulse')).toBeNull()
+    expect(screen.getByTestId('ultra-recap')).not.toHaveTextContent(/running/)
+  })
+
   it('Status: a finished crew shows no pulse', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'b', state: 'accepted', terminal: true })] })

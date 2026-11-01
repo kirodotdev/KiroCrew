@@ -187,7 +187,7 @@ _LOADER_SIGNATURES = {
     "_confined_frontmatter_and_size": "(self, path: 'Path', within: 'str') -> 'tuple[dict[str, str], int]'",
     "_create_skill_pinned": "(self, name: 'str', content: 'str', skill_dir: 'Path', parent_fd: 'int') -> 'bool'",
     "_cron_referenced_skills": "() -> 'set[str]'",
-    "_emit_lazy_load_metric": "(t0: 'float', *, hit: 'bool') -> 'None'",
+    "_emit_lazy_load_metric": "(t0: 'float', *, hit: 'bool', skill: 'str | None' = None) -> 'None'",
     "_exact_read_while_building": "(self, key: 'str', only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int', refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_get_disabled_app_names": "(self) -> 'frozenset[str]'",
     "_invalidate_iter_cache": "(self) -> 'None'",

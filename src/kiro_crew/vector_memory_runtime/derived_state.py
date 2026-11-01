@@ -58,8 +58,22 @@ def _invalidate_episodic_scoring(self: VectorMemoryStore) -> None:
     self._episodic_scoring = None
 
 
-def _invalidate_semantic_scoring(self: VectorMemoryStore) -> None:
-    """Drop cached query-aware semantic rows after a scoring-relevant write."""
+def _invalidate_semantic_scoring(self: VectorMemoryStore, key: str | None = None) -> None:
+    """Retire cached query-aware semantic rows after a scoring-relevant write.
+
+    The generation always moves. With *key*, the write changed that one fact and
+    the resident set is patched to match instead of dropped (see
+    :mod:`semantic_scoring_patch`, which drops it when it cannot be sure). Without
+    one, the set is dropped. Call with *key* only holding ``_db_lock`` and after
+    the write is applied on this connection.
+    """
+    if key is not None:
+        from kiro_crew.vector_memory_runtime import (  # imported late: it imports semantic
+            semantic_scoring_patch,
+        )
+
+        semantic_scoring_patch.patch_semantic_scoring(self, key)
+        return
     self._semantic_scoring_generation += 1
     self._semantic_scoring = None
 

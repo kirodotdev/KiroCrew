@@ -590,6 +590,18 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": template_refusal, "code": "mate_template_unsupported"}, status=400
             )
+        # No avatar supplied -> the name-seeded default ICON the UI posts for the
+        # same name, rather than the trait ghost a missing override renders as.
+        # Seeded from the name the crew SHOWS (`display_name or name`), which is
+        # what the roster draws and what the UI preview seeds from. An explicitly
+        # supplied avatar is never overridden -- including an explicit ghost
+        # reset (`{"kind": "ghost"}` or all-empty traits), which `_safe_avatar`
+        # collapses to `{}` but `_is_ghost_shaped` marks as a deliberate choice of
+        # the name-derived ghost, so the icon default must not replace it.
+        if not avatar and not _is_ghost_shaped(_raw_avatar):
+            from kiro_crew.crew_avatar_seed import default_icon_avatar
+
+            avatar = default_icon_avatar(display_name or name)
         model_reason = _model_pin_rejected(
             model, request, cfg.agent.provider, backend=_pin_entitlement_backend(cfg)
         )

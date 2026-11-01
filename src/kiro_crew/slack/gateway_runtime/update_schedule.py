@@ -600,7 +600,11 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
     """Provider-delegated update check and apply."""
     from kiro_crew import __version__ as _running_version
     from kiro_crew.config import KiroCrewConfig
-    from kiro_crew.platform.update_governance import min_version, update_required
+    from kiro_crew.platform.update_governance import (
+        min_version,
+        unattended_apply_allowed,
+        update_required,
+    )
     from kiro_crew.platform.update_provider import UpdateProvider
 
     # Loaded BEFORE provider.apply(): the legacy-nested-venv migration the
@@ -641,6 +645,22 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
             self.dashboard_state.push_update_progress("failed", message)
             self.dashboard_state.push_refresh("update_available")
         return False
+
+    def _unattended_installs_turned_off(result: Any) -> bool:
+        """True, and reported, when policy turned unattended installs off mid-cycle.
+
+        The update stays offered for a person's Update; nothing was applied.
+        """
+        if unattended_apply_allowed():
+            return False
+        logger.info(
+            "Auto-update not applied: the security policy turned off unattended "
+            "installs while this update waited"
+        )
+        self._publish_provider_update_state(result)
+        if self.dashboard_state:
+            self.dashboard_state.push_refresh("update_available")
+        return True
 
     async def _restart_unless_apply_changed_nothing(result: Any) -> None:
         """Restart into the applied update, or report an apply that changed nothing.
@@ -778,7 +798,15 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
                 self._publish_provider_update_state(result)
                 return
             try:
+                # The effect was derived before the check and the drain, and a
+                # policy installed since then decides. Read before the memory
+                # copy so a refused install spends none, and after it, with no
+                # wait between that read and the apply.
+                if _unattended_installs_turned_off(result):
+                    return
                 if not await _snapshot_memory_or_skip(result):
+                    return
+                if _unattended_installs_turned_off(result):
                     return
                 logger.info("Auto-update enabled — applying update via provider")
                 if self.dashboard_state:

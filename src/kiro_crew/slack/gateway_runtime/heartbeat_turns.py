@@ -59,9 +59,14 @@ async def _persist_turn_row(
     surface: str,
     agent_fallback: Callable[[], str],
     t0: float,
+    trigger: str = "other",
     usage: AgentTurnUsage | None = None,
 ) -> None:
     """Persist one per-turn usage row for a background dispatch surface.
+
+    ``trigger`` is who started the turn (``metrics.usage_attrs``):
+    ``heartbeat`` for a heartbeat task, ``monitor`` for a monitor wake. A
+    caller that passes nothing records ``other``, never ``user``.
 
     The heartbeat and monitor surfaces — each with a success and a timeout twin —
     share this one implementation rather than each carrying its own copy of the
@@ -94,6 +99,7 @@ async def _persist_turn_row(
             context_window=_window,
             elapsed_ms=int((time.monotonic() - t0) * 1000),
             model_source=client,
+            trigger=trigger,
         )
     except Exception:
         logger.debug("usage row (%s) persist failed", surface, exc_info=True)
@@ -227,6 +233,7 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 surface="heartbeat",
                 agent_fallback=lambda: "kirocrew-heartbeat",
                 t0=_turn_t0,
+                trigger="heartbeat",
             )
         except asyncio.TimeoutError:
             # Tear down the in-flight turn so the underlying claude-agent-acp
@@ -258,6 +265,7 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 surface="heartbeat",
                 agent_fallback=lambda: "kirocrew-heartbeat",
                 t0=_turn_t0,
+                trigger="heartbeat",
             )
             try:
                 await self.sessions.reset(session_key)

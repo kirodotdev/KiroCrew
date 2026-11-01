@@ -137,6 +137,9 @@ export interface ConductorRowView {
   aggregate: { needsYou: number; running: number } | null
   /** The creator this row cites but could not nest under, because it has closed. */
   orphanOf: string | null
+  /** That closed creator's last-known title, or null when the gateway does not
+   *  remember one (the glyph then reads the generic "a closed session"). */
+  orphanTitle: string | null
   /** The creator this row cites while the lane is NOT nesting it -- search flattens
    *  every match to one level, so a child would otherwise be indistinguishable from a
    *  session nobody opened. Distinct from `orphanOf`: that creator is gone, this one
@@ -1008,7 +1011,7 @@ const VIEW_KEYS = Object.keys(VIEW_FIELDS) as (keyof SessionRowView)[]
 
 /** Every `ConductorRowView` field, for the same reason as `VIEW_FIELDS`. */
 const CONDUCTOR_FIELDS: Record<keyof ConductorRowView, true> = {
-  depth: true, childCount: true, expanded: true, aggregate: true, orphanOf: true, citesParent: true, anchorOnly: true,
+  depth: true, childCount: true, expanded: true, aggregate: true, orphanOf: true, orphanTitle: true, citesParent: true, anchorOnly: true,
 }
 const CONDUCTOR_KEYS = Object.keys(CONDUCTOR_FIELDS) as (keyof ConductorRowView)[]
 

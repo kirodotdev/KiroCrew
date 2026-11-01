@@ -50,10 +50,12 @@ def _match_command(item: str, pattern: str) -> bool:
     return fnmatch.fnmatchcase(item, pattern)
 
 
-def _match_path(item: str, pattern: str) -> bool:
+def _match_path(item: str, pattern: str, *, any_case: bool = False) -> bool:
     """Glob match for filesystem paths, expanding ``~`` / ``$HOME``.
 
-    Case-sensitive (POSIX path semantics).  ``fnmatch``'s ``*`` already crosses
+    Case-sensitive on POSIX. On Windows either separator also matches, and with
+    *any_case* (a deny pattern only, ``_match_denied_path``) so does an ASCII
+    letter's other case (``_match_local_path``).  ``fnmatch``'s ``*`` already crosses
     directory separators, which is the documented (broad) behaviour for a
     deny-oriented read block; callers wanting precise segment semantics should
     prefer narrower patterns.
@@ -108,7 +110,19 @@ def _match_path(item: str, pattern: str) -> bool:
     if isinstance(item, GuestPath):
         norm = guest_norm(item)
         return norm is not None and fnmatch.fnmatchcase(norm, _expand(pattern))
-    return fnmatch.fnmatchcase(_norm_item(item), _expand(pattern))
+    return _match_local_path(_norm_item(item), _expand(pattern), any_case=any_case)
+
+
+def _match_denied_path(item: str, pattern: str) -> bool:
+    """``_match_path`` for a DENY pattern: on Windows a letter also meets its other case.
+
+    Only a deny folds case. A Windows directory can be case sensitive
+    (``fsutil file setCaseSensitiveInfo``, which needs no elevation), and in one
+    ``private`` and ``Private`` are two directories. Folding case in an allow would
+    admit the one the operator did not name; folding it in a deny refuses at most
+    a directory the operator did not name, which fails closed.
+    """
+    return _match_path(item, pattern, any_case=True)
 
 
 def _match_host(item: str, pattern: str) -> bool:
@@ -258,6 +272,12 @@ _MATCHERS: Dict[str, Callable[[str, str], bool]] = {
 
 _DEFAULT_MATCHER = "identifier"
 
+# The strategy a DENY pattern is matched with, where it differs from ``_MATCHERS``.
+# A deny may match more widely than an allow, since a wider deny only fails closed.
+_DENY_MATCHERS: Dict[str, Callable[[str, str], bool]] = {
+    "path": _match_denied_path,
+}
+
 
 def _expand(path_str: str) -> str:
     """Expand ``~`` and ``$VAR`` without touching the filesystem (no resolve())."""
@@ -300,6 +320,93 @@ def _norm_item(path_str: str) -> str:
     if p.startswith("//") and not p.startswith("///"):
         p = p[1:]
     return p
+
+
+# Whether a local path is a Windows one. A module constant rather than an inline
+# ``os.name`` test so a POSIX run can read a path the way a Windows gateway does.
+_WINDOWS_PATHS = os.name == "nt"
+
+
+def _match_local_path(item: str, pattern: str, *, any_case: bool = False) -> bool:
+    """Whether a normalized local item meets an expanded pattern on this gateway.
+
+    POSIX compares the two as written. On Windows ``abspath`` writes an item with
+    ``\\`` while an operator writes a pattern with ``/``, the form the spec
+    documents (``~/.ssh/**`` expands to ``C:\\Users\\u/.ssh/**``, both separators in
+    one string), and a directory usually opens a name whatever its case. So on
+    Windows a separator the pattern writes outside a bracket expression also meets
+    the other separator (``_windows_glob``), and with *any_case* an ASCII letter
+    also meets its other case. Only a deny asks for that (``_match_denied_path``):
+    a directory may be case sensitive, and there an allow that folded case would
+    admit a sibling the operator did not name.
+
+    Nothing else changes, which is what keeps every rule's character sets intact.
+    The item is matched exactly as written, and a bracket expression, ``?`` and
+    ``*`` read it as they do on POSIX. Rewriting the pattern instead changes what
+    a bracket expression covers: lower-casing turns ``[A-z]`` into ``[a-z]``,
+    dropping ``_``, and ``/`` for ``\\`` turns ``[\\-z]`` into ``[/-z]``, adding the
+    digits. The Windows readings are an OR beside the as-written comparison, so no
+    deny loses a path that comparison covers. A negated class (``[!a-z]``) stays
+    exactly as case sensitive as the as-written match.
+
+    Only ASCII letters fold (``re.ASCII``). Unicode simple case folding pairs
+    letters NTFS keeps apart (``I`` and ``İ``, ``k`` and the Kelvin sign ``K``,
+    ``s`` and ``ſ``), so a full fold would make a deny refuse a name no spelling
+    of it opens. A non-ASCII letter in another case therefore matches only as
+    written.
+    """
+    if fnmatch.fnmatchcase(item, pattern):
+        return True
+    if not _WINDOWS_PATHS:
+        return False
+    either_separator = _windows_glob(_upper_drive(pattern))
+    if re.match(either_separator, _upper_drive(item)):
+        return True
+    return any_case and re.match(either_separator, item, re.IGNORECASE | re.ASCII) is not None
+
+
+def _upper_drive(path: str) -> str:
+    """*path* with a leading drive letter (``c:``) in upper case.
+
+    A drive letter names a volume, never a directory entry, so no directory's case
+    sensitivity applies to it. Only a literal letter followed by ``:`` is
+    touched, so no bracket expression is rewritten.
+    """
+    if len(path) >= 2 and path[1] == ":" and "a" <= path[0] <= "z":
+        return path[0].upper() + path[1:]
+    return path
+
+
+def _windows_glob(pattern: str) -> str:
+    """``fnmatch.translate(pattern)`` with each separator outside a class as ``[\\\\/]``.
+
+    A bracket expression is copied verbatim. It is found with ``fnmatch``'s own
+    scan, so the two agree on where one starts and ends: ``[`` opens it, a
+    leading ``!`` and then a leading ``]`` belong to it, the next ``]`` closes it,
+    and a ``[`` with no closing ``]`` is a literal. Each separator outside one is
+    swapped for a code point the pattern does not contain, which ``translate``
+    emits as itself, and that code point is then swapped for the class.
+    """
+    mark = next(chr(c) for c in range(0xE000, 0xF900) if chr(c) not in pattern)
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "[":
+            j = i + 1
+            if j < n and pattern[j] == "!":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 1
+            if j < n:
+                out.append(pattern[i : j + 1])
+                i = j + 1
+                continue
+        out.append(mark if c in "\\/" else c)
+        i += 1
+    return fnmatch.translate("".join(out)).replace(mark, r"[\\/]")
 
 
 # Schemes that actually open a network connection to a host. A URL on any other

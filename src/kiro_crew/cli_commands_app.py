@@ -120,6 +120,37 @@ def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
     )
 
 
+def _refuse_unsafe_app_name(app_name: str) -> None:
+    """Exit 1 when *app_name* is not a single app directory name.
+
+    Runs before any cleanup step. The crons, skills and agents an app owns are
+    found by joining its name onto a data-home path, so an empty name, ``.`` or a
+    name with a separator or ``..`` would point that cleanup at the wrong place.
+    """
+    # Call-time imports: a module-level import would make this module serve
+    # these names through the ``cli_commands`` facade it does not own.
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    from kiro_crew.apps.manager import _check_path_safety
+
+    # Both path flavours, whatever this host is: a Windows drive spec such as
+    # ``C:`` has no separator, yet joining it changes the drive.
+    one_component = all(
+        flavour(app_name).name == app_name for flavour in (PurePosixPath, PureWindowsPath)
+    )
+    if app_name in ("", ".") or not one_component or not _check_path_safety(app_name):
+        print(f"❌ unsafe app name: {app_name!r}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _deregister_or_report(app_name: str) -> bool:
+    """Deregister *app_name*'s resources; print each failure and return False on any."""
+    reg = deregister_app(app_name)
+    for err in reg.errors:
+        print(f"❌ {app_name}: {err}", file=sys.stderr)
+    return not reg.errors
+
+
 _SESSION_APPROVAL_CONSENT_REQUIRED = "session_approval_consent_required"
 # Same sentence the dashboard's app detail page shows for ``permissions.sessionApproval``
 # (``pages.appDetailPage.session_approval_desc``), so both surfaces disclose the same grant.
@@ -537,6 +568,7 @@ def _handle_app(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     elif action == "disable":
+        _refuse_unsafe_app_name(args.name)
         if _run_app_action_through_gateway("disable", args.name):
             return
         _cleanup_app_crons_from_scheduler(args.name)
@@ -555,12 +587,19 @@ def _handle_app(args: argparse.Namespace) -> None:
         # which is the better of the two error shapes, because the alternative is a
         # silent re-registration nobody sees.
         result = disable_app(args.name)
-        deregister_app(args.name)
-        if result.ok:
-            _print_file_only_app_result(args.name, enabled=False)
-        else:
+        deregistered = _deregister_or_report(args.name)
+        if not result.ok:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
+        if not deregistered:
+            print(
+                f"❌ {args.name} is marked disabled, but some of its resources could "
+                f"not be removed (see above). Clear the cause and run "
+                f"`kirocrew app disable {args.name}` again.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _print_file_only_app_result(args.name, enabled=False)
 
     elif action == "uninstall":
         # Ask a running gateway first, exactly as enable and disable do above.
@@ -575,6 +614,7 @@ def _handle_app(args: argparse.Namespace) -> None:
         # The purge flag travels in the body because the handler defaults an
         # absent one to "preserve data"; without it a delegated `--purge-data`
         # would quietly keep the data it was told to destroy.
+        _refuse_unsafe_app_name(args.name)
         if _run_app_action_through_gateway(
             "uninstall",
             args.name,
@@ -597,7 +637,11 @@ def _handle_app(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         _cleanup_app_crons_from_scheduler(args.name)
-        deregister_app(args.name)
+        # A failed deregistration does not stop the uninstall: there is no
+        # `--force`, so stopping here would leave an app whose deregistration
+        # keeps failing impossible to remove from the CLI. The errors are printed
+        # now and the exit code says so once the files are gone.
+        deregistered = _deregister_or_report(args.name)
         keep_data = not getattr(args, "purge_data", False)
         # Read BEFORE the uninstall, and read BOTH: either one alone can be made to
         # say "no backend here" when there is one. The declaration is the app's own
@@ -620,6 +664,13 @@ def _handle_app(args: argparse.Namespace) -> None:
             _print_pointer_cleanup(args.name, cleanup)
             if declares_backend or recorded_port is not None:
                 _warn_backend_not_stopped(args.name)
+            if not deregistered:
+                print(
+                    f"❌ {args.name} was uninstalled, but some of its resources could "
+                    f"not be removed (see above).",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         else:
             # The pointers outlive the app, so "already gone" is the one failure
             # whose bookkeeping half is still worth doing. It is also the residual's

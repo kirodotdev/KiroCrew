@@ -1495,6 +1495,18 @@ def min_version() -> str:
     return active_update_pins().min_version
 
 
+def unattended_apply_allowed() -> bool:
+    """Whether policy lets the gateway install an update without being asked.
+
+    ``updates.unattended_apply: false`` makes every route notify-only; a
+    person's Update still applies, and a build below the floor still takes its
+    mandatory update. True when ungoverned.
+    """
+    from kiro_crew.platform.governance import active_update_pins
+
+    return active_update_pins().unattended_apply
+
+
 __all__ = [
     "PRIMARY_BRANCHES",
     "git_command_env",
@@ -1507,6 +1519,7 @@ __all__ = [
     "repo_exec_driver_reason",
     "resolve_remote_url",
     "tracks_upstream",
+    "unattended_apply_allowed",
     "update_blocked_reason",
     "update_required",
     "upstream_remote_and_branch",

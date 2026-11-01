@@ -64,6 +64,12 @@ A candidate qualifies only if **all three** hold:
    another repository's PR, and outside a checkout it cannot be evaluated),
    `pr_merged` (a PR has merged, also via `gh`, with `repo` required: an open
    PR reads `pending`, one closed without merging reads `fail`),
+   `edition_check` (`{"kind": "edition_check", "check": "<name>", "ref":
+   "<id>"}`: a check an installed edition provides, for work that lands
+   somewhere this evaluator cannot read itself, such as an edition's own code
+   review system; the check names are the edition's to document. With no
+   edition providing the check it answers `error`, and a check that says a
+   person must decide answers `refused`),
    `file` (a path existing), or `human_approval` (the user accepts it —
    legitimate for design reviews and go/no-go gates, but never
    machine-evaluated). **There is deliberately no "run this command" kind**, so
@@ -108,6 +114,20 @@ referee, and the human rules when it is stuck. Read
 participants read each other's files by design, the one exception to
 Independent above, and the ledger carries only a short summary and the path to
 the debate note.
+
+**Offer a debate; do not wait to be asked.** When a goal or an item is a
+design or implementation of real size, put "debate first" in your Round 0
+plan as one Assumption line: the question, the participants and their
+aspects, the rounds, a time estimate and the work items it uses. Real size
+means any of: about 150 lines or more, two or more modules, a security, data,
+approval or trust boundary, a contract others depend on, two or more
+plausible approaches, a prior failed attempt or a design block from a
+reviewer, or an RFC. Do not offer it for a small change with a clear fix, CI
+or rebase work, wording, an emergency, a design the owner already decided, or
+when fewer than half the goal's work items are left. "Skip the debate", "just
+do it" or any gate-skipping message drops it. A standing preference the owner
+stated ("always debate first", "stop suggesting debates") wins over these
+rules.
 
 ## The loop
 
@@ -848,7 +868,8 @@ what the composer renders:
   audit-logged and every call prompts. The evaluator accepts **no command, argv
   array, or shell string from a spec** — it builds every argv it runs from a
   fixed template, so `pr_checks` becomes `gh pr checks <n>`, `pr_merged`
-  becomes `gh pr view <n> --repo <owner/name> --json state`, and nothing else
+  becomes `gh pr view <n> --repo <owner/name> --json state`, `edition_check`
+  becomes `kirocrew acceptance-check --json <check> <ref>`, and nothing else
   executes. That is deliberate and load-bearing: this script is invoked as an
   approved wrapper, so a spec that could name a command would turn it into a
   general way to run one, and Kiro Crew's denied-command floor cannot see inside

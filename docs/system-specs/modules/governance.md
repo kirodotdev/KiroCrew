@@ -74,6 +74,30 @@ can reorder strictness or redefine matching):
   collapses a leading `//` to `/` (POSIX leaves a two-slash prefix
   implementation-defined and `normpath` preserves it, so `//etc/passwd` would
   otherwise dodge a `/etc/**` deny while the OS opens `/etc/passwd`).
+  On a **Windows** gateway the item comes out of `abspath` with `\` and a drive,
+  while a pattern is written with `/` (`~/.ssh/**` even expands to
+  `C:\Users\u/.ssh/**`), and a directory usually opens a name whatever its case.
+  So there a separator the pattern writes outside a bracket expression also
+  meets the other separator (`_match_local_path`, `_windows_glob`), and in a
+  **deny** pattern only, an ASCII letter also meets its other case
+  (`_match_denied_path`, served to `ScopedRuleset.permits` through
+  `_DENY_MATCHERS`). An allow compares case as written: a directory can be case
+  sensitive (`fsutil file setCaseSensitiveInfo`, no elevation needed), and there
+  `private` and `Private` are two directories, so an allow that folded case
+  would admit the one the operator did not name, while a deny that folds case
+  refuses at most an extra directory. Nothing else changes: the item is matched as written, and a
+  bracket expression, `?` and `*` read it as on POSIX. Rewriting the pattern
+  would change what a bracket expression covers (lower-casing turns `[A-z]`,
+  which covers `_`, into `[a-z]`; `/` for `\` turns `[\-z]` into `[/-z]`, which
+  covers the digits). The case fold is ASCII-only because Unicode simple case
+  folding pairs letters NTFS keeps apart (`I`/`İ`, `k`/Kelvin `K`, `s`/`ſ`), so a
+  full fold would refuse a name no spelling of the deny opens; a non-ASCII
+  letter in another case matches only as written. The pattern is never
+  `normpath`'d. Each Windows reading is an OR beside the as-written comparison,
+  so no deny loses a path that comparison covers, and a negated class (`[!a-z]`)
+  stays as case sensitive as the as-written match. Compared as written only, a `~/.ssh/**` deny matched no path
+  at all there. A pattern rooted without a drive (`/data/**`) still never
+  meets an item, which `abspath` gives a drive. POSIX is unchanged.
 
   **Path matcher — lexical-only contract.** The `path` matcher does **not**
   resolve symlinks (no `realpath`): a symlink lexically inside an allow-prefix
@@ -187,11 +211,12 @@ is kept. Over a profile this is a no-op, because a profile cannot carry posture.
 Everything outside `controls` stays the
 **authority's** — identity, signature state, tier and the `updates` *commands* — so a
 subordinate document cannot relabel whose ceiling this is or supply a command the
-gateway would run unsandboxed. The two `updates` pins that are themselves restrictions
-fold instead (`_intersect_update_pins`): `updates.source` is an allowlist and
-`updates.min_version` a floor, so a subordinate that sets one the authority left empty
-narrows the ceiling and keeps it; where both set one, the authority's source stands and
-the higher floor wins. Keeping "the authority's" there would have voided a pure
+gateway would run unsandboxed. The `updates` pins that are themselves restrictions
+fold instead (`_intersect_update_pins`): `updates.source` is an allowlist,
+`updates.min_version` a floor and `updates.unattended_apply` a switch whose `false`
+restricts, so a subordinate that sets one the authority left empty narrows the ceiling
+and keeps it; where both set one, the authority's source stands, the higher floor
+wins, and either tier's `false` stands. Keeping "the authority's" there would have voided a pure
 tightening — an empty source pin permits any remote, so a central document silent on
 updates plus a local source pin would have composed to "install from anywhere". Two
 things follow a declared-wins rule instead, because for them "the authority's" is only
@@ -374,9 +399,19 @@ every wheel apply checks the pin again under the update lock before downloading
   overrides each non-empty field it sets. Any command in any entry selects the
   provider on every host, so a host whose platform has no command then never
   checks or applies.
+- **`unattended_apply`** — a JSON boolean; absent or `null` reads `true`. `false`
+  stops the gateway installing an update by itself on every install shape,
+  whatever the user's `auto_update` says: the check still runs, the badge still
+  lights, and a person's Update applies it. `auto_update_effect` answers `notify`
+  but keeps the route, so the provider path still reads `can_apply` off it and
+  About keeps its Update button (see [cli](cli.md)). Each routine install reads
+  the pin again at its last step before it changes anything, so a policy
+  installed while the update waited still decides. A build below `min_version`
+  still takes its mandatory update, because the floor is the stronger pin. A
+  string such as `"false"` fails the load rather than reading as on.
 
-These five are the only keys `updates` accepts (`UpdatePins.from_dict`). Any
-other key, or a non-string value, **fails closed** (`_reject_unknown_keys`); what
+The bullets above name every key `updates` accepts (`UpdatePins.from_dict`). Any
+other key, or a value of the wrong type, **fails closed** (`_reject_unknown_keys`); what
 an unparsable file does at boot is in [Loading + precedence](#loading--precedence).
 The desktop marker's camelCase names (`checkCommand`, `updateCommand`) are
 **not** valid here.
@@ -419,7 +454,9 @@ boundary against a local operator who could edit the checkout directly.
 **Roll the build before the pin.** The parser fails closed on an unknown key, so a
 build predating `updates` refuses to boot on a pinned policy — which inverts the
 `min_version` case, since the stale hosts a floor targets are exactly the ones
-that would stop booting. Recovery is a manual `kirocrew update`.
+that would stop booting. Recovery is a manual `kirocrew update`. The same holds
+for a key added later: a build predating `unattended_apply` refuses a policy that
+sets it.
 
 ## Central distribution (`distribution`) — policy-only
 

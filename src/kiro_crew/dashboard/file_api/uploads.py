@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         _ALLOWED_IMAGE_EXT,
         _ALLOWED_TEXT_EXT,
         _ALLOWED_VIDEO_EXT,
+        _HEIC_HINT_EXT,
         _HEIF_BRANDS,
         _MAGIC_PREFIXES,
         _MAX_UPLOAD_FILES,
@@ -308,6 +309,12 @@ async def api_upload_file(request: web.Request) -> web.Response:
                     # support" when the remedy is a re-encode.
                     accepted = ", ".join(sorted(_ALLOWED_VIDEO_EXT))
                     detail = f"{detail} — accepted video containers: {accepted}"
+                elif ext in _HEIC_HINT_EXT:
+                    detail = (
+                        f"{detail}. The dashboard converts HEIC photos to JPEG "
+                        "before uploading them: reload the page and attach the "
+                        "photo again, or export it as a JPEG."
+                    )
                 return web.json_response(
                     {"error": detail, "code": "unsupported_file_type"},
                     status=400,

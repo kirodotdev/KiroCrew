@@ -147,6 +147,44 @@ class TestAgentCreate:
         assert (data_home() / "workspace-member-research").is_dir()
         assert "Workspace: member-research" in out
 
+    def test_create_defaults_to_the_name_seeded_icon(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A headless CLI create gets the same name-seeded ICON the UI posts for
+        the name, never an empty override (which renders the trait ghost)."""
+        from kiro_crew.crew_avatar_seed import default_icon_avatar
+
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "agent", "create", "--name", "research"]),
+        ):
+            main()
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        avatar = saved["agents"]["research"]["avatar"]
+        assert avatar == default_icon_avatar("research")
+        assert avatar["kind"] == "icon"
+
+    def test_create_free_form_name_seeds_the_icon_from_the_label(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A free-form name is kept as the display label; its icon seeds from that
+        shown label, matching the UI preview and the API create path."""
+        from kiro_crew.crew_avatar_seed import default_icon_avatar
+
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch(
+                "sys.argv", ["kirocrew", "agent", "create", "--name", "Release Writer"]
+            ),
+        ):
+            main()
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        agent = saved["agents"]["release-writer"]
+        assert agent["display_name"] == "Release Writer"
+        assert agent["avatar"] == default_icon_avatar("Release Writer")
+
     def test_create_can_share_a_declared_workspace(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

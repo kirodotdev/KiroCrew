@@ -1052,7 +1052,9 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
         {pending.map((e) => {
-          const age = Math.round((Date.now() / 1000 - e.created_at_epoch) / 60)
+          // created_at_epoch is stamped by the gateway's clock; one running ahead
+          // of the browser's would otherwise render a negative age.
+          const age = Math.max(0, Math.round((Date.now() / 1000 - e.created_at_epoch) / 60))
           const source = e.artifact_slug || e.local_dir || i18nT('pages.artifactDeployPage.unknown_2')
           return (
             <div key={e.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

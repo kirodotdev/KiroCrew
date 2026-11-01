@@ -18,6 +18,7 @@ from kiro_crew.validation_parts.app_schemas import (
     OPS_MISSION_CONTROL_API_SCHEMA,
     POD_DOWN_SCHEMA,
     POD_LS_SCHEMA,
+    POD_RESTART_SCHEMA,
     POD_STATUS_SCHEMA,
     POD_UP_SCHEMA,
 )
@@ -220,6 +221,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
     "design_tweak_update_thread": DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
     "pod_up": POD_UP_SCHEMA,
+    "pod_restart": POD_RESTART_SCHEMA,
     "pod_down": POD_DOWN_SCHEMA,
     "pod_status": POD_STATUS_SCHEMA,
     "pod_ls": POD_LS_SCHEMA,

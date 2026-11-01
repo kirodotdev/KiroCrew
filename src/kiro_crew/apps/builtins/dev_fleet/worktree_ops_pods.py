@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 from typing import Any, TypeGuard
 
-from kiro_crew import hooks
+from kiro_crew import hooks, platform_compat
 from kiro_crew.apps.builtins.dev_fleet import fleet_state, live, repository, runtime
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
@@ -323,7 +323,7 @@ _POD_START_REFUSAL = (
 )
 
 
-async def _pod_up(name: str) -> dict:
+async def _pod_up(name: str, memory: str = "", cpu: str = "") -> dict:
     """Start the worktree's pod while holding the worktree's lock and reservation.
 
     The pod runs from the checkout a removal deletes, and its unit goes active from
@@ -342,7 +342,25 @@ async def _pod_up(name: str) -> dict:
     The name is resolved first, because ``_wt_lock`` keeps its row for good: a name
     that names no worktree gets no row. The guard under the lock resolves it again,
     so a removal that lands in between still refuses the start.
+
+    *memory* and *cpu* are passed to the CLI as ``--memory`` / ``--cpu``, which
+    validates them against the host and records them in the pod's env file.
     """
+    return await _pod_start(name, "up", _limit_argv(memory, cpu))
+
+
+def _limit_argv(memory: str, cpu: str) -> list[str]:
+    """``--memory`` / ``--cpu`` argv for the CLI; the CLI is the validator."""
+    argv: list[str] = []
+    if memory:
+        argv += ["--memory", memory]
+    if cpu:
+        argv += ["--cpu", cpu]
+    return argv
+
+
+async def _pod_start(name: str, verb: str, extra: list[str]) -> dict:
+    """Run ``pod up`` or ``pod restart`` under the worktree's lock and reservation."""
     target, ferr = await repository._find_worktree(name)
     if target is None:
         return {"ok": False, "error": ferr or f"unknown worktree: {name!r}"}
@@ -353,10 +371,10 @@ async def _pod_up(name: str) -> dict:
         with live.pod_start_reservation(target["path"]) as reserved:
             if not reserved:
                 return {"ok": False, "error": _POD_START_REFUSAL}
-            return await _pod_up_locked(name)
+            return await _pod_up_locked(name, verb, extra)
 
 
-async def _pod_up_locked(name: str) -> dict:
+async def _pod_up_locked(name: str, verb: str = "up", extra: list[str] | None = None) -> dict:
     guard = await _pod_checkout_guard(name)
     if guard:
         return {"ok": False, "error": guard}
@@ -364,7 +382,7 @@ async def _pod_up_locked(name: str) -> dict:
     # `pod up` runs the provision chain (npm ci + vite) when asked to.
     await runtime._warm_build_path()
     cfg = runtime._load_cfg()
-    cmd = runtime._find_cli() + ["pod", "up", name, "--json"]
+    cmd = runtime._find_cli() + ["pod", verb, name, "--json", *(extra or [])]
     # A sandboxed child has its own user namespace, which the pod refuses to
     # certify as the local owner. Let the gateway mint only when it has config;
     # otherwise the CLI owns the whole operation (including Windows pods).
@@ -379,7 +397,9 @@ async def _pod_up_locked(name: str) -> dict:
         if target is None:
             return {"ok": False, "error": ferr or f"unknown worktree: {name!r}"}
         expected_checkout = target["path"]
-        cmd.append("--no-token")
+        # `pod restart` never mints, so it takes no --no-token.
+        if verb == "up":
+            cmd.append("--no-token")
     rc, stdout, stderr = await runtime._run_cmd(
         cmd, cwd=repository._repo(), env=_pod_env(), timeout=180
     )
@@ -479,12 +499,24 @@ async def _pod_down(name: str) -> dict:
     return {"ok": False, "error": detail}
 
 
-async def _pod_restart(name: str) -> dict:
-    """Restart a pod: down, then up only after a successful shutdown."""
-    r = await _pod_down(name)
-    if not r.get("ok"):
-        return {"ok": False, "error": f"pod shutdown failed: {r.get('error')}"}
-    return await _pod_up(name)
+async def _pod_restart(name: str, memory: str = "", cpu: str = "") -> dict:
+    """Restart a pod in place through ``kirocrew pod restart``, keeping its home.
+
+    The pod's sessions, config, installed apps and downloaded models survive, and
+    a new *memory* / *cpu* ceiling takes effect. Reclaiming the home is
+    ``pod down``'s job alone. Same lock, reservation and gateway-side mint as
+    :func:`_pod_up`, so the caller gets the same handle shape back.
+
+    On Windows ``pod restart`` refuses (a Windows pod cannot start again over the
+    state its stop keeps), so there the button keeps its down-then-up behaviour
+    and the home is reclaimed.
+    """
+    if platform_compat.IS_WINDOWS:
+        r = await _pod_down(name)
+        if not r.get("ok"):
+            return {"ok": False, "error": f"pod shutdown failed: {r.get('error')}"}
+        return await _pod_up(name, memory, cpu)
+    return await _pod_start(name, "restart", _limit_argv(memory, cpu))
 
 
 async def _pod_token(name: str) -> dict:

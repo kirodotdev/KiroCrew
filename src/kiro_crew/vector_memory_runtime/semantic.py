@@ -82,6 +82,27 @@ class _SemanticScoringSet:
     derived: dict = field(default_factory=dict, compare=False, repr=False)
 
 
+_SCORING_SELECT = (
+    "SELECT key, value_json, updated_at, embedding, source FROM semantic_memory "
+    "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'"
+)
+
+
+def row_bytes(row: dict[str, object]) -> int:
+    """What one scoring row is charged against the set's byte budget.
+
+    Strings and blobs are the user-data payload; the fixed margin accounts for
+    the four dict entries and Python object headers.
+    """
+    total = 256
+    for value in row.values():
+        if isinstance(value, str):
+            total += len(value.encode("utf-8"))
+        elif isinstance(value, bytes):
+            total += len(value)
+    return total
+
+
 #: Bytes the per-set row-token memo may retain. Past it, rows are tokenized
 #: per call exactly as without the memo, so the bound costs speed, never results.
 _SCORING_TOKEN_MEMO_MAX_BYTES = 64 * 1024 * 1024
@@ -715,7 +736,7 @@ def insert_if_absent(
                 operation="create",
             )
             store.db.commit()
-            store._invalidate_semantic_scoring()
+            store._invalidate_semantic_scoring(key)
         except vm.sqlite3.IntegrityError:
             store.db.rollback()
             return "existing"
@@ -857,10 +878,9 @@ def delete_semantic(
                 "old_value, new_value, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 ("delete", "semantic", key, row["value_json"], new_value, source, now),
             )
-        # Drop the cached scoring rows under the writer lock: the tombstone
-        # removes this key from the active non-lesson population the cache
-        # holds, so the next context build must reread.
-        store._invalidate_semantic_scoring()
+        # Patch the cached scoring rows under the writer lock: the tombstone
+        # removes this key from the active non-lesson population the cache holds.
+        store._invalidate_semantic_scoring(key)
     if not is_supersede:
         # A forget writes its audit event best-effort AFTER committing the
         # tombstone, through the shared helper -- an unavailable event table
@@ -1015,7 +1035,10 @@ def semantic_candidates_v1(
             }
             scored_rows.append((score, r))
 
-    scored_rows.sort(key=lambda x: (-x[0], x[1]["updated_at"]))
+    # The key is the last tie-break so the order depends on the rows, never on the
+    # order they sit in: a resident set patched in place holds the same rows as
+    # one rebuilt from the table, in a different order.
+    scored_rows.sort(key=lambda x: (-x[0], x[1]["updated_at"], x[1]["key"]))
     return [r[1] for r in scored_rows]
 
 
@@ -1102,92 +1125,132 @@ def semantic_scoring_set(store: VectorMemoryStore) -> _SemanticScoringSet | None
     """Return cached semantic scoring rows, or ``None`` for a per-call scan.
 
     ``PRAGMA data_version`` catches another process changing the database;
-    the in-process generation catches this store's own commits. A snapshot
-    that would exceed the retention budget (``vm._semantic_scoring_max_bytes``,
-    the memory-scaled clamp of a 64 MiB floor, 1/16 of available memory and a
-    1 GiB ceiling) is refused for that exact token pair, so an oversized store
-    pays one scan per state change rather than rebuilding on every context
-    request.
-    """
-    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+    the in-process generation catches this store's own commits (a write patches the
+    resident set in place, see :mod:`semantic_scoring_patch`, and a write that
+    cannot be patched drops it). A snapshot that would exceed the retention budget
+    (``vm._semantic_scoring_max_bytes``, the memory-scaled clamp of a 64 MiB
+    floor, 1/16 of available memory and a 1 GiB ceiling) is refused for that exact
+    token pair, so an oversized store pays one scan per state change rather than
+    rebuilding on every context request.
 
+    A rebuild reads the table on a pooled reader without holding ``_db_lock`` (one
+    builder at a time), so writers and other readers are not queued behind a
+    multi-second scan. The result is installed only if no write and no other
+    process's commit landed meanwhile. A thread already inside the lock, or a store
+    with an uncommitted transaction open, whose rows only the shared connection can
+    see, reads under the lock as before.
+    """
     if not store._semantic_scoring_supported:
         return None
-    with store._db_lock:
-        version = store._sqlite_data_version()
-        if version is None:
-            store._semantic_scoring_supported = False
-            store._semantic_scoring = None
-            logger.info(
-                "sqlite has no data_version pragma; semantic scoring cache disabled "
-                "(a second process writing this store could not be detected)"
-            )
-            return None
-        resident = store._semantic_scoring
-        if (
-            resident is not None
-            and resident.generation == store._semantic_scoring_generation
-            and resident.data_version == version
-        ):
-            return resident
-        token = (store._semantic_scoring_generation, version)
-        if store._semantic_scoring_refused == token:
-            return None
-        rows = store._fetch_all_locked(
-            "SELECT key, value_json, updated_at, embedding, source FROM semantic_memory "
-            "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'",
-            scan="semantic",
-        )
-        # The ceiling is read ONCE per build and reused for the overflow log, so
-        # the budget and the message it prints never disagree (the memory-scaled
-        # value could otherwise move between the two reads).
-        max_bytes = vm._semantic_scoring_max_bytes()
-        budget = max_bytes
-        cached_rows: list[dict[str, object]] = []
-        for raw in rows:
-            row = dict(raw)
-            # Strings and blobs are the user-data payload; the fixed margin
-            # accounts for the four dict entries and Python object headers.
-            row_bytes = 256
-            for value in row.values():
-                if isinstance(value, str):
-                    row_bytes += len(value.encode("utf-8"))
-                elif isinstance(value, bytes):
-                    row_bytes += len(value)
-            budget -= row_bytes
-            if budget < 0:
-                logger.info(
-                    "Semantic scoring set over %d bytes; falling back to a per-call scan",
-                    max_bytes,
-                )
-                store._semantic_scoring_refused = token
-                # Clear any prior snapshot too: a store that held a valid one
-                # and then crossed the budget through another process's commit
-                # would otherwise retain up to the budget in keys/values/blobs
-                # that no later call can serve (the generation/data_version
-                # check rejects it), until an unrelated local write drops it.
-                store._semantic_scoring = None
-                # Hand back the rows already read as a TRANSIENT set (not
-                # stored as resident): the population was materialized once
-                # above, so returning it lets this call consume it instead of
-                # the caller re-issuing the identical SELECT — one scan for
-                # this query, not two. Subsequent calls hit the refused-token
-                # early return and scan once each, which is the per-call
-                # fallback the spec promises for an oversized store.
+    lock = store._db_lock
+    if lock.held_by_current_thread():
+        with lock:
+            return _scoring_set_locked(store)
+    with store._semantic_scoring_build_lock:
+        with lock:
+            answered, value, version = _lookup_resident(store)
+            if answered:
+                return value
+            if store.db.in_transaction:
+                return _scoring_set_locked(store)
+            generation = store._semantic_scoring_generation
+        rows = store._fetch_all_locked(_SCORING_SELECT, scan="semantic")
+        read = [dict(raw) for raw in rows]
+        with lock:
+            if (
+                store._semantic_scoring_generation != generation
+                or store._sqlite_data_version() != version
+            ):
+                # A write or another process moved the state under the read: serve
+                # the rows to this call only; the next call rebuilds.
                 return _SemanticScoringSet(
-                    rows=tuple(dict(r) for r in rows),
-                    generation=store._semantic_scoring_generation,
-                    data_version=version,
+                    rows=tuple(read), generation=generation, data_version=version
                 )
-            cached_rows.append(row)
-        built = _SemanticScoringSet(
-            rows=tuple(cached_rows),
-            generation=store._semantic_scoring_generation,
-            data_version=version,
+            return _install_scoring_set(store, read, version)
+
+
+def _lookup_resident(store: VectorMemoryStore):
+    """``(answered, set or None, data_version)`` for the current state; lock held."""
+    version = store._sqlite_data_version()
+    if version is None:
+        store._semantic_scoring_supported = False
+        store._semantic_scoring = None
+        logger.info(
+            "sqlite has no data_version pragma; semantic scoring cache disabled "
+            "(a second process writing this store could not be detected)"
         )
-        store._semantic_scoring_refused = None
-        store._semantic_scoring = built
-        return built
+        return True, None, 0
+    resident = store._semantic_scoring
+    if (
+        resident is not None
+        and resident.generation == store._semantic_scoring_generation
+        and resident.data_version == version
+    ):
+        if store._semantic_scoring_pending:
+            # Rows patched in before their transaction ended: check them against
+            # what the table holds now, because a rollback leaves no other trace.
+            from kiro_crew.vector_memory_runtime import semantic_scoring_patch
+
+            resident = semantic_scoring_patch.reconcile_pending(store, resident)
+            store._semantic_scoring = resident
+            if resident is None:
+                return False, None, version
+        return True, resident, version
+    store._semantic_scoring_pending.clear()
+    if store._semantic_scoring_refused == (store._semantic_scoring_generation, version):
+        return True, None, version
+    return False, None, version
+
+
+def _scoring_set_locked(store: VectorMemoryStore) -> _SemanticScoringSet | None:
+    """Look up or rebuild the set while holding ``_db_lock`` throughout."""
+    answered, value, version = _lookup_resident(store)
+    if answered:
+        return value
+    rows = store._fetch_all_locked(_SCORING_SELECT, scan="semantic")
+    return _install_scoring_set(store, [dict(raw) for raw in rows], version)
+
+
+def _install_scoring_set(
+    store: VectorMemoryStore, rows: list[dict[str, object]], version: int
+) -> _SemanticScoringSet:
+    """Make *rows* the resident set, or refuse them when over budget; lock held."""
+    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+
+    # The ceiling is read ONCE per build and reused for the overflow log, so
+    # the budget and the message it prints never disagree (the memory-scaled
+    # value could otherwise move between the two reads).
+    max_bytes = vm._semantic_scoring_max_bytes()
+    used = sum(row_bytes(row) for row in rows)
+    generation = store._semantic_scoring_generation
+    if used > max_bytes:
+        logger.info(
+            "Semantic scoring set over %d bytes; falling back to a per-call scan", max_bytes
+        )
+        store._semantic_scoring_refused = (generation, version)
+        # Clear any prior snapshot too: a store that held a valid one
+        # and then crossed the budget through another process's commit
+        # would otherwise retain up to the budget in keys/values/blobs
+        # that no later call can serve (the generation/data_version
+        # check rejects it), until an unrelated local write drops it.
+        store._semantic_scoring = None
+        # Hand back the rows already read as a TRANSIENT set (not
+        # stored as resident): the population was materialized once
+        # above, so returning it lets this call consume it instead of
+        # the caller re-issuing the identical SELECT -- one scan for
+        # this query, not two. Subsequent calls hit the refused-token
+        # early return and scan once each, which is the per-call
+        # fallback the spec promises for an oversized store.
+        return _SemanticScoringSet(rows=tuple(rows), generation=generation, data_version=version)
+    built = _SemanticScoringSet(
+        rows=tuple(rows),
+        generation=generation,
+        data_version=version,
+        derived={"used_bytes": used, "max_bytes": max_bytes},
+    )
+    store._semantic_scoring_refused = None
+    store._semantic_scoring = built
+    return built
 
 
 def get_semantic_context(
@@ -1397,7 +1460,7 @@ def publish_committed_write(
                     f"{store._sem_guard}",
                     (blob, key, value_json),
                 )
-                store._invalidate_semantic_scoring()
+                store._invalidate_semantic_scoring(key)
 
     # Retire conflicting episodic entries that reference the old value
     # (called outside the lock — _retire_stale_episodic does a blocking embed

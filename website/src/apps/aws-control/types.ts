@@ -479,6 +479,13 @@ export interface InstallIdentity {
  * Payload of `GET /backup/{account}`. `runs` holds the last local run per kind;
  * `remote` lists the archive in the bucket (null when it could not be read,
  * with the reason in `remoteError`). `nightly` is the scheduled-snapshot toggle.
+ * `nightlyBlocked` is why THAT snapshot grant cannot run on the account being
+ * viewed, or absent when it can. Same shape and reasoning as
+ * `nightlySessionsBlocked`: the grant reads back as the owner set it, while this
+ * says whether the schedule reaches the account they are looking at. The snapshot
+ * kind has only the `other_account` condition -- the grant is recorded per account
+ * while the loop runs for the default one, so a grant on a non-default account is
+ * authorized and never runs.
  * `nightlySessions` is the SEPARATE grant for the scheduled sessions archive,
  * and is absent from an older backend, which reads as off -- the safe direction
  * for a field that authorizes uploading transcripts.
@@ -498,6 +505,7 @@ export interface InstallIdentity {
  */
 export interface BackupStatus {
   nightly: boolean
+  nightlyBlocked?: string | null
   nightlySessions?: boolean
   nightlySessionsBlocked?: string | null
   runs: Partial<Record<BackupKind, BackupRun>>

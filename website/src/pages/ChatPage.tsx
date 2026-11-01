@@ -25,7 +25,8 @@ import { useComposerDraftState, ComposerDraftSync, useComposerIntakeRefs, useMai
 import { useModelPickerModels, useNewSessionPicks, useSessionChoices, useSlotSelectionCapabilitiesQuery } from './chat/page/sessionPicks'
 import { useCrewModeSwitch } from './chat/page/crewModeSwitch'
 import UltraModeEffect from '../components/crew/UltraModeEffect'
-import { crewRootOf, runsCrewMode } from '../lib/crewMode'
+import { crewModeRoot, crewRootOf, runsCrewMode } from '../lib/crewMode'
+import { useCrewMode } from '../hooks/usePreviewFlag'
 import { useCrewRoot } from '../components/crew/useCrewRoot'
 import { useSteerDelivery, useRefusedPress, useRegenerate } from './chat/page/turnActions'
 import { useTranscriptScrollRefs, useTranscriptPaging } from './chat/page/transcriptPaging'
@@ -160,7 +161,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // singleton, which a test harness does not mount) so unrelated chat
       // updates do not re-run the effect.
       const payload = boundStore.getState().chat.mcpApps?.[mcpAppKey(activeSlot, id)]
-      tabsCtlRef.current?.openApp(id, mcpAppTabTitle(payload, i18nT('pages.chatPage.mcp_app_tab_title')), activeSlot)
+      tabsCtlRef.current?.openApp(id, mcpAppTabTitle(payload, i18nT('pages.chatPage.mcp_app_tab_title')), activeSlot, { automatic: true })
     }
   }, [mcpAppPanel, activeSlot, appToolCallIds, dispatch, boundStore])
   const {
@@ -396,7 +397,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
 
   const memorySwitchingRef = useRef(false) // Held true while a memory-mode switch runs (see usePanelLayout).
+  // An Ultra Mode chat (a crew root or one of its workers, the same test the
+  // side panel uses to put the Board first): only a person moves its focus.
+  const crewModePreview = useCrewMode()
+  const boardFirst = useAppSelector(st => {
+    const row = activeSlot ? st.dashboard.slots.find(r => r.key === activeSlot) : undefined
+    return crewModeRoot(row) || !!crewRootOf(row)
+  }) && crewModePreview
   const resources = useChatPageResourcesController({
+    boardFirst,
     activeSlot,
     activeSlotRef,
     messages,

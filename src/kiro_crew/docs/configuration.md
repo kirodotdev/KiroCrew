@@ -116,6 +116,16 @@ kiro-cli's internal sandbox is confined by that profile instead.
 
 The two layers are mutually exclusive on macOS because a nested seatbelt sandbox fails with `EPERM`. The default is `auto`: it uses the Kiro Crew sandbox where available and defers to the kiro-cli internal sandbox on macOS when that sandbox is enabled.
 
+With kiro-cli's internal sandbox on (`"sandbox": true` in
+`~/.kiro/settings/amazon-internal.json`), kiro-cli also confines the MCP servers it
+starts, and Kiro Crew's own server `kirocrew-core` fails to start there. Every
+kiro-cli session then fails with `mcp-client(kirocrew-core): initial connection or
+tool synchronization failed`. Set `"sandbox"` to `false` in that file and start a
+new session, so Kiro Crew's own sandbox confines the agent instead. If
+`agent.sandbox` is `off`, set it to `auto` first, or the agent runs with no OS
+sandbox at all. `kirocrew doctor` reports this in its MCP Tools section, and the
+session's start error names the same fix.
+
 Set via `kirocrew config set agent.sandbox auto` (or `strict`, or `off`).
 
 ## ACP Backend
@@ -611,6 +621,8 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.embedding_idle_evict_secs` | Unload the embedding model after this many seconds with no embedding; the next search loads it again. `0` keeps it loaded | `3600` |
 | `memory.embedding_child_process` | Load the embedding model and run inference in a separate low-priority child process, so embedding work never competes with the gateway process. Off by default: the model runs inside the gateway. Takes effect at the next model load | `false` |
 | `memory.consolidation_write_child_process` | Run the memory writes that history consolidation makes (extracted facts, episodes and lessons) in a separate low-priority child process, so they never compete with turn context building for the gateway process's interpreter lock. Off by default: the writes run inside the gateway. If the child crashes, times out or cannot start, the pass writes in the gateway instead, so no write is lost. Takes effect at the next consolidation pass | `false` |
+| `memory.recall_pool_processes` | Number of child processes (0 to 8) that answer the memory reads of a turn's context (facts, episodes, lessons), so sessions that build their context at the same time use several cores instead of taking turns on the gateway process's interpreter lock. `0` keeps those reads inside the gateway. Each process holds its own copy of the store's search data (about 0.75 GB for a store with 54k facts, 27k episodes and 12k lessons), so memory use grows with the store and the count. If a process cannot start, is short of memory, crashes or times out, the read runs in the gateway instead. Takes effect within a second | `0` |
+| `memory.recall_pool_worker_max_mb` | Memory limit for one recall worker. A worker is not started while less than this is free on the host, and a worker whose resident memory passes it after a read exits and is replaced by the next read. Used only when `memory.recall_pool_processes` is above 0 | `3072` |
 | `memory.embed_model_url` | Override HTTPS URL for the embedding-model GGUF download (mirrored or airgapped hosts). Empty uses the public Kiro Crew CDN. `KIROCREW_EMBED_MODEL_URL` wins over both. Downloads are sha256-verified regardless of source | `""` |
 | `memory.embed_model_path` | Absolute path to a local GGUF to run **instead of** the bundled Qwen3-Embedding-0.6B. When set, the default model is never downloaded, so a custom model survives a default-model version change. Set `embedding_dim` to the model's output width. Changing the model changes the vector space, so stored embeddings are regenerated in the background. A configured-but-unreadable path fails closed (keyword search still works) rather than silently reverting to the default and re-embedding your corpus. Editable from the dashboard (Memory → Embedding Model). `KIROCREW_EMBED_MODEL_PATH` wins over this | `""` |
 | `memory.embed_model_id` | Optional label for a custom model. The vector-space identity is `<label>:sha256:<digest>` of the model file's bytes, so two different models of identical name and size are always told apart and this key cannot pin or override that identity. A model recorded without a label takes the pooling its GGUF declares into its id, after the digest (`custom:sha256:<digest>@mean`, `custom:sha256:<digest>@cls`); a label you set, whatever it contains, keeps last-token pooling. A custom model applied before Kiro Crew read the declared pooling keeps last-token pooling and its vectors until you apply it again. A file replaced in place under a `custom` id takes the new file's declared pooling (its digest changed, so it is re-embedded anyway); a label you set carries over. Applying a model from the dashboard writes the resulting id together with `memory.embed_model_stamp` (the file's device, inode, size and timestamps); an unchanged file reuses the stored digest at startup instead of re-hashing the weights | `""` |
@@ -733,8 +745,8 @@ edited on Settings → Browser and applies without a restart.
 |-----|-------------|---------|
 | `work_ledger.max_depth` | How many levels of the work ledger may conduct. Depth 0 is the root conductor, so `2` lets it dispatch one level of conductors whose own items are workers, and `3` lets those conductors dispatch conductors of their own. Accepted range 2-10; a value outside it is refused at load with a warning and the default applies, it is never clamped. Each extra level multiplies sessions (three levels of three items is 27), so raise it only where concurrency is already capped per level. Lowering it leaves open ledgers alone, but new ledgers and new items at the levels it removes are refused. | `2` |
 | `work_ledger.remote_dispatch` | Preview. Lets a conductor on another machine place work items on this crew. When `true`, `GET /api/chat/headroom` answers this machine's free memory, CPU load and free scratch disk to the owner, every owner session-create reply carries that `headroom` snapshot, and an owner create that carries a `work_item` is refused `crew_busy` (naming `memory`, `cpu` or `disk`) when one is short. On the hub side, `true` also makes `session_create`, `session_send`, `session_read_message`, `session_stop` and `session_close` offer `crew=`, admitted only from a turn the owner sent in their own dashboard tab (`crew_owner_unverifiable` otherwise). When `false`, the route answers 404, no create is checked, the five tools do not offer `crew`, and a call carrying it is refused `remote_dispatch_disabled`. Read on every request, so no restart is needed | `false` |
-| `work_ledger.remote_dispatch_memory_gb` | Free memory one dispatched worker needs; a work-item create is refused `crew_busy` on memory when less is free. A value that is not a positive number uses the default | `2.0` |
-| `work_ledger.remote_dispatch_disk_gb` | Free disk under the scratch root one dispatched worker needs; a work-item create is refused `crew_busy` on disk when less is free. A value that is not a positive number uses the default | `10.0` |
+| `work_ledger.remote_dispatch_memory_gb` | Free memory one dispatched worker needs; a work-item create is refused `crew_busy` on memory when less is free. The default covers the largest measured worker session process tree (see the session-control spec). A value that is not a positive number uses the default | `5.0` |
+| `work_ledger.remote_dispatch_disk_gb` | Free disk under the scratch root one dispatched worker needs; a work-item create is refused `crew_busy` on disk when less is free. The default is about twice one measured self-contained clone with its dependencies. A value that is not a positive number uses the default | `5.0` |
 
 ### Power
 
@@ -845,6 +857,12 @@ A security policy that names update commands replaces everything in this
 section: its commands then check and apply on every install shape except
 Windows, where they never run and the gateway does not update itself. See the
 [governance spec](../../../docs/system-specs/modules/governance.md#update-pins-updates--policy-only).
+
+A security policy can also turn unattended installs off with
+`"unattended_apply": false` in its `updates` block. The gateway then never
+applies an update by itself, whatever `auto_update` says: it still checks and
+shows the update badge, and Update installs the update when you ask. A policy
+minimum version still installs a mandatory update.
 
 | Install | With `auto_update` on |
 |---|---|

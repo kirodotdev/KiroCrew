@@ -159,6 +159,11 @@
     "client": {
       "accepted_body_unreadable": "서버가 요청을 수락했지만 응답을 읽을 수 없었습니다.",
       "paste_token_url_or_raw_token": "로그인 URL을 붙여넣으세요…",
+      "scan_qr_code": "QR 코드 스캔",
+      "scan_qr_cancel": "스캔 취소",
+      "scan_qr_point_camera": "컴퓨터에 표시된 로그인 QR 코드에 카메라를 향하세요.",
+      "camera_permission_denied": "카메라 접근이 거부되어 QR 코드를 스캔할 수 없었습니다. 이 사이트에 카메라를 허용하거나 대신 로그인 URL을 붙여넣으세요.",
+      "camera_unavailable": "카메라를 열 수 없어 QR 코드를 스캔할 수 없었습니다. 대신 로그인 URL을 붙여넣으세요.",
       "proxy_challenge_reload": "이 브라우저 탭을 다시 로드하세요. 로그인 페이지가 나타나면 액세스 프록시 세션이 만료된 것입니다. 그렇지 않다면 이 대시보드 앞단의 프록시나 방화벽이 요청을 거부한 것이니, 프록시 로그를 확인하거나 나중에 다시 시도하세요.",
       "proxy_challenge_framed": "새 탭에서 {{origin}} 을 여세요. 로그인 페이지가 나타나면 액세스 프록시 세션이 만료된 것입니다. 이 패널 안에서는 로그인할 수 없습니다. 거기서 로그인한 뒤 이 페이지를 다시 로드하세요.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "터널 엣지에서 요청 수가 제한되었습니다 (HTTP 429) — 짧은 시간에 요청이 너무 많습니다. 대시보드가 자동으로 재시도합니다. 계속되면 몇 초 기다린 후 새로고침하세요.",
@@ -5291,6 +5296,7 @@
         "backup_start_no_drive": "이 계정에는 아직 드라이브가 없습니다. 드라이브를 만든 후 백업을 시작하세요.",
         "backup_nightly": "매일 밤 백업",
         "backup_nightly_hint": "메모리 및 워크스페이스 스냅샷을 하루에 한 번 실행합니다.",
+        "backup_nightly_blocked_other_account": "야간 스냅샷은 기본 계정에 대해서만 실행되므로 이 계정은 아무것도 백업되지 않습니다.",
         "backup_nightly_sessions": "매일 밤 세션 백업",
         "backup_nightly_sessions_hint": "세션 아카이브를 이 계정의 드라이브에 하루에 한 번 업로드합니다. 대화가 그대로 들어가며 삭제되는 것은 없습니다.",
         "backup_nightly_sessions_destination": "그 드라이브는 이 AWS 계정의 S3 스토리지이며, {{button}}도 같은 곳으로 아카이브를 보냅니다.",
@@ -9220,7 +9226,8 @@
       "retry": "다시 시도",
       "save_failed": "저장 실패",
       "star_as_artifact": "아티팩트로 즐겨찾기",
-      "starred_as_click_to_remove": "‘{{name}}’(으)로 즐겨찾기됨 — 클릭하면 해제됩니다"
+      "starred_as_click_to_remove": "‘{{name}}’(으)로 즐겨찾기됨 — 클릭하면 해제됩니다",
+      "open_artifact_named": "아티팩트 ‘{{slug}}’ 열기"
     },
     "widgetPlaceholder": {
       "generating": "생성 중…"
@@ -9517,6 +9524,7 @@
       "open_in_side_panel": "사이드 패널에서 열기",
       "path_copied": "경로 복사됨",
       "reveal_blocked": "이 경로는 보호되어 있어 열 수 없습니다.",
+      "reveal_copied_instead": "{{productName}}이(가) 실행 중인 컴퓨터에서 이 경로를 열 수 없어 대신 경로를 복사했습니다.",
       "reveal_failed": "{{productName}}이(가) 실행 중인 컴퓨터에서 이 경로를 열 수 없습니다.",
       "show_folder_in_side_panel": "사이드 패널에 폴더 표시"
     },
@@ -13048,6 +13056,7 @@
       "expand_sessions_this_one_opened": "이 세션이 연 세션 펼치기",
       "nesting_depth": "중첩 깊이: {{depth}}",
       "opened_by_session": "{{slot}}이(가) 열었음",
+      "opened_by_closed_named": "{{name}}이(가) 열었음 (종료됨)",
       "opened_by_closed_session": "종료된 세션이 열었음",
       "no_conductor_sessions_yet": "아직 컨덕터 세션이 없습니다",
       "needs_your_answer": "답변이 필요합니다",
@@ -15182,6 +15191,9 @@
         "lesson_already_covered": "기존 학습 내용에 이미 포함되어 있습니다({{reason}}). 새로운 내용을 추가하려면 문구를 바꾸세요.",
         "lesson_already_stored": "이 학습 내용은 이미 저장되어 있습니다.",
         "lesson_not_saved": "학습 내용을 저장하지 못했습니다({{reason}}). 수정한 후 다시 시도하세요.",
+        "lesson_request_failed": "레슨을 추가할 수 없습니다",
+        "settings_save_failed": "메모리 설정을 저장할 수 없습니다",
+        "settings_load_failed": "메모리 설정을 불러올 수 없습니다",
         "lessons": "학습 내용",
         "lessons_empty_subtitle": "에이전트를 가르치면 수정 사항과 환경설정이 여기에 저장됩니다.",
         "lessons_refresh_failed": "레슨은 삭제되었지만 목록을 새로 고칠 수 없습니다",
@@ -16129,7 +16141,6 @@
       "actions": "작업",
       "add_job": "작업 추가",
       "agent": "에이전트 ·",
-      "and_their_run_history_this_action_cannot_be_undo": "및 실행 기록을 영구히 삭제합니다. 이 작업은 되돌릴 수 없습니다.",
       "ask_in_chat": "채팅으로 요청",
       "batch_delete_failed": "일괄 삭제에 실패했습니다",
       "browse_all_templates": "모든 템플릿 둘러보기",
@@ -16218,21 +16229,16 @@
       "running": "실행 중",
       "schedule": "스케줄",
       "schedule_recurring_tasks_to_run_automatically_ch": "반복 태스크를 자동으로 실행하도록 예약하세요 — 파이프라인 확인, 리포트 생성, 서비스 모니터링 등 에이전트가 할 수 있는 모든 일이 가능합니다.",
-      "scheduled_job_other": "예약된 작업 {{count}}개",
       "script_python": "script · python",
       "select": "{{name}} 선택",
       "select_all_jobs": "모든 작업 선택",
       "select_deselect_all_jobs_matching_the_current_fi": "표시된 작업 전체 선택 / 선택 해제 (접힌 폴더 제외)",
-      "selected": "선택됨",
       "start_from_a_pre_made_schedule": "미리 만들어진 스케줄로 시작",
       "status": "상태",
       "strict": "엄격",
-      "this_permanently_removes_the_selected_job_other": "선택한 작업",
       "this_will_permanently_remove_the_scheduled_job_t": "예약된 작업이 영구히 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
-      "to_confirm": "입력하세요",
       "try_remind_me_to_check_my_pipeline_every_morning": "— ‘매일 아침 파이프라인을 확인하라고 알려줘’를 입력해 보세요",
       "type": "유형",
-      "type_verb_to_confirm": "확인하려면",
       "view_calendar": "캘린더",
       "view_executions": "실행 기록",
       "view_last_result": "마지막 결과 보기",
@@ -16275,7 +16281,12 @@
       "all_crewmates": "모든 크루메이트",
       "details_tab": "세부 정보",
       "logs_tab": "로그",
-      "delete_n_selected_jobs_other": "선택한 작업 {{count}}개 삭제"
+      "delete_n_selected_jobs_other": "선택한 작업 {{count}}개 삭제",
+      "n_selected_other": "{{count}}개 선택됨",
+      "delete_n_selected_other": "선택한 {{count}}개 삭제",
+      "delete_n_scheduled_jobs_title_other": "예약된 작업 {{count}}개를 삭제하시겠습니까?",
+      "bulk_delete_removes_jobs_and_history_other": "선택한 작업과 실행 기록을 영구히 삭제합니다. 이 작업은 되돌릴 수 없습니다.",
+      "type_token_to_confirm": "확인하려면 <token/>를 입력하세요"
     },
     "servicesTab": {
       "channels": "채팅 플랫폼",
@@ -16451,6 +16462,7 @@
       "cpu_cores": "CPU(코어)",
       "cpu_cores_hint": "프로세서 사용량을 퍼센트가 아니라 CPU 코어 수로 측정합니다. 1.00은 한 코어가 완전히 포화되었다는 뜻입니다.",
       "created_by": "{{name}}이(가) 생성 (실행 중이 아니므로 최상위에 표시)",
+      "created_by_closed_named": "{{name}}이(가) 생성 (종료됨)",
       "created_by_closed_unnamed": "종료된 세션이 생성",
       "credits": "크레딧",
       "done": "완료",
@@ -17816,7 +17828,6 @@
         "host_surface": "호스트 표면",
         "i_understand_this_weakens_kirocrew_s_protection": "이 설정이 {{productName}}의 보호를 약화시킨다는 점을 이해합니다.",
         "interactive": "대화형",
-        "invalid_regular_expression": "잘못된 정규식",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}}은(는) 6개의 보안 레이어를 구현합니다. 각 레이어는 독립적으로 동작합니다 — 공격자가 성공하려면 모든 레이어를 동시에 우회해야 합니다.",
         "layer_auth": "인증",
@@ -20101,6 +20112,13 @@
       "search_in": "{{path}}에서 ‘{{query}}’ 검색",
       "search_web": "웹에서 ‘{{query}}’ 검색",
       "view_image": "이미지 {{path}} 보기"
+    },
+    "heicImage": {
+      "unreadable": "{{name}}을(를) HEIC 사진으로 읽을 수 없습니다. 파일이 손상되었을 수 있습니다. JPEG로 내보낸 뒤 그 파일을 대신 첨부하세요.",
+      "too_large": "{{name}}이(가) 여기에서 HEIC 사진을 변환할 수 있는 한도인 {{max}}을(를) 넘습니다. JPEG로 내보낸 뒤 그 파일을 대신 첨부하세요.",
+      "too_many_pixels": "{{name}}은(는) {{width}} × {{height}}픽셀로, 여기에서 HEIC 사진을 변환할 수 있는 한도인 {{max}}메가픽셀을 넘습니다. 더 작은 JPEG를 내보내 대신 첨부하세요.",
+      "convert_failed": "이 브라우저에서 {{name}}을(를) JPEG로 변환하지 못했습니다. 페이지를 새로 고친 뒤 다시 시도하거나, JPEG로 내보낸 뒤 그 파일을 대신 첨부하세요.",
+      "cannot_fit": "{{name}}을(를) JPEG로 {{max}} 미만까지 줄이지 못했습니다. 더 작은 JPEG를 내보내 대신 첨부하세요."
     }
   },
   "memoryV2": {

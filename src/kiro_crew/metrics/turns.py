@@ -48,6 +48,8 @@ import logging
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.metrics.harness import ATTR_HARNESS, HARNESS_UNKNOWN
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.metrics.turn_completed import emit_turn_completed
+from kiro_crew.metrics.usage_attrs import TRIGGER_OTHER
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +180,19 @@ def emit_turn_duration(
     model: str = "",
     provider: str = "",
     harness: str = HARNESS_UNKNOWN,
+    trigger: str = TRIGGER_OTHER,
+    origin: str | None = None,
 ) -> None:
     """Emit one ``kirocrew.turn.duration`` sample (best-effort, never raises).
+
+    Also emits the exportable pair, ``kirocrew.turn.completed`` and
+    ``kirocrew.turn.completed.duration``, via
+    :func:`kiro_crew.metrics.turn_completed.emit_turn_completed`, so
+    the local and the exported reading describe one population with one outcome.
+    ``trigger`` is who started the turn (``metrics.usage_attrs``), and a caller
+    that passes nothing records ``other``. ``origin`` overrides the origin
+    derived from ``session_key``, for a surface whose key does not say where the
+    input arrived (a webhook).
 
     ``harness`` is the EFFECTIVE harness of the session that ran the turn, as
     :func:`kiro_crew.metrics.harness.harness_of` resolved it from the live
@@ -228,6 +241,16 @@ def emit_turn_duration(
     empty-string label. See :func:`_model_attrs` for the cardinality argument.
     """
     value = duration_ms or elapsed_ms
+    # Before the zero-duration return: the counter counts every finished turn,
+    # including one whose surface measured no duration at all.
+    emit_turn_completed(
+        value,
+        session_key=session_key,
+        outcome=outcome,
+        trigger=trigger,
+        harness=harness,
+        origin=origin,
+    )
     if not value:
         return
     attrs: dict = {"outcome": outcome or OUTCOME_UNCLASSIFIED}

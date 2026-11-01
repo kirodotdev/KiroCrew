@@ -473,6 +473,8 @@ comes after a record, never instead of one:
   three facts.
 - **Rerun at most once**, only what failed (`gh run rerun <run-id> --failed`, or
   `--job <job-id>`).
+- **Rerun the job; never re-push an identical tree** to re-trigger it
+  (`references/ci.md`, *Rerun, don't re-push*).
 - **A test with two or more ledger reports in 14 days is fixed before more feature work
   lands on top of it**, not rerun again.
 

@@ -301,7 +301,11 @@ class TestEditComment:
         # Agent provenance is the structured is_agent flag, not a body prefix —
         # an edit stores the new body verbatim, never stamping an emoji into it
         # (the dashboard renders a lucide Bot icon from is_agent per AGENTS.md).
-        root = await _post("doc", text="original", is_agent=True)
+        resp = await h.api_artifact_post_comment(
+            _agent_req(body={"text": "original"}, match={"slug": "doc"})
+        )
+        assert resp.status == 201, _j(resp)
+        root = _j(resp)["comment"]
         resp = await h.api_artifact_edit_comment(
             _req(body={"text": "corrected"}, match={"slug": "doc", "comment_id": root["id"]})
         )
@@ -567,6 +571,105 @@ class TestAgentDeleteComment:
         )
         assert resp.status == 403
         assert store.list_comments("doc")[0].status == "open"
+
+
+class TestCommentIdentityFromRequest:
+    """Post and reply read who wrote the comment from the request, like delete
+    and resolve: the X-Internal-Secret header marks an agent, and a person is
+    the dashboard owner's login. Body ``author`` / ``is_agent`` are accepted
+    and ignored, never refused."""
+
+    @pytest.fixture(autouse=True)
+    def owner_login(self, _floor_monkeypatch):
+        from kiro_crew.dashboard.handlers.artifacts_parts import artifact_comments as mod
+
+        _floor_monkeypatch.setattr(mod.getpass, "getuser", lambda: "owner-login")
+
+    @pytest.mark.asyncio
+    async def test_post_body_flags_ignored_for_dashboard_call(self, store):
+        resp = await h.api_artifact_post_comment(
+            _req(
+                body={"text": "hi", "is_agent": True, "author": "someone-else"},
+                match={"slug": "doc"},
+            )
+        )
+        assert resp.status == 201, _j(resp)
+        stored = store.list_comments("doc")[0]
+        assert stored.is_agent is False
+        assert stored.author == "owner-login"
+
+    @pytest.mark.asyncio
+    async def test_post_header_marks_agent_without_body_flag(self, store):
+        resp = await h.api_artifact_post_comment(
+            _agent_req(body={"text": "hi", "author": "someone-else"}, match={"slug": "doc"})
+        )
+        assert resp.status == 201, _j(resp)
+        stored = store.list_comments("doc")[0]
+        assert stored.is_agent is True
+        assert stored.author == "agent"
+
+    @pytest.mark.asyncio
+    async def test_post_mcp_shaped_body_stays_agent(self, store):
+        # The body the MCP artifact_post_comment tool sends today.
+        resp = await h.api_artifact_post_comment(
+            _agent_req(
+                body={"text": "hi", "scope": "private", "is_agent": True, "author": "agent"},
+                match={"slug": "doc"},
+            )
+        )
+        assert resp.status == 201, _j(resp)
+        stored = store.list_comments("doc")[0]
+        assert (stored.is_agent, stored.author) == (True, "agent")
+
+    @pytest.mark.asyncio
+    async def test_post_dashboard_body_keeps_owner_name(self, store):
+        # The body the dashboard sends today: no author, no is_agent.
+        await _post("doc", text="hi")
+        stored = store.list_comments("doc")[0]
+        assert (stored.is_agent, stored.author) == (False, "owner-login")
+
+    @pytest.mark.asyncio
+    async def test_reply_body_flags_ignored_for_dashboard_call(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_reply_comment(
+            _req(
+                body={"text": "re", "is_agent": True, "author": "someone-else"},
+                match={"slug": "doc", "comment_id": root["id"]},
+            )
+        )
+        assert resp.status == 201, _j(resp)
+        reply = next(c for c in store.list_comments("doc") if c.parent_id == root["id"])
+        assert reply.is_agent is False
+        assert reply.author == "owner-login"
+
+    @pytest.mark.asyncio
+    async def test_reply_header_marks_agent_without_body_flag(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_reply_comment(
+            _agent_req(body={"text": "re"}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 201, _j(resp)
+        reply = next(c for c in store.list_comments("doc") if c.parent_id == root["id"])
+        assert reply.is_agent is True
+        assert reply.author == "agent"
+
+    @pytest.mark.asyncio
+    async def test_disagreeing_body_flags_logged_at_debug(self, store, caplog):
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            resp = await h.api_artifact_post_comment(
+                _req(
+                    body={"text": "hi", "is_agent": True, "author": "someone-else"},
+                    match={"slug": "doc"},
+                )
+            )
+        assert resp.status == 201
+        debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("ignoring body is_agent=True" in m for m in debug)
+        assert any("ignoring body author" in m for m in debug)
+        # The claimed author string itself is not written to the log.
+        assert not any("someone-else" in m for m in debug)
 
 
 class TestCommentLifecycleEvents:

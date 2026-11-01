@@ -21,7 +21,9 @@ stdin (JSON):
                                      "repo": "owner/name"}},
         {"id": "item-3", "accept": {"kind": "file", "path": "/abs/path",
                                      "exists": true}},
-        {"id": "item-4", "accept": {"kind": "human_approval"}}
+        {"id": "item-4", "accept": {"kind": "human_approval"}},
+        {"id": "item-5", "accept": {"kind": "edition_check",
+                                     "check": "name", "ref": "ID-1"}}
     ]}
 
 Kinds:
@@ -32,6 +34,18 @@ Kinds:
                     required here.
     file            a path exists (or, with ``"exists": false``, does not).
     human_approval  never machine-evaluated; always ``pending``.
+    edition_check   an installed edition answers a named check (below).
+
+``edition_check`` asks an installed edition. It runs
+``kirocrew acceptance-check --json <check> <ref>``, a command the public build
+does not ship, so here it answers ``error`` ("no edition provides the
+acceptance check"). An edition that provides the check prints one JSON object
+naming the same ``check``, ``ref`` and ``verdict`` as its exit code: 0 pass,
+8 pending, 1 fail, 3 needs a person (read as ``refused``), 4 could not answer
+(read as ``error``). Exit 2 means only that no edition provides that check.
+The check names are the edition's; the core knows none of them. The edition
+contract, and how an edition provides the command, is specified in
+``docs/system-specs/modules/platform-context.md`` ("Acceptance check command").
 
 stdout (JSON):
     {"results": [{"id": "...", "verdict": "pass|fail|pending|refused|error",
@@ -98,6 +112,7 @@ Stdlib-only, Python 3.8+.
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -106,10 +121,10 @@ from pathlib import Path
 #: allowlist - nothing in a spec can name a command at all. This exists so a
 #: handler that ever passes spec input into `_exec` fails closed instead of
 #: executing it, which is the regression the `cmd` kind's removal prevents.
-#: All three invocations here are `gh` (`pr checks`, the `pr view` draft probe
-#: and `pr_merged`'s `pr view`), so a second entry would widen the surface for
-#: nothing.
-_SELF_BUILT_COMMANDS = {"gh"}
+#: `gh` serves `pr_checks`, its draft probe and `pr_merged`'s `pr view`;
+#: `kirocrew` serves `edition_check` and runs exactly one fixed subcommand,
+#: `acceptance-check --json <check> <ref>`.
+_SELF_BUILT_COMMANDS = {"gh", "kirocrew"}
 
 TIMEOUT_SECS = 300
 EVIDENCE_TAIL_CHARS = 500
@@ -121,6 +136,27 @@ _GH_PENDING_EXIT = 8
 #: a ``$`` anchor also matches before a trailing newline. ASCII classes only,
 #: and an owner cannot start with ``-``, so the value can never read as a flag.
 _GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+
+#: ``edition_check``'s two fields, applied with ``fullmatch``: a ``$`` anchor
+#: also matches before a trailing newline. ASCII classes only, and both must
+#: start with a letter or digit, so neither can ever read as a flag.
+_CHECK_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+_CHECK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+#: ``kirocrew acceptance-check`` exit codes and the report verdict each must
+#: carry. The report has to agree with the exit code before either is
+#: believed: a crash also exits 1, and a crash is not a failed check. Exit 4 is
+#: the edition's own "this check exists but could not answer" (a ref the check
+#: does not accept, or its system unreachable); it reads as ``error``, with the
+#: edition's summary as the evidence.
+_EDITION_EXIT_VERDICTS = {0: "pass", 1: "fail", 3: "needs_person", 4: "error", 8: "pending"}
+
+#: argparse's usage exit, and it has one meaning: no installed edition provides
+#: the check. The evaluator validated both fields and always passes both, so
+#: argparse can only be refusing the command (the public ``kirocrew`` has no
+#: ``acceptance-check``) or a check name the edition does not know. A check
+#: that exists but rejects a ref answers exit 4 instead.
+_EDITION_USAGE_EXIT = 2
 
 
 def _tail(text: str) -> str:
@@ -244,6 +280,91 @@ def _pr_merged(accept):
     return ("error", f"PR #{pr} in {repo} reported an unknown state: {output}")
 
 
+def _kirocrew_on_path():
+    """Name the ``kirocrew`` this evaluator runs, for evidence only.
+
+    The argv stays the bare name, resolved from ``PATH`` by the operating
+    system, so this never picks the binary; it only says which one ``PATH``
+    holds. That one need not be the install the gateway runs from (a shim
+    beside a virtual environment, say), and an answer of ``error`` is easier
+    to act on when it names it.
+    """
+    found = shutil.which("kirocrew")
+    return f"kirocrew on PATH is {found}" if found else "no kirocrew on PATH"
+
+
+def _edition_report(stdout):
+    """The one JSON object ``kirocrew acceptance-check --json`` prints, or ``None``."""
+    try:
+        report = json.loads(stdout or "")
+    except (ValueError, RecursionError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def _edition_check(accept):
+    """Has an edition's own check on this reference passed?
+
+    The edition does the reading and judging; this handler validates the two
+    fields, builds the one fixed argv, and maps the answer. The exit code and the
+    report's ``verdict`` must agree, and the report must name the check and the
+    reference that were asked about, before either is believed. Anything else is
+    an ``error``: an unexpected exit is a broken environment, not a verdict on the
+    work, so it must never read as ``fail`` - or, worse, as ``pass``.
+
+    ``needs_person`` (exit 3) becomes ``refused``: the check says waiting cannot
+    change its answer and a person decides, and the conductor surfaces a
+    ``refused`` verdict to the user rather than polling it. ``error`` (exit 4)
+    stays ``error``, carrying the edition's own reason: the check exists but
+    could not answer, which is never a verdict on the work.
+    """
+    check = accept.get("check")
+    if not isinstance(check, str) or not _CHECK_NAME.fullmatch(check):
+        return (
+            "error",
+            "edition_check spec needs a check name: a lower-case letter, then up to 31 "
+            "lower-case letters, digits or hyphens",
+        )
+    ref = accept.get("ref")
+    if not isinstance(ref, str) or not _CHECK_REF.fullmatch(ref):
+        return (
+            "error",
+            "edition_check spec needs a ref: a letter or digit, then up to 127 letters, "
+            "digits, dots, underscores or hyphens",
+        )
+    problem, proc = _exec(["kirocrew", "acceptance-check", "--json", check, ref])
+    if proc is None:
+        return problem or ("error", "could not run")
+    output = _tail(proc.stdout + "\n" + proc.stderr)
+    if proc.returncode == _EDITION_USAGE_EXIT:
+        return (
+            "error",
+            f"no installed edition provides the acceptance check {check!r}: "
+            f"kirocrew acceptance-check exited 2 ({output or 'no output'}); "
+            f"{_kirocrew_on_path()}",
+        )
+    expected = _EDITION_EXIT_VERDICTS.get(proc.returncode)
+    report = _edition_report(proc.stdout)
+    if (
+        expected is None
+        or report is None
+        or report.get("verdict") != expected
+        or report.get("check") != check
+        or report.get("ref") != ref
+    ):
+        return (
+            "error",
+            f"kirocrew acceptance-check exit {proc.returncode} came without a matching "
+            f"report for {check} {ref}: {output}; {_kirocrew_on_path()}",
+        )
+    summary = _tail(str(report.get("summary") or "")) or f"{check} {ref}: {expected}"
+    if expected == "error":
+        return ("error", f"{summary} -- the edition's check could not answer")
+    if expected == "needs_person":
+        return ("refused", f"{summary} -- waiting will not change this; a person decides")
+    return (expected, summary)
+
+
 def _evaluate(item):
     accept = item.get("accept") or {}
     kind = accept.get("kind")
@@ -289,6 +410,8 @@ def _evaluate(item):
         return (verdict, evidence)
     if kind == "pr_merged":
         return _pr_merged(accept)
+    if kind == "edition_check":
+        return _edition_check(accept)
     if kind == "file":
         path = accept.get("path")
         if not isinstance(path, str) or not path:

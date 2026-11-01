@@ -194,7 +194,7 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
         const res = await fetch(COMPOSER_UPLOAD_PATH, { method: 'POST', body, ...(signal ? { signal } : {}) })
         checkSessionExpired(res)
         return res
-      }),
+      }, signal),
     screenshot: () => post('/api/screenshot').then(j) as Promise<{ path: string }>,
   }
 

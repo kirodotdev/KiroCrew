@@ -1016,6 +1016,26 @@ is reached through `SessionManager.mark_mcp_config_changed`, a generation
 fence the gate bumps in the same call and the fill loop compares across its
 start, marking that provider at its enqueue re-check.
 
+Strands satisfies the gate by a THIRD mechanism, its own membership
+(`ACP_BACKENDS_MCP_RELAUNCH_RELOAD`, declared as
+`LLMProvider.mcp_config_relaunch_reload` by `AcpProvider` for its direct
+`AcpClient`). The Strands CLI reads its servers once, from the `--mcp-config`
+file the adapter writes at each spawn, so a running process cannot take a new
+one. Crew relaunches it instead: at the session's next turn boundary, before the
+prompt and never while a turn holds the lock, the marked client is replaced
+through the disposed-session path (`acp/relaunch_reload.py`): the old process is
+killed, the new one launches with a freshly written `--mcp-config`, and
+`session/load` of the same id brings the conversation back. Measured on Strands
+CLI 0.2.3: `test/fixtures/acp_frames/strands/mcp-relaunch-add-live.jsonl` (an
+added server's tool offered and called, the earlier turns kept) and
+`mcp-relaunch-remove-live.jsonl` (a withdrawn server's tool no longer offered).
+The launch clears the mark right before it reads the spec, so a client still
+starting needs no second relaunch, and a mark set after that read survives. A
+failed relaunch, or one whose replacement opened a different session, refuses
+that turn with a plain message and leaves the load owed: every later turn is
+refused until a replacement serves the same session id, so no turn runs in a
+conversation the chat never had.
+
 The skip is inferred from that declaration, not observed: kiro-cli's
 `_kiro.dev/mcp/server_initialized` notification is the signal that a reconcile
 actually spawned the server, and the gate does not yet consult it. A watcher
@@ -2632,8 +2652,8 @@ answers `tools/list` from):
   `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **App bridges:** `issue_radar_record_investigation`,
-  `ops_mission_control_api`, `design_tweak_update_thread`, `pod_up`, `pod_down`,
-  `pod_status`, `pod_ls`, `issue_radar_crew_read`, `issue_radar_crew_record`.
+  `ops_mission_control_api`, `design_tweak_update_thread`, `pod_up`, `pod_restart`,
+  `pod_down`, `pod_status`, `pod_ls`, `issue_radar_crew_read`, `issue_radar_crew_record`.
   Listed only while the app each one reaches is enabled — see § An app's tools
   follow the app's enablement below.
 - **Browser:** `browser`
@@ -2873,10 +2893,10 @@ of its responsibility:
 
 ### An app's tools follow the app's enablement
 
-The nine `apps`-domain tools each reach one built-in app — Issue Radar
+The ten `apps`-domain tools each reach one built-in app — Issue Radar
 (`issue_radar_record_investigation`, `issue_radar_crew_read`,
-`issue_radar_crew_record`), Dev Fleet (`pod_up`, `pod_down`, `pod_status`,
-`pod_ls`), Ops Mission Control (`ops_mission_control_api`) and Design Tweak
+`issue_radar_crew_record`), Dev Fleet (`pod_up`, `pod_restart`, `pod_down`,
+`pod_status`, `pod_ls`), Ops Mission Control (`ops_mission_control_api`) and Design Tweak
 (`design_tweak_update_thread`) — through gateway routes that refuse the call with
 HTTP 403 while the app is disabled, on `kiro_crew.apps.manager`'s read of the
 app's `installed.json`. The refusal body differs per app — Dev Fleet's routes and

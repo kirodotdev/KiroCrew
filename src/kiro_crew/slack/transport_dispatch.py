@@ -56,7 +56,7 @@ from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.slack.agent_sessions.fence import fenced_turn
-from kiro_crew.slack.channel_crew import resolve_channel_crew
+from kiro_crew.slack.channel_crew import context_template, resolve_channel_crew
 from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.format import escape_mrkdwn
 from kiro_crew.slack.handler import (
@@ -709,13 +709,14 @@ async def handle_message_transport(
         # binding -- a thread value equal to it is that binding restored from the
         # transcript header by ``_hydrate_thread_overrides`` -- and the session is
         # Slack's own: a dashboard-linked session keeps its slot's project.
-        # ``_agent`` stays the record's name for the transcript header and the
-        # context builder.
+        # ``_agent`` stays the record's name for the transcript header; the
+        # context builder takes the record's template (``context_template``).
         _channel_crew = (
             await asyncio.to_thread(resolve_channel_crew, agent_override)
             if agent_override and _agent == agent_override and is_slack_born(session_key)
             else None
         )
+        _context_agent = await asyncio.to_thread(context_template, _agent, _channel_crew)
         _alloc: dict[str, Any] = (
             _channel_crew.allocation_kwargs() if _channel_crew else {"agent": _agent}
         )
@@ -909,7 +910,7 @@ async def handle_message_transport(
                 session_key,
                 channel_id=channel,
                 thread_ts=thread_ts or msg_ts,
-                agent=_agent,
+                agent=_context_agent,
                 memory_store=_memory_store,
                 resumed=resumed,
                 needs_reinjection=_needs_reinjection,

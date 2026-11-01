@@ -26,6 +26,9 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Consolidation write child: this interpreter, -P, a fixed module; jobs travel
         # on its pipes as data, never as argv. No agent input reaches the spawn.
         "consolidation_write_child.py::_spawn",
+        # Recall pool child: this interpreter, -P, a fixed module; jobs travel on its
+        # pipes as data, never as argv. No agent input reaches the spawn.
+        "recall_pool.py::_spawn",
         # Page-cache read-ahead child: this interpreter, -I -c with a fixed program;
         # argv is a chunk size and the gateway's own database paths. stdio DEVNULL,
         # no shell or cwd. A child so closing its descriptors keeps our SQLite locks.

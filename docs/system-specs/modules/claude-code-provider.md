@@ -715,6 +715,15 @@ opens a sensitive path, since a deny rule outranks both from any source. A launc
 does not start the session.
 Detail: [side.md](side.md), "On claude the confinement is the session's own options".
 
+### A tool-less session
+
+A session whose agent spec declares `"tools": []` (the mirror's `zero_tools`, which
+covers the `kirocrew-lite` background helpers `_bg` and `_consolidate`) is started
+with `strictMcpConfig`. The adapter otherwise mounts the user's, the project's and
+installed plugins' MCP servers beside the wire array, and each helper call starts a
+fresh session, so those servers would start on every call in a session that runs no
+tool. Only the wire array mounts; nothing else in the envelope changes.
+
 ### Known gap: the user's global `~/.claude` is inherited
 
 With no `CLAUDE_CONFIG_DIR` set by the core, the adapter and the SDK read the

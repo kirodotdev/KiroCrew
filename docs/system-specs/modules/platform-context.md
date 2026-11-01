@@ -452,6 +452,57 @@ as the first positional after the module. A companion named outside the
 convention classifies as ours on the Python side but as a foreign port holder on
 the desktop side, and the app refuses to start on its own gateway's port.
 
+### Acceptance check command (`edition_check`)
+
+The goal conductor's evaluator
+(`src/kiro_crew/builtin_skills/goal-conductor/scripts/accept_eval.py`) has one
+acceptance kind an edition answers:
+`{"kind": "edition_check", "check": "<name>", "ref": "<id>"}`. The core names no
+check. It validates both fields, runs one fixed argv, and believes the answer only
+when the exit code and the printed report agree. This section is the contract an
+edition builds against, and `test/test_accept_eval_edition_check.py` pins it to the
+evaluator's own tables.
+
+**Argv.** `kirocrew acceptance-check --json <check> <ref>`, run without a shell.
+`<check>` matches `[a-z][a-z0-9-]{0,31}` and `<ref>` matches
+`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`, both with `fullmatch`, so neither can read as a
+flag. A check that accepts a narrower ref checks it itself and answers exit 4.
+
+**Report.** One JSON object on stdout. Its `check` and `ref` equal the two
+arguments, its `verdict` is the one the exit code's row names, and an optional
+one-line `summary` becomes the evidence. Anything else (no object, more than one,
+another check or ref, a verdict that disagrees with the exit code, an exit not in
+the table) reads as `error`.
+
+| exit | report `verdict` | evaluator verdict | meaning |
+|---|---|---|---|
+| 0 | `pass` | `pass` | the check is met |
+| 8 | `pending` | `pending` | not yet; another evaluation may pass |
+| 1 | `fail` | `fail` | the work ended without meeting the check |
+| 3 | `needs_person` | `refused` | waiting cannot change the answer; a person decides |
+| 4 | `error` | `error` | the check exists but could not answer: a ref it does not accept, or its own system unreachable |
+| 2 | (none) | `error` | usage: no installed edition provides this check |
+
+Exit 2 has that one meaning. The public `kirocrew` has no `acceptance-check`, so
+its argparse exits 2, and an edition's command exits 2 for a check name it does not
+know. An edition does not use exit 2 for anything else; a check that exists and
+cannot answer uses exit 4.
+
+**Which `kirocrew` runs.** The argv starts with the bare name, which the operating
+system resolves from `PATH` in the process that runs the evaluator. The evaluator
+does not look for the gateway's own install, so a `kirocrew` earlier on `PATH` (a
+shim beside a virtual environment, say) answers instead. An `error` the evaluator
+writes itself names what `kirocrew` on `PATH` is, so that case is visible.
+
+**How an edition provides the command.** The core CLI parses its arguments before
+`boot_platform` loads the `kirocrew.plugins` entry points, so a plugin cannot add a
+`kirocrew` subcommand. An edition provides `acceptance-check` by owning the
+`kirocrew` launcher on `PATH`: an edition that bundles the core and declares the
+`kirocrew` console script itself answers `acceptance-check` in that composition-root
+wrapper, and hands every other command to the core `main`. A companion installed
+beside the core under its own script name (the `kirocrew-<edition>` shape above)
+has no way to add the command today, so its `edition_check` bars answer `error`.
+
 ### Distribution build version
 
 A distribution that repackages one core release as several builds of its own

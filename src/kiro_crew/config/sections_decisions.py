@@ -193,7 +193,10 @@ class DecisionProviderConfig:
             "Endpoint",
             "Full URL of the evaluation endpoint. Override only to point at a "
             "compatible proxy — the request and response field names are fixed by "
-            "the TypeSafe API, not by this setting.",
+            "the TypeSafe API, not by this setting. "
+            "'sagemaker://<endpoint-name>?region=<region>[&profile=<profile>]' sends "
+            "the same request to an Amazon SageMaker endpoint, signed with this "
+            "machine's AWS credentials instead of an API key (needs boto3).",
         ),
     )
     api_key: str = field(

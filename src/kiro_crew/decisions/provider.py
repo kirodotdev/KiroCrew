@@ -81,6 +81,7 @@ CAPABILITY_IMAGE = "image"
 #: Registry ids. Stable identifiers for code and tests, never persisted.
 PROVIDER_HOSTED = "systemone-hosted"
 PROVIDER_LOCAL = "systemone-local"
+PROVIDER_SAGEMAKER = "systemone-sagemaker"
 PROVIDER_SESSION_LLM = "session-llm"
 
 #: The session-LLM lane's budget window in seconds. ``provider.timeout_ms`` is
@@ -180,6 +181,12 @@ def _build_system_one(provider_config: Any, _model: str) -> DecisionProvider:
     return module.SystemOneProvider(provider_config)  # type: ignore[no-any-return]
 
 
+def _build_sagemaker(provider_config: Any, _model: str) -> DecisionProvider:
+    """The same System One request sent through SageMaker's InvokeEndpoint (SigV4)."""
+    module = importlib.import_module("kiro_crew.decisions.impl_sagemaker")
+    return module.SageMakerOracle(provider_config)  # type: ignore[no-any-return]
+
+
 def _build_session_llm(_provider_config: Any, model: str) -> DecisionProvider:
     """One tool-less model call; the inherit sentinel asks for no model at all."""
     module = importlib.import_module("kiro_crew.decisions.impl_llm")
@@ -203,6 +210,20 @@ _REGISTRY: dict[str, ProviderSpec] = {
             timeout_window=None,
             factory=_build_system_one,
             # One HTTP/2 connection carries many streams; measured p50 ~150 ms.
+            max_in_flight=8,
+            latency_ms=150,
+        ),
+        ProviderSpec(
+            id=PROVIDER_SAGEMAKER,
+            kind=KIND_HOSTED,
+            lane=LANE_ENDPOINT,
+            egress=EGRESS_THIRD_PARTY,
+            authority=AUTHORITY_KEYSTONE,
+            governance_row=ROW_DECISIONS,
+            # The SageMaker transport sends the text request only: no images, no Box.
+            supports=QUESTION_KINDS,
+            timeout_window=None,
+            factory=_build_sagemaker,
             max_in_flight=8,
             latency_ms=150,
         ),
@@ -263,6 +284,11 @@ def select(lane: str, *, endpoint: object = "", model: object = "") -> ProviderS
     """
     if lane == LANE_SESSION_LLM:
         return _REGISTRY[PROVIDER_SESSION_LLM]
+    # A ``sagemaker://`` endpoint: the same request over SageMaker with SigV4.
+    from kiro_crew.decisions.impl_sagemaker import is_sagemaker_endpoint
+
+    if is_sagemaker_endpoint(endpoint):
+        return _REGISTRY[PROVIDER_SAGEMAKER]
     # Read from the catalog directly, so selecting a provider does not import the
     # governance graph ``capability`` pulls in. A catalog preset only: ``none``
     # and ``custom`` are not local presets.

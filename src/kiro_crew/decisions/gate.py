@@ -396,11 +396,19 @@ def _targets_denied(
 
     try:
         jev = lane == LANE_JEV
+        endpoint = configured_endpoint(config) if jev else None
+        if endpoint is not None:
+            from kiro_crew.decisions.impl_sagemaker import is_sagemaker_endpoint, policy_endpoint
+
+            # The ceiling is asked about the AWS host the request reaches, not the
+            # endpoint name; an address that names no host raises and denies below.
+            if is_sagemaker_endpoint(endpoint):
+                endpoint = policy_endpoint(endpoint)
         return targets_denied(
             session_key or DASHBOARD_SURFACE_KEY,
             point=point,
             model=model if jev else None,
-            endpoint=configured_endpoint(config) if jev else None,
+            endpoint=endpoint,
         )
     except Exception as exc:
         logger.debug("decisions: %s target check failed (%s)", point, type(exc).__name__)

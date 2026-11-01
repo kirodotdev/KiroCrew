@@ -233,7 +233,9 @@ def test_a_label_changed_since_the_build_is_scored_from_its_new_text(
     assert fast == _scan(store, "kyoto trip")
 
 
-def test_the_index_is_built_once_per_set(tmp_path: Path, monkeypatch) -> None:
+def test_the_index_is_built_once_per_set_and_patched_by_a_write(
+    tmp_path: Path, monkeypatch
+) -> None:
     store = _store(tmp_path)
     _seed_facts(store, 10)
     store._semantic_scoring = None
@@ -248,8 +250,12 @@ def test_the_index_is_built_once_per_set(tmp_path: Path, monkeypatch) -> None:
         store._semantic_candidates_v1(query)
     assert builds == [1]
     assert store.set_semantic("project.new.fact", "brand new", 1.0, "user_explicit") is None
-    store._semantic_candidates_v1("brand")
-    assert builds == [1, 1], "a write replaces the set, and its index with it"
+    found = store._semantic_candidates_v1("brand")
+    assert "project.new.fact" in [r["key"] for r in found]
+    assert builds == [1], "a write patches the set's index in place; it is not built again"
+    patched = store._semantic_scoring.derived["term_index"]
+    assert isinstance(patched[0], term_index.RowTermIndex)
+    assert len(patched[1]) == len(store._semantic_scoring.rows)
 
 
 def test_term_index_holds_each_text_s_exact_terms() -> None:

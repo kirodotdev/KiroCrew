@@ -627,7 +627,8 @@ class TestYoloFromConfigSlackGuards:
         """events_slash.py: /kirocrew yolo on responds with 'already ON' when active."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from kiro_crew.slack.handler import set_yolo_mode
+        from kiro_crew.safety_override import safety_override
+        from kiro_crew.slack.handler import is_yolo_mode, set_yolo_mode
 
         set_yolo_mode(True)
 
@@ -646,6 +647,8 @@ class TestYoloFromConfigSlackGuards:
         assert "already" in respond.call_args[0][0].lower()
         # No SEL log expected for already-active early return
         mock_sel.return_value.log_api_access.assert_not_called()
+        assert is_yolo_mode()
+        assert safety_override()._source == "config"
 
     @pytest.mark.asyncio
     async def test_handler_yolo_on_noop_when_already_active(self) -> None:

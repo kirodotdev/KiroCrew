@@ -1552,10 +1552,23 @@ creator by its display name, never by a raw slot id. A creator that still has a
 live row reads "Created by {name} (not running, so shown top-level)"; the
 parenthetical names the one reason a created row is top-level that real creation
 order can produce (a cycle is the other, and cannot arise from ``session_create``,
-which never lets a child create its own ancestor). A creator that has closed and
-resolves to no name reads the fixed "Created by a closed session" -- the
-user-facing fact is that the creator closed, and the slot id nobody can read adds
-nothing. The slot the log cited is kept only on the `data-orphan-of` attribute,
+which never lets a child create its own ancestor). A creator that has closed is
+named by its LAST-KNOWN title when the payload carries one: "Created by {title}
+(closed)". `lineage_parents` adds `parent.title` only for a creator with no live
+row in that payload (checked under both spellings of `slot`, so a cycle or
+self-citation on a live creator never gets one), read from
+`dashboard/creator_titles.py` -- a bounded in-memory LRU (1024 spellings) that
+every live row's already-redacted title is written to by the same join (slots
+rows), by the sampler before it (Sessions-table rows), and by `push_slot_patch`
+for a title published as a patch (a rename, via
+`session_memory.remember_slot_title`), so neither payload
+reads history metadata from disk. The not-yet-generated placeholder title is
+never stored. A creator the process never saw live (closed before a restart,
+or evicted from the LRU) carries no `title`, and the row reads the fixed
+"Created by a closed session" -- the user-facing fact is that the creator
+closed, and the slot id nobody can read adds nothing. The sidebar's orphan glyph
+reads the same way: "Opened by {title} (closed)" with `parent.title`, "Opened by
+a closed session" without. The slot the log cited is kept only on the `data-orphan-of` attribute,
 for the sidebar glyph, not in this visible text. The line is VISIBLE text, never
 a native `title`: a keyboard or touch reader sees no tooltip, and this row has
 nothing else that says it. The table re-checks the edge it is handed --

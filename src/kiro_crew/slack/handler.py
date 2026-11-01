@@ -205,7 +205,10 @@ from kiro_crew.slack.blocks import (  # noqa: F401 - read by the owners
     build_working_blocks,
     deprecation_warning_block,
 )
-from kiro_crew.slack.channel_crew import resolve_channel_crew  # noqa: F401 - read by the owners
+from kiro_crew.slack.channel_crew import (  # noqa: F401 - read by the owners
+    context_template,
+    resolve_channel_crew,
+)
 from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import (  # noqa: F401 - read by the owners

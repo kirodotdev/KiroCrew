@@ -81,6 +81,7 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
     # the kill-the-tree + bounded-reap contract for an asyncio child. (The
     # managed-venv engine's build children are synchronous ``Popen`` children
     # and use ``platform_compat.kill_popen_tree`` instead.)
+    from kiro_crew.platform.update_governance import unattended_apply_allowed
     from kiro_crew.platform.update_provider import _kill_and_reap
 
     # Loaded before the reinstall below for the same reason as the provider
@@ -601,6 +602,20 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
                     self.dashboard_state.push_refresh("update_available")
                 return True
 
+            # 6. A policy that turned unattended installs off since the effect
+            #    was derived. Read LAST, after every await above, so on the
+            #    post-copy pass nothing awaits between it and the reset. A
+            #    floor's mandatory update does not ask.
+            if not mandatory and not unattended_apply_allowed():
+                logger.info(
+                    "Auto-update not applied: the security policy turned off "
+                    "unattended installs while this update waited"
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return True
+
             return False
 
         # Every refusal runs before the copy, so a checkout they keep refusing
@@ -1014,6 +1029,7 @@ async def _auto_apply_wheel_update(
         feed_base=feed_base,
         artifact_base=artifact_base,
         state=state,
+        refuse_if_unattended_off=not mandatory,
     )
     if outcome.status == "promoted":
         if not await asyncio.to_thread(wheel_apply.restart_reaches, version):

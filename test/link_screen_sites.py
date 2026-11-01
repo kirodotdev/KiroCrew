@@ -220,6 +220,7 @@ DECLARED_SITES = frozenset(
         ("snapshot_restore.py", "_drop_derived_indexes_absent_from_bundle"),
         ("snapshot_restore.py", "_refuse_corrupt_source_databases"),
         ("snapshot_restore.py", "_restore_everything_from_rollback"),
+        ("staging.py", "staging_dir"),
         ("work_root.py", "sweep_work_root"),
         ("workspace_cli_settings.py", "workspace_cli_settings_lock"),
     }

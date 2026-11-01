@@ -1,6 +1,7 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
 import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X } from 'lucide-react'
@@ -877,7 +878,7 @@ export default function SchedulePage() {
               )}
               {selectedIds.size > 0 && (
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-[13px] text-muted whitespace-nowrap">{selectedIds.size} {i18nT('pages.schedulePage.selected')}</span>
+                  <span className="text-[13px] text-muted whitespace-nowrap">{i18nT('pages.schedulePage.n_selected', { count: selectedIds.size })}</span>
                   <Btn onClick={clearSelection}>{i18nT('pages.schedulePage.clear')}</Btn>
                   <CronJobMoveMenu
                     folders={cronFolders}
@@ -906,7 +907,7 @@ export default function SchedulePage() {
                     onNewFolder={handleNewFolder}
                   />
                   <Btn danger onClick={openBatchConfirm} title={i18nT('pages.schedulePage.delete_n_selected_jobs', { count: selectedIds.size })}>
-                    <span className="flex items-center gap-1.5"><Trash2 size={14} /> {i18nT('pages.schedulePage.delete')} {selectedIds.size} {i18nT('pages.schedulePage.selected')}</span>
+                    <span className="flex items-center gap-1.5"><Trash2 size={14} /> {i18nT('pages.schedulePage.delete_n_selected', { count: selectedIds.size })}</span>
                   </Btn>
                 </div>
               )}
@@ -1345,11 +1346,11 @@ export default function SchedulePage() {
           <DialogHeader>
             <Trash2 size={16} className="text-danger shrink-0" aria-hidden="true" />
             <DialogTitle>
-              {i18nT('pages.schedulePage.delete')} {i18nT('pages.schedulePage.scheduled_job', { count: selectedIds.size })}?
+              {i18nT('pages.schedulePage.delete_n_scheduled_jobs_title', { count: selectedIds.size })}
             </DialogTitle>
           </DialogHeader>
           <DialogBody>
-            <DialogDescription className="mb-3">{i18nT('pages.schedulePage.this_permanently_removes_the_selected_job', { count: selectedIds.size })} {i18nT('pages.schedulePage.and_their_run_history_this_action_cannot_be_undo')}</DialogDescription>
+            <DialogDescription className="mb-3">{i18nT('pages.schedulePage.bulk_delete_removes_jobs_and_history', { count: selectedIds.size })}</DialogDescription>
             <div className="max-h-[168px] overflow-y-auto rounded-md border border-border bg-bg divide-y divide-border/60 mb-4">
               {selectedJobs.map(jb => (
                 <div key={jb.id} className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
@@ -1365,14 +1366,16 @@ export default function SchedulePage() {
                   a zh-CN user typed the displayed 删除 and bulk delete stayed
                   disabled. Keep it untranslated.
 
-                  The key is `type_verb_to_confirm`, NOT the `type` used by the
-                  table header above: English "Type" is both a noun (the column)
-                  and an imperative verb (this instruction), and no single
-                  translation serves both. Sharing one key made es/pt render the
-                  NOUN here ("Tipo delete para confirmar"), turning the
-                  instruction into a fragment. A key whose name states the part
-                  of speech is what keeps a translator from having to guess. */}
-              {i18nT('pages.schedulePage.type_verb_to_confirm')} <code className="text-text font-semibold">{BULK_DELETE_TOKEN}</code> {i18nT('pages.schedulePage.to_confirm')}
+                  The sentence is ONE key with a `<token/>` slot, so each
+                  language places the token where its word order needs it
+                  (ja/ko put the verb after it). It is not the `type` key used
+                  by the table header above: English "Type" is both a noun (the
+                  column) and an imperative verb (this instruction), and sharing
+                  one key made es/pt render the NOUN here. */}
+              <Trans
+                i18nKey="pages.schedulePage.type_token_to_confirm"
+                components={{ token: <code className="text-text font-semibold">{BULK_DELETE_TOKEN}</code> }}
+              />
             </label>
             <input
               id="batch-delete-confirm"

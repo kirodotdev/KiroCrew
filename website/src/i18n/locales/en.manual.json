@@ -169,6 +169,11 @@
     "client": {
       "accepted_body_unreadable": "The server accepted the request, but its reply could not be read.",
       "paste_token_url_or_raw_token": "Paste sign-in URL…",
+      "scan_qr_code": "Scan QR code",
+      "scan_qr_cancel": "Cancel scanning",
+      "scan_qr_point_camera": "Point the camera at the sign-in QR code shown on the desktop.",
+      "camera_permission_denied": "Camera access was denied, so the QR code could not be scanned. Allow the camera for this site, or paste the sign-in URL instead.",
+      "camera_unavailable": "The camera could not be opened, so the QR code could not be scanned. Paste the sign-in URL instead.",
       "proxy_challenge_reload": "Reload this browser tab — if a sign-in page appears, your access proxy’s session expired. If not, a proxy or firewall in front of this dashboard refused the request; check the proxy’s logs, or retry later.",
       "proxy_challenge_framed": "Open {{origin}} in a new tab — if a sign-in page appears, your access proxy’s session expired. Signing in inside this panel won’t work. Sign in there, then reload this page.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. The dashboard retries automatically; if this persists, wait a few seconds and reload.",
@@ -7198,6 +7203,9 @@
         "lesson_already_covered": "An existing lesson already covers this ({{reason}}). Reword it to add something new.",
         "lesson_already_stored": "This lesson is already stored.",
         "lesson_not_saved": "Lesson not saved ({{reason}}). Edit it and try again.",
+        "lesson_request_failed": "Could not add the lesson",
+        "settings_save_failed": "Could not save the memory settings",
+        "settings_load_failed": "Could not load the memory settings",
         "persistent_lessons_injected_into_every_session_a": "Persistent lessons injected into every session. Auto-extracted from task runner failures. Add manually via 'kirocrew learn add'. When vector memory is active, lessons are managed in the Semantic tab as lesson.* entries.",
         "save": "Save",
         "skipped_incognito_session_one": "incognito session",
@@ -8546,7 +8554,6 @@
         "expand_category_rules": "Expand {{category}} rules",
         "hide_pattern": "Hide pattern",
         "interactive": "Interactive",
-        "invalid_regular_expression": "Invalid regular expression",
         "nothing_allowed": "Nothing allowed",
         "policy": "policy",
         "policy_profile": "policy ∩ profile",
@@ -9828,6 +9835,13 @@
       "search_in": "Search '{{query}}' in {{path}}",
       "search_web": "Search web for '{{query}}'",
       "view_image": "View image {{path}}"
+    },
+    "heicImage": {
+      "unreadable": "{{name}} could not be read as a HEIC photo. It may be damaged. Export it as a JPEG and attach that instead.",
+      "too_large": "{{name}} is over the {{max}} limit for converting a HEIC photo here. Export it as a JPEG and attach that instead.",
+      "too_many_pixels": "{{name}} is {{width}} × {{height}} pixels, over the {{max}}-megapixel limit for converting a HEIC photo here. Export a smaller JPEG and attach that instead.",
+      "convert_failed": "This browser could not convert {{name}} to JPEG. Reload the page and try again, or export it as a JPEG and attach that instead.",
+      "cannot_fit": "{{name}} could not be made smaller than {{max}} as a JPEG. Export a smaller JPEG and attach that instead."
     }
   },
   "store": {

@@ -250,20 +250,35 @@ def _status(_args: argparse.Namespace) -> int:
 
 def _remove(args: argparse.Namespace) -> int:
     root = kas_bundle.kas_engines_root()
-    if args.version:
+    # Removing every version is the flag left OUT, never a blank one. A blank
+    # --version (an unset "$VAR") is refused before anything is read or deleted:
+    # read as falsy it would widen a one-version delete to the whole engines root.
+    if args.version is not None and not args.version.strip():
+        print("❌ --version is blank; omit it to remove every version", file=sys.stderr)
+        return 2
+    if args.version is not None:
         if args.version not in kas_bundle.installed_versions(root=root):
-            print(f"KAS {args.version} is not installed")
-            return 0
+            print(f"❌ KAS {args.version} is not installed", file=sys.stderr)
+            return 1
         root = root / args.version
     if not root.exists():
         print("nothing installed")
         return 0
     if not args.yes:
-        answer = input(f"Delete {root} and every engine under it? [y/N] ").strip().lower()
+        try:
+            answer = input(f"Delete {root} and every engine under it? [y/N] ").strip().lower()
+        except EOFError:
+            # No terminal to answer on (piped or closed stdin) reads as "no".
+            print("\naborted: no answer on stdin; pass --yes to remove without asking")
+            return 1
         if answer not in ("y", "yes"):
             print("aborted")
             return 1
-    shutil.rmtree(root)
+    try:
+        shutil.rmtree(root)
+    except OSError as exc:
+        print(f"❌ could not remove {root}: {exc}", file=sys.stderr)
+        return 1
     print(f"removed {root}")
     return 0
 

@@ -292,6 +292,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "sanitize_label",
     "scheduled_sessions_blocked_code",
     "scheduled_sessions_blocked_reason",
+    "scheduled_snapshot_blocked_code",
     "secrets",
     "sel",
     "sessions_layer_b_enabled",

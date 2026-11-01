@@ -691,3 +691,24 @@ describe('api.sideTurn keeps the response phases distinguishable', () => {
     )
   })
 })
+
+describe('memory saves reject a refused write', () => {
+  // A bare `put()` resolves to the Response whatever its status, so a Save
+  // button awaiting it read a 403 as success. Each save parses with `j`.
+  const saves = [
+    ['saveMemorySettings', () => api.saveMemorySettings({ history_idle_hours: 2 })],
+    ['saveMemoryPreferences', () => api.saveMemoryPreferences('x')],
+    ['saveMemoryProjects', () => api.saveMemoryProjects('x')],
+    ['saveMemoryHistory', () => api.saveMemoryHistory('x')],
+  ] as const
+
+  it.each(saves)('%s rejects with an ApiError on a 403', async (_name, save) => {
+    fetchMock.mockResolvedValue(res(403, { error: 'owner only', code: 'owner_only' }))
+    await expect(save()).rejects.toBeInstanceOf(ApiError)
+  })
+
+  it.each(saves)('%s resolves the parsed body on a 2xx', async (_name, save) => {
+    fetchMock.mockResolvedValue(okJson({ ok: true }))
+    await expect(save()).resolves.toEqual({ ok: true })
+  })
+})

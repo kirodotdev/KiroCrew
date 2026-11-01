@@ -1080,6 +1080,7 @@
     "sharedCrew.composer_taken_over_hint": "Second line of the same banner: this user's unsent draft stays in their box, and they can type again once the other collaborator sends or stops typing for a moment.",
     "sharedCrew.take_over_typing": "Button on the locked composer's banner: takes the typing turn from the collaborator who is typing, so this user can type and send. Imperative verb.",
     "sharedCrew.take_over_typing_label": "Accessible name and tooltip of the same button. {{name}} is the collaborator typing now; their unsent draft is not sent or deleted.",
-    "sharedCrew.take_over_failed": "Inline error under the locked composer's banner when taking over typing failed; the composer stays read-only."
+    "sharedCrew.take_over_failed": "Inline error under the locked composer's banner when taking over typing failed; the composer stays read-only.",
+    "pages.schedulePage.type_token_to_confirm": "Instruction above the bulk-delete confirm input. <token/> is replaced by the literal word the user must type (it is never translated); keep the <token/> tag and place it where your word order needs it. 'Type' is the imperative verb."
   }
 }

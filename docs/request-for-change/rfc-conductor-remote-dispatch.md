@@ -319,7 +319,8 @@ memory and refreshes it from every create reply and from `api/chat/headroom`
 on patrol. Reservations are not stored; they are derived from the work ledger.
 Each **open** remote binding reserves one estimate on its crew, including a
 finished worker the conductor keeps open for questions (§3b). An estimate
-starts at 2 GB memory and 10 GB disk. Wave 6 tunes both from measured values.
+started at 2 GB memory and 10 GB disk; wave 6 set measured defaults of 5 GB
+memory and 5 GB disk (open question 6).
 
 **Choosing.** For each eligible crew and each of memory and disk, headroom after
 reservations is `snapshot free − open remote bindings on that crew × estimate`.
@@ -562,7 +563,9 @@ nothing that passes today.
 6. **Reservation estimate.** 2 GB memory and 10 GB disk per open worker are
    starting guesses. Which measurement replaces them: peak RSS of the worker's
    process tree and the scratch directory's peak size, or a per-repo estimate?
-   Proposed: the per-worker peak, as one global default, in wave 6.
+   Resolved in wave 6: the per-worker peak, as one global default each,
+   5 GB memory and 5 GB disk. Method and numbers are in the session-control
+   spec, "Wave 6: estimate defaults".
 7. **Retire timeout.** Is 30 minutes the right default? Shorter wastes work on a
    crew that comes back; longer strands the item. Proposed: 30 minutes,
    configurable, revisited once wave 8 logs real outage lengths.

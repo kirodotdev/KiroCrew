@@ -4,6 +4,7 @@ import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
 import { ChevronLeft, ChevronRight, ArrowUp, Loader2 } from 'lucide-react'
 import { InstantTip, useInstantTip as useSharedInstantTip } from './InstantTip'
 import ErrorNotice from './ErrorNotice'
+import { reportUiControlClick } from '../lib/uiControlTelemetry'
 import { Glass } from './Glass'
 
 import { i18nT } from '../i18n/t'
@@ -470,7 +471,7 @@ function Chip({ option, isPicked, picked, quickSend, multi, onSelect, onSend, cl
           // `undefined` (i.e. "no key supplied") keeps this path's behaviour
           // exactly as it was — see `sourceKeyAtClick` in the debounced handler,
           // which is where the race actually lives.
-          onClick={(e) => { if (pending || dimmed) return; onSelect(option, e) }}
+          onClick={(e) => { if (pending || dimmed) return; reportUiControlClick('option_chip'); onSelect(option, e) }}
           className={`${className} ${entrance.className}${stateClass}`}
           style={entrance.style}
           {...tipHandlers}
@@ -509,6 +510,7 @@ function Chip({ option, isPicked, picked, quickSend, multi, onSelect, onSend, cl
     timerRef.current = setTimeout(() => {
       timerRef.current = null
       armedSourceKeyRef.current = undefined
+      reportUiControlClick('option_chip')
       onSelect(option, synth, sourceKeyAtClick)
     }, FOLLOWUP_CHIP_DEBOUNCE_MS)
   }
@@ -520,6 +522,7 @@ function Chip({ option, isPicked, picked, quickSend, multi, onSelect, onSend, cl
     armedSourceKeyRef.current = undefined
     // Pass option text directly to send() so it doesn't race with setInput.
     // If already picked, send() will use the current input (which already contains o).
+    reportUiControlClick('option_chip')
     onSend?.(isPicked ? undefined : option, clickedKey)
   }
 

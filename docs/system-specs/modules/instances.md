@@ -1346,7 +1346,9 @@ launcher path), `<data-home>/run/gateway-<port>.pid` (its pid) and
 `<data-home>/run/gateway-<port>.start` (that pid's start-time identity, section
 12.2). It also names the two internal-API credential sidecars a serving gateway
 publishes beside those, `<data-home>/run/gateway-<port>.secret` and
-`<data-home>/run/gateway-<port>-<address>.secret` (section 12.1). It has two
+`<data-home>/run/gateway-<port>-<address>.secret` (section 12.1). A gateway on a
+non-default data home also writes `~/.kiro/crew/run/gateway-<port>.home` (its
+home path and launcher) into the default run dir, consumer 1 below. It has two
 unrelated consumers, and separating them is the point of the module.
 
 ### Consumer 1: remote token mint targets the running gateway's install
@@ -1371,7 +1373,11 @@ when it names an executable file, `exec`s it, so mint uses the same venv as the
 live gateway. The snippet probes three data homes in priority order, since the
 remote's non-interactive SSH shell usually does not export `KIROCREW_HOME`:
 
-1. `$KIROCREW_HOME` when set and non-empty,
+1. `$KIROCREW_HOME` when set and non-empty; else, when
+   `$HOME/<CONFIG_DIR_NAME>/run/gateway-<port>.home` names a data home holding
+   the port's marker and an executable launcher (lines one and two), the snippet
+   runs that launcher with `KIROCREW_HOME` set to that home. The pointed marker
+   only gates liveness and is never read or run, and neither line is eval'd,
 2. `$HOME/<CONFIG_DIR_NAME>` (the current default, `.kiro/crew`),
 3. `$HOME/<LEGACY_CONFIG_DIR_NAME>` (`.kirocrew`, for a not-yet-migrated remote).
 
@@ -1383,8 +1389,54 @@ through to the candidate search, so nothing regresses on an older remote. An
 explicit `remote_bin` is never overridden by the marker: it is the user's
 deliberate choice.
 
-`restart_remote()` resolves `kirocrew restart` through the same path, keyed by
-the instance's `remote_port`.
+A remote shell without `KIROCREW_HOME` never sees a marker under another data
+home (a second gateway on `KIROCREW_HOME=~/.kiro/crew-wrapped`), so outside a pod
+such a gateway also writes `gateway-<port>.home`, naming its data home and its
+launcher, into the default run dir when that dir already exists. A source-tree
+launch has no launcher, so it writes an empty launcher line, which mint ignores.
+With no default run dir there is no pointer, which is logged (sandbox priming
+creates it; see security.md). In both cases mint behaves as it does without a
+pointer. A default-home gateway removes the pointer for its own port, and a
+clean stop removes it when it still names the stopping
+gateway's home. A gateway writes or removes the pointer only when it published a
+listener covering `127.0.0.1` on that port (that address or `0.0.0.0`), mint's
+IPv4 target; otherwise it leaves the pointer alone and logs the skip at boot.
+Discovery and pruning list only `gateway-*.bin`, so a pointer is never pruned or
+advertised as a port. The pointer lives in the fenced default run dir, but the
+home it names is on no other gateway's floor, so mint runs only the launcher the
+pointer names and uses the pointed home's marker as a liveness gate, never
+reading or running it.
+
+Known limits of the pointer:
+
+- Where a host lets `127.0.0.1` and `0.0.0.0` share a port, two gateways from
+  different data homes can both cover `127.0.0.1` there. The last writer decides
+  the pointer; pointer selection and the forwarded listener can disagree, so
+  the mint is refused. A clean stop can race another home's pointer write on the
+  same port and remove it; that gateway has no pointer until its next boot.
+  A default-home gateway, and one that cannot take the pointer lock, remove the
+  port's pointer even while another home's gateway still covers it there.
+- A SIGKILLed gateway leaves its pointer, and mint follows it to that home until
+  its marker goes, another home's gateway on that port rewrites the pointer, or
+  a default-home gateway covering `127.0.0.1` on that port takes the marker
+  lock.
+- On Windows, where the listener guard rebinds a lost listener, coverage is read
+  only at the boot write and the clean stop: a boot write during a rebind leaves
+  no pointer until the next boot, and a stop during one leaves the pointer,
+  inert without its `.bin`.
+- Pointer writes on a port hold `gateway-<port>.home.lock` in the default run
+  dir. A write whose gateway has already stopped writes nothing, and one that
+  lands after the stop removes itself, so it never replaces another home's
+  pointer. A gateway that cannot take that lock removes the port's pointer and
+  writes none until its next boot: a boot write that stalls past shutdown's 5 s
+  wait holds it, and so can an agent that holds the readable lock file.
+- A data-home path containing a newline is not supported by the two-line pointer.
+
+`restart_remote()` and the remote update (`kirocrew update`, then `restart`)
+resolve their verbs through the same path, pointer included, keyed by the
+instance's `remote_port`, over SSH and SSM alike (`_run_remote_subcommand`).
+The pointer branch runs `restart --port <port>`, because a bare `restart`
+restarts the default home's service unit.
 
 The launcher path is derived from `sys.executable`'s sibling console script
 (`kirocrew`, or `kirocrew.exe` on Windows) and is deliberately **not** resolved

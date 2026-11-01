@@ -422,7 +422,11 @@ class TestLeafOnlyPopulationIsRecorded:
     #: * ``kas-mcp-launch`` -- the KAS MCP launch snapshots, which hold MCP
     #:   servers' env values (``sandbox_leaves``). Masked whole at the data-home
     #:   root beside writable siblings, so leaf-only is the only hold.
-    EXPECTED: dict[str, int] = {"standard": 309, "cc": 316, "strict": 317}
+    #:
+    #: One more entry per tier, from main: ``run``, the directory that holds the
+    #: sandbox launcher itself, sealed read-only under the relocated crew home
+    #: (``sandbox_leaves._CREW_SANDBOX_VISIBLE_LEAVES``).
+    EXPECTED: dict[str, int] = {"standard": 310, "cc": 317, "strict": 318}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

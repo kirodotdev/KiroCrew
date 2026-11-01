@@ -39,6 +39,37 @@ from kiro_crew.publish_provider import DEFAULT_PROVIDER, Capability, CommentAnch
 
 
 # ── Comments ──────────────────────────────────────────────────────────────────
+def _comment_identity(request: web.Request, body: dict[str, Any], route: str) -> tuple[str, bool]:
+    """Return ``(author, is_agent)`` for a new comment or reply, read from the request.
+
+    Same rule as delete, resolve and mark-review: an MCP call carries the
+    X-Internal-Secret header (validated upstream) and a dashboard call does
+    not. An agent is shown as ``agent``; a person by the dashboard owner's
+    login, which is the only caller ``_non_owner_refusal`` lets through.
+    Older callers still send ``author`` / ``is_agent`` in the body; they are
+    accepted and ignored, never refused.
+    """
+    is_agent = request.headers.get("X-Internal-Secret") is not None
+    if is_agent:
+        author = "agent"
+    else:
+        try:
+            author = getpass.getuser()
+        except Exception:
+            author = ""
+    if "is_agent" in body and bool(body.get("is_agent")) != is_agent:
+        logger.debug(
+            "%s: ignoring body is_agent=%s; the request says is_agent=%s",
+            route,
+            bool(body.get("is_agent")),
+            is_agent,
+        )
+    claimed = body.get("author")
+    if claimed not in (None, "") and str(claimed) != author:
+        logger.debug("%s: ignoring body author; it differs from the request's author", route)
+    return author, is_agent
+
+
 async def api_artifact_comments(request: web.Request) -> web.Response:
     """GET /api/artifacts/{slug}/comments — list durable local comments."""
     state = request.app.get("state")
@@ -248,21 +279,7 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
     now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     comment_id = str(uuid.uuid4())
 
-    # Determine if this is agent-authored
-    is_agent = bool(body.get("is_agent"))
-
-    # Author defaults to the dashboard user's alias (collaboration: comments
-    # show who left them). Agent comments keep their explicit
-    # author (or the agent badge). getpass.getuser() is the alias on dev desks.
-    # The author is LLM/agent-influenced on the MCP path and echoed to the
-    # dashboard, so redact + cap it like the body (backend-security-controls).
-    author = (await asyncio.to_thread(_redact_text, str(body.get("author") or "")))[:256]
-    if not author and not is_agent:
-
-        try:
-            author = getpass.getuser()
-        except Exception:
-            author = ""
+    author, is_agent = _comment_identity(request, body, "artifact_post_comment")
 
     comment = ArtifactComment(
         id=comment_id,
@@ -398,19 +415,7 @@ async def api_artifact_reply_comment(request: web.Request) -> web.Response:
 
     now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     reply_id = str(uuid.uuid4())
-    is_agent = bool(body.get("is_agent"))
-
-    # Author defaults to the dashboard user's alias (collaboration: replies show
-    # who left them), mirroring the create handler. Agent replies keep their
-    # explicit author. Without this, replies render as "Unknown". Redact + cap
-    # the LLM/agent-influenced author before it is echoed to the dashboard.
-    author = (await asyncio.to_thread(_redact_text, str(body.get("author") or "")))[:256]
-    if not author and not is_agent:
-
-        try:
-            author = getpass.getuser()
-        except Exception:
-            author = ""
+    author, is_agent = _comment_identity(request, body, "artifact_reply_comment")
 
     reply = ArtifactComment(
         id=reply_id,

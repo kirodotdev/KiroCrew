@@ -291,13 +291,14 @@ class TestAutoApplyUpdateResetPath:
         added_out=b"",
         project_dir="/tmp/proj",
         status_after_copy=None,
+        mandatory=False,
     ):
         """Run the git apply with the shared memory copy stubbed; return spawns and copies.
 
         The copy is recorded into the same list as every git spawn, so the order
         between it and the reset is read off one sequence. ``status_after_copy``
         is what `git status` reports once the copy has run, standing in for an
-        edit made while it ran.
+        edit made while it ran. ``mandatory`` is a policy floor's apply.
         """
         events: list = []
         copied = threading.Event()
@@ -327,7 +328,7 @@ class TestAutoApplyUpdateResetPath:
             patch("os.execv"),
             patch("shutil.which", return_value=None),
         ):
-            await orch._auto_apply_update()
+            await orch._auto_apply_update(mandatory=mandatory)
         return [tuple(str(a) for a in e) for e in events]
 
     @pytest.mark.asyncio
@@ -386,6 +387,10 @@ class TestAutoApplyUpdateResetPath:
             ],
             {},
         ),
+        "unattended-off": (
+            [("kiro_crew.platform.update_governance.unattended_apply_allowed", False)],
+            {},
+        ),
     }
 
     @pytest.mark.asyncio
@@ -425,6 +430,79 @@ class TestAutoApplyUpdateResetPath:
         assert not any(e[1:3] == ("reset", "--hard") for e in events)
         orch._restart_after_update.assert_not_awaited()
         ds.push_refresh.assert_called_with("update_available")
+
+    @pytest.mark.asyncio
+    async def test_unattended_installs_turned_off_during_the_copy_refuse_the_reset(self):
+        """A policy installed while the copy ran is read by the last-moment checks."""
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+        orch._restart_after_update = AsyncMock()
+
+        with patch(
+            "kiro_crew.platform.update_governance.unattended_apply_allowed",
+            side_effect=[True, False],
+        ):
+            events = await self._run_with_copy(orch, (1, ""))
+
+        assert events.count(("memory-copy",)) == 1
+        assert not any(e[1:3] == ("reset", "--hard") for e in events)
+        orch._restart_after_update.assert_not_awaited()
+        ds.push_refresh.assert_called_with("update_available")
+
+    @pytest.mark.asyncio
+    async def test_unattended_installs_turned_off_during_the_post_copy_checks_refuse_the_reset(
+        self,
+    ):
+        """The pin is the LAST check: one landing while the other checks await is read.
+
+        The policy flips while the second pass's commit count runs, after the copy;
+        every later check awaits too, so only a read after all of them sees it.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+        orch._restart_after_update = AsyncMock()
+        policy = {"unattended_apply": True, "counts": 0}
+
+        def _count_then_a_policy_lands(*_args):
+            policy["counts"] += 1
+            if policy["counts"] == 2:
+                policy["unattended_apply"] = False
+            return 0
+
+        with (
+            patch("kiro_crew.slack.gateway.commits_ahead", side_effect=_count_then_a_policy_lands),
+            patch(
+                "kiro_crew.platform.update_governance.unattended_apply_allowed",
+                side_effect=lambda: policy["unattended_apply"],
+            ),
+        ):
+            events = await self._run_with_copy(orch, (1, ""))
+
+        assert policy["counts"] == 2
+        assert events.count(("memory-copy",)) == 1
+        assert not any(e[1:3] == ("reset", "--hard") for e in events)
+        orch._restart_after_update.assert_not_awaited()
+        ds.push_refresh.assert_called_with("update_available")
+
+    @pytest.mark.asyncio
+    async def test_a_floor_still_resets_with_unattended_installs_off(self):
+        """A mandatory update below the policy floor never asks the unattended pin."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+        orch._restart_after_update = AsyncMock()
+
+        with patch(
+            "kiro_crew.platform.update_governance.unattended_apply_allowed", return_value=False
+        ) as allowed:
+            events = await self._run_with_copy(orch, (1, ""), mandatory=True)
+
+        assert any(e[1:3] == ("reset", "--hard") for e in events)
+        allowed.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_failed_memory_copy_skips_the_update_and_says_so(self):

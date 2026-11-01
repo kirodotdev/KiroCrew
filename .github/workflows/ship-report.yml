@@ -711,7 +711,7 @@ jobs:
           else
             END_FMT="$(TZ=America/Los_Angeles date -d "$END" +'%b %d %I:%M %p')"
           fi
-          HEADER="$TITLE — $COUNT PR$PLURAL merged, $ICOUNT issue$IPLURAL filed, $START_FMT–$END_FMT PT"
+          HEADER="$TITLE — $COUNT PR$PLURAL merged, $ICOUNT issue$IPLURAL filed, ${START_FMT}–${END_FMT} PT"
           { echo "$HEADER"; echo; cat body_safe.txt; } > report.txt
           if [ -n "$DRY_RUN" ]; then
             { echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

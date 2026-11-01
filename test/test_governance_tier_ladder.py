@@ -894,6 +894,27 @@ class TestUpdatePinsFoldAsRestrictions:
         merged = governance._intersect_ceilings(authority, subordinate)
         assert merged.updates.min_version == expected
 
+    @pytest.mark.parametrize(
+        ("upper", "lower", "expected"),
+        [
+            (None, False, False),  # a subordinate turning installs off narrows: kept
+            (False, True, False),  # a subordinate cannot turn them back on
+            (False, None, False),
+            (True, None, True),
+            (None, None, True),  # silent on both sides: unattended installs stay on
+        ],
+    )
+    def test_unattended_apply_folds_to_off_when_either_tier_turns_it_off(
+        self, upper, lower, expected
+    ):
+        def _updates(value):
+            return {} if value is None else {"updates": {"unattended_apply": value}}
+
+        authority = governance.parse_policy(_doc("authority", **_updates(upper)))
+        subordinate = governance.parse_policy(_doc("subordinate", **_updates(lower)))
+        merged = governance._intersect_ceilings(authority, subordinate)
+        assert merged.updates.unattended_apply is expected
+
     def test_update_commands_stay_the_authoritys_even_when_it_declares_none(self):
         authority = governance.parse_policy(_doc("authority"))
         subordinate = governance.parse_policy(

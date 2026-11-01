@@ -24,7 +24,7 @@ vi.mock('../utils/resizeImage', () => ({
 const API_KEY_ORDER = [
   'status', 'tunnelStatus', 'system', 'leakedRuntimes', 'reclaimLeakedRuntimes', 'sessionStorage',
   'sessionStorageCleanup', 'sessionStorageRestore', 'sessionStorageEmpty', 'sessionStorageEmptyStatus',
-  'sessionInventory', 'sessionInventoryDetail', 'sessionInventoryTrash', 'sessionCrewLogProjections', 'sessionWorkProjection',
+  'sessionInventory', 'sessionInventoryDetail', 'sessionInventoryTrash', 'reportUiControlClick', 'sessionCrewLogProjections', 'sessionWorkProjection',
   'telemetryStartup', 'telemetryContextTrace', 'telemetryContextTurn', 'usageTurns', 'usageSeries',
   'wakatimeStats', 'wakatimeExportUrl', 'crewBoard', 'crewBoardAction', 'wakatimeExportDownload',
   'sessionSummary', 'dashboardCard', 'generateSessionSummary',

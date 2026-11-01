@@ -1149,7 +1149,7 @@ class TestAppCli:
     ) -> None:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler") as cleanup,
-            patch("kiro_crew.cli_commands.deregister_app") as dereg,
+            patch("kiro_crew.cli_commands.deregister_app", return_value=_registration()) as dereg,
             patch("kiro_crew.cli_commands.disable_app", return_value=_result(True, message="off")),
         ):
             cc._handle_app(_ns(app_action="disable", name="demo"))
@@ -1173,7 +1173,7 @@ class TestAppCli:
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
             patch(
                 "kiro_crew.cli_commands.deregister_app",
-                side_effect=lambda n: order.append("deregister"),
+                side_effect=lambda n: order.append("deregister") or _registration(),
             ),
             patch(
                 "kiro_crew.cli_commands.disable_app",
@@ -1186,7 +1186,7 @@ class TestAppCli:
     def test_disable_failure_exits_1(self) -> None:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
-            patch("kiro_crew.cli_commands.deregister_app"),
+            patch("kiro_crew.cli_commands.deregister_app", return_value=_registration()),
             patch("kiro_crew.cli_commands.disable_app", return_value=_result(False)),
             pytest.raises(SystemExit),
         ):
@@ -1201,7 +1201,7 @@ class TestAppCli:
     ) -> None:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
-            patch("kiro_crew.cli_commands.deregister_app"),
+            patch("kiro_crew.cli_commands.deregister_app", return_value=_registration()),
             patch("kiro_crew.cli_commands.uninstall_app", return_value=_result(True)) as uninstall,
         ):
             cc._handle_app(_ns(app_action="uninstall", name="demo", purge_data=purge))
@@ -1211,7 +1211,7 @@ class TestAppCli:
     def test_uninstall_failure_exits_1(self) -> None:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
-            patch("kiro_crew.cli_commands.deregister_app"),
+            patch("kiro_crew.cli_commands.deregister_app", return_value=_registration()),
             patch("kiro_crew.cli_commands.uninstall_app", return_value=_result(False)),
             pytest.raises(SystemExit),
         ):

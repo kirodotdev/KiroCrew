@@ -134,6 +134,9 @@ from kiro_crew.vector_memory_runtime import migration as _migration
 from kiro_crew.vector_memory_runtime import recall as _recall
 from kiro_crew.vector_memory_runtime import retirement as _retirement
 from kiro_crew.vector_memory_runtime import semantic as _semantic
+from kiro_crew.vector_memory_runtime import (  # noqa: F401
+    semantic_scoring_patch as _semantic_scoring_patch,
+)
 from kiro_crew.vector_memory_runtime import store_bookkeeping as _store_bookkeeping
 from kiro_crew.vector_memory_runtime import term_index as _term_index  # noqa: F401
 from kiro_crew.vector_memory_runtime.embedding import (  # noqa: F401
@@ -666,6 +669,10 @@ class VectorMemoryStore:
         # in-process generation and cross-process SQLite version remain current.
         self._semantic_scoring: _SemanticScoringSet | None = None
         self._semantic_scoring_generation = 0
+        # One rebuild of the resident set at a time; taken before ``_db_lock``, never inside it.
+        self._semantic_scoring_build_lock = threading.Lock()
+        # Keys patched into the resident set while their transaction was still open.
+        self._semantic_scoring_pending: set[str] = set()
         self._semantic_scoring_supported = True
         self._semantic_scoring_refused: tuple[int, int] | None = None
         # Promotion keys already refused: the refusal is deterministic, so warn once per store
@@ -1164,6 +1171,13 @@ class VectorMemoryStore:
         self, query_text: str = "", cap: int = 1500, *, facts_only: bool = False
     ) -> str:
         """Format semantic memory for prompt injection with hybrid retrieval."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        pooled = _recall_pool.offload(
+            self, "semantic", {"query_text": query_text, "cap": cap, "facts_only": facts_only}
+        )
+        if pooled is not None:
+            return pooled
         return _semantic.get_semantic_context(self, query_text, cap, facts_only=facts_only)
 
     def _semantic_candidates_v2(
@@ -1300,6 +1314,19 @@ class VectorMemoryStore:
         cap: int = 3000,
     ) -> str:
         """Format episodic search results for prompt injection."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        pooled = _recall_pool.offload(
+            self,
+            "episodic",
+            {
+                "query_embedding": None if query_embedding is None else list(query_embedding),
+                "query_text": query_text,
+                "cap": cap,
+            },
+        )
+        if pooled is not None:
+            return pooled
         return _episodic_search.get_episodic_context(self, query_embedding, query_text, cap)
 
     # ── Facets: reading a carve back out ──
@@ -1404,6 +1431,23 @@ class VectorMemoryStore:
         experience_budget: int = 0,
     ) -> str:
         """Format lessons for prompt injection, most relevant first."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        if _recall_pool.pool_enabled():
+            job_args = _recall_pool.lessons_args(
+                self,
+                query_text,
+                cap,
+                project_dir,
+                recall_query,
+                background,
+                hard_cap,
+                directive_budget,
+                experience_budget,
+            )
+            pooled = _recall_pool.offload(self, "lessons", job_args)
+            if pooled is not None:
+                return pooled
         return _lessons.get_lessons_context(
             self,
             query_text,

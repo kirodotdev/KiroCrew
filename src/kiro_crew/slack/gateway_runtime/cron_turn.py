@@ -322,6 +322,7 @@ async def _cron_run_sequence(
                         context_window=_window,
                         elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
                         model_source=client,
+                        trigger="cron",
                     )
                 except Exception:
                     logger.debug("usage row (cron seq) persist failed", exc_info=True)
@@ -741,6 +742,7 @@ async def _cron_run_single(
                 context_window=_window,
                 elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
                 model_source=client,
+                trigger="cron",
             )
         except Exception:
             logger.debug("usage row (cron) persist failed", exc_info=True)

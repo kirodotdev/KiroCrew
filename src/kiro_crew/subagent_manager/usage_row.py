@@ -69,6 +69,7 @@ def persist_usage_row(
                 context_window=_window,
                 elapsed_ms=int((ns.time.monotonic() - row_t0[0]) * 1000),
                 model_source=client,
+                trigger="subagent",
             )
         )
         coordinator._manager._report_tasks.add(_usage_row)

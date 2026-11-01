@@ -159,6 +159,11 @@
     "client": {
       "accepted_body_unreadable": "サーバーはリクエストを受け付けましたが、応答を読み取れませんでした。",
       "paste_token_url_or_raw_token": "サインイン URL を貼り付け…",
+      "scan_qr_code": "QR コードをスキャン",
+      "scan_qr_cancel": "スキャンをキャンセル",
+      "scan_qr_point_camera": "パソコンに表示されているサインイン用 QR コードにカメラを向けてください。",
+      "camera_permission_denied": "カメラへのアクセスが拒否されたため、QR コードをスキャンできませんでした。このサイトにカメラの使用を許可するか、代わりにサインイン URL を貼り付けてください。",
+      "camera_unavailable": "カメラを開けなかったため、QR コードをスキャンできませんでした。代わりにサインイン URL を貼り付けてください。",
       "proxy_challenge_reload": "このブラウザータブを再読み込みしてください。サインインページが表示された場合は、アクセスプロキシのセッションが切れています。表示されない場合は、このダッシュボードの前段にあるプロキシまたはファイアウォールがリクエストを拒否しています。プロキシのログを確認するか、後でもう一度お試しください。",
       "proxy_challenge_framed": "新しいタブで {{origin}} を開いてください。サインインページが表示された場合は、アクセスプロキシのセッションが切れています。このパネル内ではサインインできません。そちらでサインインしてから、このページを再読み込みしてください。",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "トンネルエッジでレート制限されています (HTTP 429) — バーストでリクエストが多すぎます。ダッシュボードは自動的に再試行します。これが続く場合は、数秒待ってからリロードしてください。",
@@ -5291,6 +5296,7 @@
         "backup_start_no_drive": "このアカウントにはまだドライブがありません。作成してからバックアップを開始してください。",
         "backup_nightly": "毎晩バックアップする",
         "backup_nightly_hint": "メモリーとワークスペースのスナップショットを 1 日 1 回実行します。",
+        "backup_nightly_blocked_other_account": "夜間のスナップショットは既定のアカウントに対してのみ実行されるため、このアカウントは何もバックアップされません。",
         "backup_nightly_sessions": "セッションを毎夜バックアップ",
         "backup_nightly_sessions_hint": "セッションのアーカイブをこのアカウントのドライブに 1 日 1 回アップロードします。会話はそのまま含まれ、何も削除されません。",
         "backup_nightly_sessions_destination": "そのドライブはこの AWS アカウント内の S3 ストレージで、{{button}} も同じ場所にアーカイブを送ります。",
@@ -9220,7 +9226,8 @@
       "retry": "再試行",
       "save_failed": "保存に失敗しました",
       "star_as_artifact": "アーティファクトとしてスター付け",
-      "starred_as_click_to_remove": "「{{name}}」としてスター登録済み — クリックで解除"
+      "starred_as_click_to_remove": "「{{name}}」としてスター登録済み — クリックで解除",
+      "open_artifact_named": "アーティファクト「{{slug}}」を開く"
     },
     "widgetPlaceholder": {
       "generating": "生成中…"
@@ -9517,6 +9524,7 @@
       "open_in_side_panel": "サイドパネルで開く",
       "path_copied": "パスをコピーしました",
       "reveal_blocked": "このパスは保護されているため開けません。",
+      "reveal_copied_instead": "{{productName}} を実行しているマシンでこのパスを開けなかったため、代わりにパスをコピーしました。",
       "reveal_failed": "{{productName}} を実行しているマシンでこのパスを開けませんでした。",
       "show_folder_in_side_panel": "フォルダーをサイドパネルに表示"
     },
@@ -13049,6 +13057,7 @@
       "expand_sessions_this_one_opened": "このセッションが開いたセッションを展開する",
       "nesting_depth": "ネストの深さ: {{depth}}",
       "opened_by_session": "{{slot}} が開いた",
+      "opened_by_closed_named": "{{name}} が開きました（終了済み）",
       "opened_by_closed_session": "終了済みのセッションが開きました",
       "no_conductor_sessions_yet": "コンダクターセッションはまだありません",
       "needs_your_answer": "回答が必要です",
@@ -15182,6 +15191,9 @@
         "lesson_already_covered": "既存の学習内容ですでにカバーされています（{{reason}}）。新しい内容を追加するには、表現を変えてください。",
         "lesson_already_stored": "この学習内容はすでに保存されています。",
         "lesson_not_saved": "学習内容を保存できませんでした（{{reason}}）。編集してもう一度お試しください。",
+        "lesson_request_failed": "レッスンを追加できませんでした",
+        "settings_save_failed": "メモリ設定を保存できませんでした",
+        "settings_load_failed": "メモリ設定を読み込めませんでした",
         "lessons": "レッスン",
         "lessons_empty_subtitle": "エージェントを教えるとき、修正と優先設定がここに保存されます。",
         "lessons_refresh_failed": "レッスンは削除されましたが、一覧を更新できませんでした",
@@ -16134,7 +16146,6 @@
       "view_list": "リスト",
       "add_job": "ジョブを追加",
       "agent": "エージェント ·",
-      "and_their_run_history_this_action_cannot_be_undo": "その実行履歴を完全に削除します。この操作は取り消せません。",
       "ask_in_chat": "チャットで質問",
       "batch_delete_failed": "一括削除に失敗しました",
       "browse_all_templates": "すべてのテンプレートを閲覧",
@@ -16221,21 +16232,16 @@
       "running": "実行中",
       "schedule": "スケジュール",
       "schedule_recurring_tasks_to_run_automatically_ch": "定期的なタスクを自動実行するようスケジュール設定 — パイプラインの確認、レポートの生成、サービスの監視、またはあなたのエージェントができることなら何でも。",
-      "scheduled_job_other": "{{count}} 件のスケジュール済みジョブ",
       "script_python": "script · Python",
       "select": "{{name}} を選択",
       "select_all_jobs": "すべてのジョブを選択",
       "select_deselect_all_jobs_matching_the_current_fi": "現在のフィルタに一致するすべてのジョブを選択/解除",
-      "selected": "選択済み",
       "start_from_a_pre_made_schedule": "既成スケジュールから開始",
       "status": "ステータス",
       "strict": "厳密",
-      "this_permanently_removes_the_selected_job_other": "選択されたジョブと",
       "this_will_permanently_remove_the_scheduled_job_t": "このスケジュール済みジョブを完全に削除します。この操作は取り消せません。",
-      "to_confirm": "と入力してください",
       "try_remind_me_to_check_my_pipeline_every_morning": "— 「毎朝パイプラインをチェックするよう通知して」を試してみてください",
       "type": "タイプ",
-      "type_verb_to_confirm": "確認のため",
       "view_last_result": "最後の結果を表示",
       "writes_badge_tooltip": "このテンプレートのジョブは、ブランチをプッシュし、プルリクエストを開き、イシューを編集します。そのガードレールはエージェントへの指示であり、強制されるポリシーではありません。",
       "writes_notice": "このテンプレートのジョブは、リポジトリ内のブランチをプッシュし、プルリクエストを開き、イシューを編集します。プロンプト内の制限（例：「デフォルトブランチには絶対にプッシュしない」）はエージェントへの指示であり、強制されるポリシーではありません — 保存する前にプロンプトを確認してください。",
@@ -16275,7 +16281,12 @@
       "all_crewmates": "すべてのクルーメイト",
       "details_tab": "詳細",
       "logs_tab": "ログ",
-      "delete_n_selected_jobs_other": "選択した {{count}} 件のジョブを削除"
+      "delete_n_selected_jobs_other": "選択した {{count}} 件のジョブを削除",
+      "n_selected_other": "{{count}} 件選択済み",
+      "delete_n_selected_other": "選択した {{count}} 件を削除",
+      "delete_n_scheduled_jobs_title_other": "{{count}} 件のスケジュール済みジョブを削除しますか？",
+      "bulk_delete_removes_jobs_and_history_other": "選択したジョブとその実行履歴を完全に削除します。この操作は取り消せません。",
+      "type_token_to_confirm": "確認するには <token/> と入力します"
     },
     "servicesTab": {
       "channels": "チャットプラットフォーム",
@@ -16451,6 +16462,7 @@
       "cpu_cores": "CPU（コア）",
       "cpu_cores_hint": "プロセッサー使用量をCPUコア数で測定（パーセントではありません）。1.00は1コアが完全に飽和していることを意味します。",
       "created_by": "{{name}} が作成（実行されていないため、トップレベルに表示）",
+      "created_by_closed_named": "{{name}} が作成（終了済み）",
       "created_by_closed_unnamed": "終了済みのセッションが作成",
       "credits": "クレジット",
       "done": "完了",
@@ -17816,7 +17828,6 @@
         "host_surface": "ホスト表面",
         "i_understand_this_weakens_kirocrew_s_protection": "これは {{productName}}の保護を弱めることを理解しています。",
         "interactive": "インタラクティブ",
-        "invalid_regular_expression": "無効な正規表現",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}}は6つのセキュリティレイヤーを実装します。各レイヤーは独立して動作します — 攻撃者がすべてのレイヤーを同時にバイパスする必要があります。",
         "layer_auth": "認証",
@@ -20101,6 +20112,13 @@
       "search_in": "{{path}} 内で「{{query}}」を検索",
       "search_web": "ウェブで「{{query}}」を検索",
       "view_image": "画像 {{path}} を表示"
+    },
+    "heicImage": {
+      "unreadable": "{{name}} を HEIC 写真として読み取れませんでした。ファイルが破損している可能性があります。JPEG として書き出し、そのファイルを添付してください。",
+      "too_large": "{{name}} は、ここで HEIC 写真を変換できる上限 {{max}} を超えています。JPEG として書き出し、そのファイルを添付してください。",
+      "too_many_pixels": "{{name}} は {{width}} × {{height}} ピクセルで、ここで HEIC 写真を変換できる上限 {{max}} メガピクセルを超えています。より小さい JPEG を書き出して添付してください。",
+      "convert_failed": "このブラウザーでは {{name}} を JPEG に変換できませんでした。ページを再読み込みしてもう一度試すか、JPEG として書き出してそのファイルを添付してください。",
+      "cannot_fit": "{{name}} を JPEG で {{max}} 未満に縮小できませんでした。より小さい JPEG を書き出して添付してください。"
     }
   },
   "memoryV2": {

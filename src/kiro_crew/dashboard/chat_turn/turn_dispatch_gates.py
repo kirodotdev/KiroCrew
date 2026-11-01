@@ -28,6 +28,7 @@ from kiro_crew.dashboard.recovery_replays import (
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
 from kiro_crew.members import DM_SLOT_MODE
+from kiro_crew.metrics.feature_usage import record_context_composition
 from kiro_crew.milestones import record_user_turn
 
 if TYPE_CHECKING:
@@ -785,6 +786,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         phase=slot_ctx_phase,
         omitted=slot_ctx_omitted,
     )
+    # Memory and lesson use, for the same reason: only an admitted turn's
+    # composition reached the model. An in-memory add; never raises.
+    record_context_composition(slot_ctx_blocks, slot_ctx_receipts)
     # Which lessons this composition carried, for the same reason the composition
     # is written here: only an ADMITTED turn put them in front of the model. The
     # write goes to a worker thread, so this adds no suspension point either.

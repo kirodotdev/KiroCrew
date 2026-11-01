@@ -198,7 +198,10 @@ def test_the_watcher_never_checks_out_or_runs_source_code() -> None:
     for job in document["jobs"].values():
         for step in job["steps"]:
             assert "uses" not in step, step
-        assert job["runs-on"] == "ubuntu-latest"
+        assert job["runs-on"] == (
+            "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core'"
+            " || 'ubuntu-latest' }}"
+        )
 
 
 def test_a_running_watcher_is_never_killed_by_the_next_completion() -> None:

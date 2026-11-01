@@ -12,6 +12,7 @@ from aiohttp import web
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.memory_recall import bound_recall_payload, recall_json, recall_terms
+from kiro_crew.metrics.feature_usage import recall_payload_hit, record_memory_recalled
 from kiro_crew.session_surface import dashboard_surfaced_keys
 
 from ._shared import (
@@ -336,6 +337,8 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         # receipt for a recall nobody received and each time the guard sat beside the
         # call instead of in it. There is nothing left to get right at this line.
         await asyncio.to_thread(commit_receipt, session, decision_pending, payload=payload)
+    # After the answer is final; never changes it (record_* swallows its own errors).
+    record_memory_recalled("tool", hit=recall_payload_hit(payload))
     return web.json_response(
         payload,
         dumps=lambda body: recall_json(body, ensure_ascii=False, context_cap=_RECALL_CONTEXT_CAP),

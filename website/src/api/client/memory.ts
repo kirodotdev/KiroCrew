@@ -96,13 +96,16 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
     // `memoryStoreQuery`. `/api/memory/settings` is deliberately NOT in the set:
     // the consolidation cadence is one install-wide setting, not a per-store one.
     memoryPreferences: (store?: string) => fetch('/api/memory/preferences' + memoryStoreQuery(store)).then(j) as Promise<{ content?: string; content_redacted?: boolean }>,
-    saveMemoryPreferences: (content: string, store?: string) => put('/api/memory/preferences' + memoryStoreQuery(store), { content }),
+    // Every save below parses with `.then(j)`: a refused write (403, 400, a 409
+    // changed baseline) rejects instead of resolving to a Response its Save
+    // button would read as success.
+    saveMemoryPreferences: (content: string, store?: string) => put('/api/memory/preferences' + memoryStoreQuery(store), { content }).then(j) as Promise<{ ok: boolean }>,
     memoryProjects: (store?: string) => fetch('/api/memory/projects' + memoryStoreQuery(store)).then(j) as Promise<{ content?: string; content_redacted?: boolean }>,
-    saveMemoryProjects: (content: string, store?: string) => put('/api/memory/projects' + memoryStoreQuery(store), { content }),
+    saveMemoryProjects: (content: string, store?: string) => put('/api/memory/projects' + memoryStoreQuery(store), { content }).then(j) as Promise<{ ok: boolean }>,
     memoryHistory: (store?: string) => fetch('/api/memory/history' + memoryStoreQuery(store)).then(j) as Promise<{ content?: string; content_redacted?: boolean }>,
-    saveMemoryHistory: (content: string, store?: string) => put('/api/memory/history' + memoryStoreQuery(store), { content }),
+    saveMemoryHistory: (content: string, store?: string) => put('/api/memory/history' + memoryStoreQuery(store), { content }).then(j) as Promise<{ ok: boolean }>,
     memorySettings: () => fetch('/api/memory/settings').then(j),
-    saveMemorySettings: (s: {history_idle_hours?: number; history_max_days?: number}) => put('/api/memory/settings', s),
+    saveMemorySettings: (s: {history_idle_hours?: number; history_max_days?: number}) => put('/api/memory/settings', s).then(j) as Promise<{ ok: boolean }>,
     /** Every declared store with its lineage, row counts and backup state.
      *
      *  Owner-gated unconditionally — it enumerates every silo — and takes no

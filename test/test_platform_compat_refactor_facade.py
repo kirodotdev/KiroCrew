@@ -173,7 +173,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.platform_compat_runtime": tuple("""
         _UTF8_PROCESS_ENV _ensure_utf8_process_environment _KEPT_FOR_REEXEC keep_for_reexec
         kept_for_reexec _WHEEL_APPLY_MODULE cancel_wheel_applies_in_flight hard_exit
-        _disarm_process_alarm_before_exec reexec_launcher reexec_python_module
+        _disarm_process_alarm_before_exec _rearm_process_alarm_after_failed_exec
+        reexec_launcher reexec_python_module
         execv_target_available _POST_DRAIN_EXEC_FAILURE_EXIT _EXIT_FLUSH_DEADLINE_SECS
         exit_after_failed_restart_exec _drain_event_log_for_exit _WINDOWS_ARM_MACHINES
         is_windows_on_arm BUNDLED_BACKEND_DIST_DIRNAME is_bundled_interpreter
@@ -219,8 +220,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _ACL_WRITE _NO_ACL_ERRNOS _acl_admits_another_account group_write_admits_another_account
         _is_root_owned_path _local_aws_bin_candidate _is_native_program
         _local_aws_bin_is_trusted trusted_aws_bin aws_bin_declined_on_ownership
-        trusted_system_path reveal_in_file_manager open_with_default_app _reveal_env
-        tool_outside_trusted_dirs short_path_name
+        trusted_system_path desktop_launcher_available reveal_in_file_manager
+        open_with_default_app _reveal_env tool_outside_trusted_dirs short_path_name
         """.split()),
     "kiro_crew.platform_compat_liveness": tuple("""
         PID_DEAD PID_ALIVE PID_UNSIGNALABLE live_thread_group_leaders is_thread_group_leader

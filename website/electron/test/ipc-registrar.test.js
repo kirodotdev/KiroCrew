@@ -1636,12 +1636,23 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   await h.listeners.get("update:notify-policy-governed")(evForeign, true);
   assert.equal(deps.isPolicyGoverned(), false, "foreign origin must not set governance");
 
-  // Destroying the source window must clear governance even without an explicit false.
+  // Destroying the source window drops it from the governing set without an
+  // explicit false. Whether that CLEARS governance is platform-dependent: macOS
+  // keeps the app alive after its last window closes (Cmd+W is not Cmd+Q), so
+  // the handler deliberately holds governance until a reopened window re-reports
+  // it, leaving the feed lane stood down rather than racing the policy provider
+  // for the same install. Every other platform exits with its last window, so
+  // clearing there cannot strand the flag.
+  //
+  // The handler reads process.platform and electron.BrowserWindow itself, and
+  // this harness opens no window, so darwin always takes the hold branch here.
+  const holdsGovernanceWithNoWindowOpen = process.platform === "darwin";
   const ev2 = makeEvent();
   await h.listeners.get("update:notify-policy-governed")(ev2, true);
   assert.equal(deps.isPolicyGoverned(), true, "governance set before destroy");
   ev2._destroy();
-  assert.equal(deps.isPolicyGoverned(), false, "destroyed source window must clear governance");
+  assert.equal(deps.isPolicyGoverned(), holdsGovernanceWithNoWindowOpen,
+    "a destroyed source window clears governance unless macOS has no window left");
 
   // Multi-window: closing one window must NOT clear governance while another window
   // is still governed. This is the bug where `governanceSourceId` was a single id.
@@ -1654,7 +1665,8 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   assert.equal(deps.isPolicyGoverned(), true,
     "closing one window must not clear governance while another remains governed");
   evA._destroy(); // close the first window too
-  assert.equal(deps.isPolicyGoverned(), false, "governance clears when all windows close");
+  assert.equal(deps.isPolicyGoverned(), holdsGovernanceWithNoWindowOpen,
+    "governance clears when all windows close, except on macOS where the app outlives them");
 
   // Remote-gateway gate: a harness that simulates a non-kirocrew port owner
   // (SSH tunnel holding the primary port) must reject governance via gate 3.

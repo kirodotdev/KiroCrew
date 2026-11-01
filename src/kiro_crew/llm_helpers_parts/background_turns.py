@@ -36,6 +36,7 @@ from kiro_crew.llm_helpers_parts.turn_usage import (
     provider_last_turn_usage,
     usage_has_billing,
 )
+from kiro_crew.metrics.usage_attrs import TRIGGER_SYSTEM
 from kiro_crew.sel import sel as _sel
 from kiro_crew.start_priority import StartPriority
 
@@ -346,6 +347,7 @@ async def run_bg_oneliner(
                         surface=f"bg:{sel_source}",
                         elapsed_ms=_elapsed_ms,
                         model_source=session,
+                        trigger=TRIGGER_SYSTEM,
                     )
             except Exception:
                 logger.debug("bg oneliner accounting failed source=%s", sel_source, exc_info=True)
@@ -765,6 +767,7 @@ async def background_turn(
                         agent=agent or BACKGROUND_AGENT,
                         elapsed_ms=turn_elapsed_ms,
                         model_source=client,
+                        trigger=TRIGGER_SYSTEM,
                     )
             except Exception:
                 logger.debug("background turn accounting failed task=%s", task, exc_info=True)

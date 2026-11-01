@@ -719,6 +719,11 @@ _ALLOWED_VIDEO_EXT = {".mp4", ".m4v", ".mov", ".webm"}
 _VIDEO_HINT_EXT = frozenset(
     {".mkv", ".ogv", ".avi", ".mpg", ".mpeg", ".wmv", ".flv", ".3gp"}
 )
+#: HEIC/HEIF photo names. The dashboard converts these to JPEG in the browser
+#: before upload, so one arriving here skipped that step (a page loaded before
+#: the conversion shipped, or a client other than the dashboard). The boundary
+#: still refuses it -- no model reads HEIC -- but says how to get past it.
+_HEIC_HINT_EXT = frozenset({".heic", ".heif"})
 #: Media type :func:`_sniff_media_type` must report for the claimed video
 #: extension. The MP4 family (mp4/m4v/mov) all carry a ``ftyp`` box at offset 4
 #: and sniff as ``video/mp4``; QuickTime's brand differs but the box does not.

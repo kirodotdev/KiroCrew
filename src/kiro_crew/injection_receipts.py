@@ -67,6 +67,27 @@ def collect() -> Iterator[dict[str, dict[str, Any]]]:
         _SINK.reset(token)
 
 
+def replay(records: dict[str, dict[str, Any]]) -> None:
+    """Record tiers another process rendered, as if they were rendered here.
+
+    The twin of :func:`kiro_crew.context_omissions.replay`, for a read done in a
+    recall child: its records were gathered there and belong to the build that took
+    the result. Kinds outside :data:`KINDS` are ignored. Outside a collection this is
+    a no-op, like :func:`record`.
+    """
+    sink = _SINK.get()
+    if sink is None:
+        return
+    for kind, entry in records.items():
+        if kind in KINDS and isinstance(entry, dict):
+            ids = entry.get("ids")
+            omitted = entry.get("omitted")
+            sink[kind] = {
+                "ids": [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else [],
+                "omitted": max(0, omitted) if isinstance(omitted, int) else 0,
+            }
+
+
 def row_key(row: object) -> str:
     """The memory key of a rendered lesson row, or ``""`` when it has none.
 
