@@ -4,8 +4,8 @@
 and an untracked nested clone as one entry with a trailing slash. Both are
 folders on disk: they must be rows the tree can open, named in
 ``nestedRepoDirectories``, and ``?dir=`` must list what is inside them. The
-project's git cannot, so the identity-checked walk does, which does not apply
-the nested repository's own ``.gitignore``.
+project's git cannot, so the identity-checked walk does, and the nested
+repository's own git says which of the walked entries it ignores.
 
 The app, the sandbox passthrough and the project fixtures are
 ``test_project_tree.py``'s, imported so pytest registers them here too.
@@ -234,12 +234,12 @@ class TestNestedReposFolderListing:
             "libs/sub/.gitignore",
             "libs/sub/README.md",
             "libs/sub/new.txt",
-            "libs/sub/out/app.bin",
             "libs/sub/src/greet.py",
         ]
-        # Listed by the walk, not by git: the walk's own skip list hides
-        # `build/`, but the submodule's `.gitignore` is not applied, so `out/`
-        # shows. The submodule's `.git` pointer file is dropped, as git's own
+        assert "libs/sub/out" not in data["directories"]
+        # Listed by the walk: its own skip list hides `build/`, and the
+        # submodule's git reports `out/` as ignored, so it is not even a row,
+        # as when the submodule is the project. The `.git` pointer file is dropped, as git's own
         # listing never names it. A listed folder is not named as a nested
         # repository.
         assert data["repo"] is False
@@ -286,26 +286,160 @@ class TestNestedReposFolderListing:
         assert data["paths"] == []
 
     @pytest.mark.asyncio
-    async def test_git_never_runs_inside_a_nested_repository(self, workspace, monkeypatch):
-        """A nested repository is listed by the identity-checked walk: git is
-        never started with it (or anything inside it) as its working directory,
-        so a folder swapped for a link cannot redirect the read."""
+    async def test_git_inside_a_nested_repository_only_names_what_it_ignores(
+        self, workspace, monkeypatch
+    ):
+        """A nested repository is listed by the identity-checked walk. The only
+        git run inside it, from its top, asks which paths it ignores
+        (`ls-files --others --ignored --exclude-standard`, `core.fsmonitor=`);
+        its answer can only drop rows the walk read."""
         from kiro_crew.dashboard.handlers import files as files_mod
 
         real = files_mod._run_git_bounded
-        cwds: list[str] = []
+        calls: list[tuple[str, list[str]]] = []
 
         def spy(cmd, *, cwd, **kwargs):
-            cwds.append(str(cwd))
+            calls.append((str(cwd), list(cmd)))
             return real(cmd, cwd=cwd, **kwargs)
 
         monkeypatch.setattr(files_mod, "_run_git_bounded", spy)
-        # The whole listing runs git (the spy works); the nested folders do not.
+        # The whole listing runs git (the spy works).
         await _get(workspace)
-        assert cwds
-        cwds.clear()
+        assert calls
+        calls.clear()
         for folder in ("libs/sub", "libs/sub/src", "scratch/clone"):
             status, _ = await _get(workspace, dir=folder)
             assert status == 200
-        nested = [str(workspace / "libs" / "sub"), str(workspace / "scratch" / "clone")]
-        assert not [c for c in cwds if any(c.startswith(n) for n in nested)]
+        tops = {str(workspace / "libs" / "sub"), str(workspace / "scratch" / "clone")}
+        inside = [(cwd, cmd) for cwd, cmd in calls if any(cwd.startswith(t) for t in tops)]
+        assert {cwd for cwd, _ in inside} == tops
+        for _, cmd in inside:
+            assert "ls-files" in cmd and "core.fsmonitor=" in cmd
+            assert {"--others", "--ignored", "--exclude-standard", "--directory"} <= set(cmd)
+
+
+def _sub(workspace: Path) -> Path:
+    return workspace / "libs" / "sub"
+
+
+@pytest.mark.usefixtures("mock_sel")
+class TestNestedRepoGitignore:
+    """A nested repository's listing hides what its own git ignores."""
+
+    @pytest.mark.asyncio
+    async def test_an_ancestor_gitignore_applies_to_a_folder_listed_inside(self, workspace):
+        (_sub(workspace) / ".gitignore").write_text("build/\nout/\n*.log\n")
+        (_sub(workspace) / "src" / "trace.log").write_text("t\n")
+        _, data = await _get(workspace, dir="libs/sub/src")
+        assert data["paths"] == ["libs/sub/src/greet.py"]
+
+    @pytest.mark.asyncio
+    async def test_a_negated_pattern_re_includes(self, workspace):
+        (_sub(workspace) / ".gitignore").write_text("build/\nout/\n*.log\n!keep.log\n")
+        (_sub(workspace) / "drop.log").write_text("d\n")
+        (_sub(workspace) / "keep.log").write_text("k\n")
+        _, data = await _get(workspace, dir="libs/sub")
+        assert "libs/sub/keep.log" in data["paths"]
+        assert "libs/sub/drop.log" not in data["paths"]
+
+    @pytest.mark.asyncio
+    async def test_a_tracked_file_the_gitignore_matches_still_shows(self, workspace):
+        """Git never reports a tracked path as ignored, and re-includes nothing
+        untracked inside an excluded folder."""
+        sub = _sub(workspace)
+        (sub / "src" / "kept.gen").write_text("g\n")
+        (sub / "src" / "loose.gen").write_text("g\n")
+        (sub / "out" / "kept.bin").write_text("k\n")
+        _git(sub, "add", "src/kept.gen")
+        _git(sub, "add", "-f", "out/kept.bin")
+        _git(sub, "commit", "-qm", "tracked")
+        (sub / ".gitignore").write_text("build/\nout/\n*.gen\n!out/keep.txt\n")
+        (sub / "out" / "keep.txt").write_text("u\n")
+        for folder in ("libs/sub", "libs/sub/out"):
+            _, data = await _get(workspace, dir=folder)
+            shown = {p for p in data["paths"] if p.startswith("libs/sub/out/")}
+            assert shown == {"libs/sub/out/kept.bin"}, folder
+        _, data = await _get(workspace, dir="libs/sub")
+        assert "libs/sub/src/kept.gen" in data["paths"]
+        assert "libs/sub/src/loose.gen" not in data["paths"]
+
+    @pytest.mark.asyncio
+    async def test_a_repository_inside_is_not_filtered_by_the_outer_rules(self, workspace):
+        (_sub(workspace) / ".gitignore").write_text("build/\nout/\nd.txt\n")
+        deeper = _sub(workspace) / "vendor" / "deep"
+        deeper.mkdir(parents=True)
+        _git(deeper, "init", "-q", "-b", "trunk")
+        (deeper / "d.txt").write_text("d\n")
+        (_sub(workspace) / "d.txt").write_text("d\n")
+        _, data = await _get(workspace, dir="libs/sub")
+        assert "libs/sub/d.txt" not in data["paths"]
+        assert "libs/sub/vendor/deep/d.txt" in data["paths"]
+
+    @pytest.mark.asyncio
+    async def test_the_projects_own_gitignore_does_not_reach_inside(self, workspace):
+        (workspace / ".gitignore").write_text("notes.txt\n")
+        _, data = await _get(workspace, dir="scratch/clone")
+        assert "scratch/clone/notes.txt" in data["paths"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_git_run_hides_nothing(self, workspace, monkeypatch):
+        """When git cannot say, nothing is hidden, as the project listing falls
+        back to the plain walk when its git fails."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        sub = str(_sub(workspace))
+        real = files_mod._run_git_bounded
+
+        def failing(cmd, *, cwd, **kwargs):
+            if str(cwd).startswith(sub):
+                return (1, "", True)
+            return real(cmd, cwd=cwd, **kwargs)
+
+        monkeypatch.setattr(files_mod, "_run_git_bounded", failing)
+        status, data = await _get(workspace, dir="libs/sub")
+        assert status == 200
+        assert "libs/sub/out/app.bin" in data["paths"]
+
+    @pytest.mark.asyncio
+    async def test_a_name_only_git_reports_is_never_listed(self, workspace, monkeypatch):
+        """Git's answer only drops entries the pinned walk read: a redirected
+        run can hide rows but never add one."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        sub = str(_sub(workspace))
+        real = files_mod._run_git_bounded
+
+        def redirected(cmd, *, cwd, **kwargs):
+            if str(cwd).startswith(sub):
+                return (0, "phantom/\0elsewhere/secret.txt\0", False)
+            return real(cmd, cwd=cwd, **kwargs)
+
+        monkeypatch.setattr(files_mod, "_run_git_bounded", redirected)
+        _, data = await _get(workspace, dir="libs/sub")
+        assert "libs/sub/out/app.bin" in data["paths"]
+        assert not [p for p in data["paths"] if "phantom" in p or "secret" in p]
+
+    @pytest.mark.asyncio
+    async def test_git_paths_and_entries_are_compared_by_normcase(self, workspace, monkeypatch):
+        """On a case-insensitive checkout (Windows ``normcase``) git's spelling
+        of an ignored path still matches the entry the walk read."""
+        import os
+
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        sub = str(_sub(workspace))
+        real = files_mod._run_git_bounded
+
+        (_sub(workspace) / "Gen").mkdir()
+        (_sub(workspace) / "Gen" / "x.bin").write_text("x\n")
+
+        def other_case(cmd, *, cwd, **kwargs):
+            if str(cwd).startswith(sub):
+                return (0, "gen/\0", False)
+            return real(cmd, cwd=cwd, **kwargs)
+
+        monkeypatch.setattr(files_mod, "_run_git_bounded", other_case)
+        monkeypatch.setattr(os.path, "normcase", lambda p: p.lower())
+        _, data = await _get(workspace, dir="libs/sub")
+        assert "libs/sub/Gen/x.bin" not in data["paths"]
+        assert "libs/sub/Gen" not in data["directories"]
