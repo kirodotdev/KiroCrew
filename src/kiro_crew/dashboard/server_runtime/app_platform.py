@@ -202,9 +202,8 @@ async def _start_app_backends(app: web.Application, state: DashboardState) -> No
 async def _start_bound_port_app_backends() -> None:
     """Start the app backends the main wave deferred until the listener serves.
 
-    The backend the main wave deferred (``apps.backend.DEV_FLEET_APP_NAME``):
-    ``apps/backend.py`` hands the Dev Fleet backend ``KIROCREW_BOUND_PORT`` at
-    spawn. Under ``start_dashboard``'s port reservation that value exists before
+    The backends the main wave deferred (``apps.builtin_host_grants.bound_port_apps``):
+    ``apps/backend.py`` hands each of them ``KIROCREW_BOUND_PORT`` at spawn. Under ``start_dashboard``'s port reservation that value exists before
     the main wave too, but the admission split lives in
     ``apps/backend_runtime/startup.py`` and is shared with the headless entrypoint,
     where the value only exists post-listen -- so the second wave stays. Same

@@ -8,9 +8,9 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders } from '../../test/helpers'
 
-import DevFleetPage, { mergeLogWindow, LOG_GAP_MARKER, pruneVerdictLabel, gatewayRecovered, __resetDevFleetNoticesForTests } from '../pages/DevFleetPage'
+import DevFleetPage, { mergeLogWindow, LOG_GAP_MARKER, pruneVerdictLabel, gatewayRecovered, __resetDevFleetNoticesForTests } from './DevFleetPage'
 
 function renderPage() {
   return renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
@@ -632,7 +632,7 @@ describe('DevFleetPage', () => {
   })
 
   it('is registered in builtin component registry', async () => {
-    const { hasBuiltinComponent } = await import('../apps/builtinRegistry')
+    const { hasBuiltinComponent } = await import('../builtinRegistry')
     expect(hasBuiltinComponent('/dev-fleet')).toBe(true)
   })
 

@@ -8,9 +8,9 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, waitFor, fireEvent, within } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders } from '../../test/helpers'
 
-import DevFleetPage, { __resetDevFleetNoticesForTests } from '../pages/DevFleetPage'
+import DevFleetPage, { __resetDevFleetNoticesForTests } from './DevFleetPage'
 
 function renderPage() {
   return renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })

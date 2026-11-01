@@ -219,8 +219,8 @@ yourself. Never use the live gateway instead.
 
 A healthy pod proves only boot. For behavior proof, follow
 `docs/guides/worktree-verification-recipes.md`: select the owning endpoint from
-the feature map, assert seeded state, run the pod-e2e Playwright harness and
-preserve screenshots. Treat commands marked forthcoming as absent until help
+the feature map, assert seeded state, run the pod-e2e Playwright harness (it
+ships with the Dev Fleet app) and preserve screenshots. Treat commands marked forthcoming as absent until help
 lists them, and a session-control HTTP 403 as a gap, not successful proof.
 
 ### Agent/MCP specs are a separate isolation axis

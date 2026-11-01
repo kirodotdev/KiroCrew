@@ -48,6 +48,11 @@
       "expression": 6,
       "prose": 4
     },
+    "apps/dev-fleet/DevFleetPage.tsx": {
+      "total": 20,
+      "prose": 12,
+      "template": 8
+    },
     "apps/file-explorer/FileExplorerPage.tsx": {
       "total": 1,
       "template": 1
@@ -265,11 +270,6 @@
     "pages/ChatPage.tsx": {
       "total": 1,
       "expression": 1
-    },
-    "pages/DevFleetPage.tsx": {
-      "total": 20,
-      "prose": 12,
-      "template": 8
     },
     "pages/HooksPage.tsx": {
       "total": 1,

@@ -1535,12 +1535,14 @@ keys`. Three exclusions from that warning are named in code:
 - `CONFIG_RESERVED_TOP_KEYS` in `resolution.py` (`meta`, retired keys) — stamped
   by `save()` itself or written by an older build; never parsed, never
   captured, dropped on the next save, never warned about.
-- `validation._APP_OWNED_TOP_KEYS` (`dev_fleet`) — a section a builtin app reads
-  from the file directly (`dev_fleet.repo_path`, prescribed by the Dev Fleet
-  "no checkout found" banner). Captured and round-tripped like any unknown
-  section, and NOT reported as unrecognized: the product told the operator to
-  write it. Private to the warning that is its only consumer; a second member
-  is the point at which this becomes an app-declared registration.
+- `validation._APP_OWNED_TOP_KEYS` — a section a shipped builtin app reads
+  from the file directly, declared in that app's own host grants
+  (`config_top_keys`, read once at import through `apps.builtin_host_grants`;
+  today Dev Fleet's `dev_fleet`, whose `dev_fleet.repo_path` the "no checkout
+  found" banner prescribes). The core spells no member, so the set is empty when
+  no builtin declares one. Captured and round-tripped like any unknown section,
+  and NOT reported as unrecognized: the product told the operator to write it.
+  Private to the warning that is its only consumer.
 - `validation._CORE_OWNED_TOP_KEYS` (`voice_reply`, `connections`) — a section this core itself
   writes and reads but does not model as a field. The settings UI persists it
   (`slack/interactions_modals.py`, `dashboard/chat_voice.py`) and the gateway reads it
@@ -1553,8 +1555,7 @@ keys`. Three exclusions from that warning are named in code:
   `connections/oauth_clients.py` reads back, and
   `agent_materialization/mcp_aliases.py` reads `connections.tool_aliases`.
   A separate set from `_APP_OWNED_TOP_KEYS` because the owner is core, not an
-  app: it has no manifest to declare itself through, so the "second member →
-  app-declared registration" trigger on the app-owned set does not apply to it.
+  app: it has no app to declare it through host grants.
   Both sets exempt only the shape the reader keeps — a JSON object — so a scalar
   value still warns.
 

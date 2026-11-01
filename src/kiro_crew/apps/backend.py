@@ -34,6 +34,7 @@ from typing import Any
 
 from kiro_crew import md_notebook_state as _md_notebook_state
 from kiro_crew import platform_compat
+from kiro_crew.apps import builtin_host_grants as _host_grants
 from kiro_crew.apps import deps_boot as _deps_boot_module
 from kiro_crew.apps.execution import (
     app_execution_denied,
@@ -97,7 +98,6 @@ from kiro_crew.apps.backend_runtime.provisioning import (  # noqa: E402
     provision_app_deps,
 )
 from kiro_crew.apps.backend_runtime.registration import _set_backend_health  # noqa: E402
-from kiro_crew.apps.backend_runtime.startup import DEV_FLEET_APP_NAME  # noqa: E402
 from kiro_crew.apps.backend_runtime.supervision import (  # noqa: E402
     _start_adopted_health_watch,
     _start_health_supervisor,
@@ -123,12 +123,6 @@ logger = logging.getLogger(__name__)
 
 #: Said once per process: a centrally governed host with no OS confinement (see the spawn).
 _warned_unconfined_cache = False
-
-
-# Apps whose backends spawn real build workloads (vite/pip) and need the
-# elevated-but-finite NOFILE ceiling as the workload's ANCESTOR. Every other
-# app backend keeps the standard (operator-configurable) resource policy.
-_BUILD_CAPABLE_APPS = frozenset({"dev-fleet"})
 
 
 # backend.log durability bound. The log is opened in APPEND mode so a crash
@@ -654,7 +648,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     if os.environ.get("KIROCREW_PROJECT_DIR"):
         # Platform var (same class as KIROCREW_HOME): the resolved project
         # checkout. minimal_env() strips it; backends need it to locate the
-        # gateway's source checkout (e.g. dev-fleet worktree discovery).
+        # gateway's source checkout (e.g. to discover its worktrees).
         _platform_extra["KIROCREW_PROJECT_DIR"] = os.environ["KIROCREW_PROJECT_DIR"]
     if os.environ.get("KIROCREW_EDITION_DIR"):
         # Platform var, same class as the above: whether this gateway is an
@@ -669,15 +663,6 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         # backend can detect an edition but never manufacture consent to compile
         # one.
         _platform_extra["KIROCREW_EDITION_DIR"] = os.environ["KIROCREW_EDITION_DIR"]
-    if os.environ.get("KIROCREW_DEVFLEET_REPO"):
-        # Operator-declared main-checkout override (same trust class as the
-        # KIROCREW_DEVFLEET_BIN_* overrides below). dev-fleet reads it as the
-        # highest-priority repo discovery hint, ahead of KIROCREW_PROJECT_DIR
-        # — which packaged installs point at the app bundle (no .git), leaving
-        # only the ~/kirocrew fallback. minimal_env() strips the var, so
-        # without this forward the documented override silently never reaches
-        # the backend and the fleet renders empty. A path, not a secret.
-        _platform_extra["KIROCREW_DEVFLEET_REPO"] = os.environ["KIROCREW_DEVFLEET_REPO"]
     if os.environ.get("KIROCREW_PROFILE"):
         # Forward the edition-profile override to the backend subprocess.
         # minimal_env() strips it otherwise, so a gateway launched with an
@@ -753,23 +738,24 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         _max_age = effective_max_cache_age()
         if _max_age:
             _platform_extra[POLICY_MAX_AGE_ENV] = str(_max_age)
+    # Operator-declared variables a built-in app's host grants name (a repo override,
+    # trusted-binary overrides): minimal_env() would otherwise strip them. Forwarded
+    # to every backend, by exact name or by prefix; the seam admits only
+    # ``KIROCREW_*`` names, so it cannot forward an arbitrary host credential.
+    _grant_env_names = _host_grants.backend_env_names()
+    _grant_env_prefixes = _host_grants.backend_env_prefixes()
     for _k, _v in os.environ.items():
-        # Operator-declared trusted-binary overrides (unit-file owned):
-        # backends resolve credential-bearing tools through these instead of
-        # the inherited PATH; minimal_env() would otherwise strip them.
-        if _k.startswith("KIROCREW_DEVFLEET_BIN_"):
+        if (_k in _grant_env_names and _v) or (_grant_env_prefixes and _k.startswith(_grant_env_prefixes)):
             _platform_extra[_k] = _v
     # The port the gateway ACTUALLY bound (``dashboard.server._export_bound_port``),
-    # handed to the ONE backend that calls back into the gateway: Dev Fleet reads
-    # live-target pointer state through an in-gateway route, because the pointer
-    # itself is masked from its namespace. Scoped by app name exactly as the
-    # ``KIROCREW_DEVFLEET_BIN_`` loop above is — no other backend has a consumer, and
-    # ``pod/runtime.py`` deliberately scrubs this variable from spawns that must not
-    # aim at the live gateway. Not a secret: it is the port every dashboard client
-    # already connects to, and the gateway's own auth governs what a caller may do
-    # there. Absent (a foreground gateway before its site is up, or a test) it is not
-    # passed and the backend degrades as documented.
-    if app_name == DEV_FLEET_APP_NAME:
+    # handed only to a backend whose host grants ask for it (``bound_port``): one that
+    # calls back into the gateway. Scoped by app because no other backend has a
+    # consumer, and ``pod/runtime.py`` deliberately scrubs this variable from spawns
+    # that must not aim at the live gateway. Not a secret: it is the port every
+    # dashboard client already connects to, and the gateway's own auth governs what a
+    # caller may do there. Absent (a foreground gateway before its site is up, or a
+    # test) it is not passed and the backend degrades as documented.
+    if app_name in _host_grants.bound_port_apps():
         _bound = os.environ.get("KIROCREW_BOUND_PORT", "")
         if _bound.isdigit():
             _platform_extra["KIROCREW_BOUND_PORT"] = _bound
@@ -1317,12 +1303,14 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                 env=env,
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-                # Build-capable apps get the elevated-but-finite NOFILE
-                # ceiling: the backend is the ANCESTOR of its build workloads
-                # (vite/pip) and a 1024 hard cap starves every descendant.
-                # All other apps keep the standard configured policy.
+                # An app whose host grants ask for it (``build_rlimit``) gets the
+                # elevated-but-finite NOFILE ceiling: the backend is the ANCESTOR
+                # of its build workloads (vite/pip) and a 1024 hard cap starves
+                # every descendant. All other apps keep the standard policy.
                 profile=(
-                    RLIMIT_PROFILE_BUILD if app_name in _BUILD_CAPABLE_APPS else RLIMIT_PROFILE_TOOL
+                    RLIMIT_PROFILE_BUILD
+                    if app_name in _host_grants.build_rlimit_apps()
+                    else RLIMIT_PROFILE_TOOL
                 ),
             )
         except OSError:
@@ -1471,7 +1459,7 @@ def _pid_alive(pid: int) -> bool:
 # generations) is ONE object per name, defined once in its owner and imported by the
 # owners that act on it, so a ``.clear()`` through the facade empties the table every
 # owner reads. The two flags rebound with ``global`` each have one holder: the spawn
-# body's ``_warned_unconfined_cache`` here, and ``startup._DEV_FLEET_DEFERRED``.
+# body's ``_warned_unconfined_cache`` here, and ``startup._DEFERRED_BOUND_PORT_APPS``.
 #
 # Every owner is imported here, at the facade's own import. An owner's
 # ``from ... import`` bindings are therefore taken once, as the one-module backend
@@ -1690,7 +1678,7 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.backend_runtime.startup import (  # noqa: F401
         _BOOT_SPAWN_MAX_WORKERS,
-        _DEV_FLEET_DEFERRED,
+        _DEFERRED_BOUND_PORT_APPS,
         _preclaim_fixed_ports,
         _start_backends_concurrently,
         concurrent,

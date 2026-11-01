@@ -236,6 +236,12 @@ _FACADE_DEF_HOMES: dict[str, tuple[str, ...]] = {
 }
 _FACADE_DEF_HOME = {name: stem for stem, names in _FACADE_DEF_HOMES.items() for name in names}
 
+#: The one import a data module may bind beside its values: the reader of the data a
+#: shipped built-in app declares in its host grants, folded into a value at import.
+_DATA_MODULE_SOURCES: dict[str, tuple[str, ...]] = {
+    "kiro_crew.dashboard.server_internal_paths": ("_builtin_strict_internal_paths",),
+}
+
 #: The pure-data modules beside the server, by dotted name, and every name each binds.
 #: The server imports all of them and nothing else imports either module, so the
 #: server's binding is the one its owners read and the one a test rebinds.
@@ -602,7 +608,7 @@ def test_a_data_module_holds_only_the_values_the_facade_rebinds(module: str) -> 
     tree = ast.parse(Path(data.__file__).read_text(encoding="utf-8"))
     code = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
     assert [type(node).__name__ for node in ast.walk(tree) if isinstance(node, code)] == []
-    assert _module_bindings(tree) == names
+    assert _module_bindings(tree) == names | set(_DATA_MODULE_SOURCES.get(module, ()))
     assert {
         o.__name__: sorted(names & set(vars(o))) for o in _owners() if names & set(vars(o))
     } == {}
