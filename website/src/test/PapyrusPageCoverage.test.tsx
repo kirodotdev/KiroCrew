@@ -16,7 +16,7 @@
  * under test is the page's session handlers, not that chat.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import PapyrusPage from '../apps/papyrus/PapyrusPage'
 import { createTestStore, renderWithProviders } from './helpers'
@@ -173,6 +173,12 @@ async function workspaceReady() {
 
 function makeDirty(text: string) {
   fireEvent.change(screen.getByLabelText('editor'), { target: { value: text } })
+}
+
+/** The co-author's turn ends: the busy -> idle slot update the refresh is keyed
+ *  on. The page re-renders on that store change, so the dispatch runs in act. */
+function endAgentTurn(store: ReturnType<typeof createTestStore>) {
+  act(() => { store.dispatch(sseSlots([slot({ subagents_running: false })])) })
 }
 
 const compileBtn = () => screen.getByRole('button', { name: /^Compile$/ })
@@ -759,7 +765,7 @@ describe('Papyrus co-author refresh', () => {
     store.dispatch(sseSlots([slot({ subagents_running: true })]))
     const handle = openWorkspace(store)
     await workspaceReady()
-    store.dispatch(sseSlots([slot({ subagents_running: false })]))
+    endAgentTurn(store)
     return handle
   }
 
@@ -795,7 +801,7 @@ describe('Papyrus co-author refresh', () => {
     await workspaceReady()
     makeDirty(`${BODY}\n% mine, unsaved`)
 
-    store.dispatch(sseSlots([slot({ subagents_running: false })]))
+    endAgentTurn(store)
 
     expect(await screen.findByText('Co-author changed this file')).toBeInTheDocument()
     // Neither side lost: disk keeps the agent's version, the editor keeps the user's.
@@ -812,7 +818,7 @@ describe('Papyrus co-author refresh', () => {
     const { user } = openWorkspace(store)
     await workspaceReady()
     makeDirty(`${BODY}\n% mine, unsaved`)
-    store.dispatch(sseSlots([slot({ subagents_running: false })]))
+    endAgentTurn(store)
     await screen.findByText('Co-author changed this file')
     api.compile.mockClear()
 
@@ -834,7 +840,7 @@ describe('Papyrus co-author refresh', () => {
     const gate = deferred<{ path: string; content: string }>()
     api.readFile.mockReturnValue(gate.promise)
 
-    store.dispatch(sseSlots([slot({ subagents_running: false })]))
+    endAgentTurn(store)
     // The buffer is clean here, so the refresh gets past the pre-check and starts
     // the read; the keystroke only arrives while that read is in flight.
     await waitFor(() => expect(api.readFile.mock.calls.length).toBeGreaterThan(reads))
@@ -855,7 +861,7 @@ describe('Papyrus co-author refresh', () => {
     const { user } = openWorkspace(store)
     await workspaceReady()
     makeDirty(`${BODY}\n% mine, unsaved`)
-    store.dispatch(sseSlots([slot({ subagents_running: false })]))
+    endAgentTurn(store)
     await screen.findByText('Co-author changed this file')
     api.readFile.mockResolvedValue({ path: MAIN, content: `${BODY}\n% the agent version` })
 
@@ -880,7 +886,7 @@ describe('Papyrus co-author refresh', () => {
     const { user } = openWorkspace(store)
     await workspaceReady()
     makeDirty(`${BODY}\n% mine, unsaved`)
-    store.dispatch(sseSlots([slot({ subagents_running: false })]))
+    endAgentTurn(store)
     await screen.findByText('Co-author changed this file')
     api.readFile.mockClear()
 
@@ -903,7 +909,7 @@ describe('Papyrus co-author refresh', () => {
     const { user } = openWorkspace(store)
     await workspaceReady()
     makeDirty(`${BODY}\n% mine, unsaved`)
-    store.dispatch(sseSlots([slot({ subagents_running: false })]))
+    endAgentTurn(store)
     await screen.findByText('Co-author changed this file')
     api.readFile.mockRejectedValue(new Error('still unreachable'))
 
@@ -944,7 +950,7 @@ describe('Papyrus project errors', () => {
     makeDirty(`${BODY}\n% mid-paragraph`)
     api.getProject.mockRejectedValue(new Error('gateway restarting'))
 
-    store.dispatch(sseSlots([slot({ subagents_running: false })]))
+    endAgentTurn(store)
 
     await waitFor(() => expect(api.getProject.mock.calls.length).toBeGreaterThan(1))
     // The failure IS reported — it just no longer takes the document with it.
