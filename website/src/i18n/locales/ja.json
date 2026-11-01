@@ -17266,7 +17266,18 @@
         "theme_experience_persona": "ペルソナ",
         "milestones_hint": "トップバーに探索を、新しいチャットに「今日試す」カードを表示します。",
         "milestones_save_failed": "探索の設定を保存できませんでした。もう一度お試しください。",
-        "milestones": "探索"
+        "milestones": "探索",
+        "interface_chat": "チャット",
+        "theme_mode_auto": "自動",
+        "theme_mode_light": "ライト",
+        "theme_mode_dark": "ダーク",
+        "color_mode_solid_tint": "単色",
+        "color_mode_gradient": "グラデーション",
+        "intensity_soft": "ソフト",
+        "intensity_clear": "クリア",
+        "intensity_vivid": "ビビッド",
+        "intensity_bold": "ボールド",
+        "intensity_intense": "インテンス"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",

@@ -9908,7 +9908,18 @@
         "theme_experience": "Experience",
         "theme_experience_sounds": "Sounds",
         "theme_experience_overlays": "Overlays",
-        "theme_experience_persona": "Persona"
+        "theme_experience_persona": "Persona",
+        "interface_chat": "Chat",
+        "theme_mode_auto": "Auto",
+        "theme_mode_light": "Light",
+        "theme_mode_dark": "Dark",
+        "color_mode_solid_tint": "Solid Tint",
+        "color_mode_gradient": "Gradient",
+        "intensity_soft": "Soft",
+        "intensity_clear": "Clear",
+        "intensity_vivid": "Vivid",
+        "intensity_bold": "Bold",
+        "intensity_intense": "Intense"
       },
       "importPanel": {
         "agent_data": "Agent data",

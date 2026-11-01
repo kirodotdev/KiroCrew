@@ -1,4 +1,4 @@
-import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft, Monitor, Sun, Moon } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
@@ -78,6 +78,15 @@ function StatusIndicator({ label }: { label: string }) {
     </span>
   )
 }
+
+// Intensity values are stored ids; each one renders through its own catalog key.
+const INTENSITY_LABEL_KEYS = {
+  soft: 'pages.settings.displayPanel.intensity_soft',
+  clear: 'pages.settings.displayPanel.intensity_clear',
+  vivid: 'pages.settings.displayPanel.intensity_vivid',
+  bold: 'pages.settings.displayPanel.intensity_bold',
+  intense: 'pages.settings.displayPanel.intensity_intense',
+} as const satisfies Record<IntensityName, string>
 
 export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
@@ -611,7 +620,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           )}
           <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.interface')} hint={i18nT('pages.settings.displayPanel.chat_bubbles_or_cli_style_line_by_line_output')} value={uiMode}
             options={[
-              { value: 'chat', label: 'Chat' },
+              { value: 'chat', label: i18nT('pages.settings.displayPanel.interface_chat') },
               { value: 'cli', label: 'CLI' },
             ]}
             onChange={v => setUIMode(v as 'chat' | 'cli')} />
@@ -1002,9 +1011,9 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           )}
           <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.mode')} hint={i18nT('pages.settings.displayPanel.light_or_dark_appearance_for_the_dashboard')} value={preference}
             options={[
-              { value: 'system', label: 'Auto', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> },
-              { value: 'light', label: 'Light', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg> },
-              { value: 'dark', label: 'Dark', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> },
+              { value: 'system', label: i18nT('pages.settings.displayPanel.theme_mode_auto'), icon: <Monitor className="w-3.5 h-3.5" /> },
+              { value: 'light', label: i18nT('pages.settings.displayPanel.theme_mode_light'), icon: <Sun className="w-3.5 h-3.5" /> },
+              { value: 'dark', label: i18nT('pages.settings.displayPanel.theme_mode_dark'), icon: <Moon className="w-3.5 h-3.5" /> },
             ]}
             onChange={v => setTheme(v as 'system' | 'light' | 'dark')} />
 
@@ -1133,14 +1142,14 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             label={i18nT('pages.settings.displayPanel.intensity')}
             hint={i18nT('pages.settings.displayPanel.how_visible_the_color_tint_is_on_sidebar_rows')}
             value={intensity}
-            options={INTENSITY_NAMES.map(n => ({ value: n, label: n.charAt(0).toUpperCase() + n.slice(1) }))}
+            options={INTENSITY_NAMES.map(n => ({ value: n, label: i18nT(INTENSITY_LABEL_KEYS[n]) }))}
             onChange={v => dispatch(setSessionColorsIntensity(v as IntensityName))}
           />
           <SettingsButtonGroup
             label={i18nT('pages.settings.displayPanel.display_mode')}
             hint={i18nT('pages.settings.displayPanel.how_the_session_color_is_applied_to_the_row')}
             value={colorMode}
-            options={[{ value: 'tint', label: 'Solid Tint' }, { value: 'gradient', label: 'Gradient' }]}
+            options={[{ value: 'tint', label: i18nT('pages.settings.displayPanel.color_mode_solid_tint') }, { value: 'gradient', label: i18nT('pages.settings.displayPanel.color_mode_gradient') }]}
             onChange={v => dispatch(setSessionColorsMode(v as SessionColorMode))}
           />
           <SettingsStepper

@@ -17598,7 +17598,18 @@
         "theme_experience_persona": "পারসোনা",
         "milestones_hint": "উপরের বারে এক্সপ্লোর আর নতুন চ্যাটে \"আজ চেষ্টা করো\" কার্ড দেখাও।",
         "milestones": "এক্সপ্লোর",
-        "milestones_save_failed": "এক্সপ্লোরের সেটিং সেভ করা যায়নি। আবার চেষ্টা করো।"
+        "milestones_save_failed": "এক্সপ্লোরের সেটিং সেভ করা যায়নি। আবার চেষ্টা করো।",
+        "interface_chat": "চ্যাট",
+        "theme_mode_auto": "স্বয়ংক্রিয়",
+        "theme_mode_light": "লাইট",
+        "theme_mode_dark": "ডার্ক",
+        "color_mode_solid_tint": "একরঙা আভা",
+        "color_mode_gradient": "গ্রেডিয়েন্ট",
+        "intensity_soft": "কোমল",
+        "intensity_clear": "স্পষ্ট",
+        "intensity_vivid": "উজ্জ্বল",
+        "intensity_bold": "গাঢ়",
+        "intensity_intense": "তীব্র"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",

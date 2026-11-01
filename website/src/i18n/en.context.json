@@ -1058,6 +1058,17 @@
     "sharedCrew.first_share_stop_tailscale": "First-share warning: where to stop sharing while Tailscale access rules decide; Invites is the invite list heading on the same page.",
     "sharedCrew.first_share_laptop": "Laptop warning: sleep cuts teammates off; Crew keeps it awake while they are connected.",
     "sharedCrew.first_share_laptop_no_keep_awake": "Laptop warning when this computer cannot be kept awake.",
-    "sharedCrew.direct_link_note": "Direct-link access follows Tailscale access rules; Tailscale alone decides who opens the link."
+    "sharedCrew.direct_link_note": "Direct-link access follows Tailscale access rules; Tailscale alone decides who opens the link.",
+    "pages.settings.displayPanel.interface_chat": "One of two options (Chat / CLI) in Settings > Display > Interface: messages render as chat bubbles. A noun naming a layout style, not the verb \"to chat\"; CLI stays as written.",
+    "pages.settings.displayPanel.theme_mode_auto": "One of three options (Auto / Light / Dark) in Settings > Display > Mode: the dashboard follows the operating system's light or dark setting.",
+    "pages.settings.displayPanel.theme_mode_light": "One of three options (Auto / Light / Dark) in Settings > Display > Mode: a light color scheme. An adjective about the appearance, not about weight.",
+    "pages.settings.displayPanel.theme_mode_dark": "One of three options (Auto / Light / Dark) in Settings > Display > Mode: a dark color scheme.",
+    "pages.settings.displayPanel.color_mode_solid_tint": "One of two options (Solid Tint / Gradient) in Settings > Display > Session Colors > Display Mode: a session row is filled with one even tint of its color.",
+    "pages.settings.displayPanel.color_mode_gradient": "One of two options (Solid Tint / Gradient) in Settings > Display > Session Colors > Display Mode: a session row's color fades across the row.",
+    "pages.settings.displayPanel.intensity_soft": "One of five options (Soft / Clear / Vivid / Bold / Intense) in Settings > Display > Sidebar colors > Intensity: the faintest tint of a session's color on its sidebar row. Adjective describing how strong the tint is.",
+    "pages.settings.displayPanel.intensity_clear": "One of five options (Soft / Clear / Vivid / Bold / Intense) in Settings > Display > Sidebar colors > Intensity: a light but clearly visible tint. Adjective describing how strong the tint is; not the verb \"to clear\".",
+    "pages.settings.displayPanel.intensity_vivid": "One of five options (Soft / Clear / Vivid / Bold / Intense) in Settings > Display > Sidebar colors > Intensity: a bright, noticeable tint. Adjective describing how strong the tint is.",
+    "pages.settings.displayPanel.intensity_bold": "One of five options (Soft / Clear / Vivid / Bold / Intense) in Settings > Display > Sidebar colors > Intensity: a strong tint. Adjective describing how strong the tint is; not bold type.",
+    "pages.settings.displayPanel.intensity_intense": "One of five options (Soft / Clear / Vivid / Bold / Intense) in Settings > Display > Sidebar colors > Intensity: the strongest tint. Adjective describing how strong the tint is."
   }
 }

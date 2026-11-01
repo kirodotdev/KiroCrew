@@ -17930,7 +17930,18 @@
         "theme_experience_persona": "Persona",
         "milestones": "Explorar",
         "milestones_save_failed": "Não foi possível salvar a configuração de Explorar. Tente de novo.",
-        "milestones_hint": "Mostra Explorar na barra superior e um cartão \"Experimente hoje\" em um chat novo."
+        "milestones_hint": "Mostra Explorar na barra superior e um cartão \"Experimente hoje\" em um chat novo.",
+        "interface_chat": "Chat",
+        "theme_mode_auto": "Automático",
+        "theme_mode_light": "Claro",
+        "theme_mode_dark": "Escuro",
+        "color_mode_solid_tint": "Cor sólida",
+        "color_mode_gradient": "Gradiente",
+        "intensity_soft": "Suave",
+        "intensity_clear": "Nítida",
+        "intensity_vivid": "Viva",
+        "intensity_bold": "Marcante",
+        "intensity_intense": "Intensa"
       },
       "importPanel": {
         "agent_data": "Dados do agente",

@@ -17598,7 +17598,18 @@
         "theme_experience_persona": "Persona",
         "milestones_save_failed": "Die Einstellung für Entdecken konnte nicht gespeichert werden. Versuch es noch einmal.",
         "milestones_hint": "Zeigt Entdecken in der oberen Leiste und eine Karte „Heute ausprobieren“ in einem neuen Chat.",
-        "milestones": "Entdecken"
+        "milestones": "Entdecken",
+        "interface_chat": "Chat",
+        "theme_mode_auto": "Automatisch",
+        "theme_mode_light": "Hell",
+        "theme_mode_dark": "Dunkel",
+        "color_mode_solid_tint": "Einfarbige Tönung",
+        "color_mode_gradient": "Farbverlauf",
+        "intensity_soft": "Sanft",
+        "intensity_clear": "Klar",
+        "intensity_vivid": "Lebhaft",
+        "intensity_bold": "Kräftig",
+        "intensity_intense": "Intensiv"
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

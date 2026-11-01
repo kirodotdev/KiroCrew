@@ -18262,7 +18262,18 @@
         "theme_experience_persona": "Персона",
         "milestones_hint": "Показывать обзор в верхней панели и карточку «Попробуй сегодня» в новом чате.",
         "milestones": "Обзор",
-        "milestones_save_failed": "Не удалось сохранить настройку обзора. Попробуй ещё раз."
+        "milestones_save_failed": "Не удалось сохранить настройку обзора. Попробуй ещё раз.",
+        "interface_chat": "Чат",
+        "theme_mode_auto": "Авто",
+        "theme_mode_light": "Светлая",
+        "theme_mode_dark": "Тёмная",
+        "color_mode_solid_tint": "Сплошной оттенок",
+        "color_mode_gradient": "Градиент",
+        "intensity_soft": "Мягкая",
+        "intensity_clear": "Чёткая",
+        "intensity_vivid": "Яркая",
+        "intensity_bold": "Насыщенная",
+        "intensity_intense": "Интенсивная"
       },
       "importPanel": {
         "agent_data": "Данные агента",

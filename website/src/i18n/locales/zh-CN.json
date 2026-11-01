@@ -17266,7 +17266,18 @@
         "theme_experience_persona": "角色设定",
         "milestones_hint": "在顶栏显示探索，并在新聊天里显示“今天试试”卡片。",
         "milestones": "探索",
-        "milestones_save_failed": "无法保存探索设置。请重试。"
+        "milestones_save_failed": "无法保存探索设置。请重试。",
+        "interface_chat": "聊天",
+        "theme_mode_auto": "自动",
+        "theme_mode_light": "浅色",
+        "theme_mode_dark": "深色",
+        "color_mode_solid_tint": "纯色着色",
+        "color_mode_gradient": "渐变",
+        "intensity_soft": "柔和",
+        "intensity_clear": "清晰",
+        "intensity_vivid": "鲜艳",
+        "intensity_bold": "浓郁",
+        "intensity_intense": "强烈"
       },
       "importPanel": {
         "agent_data": "代理数据",

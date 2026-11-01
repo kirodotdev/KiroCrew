@@ -17598,7 +17598,18 @@
         "theme_experience_persona": "पर्सोना",
         "milestones": "एक्सप्लोर",
         "milestones_hint": "ऊपर की बार में एक्सप्लोर और नई चैट में \"आज आज़माओ\" कार्ड दिखाओ।",
-        "milestones_save_failed": "एक्सप्लोर की सेटिंग सेव नहीं हो सकी। फिर कोशिश करो।"
+        "milestones_save_failed": "एक्सप्लोर की सेटिंग सेव नहीं हो सकी। फिर कोशिश करो।",
+        "interface_chat": "चैट",
+        "theme_mode_auto": "स्वतः",
+        "theme_mode_light": "लाइट",
+        "theme_mode_dark": "डार्क",
+        "color_mode_solid_tint": "एकरंगी टिंट",
+        "color_mode_gradient": "ग्रेडिएंट",
+        "intensity_soft": "हल्का",
+        "intensity_clear": "स्पष्ट",
+        "intensity_vivid": "चटकीला",
+        "intensity_bold": "गहरा",
+        "intensity_intense": "तीव्र"
       },
       "importPanel": {
         "agent_data": "एजेंट डेटा",
