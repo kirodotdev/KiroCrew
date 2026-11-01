@@ -31,7 +31,9 @@ from kiro_crew.dashboard.handlers.prompts_caller_gates import (
     _deny_non_owner_skill_operation,
     _named_slot,
     _sel,
+    logger,
 )
+from kiro_crew.dashboard.handlers.prompts_paths import _is_path_too_long_error
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.loop_lock import LoopBoundLock
@@ -603,6 +605,32 @@ async def api_skills_trust_revoke(request: web.Request) -> web.Response:
     return web.json_response(snapshot)
 
 
+def _skill_name_too_long(name: str, tool_name: str, **metadata: str) -> web.Response:
+    """Audit and answer a skill name the filesystem refused for its LENGTH.
+
+    ``_resolve_skill_root`` joins the unbounded URL name onto a skills root and
+    stats it. A POSIX host refuses a too-long component with ``ENAMETOOLONG``,
+    which ``Path.is_dir()`` re-raises, so the tree and file routes 500'd where
+    ``GET /api/skills/{name}`` already answers the same name with this coded 400
+    (``prompts_skill_edits.api_skill_detail``).
+    """
+    try:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name=tool_name,
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"name": name, **metadata, "reason": "name_too_long"},
+        )
+    except Exception:  # noqa: BLE001 — the refusal is decided; never 500 on an audit write
+        logger.debug("Could not audit skill name_too_long refusal", exc_info=True)
+    return web.json_response(
+        {"error": "skill name is too long", "code": "name_too_long"}, status=400
+    )
+
+
 async def api_skill_tree(request: web.Request) -> web.Response:
     """GET /api/skills/{name}/tree — list files within a skill folder.
 
@@ -624,9 +652,15 @@ async def api_skill_tree(request: web.Request) -> web.Response:
         r = _resolve_skill_root(name, state, session_key)
         return (r, list_skill_tree(r) if r is not None else [])
 
-    root, entries = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(), _resolve_and_list
-    )
+    try:
+        root, entries = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _resolve_and_list
+        )
+    except OSError as exc:
+        # Only the resolve can raise: ``list_skill_tree`` handles its own errors.
+        if not _is_path_too_long_error(exc):
+            raise
+        return _skill_name_too_long(name, "api_skill_tree")
     if root is None:
         _sel().log_tool_invocation(
             session_key="",
@@ -697,9 +731,16 @@ async def api_skill_file(request: web.Request) -> web.Response:
         c, e = read_skill_file(r, rel_path)
         return r, c, e
 
-    root, content, err = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(), _resolve_and_read
-    )
+    try:
+        root, content, err = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _resolve_and_read
+        )
+    except OSError as exc:
+        # Only the resolve can raise: ``read_skill_file`` maps every ``OSError`` of
+        # its own onto an error string, so a too-long ``path`` is still a 404.
+        if not _is_path_too_long_error(exc):
+            raise
+        return _skill_name_too_long(name, "api_skill_file", path=rel_path)
     if root is None:
         _audit("not_found")
         return web.json_response({"error": "not found"}, status=404)
