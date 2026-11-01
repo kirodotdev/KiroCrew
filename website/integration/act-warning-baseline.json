@@ -54,7 +54,6 @@
   "src/test/ChatPage.navFarJump.test.tsx",
   "src/test/ChatPage.panelTabFocus.test.tsx",
   "src/test/ChatPage.previewExpandSessions.test.tsx",
-  "src/test/ChatPage.responsivePanel.test.tsx",
   "src/test/ChatPage.sessionControls.test.tsx",
   "src/test/ChatPage.sessionTabs.test.tsx",
   "src/test/ChatPage.sid.test.tsx",

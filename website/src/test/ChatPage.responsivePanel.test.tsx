@@ -409,7 +409,7 @@ describe('ChatPage — message scroller contains its scroll', () => {
  */
 describe('ChatPage — focus-mode caption reserve on the title row', () => {
   beforeEach(() => { setWindowWidth(1400); localStorage.clear(); setSidePanelDock('right') })
-  afterEach(() => { document.getElementById('activity-bar-slot')?.remove(); setSidePanelDock('right') })
+  afterEach(() => { document.getElementById('activity-bar-slot')?.remove(); act(() => { setSidePanelDock('right') }) })
 
   function renderWithSlot() {
     const store = createTestStore()
