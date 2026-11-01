@@ -215,8 +215,15 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
 
     # Config → config.json under "slack" (staged, applied only after Phase 1).
     path = config_path()
+
+    def _read_config() -> object:
+        # The existence check, the read and the parse share one worker-thread hop
+        # (as in feishu_settings.py): a stalled mount must not block the loop on
+        # any of them.
+        return json.loads(read_config_text(path)) if path.exists() else {}
+
     try:
-        data = json.loads(read_config_text(path)) if await asyncio.to_thread(path.exists) else {}
+        data = await asyncio.to_thread(_read_config)
         if not isinstance(data, dict):
             raise ValueError("config.json is not a JSON object")
     except Exception:
