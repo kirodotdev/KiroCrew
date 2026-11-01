@@ -1331,6 +1331,18 @@ tool argument could name. The governance vet and the delivery key therefore
 resolve the same principal, on the `channel_type`/`target_id` leg and the
 channel-`session` leg alike.
 
+**Every egress leg also re-asks the calling app's own messaging grant.** The MCP
+tool's `capabilities.messaging` vet runs in `kirocrew-core`, which knows no app,
+so a per-app profile that revokes messaging never reaches it. The gateway does
+know the app (`effective_request_app`: the attested token's claim, or the owner of
+the calling session), and `channel_delivery._vet_app_messaging` asks that grant,
+fail-closed, before the configured-target leg resolves its target and before the
+owner-DM, session-conversation or Slack leg in `_deliver_send_message_fallback`
+sends. A refusal sends on none of them and answers 403 `channel_not_permitted`,
+the code a refused owner DM already answers. A caller no app owns is the person,
+whose surface profile the MCP tool already vets, so it is not re-asked; the
+dashboard notification is not an egress leg and is not gated.
+
 `"slack"` is deliberately **not** a legal `channel_type`: Slack is absent from
 `state.channel_transports` on purpose, so the shared ladder skips it and accepting
 the value would fail every such send closed with no useful reason.

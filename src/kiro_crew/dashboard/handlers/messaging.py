@@ -151,6 +151,7 @@ from kiro_crew.dashboard.messaging_api.channel_delivery import (  # noqa: F401
     _deliver_to_channel,
     _owner_dm_target,
     _send_to_channel_target,
+    _vet_app_messaging,
     _vet_channel_send,
 )
 from kiro_crew.dashboard.messaging_api.channel_folder_backfill import (  # noqa: F401
@@ -302,6 +303,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
 from kiro_crew.dashboard.token_auth import (  # noqa: F401
     LINK_WINDOW_SECS,
     caller_names_a_missing_slot,
+    effective_request_app,
     generate_token,
 )
 from kiro_crew.dashboard.ws_event_scope import (  # noqa: F401
@@ -847,6 +849,7 @@ async def api_send_message(request: web.Request) -> web.Response:
                 attribution_session=await asyncio.to_thread(attributable_session_key, request),
                 is_cron_caller=is_cron_caller,
                 send_to_slack=send_to_slack,
+                request_app=effective_request_app(state, request),
             )
     finally:
         _audit_send_message(
