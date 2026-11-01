@@ -1003,12 +1003,8 @@ def semantic_candidates_v1(
             key_words = hits.matched(2 * i)
             val_words = hits.matched(2 * i + 1)
         else:
-            key_words = row_tokens(key_text)
+            key_words = _text_scoring._semantic_key_words(label, row_tokens)
             val_words = row_tokens(raw["value_json"].lower())
-        key_overlap = len(query_words & key_words)
-        val_overlap = len(query_words & val_words)
-        kw_raw = key_overlap * 3 + val_overlap
-        kw_score = _text_scoring._keyword_score(kw_raw)
 
         # Vector score (when a stored vector is present). The mixed
         # population is real — legacy rows stay NULL until the backfill
@@ -1020,7 +1016,9 @@ def semantic_candidates_v1(
         # keyword-only floor a merely-dissimilar row should get.
         vec_score = max(0.0, cosines[i] if cosines is not None else similarity(raw))
 
-        score = _text_scoring._hybrid_score(kw_score, vec_score, query_has_vector=query_has_vector)
+        score = _text_scoring._semantic_row_score(
+            query_words, key_words, val_words, vec_score, query_has_vector=query_has_vector
+        )
 
         if score > 0:
             # Copy only the rows returned: a resident row is shared state.
