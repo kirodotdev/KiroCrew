@@ -285,7 +285,6 @@ line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysi
 line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysis.md	fleet_probe.py:88,91,102,107,108,113
 line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysis.md	fleet_probe.py:91
 line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysis.md	setup.cfg:366-367
-line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysis.md	test/test_pipeline_conductor_agent.py:179
 line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysis.md	test/test_pipeline_conductor_agent.py:181
 line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysis.md	test/test_pipeline_conductor_agent.py:26
 line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysis.md	test/test_pipeline_conductor_agent.py:453
