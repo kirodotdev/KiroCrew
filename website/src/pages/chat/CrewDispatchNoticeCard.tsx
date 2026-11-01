@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { Info, Users } from 'lucide-react'
+import { Info, Zap } from 'lucide-react'
 
 import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { i18nT } from '../../i18n/t'
@@ -10,8 +10,8 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  * (`meta.kind === 'crew_dispatch_notice'`,
  * `src/kiro_crew/dashboard/crew_dispatch_notice.py`).
  *
- * In Crew Mode a dispatched crew member is listed in the Crew (Workers) tab of
- * the side panel, not in the session list, so after the conductor starts one the
+ * In Crew Mode a dispatched crew member is listed on the Board (view `workers`)
+ * of the side panel, not in the session list, so after the conductor starts one the
  * person otherwise sees only a folded tool line. This row names that tab and
  * carries a button that opens it. The gateway writes exactly one per person turn
  * and never on a plain chat, a failed dispatch or a crew member's own
@@ -46,8 +46,8 @@ export default memo(function CrewDispatchNoticeCard({
   // invalidate it (the same subscription NoticeCard uses).
   useLanguageGeneration()
   if (!crewMode) return null
-  const openCrewTab = i18nT('pages.chat.crewDispatchNotice.openCrewTab')
-  // Revealing the Workers tab is the HOST's job, not the card's: it must close
+  const openBoard = i18nT('pages.chat.crewDispatchNotice.openBoard')
+  // Revealing the Board (Workers view) is the HOST's job, not the card's: it must close
   // the find pane (which keeps the side-panel dock unmounted while open) and,
   // in a split pane, rebind this card's slot to the active one before opening
   // the panel for it — neither reachable from here. The card used to call
@@ -80,8 +80,9 @@ export default memo(function CrewDispatchNoticeCard({
               className="pi-morph inline-flex items-center gap-1 text-[11px] leading-4 text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors disabled:opacity-50 disabled:cursor-default"
               data-testid="crew-dispatch-notice-open"
             >
-              <Users size={13} />
-              <span>{openCrewTab}</span>
+              {/* The Board tab's glyph (`SidePanelTabIcons`, kind `workers`). */}
+              <Zap size={13} aria-hidden="true" />
+              <span>{openBoard}</span>
             </button>
           </div>
         </div>

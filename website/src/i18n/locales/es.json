@@ -12051,8 +12051,8 @@
         "warning": "Advertencia"
       },
       "crewDispatchNotice": {
-        "openCrewTab": "Abrir la pestaña Crew",
-        "text": "Se iniciaron miembros del crew: aparecen en la pestaña Crew del panel lateral, no en la lista de sesiones."
+        "openBoard": "Abrir el Tablero",
+        "text": "Se iniciaron miembros del crew: aparecen en el Tablero del panel lateral, no en la lista de sesiones."
       },
       "compactionCard": {
         "after_turn": "Contexto al {{pct}}, por encima del umbral de compactación automática del {{limit}}: el chat se resumirá al terminar este turno",

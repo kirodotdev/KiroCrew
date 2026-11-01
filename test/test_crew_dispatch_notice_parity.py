@@ -23,7 +23,7 @@ _CARD = _REPO / "website" / "src" / "pages" / "chat" / "CrewDispatchNoticeCard.t
 _EN = _REPO / "website" / "src" / "i18n" / "locales" / "en.json"
 
 _TEXT_KEY = "pages.chat.crewDispatchNotice.text"
-_BUTTON_KEY = "pages.chat.crewDispatchNotice.openCrewTab"
+_BUTTON_KEY = "pages.chat.crewDispatchNotice.openBoard"
 
 
 def test_frontend_matches_the_backend_notice_kind() -> None:
@@ -45,5 +45,5 @@ def test_english_catalog_defines_the_keys() -> None:
     en = json.loads(_EN.read_text(encoding="utf-8"))
     block = en["pages"]["chat"].get("crewDispatchNotice")
     assert isinstance(block, dict), "pages.chat.crewDispatchNotice missing from en.json"
-    assert set(block) == {"text", "openCrewTab"}, block
-    assert block["text"].strip() and block["openCrewTab"].strip()
+    assert set(block) == {"text", "openBoard"}, block
+    assert block["text"].strip() and block["openBoard"].strip()
