@@ -421,6 +421,15 @@ class TestAFailedWriteLeavesMemoryAuthoritativeAndThePreviousFileIntact:
         assert store.save("a", Savepoint("summing", 3, 4, {"bad": object()}, IDENTITY)) is False
         assert store.load("a", "summing", state_version=3, identity=IDENTITY) is None
 
+    def test_state_nested_past_the_interpreter_limit_costs_the_savepoint(self, tmp_path):
+        state = []
+        for _ in range(10_000):
+            state = [state]
+
+        store = DirectoryCheckpointStore(tmp_path)
+
+        assert store.save("a", Savepoint("summing", 3, 4, state, IDENTITY)) is False
+
 
 class TestAPayloadThisBuildCannotTrustIsIgnored:
     @pytest.mark.parametrize(
@@ -452,6 +461,15 @@ class TestAPayloadThisBuildCannotTrustIsIgnored:
         path = store.path_for("a", "summing")
         assert path is not None
         path.write_text('{"v": 1, "key": "summ', encoding="utf-8")
+
+        assert store.load("a", "summing", state_version=3, identity=IDENTITY) is None
+
+    def test_json_nested_past_the_interpreter_limit_answers_none(self, tmp_path):
+        store = DirectoryCheckpointStore(tmp_path)
+        path = store.path_for("a", "summing")
+        assert path is not None
+        path.parent.mkdir(parents=True)
+        path.write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
 
         assert store.load("a", "summing", state_version=3, identity=IDENTITY) is None
 
