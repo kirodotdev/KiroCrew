@@ -262,7 +262,6 @@
   "src/test/paletteOpenSessionFocusesComposer.test.tsx",
   "src/test/pierre.warmSwap.test.tsx",
   "src/test/shortcutsPanelSkipShell.test.tsx",
-  "src/test/sidePanelLeadingTab.test.tsx",
   "src/test/toolDisclosureKey.renderSite.test.tsx",
   "src/test/useAgentSync.defaultLabel.test.tsx",
   "src/test/useAgentSync.recencyOrder.test.tsx",
