@@ -164,7 +164,6 @@
   "src/test/ChatSidebar.boardColumnTagFilter.test.tsx",
   "src/test/ChatSidebar.boardDuplicate.test.tsx",
   "src/test/ChatSidebar.boardFolderCollapse.test.tsx",
-  "src/test/ChatSidebar.boardFolderCreateInTab.test.tsx",
   "src/test/ChatSidebar.boardFolderRename.test.tsx",
   "src/test/ChatSidebar.boardFolderReorder.test.tsx",
   "src/test/ChatSidebar.boardNewChatInFolder.test.tsx",
