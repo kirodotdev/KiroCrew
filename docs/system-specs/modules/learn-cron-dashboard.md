@@ -17,6 +17,22 @@ and pooled into the compact readout. The `kiro-cli /usage` scrape (a local slash
 command over the same free API) remains fallback-only, and its two known bonus
 formats produce the same list shape.
 
+The Usage page's session statistics count kiro-cli and KAS sessions by reading
+two transcript stores under kiro-cli's home: kiro-cli's flat
+`sessions/cli/<id>.jsonl` files and the KAS harness's
+`sessions/<id>/sess_<uuid>/messages.jsonl` records. A transcript's day is the
+local day of its first row's timestamp, or of the file's modification time when
+its rows lack a timestamp. A message is a user prompt or an assistant reply: a kiro-cli
+`Prompt` or `AssistantMessage` row, or a KAS `user` row or `assistant` row of
+operation type `Say`, which leaves out the KAS reasoning rows. A tool call is a
+kiro-cli `ToolResults` row or a KAS `tool_call` row. A KAS record without a
+messages file is skipped and stays out of `refused_transcripts`: the record holds
+only its `session.json`, or the harness deleted it at session teardown after the
+scan listed it. A parse keeps each transcript's counts keyed on its modification
+time and size, and a later parse reads a transcript again only when either
+changed. The path check and the `stat` still run on every transcript, and on a
+store of thousands of transcripts the path check takes most of a warm parse.
+
 When the local session transcript directory does not exist, `/api/usage/kiro`
 returns the same complete zero-valued session statistics as an empty directory,
 including `today`, `this_week`, `this_month`, and an empty `daily_history`.
