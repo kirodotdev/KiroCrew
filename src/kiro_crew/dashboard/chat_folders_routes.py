@@ -14,11 +14,14 @@ from aiohttp import web
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_folders_icons import (
     _CHAT_FOLDER_ICON_EPOCHS,
+    _CHAT_FOLDER_ICON_PREVIEWS,
     _CHAT_FOLDER_PENDING_ICON_TASKS,
     _bump_icon_epoch,
     _is_single_emoji,
     _is_valid_folder_color,
     _spawn_chat_folder_icon_task,
+    generate_emoji_for_name,
+    icon_preview_avoid,
 )
 from kiro_crew.dashboard.chat_folders_paths import (
     _folder_project_overlap_denied,
@@ -787,6 +790,119 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         resources=fid,
     )
     return web.json_response(folder)
+
+
+#: Model calls one preview may make: a pick that repeats an ``avoid`` emoji is
+#: retried once, so a person clicking again never gets the same icon back.
+_ICON_PREVIEW_ATTEMPTS = 2
+
+
+async def api_chat_folder_icon_preview(request: web.Request) -> web.Response:
+    """POST /api/chat/folders/{id}/icon-preview -- pick an emoji, save nothing.
+
+    The folder modal's Auto-generate button calls this so the person sees the
+    icon before Save; Save then sends it as an ordinary ``icon``. The body is
+    optional: ``name`` (the draft name, else the stored one) and ``avoid`` (emoji
+    already shown, so a second click picks another). It answers 200
+    ``{"icon": "<emoji>"}``, or 502 ``icon_generate_failed`` when no single emoji
+    came back. One preview per folder at a time, and none while a background
+    generation for it is pending. ``PATCH regenerate_icon`` is unchanged.
+    """
+    state: DashboardState = request.app["state"]
+    if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
+    fid = request.match_info["id"]
+    folder = next((f for f in state._folders if f["id"] == fid), None)
+    if not folder:
+        return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
+    request_app = folder_principal(state, request)
+    if is_mate_home(folder) or refuses_write_into(state._folders, fid, request_app):
+        return _mate_home_locked()
+    origin_source, origin_caller = _audit_origin(request)
+    if request_app and _folder_owner_app(folder) != request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.folder_icon_preview",
+            outcome="denied",
+            source="app_isolation",
+            resources=fid,
+            error="app cannot preview an icon for a folder it does not own",
+        )
+        return web.json_response(
+            {"error": "this app does not own that folder", "code": "folder_not_owned"},
+            status=403,
+        )
+    body: Any = {}
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "invalid_json"},
+            status=400,
+        )
+    raw_avoid = body.get("avoid", [])
+    if not isinstance(raw_avoid, list):
+        return web.json_response(
+            {"error": "avoid must be a list of emoji", "code": "avoid_invalid"}, status=400
+        )
+    avoid = tuple(str(a).strip() for a in raw_avoid if isinstance(a, str))
+    name = str(body.get("name") or "").strip()[:100] or str(folder.get("name") or "")
+    caller_key = request.headers.get("X-Session-Key", "").strip()
+    if origin_source != "dashboard" and _caller_reaches_a_channel(request, caller_key):
+        # The same containment as an agent's regenerate_icon PATCH: a session a
+        # channel can drive does not spend model calls on folder icons.
+        sel().log_api_access(
+            caller=request_app or origin_caller,
+            operation="chat.folder_icon_preview",
+            outcome="denied",
+            source="channel_containment",
+            resources=fid,
+            error="agent icon preview from a session a channel can drive",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "this session can receive turns from a channel conversation, so "
+                    "an agent cannot restyle folders from it"
+                ),
+                "code": "channel_reachable_caller",
+            },
+            status=403,
+        )
+    pending = _CHAT_FOLDER_PENDING_ICON_TASKS.get(fid)
+    if fid in _CHAT_FOLDER_ICON_PREVIEWS or (pending is not None and not pending.done()):
+        return web.json_response(
+            {"error": "an icon is already being generated for this folder", "code": "icon_busy"},
+            status=409,
+        )
+    # An icon already shown is not a new pick: one bounded retry, then 502.
+    # Compared without the emoji variation selector, which models drop or add.
+    shown = {a.replace("\ufe0f", "") for a in icon_preview_avoid(avoid)}
+    _CHAT_FOLDER_ICON_PREVIEWS.add(fid)
+    try:
+        icon = ""
+        for _ in range(_ICON_PREVIEW_ATTEMPTS):
+            icon = await generate_emoji_for_name(state, name, avoid=avoid)
+            if not icon or icon.replace("\ufe0f", "") not in shown:
+                break
+            icon = ""
+    finally:
+        _CHAT_FOLDER_ICON_PREVIEWS.discard(fid)
+    sel().log_api_access(
+        caller=request_app or origin_caller,
+        operation="chat.folder_icon_preview",
+        outcome="allowed" if icon else "failed",
+        source=origin_source,
+        resources=fid,
+    )
+    if not icon:
+        return web.json_response(
+            {"error": "no icon could be generated", "code": "icon_generate_failed"}, status=502
+        )
+    return web.json_response({"icon": icon})
 
 
 #: The most rows one reorder request may carry. A reorder writes one row per
