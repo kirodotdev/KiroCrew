@@ -146,6 +146,22 @@ def _spec_withheld_hooks_notice(agent: str, *, user_hooks_run: bool) -> str:
     return f"{lead} To run a hook you trust, add it to your user-level spec for agent {agent}."
 
 
+def _project_hook_files_notice() -> str:
+    """The session-start notice for standalone ``<project>/.kiro/hooks/*.json`` files.
+
+    These do not run in a dashboard session: a project hook is a command from a
+    checkout, and Crew cannot read this backend's workspace-trust verdict. Your
+    own ``~/.kiro/hooks/*.json`` files do run. Said so they are never withheld
+    silently.
+    """
+    return (
+        "ℹ️ This project has hook files in .kiro/hooks that do not run in this "
+        "session: Crew cannot read this backend's workspace-trust decision, so it "
+        "does not run commands from a project checkout. Your own ~/.kiro/hooks "
+        "files still run."
+    )
+
+
 #: Deny classes a credential-vending MCP server can actually resolve. Only these
 #: justify the capability-manager lookup: the hint is appended for them alone, so
 #: probing on any other refusal would spend a subprocess to produce a string

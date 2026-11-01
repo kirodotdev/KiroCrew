@@ -115,6 +115,38 @@ _HOOKS_CONCERN = "hooks"
 #: were skipped (the session-start notice names the count).
 _cache: dict[tuple[str, str], tuple[tuple[ScriptHook, ...], int]] = {}
 
+#: The origin tag a user standalone-hook-file hook carries, distinct from a spec
+#: hook's ``project`` / ``user`` origin, so a reader can tell a ``~/.kiro/hooks``
+#: file hook apart from an agent spec's own ``hooks`` field.
+_USER_FILE_ORIGIN = "user_file"
+
+#: Bound on a single standalone hook file read, so a large or runaway file cannot
+#: be slurped whole. A v1 hook file is a small JSON object; 256 KiB is far above
+#: any real one and still refuses a pathological file.
+_MAX_HOOK_FILE_BYTES = 256 * 1024
+
+#: Bound on the standalone hook files scanned in one directory, so a directory
+#: packed with files cannot make session start walk without limit. The per-file
+#: document cap and ``_MAX_SPEC_HOOKS`` still bound what actually fires.
+_MAX_HOOK_FILES = 64
+
+#: Per standalone hook FILE: the converted hooks keyed by (path, content digest),
+#: so an unchanged file is converted -- and its skipped documents audited -- once
+#: rather than on every turn. Bounded like :data:`_cache`.
+_user_file_cache: dict[tuple[str, str], tuple[ScriptHook, ...]] = {}
+
+#: Per standalone hook FILE: whether its own per-file cap truncated it (it had at
+#: least one convertible hook beyond the cap), keyed like :data:`_user_file_cache`,
+#: so a cap overflow is noted once per unchanged file rather than recomputed every
+#: turn. A document skipped for being disabled, confirm-only, an unknown trigger or
+#: a bad matcher is not a cap truncation and never flips this.
+_user_file_doc_counts: dict[tuple[str, str], bool] = {}
+
+#: Snapshots (one digest of the directory's files + their content) whose cap
+#: overflow has already been warned about and SEL-audited, so a cap drop is
+#: reported once per changed snapshot rather than on every turn. Bounded.
+_user_file_truncation_audited: set[str] = set()
+
 
 def _diagnostic(value: object) -> str:
     """A spec-supplied value for a log line: escaped, then redacted."""
@@ -363,7 +395,12 @@ def _from_object_form(agent_id: str, hooks: dict) -> list[ScriptHook]:
     return out
 
 
-def _from_documents(agent_id: str, hooks: list, unconfirmable: list[int]) -> list[ScriptHook]:
+def _from_documents(
+    agent_id: str,
+    hooks: list,
+    unconfirmable: list[int],
+    cap_overflow: list[int] | None = None,
+) -> list[ScriptHook]:
     # circular import: agent imports hooks, which this module imports at load time.
     from kiro_crew.agent import _event_for_hook_trigger, normalize_spec_hooks
 
@@ -400,6 +437,13 @@ def _from_documents(agent_id: str, hooks: list, unconfirmable: list[int]) -> lis
             _normalize_hook_timeout(doc.get("timeout")),
         )
         if hook is not None:
+            # Pure side-count: a document that converts to a runnable hook while
+            # the kept list is already at the cap is recorded for the caller that
+            # asked (``cap_overflow``) and still appended, so the cap / break and
+            # what is kept are exactly as on the no-counter path. The spec-hook
+            # callers pass no list and ``_convert`` audits the overflow as before.
+            if cap_overflow is not None and len(out) >= _MAX_SPEC_HOOKS:
+                cap_overflow.append(index)
             out.append(hook)
     return out
 
@@ -411,6 +455,256 @@ def spec_script_hooks(agent_id: str, spec: dict[str, Any]) -> list[ScriptHook]:
     docstring); anything else is warned about, audited once, and yields nothing.
     """
     return list(_convert(agent_id, spec)[0])
+
+
+def project_hook_files_present(project_dir: str | None) -> bool:
+    """Whether the session's checkout has standalone ``<project>/.kiro/hooks/*.json``.
+
+    These files do NOT run in a dashboard KAS session: a project hook is a command
+    from a checkout, gated on the trust verdict Crew cannot read
+    (:func:`kiro_crew.acp.session_mcp._project_mcp_trusted`). This only reports that
+    such files exist, so a session-start notice can say they are withheld rather
+    than let them fail silently -- the same shape as the withheld project spec
+    hooks notice. Best-effort: any read error answers ``False`` (no notice) rather
+    than failing the turn.
+    """
+    if not project_dir:
+        return False
+    try:
+        hooks_dir = Path(project_dir) / ".kiro" / "hooks"
+        return any(p.is_file() for p in hooks_dir.glob("*.json"))
+    except OSError:
+        return False
+
+
+def _user_hooks_dir() -> Path | None:
+    """The directory standalone user hook files are read from, or ``None``.
+
+    ``agent.kiro_hooks_dir`` in ``~/.kiro/crew/config.json`` (default
+    ``~/.kiro/hooks``), resolved through the ``kiro_crew.agent`` facade
+    (:func:`kiro_crew.agent.resolved_kiro_hooks_dir`) and required to live under
+    the user's HOME and outside a sensitive directory -- the same containment the
+    ``~/.kiro/hooks`` script autoimport applies. An unresolvable or out-of-HOME
+    setting answers ``None`` (fail closed), never an unchecked path. The user's own
+    files need no per-workspace trust gate, the way project files do: this is the
+    user's HOME, not a checkout.
+    """
+    # Deferred import: ``agent`` imports ``hooks``, which this module imports at
+    # load time, so resolving the dir at call time avoids the import cycle.
+    from kiro_crew import agent as agent_mod
+
+    try:
+        return agent_mod.resolved_kiro_hooks_dir()
+    except Exception:  # noqa: BLE001 - a missing dir must never fail the turn
+        logger.debug("user hook files: could not resolve the hooks directory", exc_info=True)
+        return None
+
+
+def _hook_file_bytes(path: Path, within_root: Path) -> bytes | None:
+    """Bytes of one hook file, read symlink- and containment-safe, or ``None``.
+
+    Reads through :func:`kiro_crew.hooks.safe_read_file_bytes_nolink` pinned to
+    *within_root* and :data:`_MAX_HOOK_FILE_BYTES`: a symlink at the final
+    component, a hardlinked inode, a non-regular file, a target escaping the hooks
+    directory, a sensitive path, or an oversized file is refused and read as
+    ``None``. So a ``*.json`` entry that is a link to a credential file is never
+    read as a hook file. A read failure degrades to ``None`` rather than raising.
+    """
+    from kiro_crew.hooks import safe_read_file_bytes_nolink
+
+    try:
+        return safe_read_file_bytes_nolink(
+            str(path), str(within_root), max_bytes=_MAX_HOOK_FILE_BYTES
+        )
+    except Exception:  # noqa: BLE001 - a hand-placed file must never fail a turn
+        logger.debug("user hook file %s could not be read safely", _diagnostic(str(path)))
+        return None
+
+
+def _hook_documents_from_bytes(path: Path, raw: bytes) -> list | None:
+    """The ``hooks`` array of one v1 hook file's bytes, or ``None`` for none.
+
+    A JSON error, a non-object top level, or a ``hooks`` that is not a list skips
+    the file with one log line rather than raising. The ``version`` field is not
+    required: the document validator downstream accepts or rejects each entry.
+    """
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        logger.info("user hook file %s is not valid JSON, skipping", _diagnostic(str(path)))
+        return None
+    if not isinstance(data, dict):
+        logger.info("user hook file %s is not a JSON object, skipping", _diagnostic(str(path)))
+        return None
+    hooks = data.get("hooks")
+    if not isinstance(hooks, list) or not hooks:
+        return None
+    return hooks
+
+
+def user_hook_files() -> list[ScriptHook]:
+    """The user's standalone ``~/.kiro/hooks/*.json`` hooks, as script hooks.
+
+    These v1 files are what ``kiro-cli chat --agent-engine v3`` runs. Each file's
+    ``hooks`` array is converted through the SAME document path a spec's array form
+    uses (:func:`_from_documents`): only ``action.type == "command"`` documents on
+    a known trigger (SessionStart/AgentSpawn, UserPromptSubmit, PreToolUse,
+    PostToolUse, Stop) become hooks; an ``agent`` action, an unknown trigger, a
+    disabled or ``confirm: true`` document, or a malformed entry is skipped and
+    logged once, never guessed. The returned hooks ride the turn's ``extra_hooks``,
+    so they meet the shell deny list, the SEL audit and ``capabilities.script_hooks``
+    like a Hooks-page hook, and carry ``spec_origin="user_file"`` so PreToolUse
+    follows kiro-cli's exit-code contract -- a delivered exit 2 blocks the tool; a
+    crash or timeout does not -- the same as an agent spec's own hooks, which is the
+    parity this exists for.
+
+    Only the USER directory is read, symlink- and containment-safe. Project
+    ``<project>/.kiro/hooks/*.json`` are not read here; they stay off on the trust
+    verdict Crew cannot read for a checkout
+    (:func:`kiro_crew.acp.session_mcp._project_mcp_trusted`). The total is bounded
+    by :data:`_MAX_SPEC_HOOKS`, the same cap a spec's hooks share.
+
+    Each file's conversion is cached by its path and content digest, so an
+    unchanged file is converted -- and its skipped documents audited -- once rather
+    than on every turn. Never raises: a missing directory, or an unreadable or
+    malformed file, degrades to fewer hooks rather than a failed turn.
+    """
+    hooks_dir = _user_hooks_dir()
+    if hooks_dir is None:
+        return []
+    try:
+        files = sorted(p for p in hooks_dir.glob("*.json") if p.is_file())
+    except OSError:
+        logger.debug("user hook files: could not list %s", _diagnostic(str(hooks_dir)))
+        return []
+    out: list[ScriptHook] = []
+    dropped_files = max(0, len(files) - _MAX_HOOK_FILES)
+    # A cap truncated the hooks that run. The per-file side-count (``cap_overflow``)
+    # only knows a file had at least one convertible hook beyond the cap -- not how
+    # many -- and the global cap below only knows it stopped appending, so this is
+    # a flag, not a count. A disabled / confirm-only / unknown-trigger / bad-matcher
+    # document took its own reject path and is never a cap truncation.
+    hooks_truncated = False
+    # Digest of the whole directory snapshot. EVERY file name is in the key (names
+    # only past the cap), so a file added beyond the cap changes the snapshot and
+    # is reported; the content digest of each READ file is folded in too, so an
+    # edit within the cap is reported. One report per CHANGED snapshot, not per
+    # turn.
+    snapshot = hashlib.sha256()
+    for name in (p.name for p in files):
+        snapshot.update(name.encode("utf-8", "replace"))
+        snapshot.update(b"\0")
+    for path in files[:_MAX_HOOK_FILES]:
+        raw = _hook_file_bytes(path, hooks_dir)
+        if raw is None:
+            continue
+        digest = hashlib.sha256(raw).hexdigest()
+        snapshot.update(digest.encode("ascii"))
+        key = (str(path), digest)
+        cached = _user_file_cache.get(key)
+        if cached is None:
+            documents = _hook_documents_from_bytes(path, raw)
+            if not documents:
+                converted: tuple[ScriptHook, ...] = ()
+                over_cap = False
+            else:
+                # ``_from_documents`` runs the same enabled/trigger/action/matcher
+                # screening a spec array gets; ``cap_overflow`` records a document
+                # it would have converted but for the per-file cap, so a disabled or
+                # unknown-trigger document is never read as a cap truncation.
+                agent_id = f"userfile:{path.stem}"
+                overflow: list[int] = []
+                converted = tuple(
+                    dataclasses.replace(h, spec_origin=_USER_FILE_ORIGIN)
+                    for h in _from_documents(agent_id, documents, [], overflow)
+                )
+                over_cap = bool(overflow)
+            if len(_user_file_cache) >= _CACHE_MAX:
+                _user_file_cache.clear()
+                _user_file_doc_counts.clear()
+            _user_file_cache[key] = converted
+            _user_file_doc_counts[key] = over_cap
+            cached = converted
+        if _user_file_doc_counts.get(key):
+            hooks_truncated = True
+        for hook in cached:
+            if len(out) >= _MAX_SPEC_HOOKS:
+                # Global cap across files: more convertible hooks than will run.
+                hooks_truncated = True
+                break
+            out.append(hook)
+    if dropped_files or hooks_truncated:
+        _audit_user_file_truncation(snapshot.hexdigest(), dropped_files, hooks_truncated)
+    return out
+
+
+def _audit_user_file_truncation(snapshot: str, dropped_files: int, hooks_truncated: bool) -> None:
+    """Warn and SEL-audit that a cap truncated the user's hook files or hooks, once
+    per changed snapshot.
+
+    A silent cut reads downstream as "the user has no more hooks", which is a
+    different fact, and a dropped PreToolUse guard neither runs nor withholds
+    auto-approval. The number of hooks a cap drops is not known here -- the loader
+    stops once the cap is reached -- so the message names the cap, not an exact
+    dropped count. Keyed on the directory snapshot digest so an unchanged set is
+    reported once, not on every turn.
+    """
+    if snapshot in _user_file_truncation_audited:
+        return
+    if len(_user_file_truncation_audited) >= _CACHE_MAX:
+        _user_file_truncation_audited.clear()
+    _user_file_truncation_audited.add(snapshot)
+    parts = []
+    if dropped_files:
+        parts.append(
+            f"more than {_MAX_HOOK_FILES} files (only the first {_MAX_HOOK_FILES} are read)"
+        )
+    if hooks_truncated:
+        parts.append(f"more than {_MAX_SPEC_HOOKS} hooks (only the first {_MAX_SPEC_HOOKS} run)")
+    reason = (
+        "user hook files exceed the caps: "
+        + " and ".join(parts)
+        + "; the rest will not run or gate auto-approval"
+    )
+    logger.warning("user hook files: %s", reason)
+    # circular import: agent imports hooks, which this module imports at load time.
+    from kiro_crew.agent import _sel_hook_rejected
+
+    _sel_hook_rejected("user_hook_files", "caps", reason)
+
+
+def merge_user_hook_files(provider: object, base_hooks: list[ScriptHook]) -> list[ScriptHook]:
+    """*base_hooks* (the spec's own hooks) plus the user's standalone files, on KAS.
+
+    The ONE place every KAS turn -- dashboard, sub-agent and task-runner -- folds
+    :func:`user_hook_files` into the hooks it fires, so a user's
+    ``~/.kiro/hooks/*.json`` hook runs on each of them and the projection's
+    auto-approve withhold (which also lists these files) always has a hook to fire.
+    Returns *base_hooks* unchanged off KAS: goose and opencode are in
+    ``crew_fires_spec_hooks`` too but do not read a user's standalone files.
+
+    A user-file hook whose ``(event, command, matcher)`` already appears in
+    *base_hooks* is dropped -- the spec / Hooks-page hook wins -- so a JSON file
+    whose command is a ``*.sh`` script the autoimport already folded into the spec
+    is not fired twice.
+    """
+    # Deferred: ``backends`` imports modules that reach this one, so resolve the
+    # backend id at call time like :func:`spec_project_dir` does.
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+    # Positive identity test (harness gate H5): name the one backend this folds in,
+    # so a harness added later does not inherit it by an inequality.
+    if capabilities_of(provider).backend == ACP_BACKEND_KAS:
+        seen = {(h.event, h.command, h.matcher) for h in base_hooks}
+        merged = list(base_hooks)
+        for hook in user_hook_files():
+            key = (hook.event, hook.command, hook.matcher)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(hook)
+        return merged
+    return base_hooks
 
 
 def _convert(agent_id: str, spec: dict[str, Any]) -> tuple[tuple[ScriptHook, ...], int]:
@@ -737,6 +1031,14 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
             exc_info=True,
         )
         return TurnSpecHooks([], work_dir, True, True)
+    # The user's standalone ~/.kiro/hooks/*.json files run on every KAS turn, not
+    # only the dashboard chat turn, so a sub-agent or task-runner turn fires them
+    # too (and the auto-approve withhold always has a hook to fire). KAS only; the
+    # helper returns the spec hooks unchanged off KAS.
+    try:
+        hooks = await asyncio.to_thread(merge_user_hook_files, provider, hooks)
+    except Exception:  # noqa: BLE001 - a hook-file read must never fail the turn
+        logger.debug("user hook files could not be merged for this turn", exc_info=True)
     return TurnSpecHooks(hooks, work_dir, False, True)
 
 

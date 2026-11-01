@@ -1223,6 +1223,73 @@ def test_an_unreadable_spec_re_projects(agents_dir, hooks_page):
     assert asyncio.run(spec_hooks.hook_projection_stale(live, "a1")) is True
 
 
+def _point_user_hooks_dir(monkeypatch, tmp_path: Path) -> Path:
+    """Point ~/.kiro/hooks at a temp dir via the resolver's seam, return it."""
+    import kiro_crew.agent as agent_mod
+
+    hooks_dir = tmp_path / "userhome" / ".kiro" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(agent_mod, "_DEFAULT_KIRO_HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(agent_mod, "_mc_config_path", lambda: tmp_path / "no-config.json")
+    spec_hooks._user_file_cache.clear()
+    return hooks_dir
+
+
+def _write_user_file(hooks_dir: Path, name: str, matcher: str) -> None:
+    (hooks_dir / name).write_text(
+        json.dumps(
+            {
+                "version": "v1",
+                "hooks": [
+                    {
+                        "name": "guard",
+                        "trigger": "PreToolUse",
+                        "action": {"type": "command", "command": "guard.sh"},
+                        "matcher": matcher,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_the_projection_withholds_what_a_user_file_pre_tool_hook_covers(
+    tmp_path, monkeypatch, hooks_page
+):
+    """A user ~/.kiro/hooks PreToolUse hook on web_fetch keeps web_fetch out of
+    auto-approve, so the call reaches the gate and exit 2 can block it."""
+    hooks_dir = _point_user_hooks_dir(monkeypatch, tmp_path)
+    _write_user_file(hooks_dir, "guard.json", "web_fetch")
+    matchers = kas_agents.pre_tool_hook_matchers("a1", {"allowedTools": ["web_fetch"]})
+    assert "web_fetch" in matchers
+    gated = kas_agents.to_client_custom_agent(
+        "a1", {"allowedTools": ["web_fetch", "web_search"]}, "p", pre_tool_hook_matchers=matchers
+    )
+    assert ("web_fetch", "ask") in _rules(gated["permissions"])
+    assert ("web_search", "ask") not in _rules(gated["permissions"])
+
+
+def test_editing_a_user_file_hook_makes_an_auto_approved_session_stale(
+    tmp_path, monkeypatch, agents_dir, hooks_page
+):
+    """Adding/editing a ~/.kiro/hooks file so it matches an already-auto-approved
+    capability marks the KAS session stale, so the next turn re-projects."""
+    hooks_dir = _point_user_hooks_dir(monkeypatch, tmp_path)
+    _write_spec(agents_dir, "a1", allowedTools=["web_fetch"])
+    live = _live(ACP_BACKEND_KAS, frozenset({"web_fetch"}))
+    # No user file yet: not stale.
+    assert asyncio.run(spec_hooks.hook_projection_stale(live, "a1")) is False
+    # A user file on a DIFFERENT capability: still not stale.
+    _write_user_file(hooks_dir, "guard.json", "web_search")
+    spec_hooks._user_file_cache.clear()
+    assert asyncio.run(spec_hooks.hook_projection_stale(live, "a1")) is False
+    # Edit it to match the auto-approved web_fetch: now stale.
+    _write_user_file(hooks_dir, "guard.json", "web_fetch")
+    spec_hooks._user_file_cache.clear()
+    assert asyncio.run(spec_hooks.hook_projection_stale(live, "a1")) is True
+
+
 class _Sessions:
     def __init__(self, provider) -> None:
         self.provider = provider
