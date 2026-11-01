@@ -635,7 +635,15 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#: Raised by 36, from 33,723, for the HTTP/JSON bearer branch keeping its non-secret
+#: prefix: a named ``bearer_prefix`` group captures the header name, separator, quote
+#: and ``Bearer`` scheme so pass 1 redacts only the token after it and a JSON/header
+#: document parses. The comment and split branch live in ``redaction_patterns``, the
+#: value-only span in ``redaction``'s ``_credential_redaction_plan``, and the matching
+#: keep in ``text_redaction``'s stream ceiling discard (a sibling prefix regex and the
+#: pure-bearer keep) so a streamed Bearer value fails closed to the same output. No
+#: credential branch, match or pass moved; only the Bearer branch's redacted span.
+_PACKAGE_LINE_BUDGET = 33_759
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

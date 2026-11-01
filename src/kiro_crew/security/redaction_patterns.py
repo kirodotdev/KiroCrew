@@ -259,7 +259,15 @@ _CREDENTIAL_PATTERNS = re.compile(
     # the JWT); a bare JWT is still caught independently (defense in depth).
     f"|{JWT_MULTI_SEGMENT}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES), shared spelling
     r"|(?<![A-Za-z0-9_-])(?!(?<=\.)(?!eyJ[A-Za-z0-9_]*-)(?!eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_]*-)(?!eyJ[A-Za-z0-9_-](?:[A-Za-f][A-Za-z0-9_-]{3})*(?:[A-Za-f][A-Za-z0-9_-]{1,2})?\.))eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"  # 2-seg link token
-    r"|(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
+    # The non-secret prefix -- the header name, the `:`/`=` separator, an
+    # optional quote and the `Bearer` scheme word -- sits in the `bearer_prefix`
+    # named group, which pass 1 keeps while it redacts ONLY the token after it,
+    # so a serialized header (`{"Authorization": "Bearer <tok>"}`) stays a
+    # parseable JSON/header document rather than a bare tag. The token class
+    # (`[A-Za-z0-9._~+/-]`, RFC 6750 `b64token`) stops at the closing quote, so
+    # the value-only span leaves the key, both quotes and the scheme intact.
+    r"|(?P<bearer_prefix>(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+)"
+    r"[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
     r")",
 )
 

@@ -182,6 +182,17 @@ _BEARER_ANCHOR_PARTIAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The non-secret Bearer prefix -- header name, separator, optional quote and the
+# `Bearer` scheme word with its trailing whitespace -- anchored so a ceiling
+# discard can keep it while it drops only the token, the way the batch pass's
+# `bearer_prefix` group does. Matches only when the whole prefix (through the
+# whitespace before the token) is present, so a partial `Beare`/`Bear` yields no
+# match and the discard keeps nothing extra.
+_BEARER_PREFIX_RE = re.compile(
+    r"""Authorization["']?\s*[:=]\s*["']?Bearer\s+""",
+    re.IGNORECASE,
+)
+
 
 def _complete_token_match_crossing(
     matches: tuple[re.Match[str], ...], cut: int
@@ -519,6 +530,16 @@ class StreamRedactor:
                         aws_keyed_anchor.start("val"),
                         len(self._buf) - stream_aws_anchor.LABEL_CARRY,
                     )
+                if armed == ["bearer"] and bearer_anchor is not None:
+                    # Keep the non-secret Bearer prefix (header, separator, quote
+                    # and `Bearer ` scheme) in the commit so a long Bearer value
+                    # failing closed leaves a parseable header, the way the batch
+                    # pass redacts only the token after `bearer_prefix`. Only the
+                    # pure-bearer carrier does this: a nested or glued carrier
+                    # keeps the whole fail-closed drop.
+                    prefix = _BEARER_PREFIX_RE.match(self._buf, bearer_anchor.start())
+                    if prefix is not None:
+                        i = max(i, prefix.end())
                 commit, self._buf = self._buf[:i], self._buf[drop_end:]
                 out = self._redact_window(commit) if commit else ""
                 return out + _redaction._REDACTED_CREDENTIAL_TAG
