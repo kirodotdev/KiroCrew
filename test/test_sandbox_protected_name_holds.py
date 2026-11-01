@@ -423,9 +423,17 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   servers' env values (``sandbox_leaves``). Masked whole at the data-home
     #:   root beside writable siblings, so leaf-only is the only hold.
     #:
-    #: One more entry per tier, from main: ``run``, the directory that holds the
-    #: sandbox launcher itself, sealed read-only under the relocated crew home
-    #: (``sandbox_leaves._CREW_SANDBOX_VISIBLE_LEAVES``).
+    #: One entry per tier for the default home's ``run`` under a relocated data
+    #: home (``sandbox_workspace.prime_voice_runtime_sandbox_paths``):
+    #:
+    #: * ``$HOME/.kiro/crew/run`` -- where every gateway leaves its run-dir pointer,
+    #:   whatever its data home, and the token mint follows that pointer to a
+    #:   launcher it runs outside the sandbox. Sealed read-only so an agent cannot
+    #:   plant one. Only the ``$HOME/.kiro/crew`` spelling is added: the relocated
+    #:   home's own ``run`` is already counted. It sits at the default home's root
+    #:   beside writable siblings, so no enclosing directory mask can hold it and
+    #:   leaf-only is the only hold available. The pointer is published by a rename
+    #:   INSIDE it, so the directory's own inode stays the same on a republish.
     EXPECTED: dict[str, int] = {"standard": 310, "cc": 317, "strict": 318}
 
     @pytest.mark.parametrize("tier", TIERS)
