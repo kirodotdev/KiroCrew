@@ -183,6 +183,21 @@ describe('useCrewModeSwitch turning Ultra Mode on fails', () => {
   })
 })
 
+describe('useCrewModeSwitch openTaskBoard', () => {
+  beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  it('opens the side panel with the Board tab in front', () => {
+    const openView = vi.fn()
+    const { hook, store } = setup(openView)
+    expect(hook.result.current.openTaskBoard).toBeTypeOf('function')
+    act(() => { hook.result.current.openTaskBoard() })
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(openView).toHaveBeenCalledTimes(1)
+    expect(openView).toHaveBeenCalledWith('workers')
+  })
+})
+
 describe('useCrewModeSwitch entering an Ultra Mode root', () => {
   beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })

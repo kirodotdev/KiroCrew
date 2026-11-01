@@ -1,6 +1,6 @@
 import { cn } from '../lib/utils'
 import { motion, useReducedMotion, type TargetAndTransition, type Transition } from 'framer-motion'
-import { ChevronRight, Hand, PanelRight, Target } from 'lucide-react'
+import { ChevronRight, Hand, Target, Zap } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { KiroGhost } from './KiroGhost'
 import { KiroGhostMark } from './KiroGhostMark'
@@ -215,9 +215,9 @@ function Flow({ still }: { still: boolean }) {
  *  a flow that shows what the mode does in the order it does it, with one or two
  *  words per step: one goal, this chat splits it, a crew ghost flies into each
  *  task's own chat, the tasks land on the board, and the step that waits for you
- *  lights up. Then one "Task board" button (its icon alone where room is tight).
- *  Every word is generic, so nothing
- *  here reads as live work: the real board is the side panel's Overview, read from
+ *  lights up. Then one "Board" button, the Board tab's own bolt and name (its icon
+ *  alone where room is tight). Every word is generic, so nothing
+ *  here reads as live work: the real board is the side panel's Board tab, read from
  *  this chat's own work ledger.
  *
  *  Everything plays once and is done within CREW_WELCOME_PLAY_SECS; the moment the
@@ -228,7 +228,7 @@ function Flow({ still }: { still: boolean }) {
  *  art and the slogan and puts the button beside the title, and a page taller than
  *  the room scrolls, title in reach.
  *
- *  `onOpenTaskBoard` opens that Overview. Unset (a session with no Overview of its
+ *  `onOpenTaskBoard` opens that Board tab. Unset (a session with no board of its
  *  own), the button is left out. */
 export default function CrewModeWelcome({ onOpenTaskBoard, chatKey }: {
   onOpenTaskBoard?: () => void
@@ -240,7 +240,8 @@ export default function CrewModeWelcome({ onOpenTaskBoard, chatKey }: {
   const short = '[@media(max-height:480px)]:hidden'
   // Tight room: the same short-screen query, or a chat column narrower than 18rem.
   const tight = cn(short, '@max-[18rem]/crewwelcome:hidden')
-  const boardLabel = i18nT('components.crewMode.side_panel_open')
+  // The Board tab's own name, so the button and the tab it opens never disagree.
+  const boardLabel = i18nT('commandCenter.workers')
   return (
     <motion.div
       // Re-mounted when it settles: every part then mounts on its final frame, so an
@@ -322,7 +323,7 @@ export default function CrewModeWelcome({ onOpenTaskBoard, chatKey }: {
             title={boardLabel}
             className="justify-center min-h-[44px] sm:min-h-0 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
           >
-            <PanelRight size={14} aria-hidden="true" />
+            <Zap size={14} aria-hidden="true" />
             <span data-testid="crew-mode-open-board-label" aria-hidden="true" className={tight}>{boardLabel}</span>
           </Btn>
         </motion.div>
