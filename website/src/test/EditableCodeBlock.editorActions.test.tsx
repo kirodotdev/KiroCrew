@@ -7,7 +7,7 @@
  * streaming).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, within, act } from '@testing-library/react'
 import { setTerminalEnabledFlag } from '../utils/terminalRegistry'
 
 const hoisted = vi.hoisted(() => ({
@@ -153,30 +153,32 @@ describe('EditableCodeBlock editor height cap', () => {
 })
 
 describe('EditableCodeBlock scratch copy', () => {
-  it('copies the untouched snippet when nothing was edited', () => {
+  it('copies the untouched snippet when nothing was edited', async () => {
     render(<EditableCodeBlock code="const a = 1" lang="ts" complete />)
     openEditor()
-    fireEvent.click(copyButton())
+    // The copy handler awaits copyCode before it sets the confirmation state,
+    // so the click runs inside act and the state update lands in that scope.
+    await act(async () => { fireEvent.click(copyButton()) })
     expect(copyCode).toHaveBeenCalledWith('const a = 1')
   })
 
-  it('copies the live edit, not the message’s original text', () => {
+  it('copies the live edit, not the message’s original text', async () => {
     render(<EditableCodeBlock code="const a = 1" lang="ts" complete />)
     openEditor()
     fireEvent.change(screen.getByTestId('pierre-editor'), { target: { value: 'const a = 99' } })
-    fireEvent.click(copyButton())
+    await act(async () => { fireEvent.click(copyButton()) })
     expect(copyCode).toHaveBeenCalledWith('const a = 99')
     expect(copyCode).not.toHaveBeenCalledWith('const a = 1')
   })
 
-  it('discards the scratch edit when the editor is closed', () => {
+  it('discards the scratch edit when the editor is closed', async () => {
     render(<EditableCodeBlock code="const a = 1" lang="ts" complete />)
     openEditor()
     fireEvent.change(screen.getByTestId('pierre-editor'), { target: { value: 'throwaway' } })
     fireEvent.click(screen.getByLabelText('Close editor'))
 
     openEditor()
-    fireEvent.click(copyButton())
+    await act(async () => { fireEvent.click(copyButton()) })
     expect(copyCode).toHaveBeenCalledWith('const a = 1')
   })
 
