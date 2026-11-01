@@ -21,7 +21,6 @@
 2 test/test_installer_node_floor.py
 6 test/test_ios_simulator_preview_skill.py
 1 test/test_perf_boot_path.py
-1 test/test_pr_readiness_publish.py
 2 test/test_prepare_pr_prove.py
 3 test/test_spawn_exec_shim.py
 1 test/test_xdist_host_budget.py
