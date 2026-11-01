@@ -246,13 +246,13 @@ async def test_takeover_claim_event_release_round_trip() -> None:
         assert wire.events[-1][1]["state"] == "live"
 
 
-async def test_open_in_browser_reports_whether_the_window_was_focused() -> None:
+async def test_open_in_browser_refuses_when_no_window_could_be_focused() -> None:
     app, _wire = _app()
     async with TestClient(TestServer(app)) as client:
         status, body = await _post(
             client, "/api/browser/live/open-in-browser", {"session_key": "chat-1"}
         )
-        assert status == 200 and body["focused"] is False
+        assert status == 409 and body["code"] == "browser_not_open"
         _stream, relay = await _live()
         status, body = await _post(
             client, "/api/browser/live/open-in-browser", {"session_key": "chat-1"}

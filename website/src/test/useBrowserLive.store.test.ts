@@ -281,6 +281,14 @@ describe('claim and release', () => {
     expect(writes.visibility).not.toHaveBeenCalled()
   })
 
+  it('a takeover restored by an event (a reloaded tab) keeps the heartbeat too', () => {
+    browserLiveStore.applyEvent(ev({ state: 'in_control' }))
+    browserLiveStore.setVisible(S, 'card-1', true, 't1')
+    writes.visibility.mockClear()
+    vi.advanceTimersByTime(TAKEOVER_HEARTBEAT_MS)
+    expect(writes.visibility.mock.calls).toEqual([[S, true]])
+  })
+
   it('claim flips to in_control at once and posts the claim', async () => {
     browserLiveStore.applyEvent(ev())
     const p = browserLiveStore.claim(S)

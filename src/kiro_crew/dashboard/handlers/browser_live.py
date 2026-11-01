@@ -248,7 +248,10 @@ async def api_browser_live_open_in_browser(request: web.Request) -> web.Response
     """POST /api/browser/live/open-in-browser: focus the real window."""
 
     async def act(hub: LiveHub, key: str, body: dict[str, Any]) -> dict[str, Any] | web.Response:
-        return {"focused": await hub.open_in_browser(key)}
+        if not await hub.open_in_browser(key):
+            # Said as a refusal, so the card shows why the click did nothing.
+            return _error("browser_not_open", "the browser window for this chat is not open", 409)
+        return {"focused": True}
 
     return await _run(request, "browser_live_open_in_browser", act)
 

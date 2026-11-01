@@ -435,6 +435,9 @@ class BrowserLiveStore {
     }
     s.turns.set(next.turnId, next)
     s.current = next
+    // A takeover this tab did not start (a reload restored it) still needs the
+    // heartbeat, or the gateway reads the person as gone and hands control back.
+    if (next.state === 'in_control') this.startHeartbeat()
     if (!prev) {
       this.evictRings(s)
       // A new turn starts with no card showing it; the unseen count is per turn.
