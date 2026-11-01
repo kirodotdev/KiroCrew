@@ -42,7 +42,9 @@ class TestRealSlackClientFetchThreadReplies:
         assert len(result) == 1
         assert result[0]["text"] == "hi"
         web.conversations_replies.assert_called_once_with(
-            channel="C1", ts="100.0", limit=200,
+            channel="C1",
+            ts="100.0",
+            limit=200,
         )
 
     @pytest.mark.asyncio
@@ -72,9 +74,7 @@ class TestRealSlackClientFetchThreadReplies:
         from kiro_crew.slack.client import RealSlackClient
 
         web = AsyncMock()
-        web.conversations_replies = AsyncMock(
-            side_effect=aiohttp.ClientError("timeout")
-        )
+        web.conversations_replies = AsyncMock(side_effect=aiohttp.ClientError("timeout"))
         client = RealSlackClient.__new__(RealSlackClient)
         client._web = web
 
