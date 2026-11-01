@@ -10,11 +10,37 @@ import tempfile
 import unittest
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+import pytest
 import yaml
 
 from scripts.ci_file_shards import file_shard
 
 ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 45
+# Lost-run ceiling for the Windows `--surface backend` scan (testing-conventions
+# class 6). The slowest passing call in a windows-pytest-progress-7 artifact took
+# 42.251775s (run 39911553168); 10x is 422.5s, rounded up to 425s. Fifteen
+# consecutive green main runs (41234261776..41278128347) measured 18.2s-25.2s.
+_WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS = 425
+# At most half the module timeout, so an expired scan fails by name instead of
+# pytest-timeout killing the xdist worker (Windows has no SIGALRM).
+pytestmark = pytest.mark.timeout(2 * _WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS)
+
+
+def _backend_scope_timeout_seconds(*, windows: bool) -> int:
+    """Bound Windows scans from the measured shard time; others keep 45s."""
+    return (
+        _WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS if windows else _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+    )
+
+
+def _tail(output: str | bytes | None, limit: int = 2000) -> str:
+    """Last ``limit`` characters a timed-out child wrote, for the failure message."""
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", "replace")
+    return output[-limit:]
 
 
 class TestFileShards(unittest.TestCase):
@@ -40,7 +66,7 @@ class TestFileShards(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         return path
 
-    def run_python(self, *extra):
+    def run_python(self, *extra, timeout=_DEFAULT_SUBPROCESS_TIMEOUT_SECONDS):
         env = dict(os.environ)
         env.pop("PYTEST_ADDOPTS", None)
         env.pop("PYTEST_PLUGINS", None)
@@ -53,15 +79,21 @@ class TestFileShards(unittest.TestCase):
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["PYTHONPATH"] = str(ROOT)
         env["TMPDIR"] = env["TMP"] = env["TEMP"] = str(self.root)
-        return subprocess.run(
-            [sys.executable, "-B", *extra],
-            cwd=self.root,
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=45,
-        )
+        try:
+            return subprocess.run(
+                [sys.executable, "-B", *extra],
+                cwd=self.root,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self.fail(
+                f"{extra} still running when its {exc.timeout}s ceiling expired; "
+                f"stdout tail: {_tail(exc.stdout)!r}; stderr tail: {_tail(exc.stderr)!r}"
+            )
 
     def run_pytest(self, *extra):
         return self.run_python("-m", "pytest", "-p", "scripts.ci_file_shards", "-q", *extra)
@@ -137,8 +169,19 @@ class TestFileShards(unittest.TestCase):
         self.assertCountEqual(all_files, {item.split("::")[0] for item in baseline})
         self.assertEqual(len(all_files), 26)
 
+    def test_reduced_backend_scope_timeout_accounts_for_windows(self):
+        self.assertEqual(
+            _backend_scope_timeout_seconds(windows=False), _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+        )
+        self.assertEqual(
+            _backend_scope_timeout_seconds(windows=True), _WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS
+        )
+
     def test_reduced_backend_scope_populates_every_ci_shard(self):
-        result = self.run_python(str(ROOT / "scripts/ci-surface-tests.py"), "--surface", "backend")
+        timeout = _backend_scope_timeout_seconds(windows=os.name == "nt")
+        result = self.run_python(
+            str(ROOT / "scripts/ci-surface-tests.py"), "--surface", "backend", timeout=timeout
+        )
         self.assert_ok(result)
         files = result.stdout.splitlines()
         self.assertTrue(files)
