@@ -2855,6 +2855,7 @@
           }
         },
         "taggingView": {
+          "analyse_next_issues_other": "分析接下来的 {{count}} 个 issue",
           "analyzing": "正在分析…",
           "apply_suggestion_other": "应用 {{count}} 条建议",
           "applying": "正在应用…",
@@ -2873,6 +2874,7 @@
           "loading_the_untagged_queue": "正在加载未标记队列…",
           "newest_first": "最新优先",
           "read_only_repo_needs_triage_or_push_access": "仓库只读 — 需要 triage 或 push 权限",
+          "reanalyse_issues_other": "重新分析已有提案的 {{count}} 个 issue",
           "reload_the_untagged_queue": "重新加载未标记队列",
           "repo_labels": "仓库标签",
           "s_labels": "的标签：",

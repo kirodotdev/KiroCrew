@@ -3079,6 +3079,9 @@
           }
         },
         "taggingView": {
+          "analyse_next_issues_many": "Analyser les {{count}} issues suivantes",
+          "analyse_next_issues_one": "Analyser {{count}} issue suivante",
+          "analyse_next_issues_other": "Analyser les {{count}} issues suivantes",
           "analyzing": "Analyse…",
           "apply_suggestion_many": "Appliquer {{count}} suggestions",
           "apply_suggestion_one": "Appliquer {{count}} suggestion",
@@ -3103,6 +3106,9 @@
           "loading_the_untagged_queue": "Chargement de la file des tickets non étiquetés…",
           "newest_first": "les plus récents d’abord",
           "read_only_repo_needs_triage_or_push_access": "Dépôt en lecture seule — nécessite un accès triage ou push",
+          "reanalyse_issues_many": "Réanalyser {{count}} issues qui ont déjà une proposition",
+          "reanalyse_issues_one": "Réanalyser {{count}} issue qui a déjà une proposition",
+          "reanalyse_issues_other": "Réanalyser {{count}} issues qui ont déjà une proposition",
           "reload_the_untagged_queue": "Recharger la file des tickets non étiquetés",
           "repo_labels": "Étiquettes du dépôt",
           "s_labels": ", étiquettes :",

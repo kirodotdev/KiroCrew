@@ -3056,6 +3056,10 @@
           }
         },
         "taggingView": {
+          "analyse_next_issues_few": "Проанализировать следующие {{count}} задачи",
+          "analyse_next_issues_many": "Проанализировать следующие {{count}} задач",
+          "analyse_next_issues_one": "Проанализировать следующую {{count}} задачу",
+          "analyse_next_issues_other": "Проанализировать следующие {{count}} задачи",
           "analyzing": "Анализ...",
           "apply_suggestion_few": "Применить {{count}} предложения",
           "apply_suggestion_many": "Применить {{count}} предложений",
@@ -3083,6 +3087,10 @@
           "loading_the_untagged_queue": "Загрузка очереди без меток…",
           "newest_first": "сначала новые",
           "read_only_repo_needs_triage_or_push_access": "Репозиторий только для чтения — нужен доступ triage или push",
+          "reanalyse_issues_few": "Повторно проанализировать {{count}} задачи, у которых уже есть предложение",
+          "reanalyse_issues_many": "Повторно проанализировать {{count}} задач, у которых уже есть предложение",
+          "reanalyse_issues_one": "Повторно проанализировать {{count}} задачу, у которой уже есть предложение",
+          "reanalyse_issues_other": "Повторно проанализировать {{count}} задачи, у которых уже есть предложение",
           "reload_the_untagged_queue": "Перезагрузить очередь без меток",
           "repo_labels": "Метки репозитория",
           "s_labels": "метки:",
