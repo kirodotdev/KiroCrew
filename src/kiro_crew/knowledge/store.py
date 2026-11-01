@@ -56,7 +56,10 @@ from .store_parts.fulltext_index import FTS_INDEX_VERSION  # noqa: F401
 from .store_parts.item_ownership import _DOC_STATE_KEY_COL  # noqa: F401
 from .store_parts.item_ownership import _DOC_STATE_TABLES  # noqa: F401
 from .store_parts.item_ownership import _OWNERSHIP_HASH_COL  # noqa: F401
+from .store_parts.item_ownership import LiveSourceHoldsNoItems  # noqa: F401
 from .store_parts.maintenance_sweeps import _RECLAIM_CHUNK  # noqa: F401
+from .store_parts.source_rows import _ACCOUNT_BOUND_SOURCE_TYPE  # noqa: F401
+from .store_parts.source_rows import _ACCOUNT_BOUND_URI_PREFIX  # noqa: F401
 from .store_parts.source_rows import _WALKING_SOURCE_TYPES  # noqa: F401
 from .store_parts.source_rows import AUTO_ADDED_PROP  # noqa: F401
 from .store_parts.source_rows import AUTO_REGISTRATION_RETIRED_PROP  # noqa: F401
@@ -666,6 +669,8 @@ class KnowledgeStore:
     add_source_location = _item_ownership.add_source_location
     add_source_location_in_txn = _item_ownership.add_source_location_in_txn
     sources_holding_item = _item_ownership.sources_holding_item
+    _refuse_live_source = _item_ownership._refuse_live_source
+    _reassignment_candidates = _item_ownership._reassignment_candidates
     reassign_item_source = _item_ownership.reassign_item_source
 
     # Item rows and deletes: ``kiro_crew.knowledge.store_parts.item_rows``.

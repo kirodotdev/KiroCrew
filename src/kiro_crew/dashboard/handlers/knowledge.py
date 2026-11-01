@@ -57,6 +57,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _build_context_card,
         _read_knowledge_config,
         add_agent_document_route,
+        remote_search,
         search_for_context,
     )
     from kiro_crew.dashboard.handlers.knowledge_bundles import _BUNDLE_LIST_FIELDS  # noqa: F401
@@ -128,19 +129,23 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _watch_knowledge_config,
         setup_knowledge_routes,
     )
+    from kiro_crew.dashboard.handlers.knowledge_sources import _ADD_SOURCE_TEXT_FIELDS  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _FOLDER_DIALOG_TIMEOUT  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _MAX_SOURCE_NAME_LEN  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _REMOTE_URI_PREFIXES  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _add_source_path_checks  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sources import _add_source_shape_error  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _adopt_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _create_source_audited  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _file_path_restricted  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _folder_file_rows  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sources import _insert_bedrock_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _LocalUriProbe  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _pause_source_row  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _probe_local_uri  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _run_folder_dialog  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _set_file_state  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sources import _source_exists_response  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _source_rows  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import add_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import confirm_source  # noqa: F401
@@ -155,7 +160,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_sources import retry_file  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import skip_file  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import (  # noqa: F401
+        _bedrock_registration_identity,
         _folder_picker_available,
+        _reclaim_rowless_attestations,
         _url_allowed_hosts_or_none,
     )
     from kiro_crew.dashboard.handlers.knowledge_sync import DocIngestHostsUnavailable  # noqa: F401
@@ -235,6 +242,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.knowledge.retrieval import HybridRetriever  # noqa: F401
     from kiro_crew.knowledge.retrieval import vector_leg  # noqa: F401
     from kiro_crew.knowledge.spend import source_spend  # noqa: F401
+    from kiro_crew.knowledge.store import _ACCOUNT_BOUND_SOURCE_TYPE  # noqa: F401
     from kiro_crew.knowledge.store import AUTO_REGISTRATION_RETIRED_PROP  # noqa: F401
     from kiro_crew.knowledge.store import BUNDLE_STATE_KEY_COL  # noqa: F401
     from kiro_crew.knowledge.store import KnowledgeBundleError  # noqa: F401

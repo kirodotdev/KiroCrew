@@ -5955,6 +5955,7 @@
       "badge_not_enabled": "Not enabled",
       "confirmed_on": "confirmed {{date}}",
       "billing_notice_short": "Billable. Nothing is sent until you confirm.",
+      "pending_profile_hint": "Finish editing the profile to confirm.",
       "withdraw_effect": "Withdrawing stops agents using this service until you confirm again."
     },
     "tailnetMobile": {

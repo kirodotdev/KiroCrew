@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers.knowledge import (
     _folder_picker_available,
@@ -247,6 +249,72 @@ class TestAddSourceLocalFile:
             assert source is not None
 
 
+class TestAddSourceKeepsLocalNames:
+    """Only a ``bedrock_kb`` name is cut at add time. Every other source type
+    stores its name as sent, because its readers can send names longer than
+    ``_MAX_SOURCE_NAME_LEN``. One test per reader: each fails on a cut and on
+    a ``400 name_too_long``."""
+
+    @staticmethod
+    def _folder_app(store):
+        app = _make_app(store)
+        connector = MagicMock(validate_config=MagicMock(return_value=(True, None)))
+        app["knowledge_sync"] = MagicMock(get_connector=lambda source_type: connector)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_markdown_panel_file_add_keeps_a_long_basename(self, store, tmp_path):
+        """``MarkdownPanel.tsx`` posts the file's basename as ``name``. The file on
+        disk keeps a short name: the server never compares ``name`` with the
+        path, and a stock Windows host refuses a path over 260 characters."""
+        from kiro_crew.dashboard.handlers.knowledge import _MAX_SOURCE_NAME_LEN
+
+        basename = "n" * (_MAX_SOURCE_NAME_LEN + 37) + ".md"
+        test_file = tmp_path / "long.md"
+        test_file.write_text("# Long name")
+        pipeline = MagicMock()
+        pipeline.ingest_file = AsyncMock()
+        async with TestClient(TestServer(_make_app(store, pipeline=pipeline))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": basename, "source_type": "local_file", "uri": str(test_file),
+            })
+            assert resp.status == 201, await resp.text()
+        assert store.db.execute("SELECT name FROM sources").fetchone()["name"] == basename
+
+    @pytest.mark.asyncio
+    async def test_knowledge_tab_folder_add_keeps_a_long_name(self, store, tmp_path):
+        """``SourcesList.tsx`` posts ``addName || addUri``: the typed name, or the
+        folder path when the name field is blank. Either can pass 200
+        characters; the folder on disk stays short for the reason above."""
+        from kiro_crew.dashboard.handlers.knowledge import _MAX_SOURCE_NAME_LEN
+
+        long_name = "d" * (_MAX_SOURCE_NAME_LEN + 40)
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        async with TestClient(TestServer(self._folder_app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": long_name, "source_type": "local_folder", "uri": str(folder),
+            })
+            assert resp.status == 201, await resp.text()
+        assert store.db.execute("SELECT name FROM sources").fetchone()["name"] == long_name
+
+    @pytest.mark.asyncio
+    async def test_md_notebook_vault_add_keeps_a_long_vault_name(self, store, tmp_path):
+        """md-notebook's ``knowledgeRegister`` posts the vault's own name."""
+        from kiro_crew.dashboard.handlers.knowledge import _MAX_SOURCE_NAME_LEN
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        vault_name = "v" * (_MAX_SOURCE_NAME_LEN + 30)
+        async with TestClient(TestServer(self._folder_app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": vault_name, "source_type": "obsidian_vault", "uri": str(vault),
+                "properties": {},
+            })
+            assert resp.status == 201, await resp.text()
+        assert store.db.execute("SELECT name FROM sources").fetchone()["name"] == vault_name
+
+
 def _make_pick_app(store, local_only=True):
     app = web.Application()
     state = MagicMock()
@@ -467,3 +535,1008 @@ class TestConfigFolderPickerFlag:
         async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
             resp = await client.get("/api/knowledge/config")
             assert (await resp.json())["folder_picker"] is False
+
+
+def _grant_bedrock(
+    *, profile: str = "team-a", region: str = "us-east-1", account: str = "111122223333"
+):
+    """Record a REAL Bedrock KB grant in the isolated consent store.
+
+    The attestation the insert records pins the account the grant confirms, so
+    the bedrock_kb tests need a readable grant, not only a stubbed
+    ``is_granted``; the real ``is_granted`` then passes for the body's target.
+    """
+    from kiro_crew import aws_consent
+
+    return aws_consent.record_grant(
+        aws_consent.SERVICE_BEDROCK_KB,
+        profile=profile,
+        region=region,
+        account=account,
+        arn=f"arn:aws:iam::{account}:user/x",
+        granted_at="2026-09-06T00:00:00+00:00",
+    )
+
+
+class TestAddSourceBedrockGrantRecheck:
+    """The locked insert re-reads the LIVE grant for the exact target and
+    refuses a grantless registration: ``is_granted`` returns ``(granted,
+    reason)``, so the guard must test the boolean, not the tuple."""
+
+    # The body the dashboard sends (SourcesList.tsx): a derived logical uri
+    # plus kb_ids / region / profile in properties.
+    _BODY = {
+        "name": "kb",
+        "source_type": "bedrock_kb",
+        "uri": "bedrock-kb://us-east-1/ABCDEFGHIJ",
+        "properties": {"kb_ids": "ABCDEFGHIJ", "region": "us-east-1", "profile": "team-a"},
+    }
+
+    @pytest.fixture(autouse=True)
+    def _granted(self):
+        _grant_bedrock()
+
+    @staticmethod
+    def _app(store, *, owner: str = ""):
+        # A registered connector whose validation passes, so the request
+        # reaches the locked insert (an unregistered type stops at the
+        # https:// rule and never gets there). Owner-shaped: the bedrock_kb
+        # branch is owner-gated before validation, and ``as_owner`` leaves a
+        # fixture's own ``state`` alone, so the MagicMock state needs an
+        # explicit ``owner_id`` (a MagicMock attribute is a truthy, unmatched
+        # owner and would refuse the default ``local-app`` caller).
+        app = _make_app(store)
+        app["state"].owner_id = owner
+
+        def _validated_in_the_live_account(config):
+            # Real validation verifies the credentials against the grant it
+            # reads after its STS call, and reports that grant's account.
+            from kiro_crew import aws_consent
+
+            grant = aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB)
+            return True, "", grant.account if grant is not None else ""
+
+        connector = MagicMock(
+            validate_config=MagicMock(return_value=(True, None)),
+            validate_registration=MagicMock(side_effect=_validated_in_the_live_account),
+        )
+        app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=connector))
+        return as_owner(app)
+
+    @staticmethod
+    def _seed_registration(store, kb_id: str) -> tuple[str, str]:
+        from kiro_crew import aws_consent
+
+        uri = f"bedrock-kb://us-east-1/{kb_id}"
+        properties = {"kb_ids": kb_id, "region": "us-east-1", "profile": "team-a"}
+        sid = store.add_source(
+            name=f"KB {kb_id}",
+            source_type="bedrock_kb",
+            uri=uri,
+            properties=properties,
+        )
+        aws_consent.record_source_attestation(
+            sid,
+            uri,
+            properties,
+            expected_account="111122223333",
+        )
+        return sid, uri
+
+    @pytest.mark.asyncio
+    async def test_source_limit_refuses_new_registration_without_either_write(
+        self, store, monkeypatch
+    ):
+        from kiro_crew import aws_consent
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        monkeypatch.setattr(bedrock_kb, "MAX_BEDROCK_KB_SOURCES", 2)
+        self._seed_registration(store, "KB00000001")
+        self._seed_registration(store, "KB00000002")
+        before = aws_consent.recorded_source_attestations()
+
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 409, await resp.text()
+            data = await resp.json()
+
+        assert data["code"] == "bedrock_kb_source_limit"
+        assert "limited to 2" in data["error"]
+        assert "remove a source" in data["error"]
+        assert store.get_source_by_uri("bedrock-kb://us-east-1/ABCDEFGHIJ") is None
+        assert aws_consent.recorded_source_attestations() == before
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM sources WHERE source_type = 'bedrock_kb'"
+        ).fetchone()[0] == 2
+
+    @pytest.mark.asyncio
+    async def test_removing_a_registered_source_frees_one_slot(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+        from kiro_crew.dashboard.handlers.knowledge import delete_source
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        monkeypatch.setattr(bedrock_kb, "MAX_BEDROCK_KB_SOURCES", 2)
+        removed_sid, _ = self._seed_registration(store, "KB00000001")
+        self._seed_registration(store, "KB00000002")
+        app = self._app(store)
+        app.router.add_delete("/api/knowledge/sources/{id}", delete_source)
+
+        async with TestClient(TestServer(app)) as client:
+            full = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert full.status == 409
+            assert (await full.json())["code"] == "bedrock_kb_source_limit"
+            deleted = await client.delete(f"/api/knowledge/sources/{removed_sid}")
+            assert deleted.status == 200
+            added = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert added.status == 201, await added.text()
+            added_sid = (await added.json())["id"]
+
+        recorded = aws_consent.recorded_source_attestations()
+        assert removed_sid not in recorded
+        assert added_sid in recorded
+        assert len(recorded) == 2
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM sources WHERE source_type = 'bedrock_kb'"
+        ).fetchone()[0] == 2
+
+    @pytest.mark.asyncio
+    async def test_full_population_reclaims_an_attestation_whose_row_is_gone(
+        self, store, monkeypatch
+    ):
+        # knowledge.db is agent-writable, so a row can vanish without the
+        # delete route, which answers 404 for a missing row and so can never
+        # revoke that row's attestation. Unreclaimed, the attestation would
+        # hold one of the limited slots for good.
+        from kiro_crew import aws_consent
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        monkeypatch.setattr(bedrock_kb, "MAX_BEDROCK_KB_SOURCES", 2)
+        gone_sid, _ = self._seed_registration(store, "KB00000001")
+        kept_sid, _ = self._seed_registration(store, "KB00000002")
+        store.db.execute("DELETE FROM sources WHERE id = ?", (gone_sid,))
+        store.db.commit()
+
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 201, await resp.text()
+            added_sid = (await resp.json())["id"]
+
+        assert set(aws_consent.recorded_source_attestations()) == {kept_sid, added_sid}
+
+    @pytest.mark.asyncio
+    async def test_racing_readd_at_the_limit_still_answers_source_exists(
+        self, store, monkeypatch
+    ):
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        monkeypatch.setattr(bedrock_kb, "MAX_BEDROCK_KB_SOURCES", 2)
+        expected_sid, _ = self._seed_registration(store, "ABCDEFGHIJ")
+        self._seed_registration(store, "KB00000002")
+        real_lookup = store.get_source_by_uri
+        calls = 0
+
+        def miss_before_the_lock(uri):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return None
+            return real_lookup(uri)
+
+        monkeypatch.setattr(store, "get_source_by_uri", miss_before_the_lock)
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 409, await resp.text()
+            data = await resp.json()
+
+        assert calls == 2
+        assert data["code"] == "source_exists"
+        assert data["id"] == expected_sid
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM sources WHERE source_type = 'bedrock_kb'"
+        ).fetchone()[0] == 2
+
+    @pytest.mark.asyncio
+    async def test_no_grant_for_the_target_refuses_and_persists_nothing(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(aws_consent, "read_grant", lambda service: None)
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 409
+            data = await resp.json()
+            assert data["code"] == "bedrock_kb_grant_changed"
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM sources WHERE source_type = 'bedrock_kb'"
+            ).fetchone()[0]
+            == 0
+        )
+
+    @pytest.mark.asyncio
+    async def test_matching_grant_lets_the_insert_through(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 201
+
+    @pytest.mark.asyncio
+    async def test_target_conflict_refusal_redacts_the_held_rows_name(self, store, monkeypatch):
+        """The 409 (the consent POST's status for the same code) names the
+        registered source that holds the other target, and that name comes
+        from an agent-writable row the handler's own bound never saw. A
+        planted credential or exfil URL in it reaches the operator as the
+        redaction tag, not the value. Found in review."""
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        token = "AKIAIOSFODNN7EXAMPLE"
+        planted = (
+            "Team KB AKIAIOSFODNN7EXAMPLE https://collect.attacker.example/?token="
+            + token
+            + "&host=corp-laptop&path=/home/alice/.aws/credentials"
+        )
+        sid, uri = "src-held-1", "bedrock-kb://eu-west-1/KBTEST0001"
+        props = {"kb_ids": "KBTEST0001", "region": "eu-west-1", "profile": "team-b"}
+        store.db.execute(
+            "INSERT INTO sources (id, name, source_type, uri, properties, created_at, updated_at) "
+            "VALUES (?, ?, 'bedrock_kb', ?, ?, '2026-09-22T00:00:00', '2026-09-22T00:00:00')",
+            (sid, planted, uri, json.dumps(props)),
+        )
+        store.db.commit()
+        # Registered by the gateway, so it holds its target, then renamed by an
+        # agent: the attestation pins the target, not the name.
+        aws_consent.record_source_attestation(sid, uri, props)
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 409, await resp.text()
+            data = await resp.json()
+        assert data["code"] == "bedrock_kb_target_conflict"
+        assert "AKIAIOSFODNN7EXAMPLE" not in data["error"]
+        assert token not in data["error"] and "corp-laptop" not in data["error"]
+        assert "[REDACTED: credential]" in data["error"]
+        assert "[REDACTED: suspicious URL to collect.attacker.example]" in data["error"]
+        assert "(team-b, eu-west-1)" in data["error"]
+
+    @staticmethod
+    def _app_reconfirming_during_validation(store, *, account: str):
+        """The owner-shaped app whose connector validation, in the seconds it
+        runs outside the lock, sees the consent POST land a same-target
+        confirmation for ``account`` -- the race the locked insert must see."""
+        app = TestAddSourceBedrockGrantRecheck._app(store)
+
+        def _validate_then_reconfirm(config):
+            _grant_bedrock(account=account)
+            return True, "", "111122223333"
+
+        connector = MagicMock(
+            validate_config=MagicMock(return_value=(True, None)),
+            validate_registration=MagicMock(side_effect=_validate_then_reconfirm),
+        )
+        app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=connector))
+        return app
+
+    @pytest.mark.asyncio
+    async def test_a_same_target_reconfirmation_for_another_account_during_validation_is_refused(
+        self, store
+    ):
+        """Same target is not the same account. Validation probed the KB under
+        the account the grant confirmed when it started; a confirmation for
+        another account with the same (profile, region) passes the target
+        equality check, and the attestation would pin the new account -- a KB
+        never validated there. Refused with nothing persisted. Found in review."""
+        from kiro_crew import aws_consent
+
+        app = self._app_reconfirming_during_validation(store, account="999988887777")
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 409, await resp.text()
+            assert (await resp.json())["code"] == "bedrock_kb_grant_changed"
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM sources WHERE source_type = 'bedrock_kb'"
+        ).fetchone()[0] == 0
+        assert aws_consent.attested_sources() == {}
+
+    @pytest.mark.asyncio
+    async def test_a_same_target_same_account_reconfirmation_during_validation_still_lands(
+        self, store
+    ):
+        """The documented choice holds: retrieval demands target equality, not
+        grant identity. A fresh grant for the same target AND the same account
+        is the account validation ran under, so the insert goes through and
+        the attestation pins that account."""
+        from kiro_crew import aws_consent
+
+        app = self._app_reconfirming_during_validation(store, account="111122223333")
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 201, await resp.text()
+            sid = (await resp.json())["id"]
+        attested = aws_consent.attested_sources()
+        assert set(attested) == {sid}
+        assert attested[sid]["account"] == "111122223333"
+
+    @pytest.mark.asyncio
+    async def test_a_grant_that_moves_away_and_back_during_validation_is_refused(self, store):
+        """The account the insert compares is the one validation verified, not
+        one read before it. Here the grant is confirmed for account B while the
+        probes run, the KB is proven in B, and the grant returns to account A
+        before the insert. A read taken before validation names A and matches
+        the final grant, so the row would be attested in A for a KB proven
+        only in B. Refused with nothing persisted. Found in review."""
+        from kiro_crew import aws_consent
+
+        app = self._app(store)
+
+        def _validate_in_b_then_back_to_a(config):
+            _grant_bedrock(account="999988887777")
+            verified = aws_consent.read_grant(aws_consent.SERVICE_BEDROCK_KB).account
+            _grant_bedrock(account="111122223333")
+            return True, "", verified
+
+        app["knowledge_sync"].get_connector.return_value.validate_registration.side_effect = (
+            _validate_in_b_then_back_to_a
+        )
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 409, await resp.text()
+            assert (await resp.json())["code"] == "bedrock_kb_grant_changed"
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM sources WHERE source_type = 'bedrock_kb'"
+        ).fetchone()[0] == 0
+        assert aws_consent.recorded_source_attestations() == {}
+
+    @pytest.mark.asyncio
+    async def test_the_insert_attests_the_row_and_delete_revokes_it(self, store, monkeypatch):
+        """The row alone proves nothing (knowledge.db is agent-writable
+        in-sandbox), so the owner-gated insert records the row in the sealed
+        consent store, pinned to the values it stored; the paid enumeration
+        searches only such rows. Deleting the row drops the attestation, so a
+        later row minted under the same id cannot inherit it."""
+        from kiro_crew import aws_consent
+        from kiro_crew.dashboard.handlers.knowledge import delete_source
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        app = self._app(store)
+        app.router.add_delete("/api/knowledge/sources/{id}", delete_source)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 201
+            sid = (await resp.json())["id"]
+            row = store.db.execute(
+                "SELECT uri, properties FROM sources WHERE id = ?", (sid,)
+            ).fetchone()
+            attested = aws_consent.attested_sources()
+            assert set(attested) == {sid}
+            assert aws_consent.source_matches_attestation(
+                attested, sid, row["uri"], json.loads(row["properties"])
+            )
+            # The attestation pins the stored triple: a row rewritten to name
+            # another KB does not match it.
+            assert not aws_consent.source_matches_attestation(
+                attested, sid, row["uri"],
+                {**json.loads(row["properties"]), "kb_ids": "ABCDEFGHIJ,KLMNOPQRST"},
+            )
+
+            resp = await client.delete(f"/api/knowledge/sources/{sid}")
+            assert resp.status == 200
+            assert aws_consent.attested_sources() == {}
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_consent_store_refuses_the_delete_and_leaves_the_row(
+        self, store, monkeypatch
+    ):
+        """The revoke must not read an unreadable store as "nothing attested":
+        the row would go while the attestation stays on disk, for a row
+        re-minted under the same id and values to inherit. The revoke raises,
+        the route answers its coded 500, the row and the file's bytes stay.
+        Found in review."""
+        from kiro_crew import aws_consent
+        from kiro_crew.dashboard.handlers.knowledge import delete_source
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        app = self._app(store)
+        app.router.add_delete("/api/knowledge/sources/{id}", delete_source)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 201
+            sid = (await resp.json())["id"]
+            path = aws_consent.aws_consent_path()
+            path.write_text("{not json", encoding="utf-8")
+            resp = await client.delete(f"/api/knowledge/sources/{sid}")
+            assert resp.status == 500, await resp.text()
+            body = await resp.json()
+            assert body["code"] == "bedrock_kb_attestation_revoke_failed"
+            assert body["error"] == "Couldn't remove this source. Nothing was deleted. Try again."
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM sources WHERE id = ?", (sid,)
+        ).fetchone()[0] == 1
+        assert path.read_text(encoding="utf-8") == "{not json"
+
+    @pytest.mark.asyncio
+    async def test_the_row_retains_only_the_keys_the_connector_reads(self, store, monkeypatch):
+        """``properties`` is retained and re-parsed at every search, so the
+        insert projects it onto the read set: extra fields in the body, flat
+        or nested, never reach the row."""
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        body = {
+            **self._BODY,
+            "properties": {
+                **self._BODY["properties"],
+                "note": "x" * 5000,
+                "nested": {"a": [1, 2, 3]},
+                "sync_status": "active",
+            },
+        }
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=body)
+            assert resp.status == 201
+        row = store.db.execute(
+            "SELECT properties FROM sources WHERE source_type = 'bedrock_kb'"
+        ).fetchone()
+        assert json.loads(row["properties"]) == self._BODY["properties"]
+
+    @pytest.mark.asyncio
+    async def test_the_row_retains_the_validated_values_not_the_raw_spelling(
+        self, store, monkeypatch
+    ):
+        """Every gate strips or parses before it judges, so whitespace padding
+        (and an ARN spelling of a KB id) passes them all. The row must hold the
+        values the gates checked -- stripped region/profile, canonical bare
+        ids -- so its size follows the gates' bounds instead of the request
+        body cap, and its spelling is the one every later compare uses."""
+        from kiro_crew import aws_consent
+
+        seen: list[tuple[str, str]] = []
+
+        def _granted(service, *, profile, region):
+            seen.append((profile, region))
+            return True, ""
+
+        monkeypatch.setattr(aws_consent, "is_granted", _granted)
+        pad = " " * 5000
+        body = {
+            **self._BODY,
+            "properties": {
+                "kb_ids": (
+                    f"{pad}arn:aws:bedrock:us-east-1:123456789012:knowledge-base/ABCDEFGHIJ{pad},"
+                    f" KLMNOPQRST{pad}"
+                ),
+                "region": f"{pad}us-east-1{pad}",
+                "profile": f"{pad}team-a{pad}",
+            },
+        }
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=body)
+            assert resp.status == 201
+        row = store.db.execute(
+            "SELECT properties FROM sources WHERE source_type = 'bedrock_kb'"
+        ).fetchone()
+        assert json.loads(row["properties"]) == {
+            "kb_ids": "ABCDEFGHIJ,KLMNOPQRST",
+            "region": "us-east-1",
+            "profile": "team-a",
+        }
+        # The grant equality judged exactly the values the row now holds.
+        assert seen == [("team-a", "us-east-1")]
+
+    @pytest.mark.asyncio
+    async def test_the_row_is_keyed_by_the_server_derived_handle_not_the_callers(
+        self, store, monkeypatch
+    ):
+        """``sources.uri`` is the UNIQUE dedup key, so it is derived from the
+        validated config on the server. A caller-chosen handle (oversized, or
+        simply unique per request) never reaches the row, and a second add of
+        the same knowledge base under another handle dedupes against the first
+        instead of minting a row -- the row count is one per real KB."""
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        first = {**self._BODY, "uri": "bedrock-kb://us-east-1/" + "x" * 5000}
+        second = {**self._BODY, "uri": "bedrock-kb://us-east-1/another-unique-handle"}
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=first)
+            assert resp.status == 201
+            resp = await client.post("/api/knowledge/sources", json=second)
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "source_exists"
+            # No uri at all is fine too: the server owns the handle.
+            without = {k: v for k, v in self._BODY.items() if k != "uri"}
+            resp = await client.post("/api/knowledge/sources", json=without)
+            assert resp.status == 409
+        rows = store.db.execute(
+            "SELECT uri FROM sources WHERE source_type = 'bedrock_kb'"
+        ).fetchall()
+        assert [r["uri"] for r in rows] == ["bedrock-kb://us-east-1/ABCDEFGHIJ"]
+
+    @pytest.mark.asyncio
+    async def test_a_long_name_is_cut_to_the_ceiling_not_refused(self, store, monkeypatch):
+        """The search reads ``bedrock_kb`` rows through ``_BOUNDED_ROW_SELECT``,
+        which cuts ``name`` to ``_MAX_RESULT_SOURCE_NAME_CHARS``, so the add path
+        stores no more than that. A longer name is cut, not refused, so no
+        caller gets a 400 for a name it can see shortened."""
+        from kiro_crew import aws_consent
+        from kiro_crew.knowledge.connectors.bedrock_kb import (
+            _MAX_RESULT_SOURCE_NAME_CHARS,
+        )
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        too_long = {**self._BODY, "name": "n" * (_MAX_RESULT_SOURCE_NAME_CHARS + 1)}
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=too_long)
+            assert resp.status == 201, await resp.text()
+        row = store.db.execute(
+            "SELECT name FROM sources WHERE source_type = 'bedrock_kb'"
+        ).fetchone()
+        assert row["name"] == "n" * _MAX_RESULT_SOURCE_NAME_CHARS
+
+    @pytest.mark.asyncio
+    async def test_a_retained_field_outside_its_bound_is_refused_with_a_code(self, store):
+        """The connector bounds every field a row retains; here the registered
+        connector's validation is a mock that passes anything, so the
+        retention bound is the gate that answers, with a coded 400 and no
+        row."""
+        for bad in (
+            {**self._BODY, "properties": {**self._BODY["properties"], "profile": "p" * 129}},
+            {**self._BODY, "properties": {**self._BODY["properties"], "region": "r" * 65}},
+        ):
+            async with TestClient(TestServer(self._app(store))) as client:
+                resp = await client.post("/api/knowledge/sources", json=bad)
+                assert resp.status == 400
+                assert (await resp.json())["code"] == "bedrock_kb_config_invalid"
+        assert store.db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_failed_attestation_undoes_the_insert(self, store, monkeypatch):
+        """The row insert and the attestation are two writes. A row nothing
+        attests is dark for good (the enumeration skips it every search), so
+        when the attestation write fails the insert is undone and the add
+        reports the failure instead of a half-registered success."""
+        from kiro_crew import aws_consent
+
+        def boom(source_id, uri, properties):
+            raise OSError("consent store not writable")
+
+        monkeypatch.setattr(aws_consent, "record_source_attestation", boom)
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 500
+            assert (await resp.json())["code"] == "bedrock_kb_attestation_failed"
+        assert store.db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+        assert aws_consent.attested_sources() == {}
+
+    @pytest.mark.asyncio
+    async def test_delete_revokes_before_the_row_goes(self, store, monkeypatch):
+        """Order of the two delete writes: the attestation first, so a failure
+        between them leaves a dark row (skipped, audited, removable by a
+        retry), never an attestation without a row that a later row minted
+        under the same id could inherit. A failed revoke deletes nothing."""
+        from kiro_crew import aws_consent
+        from kiro_crew.dashboard.handlers.knowledge import delete_source
+
+        app = self._app(store)
+        app.router.add_delete("/api/knowledge/sources/{id}", delete_source)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 201
+            sid = (await resp.json())["id"]
+
+            def boom(source_id):
+                raise OSError("consent store not writable")
+
+            with monkeypatch.context() as mp:
+                mp.setattr(aws_consent, "revoke_source_attestation", boom)
+                resp = await client.delete(f"/api/knowledge/sources/{sid}")
+            assert resp.status == 500
+            body = await resp.json()
+            assert body["code"] == "bedrock_kb_attestation_revoke_failed"
+            assert body["error"] == "Couldn't remove this source. Nothing was deleted. Try again."
+            assert (
+                store.db.execute("SELECT COUNT(*) FROM sources WHERE id = ?", (sid,)).fetchone()[0]
+                == 1
+            )
+            assert set(aws_consent.attested_sources()) == {sid}
+
+            order: list[str] = []
+            real_revoke = aws_consent.revoke_source_attestation
+            real_cascade = store.delete_source_cascade
+            monkeypatch.setattr(
+                aws_consent,
+                "revoke_source_attestation",
+                lambda source_id: (order.append("revoke"), real_revoke(source_id))[1],
+            )
+            monkeypatch.setattr(
+                store,
+                "delete_source_cascade",
+                lambda source_id: (order.append("delete"), real_cascade(source_id))[1],
+            )
+            resp = await client.delete(f"/api/knowledge/sources/{sid}")
+            assert resp.status == 200
+            assert order == ["revoke", "delete"]
+            assert aws_consent.attested_sources() == {}
+            assert store.db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_re_adding_a_registered_kb_names_the_remove_then_add_recovery(self, store):
+        """A grant confirmed for another account leaves the row unattested
+        (``attested_sources`` keeps only the CURRENT grant's account), and
+        re-adding the same knowledge base dedupes on the row's uri, where only
+        a row the add CREATES is attested: a plain re-add can never re-attest.
+        The 409 keeps the code and id every source type answers with, but its
+        text names the recovery that does work -- remove the row, then add it
+        again -- and the consent store is not written. Found in review."""
+        from kiro_crew import aws_consent
+
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 201
+            sid = (await resp.json())["id"]
+            assert set(aws_consent.attested_sources()) == {sid}
+            # The profile was re-pointed and confirmed again for another
+            # account: the registration is dark on every search from here.
+            _grant_bedrock(account="999988887777")
+            assert aws_consent.attested_sources() == {}
+            before = aws_consent.aws_consent_path().read_bytes()
+
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 409, await resp.text()
+            data = await resp.json()
+        assert data["code"] == "source_exists"
+        assert data["id"] == sid
+        assert "remove it and add it again" in data["error"]
+        assert aws_consent.attested_sources() == {}
+        assert aws_consent.aws_consent_path().read_bytes() == before
+        assert store.db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_removing_the_dark_row_and_adding_again_attests_the_new_row(self, store):
+        """The recovery the 409 names, end to end. The owner's delete revokes
+        the stale attestation (any account) with the row; the fresh add then
+        validates, inserts and attests under the account the grant confirms
+        now, so the new row is the one the paid enumeration searches."""
+        from kiro_crew import aws_consent
+        from kiro_crew.dashboard.handlers.knowledge import delete_source
+
+        app = self._app(store)
+        app.router.add_delete("/api/knowledge/sources/{id}", delete_source)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 201
+            dark = (await resp.json())["id"]
+            _grant_bedrock(account="999988887777")
+            assert aws_consent.attested_sources() == {}
+            # Stale, not gone: the entry still has to be revoked with the row.
+            assert aws_consent.has_source_attestation(dark)
+
+            resp = await client.delete(f"/api/knowledge/sources/{dark}")
+            assert resp.status == 200, await resp.text()
+            assert not aws_consent.has_source_attestation(dark)
+            assert store.db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 201, await resp.text()
+            fresh = (await resp.json())["id"]
+        assert fresh != dark
+        row = store.db.execute(
+            "SELECT uri, properties FROM sources WHERE id = ?", (fresh,)
+        ).fetchone()
+        attested = aws_consent.attested_sources()
+        assert set(attested) == {fresh}
+        assert attested[fresh]["account"] == "999988887777"
+        assert aws_consent.source_matches_attestation(
+            attested, fresh, row["uri"], json.loads(row["properties"])
+        )
+
+
+class TestAddSourceBedrockIsOwnerOnly:
+    """Registering a Bedrock source is an OWNER action, like the grant it rides.
+
+    The knowledge owner gate refuses non-owner dashboard users on every source
+    type and admits an app token, which is fine for a local folder. A
+    ``bedrock_kb`` source validates by probing the KB with the owner's AWS
+    credentials and then registers a KB the gateway queries on the owner's
+    account, so the same two caller classes the consent endpoint shuts out are
+    refused here, BEFORE validation: an allow-listed messaging user
+    (``app == ""``, caller is not the owner) and an app token. Found in review.
+    """
+
+    _BODY = TestAddSourceBedrockGrantRecheck._BODY
+
+    @pytest.fixture(autouse=True)
+    def _granted(self):
+        _grant_bedrock()
+
+    @staticmethod
+    def _app(store):
+        return TestAddSourceBedrockGrantRecheck._app(store, owner="owner-1")
+
+    @staticmethod
+    def _assert_refused_before_validation(app, store, resp_status, payload):
+        assert resp_status == 403
+        assert payload["code"] == "owner_only"
+        connector = app["knowledge_sync"].get_connector.return_value
+        connector.validate_registration.assert_not_called()
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM sources WHERE source_type = 'bedrock_kb'"
+            ).fetchone()[0]
+            == 0
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_owner_messaging_user_is_refused(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json=self._BODY,
+                headers={"X-Test-User": "slack-guest"},
+            )
+            self._assert_refused_before_validation(app, store, resp.status, await resp.json())
+
+    @pytest.mark.asyncio
+    async def test_app_token_is_refused(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json=self._BODY,
+                headers={"X-Test-User": "owner-1", "X-Test-App": "some-app"},
+            )
+            self._assert_refused_before_validation(app, store, resp.status, await resp.json())
+
+    @pytest.mark.asyncio
+    async def test_the_owner_still_gets_through(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json=self._BODY,
+                headers={"X-Test-User": "owner-1"},
+            )
+            assert resp.status == 201
+        app["knowledge_sync"].get_connector.return_value.validate_registration.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_bedrock_source_is_owner_only_too(self, store, tmp_path):
+        """The mirror of the insert gate: removing the owner's registration
+        (and the approval recorded with it) is the owner's call. A non-owner
+        DELETE is refused before either write, so the row stays attested, and
+        so is an app token, which the knowledge owner gate admits; that app
+        token still removes a local folder row."""
+        from kiro_crew import aws_consent
+        from kiro_crew.dashboard.handlers.knowledge import delete_source
+
+        app_caller = {"X-Test-User": "owner-1", "X-Test-App": "some-app"}
+        folder = tmp_path / "notes"
+        folder.mkdir()
+        app = self._app(store)
+        app.router.add_delete("/api/knowledge/sources/{id}", delete_source)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources", json=self._BODY, headers={"X-Test-User": "owner-1"}
+            )
+            assert resp.status == 201
+            sid = (await resp.json())["id"]
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json={"name": "notes", "source_type": "local_folder", "uri": str(folder)},
+                headers=app_caller,
+            )
+            assert resp.status == 201
+            folder_sid = (await resp.json())["id"]
+
+            for refused_caller in ({"X-Test-User": "slack-guest"}, app_caller):
+                resp = await client.delete(
+                    f"/api/knowledge/sources/{sid}", headers=refused_caller
+                )
+                assert resp.status == 403
+                assert (await resp.json())["code"] == "owner_only"
+                assert (
+                    store.db.execute("SELECT COUNT(*) FROM sources WHERE id = ?", (sid,)).fetchone()[0]
+                    == 1
+                )
+                assert set(aws_consent.attested_sources()) == {sid}
+
+            resp = await client.delete(
+                f"/api/knowledge/sources/{folder_sid}", headers=app_caller
+            )
+            assert resp.status == 200
+
+            resp = await client.delete(
+                f"/api/knowledge/sources/{sid}", headers={"X-Test-User": "owner-1"}
+            )
+            assert resp.status == 200
+            assert aws_consent.attested_sources() == {}
+
+    @pytest.mark.asyncio
+    async def test_a_relabelled_registered_row_is_still_owner_gated_and_revoked(self, store):
+        """The delete gate keys on the sealed attestation, not on the row's
+        ``source_type``: that column lives in the agent-writable knowledge.db,
+        so an in-sandbox agent can re-label a registered row as a local one.
+        A delete that trusted the label would skip the owner gate and the
+        revoke, leaving the attestation for a row re-minted under the same id
+        and values to inherit (review finding). Re-labelled, the row still
+        refuses a non-owner, and the owner's delete still revokes."""
+        from kiro_crew import aws_consent
+        from kiro_crew.dashboard.handlers.knowledge import delete_source
+
+        app = self._app(store)
+        app.router.add_delete("/api/knowledge/sources/{id}", delete_source)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources", json=self._BODY, headers={"X-Test-User": "owner-1"}
+            )
+            assert resp.status == 201
+            sid = (await resp.json())["id"]
+            assert set(aws_consent.attested_sources()) == {sid}
+            # A direct write to the row, as an in-sandbox agent could make.
+            store.db.execute("UPDATE sources SET source_type = 'local_folder' WHERE id = ?", (sid,))
+            store.db.commit()
+
+            resp = await client.delete(
+                f"/api/knowledge/sources/{sid}", headers={"X-Test-User": "slack-guest"}
+            )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "owner_only"
+            assert set(aws_consent.attested_sources()) == {sid}
+
+            resp = await client.delete(
+                f"/api/knowledge/sources/{sid}", headers={"X-Test-User": "owner-1"}
+            )
+            assert resp.status == 200
+            assert aws_consent.has_source_attestation(sid) is False
+            assert aws_consent.attested_sources() == {}
+
+    @pytest.mark.asyncio
+    async def test_local_sources_are_not_gated(self, store, tmp_path):
+        """The gate is scoped to bedrock_kb: an app token, which the knowledge
+        owner gate admits, still adds a local folder."""
+        folder = tmp_path / "notes"
+        folder.mkdir()
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json={"name": "notes", "source_type": "local_folder", "uri": str(folder)},
+                headers={"X-Test-User": "owner-1", "X-Test-App": "some-app"},
+            )
+            assert resp.status == 201, await resp.text()
+
+
+class TestAddSourceKeepsBoto3OffTheLoop:
+    """The first ``bedrock_kb`` import loads boto3, which would stall the loop."""
+
+    def test_add_source_imports_the_connector_only_on_a_worker_thread(self):
+        import inspect
+
+        from kiro_crew.dashboard.handlers import knowledge as kh
+
+        assert "connectors.bedrock_kb import" not in inspect.getsource(kh.add_source)
+        assert "_bedrock_registration_identity" in inspect.getsource(kh.add_source)
+
+    def test_the_identity_helper_derives_uri_and_name_cap(self):
+        from kiro_crew.dashboard.handlers import knowledge as kh
+
+        retained, uri, cap = kh._bedrock_registration_identity(
+            {"kb_ids": "KBTEST1234", "region": "us-east-1", "profile": ""}
+        )
+        assert retained["region"] == "us-east-1"
+        assert uri.startswith("bedrock-kb://")
+        assert cap > 0
+
+
+class TestAddSourceBodyShapeGate:
+    """Every field ``add_source`` reads is type-checked ONCE, up front.
+
+    A caller-shaped body is a shape question answered before any field is
+    used, so no later line dereferences a wrong-typed value. The Bedrock
+    connector ignores ``url`` during validation, so a JSON object in ``uri``
+    would otherwise pass validation and reach ``str.startswith`` as a 500.
+    """
+
+    _BODY = TestAddSourceBedrockGrantRecheck._BODY
+
+    @pytest.fixture(autouse=True)
+    def _granted(self):
+        _grant_bedrock()
+
+    @staticmethod
+    def _app(store):
+        return TestAddSourceBedrockGrantRecheck._app(store, owner="owner-1")
+
+    @pytest.mark.asyncio
+    async def test_non_string_uri_is_a_400_before_validation(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json={**self._BODY, "uri": {"scheme": "bedrock-kb"}},
+                headers={"X-Test-User": "owner-1"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["error"] == "uri must be a string"
+        app["knowledge_sync"].get_connector.return_value.validate_registration.assert_not_called()
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM sources WHERE source_type = 'bedrock_kb'"
+            ).fetchone()[0]
+            == 0
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "value", "error"),
+        [
+            ("name", 7, "name must be a string"),
+            ("source_type", ["bedrock_kb"], "source_type must be a string"),
+            ("namespace", {"x": 1}, "namespace must be a string"),
+            ("properties", "kb_ids=ABCDEFGHIJ", "properties must be an object"),
+        ],
+    )
+    async def test_every_read_field_is_gated(self, store, field, value, error):
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json={**self._BODY, field: value},
+                headers={"X-Test-User": "owner-1"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["error"] == error
+        app["knowledge_sync"].get_connector.return_value.validate_registration.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_null_text_fields_read_as_absent(self, store, monkeypatch):
+        """``null`` is not a shape violation: each text field has a default,
+        so a client that serializes an unset field as null keeps working."""
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json={**self._BODY, "name": None, "namespace": None},
+                headers={"X-Test-User": "owner-1"},
+            )
+            assert resp.status == 201, await resp.text()

@@ -349,6 +349,71 @@ class TestKnowledgeSearchSourceFilter:
         assert "AKIAIOSFODNN7EXAMPLE" not in logged["metadata"]["query"]
 
 
+class TestKnowledgeSearchRemoteLegScope:
+    """How the Bedrock remote leg composes with the search scope.
+
+    Namespaces live on ``items.namespace`` and a ``bedrock_kb`` source holds
+    no items, so no remote hit can fall inside a namespace: a namespace-scoped
+    search makes no remote call and answers from local results alone. An
+    unscoped search keeps the leg. Both run end to end against a real store
+    with a registered ``bedrock_kb`` row, so the ``has_remote`` probe is real;
+    only the gateway hop is replaced.
+    """
+
+    _REMOTE_HIT = {
+        "id": "bedrock:src:KBTEST0001:0",
+        "title": "Remote doc",
+        "content": "remote hit",
+        "score": 0.5,
+        "match_type": "remote",
+        "source_type": "bedrock_kb",
+        "source_name": "Team KB",
+    }
+
+    def _search(self, tmp_path, monkeypatch, opened, args):
+        from kiro_crew import mcp_core
+        from kiro_crew.knowledge.store import KnowledgeStore
+        from kiro_crew.mcp_tools import knowledge as mcp_knowledge
+
+        db_dir = tmp_path / "workspace" / "knowledge"
+        db_dir.mkdir(parents=True)
+        store = opened(KnowledgeStore(str(db_dir / "knowledge.db")))
+        store.add_source("Team KB", "bedrock_kb", "bedrock-kb://KBTEST0001")
+        folder = store.add_source("Client A docs", "local_folder", "/tmp/client-a")
+        store.add_item(
+            "Quorum note",
+            "quorum rules for client a",
+            "note",
+            source_id=folder,
+            namespace="client-a",
+        )
+
+        calls: list[tuple] = []
+
+        def fake_fetch(query, limit, source_id):
+            calls.append((query, limit, source_id))
+            return [dict(self._REMOTE_HIT)]
+
+        monkeypatch.setattr(mcp_knowledge, "_fetch_remote_results", fake_fetch)
+        monkeypatch.setattr(mcp_core, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(mcp_core, "_get_knowledge_search", lambda _db, _cfg: (store, None))
+        return calls, mcp_core._call_tool_inner("local_knowledge_search", args)
+
+    def test_namespace_scope_makes_no_remote_call(self, tmp_path, monkeypatch, opened):
+        calls, result = self._search(
+            tmp_path, monkeypatch, opened, {"query": "quorum", "namespace": "client-a"}
+        )
+        assert calls == []
+        assert "remote hit" not in result
+        assert "Quorum note" in result
+
+    def test_unscoped_search_keeps_the_remote_leg(self, tmp_path, monkeypatch, opened):
+        calls, result = self._search(tmp_path, monkeypatch, opened, {"query": "quorum"})
+        assert calls == [("quorum", 3, None)]
+        assert "remote hit" in result
+        assert "Quorum note" in result
+
+
 class TestKnowledgeListSources:
     @patch("kiro_crew.mcp_core.config_dir")
     def test_returns_not_configured_when_db_missing(self, mock_config_dir, tmp_path):
