@@ -28,8 +28,10 @@ While `require_memory_ready()` raises `MemoryStartupUnavailable` (Global memory 
 - Lines starting with `#`, empty lines, and HTML comments (`<!-- -->`) are ignored
 - A closed comment (ended by `-->` or `--!>`, as in HTML) hides only what is inside it, even across lines; text before `<!--` or after `-->` on the same line is still a task
 - A deliver tag inside a comment is part of that comment, so commenting out a task together with its tag keeps it hidden
-- A `<!--` that is never closed hides only the rest of its own line, and logs a warning naming that line. It never hides later lines. This is a choice of "run them and warn" over "skip them" (how HTML reads it): the rewrite keeps only parsed tasks, so skipped lines would be erased from the file for good
-- List markers (`-`, `*`, `- [ ]`, `- [x]`) are stripped
+- A `<!--` that is never closed hides only the rest of its own line, and logs a warning naming that line. It never hides later lines. This is a choice of "run them and warn" over "skip them" (how HTML reads it): a stray opener must not silently stop every task below it
+- A leading list bullet (`-`, `*`, `+`, `1.`, `1)`) and then a leading checkbox (`[ ]`, `[x]`, `[X]`) are stripped from the task text the agent gets; each is a marker only when whitespace or the end of the line follows it
+- A pass rewrites only the lines that held a finished task (`_rewrite_heartbeat_locked`). Every other line (headings, comment notes, commented-out tasks, kept tasks, line endings) is written back byte for byte and in order, so a file the heartbeat wrote itself round-trips unchanged. Dropping a finished task's line keeps any part of a multi-line comment that line opened or closed, and never takes the newline off the line before it
+- `append_heartbeat_task` starts a new line first when the file's last line has no newline, so an entry never glues onto that line
 - File is auto-created on first start with an empty template
 
 ## Task Lifecycle
@@ -162,7 +164,7 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 ## Known Limitations
 
 - No multiline tasks — each line is a separate task
-- Tasks appended to HEARTBEAT.md while a cycle runs are kept: the rewrite re-reads the file under a file lock, merges what was appended, and replaces it atomically (`_rewrite_heartbeat_locked`). Only an edit or removal of a task that was in the cycle's own snapshot is overwritten
+- Tasks appended to HEARTBEAT.md while a cycle runs are kept: the rewrite re-reads the file under a file lock, drops only the finished tasks' lines, and replaces it atomically (`_rewrite_heartbeat_locked`). A finished task is matched by its text and deliver target, first occurrence first, so a duplicate appended mid-cycle survives and the original goes
 - Exception-retried tasks have no max retry count
 
 ## Delivery Modes
