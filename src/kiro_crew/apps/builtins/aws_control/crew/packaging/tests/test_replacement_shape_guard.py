@@ -21,7 +21,7 @@ import pytest
 
 from ..build import _STAGING_OWNED_TOP_LEVEL as OWNED
 from ..build import _is_shape_this_build_never_writes as odd
-from .test_producer import load_build, make_crew
+from .test_producer import load_build, make_crew, requires_symlinks
 
 _posix_only = pytest.mark.skipif(
     os.name != "posix",
@@ -186,6 +186,7 @@ def test_a_fifo_with_an_owned_name_is_still_refused(tmp_path):
     assert _new_predicate(f, tmp_path) is True
 
 
+@requires_symlinks
 def test_a_link_with_an_owned_name_is_refused(tmp_path):
     """``is_file()`` follows links, so the old scan saw a legitimate manifest here."""
     target = tmp_path / "elsewhere.json"
@@ -197,6 +198,7 @@ def test_a_link_with_an_owned_name_is_refused(tmp_path):
     assert _new_predicate(link, tmp_path) is True
 
 
+@requires_symlinks
 def test_a_link_to_a_directory_with_an_owned_name_is_refused(tmp_path):
     (tmp_path / "real").mkdir()
     link = tmp_path / "skills"
@@ -205,6 +207,7 @@ def test_a_link_to_a_directory_with_an_owned_name_is_refused(tmp_path):
     assert _new_predicate(link, tmp_path) is True
 
 
+@requires_symlinks
 def test_the_predicate_judges_the_link_not_its_target(tmp_path):
     """A dangling link must be refused too, rather than raising or being ignored."""
     link = tmp_path / "manifest.json"
