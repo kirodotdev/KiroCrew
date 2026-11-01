@@ -577,6 +577,8 @@ class TestSpawnRoute:
         assert plan.host_auth is True
         assert plan.spawn_label == KAS_BUNDLE_SPAWN_LABEL
         assert plan.stderr_label == KAS_BUNDLE_SPAWN_LABEL
+        # The turn gates read this off a live process to tell a bundle session apart.
+        assert plan.engine_bundle is True
 
     @pytest.mark.asyncio
     async def test_bundle_on_with_nothing_installed_refuses_and_names_the_install(self, tmp_path):
