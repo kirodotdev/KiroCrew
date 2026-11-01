@@ -43,6 +43,10 @@ from kiro_crew import sel as _sel_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.chat_utils import slot_transcript_key
+from kiro_crew.dashboard.handlers.telemetry_folder_spend import (
+    _persisted_field,
+    _with_folder_spend,
+)
 from kiro_crew.dashboard.handlers.usage import (
     SPEND_WINDOW_DAYS,
     TimeWindow,
@@ -1469,6 +1473,7 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
     cost = await asyncio.to_thread(_cost_block, cost_window)
     if cost:
         cost = await _with_conversation_titles(request, cost)
+        cost = await _with_folder_spend(request, cost)
     return web.json_response(
         {
             "enabled": state.enabled,
@@ -1639,38 +1644,21 @@ def _app_is_enabled(app_name: str) -> bool:
 
 
 def _persisted_titles(conversation_log: Any, slot_keys: list[str]) -> dict[str, str]:
-    """Read the persisted title for each of *slot_keys*. Blocking; call off-loop.
+    """Persisted title per slot; only an explicit ``metadata["title"]`` counts.
 
-    ``get_metadata`` rather than ``list_sessions``: the latter falls back to the
-    first user message and then to the session key when the metadata line names
-    no title, which would turn a ranking label into prompt text and leave no way
-    to tell a named conversation from an unnamed one. Only an explicit
-    ``metadata["title"]`` counts here, which is the same thing the live slot
-    carries.
-
-    Keyed by SLOT key on the way out, so the caller never has to know how a slot
-    maps onto a transcript. Distinct slots can share one transcript (a
-    channel-born slot's conversation IS the channel's), so the read is
-    deduplicated by transcript key rather than by slot.
+    One transcript per key, :func:`slot_transcript_key`'s, as before the folder
+    lookup existed: the folder roll-up reads a cron run's or cron tab's job
+    transcript (:func:`usage_transcript_keys`), but that must not change what a
+    ranked conversation is CALLED, so a ``cron:<job>:<run>`` row does not take
+    on the job's title here.
     """
-    by_transcript: dict[str, str] = {}
-    out: dict[str, str] = {}
-    for slot_key in slot_keys:
-        try:
-            transcript_key = slot_transcript_key(slot_key)
-        except Exception:  # pragma: no cover — a key shape no rule recognises
-            continue
-        if transcript_key not in by_transcript:
-            try:
-                meta = conversation_log.get_metadata(transcript_key) or {}
-            except Exception:
-                logger.debug("no persisted title for %s", transcript_key, exc_info=True)
-                meta = {}
-            by_transcript[transcript_key] = str(meta.get("title") or "")
-        title = by_transcript[transcript_key]
-        if title and title != NEW_SESSION_TITLE:
-            out[slot_key] = title
-    return out
+    return {
+        k: v
+        for k, v in _persisted_field(
+            conversation_log, slot_keys, "title", lambda k: (slot_transcript_key(k),)
+        ).items()
+        if v != NEW_SESSION_TITLE
+    }
 
 
 async def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) -> dict[str, Any]:
