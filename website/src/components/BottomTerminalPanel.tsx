@@ -617,7 +617,7 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
         )}
         {tabs.map(t => (
           <div key={t.id} className="absolute inset-0" style={{ display: t.id === activeId ? 'block' : 'none' }}>
-            <CliPanel sessionId={t.id} cwd={t.cwd} chatSlot={t.chatSlot} visible={t.id === activeId} deferOpen={deferOpen} />
+            <CliPanel sessionId={t.id} cwd={t.cwd} chatSlot={t.chatSlot} kiroCliSlot={t.kiroCliSlot} visible={t.id === activeId} deferOpen={deferOpen} />
           </div>
         ))}
       </div>

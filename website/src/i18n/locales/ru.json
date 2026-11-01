@@ -6869,7 +6869,8 @@
       "touch_select_done": "Диапазон выбран — коснитесь «Копировать»",
       "use_here": "Использовать терминал здесь",
       "use_starting_directory": "Использовать начальный каталог терминала",
-      "use_starting_directory_hint": "Открывает новую оболочку в каталоге терминала, заданном на сервере (dashboard.terminal.cwd, иначе домашний каталог сервера). Неудавшаяся команда повторно не отправляется."
+      "use_starting_directory_hint": "Открывает новую оболочку в каталоге терминала, заданном на сервере (dashboard.terminal.cwd, иначе домашний каталог сервера). Неудавшаяся команда повторно не отправляется.",
+      "kiro_cli_refused_message": "kiro-cli не открылся для этого чата ({{reason}}). Переподключись, чтобы попробовать снова."
     },
     "codeBlock": {
       "add_comment": "Добавить комментарий",
@@ -8948,7 +8949,24 @@
       "mute": "Отключить уведомления этой сессии",
       "unmute": "Включить уведомления этой сессии",
       "mute_failed": "Не удалось отключить уведомления этой сессии",
-      "unmute_failed": "Не удалось включить уведомления этой сессии"
+      "unmute_failed": "Не удалось включить уведомления этой сессии",
+      "open_in_kiro_cli": "Открыть в kiro-cli",
+      "open_in_kiro_cli_tooltip": "Продолжи этот разговор в kiro-cli в терминале. Этот чат ставится на паузу, пока kiro-cli не завершится.",
+      "open_in_kiro_cli_default_agent": "Открывается с агентом kiro-cli по умолчанию. У {{agent}} нет файла агента, который kiro-cli может загрузить.",
+      "kiro_cli_check_failed": "Не удалось проверить kiro-cli",
+      "kiro_cli_blocked_no_session": "разговора пока нет",
+      "kiro_cli_blocked_no_log": "нет журнала разговора",
+      "kiro_cli_blocked_no_project": "нет папки проекта",
+      "kiro_cli_blocked_not_installed": "kiro-cli не установлен",
+      "kiro_cli_blocked_already_open": "уже открыт",
+      "kiro_cli_blocked_unavailable": "недоступно",
+      "kiro_cli_blocked_terminals_full": "вкладки терминала заполнены",
+      "kiro_cli_blocked_project_agent": "у проекта своя конфигурация kiro-cli",
+      "kiro_cli_blocked_ended": "kiro-cli завершился",
+      "kiro_cli_blocked_launch_spec": "Crew не удалось записать временную копию агента в ~/.kiro/agents",
+      "kiro_cli_blocked_record": "Crew не удалось сохранить запись об открытии в папке данных",
+      "kiro_cli_blocked_session_file": "Crew не удалось обновить файл сеанса этого чата в ~/.kiro/sessions/cli",
+      "kiro_cli_blocked_starting": "агент ещё запускается"
     },
     "newFolderMoveDialog": {
       "cancel": "Отмена",

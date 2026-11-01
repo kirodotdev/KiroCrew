@@ -47,6 +47,7 @@ from kiro_crew.dashboard.slot_ownership import (
 )
 from kiro_crew.dashboard.state import _TRANSIENT_ROLES, DashboardState
 from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.kiro_cli_handoff import HELD_TURN_REFUSAL, is_held_any_spelling
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _kiro_sessions_dir
 
@@ -174,6 +175,11 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             return slot_not_found()
         if slot.running:
             return web.json_response({"error": "slot is running"}, status=409)
+        if is_held_any_spelling(effective_session_key(slot)):
+            # Open in kiro-cli: the terminal is the conversation's one writer.
+            return web.json_response(
+                {"error": HELD_TURN_REFUSAL, "code": "kiro_cli_open"}, status=409
+            )
         if slot.is_closing:
             # A close that is already running has fenced the slot and waits for
             # the truncating writes registered against it. Admitting a rewind

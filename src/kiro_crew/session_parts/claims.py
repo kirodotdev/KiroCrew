@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import shutdown_event
+from kiro_crew.kiro_cli_handoff import refuse_if_held
 from kiro_crew.session_allocation import SessionAllocationService, _collect_parent_runtime_kwargs
 from kiro_crew.session_allocation import parent_work_scratch_dir as _parent_work_scratch_dir
 from kiro_crew.session_parts.policy import BACKGROUND_AGENT, BACKGROUND_KEY
@@ -252,6 +253,11 @@ async def get_or_create(
     ``start_priority`` orders a cold start in the start queues; a caller passes
     FOREGROUND only where a person waits on it (rule: ``kiro_crew.start_priority``).
     """
+    # A session open in kiro-cli in the terminal has ONE writer, that terminal.
+    # Refused here, at the one door every caller allocates through, so a
+    # channel that resumed or linked the chat after the handover is covered
+    # by construction rather than per caller.
+    refuse_if_held(key)
     if key == BACKGROUND_KEY:
         # ``_bg`` is one persistent session shared by every background job,
         # so it is always the background agent, whichever caller reaches it

@@ -443,13 +443,7 @@ def derive_readonly_spec(
             else ""
         )
     )
-    spec["allowedTools"] = []
-    for server in _grant_container(spec, "mcpServers").values():
-        _grant_entry(server, "mcpServers").pop("autoApprove", None)
-    for tool_settings in _grant_container(spec, "toolsSettings").values():
-        entry = _grant_entry(tool_settings, "toolsSettings")
-        for key in [k for k in entry if str(k).startswith(_TOOL_SETTING_GRANT_PREFIXES)]:
-            entry.pop(key, None)
+    empty_backend_grants(spec, agent_filename=derived_name)
     if denied_read_paths:
         tools_settings = spec.get("toolsSettings")
         if tools_settings is None:
@@ -466,6 +460,34 @@ def derive_readonly_spec(
                     "base_spec_malformed", f"toolsSettings.{tool}.deniedPaths is not a list"
                 )
             entry["deniedPaths"] = existing + [p for p in denied_read_paths if p not in existing]
+    spec.pop("hooks", None)
+    return spec
+
+
+def empty_backend_grants(
+    spec: dict[str, Any], *, agent_filename: str, keep_narrowing: bool = False
+) -> None:
+    """Empty every backend-side grant in *spec*, in place, so the backend asks
+    before each tool. The grant set :func:`derive_readonly_spec` documents:
+    ``allowedTools``, each server's ``autoApprove``, every ``toolsSettings``
+    key starting ``allowed``/``trusted``/``auto``, the global ``mcp.json`` merge
+    (``includeMcpJson``), top-level ``autoAllowReadonly`` and the KAS
+    ``permissions`` allows. Restrictions (``denied*``/``available*`` keys) stay.
+
+    *keep_narrowing* also keeps the ``permissions`` block's own ``deny`` and
+    ``ask`` rules (``narrowed_agent_permissions``), for a copy that keeps the
+    rest of its agent; the read-only derivation empties the block whole.
+
+    Raises :class:`ReadOnlySpecError` ``base_spec_malformed`` when a grant
+    container is not an object: its grants cannot be located.
+    """
+    spec["allowedTools"] = []
+    for server in _grant_container(spec, "mcpServers").values():
+        _grant_entry(server, "mcpServers").pop("autoApprove", None)
+    for tool_settings in _grant_container(spec, "toolsSettings").values():
+        entry = _grant_entry(tool_settings, "toolsSettings")
+        for key in [k for k in entry if str(k).startswith(_TOOL_SETTING_GRANT_PREFIXES)]:
+            entry.pop(key, None)
     spec.pop("useLegacyMcpJson", None)
     spec["includeMcpJson"] = False
     if "autoAllowReadonly" in spec:
@@ -475,17 +497,21 @@ def derive_readonly_spec(
         # kiro-cli below ``SPEC_PERMISSIONS_MIN_VERSION`` -- or one whose
         # version cannot be established -- refuses the whole file for
         # (``deny_unknown_fields``). This file is published into the registry
-        # kiro-cli loads agents from, so a refusal here costs the side turn the
-        # very isolation this module exists to give it. Same gate, and same
-        # removal of an inherited value, as the generated writers in
-        # ``agent.py``; on an accepting release it derives ``{"rules": []}``
-        # from the emptied grants above, which is what this line wrote. The
-        # guard stays: a base carrying no block never gains one.
+        # kiro-cli loads agents from, so a refusal here costs the turn the
+        # isolation it was written for. Same gate, and same removal of an
+        # inherited value, as the generated writers in ``agent.py``; on an
+        # accepting release it derives ``{"rules": []}`` from the emptied
+        # grants above. The guard stays: a base carrying no block never gains one.
         from kiro_crew.agent import _write_derived_permissions
 
-        _write_derived_permissions(spec, spec["allowedTools"], derived_name)
-    spec.pop("hooks", None)
-    return spec
+        inherited = spec["permissions"]
+        _write_derived_permissions(spec, spec["allowedTools"], agent_filename)
+        if keep_narrowing and "permissions" in spec:
+            from kiro_crew.agent_sdk.drivers.acp import narrowed_agent_permissions
+
+            spec["permissions"] = narrowed_agent_permissions(
+                spec["permissions"], inherited, agent_filename
+            )
 
 
 def is_owned_readonly_spec(data: Any) -> bool:

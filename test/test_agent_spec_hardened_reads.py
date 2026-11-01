@@ -1403,6 +1403,9 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # template; a link at the name is screened before it is followed.
     "kiro_crew/agent_materialization/service_agents.py": [("knowledge_spec_repair", "unknown")],
     "kiro_crew/crewmate_prune_migration.py": [("crewmate_prune", "dashboard")],
+    # Open in kiro-cli reads the chat's agent spec to build its per-open launch
+    # copy; a spec it cannot read refuses the open rather than launching a guess.
+    "kiro_crew/dashboard/handlers/kiro_cli_launch.py": [("kiro_cli_launch_spec", "dashboard")],
     "kiro_crew/dashboard/handlers/sessions_parts/tool_policy.py": [
         ("session_tool_policy", "dashboard"),
         ("session_tool_policy", "dashboard"),

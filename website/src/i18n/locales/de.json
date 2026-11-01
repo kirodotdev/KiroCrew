@@ -6629,7 +6629,8 @@
       "touch_select_done": "Bereich ausgewählt — tippe auf Kopieren",
       "use_here": "Terminal hier verwenden",
       "use_starting_directory": "Startverzeichnis des Terminals verwenden",
-      "use_starting_directory_hint": "Öffnet eine neue Shell im konfigurierten Terminalverzeichnis des Servers (dashboard.terminal.cwd, sonst das Home-Verzeichnis des Servers). Der fehlgeschlagene Befehl wird nicht erneut gesendet."
+      "use_starting_directory_hint": "Öffnet eine neue Shell im konfigurierten Terminalverzeichnis des Servers (dashboard.terminal.cwd, sonst das Home-Verzeichnis des Servers). Der fehlgeschlagene Befehl wird nicht erneut gesendet.",
+      "kiro_cli_refused_message": "kiro-cli wurde für diesen Chat nicht geöffnet ({{reason}}). Verbinde neu, um es erneut zu versuchen."
     },
     "codeBlock": {
       "add_comment": "Kommentar hinzufügen",
@@ -8660,7 +8661,24 @@
       "mute": "Diese Sitzung stummschalten",
       "unmute": "Stummschaltung dieser Sitzung aufheben",
       "mute_failed": "Diese Sitzung konnte nicht stummgeschaltet werden",
-      "unmute_failed": "Stummschaltung dieser Sitzung konnte nicht aufgehoben werden"
+      "unmute_failed": "Stummschaltung dieser Sitzung konnte nicht aufgehoben werden",
+      "open_in_kiro_cli": "In kiro-cli öffnen",
+      "open_in_kiro_cli_tooltip": "Setze diese Unterhaltung im Terminal in kiro-cli fort. Dieser Chat pausiert, bis kiro-cli beendet wird.",
+      "open_in_kiro_cli_default_agent": "Öffnet mit dem Standardagenten von kiro-cli. Für {{agent}} gibt es keine Agentendatei, die kiro-cli laden kann.",
+      "kiro_cli_check_failed": "kiro-cli konnte nicht geprüft werden",
+      "kiro_cli_blocked_no_session": "noch keine Unterhaltung",
+      "kiro_cli_blocked_no_log": "Unterhaltungsprotokoll fehlt",
+      "kiro_cli_blocked_no_project": "Projektordner fehlt",
+      "kiro_cli_blocked_not_installed": "kiro-cli nicht installiert",
+      "kiro_cli_blocked_already_open": "bereits geöffnet",
+      "kiro_cli_blocked_unavailable": "nicht verfügbar",
+      "kiro_cli_blocked_terminals_full": "Terminal-Tabs voll",
+      "kiro_cli_blocked_project_agent": "Projekt hat eine eigene kiro-cli-Konfiguration",
+      "kiro_cli_blocked_ended": "kiro-cli wurde beendet",
+      "kiro_cli_blocked_launch_spec": "Crew konnte die temporäre Agent-Kopie nicht in ~/.kiro/agents schreiben",
+      "kiro_cli_blocked_record": "Crew konnte den Vermerk zu diesem Öffnen nicht im Datenordner speichern",
+      "kiro_cli_blocked_session_file": "Crew konnte die Sitzungsdatei dieses Chats in ~/.kiro/sessions/cli nicht aktualisieren",
+      "kiro_cli_blocked_starting": "Agent startet noch"
     },
     "newFolderMoveDialog": {
       "cancel": "Abbrechen",

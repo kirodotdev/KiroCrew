@@ -6749,7 +6749,8 @@
       "touch_select_done": "Intervallo selezionato — tocca Copia",
       "use_here": "Usa il terminale qui",
       "use_starting_directory": "Usa la directory iniziale del terminale",
-      "use_starting_directory_hint": "Apre una nuova shell nella directory del terminale configurata sul server (dashboard.terminal.cwd, altrimenti la directory home del server). Il comando non riuscito non viene reinviato."
+      "use_starting_directory_hint": "Apre una nuova shell nella directory del terminale configurata sul server (dashboard.terminal.cwd, altrimenti la directory home del server). Il comando non riuscito non viene reinviato.",
+      "kiro_cli_refused_message": "kiro-cli non si è aperto per questa chat ({{reason}}). Riconnettiti per riprovare."
     },
     "codeBlock": {
       "add_comment": "Aggiungi commento",
@@ -8804,7 +8805,24 @@
       "mute": "Silenzia questa sessione",
       "unmute": "Riattiva l'audio di questa sessione",
       "mute_failed": "Impossibile silenziare questa sessione",
-      "unmute_failed": "Impossibile riattivare l'audio di questa sessione"
+      "unmute_failed": "Impossibile riattivare l'audio di questa sessione",
+      "open_in_kiro_cli": "Apri in kiro-cli",
+      "open_in_kiro_cli_tooltip": "Continua questa conversazione in kiro-cli nel terminale. Questa chat resta in pausa finché kiro-cli non termina.",
+      "open_in_kiro_cli_default_agent": "Si apre con l’agente predefinito di kiro-cli. {{agent}} non ha un file agente che kiro-cli possa caricare.",
+      "kiro_cli_check_failed": "Impossibile verificare kiro-cli",
+      "kiro_cli_blocked_no_session": "ancora nessuna conversazione",
+      "kiro_cli_blocked_no_log": "registro della conversazione mancante",
+      "kiro_cli_blocked_no_project": "cartella del progetto mancante",
+      "kiro_cli_blocked_not_installed": "kiro-cli non installato",
+      "kiro_cli_blocked_already_open": "già aperto",
+      "kiro_cli_blocked_unavailable": "non disponibile",
+      "kiro_cli_blocked_terminals_full": "schede del terminale piene",
+      "kiro_cli_blocked_project_agent": "il progetto ha una propria configurazione kiro-cli",
+      "kiro_cli_blocked_ended": "kiro-cli è terminato",
+      "kiro_cli_blocked_launch_spec": "Crew non è riuscito a scrivere una copia temporanea dell’agente in ~/.kiro/agents",
+      "kiro_cli_blocked_record": "Crew non è riuscito a salvare la nota di questa apertura nella sua cartella dati",
+      "kiro_cli_blocked_session_file": "Crew non è riuscito ad aggiornare il file di sessione di questa chat in ~/.kiro/sessions/cli",
+      "kiro_cli_blocked_starting": "l’agente si sta ancora avviando"
     },
     "newFolderMoveDialog": {
       "cancel": "Annulla",

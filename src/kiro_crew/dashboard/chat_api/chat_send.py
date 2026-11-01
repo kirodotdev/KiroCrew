@@ -1063,6 +1063,23 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         slot.theme_consent = theme_consent
         slot.theme_consent_sha = theme_consent_sha
 
+    # An "Open in kiro-cli" a restart cut short brings its turns in ahead of this
+    # message. Here, before the busy and queue reads, and never between them and
+    # the user row: those reads and the dispatch below stay one step with no
+    # await, so two overlapping sends still queue rather than both dispatching.
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import recover_left_open
+
+    await recover_left_open(state, slot, effective_session_key(slot))
+    # While a terminal runs this conversation in kiro-cli, the turn would be
+    # refused at admission anyway. Refused here, ahead of every branch that
+    # accepts or queues the message (the responsive path included), so nothing
+    # is taken in that cannot run and the sender keeps the draft. The admission
+    # check stays the authority for every other way in.
+    from kiro_crew.kiro_cli_handoff import HELD_TURN_REFUSAL, is_held
+
+    if is_held(effective_session_key(slot)):
+        return web.json_response({"error": HELD_TURN_REFUSAL, "code": "kiro_cli_open"}, status=409)
+
     from kiro_crew.dashboard import responsive_chat
 
     _responsive_eligible = False

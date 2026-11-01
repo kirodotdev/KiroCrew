@@ -6509,7 +6509,8 @@
       "touch_select_done": "범위 선택됨 — 복사를 탭하세요",
       "use_here": "여기에서 터미널 사용",
       "use_starting_directory": "터미널 시작 디렉터리 사용",
-      "use_starting_directory_hint": "서버에 설정된 터미널 디렉터리(dashboard.terminal.cwd, 없으면 서버의 홈 디렉터리)에서 새 셸을 엽니다. 실패한 명령은 다시 보내지 않습니다."
+      "use_starting_directory_hint": "서버에 설정된 터미널 디렉터리(dashboard.terminal.cwd, 없으면 서버의 홈 디렉터리)에서 새 셸을 엽니다. 실패한 명령은 다시 보내지 않습니다.",
+      "kiro_cli_refused_message": "이 채팅의 kiro-cli가 열리지 않았습니다({{reason}}). 다시 시도하려면 다시 연결하세요."
     },
     "codeBlock": {
       "add_comment": "댓글 추가",
@@ -8516,7 +8517,24 @@
       "mute": "이 세션 음소거",
       "unmute": "이 세션 음소거 해제",
       "mute_failed": "이 세션을 음소거할 수 없습니다",
-      "unmute_failed": "이 세션의 음소거를 해제할 수 없습니다"
+      "unmute_failed": "이 세션의 음소거를 해제할 수 없습니다",
+      "open_in_kiro_cli": "kiro-cli에서 열기",
+      "open_in_kiro_cli_tooltip": "이 대화를 터미널의 kiro-cli에서 이어 갑니다. kiro-cli가 종료될 때까지 이 채팅은 일시 중지됩니다.",
+      "open_in_kiro_cli_default_agent": "kiro-cli의 기본 에이전트로 엽니다. {{agent}}에는 kiro-cli가 불러올 수 있는 에이전트 파일이 없습니다.",
+      "kiro_cli_check_failed": "kiro-cli를 확인하지 못했습니다",
+      "kiro_cli_blocked_no_session": "아직 대화 없음",
+      "kiro_cli_blocked_no_log": "대화 로그 없음",
+      "kiro_cli_blocked_no_project": "프로젝트 폴더 없음",
+      "kiro_cli_blocked_not_installed": "kiro-cli 미설치",
+      "kiro_cli_blocked_already_open": "이미 열림",
+      "kiro_cli_blocked_unavailable": "사용할 수 없음",
+      "kiro_cli_blocked_terminals_full": "터미널 탭 가득 참",
+      "kiro_cli_blocked_project_agent": "프로젝트에 자체 kiro-cli 설정이 있음",
+      "kiro_cli_blocked_ended": "kiro-cli가 종료됨",
+      "kiro_cli_blocked_launch_spec": "Crew가 ~/.kiro/agents에 에이전트 임시 사본을 쓰지 못함",
+      "kiro_cli_blocked_record": "Crew가 데이터 폴더에 이 열기 기록을 저장하지 못함",
+      "kiro_cli_blocked_session_file": "Crew가 ~/.kiro/sessions/cli에 있는 이 채팅의 세션 파일을 업데이트하지 못함",
+      "kiro_cli_blocked_starting": "에이전트 시작 중"
     },
     "newFolderMoveDialog": {
       "cancel": "취소",

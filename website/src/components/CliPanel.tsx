@@ -5,7 +5,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
-import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, retryTerminalConnection } from '../utils/terminalRegistry'
+import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, useTerminalKiroCliRefusal, retryTerminalConnection } from '../utils/terminalRegistry'
+import { kiroCliBlockedLabel } from '../lib/kiroCli'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
@@ -351,7 +352,7 @@ function touchSelectHint(status: TouchSelectStatus): string {
   }
 }
 
-function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean }) {
+function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, kiroCliSlot, visible, onSendToChat, deferOpen }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; kiroCliSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const entryRef = useRef<{ term: Terminal; fit: FitAddon } | null>(null)
@@ -375,6 +376,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   const connStatus = useTerminalConnStatus(sessionId)
   const invalidCwd = useTerminalInvalidCwd(sessionId)
   const wrongMachine = useTerminalWrongMachine(sessionId)
+  const kiroCliRefusal = useTerminalKiroCliRefusal(sessionId)
   const manualRetry = useTerminalManualRetry(sessionId)
   // The manual "Reconnecting…" state: the user clicked Reconnect and the dial
   // has not yet resolved. On failure the status flips back to 'disconnected'
@@ -409,8 +411,8 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   // panel/route unmounts; torn down only on explicit tab close. Unmounting this
   // component does not disconnect — the module-level manager owns the socket.
   useEffect(() => {
-    ensureTerminalConnection(sessionId, term, fit, cwd, remoteSlot, chatSlot)
-  }, [sessionId, term, fit, cwd, remoteSlot, chatSlot])
+    ensureTerminalConnection(sessionId, term, fit, cwd, remoteSlot, chatSlot, kiroCliSlot)
+  }, [sessionId, term, fit, cwd, remoteSlot, chatSlot, kiroCliSlot])
 
   // A terminal that has never been opened, while its host asks to wait (the
   // dock is still sliding in): xterm's first open, render and glyph measuring
@@ -740,7 +742,9 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
                   ? i18nT('components.cliPanel.invalid_cwd_message', { cwd })
                   : wrongMachine
                     ? i18nT('components.cliPanel.wrong_machine_message')
-                    : i18nT('components.cliPanel.disconnected_message')}
+                    : kiroCliRefusal
+                      ? i18nT('components.cliPanel.kiro_cli_refused_message', { reason: kiroCliBlockedLabel(kiroCliRefusal) })
+                      : i18nT('components.cliPanel.disconnected_message')}
               />
             )}
             <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -851,13 +855,15 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
  * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
  * bucket; the module-level termCache keeps them warm across tab/chat switches.
  */
-export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat, deferOpen }: {
+export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, kiroCliSlot, visible = true, onSendToChat, deferOpen }: {
   sessionId: string
   cwd?: string
   /** Open the shell in this chat's REMOTE session workspace instead of locally. */
   remoteSlot?: string
   /** The chat a local shell belongs to: the gateway refuses it if that chat is remote. */
   chatSlot?: string
+  /** "Open in kiro-cli": run this chat's own kiro-cli conversation instead of a shell. */
+  kiroCliSlot?: string
   visible?: boolean
   onSendToChat?: (text: string) => void
   /** Hold a never-opened terminal behind a focus stand-in until this turns false. */
@@ -872,7 +878,7 @@ export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible
       className="flex flex-col w-full h-full overflow-hidden px-3 pt-2"
       style={{ background: 'var(--term-bg, var(--bg))' }}
     >
-      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} deferOpen={deferOpen} />
+      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} kiroCliSlot={kiroCliSlot} visible={visible} onSendToChat={onSendToChat} deferOpen={deferOpen} />
     </div>
   )
 }

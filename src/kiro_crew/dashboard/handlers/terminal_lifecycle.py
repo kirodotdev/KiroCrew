@@ -248,8 +248,32 @@ async def _close_terminal_fd(fd: int) -> None:
             raise cancelled
 
 
+async def _release_kiro_cli_hold(sess: _TerminalSession) -> None:
+    """Give back the chat conversation a kiro-cli PTY held, once its process is
+    gone: the chat's transcript takes kiro-cli's turns first, then the hold goes."""
+    key = sess.kiro_cli_session_key
+    if not key:
+        return
+    sess.kiro_cli_session_key = ""
+    from kiro_crew import kiro_cli_handoff
+
+    await kiro_cli_handoff.settle_and_release(key, sess.session_id)
+
+
 async def _kill_session(sess: _TerminalSession) -> None:
-    """Kill PTY process and close FDs for a session."""
+    """Kill PTY process and close FDs for a session.
+
+    A kiro-cli PTY's hold on its chat's conversation is released last, after
+    the child is signalled and reaped (or given up on), so the chat cannot start
+    its own process while kiro-cli may still be writing the session.
+    """
+    try:
+        await _kill_session_process(sess)
+    finally:
+        await _release_kiro_cli_hold(sess)
+
+
+async def _kill_session_process(sess: _TerminalSession) -> None:
     # Windows ConPTY backend: terminate the pseudo-console child and close its
     # handles. Offloaded to the subprocess pool so a wedged TerminateProcess /
     # ClosePseudoConsole can never stall the event loop (same rationale as the
