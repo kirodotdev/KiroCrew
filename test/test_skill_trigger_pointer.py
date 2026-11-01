@@ -141,9 +141,7 @@ class TestOptedOutSkill:
 
     def test_long_description_is_truncated(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
-        _write_skill(
-            skills, "verbose", inject="false", description="x" * (_SHORT_DESC_CHARS + 200)
-        )
+        _write_skill(skills, "verbose", inject="false", description="x" * (_SHORT_DESC_CHARS + 200))
         loader = _loader(skills)
 
         hint = loader.trigger_hint(["verbose"])
@@ -203,9 +201,7 @@ class TestMixedAndUnchangedPaths:
         _write_skill(skills, "foundation", inject="false")
         loader = _loader(skills)
 
-        msg, _ = _builder(tmp_path, loader).build_message(
-            "unrelated wording", is_new_session=False
-        )
+        msg, _ = _builder(tmp_path, loader).build_message("unrelated wording", is_new_session=False)
 
         assert HINT_HEADER not in msg
         assert BODY_SENTINEL not in msg
