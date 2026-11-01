@@ -310,7 +310,6 @@
   "src/test/MarkdownRenderer.sessionChip.test.tsx",
   "src/test/MarkdownRenderer.streamingReclassify.test.tsx",
   "src/test/MarkdownRenderer.test.tsx",
-  "src/test/MarkdownTable.columnResize.test.tsx",
   "src/test/McpAppFrame.test.tsx",
   "src/test/McpBrowserModal.test.tsx",
   "src/test/McpManagement.resolveOnce.test.tsx",
