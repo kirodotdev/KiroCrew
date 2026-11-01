@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { DiscoveredMcpServer } from '../types'
 
@@ -76,9 +76,12 @@ describe('McpBrowserModal', () => {
     renderModal()
     expect(screen.getByText('Type at least 2 characters to search')).toBeInTheDocument()
 
+    // Fake timers go on once the modal has rendered, so the 300ms debounce below runs on the fake clock.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
     await search('w')
     // Outwait the 300ms debounce — a 1-char query must never hit the API.
-    await new Promise(r => setTimeout(r, 400))
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
     expect(mockApi.mcpDiscover).not.toHaveBeenCalled()
     expect(screen.getByText('Type at least 2 characters to search')).toBeInTheDocument()
   })
