@@ -143,6 +143,8 @@ const { isLocalGatewayEnabled, setLocalGatewayEnabled, classifyStartFailure } = 
 
 const { initNativeLogging } = require("./native-logging");
 
+const { initGpuPolicy } = require("./disable-gpu");
+
 // Carry settings across the npm `name` rename, by writing the new store's file
 // BEFORE electron-store opens it. Order is load-bearing: construction writes the
 // defaults, after which the file always exists and the seed can never run. It only
@@ -310,6 +312,22 @@ if (!app.requestSingleInstanceLock()) {
     appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
     startCrashReporter: (opts) => crashReporter.start(opts),
     fs,
+    log: (m) => glog(m),
+  });
+
+  // GPU-disable policy, applied through the SAME pre-app-ready appendSwitch seam
+  // as native logging above (Chromium reads switches during init, so a later
+  // append is ignored). Disabled by default on a normal desktop; auto-enabled on
+  // a GPU-less host (Windows RDP session via SESSIONNAME, etc.) and overridable
+  // either way by KIROCREW_DISABLE_GPU / --disable-gpu (force off) or
+  // KIROCREW_DISABLE_GPU=0 / --enable-gpu (force on). This stops the renderer
+  // from crashing with launch-failed (exitCode 18) or GPU-process-crashed
+  // (exit_code=-1069547419 / 0xC0000409) on VM/RDP hosts, where the Gateway is
+  // healthy but the Electron renderer otherwise reload-loops.
+  initGpuPolicy({
+    appendSwitch: (name) => app.commandLine.appendSwitch(name),
+    env: process.env,
+    argv: process.argv,
     log: (m) => glog(m),
   });
 
