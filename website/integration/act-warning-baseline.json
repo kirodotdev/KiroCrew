@@ -279,7 +279,6 @@
   "src/test/backNavLeaveGuard.test.tsx",
   "src/test/chatPins.test.tsx",
   "src/test/composerTreeDrop.test.ts",
-  "src/test/issueRadarPolling.test.tsx",
   "src/test/notificationConstructorGuard.test.ts",
   "src/test/paletteOpenSessionFocusesComposer.test.tsx",
   "src/test/pierre.warmSwap.test.tsx",
