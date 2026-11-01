@@ -1664,6 +1664,7 @@ Background task approvals (subagent, cron, task runner, and AutoNudge) post appr
 3. Dashboard callback resolves Slack future on dashboard approve
 4. Slack button click resolves dashboard future
 5. `handle_interaction()` guards against None provider and double-set on futures
+6. A caller that passes `requester=` (the cron turn: `cron job <name> (<id>), agent <agent>`) gets a `Requested by …` context line on the card, in its plain-text fallback, and on the answered card (`🔐 *<title>* — ✅ Approved`). The text is redacted and mrkdwn-escaped once, because a job name is user-authored and Slack parses entity markup.
 
 ### Background Deny-Fast (Unattended Sources)
 
