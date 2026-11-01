@@ -242,7 +242,6 @@
   "src/test/CrewCompanionPanelCoverage.test.tsx",
   "src/test/CrewCompanionPanelViewsCoverage.test.tsx",
   "src/test/CrewCompanionPet.coverage.test.tsx",
-  "src/test/CrewLogPanel.test.tsx",
   "src/test/CrewStateAvatarPackCue.test.tsx",
   "src/test/CronAckBar.test.tsx",
   "src/test/DesignTweakHistoryCov80.test.tsx",

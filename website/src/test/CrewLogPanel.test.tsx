@@ -9,7 +9,7 @@
  * "nothing recorded" apart from "nothing fetched yet".
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import { CrewLogTab, CREW_LOG_FOLDS } from '../pages/chat/CrewLogPanel'
 import { api } from '../api/client'
@@ -318,11 +318,11 @@ describe('CrewLogTab', () => {
 
     // A turn STARTS: the entries that matter have not been appended yet, so a
     // re-read here would spend a request to learn nothing.
-    store.dispatch(syncSlotRunningFromServer({ slot: SLOT, running: true, stopping: false }))
+    act(() => { store.dispatch(syncSlotRunningFromServer({ slot: SLOT, running: true, stopping: false })) })
     await waitFor(() => expect(api.sessionCrewLogProjections).toHaveBeenCalledTimes(1))
 
     // The turn ENDS: fold again.
-    store.dispatch(syncSlotRunningFromServer({ slot: SLOT, running: false, stopping: false }))
+    act(() => { store.dispatch(syncSlotRunningFromServer({ slot: SLOT, running: false, stopping: false })) })
     await waitFor(() => expect(api.sessionCrewLogProjections).toHaveBeenCalledTimes(2))
   })
 
@@ -337,14 +337,14 @@ describe('CrewLogTab', () => {
     renderWithProviders(<CrewLogTab slot={SLOT} />, { store })
     await waitFor(() => expect(api.sessionCrewLogProjections).toHaveBeenCalledTimes(1))
 
-    store.dispatch(setSlotState('streaming'))
+    act(() => { store.dispatch(setSlotState('streaming')) })
     // A subagent is spawned and is still pending when the turn itself finishes.
-    store.dispatch(sseSubagentPending({ slot: SLOT, id: 'sub-1', task: 'a task', approval_id: 'ap-1' }))
+    act(() => { store.dispatch(sseSubagentPending({ slot: SLOT, id: 'sub-1', task: 'a task', approval_id: 'ap-1' })) })
     await waitFor(() => expect(api.sessionCrewLogProjections).toHaveBeenCalledTimes(1))
 
     // The TURN ends. The composer is still busy because the subagent is alive, so
     // this edge is the only thing that can fold the entries the turn just wrote.
-    store.dispatch(setSlotState('idle'))
+    act(() => { store.dispatch(setSlotState('idle')) })
     await waitFor(() => expect(api.sessionCrewLogProjections).toHaveBeenCalledTimes(2))
   })
 
