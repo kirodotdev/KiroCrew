@@ -24,6 +24,7 @@ _LIBRARY_SUBDIR = "library"
 _SCHEMA_VERSION = 2
 _MAX_SLUG_LENGTH = 64
 _DEFAULT_SEARCH_LIMIT = 3
+_MIN_PREFIX_MATCH_LENGTH = 3
 SOURCE_FORMAT_PYTHON = "python"
 SOURCE_FORMAT_TASK_PLAN = "task-plan"
 SOURCE_FORMATS = frozenset({SOURCE_FORMAT_PYTHON, SOURCE_FORMAT_TASK_PLAN})
@@ -92,6 +93,11 @@ def _tokens(value: str) -> set[str]:
 
 
 def _token_matches(query: str, candidate: str) -> bool:
+    # A prefix only counts when the shorter word is long enough to mean
+    # something: a lone ``r`` in a script would otherwise match every query
+    # word that starts with ``r``. Short words still match exactly.
+    if min(len(query), len(candidate)) < _MIN_PREFIX_MATCH_LENGTH:
+        return query == candidate
     return query == candidate or query.startswith(candidate) or candidate.startswith(query)
 
 

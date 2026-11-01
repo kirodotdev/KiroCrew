@@ -1137,7 +1137,10 @@ the library reject the second update to the same revision rather than silently
 accepting both and losing one writer's source.
 
 Only explicitly saved definitions participate in local authoring matches.
-`search(intent)` uses deterministic local lexical ranking. `author(intent)` adds
+`search(intent)` uses deterministic local lexical ranking: a query word matches a
+saved word when they are equal, or when one is a prefix of the other and both are
+at least three characters long, so a one- or two-letter word in a script never
+pulls in an unrelated definition. `author(intent)` adds
 the bounded top matches to the authoring prompt as examples, never edits them,
 and accepts lineage only when the authored `META["adapted_from"]` exactly names
 the current revision of one of the candidates included in that prompt. Historical
