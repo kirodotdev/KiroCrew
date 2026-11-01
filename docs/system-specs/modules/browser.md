@@ -394,14 +394,19 @@ asked, at most every 250 ms, for the boxes of visible `input[type=password]`
 (a read-only `querySelectorAll` + `getBoundingClientRect` on the relay's own
 session, walking open shadow roots to the same depth the snapshot walker does),
 scaled from CSS to frame pixels; a failed query keeps the last boxes rather than
-unmasking. The boxes are kept in CSS pixels and scaled per frame, so a frame at
+unmasking. The query runs in an isolated world made on the frame it reads
+(`screencast.MASK_WORLD`), so a page script cannot replace those functions to
+report no secret field; no world means a failed query. The boxes are kept in CSS pixels and scaled per frame, so a frame at
 another width (a picture change, the settle frame) is masked at its own scale.
 Every clock read and sleep is injected, so the ladder and the settle frame are
 tested on a fake clock.
 
 **Wire.** Owner websockets only. State changes are the JSON event
 `browser_live` (`session_key`, `turn_id`, `state`, `url`, `title`, `browser`,
-`headless`, `step`, `steps`, `rung`, `fps`). Frames are BINARY messages: a
+`headless`, `step`, `steps`, `rung`, `fps`). A newly connected owner socket is
+sent each chat's last published event (`LiveHub.snapshot_events`, from
+`dashboard/ws.py`), so a reloaded tab shows the card, a waiting quick ask
+included, without waiting for a change. Frames are BINARY messages: a
 4-byte big-endian header length, a UTF-8 JSON header
 (`{"type":"browser_frame","session_key","stream","seq","w","h","mask":[[x,y,w,h],...]}`),
 then the JPEG bytes. `stream` names the screencast the frame came from and `seq`

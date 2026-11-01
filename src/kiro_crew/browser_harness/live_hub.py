@@ -1310,6 +1310,25 @@ class LiveHub:
         """
         return self._publish is not None and bool(sess.state) and self._config.enabled
 
+    def snapshot_events(self) -> list[dict[str, Any]]:
+        """Every session's current ``browser_live`` payload, redacted, as published.
+
+        For an owner tab that just connected: events go out only on a change, so a
+        reloaded dashboard would otherwise show no card (and no pending quick ask)
+        until the next change, which a parked ask never makes.
+        """
+        out: list[dict[str, Any]] = []
+        for sess in list(self._sessions.values()):
+            if not self._publishable(sess):
+                continue
+            try:
+                out.append(redact_wire(live_event(sess)))
+            except Exception:
+                # As ``_emit_now``: this chat's card waits for its next change, and
+                # every other chat's still goes out.
+                logger.debug("browser_live snapshot skipped a session", exc_info=True)
+        return out
+
     async def _emit_now(self, sess: LiveSession) -> None:
         publish = self._publish
         if publish is None or not self._publishable(sess):

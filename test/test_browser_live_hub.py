@@ -123,6 +123,46 @@ async def test_nothing_is_published_before_the_card_has_a_state(hub) -> None:
     assert h.in_control("chat-1") is False and h.in_control("nope") is False
 
 
+async def test_a_new_owner_tab_gets_each_chats_current_state_as_last_published(hub) -> None:
+    """A reloaded tab sees the card (a parked quick ask included) without waiting for a
+    change: the snapshot is the last published payload, and a chat with no state yet
+    sends none."""
+    h, wire = hub
+    h.turn_started("chat-1", "t1")
+    h.set_state("chat-1", lh.STATE_WAITING_ALLOW, browser="user_chrome", headless=False)
+    h.turn_started("chat-2", "t2")
+    await _settled(h)
+    assert h.snapshot_events() == [wire.events[-1][1]]
+
+
+async def test_the_owner_socket_is_sent_the_browser_snapshot_frames() -> None:
+    import json
+
+    from kiro_crew.dashboard import ws as ws_mod
+
+    wire = Wire()
+    h = lh.LiveHub(clock=lambda: 100.0)
+    h.bind(wire.publish, wire.send_frame)
+    h.turn_started("chat-1", "t1")
+    h.set_state("chat-1", lh.STATE_WAITING_ALLOW, browser="user_chrome", headless=False)
+    sent: list[str] = []
+
+    class _Ws:
+        async def send_str(self, text: str) -> None:
+            sent.append(text)
+
+    lh.reset_live_hub()
+    lh._HUB = h
+    try:
+        await ws_mod._send_browser_live_snapshot(_Ws())  # type: ignore[arg-type]
+    finally:
+        lh.reset_live_hub()
+    frames = [json.loads(t) for t in sent]
+    assert [f["type"] for f in frames] == [lh.LIVE_EVENT]
+    assert frames[0]["data"]["session_key"] == "chat-1"
+    assert frames[0]["data"]["state"] == "waiting_allow"
+
+
 async def test_start_stream_goes_live_and_frames_reach_the_owner_sender(hub) -> None:
     h, wire = hub
     relay = FakeRelay()

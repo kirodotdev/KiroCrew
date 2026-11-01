@@ -438,6 +438,64 @@ async def test_a_failed_mask_query_keeps_the_last_boxes_rather_than_unmasking() 
 
 
 @pytest.mark.asyncio
+async def test_the_mask_query_runs_in_an_isolated_world_page_script_cannot_reach() -> None:
+    """A page script that replaces ``querySelectorAll`` changes only its own world: the
+    query is evaluated in a world made for it on the tab's own frame."""
+    stream, relay, _clock, sink = make_stream()
+    relay.answers["Runtime.evaluate"] = {"result": {"value": [[10, 10, 20, 20]]}}
+    await stream.start()
+    await relay.on_event(frame_event(make_jpeg(1280, 768)))
+    ((_m, world, wsid),) = relay.methods("Page.createIsolatedWorld")
+    assert world == {"frameId": "F1", "worldName": sc.MASK_WORLD, "grantUniveralAccess": False}
+    _m, params, sid = relay.methods("Runtime.evaluate")[0]
+    assert params["contextId"] == 7 and sid == wsid == SESSION
+    assert sink.frames[0][0]["mask"] == [[10, 10, 21, 21]]
+
+
+@pytest.mark.asyncio
+async def test_the_mask_world_is_made_once_and_made_again_after_a_navigation() -> None:
+    stream, relay, clock, _sink = make_stream()
+    contexts = iter([7, 8])
+    relay.answers["Page.createIsolatedWorld"] = lambda: {"executionContextId": next(contexts)}
+    alive = {7: True, 8: True}
+
+    def _evaluate() -> dict[str, Any]:
+        ctx = relay.calls[-1][1].get("contextId")
+        if not alive.get(ctx, False):
+            raise RuntimeError("Cannot find context with specified id")
+        return {"result": {"value": [[10, 10, 20, 20]]}}
+
+    relay.answers["Runtime.evaluate"] = _evaluate
+    await stream.start()
+    for _ in range(3):
+        clock.now += 1
+        await relay.on_event(frame_event(make_jpeg(1280, 768)))
+    assert len(relay.methods("Page.createIsolatedWorld")) == 1
+    alive[7] = False  # the page navigated: its world went with it
+    clock.now += 1
+    await relay.on_event(frame_event(make_jpeg(1280, 768)))
+    assert len(relay.methods("Page.createIsolatedWorld")) == 2
+    assert relay.methods("Runtime.evaluate")[-1][1]["contextId"] == 8
+
+
+@pytest.mark.asyncio
+async def test_no_isolated_world_keeps_the_last_boxes_and_records_no_frame_as_masked() -> None:
+    stream, relay, clock, sink = make_stream()
+    relay.answers["Runtime.evaluate"] = {"result": {"value": [[10, 10, 20, 20]]}}
+    await stream.start()
+    await relay.on_event(frame_event(make_jpeg(1280, 768)))
+    # The page navigated (its world is gone) and no new world can be made.
+    relay.answers["Runtime.evaluate"] = {"exceptionDetails": {"text": "context destroyed"}}
+    relay.answers["Page.createIsolatedWorld"] = {}
+    clock.now += 1
+    await relay.on_event(frame_event(make_jpeg(1280, 768)))
+    asked = relay.methods("Runtime.evaluate")
+    assert all("contextId" in params for _m, params, _sid in asked), "never the page's world"
+    assert sink.frames[1][0]["mask"] == [[10, 10, 21, 21]]
+    assert stream._mask_ok is False
+
+
+@pytest.mark.asyncio
 async def test_mask_off_in_config_never_asks_the_page() -> None:
     stream, relay, _clock, sink = make_stream(config=sc.LiveConfig(mask_passwords=False))
     await stream.start()

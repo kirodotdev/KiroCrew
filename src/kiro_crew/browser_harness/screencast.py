@@ -586,6 +586,10 @@ class Relay(Protocol):
 #: scroll offset when the boxes were read: the replay keeps a frame only when they
 #: match the offset Chrome stamped on the frame (a scroll between the capture and
 #: the query would put every box in the wrong place, or off the frame).
+#: The isolated world the mask query runs in: page script cannot replace the DOM
+#: functions it calls there, so it cannot make a secret field read as absent.
+MASK_WORLD = "kirocrew_mask"
+
 _MASK_JS = (
     "(()=>{const r=[],f=[];let partial=false;"
     "const SEL='input[type=password],input[autocomplete~=current-password],"
@@ -746,6 +750,8 @@ class LiveStream:
         #: Last password boxes the page reported, in viewport CSS pixels; scaled
         #: per frame so a frame at another width is masked at its own scale.
         self._mask_boxes: list[Any] = []
+        #: The mask query's isolated world per CDP session (``_mask_query``).
+        self._mask_worlds: dict[str, int] = {}
         #: The recorder's mask for the frame in hand (see :meth:`_mask_rects`): a
         #: frame whose boxes did not come from its own answered query is never kept.
         self._mask_ok = False
@@ -1169,11 +1175,7 @@ class LiveStream:
             )
         self._mask_at = now
         try:
-            reply = await self.relay.send(
-                "Runtime.evaluate",
-                {"expression": _MASK_JS, "returnByValue": True},
-                self.session_id,
-            )
+            reply = await self._mask_query(self.session_id)
         except Exception:
             # Keep the last boxes rather than unmask on a transient failure.
             return clip_mask_rects(
@@ -1208,6 +1210,49 @@ class LiveStream:
                 self._rec_last_size = (width, height)
         return list(rects)
 
+    async def _mask_query(self, sid: str) -> Any:
+        """Run :data:`_MASK_JS` in an isolated world of *sid*'s own frame.
+
+        In the page's own world a script could replace ``querySelectorAll`` or
+        ``getBoundingClientRect`` and hand back no boxes, which reads as a page with
+        no secret field. The world is made once per session and reused: Chrome
+        makes a new one for every ``Page.createIsolatedWorld``, kept until the frame
+        navigates. A reused world that a navigation destroyed fails, and is made
+        again once. Raises when no world can be had: the caller then keeps the last
+        boxes and records no frame as masked.
+        """
+        ctx = self._mask_worlds.get(sid)
+        if ctx is not None:
+            try:
+                reply = await self._mask_eval(sid, ctx)
+                if isinstance(reply, dict) and not reply.get("exceptionDetails"):
+                    return reply
+            except Exception:  # noqa: BLE001 - the world went with a navigation
+                pass
+            self._mask_worlds.pop(sid, None)
+        tree = await self.relay.send("Page.getFrameTree", {}, sid)
+        frame = ((tree.get("frameTree") or {}).get("frame") or {}) if isinstance(tree, dict) else {}
+        frame_id = frame.get("id")
+        if not isinstance(frame_id, str) or not frame_id:
+            raise RuntimeError("mask: no frame to query")
+        made = await self.relay.send(
+            "Page.createIsolatedWorld",
+            {"frameId": frame_id, "worldName": MASK_WORLD, "grantUniveralAccess": False},
+            sid,
+        )
+        ctx = made.get("executionContextId") if isinstance(made, dict) else None
+        if not isinstance(ctx, int):
+            raise RuntimeError("mask: no isolated world")
+        self._mask_worlds[sid] = ctx
+        return await self._mask_eval(sid, ctx)
+
+    async def _mask_eval(self, sid: str, ctx: int) -> Any:
+        return await self.relay.send(
+            "Runtime.evaluate",
+            {"expression": _MASK_JS, "contextId": ctx, "returnByValue": True},
+            sid,
+        )
+
     async def _frame_boxes(self) -> list[Any]:
         """Secret-field boxes inside the tab's cross-origin iframes, in page CSS pixels.
 
@@ -1219,9 +1264,7 @@ class LiveStream:
         place = FrameOps(self.relay, self.session_id, self.frames, "")
         for frame_id, sid in self.frames.frames():
             try:
-                reply = await self.relay.send(
-                    "Runtime.evaluate", {"expression": _MASK_JS, "returnByValue": True}, sid
-                )
+                reply = await self._mask_query(sid)
             except Exception:  # noqa: BLE001 - the frame went away
                 continue
             value = (reply.get("result") or {}).get("value") if isinstance(reply, dict) else None

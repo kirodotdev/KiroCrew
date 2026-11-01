@@ -55,7 +55,11 @@ class FakeRelay:
         self.on_event: Any = None
         self.attached: list[str] = []
         self.detached: list[str] = []
-        self.answers: dict[str, Any] = {}
+        # The mask query's isolated world (``LiveStream._mask_query``).
+        self.answers: dict[str, Any] = {
+            "Page.getFrameTree": {"frameTree": {"frame": {"id": "F1"}}},
+            "Page.createIsolatedWorld": {"executionContextId": 7},
+        }
         self.fail: set[str] = set()
 
     async def send(
