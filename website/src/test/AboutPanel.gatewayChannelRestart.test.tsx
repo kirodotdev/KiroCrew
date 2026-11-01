@@ -18,7 +18,7 @@
 // follows a remote and a desktop bundle / container is updated by something
 // else, so both report no channel and get no control.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
@@ -195,7 +195,7 @@ describe('AboutPanel gateway channel switcher', () => {
     mountWeb()
 
     const switcher = await screen.findByTestId('gateway-channel-switcher')
-    fireEvent.click(within(switcher).getByTitle('Stable'))
+    await act(async () => { fireEvent.click(within(switcher).getByTitle('Stable')) })
 
     // A no-op POST would drop the cached verdict for nothing and re-hit the feed.
     await new Promise(r => setTimeout(r, 20))
@@ -426,7 +426,8 @@ describe('AboutPanel gateway restart', () => {
     const restart = screen.getByTestId('gateway-restart')
     // Two-step: the first click only arms it.
     fireEvent.click(restart)
-    await new Promise(r => setTimeout(r, 20))
+    // The first click only arms: the button turns to the warn colour and no restart is posted.
+    await waitFor(() => expect(screen.getByTestId('gateway-restart').className).toContain('warn'))
     expect(posts.some(p => p.url.includes('/api/restart'))).toBe(false)
 
     fireEvent.click(screen.getByTestId('gateway-restart'))
@@ -460,7 +461,7 @@ describe('AboutPanel gateway restart', () => {
       const posts = stubFetch()
       seedStatus({ update_available: false, update_check_status: 'succeeded', update_channel: 'stable' })
       mountWeb()
-      await vi.advanceTimersByTimeAsync(500)
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
 
       const btn = screen.getByTestId('gateway-restart-standing')
       fireEvent.click(btn)
@@ -468,9 +469,9 @@ describe('AboutPanel gateway restart', () => {
       expect(posts.some(p => p.url.includes('/api/restart'))).toBe(false)
 
       // An armed control left on screen must not stay a trap for a later click.
-      await vi.advanceTimersByTimeAsync(6000)
+      await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
       fireEvent.click(screen.getByTestId('gateway-restart-standing'))
-      await vi.advanceTimersByTimeAsync(50)
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
       expect(posts.some(p => p.url.includes('/api/restart'))).toBe(false)
     } finally {
       vi.useRealTimers()
