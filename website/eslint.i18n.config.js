@@ -200,6 +200,11 @@ export default [
       // user-visible copy ever added to these two paths will not be reported —
       // keep both modules parser-facing only.
       'src/lib/widgetSrcdoc.ts',
+      // The height-reporter script split out of widgetSrcdoc.ts (for the file
+      // line cap) -- ONE template literal of in-iframe JS (postMessage + layout
+      // measurement), no human-facing copy. Same parser-only boundary and same
+      // false-negative class as widgetSrcdoc.ts above: keep it parser-only.
+      'src/lib/widgetHeightReporter.ts',
       'src/lib/mcpAppSrcdoc.ts',
       // Same parser-only boundary as the srcdoc builders above: this module
       // sanitizes model markup and injects CSP, a DOCTYPE and theme CSS. None
