@@ -550,9 +550,14 @@ def test_pod_mutex_is_reentrant_within_a_thread(cfg):
     """The CLI holds the mutex across a transaction while start_pod/stop_pod
     re-acquire it inside; flock is per open-file-description, so without
     reentrancy that inner acquisition would deadlock against our own lock."""
+    key = f"{cfg.unit_prefix}@smoke"
     with rt.pod_name_mutex(cfg, "smoke"):
         with rt.pod_name_mutex(cfg, "smoke"):  # must not block
-            pass
+            assert rt._MUTEX_STATE.held[key] == 2
+        # The inner exit must leave the outer hold counted, or a third entry would
+        # take the OS lock again and deadlock.
+        assert rt._MUTEX_STATE.held[key] == 1
+    assert rt._MUTEX_STATE.held[key] == 0
 
 
 def test_down_fails_on_macos_when_stop_cannot_confirm_even_if_not_active(cfg, monkeypatch):
