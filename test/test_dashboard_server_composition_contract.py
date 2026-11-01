@@ -394,7 +394,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
     "kiro_crew.crew_log": "crew_log_emit",
     "kiro_crew.edition_locks": "local_enable_locked",
-    "kiro_crew.dashboard": "crew_mode_migration display_verdicts handlers_instances tailnet_direct_listener",
+    "kiro_crew.dashboard": "crew_mode_migration display_verdicts handlers_instances remote_workspaces tailnet_direct_listener",
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.enterprise_gate_middleware": (
         "enterprise_gate_middleware_for enterprise_login_source install_enterprise_gate"
@@ -428,6 +428,7 @@ _LAZY_IMPORTS = {
     ),
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
     "kiro_crew.dashboard.slot_queue_repository": "drain_restored_parked_sends",
+    "kiro_crew.dashboard.remote_subagents": "RemoteSubagentError get_remote_subagent_service",
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
     "kiro_crew.dashboard.workflow_session_port": "WorkflowSessionPort",
     "kiro_crew.decisions": "impl_jev local_runtime",
@@ -473,7 +474,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 115
+    assert len(expected) == 118
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

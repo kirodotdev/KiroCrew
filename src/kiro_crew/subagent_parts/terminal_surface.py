@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         DISMISSAL_FAILED,
         MAX_ERROR_DETAIL_LEN,
         Any,
+        Iterable,
         Literal,
         ProcessHandle,
         SubagentDelivery,
@@ -151,6 +152,44 @@ async def _await_report(task: "asyncio.Task[bool]") -> bool:
     return await asyncio.shield(task)
 
 
+async def _commit_panel_dismissal(info: SubagentInfo, agent_id: str) -> bool:
+    """Record *agent_id*'s dismissal in the crew log and its folder; True once
+    both halves are durable (see :func:`settle_before_delete` for why each is
+    written, and waited on, before the in-memory pop that publishes it)."""
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log.resolve import UnitSearchFailed, unit_holding_child
+    from kiro_crew.dashboard.chat_utils import subagent_event_slot
+
+    if crew_log_emit.enabled():
+        try:
+            unit = await asyncio.to_thread(
+                unit_holding_child,
+                subagent_event_slot(info.parent_session_key),
+                agent_id,
+            )
+        except UnitSearchFailed:
+            # The store would not say whether a unit holds this child, which is
+            # not the same as none holding it. Popping here would report a
+            # dismissal that was never even looked for, and the card returns
+            # once the store recovers.
+            logger.debug(
+                "crew log: the unit search for %s failed, so the dismissal is "
+                "left retryable rather than published",
+                agent_id,
+                exc_info=True,
+            )
+            return False
+        if unit and not await crew_log_emit.awaiting_commit(
+            lambda on_settled: crew_log_emit.on_subagent_dismissed(
+                unit, agent_id=agent_id, on_settled=on_settled
+            ),
+            what=f"the panel dismissal for {agent_id}",
+        ):
+            return False
+    outcome = await asyncio.to_thread(record_panel_dismissal_outcome, agent_id)
+    return outcome != DISMISSAL_FAILED
+
+
 async def settle_before_delete(
     self: SubagentManager,
     agent_id: str,
@@ -158,7 +197,7 @@ async def settle_before_delete(
     """Settle completion debt and remove a finished run atomically."""
     info = self._agents.get(agent_id)
     if info is None:
-        return "delivered"
+        return await self._settle_external_before_delete(agent_id)
     if info._ending_claimed and not info.done:
         # Claimed its completed ending and still writing its result (a
         # bounded wait): ``cancel()`` declined it as done, but its report
@@ -207,41 +246,51 @@ async def settle_before_delete(
     # whose folder is later reclaimed has only this record, so a pop on an
     # uncommitted append is the same published-too-early failure the folder
     # write above is ordered to avoid.
-    from kiro_crew.crew_log import emit as crew_log_emit
-    from kiro_crew.crew_log.resolve import UnitSearchFailed, unit_holding_child
-    from kiro_crew.dashboard.chat_utils import subagent_event_slot
-
-    if crew_log_emit.enabled():
-        try:
-            unit = await asyncio.to_thread(
-                unit_holding_child,
-                subagent_event_slot(info.parent_session_key),
-                agent_id,
-            )
-        except UnitSearchFailed:
-            # The store would not say whether a unit holds this child, which is
-            # not the same as none holding it. Popping here would report a
-            # dismissal that was never even looked for, and the card returns
-            # once the store recovers.
-            logger.debug(
-                "crew log: the unit search for %s failed, so the dismissal is "
-                "left retryable rather than published",
-                agent_id,
-                exc_info=True,
-            )
-            return "pending"
-        if unit and not await crew_log_emit.awaiting_commit(
-            lambda on_settled: crew_log_emit.on_subagent_dismissed(
-                unit, agent_id=agent_id, on_settled=on_settled
-            ),
-            what=f"the panel dismissal for {agent_id}",
-        ):
-            return "pending"
-    outcome = await asyncio.to_thread(record_panel_dismissal_outcome, agent_id)
-    if outcome == DISMISSAL_FAILED:
+    if not await _commit_panel_dismissal(info, agent_id):
         return "pending"
     self._agents.pop(agent_id, None)
     self._tasks.pop(agent_id, None)
+    return "delivered"
+
+
+async def _settle_external_before_delete(
+    self: SubagentManager, agent_id: str
+) -> Literal["delivered", "pending"]:
+    """Dismiss one finished peer-owned record, unless its completion is in flight.
+
+    A record whose report is still running, or that the gateway parked in a
+    wave digest or a busy slot's queue, has not reached the parent: removing
+    it would drop the result the parent is about to read.
+
+    The dismissal is committed before the pop, as for a local run: the
+    panel's crew log and folder through :func:`_commit_panel_dismissal`, and
+    the placement's own mapping through the bound dismisser, so a restart
+    cannot restore a run the operator dismissed. Either write failing leaves
+    the record in place and answers ``pending`` (retryable).
+    """
+    info = getattr(self, "_external_agents", {}).get(agent_id)
+    if info is None:
+        return "delivered"
+    if not info.done:
+        return "pending"
+    reporting = any(
+        report_info is info or report_info.id == agent_id
+        for report_info in self._report_owners.values()
+    )
+    if reporting or info._digest_held or info._delivery_queued:
+        return "pending"
+    placement = getattr(self, "_external_placement", None)
+    if placement is not None:
+        try:
+            committed = await placement.dismiss(info)
+        except Exception:
+            logger.warning("Could not commit the dismissal of %s", agent_id, exc_info=True)
+            committed = False
+        if not committed:
+            return "pending"
+    if not await _commit_panel_dismissal(info, agent_id):
+        return "pending"
+    self.forget_external(agent_id)
     return "delivered"
 
 
@@ -371,11 +420,41 @@ async def _announce_digest_flush(self: SubagentManager, info: SubagentInfo) -> N
 
 
 async def settle_queued_delivery(self: SubagentManager, deliveries: list[SubagentDelivery]) -> None:
-    return await self._waves.settle_queued_delivery_impl(deliveries)
+    external = self._external_ids_in(deliveries)
+    await self._waves.settle_queued_delivery_impl(deliveries)
+    await self._notify_external_delivered(external)
 
 
 async def _settle_digest_holds(self: SubagentManager, info: SubagentInfo) -> None:
-    return await self._waves._settle_digest_holds_impl(info)
+    # Read before the impl: it detaches the held deliveries from ``info``.
+    external = (
+        [] if info._report_undelivered else self._external_ids_in(info._digest_settle_deliveries)
+    )
+    await self._waves._settle_digest_holds_impl(info)
+    await self._notify_external_delivered(external)
+
+
+def _external_ids_in(self: SubagentManager, deliveries: Iterable[SubagentDelivery]) -> list[str]:
+    external = self._external_agents
+    return [
+        delivery.agent_id
+        for delivery in deliveries
+        if not delivery.report_owed and delivery.agent_id in external
+    ]
+
+
+async def _notify_external_delivered(self: SubagentManager, agent_ids: list[str]) -> None:
+    placement = getattr(self, "_external_placement", None)
+    if not agent_ids or placement is None:
+        return
+    try:
+        # report_external cannot acknowledge a result parked in a wave digest
+        # or a busy slot's queue; this settle is where it actually landed.
+        await placement.acknowledge_delivered(agent_ids)
+    except Exception:
+        # The parent already has the result; a failed acknowledgement can at
+        # worst re-deliver it after a restart, so it must not fail the settle.
+        logger.warning("External delivery acknowledgement failed", exc_info=True)
 
 
 def _write_tombstone(info: SubagentInfo, cause: str, *, leaked_process: bool = False) -> None:

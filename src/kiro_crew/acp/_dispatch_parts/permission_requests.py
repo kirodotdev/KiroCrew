@@ -1118,3 +1118,25 @@ def build_permission_event(
         tool_purpose=_purpose,
     )
     return event, recorded
+
+
+def build_relayed_permission_event(
+    *, request_id: str, title: str, tool_input: str, tool_purpose: str, approval_floor: str
+) -> AcpEvent:
+    """A permission request a remote run raised on its crew, as this gateway's gate reads it.
+
+    It lives beside :func:`build_permission_event` so this module stays the one
+    place an ``EVENT_PERMISSION_REQUEST`` is made. The crew already judged the call
+    against its own workspace; what reaches the hub is display data, so the event
+    carries only those fields: no params, no shell or MCP identity, nothing a
+    policy rule could match and allow. ``approval_floor`` makes every non-human
+    shortcut in the callback step aside, so a person answers it.
+    """
+    return AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=request_id,
+        title=title,
+        tool_input=tool_input,
+        tool_purpose=tool_purpose,
+        approval_floor=approval_floor,
+    )

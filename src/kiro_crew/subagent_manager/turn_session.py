@@ -488,6 +488,11 @@ async def persist_spawn_records(
         cleanup_cwd = str(getattr(info, "_session_cwd", ""))
         if cleanup_cwd:
             state_update["cwd"] = cleanup_cwd
+        if info.approval_floor:
+            # Same write as session_id, so a run a cold continuation can find
+            # always records the hub floor it ran under (run_control refuses
+            # to relaunch it after a restart forgets the in-memory record).
+            state_update["approval_floor"] = info.approval_floor
         # Same off-loop, drained write as the PID record above.
         # This one also carries `keep`, the field the two remaining
         # on-loop writers (promote / release) contend for -- taking the

@@ -73,6 +73,9 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     # ``acp_backends.POLICY_ID_KIRO``.
     "agent_backend": {"mode": "allow", "allow": ["kiro"]},
     "capabilities.spawn": _CAPABILITY_OFF,
+    # Placing a child on a registered crew sends the task and a project snapshot
+    # off this machine: off like spawn itself until the remote policy allows it.
+    "capabilities.remote_spawn": _CAPABILITY_OFF,
     "capabilities.memory_writes": _CAPABILITY_OFF,
     "capabilities.browse": _CAPABILITY_OFF,
     "capabilities.script_hooks": _CAPABILITY_OFF,

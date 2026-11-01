@@ -728,6 +728,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "cloud/source.py::_tracked_attr_values",
         "cloud/source.py::_tracked_tree_is_dirty",
         "cloud/source.py::_use_git_archive",
+        # The remote-workspace snapshot's two git probes, `rev-parse HEAD` and
+        # `ls-files -z --stage`: a fixed argv (shell=False, 60s timeout) from
+        # `trusted_git_bin()` under `hardened_git_env()` (no global/system config,
+        # no inherited GIT_*), with every program-running repo setting
+        # (`core.fsmonitor`, `core.hooksPath`, `core.pager`, `diff.external`)
+        # pinned off by `-c`, which outranks the agent-writable `.git/config`.
+        # The callers pass only those two verbs; no agent text reaches the args.
+        # File bytes are read by the gateway with O_NOFOLLOW, never by git.
+        "dashboard/remote_snapshot.py::_project_git",
         # Release-tag probe before a packaged install's cloud launch: `<trusted
         # git> ls-remote --exit-code --tags -- <repo> refs/tags/<ref>`, a fixed
         # argv with no shell. The binary comes from
