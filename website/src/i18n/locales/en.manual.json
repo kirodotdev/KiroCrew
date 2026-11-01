@@ -665,11 +665,16 @@
           "write": "Write"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "Could not check for an existing review session — retrying on refresh",
           "open_ai_code_review_session_for_this": "Open an AI code-review chat session for this {{label}}",
           "resume_ai_code_review_session_for_this": "Resume the AI code-review chat session for this {{label}}"
         },
         "readOnlyTag": {
           "read_only_repo_needs_triage_or_push_access": "Read-only repo — needs triage or push access"
+        },
+        "settingsSection": {
+          "account": "Account",
+          "repositories": "Repositories"
         }
       },
       "connectPanel": {
@@ -688,6 +693,9 @@
         "try_again": "Try again"
       },
       "connectRepoModal": {
+        "connect": "Connect",
+        "connect_count_one": "Connect {{count}}",
+        "connect_count_other": "Connect {{count}}",
         "connecting": "Connecting {{done}} of {{total}}…"
       },
       "views": {
@@ -1026,12 +1034,23 @@
           "crew_sort_created": "Created"
         },
         "links": {
+          "merge_request": "merge request",
+          "merge_request_title": "Merge Request",
+          "merge_requests": "merge requests",
+          "merge_requests_title": "Merge Requests",
+          "pull_request": "pull request",
+          "pull_request_title": "Pull Request",
+          "pull_requests": "pull requests",
+          "pull_requests_title": "Pull Requests",
           "read_only_here_apply_in_provider": "Read-only here — {{provider}} repositories can't be changed from {{productName}}; apply the change in {{provider}}",
           "tracked_items_work_items": "Work Items",
           "tracked_items_issues": "Issues"
         }
       },
       "welcomeCarousel": {
+        "connect": "Connect",
+        "connect_count_one": "Connect {{count}}",
+        "connect_count_other": "Connect {{count}}",
         "connecting_n_of_total": "Connecting {{n}} of {{total}}…",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar reads what your bots already found instead of starting over.",
         "slide_bots_title": "Reads What Your Bots Already Told You",

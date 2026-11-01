@@ -2385,13 +2385,16 @@
           "repositories": "রিপোজিটরি"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "আগের কোনো রিভিউ সেশন আছে কি না দেখা যায়নি — রিফ্রেশে আবার চেষ্টা হবে",
           "open_ai_code_review_session_for_this": "এই {{label}}-এর জন্য একটি AI কোড-রিভিউ চ্যাট সেশন খোলো",
           "resume_ai_code_review_session_for_this": "এই {{label}}-এর AI কোড-রিভিউ চ্যাট সেশন আবার চালু করো",
           "review": "পর্যালোচনা করুন"
         },
         "settingsSection": {
+          "account": "অ্যাকাউন্ট",
           "connect_repo": "রিপো সংযুক্ত করুন",
           "general": "সাধারণ",
+          "repositories": "রিপোজিটরি",
           "repository_settings": "রিপোজিটরি সেটিংস",
           "gitlab_groups": "GitLab গ্রুপ"
         },
@@ -2493,7 +2496,10 @@
       "connectRepoModal": {
         "close": "বন্ধ করুন",
         "close_connect_dialog": "সংযোগ ডায়ালগ বন্ধ করুন",
+        "connect": "সংযুক্ত করো",
         "connect_a_repo": "একটি রিপো সংযুক্ত করুন",
+        "connect_count_one": "{{count}}টি সংযুক্ত করো",
+        "connect_count_other": "{{count}}টি সংযুক্ত করো",
         "connecting": "{{total}}-এর মধ্যে {{done}}টি সংযুক্ত করা হচ্ছে…"
       },
       "issueRadarPage": {
@@ -2508,6 +2514,14 @@
           "crew_sort_created": "তৈরি হয়েছে"
         },
         "links": {
+          "merge_request": "মার্জ রিকোয়েস্ট",
+          "merge_request_title": "মার্জ রিকোয়েস্ট",
+          "merge_requests": "মার্জ রিকোয়েস্ট",
+          "merge_requests_title": "মার্জ রিকোয়েস্ট",
+          "pull_request": "পুল রিকোয়েস্ট",
+          "pull_request_title": "পুল রিকোয়েস্ট",
+          "pull_requests": "পুল রিকোয়েস্ট",
+          "pull_requests_title": "পুল রিকোয়েস্ট",
           "read_only_here_apply_in_provider": "এখানে শুধু পড়া যায় — {{provider}} রিপোজিটরি {{productName}} থেকে পরিবর্তন করা যায় না; পরিবর্তনটি {{provider}}-এ করুন",
           "tracked_items_work_items": "ওয়ার্ক আইটেম",
           "tracked_items_issues": "ইস্যু"
@@ -3043,6 +3057,9 @@
       "welcomeCarousel": {
         "back": "পিছনে",
         "carl_sagan": "— Carl Sagan",
+        "connect": "সংযুক্ত করো",
+        "connect_count_one": "{{count}}টি সংযুক্ত করো",
+        "connect_count_other": "{{count}}টি সংযুক্ত করো",
         "connecting_n_of_total": "{{total}}-এর মধ্যে {{n}}টি সংযুক্ত করা হচ্ছে…",
         "next": "পরবর্তী",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — নতুন করে শুরু না করে Issue Radar পড়ে নেয় তোমার বটরা আগেই যা খুঁজে পেয়েছে।",

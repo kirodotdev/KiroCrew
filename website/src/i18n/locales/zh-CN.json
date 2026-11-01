@@ -2324,13 +2324,16 @@
           "repositories": "仓库"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "无法检查是否已有审查会话 — 刷新时会重试",
           "open_ai_code_review_session_for_this": "为此 {{label}} 打开 AI 代码审查聊天会话",
           "resume_ai_code_review_session_for_this": "恢复此 {{label}} 的 AI 代码审查聊天会话",
           "review": "审查"
         },
         "settingsSection": {
+          "account": "账户",
           "connect_repo": "连接仓库",
           "general": "通用",
+          "repositories": "仓库",
           "repository_settings": "仓库设置",
           "gitlab_groups": "GitLab 群组"
         },
@@ -2431,7 +2434,9 @@
       "connectRepoModal": {
         "close": "关闭",
         "close_connect_dialog": "关闭连接对话框",
+        "connect": "连接",
         "connect_a_repo": "连接一个仓库",
+        "connect_count_other": "连接 {{count}} 个",
         "connecting": "正在连接 {{done}}/{{total}}…"
       },
       "issueRadarPage": {
@@ -2446,6 +2451,14 @@
           "crew_sort_created": "已创建"
         },
         "links": {
+          "merge_request": "合并请求",
+          "merge_request_title": "合并请求",
+          "merge_requests": "合并请求",
+          "merge_requests_title": "合并请求",
+          "pull_request": "拉取请求",
+          "pull_request_title": "拉取请求",
+          "pull_requests": "拉取请求",
+          "pull_requests_title": "拉取请求",
           "read_only_here_apply_in_provider": "此处为只读 — {{provider}} 仓库无法从 {{productName}} 修改；请在 {{provider}} 中进行更改",
           "tracked_items_work_items": "工作项",
           "tracked_items_issues": "Issues"
@@ -2971,6 +2984,8 @@
       "welcomeCarousel": {
         "back": "上一步",
         "carl_sagan": "— Carl Sagan",
+        "connect": "连接",
+        "connect_count_other": "连接 {{count}} 个",
         "connecting_n_of_total": "正在连接 {{n}}/{{total}}…",
         "next": "下一步",
         "slide_bots_subtitle": "Renovate、Dependabot、CodeRabbit — Issue Radar 直接读取机器人已经查到的结果，不用从头再来。",

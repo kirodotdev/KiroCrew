@@ -2412,13 +2412,16 @@
           "repositories": "リポジトリ"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "既存のレビューセッションを確認できません — 更新時に再試行します",
           "open_ai_code_review_session_for_this": "この {{label}} の AI コードレビューチャットセッションを開く",
           "resume_ai_code_review_session_for_this": "この {{label}} の AI コードレビューチャットセッションを再開",
           "review": "レビュー"
         },
         "settingsSection": {
+          "account": "アカウント",
           "connect_repo": "リポジトリを接続",
           "general": "一般",
+          "repositories": "リポジトリ",
           "repository_settings": "リポジトリ設定",
           "gitlab_groups": "GitLab グループ"
         },
@@ -2519,7 +2522,9 @@
       "connectRepoModal": {
         "close": "クローズ",
         "close_connect_dialog": "接続ダイアログをクローズ",
+        "connect": "接続",
         "connect_a_repo": "リポジトリを接続",
+        "connect_count_other": "{{count}} 件を接続",
         "connecting": "{{done}}/{{total}} を接続中…"
       },
       "issueRadarPage": {
@@ -2534,6 +2539,14 @@
           "crew_sort_created": "作成済み"
         },
         "links": {
+          "merge_request": "マージリクエスト",
+          "merge_request_title": "マージリクエスト",
+          "merge_requests": "マージリクエスト",
+          "merge_requests_title": "マージリクエスト",
+          "pull_request": "プルリクエスト",
+          "pull_request_title": "プルリクエスト",
+          "pull_requests": "プルリクエスト",
+          "pull_requests_title": "プルリクエスト",
           "read_only_here_apply_in_provider": "ここでは読み取り専用です — {{provider}} のリポジトリは {{productName}} から変更できません。{{provider}} で変更してください",
           "tracked_items_work_items": "作業項目",
           "tracked_items_issues": "Issue"
@@ -3059,6 +3072,8 @@
       "welcomeCarousel": {
         "back": "戻る",
         "carl_sagan": "— Carl Sagan",
+        "connect": "接続",
+        "connect_count_other": "{{count}} 件を接続",
         "connecting_n_of_total": "{{n}}/{{total}} を接続中…",
         "next": "次へ",
         "slide_bots_subtitle": "Renovate、Dependabot、CodeRabbit。Issue Radar は、ボットがすでに検出したものを読み取り、最初からやり直す代わりに行動します。",

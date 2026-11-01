@@ -2507,13 +2507,16 @@
           "repositories": "Репозитории"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "Не удалось проверить наличие сессии код-ревью — повтор при обновлении",
           "open_ai_code_review_session_for_this": "Открыть чат с ИИ-проверкой кода для {{label}}",
           "resume_ai_code_review_session_for_this": "Продолжить чат с ИИ-проверкой кода для {{label}}",
           "review": "Проверить"
         },
         "settingsSection": {
+          "account": "Аккаунт",
           "connect_repo": "Подключить репозиторий",
           "general": "Общие",
+          "repositories": "Репозитории",
           "repository_settings": "Настройки репозитория",
           "gitlab_groups": "Группы GitLab"
         },
@@ -2617,7 +2620,12 @@
       "connectRepoModal": {
         "close": "Закрыть",
         "close_connect_dialog": "Закрыть диалог подключения",
+        "connect": "Подключить",
         "connect_a_repo": "Подключить репозиторий",
+        "connect_count_few": "Подключить {{count}}",
+        "connect_count_many": "Подключить {{count}}",
+        "connect_count_one": "Подключить {{count}}",
+        "connect_count_other": "Подключить {{count}}",
         "connecting": "Подключение {{done}} из {{total}}..."
       },
       "issueRadarPage": {
@@ -2632,6 +2640,14 @@
           "crew_sort_created": "Создано"
         },
         "links": {
+          "merge_request": "мерж-реквест",
+          "merge_request_title": "Мерж-реквест",
+          "merge_requests": "мерж-реквесты",
+          "merge_requests_title": "Мерж-реквесты",
+          "pull_request": "пул-реквест",
+          "pull_request_title": "Пул-реквест",
+          "pull_requests": "пул-реквесты",
+          "pull_requests_title": "Пул-реквесты",
           "read_only_here_apply_in_provider": "Только чтение — репозитории {{provider}} нельзя изменить из {{productName}}; внесите изменение в {{provider}}",
           "tracked_items_work_items": "Рабочие элементы",
           "tracked_items_issues": "Задачи"
@@ -3187,6 +3203,11 @@
       "welcomeCarousel": {
         "back": "Назад",
         "carl_sagan": "— Карл Саган",
+        "connect": "Подключить",
+        "connect_count_few": "Подключить {{count}}",
+        "connect_count_many": "Подключить {{count}}",
+        "connect_count_one": "Подключить {{count}}",
+        "connect_count_other": "Подключить {{count}}",
         "connecting_n_of_total": "Подключение {{n}} из {{total}}...",
         "next": "Далее",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar читает то, что уже нашли твои боты, вместо того чтобы начинать заново.",
