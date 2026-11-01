@@ -262,8 +262,10 @@ describe('LibraryPage — pin badge and persistence', () => {
     fireEvent.click(scope.getByRole('button', { name: 'More actions for Secretary' }))
     fireEvent.click(await scope.findByRole('menuitem', { name: 'Disable' }))
     expect(await scope.findByText('Working…')).toBeInTheDocument()
-    // Settle the promise so the run's teardown has no dangling act() work.
+    // Settle the promise, then wait for the caption to clear: that is the state
+    // the settle produces, so the teardown has no dangling update.
     resolveDisable({})
+    await waitFor(() => expect(scope.queryByText('Working…')).not.toBeInTheDocument())
   })
 })
 
