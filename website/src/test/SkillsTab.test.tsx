@@ -12,6 +12,8 @@ const mockApi = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
+  skillsBudget: vi.fn(),
+  setSkillInjectOnTrigger: vi.fn(),
 }))
 // A stub ApiError declared inside vi.hoisted so the mock factory (hoisted above
 // the imports) can close over it: createSkill.onError branches on
@@ -1611,5 +1613,125 @@ describe('SkillsTab update/delete failure surfacing', () => {
     // save's outcome along with the draft. (Pending label while in flight.)
     expect(screen.getByText('Saving…')).toBeInTheDocument()
     expect(screen.getByText('Cancel')).toBeInTheDocument()
+  })
+})
+
+describe('SkillsTab — open a skill from the Context budget (#26893)', () => {
+  const SKILLS = [
+    { key: 'code-reference', name: 'code-reference', description: 'CLI reference', source: 'kirocrew', loaded_by_agents: [] },
+    { key: 'widgets', name: 'widgets', description: 'Inline HTML widgets', source: 'kirocrew', loaded_by_agents: [] },
+  ]
+  const BUDGET = {
+    window_days: 30,
+    total_chars: 1000,
+    rows: [
+      { key: 'code-reference', name: 'code-reference', size_bytes: 21000, deliveries: 10, chars: 1000, inject_on_trigger: true, always: false, owned: true, source: 'kirocrew', idle_days: 0 },
+      { key: 'widgets', name: 'widgets', size_bytes: 30000, deliveries: 0, chars: 0, inject_on_trigger: true, always: false, owned: true, source: 'kirocrew', idle_days: null },
+    ],
+  }
+
+  beforeEach(() => {
+    mockApi.skills.mockResolvedValue(SKILLS)
+    mockApi.skillsBudget.mockResolvedValue(BUDGET)
+    mockApi.setSkillInjectOnTrigger.mockResolvedValue({})
+    isMobileMock.value = false
+  })
+
+  it('(a) filter hides the target: Open shows that skill and clears the filter', async () => {
+    renderWithQuery()
+    await screen.findByText('Code Reference')
+    // Filter so only "widgets" matches; the target we will open is hidden.
+    const filter = screen.getByPlaceholderText(/filter skills/i)
+    fireEvent.change(filter, { target: { value: 'widgets' } })
+    // Into the budget view, click the hidden skill's open link.
+    fireEvent.click(screen.getByText(/context budget/i))
+    const openBtn = await screen.findByRole('button', { name: /open code reference/i })
+    fireEvent.click(openBtn)
+    // The detail pane shows the clicked skill, NOT the filter's best match.
+    await waitFor(() => {
+      expect(screen.getByTestId('dir-browser').getAttribute('data-skill')).toBe('code-reference')
+    })
+    // And the filter was cleared so the keep-selection effect kept it visible.
+    expect((screen.getByPlaceholderText(/filter skills/i) as HTMLInputElement).value).toBe('')
+  })
+
+  it('(c) target already visible: the filter is left untouched', async () => {
+    renderWithQuery()
+    await screen.findByText('Code Reference')
+    // Filter still matches the target, so it stays visible in the list.
+    const filter = screen.getByPlaceholderText(/filter skills/i)
+    fireEvent.change(filter, { target: { value: 'code' } })
+    fireEvent.click(screen.getByText(/context budget/i))
+    const openBtn = await screen.findByRole('button', { name: /open code reference/i })
+    fireEvent.click(openBtn)
+    await waitFor(() => {
+      expect(screen.getByTestId('dir-browser').getAttribute('data-skill')).toBe('code-reference')
+    })
+    // Untouched: the filter the user set is still there.
+    expect((screen.getByPlaceholderText(/filter skills/i) as HTMLInputElement).value).toBe('code')
+  })
+
+  it('(b) an unsaved draft is NOT dropped mid-save — delegates to selectSkill’s guards', async () => {
+    // The old budget handler called setDetailEditing(false) unconditionally,
+    // dropping an open draft. Delegating to selectSkill inherits its in-flight
+    // -save no-op: with a PUT in flight, opening another skill from the budget
+    // must be a no-op and keep the editor (and its draft) mounted — exactly as
+    // a list-row click behaves (see "ignores row clicks while a save is in
+    // flight"). A never-resolving updateSkill holds the save window open.
+    mockApi.skill.mockResolvedValue({ name: 'code-reference', content: '---\nname: code-reference\n---\nbody text', hash: 'h-kc' })
+    mockApi.updateSkill.mockImplementation(() => new Promise(() => {}))
+    renderWithQuery()
+    const editBtn = await screen.findByText('Edit')
+    await waitFor(() => expect(editBtn).not.toBeDisabled())
+    fireEvent.click(editBtn)
+    await waitFor(() => expect(screen.getByText('Save')).toBeInTheDocument())
+    const body = screen.getByDisplayValue('body text')
+    fireEvent.change(body, { target: { value: 'unsaved draft' } })
+    // Start the save; it never resolves, so the editor is in the save window.
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(mockApi.updateSkill).toHaveBeenCalled())
+    // Open another skill from the budget while the save is in flight.
+    fireEvent.click(screen.getByText(/context budget/i))
+    const openBtn = await screen.findByRole('button', { name: /open widgets/i })
+    fireEvent.click(openBtn)
+    // The editor (and the draft) survived: the budget open was a no-op, as the
+    // list path is. The old unconditional setDetailEditing(false) would have
+    // unmounted this.
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('unsaved draft')).toBeInTheDocument()
+      expect(screen.getByText('Saving…')).toBeInTheDocument()
+    })
+  })
+
+  it('(d) desktop: with an edit open, Open other-skill keeps the ORIGINAL edit and draft, no switch', async () => {
+    // Lead ruling: the budget doorway must not drop an unsaved edit. On desktop
+    // (no save in flight), opening ANOTHER skill from the budget while editing
+    // returns to the open editor with the draft intact and does NOT switch the
+    // selection — Save/Cancel stay the only way out. This is the button's own
+    // guard; a list-row click mid-edit is unchanged.
+    mockApi.skill.mockResolvedValue({ name: 'code-reference', content: '---\nname: code-reference\n---\nbody text', hash: 'h-cr' })
+    renderWithQuery()
+    // Auto-selected first skill is code-reference; enter its editor and type.
+    const editBtn = await screen.findByText('Edit')
+    await waitFor(() => expect(editBtn).not.toBeDisabled())
+    fireEvent.click(editBtn)
+    await waitFor(() => expect(screen.getByText('Save')).toBeInTheDocument())
+    const body = screen.getByDisplayValue('body text')
+    fireEvent.change(body, { target: { value: 'unsaved draft' } })
+    // Into the budget and click a DIFFERENT skill's open link.
+    fireEvent.click(screen.getByText(/context budget/i))
+    const openBtn = await screen.findByRole('button', { name: /open widgets/i })
+    fireEvent.click(openBtn)
+    // Back on the editor: still the original skill's edit, draft unchanged, and
+    // the selection did not move to widgets.
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('unsaved draft')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Save')).toBeInTheDocument()
+    expect(screen.getByText('Cancel')).toBeInTheDocument()
+    // The budget never reseeded the editor from the clicked skill ("widgets"):
+    // beginEdit is the only path that reads a skill's content, and it was not
+    // called for widgets, so the open edit is still the original skill's.
+    expect(mockApi.skill).not.toHaveBeenCalledWith('widgets')
   })
 })

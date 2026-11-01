@@ -15870,6 +15870,7 @@
         "budget_group_frozen_detail": "{{count}} · {{chars}} venivano spesi",
         "budget_header": "<total>{{total}}</total> caratteri · ultimi 30 giorni · top 3 = <pct>{{pct}}</pct>",
         "budget_if_fires": "{{size}} se si attiva",
+        "budget_open_skill": "Apri {{name}}",
         "budget_renamed": "(rinominato)",
         "budget_sort": "Ordina",
         "budget_sort_cost": "Costo maggiore",

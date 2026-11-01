@@ -15579,6 +15579,7 @@
         "budget_group_frozen_detail": "{{count}} · {{chars}} খরচ হচ্ছিল",
         "budget_header": "<total>{{total}}</total> অক্ষর · গত 30 দিন · সেরা 3 = <pct>{{pct}}</pct>",
         "budget_if_fires": "চললে {{size}}",
+        "budget_open_skill": "{{name}} খুলুন",
         "budget_renamed": "(নাম পরিবর্তিত)",
         "budget_sort": "সাজান",
         "budget_sort_cost": "সর্বোচ্চ খরচ",

@@ -16161,6 +16161,7 @@
         "budget_group_frozen_detail": "{{count}} · {{chars}} расходовалось",
         "budget_header": "<total>{{total}}</total> символов · последние 30 дней · топ-3 = <pct>{{pct}}</pct>",
         "budget_if_fires": "{{size}} при срабатывании",
+        "budget_open_skill": "Открыть {{name}}",
         "budget_renamed": "(переименован)",
         "budget_sort": "Сортировка",
         "budget_sort_cost": "Наибольшая стоимость",

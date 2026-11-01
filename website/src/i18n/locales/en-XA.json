@@ -15401,6 +15401,7 @@
         "budget_group_frozen_detail": "[{{count}} · {{chars}} ẁàş ƀèìñğ şþèñţ ·················]",
         "budget_header": "[<total>{{total}}</total> çĥàŕş · ĺàşţ 30 ðàýş · ţøþ 3 = <pct>{{pct}}</pct> ················]",
         "budget_if_fires": "[{{size}} ìƒ ìţ ƒìŕèş ···········]",
+        "budget_open_skill": "[Øþèñ {{name}} ········]",
         "budget_renamed": "[(ŕèñàɱèð) ··············]",
         "budget_sort": "[Şøŕţ ······]",
         "budget_sort_cost": "[Ɓìğğèşţ çøşţ ···········]",

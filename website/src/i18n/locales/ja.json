@@ -15288,6 +15288,7 @@
         "budget_group_frozen_detail": "{{count}} 件 · {{chars}} を消費していました",
         "budget_header": "<total>{{total}}</total> 文字 · 過去30日 · 上位3件 = <pct>{{pct}}</pct>",
         "budget_if_fires": "発火すれば {{size}}",
+        "budget_open_skill": "{{name}} を開く",
         "budget_renamed": "（改名）",
         "budget_sort": "並び替え",
         "budget_sort_cost": "消費量が多い順",

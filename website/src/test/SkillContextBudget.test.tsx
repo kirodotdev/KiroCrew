@@ -306,4 +306,97 @@ describe('SkillContextBudget — control plane', () => {
       expect(onBack).toHaveBeenCalled()
     })
   })
+
+  describe('description + link join (#26893)', () => {
+    // The budget endpoint reports cost only; description and the detail view
+    // are joined from the skills list by the shared `key`.
+    const skillsByKey = new Map<string, { key: string; name: string; description: string }>([
+      ['kirocrew-commands', { key: 'kirocrew-commands', name: 'kirocrew-commands', description: 'Complete CLI reference for Kiro Crew commands.' }],
+      ['browser-auth', { key: 'browser-auth', name: 'browser-auth', description: 'Browse sites behind a login wall.' }],
+      // grill (a cold row) is deliberately absent AND present-without-desc is
+      // tested separately: here its omission proves a row with no matching
+      // skill renders cleanly with no description and no open affordance.
+    ])
+
+    function mountJoined(onOpenSkill = vi.fn()) {
+      mockApi.skillsBudget.mockResolvedValue(BUDGET_RESPONSE)
+      mockApi.setSkillInjectOnTrigger.mockResolvedValue({})
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+      render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <SkillContextBudget
+              onBack={() => {}}
+              skillsByKey={skillsByKey as never}
+              onOpenSkill={onOpenSkill}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      )
+      return { onOpenSkill }
+    }
+
+    it('renders a row’s description from the joined skill', async () => {
+      mountJoined()
+      expect(await screen.findByText(/Complete CLI reference for Kiro Crew commands\./i)).toBeTruthy()
+    })
+
+    it('offers a working open-skill link that calls onOpenSkill with the key', async () => {
+      const { onOpenSkill } = mountJoined()
+      const openBtn = await screen.findByRole('button', { name: /open kirocrew commands/i })
+      fireEvent.click(openBtn)
+      expect(onOpenSkill).toHaveBeenCalledWith('kirocrew-commands')
+    })
+
+    it('renders a skill with no matching description cleanly (no link, no crash)', async () => {
+      mountJoined()
+      // The cold row `grill` has no entry in skillsByKey: it still renders its
+      // name as plain text, with no open button for it. (/Grill/i matches both
+      // the display name and the mono key line, so assert on the count.)
+      await waitFor(() => expect(screen.getAllByText(/Grill/i).length).toBeGreaterThan(0))
+      expect(screen.queryByRole('button', { name: /open grill/i })).toBeNull()
+    })
+
+    it('leaves rows cost-only when no join data is supplied (back-compat)', async () => {
+      mount() // no skillsByKey / onOpenSkill
+      await screen.findByText(/Kirocrew Commands/i)
+      // No description text and no open affordance when the host passes nothing.
+      expect(screen.queryByText(/Complete CLI reference/i)).toBeNull()
+      expect(screen.queryByRole('button', { name: /open kirocrew commands/i })).toBeNull()
+    })
+
+    it('opens a skill whose joined description is empty/whitespace, with no empty description line', async () => {
+      // browser-auth IS in the map but with a whitespace-only description: the
+      // name must still be a working open button, and no blank description line
+      // should render between the name and the mono key.
+      const onOpenSkill = vi.fn()
+      const blankDescMap = new Map<string, { key: string; name: string; description: string }>([
+        ['browser-auth', { key: 'browser-auth', name: 'browser-auth', description: '   ' }],
+      ])
+      mockApi.skillsBudget.mockResolvedValue({
+        window_days: 30,
+        total_chars: 42868,
+        rows: [FROZEN_SKILL],
+      })
+      mockApi.setSkillInjectOnTrigger.mockResolvedValue({})
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+      const { container } = render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <SkillContextBudget
+              onBack={() => {}}
+              skillsByKey={blankDescMap as never}
+              onOpenSkill={onOpenSkill}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      )
+      const openBtn = await screen.findByRole('button', { name: /open browser auth/i })
+      fireEvent.click(openBtn)
+      expect(onOpenSkill).toHaveBeenCalledWith('browser-auth')
+      // The description line carries the `text-[11px] text-muted truncate`
+      // classes unique to it; a whitespace-only description must render none.
+      expect(container.querySelector('div.text-\\[11px\\].text-muted.truncate')).toBeNull()
+    })
+  })
 })
