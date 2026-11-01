@@ -1346,7 +1346,16 @@ I/O, so a loop-bound caller MUST defer it: `CronService.__init__` passes
 `_defer_prepare=_defer_initial_load` and `CronService.create()` runs `prepare()`
 through `asyncio.to_thread`, the same hop it already uses for `_load()`; a deferred
 store reads `enabled` False until that completes, so a read racing the prepare
-degrades rather than touching a directory of unknown state. At runtime `_degrade`
+degrades rather than touching a directory of unknown state. An unusable directory
+logs a WARNING, except the sandbox-mask shape (`_dir_masked`): the process shows
+agent confinement (`_sandbox_confined`: the noted `sandbox_launch_mark` or
+`sandbox_unavailable.agent_confinement_evidence`), the parent lists the name, and
+`os.stat` on it answers a denial. An unconfined process such as the gateway always
+warns, whatever the denial. That is the `cron-history` mask in
+an agent's sandboxed shell (`sandbox._CREW_HIDDEN_LEAVES`), where history is off in
+that process and the gateway records runs, so it logs at DEBUG instead (#25200).
+The mkdir errno plays no part, since it is `EEXIST` or `EPERM` by route and Python
+version. At runtime `_degrade`
 disables the store only on a DENIAL (`EPERM`/`EACCES`/`EROFS`), which is a standing
 condition; every other `OSError` (a full disk, fd exhaustion) costs one record and
 leaves history on. Callers do not branch on any of this: the store answers
