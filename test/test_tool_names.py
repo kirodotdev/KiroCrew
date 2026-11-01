@@ -268,6 +268,17 @@ class TestWebSearchReachesTheRemoteTool:
         assert policy_aliases("remote_web_search") == ("web_search",)
         assert policy_alias_split("remote_web_search") == (("web_search",), ())
 
+    def test_remote_web_search_is_the_remote_wrapped_set(self):
+        """The permission path's identity-disagreement exemption reads this
+        derived set, not the mount table directly, so it must carry exactly the
+        remote-prefixed ids and nothing a local built-in's id could collide
+        with."""
+        from kiro_crew.platform.tool_names import KAS_REMOTE_WRAPPED_TOOL_IDS
+
+        assert KAS_REMOTE_WRAPPED_TOOL_IDS == frozenset({"remote_web_search"})
+        for kas_id in KAS_REMOTE_WRAPPED_TOOL_IDS:
+            assert kas_id.startswith("remote_")
+
 
 class TestTheTwoReadingsHaveOppositePolarity:
     """Mounting grants, so it is bounded by the kiro-cli tool's own verbs.

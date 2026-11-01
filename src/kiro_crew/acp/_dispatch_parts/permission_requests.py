@@ -50,6 +50,7 @@ from kiro_crew.acp_backends import (
 )
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
 from kiro_crew.platform.guest_paths import GuestPathParams
+from kiro_crew.platform.tool_names import KAS_REMOTE_WRAPPED_TOOL_IDS
 from kiro_crew.session_environment import WORKSPACE_DENY_ALIASES, WORKSPACE_TOOL_KINDS
 
 # Logs under the facade's name, which operators and tests filter on.
@@ -809,9 +810,30 @@ def build_permission_event(
             ):
                 _mcp_identity_unreadable = True
             if _id_server and _id_server != _mcp_server_name:
+                # One KNOWN disagreement is not a mismatch: KAS's remote tool
+                # wrapper (idPrefix "remote_"; remote_web_search is the only
+                # member today, test/fixtures/kas_builtin_tool_ids.json's
+                # "remote" family) reports an identity on THIS frame that its
+                # own tool_call never carries at all -- no serverName channel,
+                # recorded live on kiro-cli 2.37.0 -- so the tool_call cache
+                # above holds a trusted EMPTY hit, the same shape a local
+                # built-in like read_file writes, and the comparison always
+                # disagrees for it. Recognised by toolId alone
+                # (KAS_REMOTE_WRAPPED_TOOL_IDS), never by trusting the
+                # claimed server name: _mcp_server_name is not touched here,
+                # so this cannot be used to adopt a server identity the
+                # tool_call did not itself report, and a toolId outside that
+                # set -- or a tool_call that cached a REAL server -- still
+                # falls through to the refusal below.
+                _is_recognized_remote_builtin = (
+                    _cached_server == ""
+                    and _cached_tool == ""
+                    and _harness_identifier(_frame_kiro.get("toolId"))
+                    in KAS_REMOTE_WRAPPED_TOOL_IDS
+                )
                 # Never adopted (see the design note above): refused on the
                 # harness handed the store, ignored elsewhere.
-                if identity_unreadable_cache is not None:
+                if not _is_recognized_remote_builtin and identity_unreadable_cache is not None:
                     _mcp_identity_unreadable = True
             if _id_server and _id_server == _mcp_server_name and not _tool_name and _id_tool:
                 _tool_name = _id_tool
