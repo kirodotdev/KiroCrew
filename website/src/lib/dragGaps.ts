@@ -70,3 +70,27 @@ export function computeHeaderDragGaps(header: Element, bandWidth: number): DragG
   if (width - cursor >= MIN_GAP_PX) gaps.push({ x: cursor, w: width - cursor })
   return gaps
 }
+
+/**
+ * Call `onChange` on every reflow that can move a control in `header`: a window
+ * or zoom resize, a child resizing (a badge widening a cluster leaves the header
+ * itself the same size, so observing the header alone would miss it), and any
+ * child, class or style change in its subtree. Returns the unsubscribe.
+ *
+ * Drag gaps are only failure-safe while they are fresh: a gap measured before a
+ * control appeared can sit over that control and turn its clicks into window
+ * drags, so every surface that keeps gaps on screen re-measures through this.
+ */
+export function observeHeaderLayout(header: Element, onChange: () => void): () => void {
+  const ro = new ResizeObserver(onChange)
+  ro.observe(header)
+  for (const c of Array.from(header.children)) ro.observe(c)
+  const mo = new MutationObserver(onChange)
+  mo.observe(header, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] })
+  window.addEventListener('resize', onChange)
+  return () => {
+    ro.disconnect()
+    mo.disconnect()
+    window.removeEventListener('resize', onChange)
+  }
+}
