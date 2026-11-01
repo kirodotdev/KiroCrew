@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import json
 import textwrap
 from unittest.mock import MagicMock
 
@@ -295,6 +296,33 @@ def test_unmarked_entry_in_unconstrained_slot_survives(tmp_path):
     cr._drop_stale_admissions(state, slot)
 
     assert [q["content"] for q in slot._queue] == ["hi"]
+
+
+def test_unsent_restored_cards_wait_and_a_sent_one_is_judged(tmp_path):
+    """A restored card carries no snapshot (the restore strips it) and no drain
+    runs it, so the sweep leaves it for the user. The card the user sends, named
+    or marked chosen, is judged like any unmarked entry and fails closed."""
+    from kiro_crew.dashboard.slot_queue_repository import (
+        RESTORED_QUEUE_KEY,
+        RESTORED_SEND_CHOSEN_KEY,
+    )
+
+    state = _make_state(tmp_path)
+    slot = _link(state.get_or_create_slot("chat-1"))
+    slot._queue = [
+        {"id": "r1", "content": "old one", RESTORED_QUEUE_KEY: True},
+        {"id": "r2", "content": "old two", RESTORED_QUEUE_KEY: True},
+    ]
+
+    cr._drop_stale_admissions(state, slot)
+    assert [q["id"] for q in slot._queue] == ["r1", "r2"]
+
+    cr._drop_stale_admissions(state, slot, selected_id="r2")
+    assert [q["id"] for q in slot._queue] == ["r1"]
+
+    slot._queue[0][RESTORED_SEND_CHOSEN_KEY] = True
+    cr._drop_stale_admissions(state, slot)
+    assert slot._queue == []
 
 
 def test_cron_and_subagent_entries_are_exempt(tmp_path):
@@ -748,6 +776,214 @@ async def test_drain_strips_snapshot_from_the_persisted_row(tmp_path, monkeypatc
     assert user_rows, "the drained entry must land as a user row"
     row_meta = user_rows[-1].get("meta") or {}
     assert sc.QUEUED_CONTAINMENT_META_KEY not in row_meta
+
+
+def _restored_cards():
+    from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+
+    return [
+        {"id": "r1", "content": "accepted parked send", RESTORED_QUEUE_KEY: True},
+        {"id": "r2", "content": "waiting card", RESTORED_QUEUE_KEY: True},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restored_parked_send_on_linked_slot_is_dropped_not_dispatched(tmp_path, monkeypatch):
+    """The restore drain picks an accepted parked send AFTER the opening sweep,
+    which left the unsent restored cards unjudged. The picked card has no
+    snapshot, so on a slot that is now linked it fails closed: dropped, never
+    dispatched. The card the drain did not pick keeps waiting for the user."""
+    state = _make_state(tmp_path)
+    state.subagents = None
+    slot = _link(state.get_or_create_slot("chat-1"))
+    slot._queue = _restored_cards()
+
+    spawned = MagicMock()
+
+    def _no_spawn(_state, _slot, coro):  # pragma: no cover - must not be reached
+        coro.close()
+        spawned()
+        return MagicMock()
+
+    monkeypatch.setattr(cr, "spawn_guarded_turn", _no_spawn)
+    previous = cr._RESTORED_DRAIN_IDS.get()
+    cr._RESTORED_DRAIN_IDS.set({slot.key: frozenset({"r1"})})
+    try:
+        started = await cr._start_next_queued_turn(state, slot)
+    finally:
+        cr._RESTORED_DRAIN_IDS.set(previous)
+
+    assert started is False
+    assert not spawned.called
+    assert [q["id"] for q in slot._queue] == ["r2"]
+
+
+@pytest.mark.asyncio
+async def test_restored_parked_send_on_unconstrained_slot_still_runs(tmp_path, monkeypatch):
+    """The same accepted parked send on a slot with no containment constraint
+    passes the check and runs; the unpicked restored card stays queued."""
+    state = _make_state(tmp_path)
+    state.subagents = None
+    slot = state.get_or_create_slot("chat-1")
+    slot._queue = _restored_cards()
+
+    async def _stub_run_chat(_state, _slot, _prompt, **_kwargs):
+        return None
+
+    def _fake_spawn(_state, _slot, coro):
+        coro.close()
+        task = MagicMock()
+        task.done.return_value = True
+        return task
+
+    monkeypatch.setattr(cr, "_run_chat", _stub_run_chat)
+    monkeypatch.setattr(cr, "spawn_guarded_turn", _fake_spawn)
+    previous = cr._RESTORED_DRAIN_IDS.get()
+    cr._RESTORED_DRAIN_IDS.set({slot.key: frozenset({"r1"})})
+    try:
+        started = await cr._start_next_queued_turn(state, slot)
+    finally:
+        cr._RESTORED_DRAIN_IDS.set(previous)
+
+    assert started is True
+    assert [q["id"] for q in slot._queue] == ["r2"]
+    user_rows = [m for m in slot.messages if m.get("role") == "user"]
+    assert user_rows and "accepted parked send" in user_rows[-1]["content"]
+
+
+def test_a_restored_entry_loses_its_steer_intent_mark():
+    """The act-now mark lets an entry drain past the sub-agent hold, so the
+    reader drops it with the other authority-bearing keys."""
+    from kiro_crew.dashboard.chat_utils_injected_rows import (
+        STEER_INTENT_META,
+        releases_past_subagent_hold,
+    )
+    from kiro_crew.dashboard.slot_queue_repository import sanitize_restored_queue
+
+    saved = [{"id": "s1", "content": "act now", "meta": {STEER_INTENT_META: True, "sendId": "x"}}]
+    (restored,) = sanitize_restored_queue(json.loads(json.dumps(saved)))
+
+    assert STEER_INTENT_META not in restored["meta"]
+    assert restored["meta"]["sendId"] == "x"
+    assert not releases_past_subagent_hold(restored)
+
+
+@pytest.mark.asyncio
+async def test_a_restored_steer_under_the_subagent_hold_is_not_dispatched(tmp_path, monkeypatch):
+    """A saved act-now steer, restored onto a slot that is now linked while a
+    sub-agent hold is active, must not drain through the hold's system path:
+    that path runs no containment sweep. It waits as an ordinary card."""
+    from kiro_crew.dashboard.chat_utils_injected_rows import STEER_INTENT_META
+    from kiro_crew.dashboard.slot_queue_repository import sanitize_restored_queue
+
+    state = _make_state(tmp_path)
+    state.subagents = None
+    slot = _link(state.get_or_create_slot("chat-1"))
+    saved = [{"id": "s1", "content": "act now", "meta": {STEER_INTENT_META: True}}]
+    slot._queue[:] = sanitize_restored_queue(json.loads(json.dumps(saved)))
+    slot._subagent_deliveries_inflight = 1
+
+    spawned = MagicMock()
+
+    def _no_spawn(_state, _slot, coro):  # pragma: no cover - must not be reached
+        coro.close()
+        spawned()
+        return MagicMock()
+
+    monkeypatch.setattr(cr, "spawn_guarded_turn", _no_spawn)
+    started = await cr._start_next_queued_turn(state, slot)
+
+    assert started is False
+    assert not spawned.called
+    assert [q["id"] for q in slot._queue] == ["s1"]
+
+
+def test_the_subagent_hold_path_never_drains_an_unchosen_restored_card():
+    """Even a restored card still wearing the act-now mark (built here directly,
+    so the reader's strip does not apply) stays queued on the hold's system path;
+    an in-process steer behind it still drains."""
+    from kiro_crew.dashboard.chat_utils_injected_rows import (
+        STEER_INTENT_META,
+        _dequeue_next_system_message,
+    )
+    from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+
+    restored = {
+        "id": "r1",
+        "content": "restored steer",
+        "kind": "",
+        RESTORED_QUEUE_KEY: True,
+        "meta": {STEER_INTENT_META: True},
+    }
+    live = {"id": "l1", "content": "live steer", "kind": "", "meta": {STEER_INTENT_META: True}}
+    slot = MagicMock()
+    slot._queue = [restored, live]
+    slot.queue_pop = slot._queue.pop
+
+    content, consumed = _dequeue_next_system_message(slot)
+
+    assert content == "live steer"
+    assert [c["id"] for c in consumed] == ["l1"]
+    assert [q["id"] for q in slot._queue] == ["r1"]
+
+
+@pytest.mark.asyncio
+async def test_a_card_chosen_during_the_drains_await_is_judged_before_it_runs(
+    tmp_path, monkeypatch
+):
+    """The opening sweep skips an unsent restored card, then the drain waits in
+    the Shared Crew cancelled-parked check. A "run this next" click marks the
+    card chosen during that wait. On a slot that is now linked the card is
+    judged when it is picked, so it is dropped, not dispatched."""
+    from kiro_crew.dashboard.slot_queue_repository import (
+        RESTORED_QUEUE_KEY,
+        RESTORED_SEND_CHOSEN_KEY,
+    )
+    from kiro_crew.shared_crew import admission_gate
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class _ParkedCheckThatWaits:
+        enabled = True
+
+        async def _cancelled_parked(self, work_ids):
+            entered.set()
+            await release.wait()
+            return None
+
+    monkeypatch.setattr(admission_gate, "installed_service", lambda: _ParkedCheckThatWaits())
+    spawned = MagicMock()
+
+    def _no_spawn(_state, _slot, coro):  # pragma: no cover - must not be reached
+        coro.close()
+        spawned()
+        return MagicMock()
+
+    monkeypatch.setattr(cr, "spawn_guarded_turn", _no_spawn)
+    state = _make_state(tmp_path)
+    state.subagents = None
+    slot = _link(state.get_or_create_slot("chat-1"))
+    slot._queue[:] = [
+        {
+            "id": "X",
+            "content": "restored card",
+            "kind": "",
+            RESTORED_QUEUE_KEY: True,
+            "meta": {"sharedCrewWork": "w-1"},
+        }
+    ]
+
+    drain = asyncio.create_task(cr._start_next_queued_turn(state, slot))
+    await asyncio.wait_for(entered.wait(), timeout=30)
+    # What the interrupt route does after its body read: promote, mark chosen.
+    assert slot.queue_promote_by_id("X")
+    slot._queue[0][RESTORED_SEND_CHOSEN_KEY] = True
+    release.set()
+    started = await asyncio.wait_for(drain, timeout=30)
+
+    assert started is False
+    assert not spawned.called
+    assert [q["id"] for q in slot._queue] == []
 
 
 # ── Constraint-set parity with authorize_target ──────────────────────

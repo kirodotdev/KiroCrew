@@ -573,8 +573,19 @@ def _dequeue_next_system_message(slot) -> tuple:
     and so is a steer that fell back to the queue
     (:func:`releases_past_subagent_hold`). Returns ``(content, [item])`` for the
     drained item, or ``(None, [])`` when only held (user) messages remain queued.
+
+    An entry restored from disk that the user did not choose never drains here:
+    this path runs no containment sweep, and such a card waits for the user.
     """
+    # Local import: slot_queue_repository reaches this module at call time.
+    from kiro_crew.dashboard.slot_queue_repository import (
+        RESTORED_QUEUE_KEY,
+        RESTORED_SEND_CHOSEN_KEY,
+    )
+
     for i, item in enumerate(slot._queue):
+        if item.get(RESTORED_QUEUE_KEY) and not item.get(RESTORED_SEND_CHOSEN_KEY):
+            continue
         if releases_past_subagent_hold(item):
             popped = slot.queue_pop(i)
             return popped["content"], [popped]

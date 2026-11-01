@@ -299,6 +299,8 @@ async def test_interrupt_declined_by_the_precheck_leaves_the_turn_untouched(monk
     status, data = await _post_interrupt(state)
 
     assert status == 200 and data["outcome"] == "compacting"
+    # Declined before the body read, so no card was selected.
+    assert data["queue_selected"] is False
     state.sessions.stop_turn.assert_not_awaited()
     assert not fut.done(), "a declined interrupt must not reject the turn's approvals"
     assert slot._stop_state == "idle"
