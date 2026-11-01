@@ -9,6 +9,7 @@ for real.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import hashlib
 import json
@@ -27,6 +28,8 @@ from kiro_crew.dashboard.handlers.office_slides import (
     api_file_office_slide,
     api_file_office_slides,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.office_slides"
 
@@ -371,6 +374,56 @@ async def test_spawn_routes_through_the_strict_sandbox_chokepoint(tmp_path):
     spawned = spawn.await_args
     assert list(spawned.args) == argv
     assert spawned.kwargs["cwd"] == str(work)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_conversion_kills_soffice(tmp_path, monkeypatch):
+    """Cancelling the conversion must not orphan ``soffice``.
+
+    The child runs in its own session, so nothing else stops it once
+    ``_run_soffice`` stops awaiting it. A cancel (gateway shutdown or restart)
+    that skipped the kill would leave LibreOffice parsing an untrusted deck with
+    no deadline left. The child must be handed to ``kill_and_reap`` before the
+    cancel propagates.
+    """
+    work = tmp_path / "work"
+    (work / "out").mkdir(parents=True)
+    started = asyncio.Event()
+    killed = asyncio.Event()
+
+    async def _wait() -> int:
+        started.set()
+        await killed.wait()
+        return -9
+
+    proc = MagicMock()
+    proc.stdout = None
+    proc.stderr = None
+    proc.returncode = None
+    proc.pid = UNALLOCATABLE_PID
+    proc.wait = _wait
+    reaped: list[object] = []
+
+    async def _kill_and_reap(child, *, timeout=None):  # noqa: ARG001
+        reaped.append(child)
+        child.returncode = -9
+        killed.set()
+
+    async def _prepare(partial_fn, executor=None):  # noqa: ARG001
+        return list(partial_fn.args[0]), dict(partial_fn.keywords["env"]), None
+
+    monkeypatch.setattr(mod.platform_compat, "kill_and_reap", _kill_and_reap)
+    argv = mod._soffice_argv("/usr/bin/soffice", work / "profile", work / "out", work / "deck.pptx")
+    with (
+        patch(f"{_MOD}.shielded_prepare_off_loop", _prepare),
+        patch(f"{_MOD}.create_subprocess_limited", AsyncMock(return_value=proc)),
+    ):
+        task = asyncio.create_task(mod._run_soffice(argv, work))
+        await await_until(started, what="the conversion awaiting soffice")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await await_until(task, what="the cancelled conversion finishing")
+    assert reaped == [proc], "a cancelled conversion left soffice running"
 
 
 def test_soffice_argv_is_a_list_with_a_private_profile(tmp_path):
