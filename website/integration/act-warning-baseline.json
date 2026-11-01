@@ -76,7 +76,6 @@
   "src/test/ChatSidebar.folderSortMode.test.tsx",
   "src/test/ChatSidebar.hapticTaps.test.tsx",
   "src/test/ChatSidebar.renameFailureRecovery.test.tsx",
-  "src/test/ChatSidebar.sourceLinkUnlink.test.tsx",
   "src/test/ChatSidebar.toolStatusSetting.test.tsx",
   "src/test/ChatSidebarCoverage.test.tsx",
   "src/test/ChatSidebarMoreCoverage.test.tsx",
