@@ -765,8 +765,15 @@ class WhatsAppTransport(MessagingTransport):
             targets.append(
                 ConfiguredChannelTarget(f"user:{me}", "WhatsApp · yourself", available, reason)
             )
+        seen = {me} if me else set()
         for jid in sorted(self._allowed):
             wa_id = jid_user(jid)
+            # One person, one target: the operator may list their own number, and
+            # a phone JID and its alias share a user part. A repeated id would read
+            # as a second recipient to sole_direct_target and be refused as ambiguous.
+            if wa_id in seen:
+                continue
+            seen.add(wa_id)
             targets.append(
                 ConfiguredChannelTarget(
                     f"user:{wa_id}", f"WhatsApp DM · {wa_id}", available, reason

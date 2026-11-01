@@ -873,3 +873,26 @@ class TestAttachmentCleanupRunsOffTheLoop:
         )
 
         assert not image.exists(), "a refused offload left the temp file behind"
+
+
+class TestOwnerDmDedup:
+    """Listing your own number in ``allowed_wa_ids`` is one person, not two.
+    A duplicate target would make ``sole_direct_target`` see two recipients and
+    refuse the DM as ambiguous, silently downgrading it to a dashboard notice."""
+
+    def test_own_number_in_the_allowlist_is_not_a_second_target(self) -> None:
+        from kiro_crew.messaging.transport import sole_direct_target
+
+        own = OWN_JID.split("@")[0]
+        h = Harness(dm_policy="allowlist", allowed_wa_ids=[own])
+        ids = [t.target_id for t in h.transport.configured_targets()]
+        assert ids.count(f"user:{own}") == 1, ids
+        assert sole_direct_target(h.transport.configured_targets()) == f"user:{own}"
+
+    def test_a_genuinely_second_person_is_still_ambiguous(self) -> None:
+        from kiro_crew.messaging.transport import sole_direct_target
+
+        own = OWN_JID.split("@")[0]
+        friend = FRIEND.split("@")[0]
+        h = Harness(dm_policy="allowlist", allowed_wa_ids=[own, friend])
+        assert sole_direct_target(h.transport.configured_targets()) == ""
