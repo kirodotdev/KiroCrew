@@ -463,6 +463,48 @@ describe('notificationsSlice: server-confirmed removal', () => {
     const state = reducer(seeded, fetchNotifications.fulfilled({ items: [approvalNote], seq: 0, ackSeq: 0 }, '', undefined))
     expect(state.retiredApprovals).toEqual({ '2': true })
   })
+
+  // A stored note of kind `approval` is unread on the server; settling it
+  // marks it read in this tab only, so a refetch (a reconnect) must not
+  // reinstall the server's unread flag on a row that asks for nothing.
+  it.each([
+    ['refused', 'retired'],
+    ['dismiss_failed', 'decided with a failed DELETE'],
+  ] as const)('a refetch keeps a %s (%s) stored approval note read', (outcome) => {
+    const stored: Notification = { ...approvalNote, acked: false }
+    const other: Notification = { ...n1, acked: false }
+    let state = reducer({ items: [other, stored], clearSeq: 0 }, approvalDecisionSettled({ ts: '2', outcome }))
+    expect(state.items.find(n => n.ts === '2')?.acked).toBe(true)
+    state = reducer(state, fetchNotifications.fulfilled({ items: [other, stored], seq: 0, ackSeq: 0 }, '', undefined))
+    expect(state.items.find(n => n.ts === '2')?.acked).toBe(true)
+    // Only the settled row keeps its local read state: the other row still
+    // takes the server's flag.
+    expect(state.items.find(n => n.ts === '1')?.acked).toBe(false)
+  })
+
+  // Mark unread, then a decide whose refusal lands before the unread
+  // response: the settlement is newer, so that late receipt must not make
+  // the settled row unread again.
+  it.each(['refused', 'dismiss_failed'] as const)('a late unread receipt does not relight a %s approval row', async (outcome) => {
+    let release!: () => void
+    vi.mocked(api.unackNotification).mockImplementationOnce(() => new Promise(r => { release = () => r({}) }))
+    const store = mkStore([{ ...approvalNote, acked: true }])
+    const unread = store.dispatch(unackNotification('2'))
+    expect(store.getState().notifications.items[0].acked).toBe(false)
+    store.dispatch(approvalDecisionSettled({ ts: '2', outcome }))
+    expect(store.getState().notifications.items[0].acked).toBe(true)
+    release()
+    await unread
+    expect(store.getState().notifications.items[0].acked).toBe(true)
+  })
+
+  it('a refetch still takes the server flag for a row whose close X failed (not settled)', () => {
+    const stored: Notification = { ...approvalNote, acked: true }
+    // The close X is a one-note clear: a refused DELETE leaves no mark.
+    let state = reducer({ items: [stored], clearSeq: 0 }, deleteNotification.rejected(new Error('offline'), '', '2'))
+    state = reducer(state, fetchNotifications.fulfilled({ items: [{ ...stored, acked: false }], seq: 0, ackSeq: 0 }, '', undefined))
+    expect(state.items[0].acked).toBe(false)
+  })
 })
 
 describe('notificationsSlice: approval decision lifecycle', () => {
