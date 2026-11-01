@@ -56,7 +56,7 @@
  * A frame built with `relayWheel` (lib/widgetSrcdoc) posts its unowned
  * horizontal wheels as `{type: 'mc-frame-wheel', dx, dy, mode}`; the hook feeds
  * those into the same reader, accepted only from a frame `acceptFrame` names,
- * and asks `wants(dir, true)` so the host can limit what a frame may start.
+ * and asks `wants(dir, true, null)` so the host can limit what a frame may start.
  */
 import { useEffect, useRef, type RefObject } from 'react'
 import { WHEEL_LINE_PX } from './useWheelToHorizontal'
@@ -140,6 +140,8 @@ export interface WheelSample {
   at: number
   /** The sample came from a relaying frame. */
   fromFrame?: boolean
+  /** The element the wheel landed on. Unset for a relayed frame's wheel. */
+  target?: Element | null
 }
 
 export interface WheelVerdict {
@@ -174,7 +176,7 @@ type RunOwner = 'drag' | 'held' | 'other'
  * `reveals` right after it for a run it accepts.
  */
 export function createTrackpadSwipeReader(
-  wants: (dir: TrackpadSwipeDir, fromFrame: boolean) => boolean,
+  wants: (dir: TrackpadSwipeDir, fromFrame: boolean, target: Element | null) => boolean,
   /** True while the shell reports the fingers down. Unset: never known. */
   fingersDown: () => boolean = () => false,
   reveals: (dir: TrackpadSwipeDir) => boolean = () => false,
@@ -296,7 +298,7 @@ export function createTrackpadSwipeReader(
         if (dx === 0 && dy === 0) return out
         runNo += 1
         dir = dx > 0 ? 'left' : 'right'
-        if (Math.abs(dx) <= Math.abs(dy) || s.owned || !wants(dir, !!s.fromFrame)) owner = 'other'
+        if (Math.abs(dx) <= Math.abs(dy) || s.owned || !wants(dir, !!s.fromFrame, s.target ?? null)) owner = 'other'
         else owner = 'drag'
         waiting = owner === 'drag' && reveals(dir)
         sumX = 0
@@ -516,10 +518,12 @@ function prefersReducedMotion(): boolean {
 export interface TrackpadSwipeOptions {
   enabled: boolean
   /** Whether a run this way may start now. `fromFrame` is true for a run a
-   *  relaying frame reported. A declined run is left entirely to the browser. */
-  wants: (dir: TrackpadSwipeDir, fromFrame: boolean) => boolean
+   *  relaying frame reported. `target` is the element the run's first wheel
+   *  landed on, and null for a relayed run. A declined run is left entirely to
+   *  the browser. */
+  wants: (dir: TrackpadSwipeDir, fromFrame: boolean, target: Element | null) => boolean
   /** Whether a run this way, which `wants` just accepted, would bring a closed
-   *  panel out (or another of its tabs forward): its drag then starts only
+   *  panel out: its drag then starts only
    *  once it has travelled SWIPE_THRESHOLD_PX. Not asked under reduced motion.
    *  Unset: never. */
   reveals?: (dir: TrackpadSwipeDir) => boolean
@@ -555,7 +559,7 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
     /** The shell's last finger phase: null until one is heard (a browser never). */
     let fingers: boolean | null = null
     const reader = createTrackpadSwipeReader(
-      (d, fromFrame) => optsRef.current.wants(d, fromFrame),
+      (d, fromFrame, target) => optsRef.current.wants(d, fromFrame, target),
       () => fingers === true,
       // Under reduced motion nothing moves, and the swipe's own threshold applies.
       (d) => !prefersReducedMotion() && (optsRef.current.reveals?.(d) ?? false),
@@ -670,7 +674,8 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       // slow frame arrive in a burst, and handling time would read that frame
       // as a gap in the fingers and end the drag under them.
       const when = e.timeStamp > 0 ? e.timeStamp : performance.now()
-      const sample = { dx: e.deltaX, dy: e.deltaY, mode: e.deltaMode, ctrl: e.ctrlKey, owned, at: when }
+      const target = e.target instanceof Element ? e.target : null
+      const sample = { dx: e.deltaX, dy: e.deltaY, mode: e.deltaMode, ctrl: e.ctrlKey, owned, at: when, target }
       if (run(sample)) e.preventDefault()
     }
     /** Tell a relaying frame whether this host is listening. A frame that is

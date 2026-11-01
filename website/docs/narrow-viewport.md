@@ -649,7 +649,7 @@ direction with nothing to do are all left alone; a new run during a settle grabs
 panel where it is presenting it and follows from there, as a phone's drag can; anything else is cancelled event by event, with
 `overscroll-behavior-x: contain` on the document root while it runs, so macOS's
 back/forward swipe does not start under it. A leftward run from rest (the host's
-`reveals`: a closed panel, or the panel on another tab) is read like a drag but moves
+`reveals`: a closed panel) is read like a drag but moves
 nothing until the fingers' own travel, its tail never counted, reaches
 `SWIPE_THRESHOLD_PX` (80px), the distance a reduced-motion swipe needs; the drag starts
 there and follows from that point, and a lift-off or a recognised tail before it ends the
