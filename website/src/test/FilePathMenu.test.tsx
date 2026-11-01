@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import FilePathMenu from '../components/FilePathMenu'
@@ -164,7 +164,7 @@ describe('FilePathMenu', () => {
       })
       fireEvent.click(screen.getByText('Copy path'))
 
-      expect(copyToClipboard).toHaveBeenCalledWith(TEST_PATH)
+      await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(TEST_PATH))
     })
   })
 
@@ -355,24 +355,24 @@ describe('FilePathMenu', () => {
 
       rightClick(screen.getByTestId('trigger'))
       const reveal = await screen.findByRole('menuitem', { name: 'Show in file manager' })
-      reveal.focus()
+      act(() => { reveal.focus() })
       await user.keyboard('{Enter}')
       const alert = await screen.findByTestId('file-path-menu-error')
       expect(api.revealPath).toHaveBeenCalledTimes(1)
 
-      reveal.focus()
+      act(() => { reveal.focus() })
       await user.keyboard('{Enter}')
       await waitFor(() => expect(api.revealPath).toHaveBeenCalledTimes(2))
       await screen.findByTestId('file-path-menu-error')
 
-      reveal.focus()
+      act(() => { reveal.focus() })
       await user.keyboard('{ArrowDown}')
       const handoff = screen.getByRole('menuitem', { name: /^ask the agent$/i })
       expect(handoff).toHaveFocus()
       expect(handoff).toHaveAttribute('aria-describedby', alert.id)
       expect(handoff.getAttribute('title')).toBeTruthy()
       expect(handoff.querySelector('svg')).toHaveClass('text-muted')
-      await user.keyboard(key)
+      await act(async () => { await user.keyboard(key) })
 
       expect(consumeChatHandoff()).toContain('Couldn’t open this path on the machine running Kiro Crew.')
       expect(api.revealPath).toHaveBeenCalledTimes(2)
@@ -390,16 +390,16 @@ describe('FilePathMenu', () => {
 
       rightClick(screen.getByTestId('trigger'))
       const openInEditor = await screen.findByRole('menuitem', { name: 'Open in editor' })
-      openInEditor.focus()
+      act(() => { openInEditor.focus() })
       await user.keyboard('{Enter}')
       const alert = await screen.findByTestId('file-path-menu-editor-error')
 
-      openInEditor.focus()
+      act(() => { openInEditor.focus() })
       await user.keyboard('{ArrowDown}')
       const handoff = screen.getByRole('menuitem', { name: /^ask the agent$/i })
       expect(handoff).toHaveFocus()
       expect(handoff).toHaveAttribute('aria-describedby', alert.id)
-      await user.keyboard('{Enter}')
+      await act(async () => { await user.keyboard('{Enter}') })
 
       expect(consumeChatHandoff()).toContain('editor refused')
       expect(editorEnv.open).toHaveBeenCalledTimes(1)

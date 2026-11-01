@@ -248,7 +248,6 @@
   "src/test/FileArtifactComments.test.tsx",
   "src/test/FileBrowserRail.test.tsx",
   "src/test/FileChangeChipsAnim.test.tsx",
-  "src/test/FilePathMenu.test.tsx",
   "src/test/FolderConfigModal.test.tsx",
   "src/test/FolderPanel.deadline.test.tsx",
   "src/test/FolderPanel.search.test.tsx",
