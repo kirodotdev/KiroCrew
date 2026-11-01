@@ -636,6 +636,17 @@ provenance (a filesystem path, `registry:<name>`, or the literal `builtin`).
 `origin` drives behavioural branching, `source` drives display and re-install
 lookups. Both are needed and neither substitutes for the other.
 
+**`builtin` is a closed set that is being emptied.** It names only the apps that
+still ship inside the package, and no new name joins it: a new app, first-party
+included, reaches people from a dedicated GitHub repository listed in the official
+registry (`kirodotdev/KiroCrewApps`), and is installed
+like any other non-built-in app. Each built-in that still ships moves out with its
+user's record, data and enablement kept, so everything this document says about
+`origin: builtin` holds for those apps until each one's move lands. A capability an
+app could only get by being built in is a seam gap in these contracts, and the fix
+is a seam every app can use ([decision](../../decisions/2026-11-01-kiro-crew-accepts-no-new-built-in-apps.md);
+gated by `no-new-builtin-apps` in `AUTOSDE.yaml`).
+
 Behaviour hangs off `resources` and `lifecycle`, never off `origin`:
 
 | Operation | `resources: gateway` | `resources: app` |

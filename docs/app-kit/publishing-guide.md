@@ -383,6 +383,17 @@ MyAppRepo/
 
 ## 10. Add a registry entry
 
+**Where your app's code lives.** Every app reaches people through a registry,
+never by being added to the Kiro Crew package: Kiro Crew accepts no new built-in
+app. Every app, first-party included, lives in a dedicated GitHub repository
+listed in the official registry
+([kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)), and the
+official catalog row below is what lists it; the catalog repository holds listing
+data, never app code. The built-in apps that still ship inside the package are
+being moved out the same way, so do not copy one of them as a pattern for where a
+new app goes
+([decision](../decisions/2026-11-01-kiro-crew-accepts-no-new-built-in-apps.md)).
+
 There are two listing surfaces, and they take different paths:
 
 **The official App Store catalog** is the store's inventory, and it is

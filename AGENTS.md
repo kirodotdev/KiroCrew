@@ -55,7 +55,7 @@ in the **same commit** when you change what it documents.
 | `context.py`, `context_blocks.py`, `context_assembly/`, what reaches the model's context | [context-management](docs/architecture/context-management.md) + [memory-skills-hooks: Context Builder](docs/system-specs/modules/memory-skills-hooks.md#context-builder-contextpy) (module ownership) |
 | MCP servers or tools (adding, changing, statelessness) | [mcp](docs/architecture/mcp.md) |
 | `mcp_gateway/` — `gatewayd.py`, `daemon/`, the daemon's lifecycle and facade | [mcp-gateway-daemon-lifecycle](docs/system-specs/modules/mcp-gateway-daemon-lifecycle.md) + [mcp](docs/architecture/mcp.md) |
-| apps, App Kit, manifests, app agents | [app-kit-platform](docs/system-specs/modules/app-kit-platform.md) + [app-kit/](docs/app-kit/README.md) |
+| apps, App Kit, manifests, app agents, where a new app ships | [app-kit-platform](docs/system-specs/modules/app-kit-platform.md) + [app-kit/](docs/app-kit/README.md) + [No built-in apps](#no-built-in-apps) |
 | artifacts, companion chat | [artifacts](docs/system-specs/modules/artifacts.md) |
 | `stt/`, `transcribe.py` and its `transcribe_*.py` owners, `voice_reply.py`, the mic, dictation, TTS | [stt-streaming](docs/system-specs/modules/stt-streaming.md) + [voice-streaming](docs/system-specs/modules/voice-streaming.md) |
 | cron, learn, dashboard handlers | [learn-cron-dashboard](docs/system-specs/modules/learn-cron-dashboard.md) |
@@ -204,6 +204,26 @@ capability sets and the CI half:
 [harness-parity](docs/system-specs/modules/harness-parity.md). Run the added-line
 gate locally with
 `HARNESS_BASE_REF=origin/main python3 scripts/check_harness_parity.py`.
+
+## No built-in apps
+
+Kiro Crew accepts no new built-in app. Never add an app under
+`src/kiro_crew/apps/builtins/`, an `app.json` outside `docs/app-kit/examples/` and
+test fixtures, a per-app page under `website/src/apps/<app>/`, a per-app row in a
+core built-in table (`BUILTIN_NAMES`, `apps/manager_builtins.py`, the
+`website/src/apps/` registries), or an app-specific MCP tool (`mcp_tools/apps.py`)
+or internal-secret path row (`dashboard/server_internal_paths.py`) in core. A new
+app, first-party included, ships from a dedicated GitHub repository listed in the
+official registry ([kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)).
+The built-ins that still ship are being moved out under #26967; fixing one in place
+until it leaves is fine. An app moves out COMPLETELY: no part of it (backend, UI,
+scripts, CI, specs) stays in core, and core never imports or hard-codes a specific
+app (`kiro_crew.apps.builtins.<app>`, an app id) outside the built-in tables being
+emptied. A capability an app cannot get from outside core is an App Kit seam gap:
+fix it with a generic, app-agnostic seam, never put the app in core. Rule:
+`no-new-builtin-apps` in `AUTOSDE.yaml`; decision:
+[2026-11-01](docs/decisions/2026-11-01-kiro-crew-accepts-no-new-built-in-apps.md);
+seams: [app-kit-platform](docs/system-specs/modules/app-kit-platform.md).
 
 ## Specs and docs
 

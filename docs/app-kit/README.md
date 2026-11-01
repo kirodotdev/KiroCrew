@@ -1,8 +1,10 @@
 # App Kit
 
-Developer documentation for building apps that run inside Kiro Crew. For the
-platform's own contracts (where an app's MCP servers land, how its agent JSON is
-composed), see
+Developer documentation for building apps that run inside Kiro Crew. A new app
+ships through a registry from its own repository: Kiro Crew accepts no new
+built-in app ([publishing-guide.md](publishing-guide.md#10-add-a-registry-entry)).
+For the platform's own contracts (where an app's MCP servers land, how its agent
+JSON is composed), see
 [../system-specs/modules/app-kit-platform.md](../system-specs/modules/app-kit-platform.md).
 
 | Document | Covers |
