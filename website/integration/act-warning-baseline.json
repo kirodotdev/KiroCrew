@@ -113,7 +113,6 @@
   "src/test/McpRowSignIn.test.tsx",
   "src/test/MdNotebookPageCoverage.test.tsx",
   "src/test/MeetingsMeetingTitle.test.tsx",
-  "src/test/MeetingsSettingsViewCoverage.test.tsx",
   "src/test/MemberMemoryPanel.test.tsx",
   "src/test/MemoryStorePicker.test.tsx",
   "src/test/MochiSettingsPanel.coverage.test.tsx",
