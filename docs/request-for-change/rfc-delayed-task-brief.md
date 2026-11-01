@@ -27,6 +27,7 @@ superseded-by: []
 - Trigger amendment, 2026-11-01 (owner ruling; implementation [#26938](https://github.com/kirodotdev/KiroCrew/pull/26938)): "warm welcome should consider clicking to another chat in the sidebar. Switching focus means attention left, so the user needs this info to catch up." A Crew Mode root now follows the crewmate's leave rule. A switch to another chat, from the sidebar or to another split-view pane, starts its away episode, as a page hide does; so do a socket close and, after a restart, the durable times, exactly as for a crewmate thread. The explicit-hide gate of the 2026-10-29 Scope amendment and its per-view hide mark go away; the client keeps sending the `hidden: true` bit, and the warm brief does not read it. The 30-minute minimum, the `announce` rule that keeps the reconnect wave quiet, a second window still showing the chat, the durable claim, the fingerprint dedup and every other rule of the Scope amendment are unchanged. This supersedes the stricter-trigger sentences of the 2026-10-29 Scope amendment.
 - UX amendment, 2026-10-31 (owner decision; implementation [#26500](https://github.com/kirodotdev/KiroCrew/pull/26500), issue [#26494](https://github.com/kirodotdev/KiroCrew/issues/26494)): the model-drawn `widget` drew its own progress ring against the prompt, cut long lines off at 320 px, and looked different on every return. The model now writes words only; it is not asked for a `widget`, and one it sends is ignored. The gateway lists what waits on the owner itself, from the ledger the snapshot already reads, and a fixed card component draws progress and that list as one picture. The owner chose this "glowing orb" direction from three mockups. Section 5.1 holds the shape. Trigger, preparation, spend, staleness, progress counting and reader-filter rules are unchanged; a stored brief keeps drawing its old `widget`. This supersedes the `widget` of the second 2026-10-26 UX amendment and of section 3.8.
 - Redesign amendment, 2026-10-31 (owner decision; issue [#25306](https://github.com/kirodotdev/KiroCrew/issues/25306)): a study of every real brief the owner received found most of them stated stale or false facts and none carried the owner's pending choices. The brief is rebuilt around two rules: verify before stating, and make every ask usable from the message alone. It is one message, replaced in place from a "preparing" indicator; a quiet return is one line; only goal-scoped numbers are shown; scope stays crewmate threads and Crew Mode roots. The trigger is unchanged. Section 3.9 holds the design and lists what it supersedes.
+- GitHub-read amendment, 2026-11-01 (owner decision in the conductor chat: "改设计稿，允许回来时查 GitHub", "amend the design; allow reading GitHub on return"; implementation [#26666](https://github.com/kirodotdev/KiroCrew/pull/26666), issue [#25306](https://github.com/kirodotdev/KiroCrew/issues/25306)): on a qualifying return the gateway itself reads, read-only, the pull requests the brief's open asks name, at most five, each good read cached 15 minutes, and states their state with its read time; a failed or rate-limited read never blocks the brief and shows "not checked since HH:MM". This supersedes the owner's earlier rejection of a gateway-side GitHub read ([#25307](https://github.com/kirodotdev/KiroCrew/pull/25307), closed 2026-10-28), the "gateway does not read GitHub itself" rule of section 3.9.1, the "no remote read" clause of section 3.9.8 and that rejected alternative in section 3.9. It applies the owner's 2026-10-31 rule 1 (verify before stating) to pull requests while the section 3.8 wake is not on `main`. Section 3.9.1 holds the rules. The trigger, claim, spend and every other section 3.9 rule are unchanged.
 - Audited on `d06b611f549d` (`main`, 2026-10-14).
 - This amends only the **warm** branch of [rfc-crewmate-greeting.md](rfc-crewmate-greeting.md) and [rfc-crewmate-greeting-as-message.md](rfc-crewmate-greeting-as-message.md). Their cold-welcome decision remains fully in force.
 
@@ -174,7 +175,7 @@ The gateway rechecks the foreground episode, slot identity, task fingerprint, an
 
 ### 3.8 Writer amendment, 2026-10-28: the crewmate writes the brief
 
-**Why.** The one-call brief summarizes what the ledger last said. The ledger only changes when a worker or the crewmate writes to it, so the brief can say a pull request is waiting for review after it merged, or is green after it went conflicting. A gateway-side fix that read live pull-request state before the call ([#25307](https://github.com/kirodotdev/KiroCrew/pull/25307)) was closed by the owner in favor of this design: it covered one task kind, and the gateway would have had to learn every other kind (files, deployments, tickets) itself. The crewmate already has the tools for every task it owns. Issue [#25306](https://github.com/kirodotdev/KiroCrew/issues/25306) tracks the stale report.
+**Why.** The one-call brief summarizes what the ledger last said. The ledger only changes when a worker or the crewmate writes to it, so the brief can say a pull request is waiting for review after it merged, or is green after it went conflicting. A gateway-side fix that read live pull-request state before the call ([#25307](https://github.com/kirodotdev/KiroCrew/pull/25307)) was closed by the owner in favor of this design: it covered one task kind, and the gateway would have had to learn every other kind (files, deployments, tickets) itself. The crewmate already has the tools for every task it owns. Issue [#25306](https://github.com/kirodotdev/KiroCrew/issues/25306) tracks the stale report. The GitHub-read amendment of 2026-11-01 (section 3.9.1) supersedes the rejection of a gateway-side pull-request read: the gateway now reads the pull requests the brief names on return, and the wake, when it ships, still covers every other task kind.
 
 **Decision.** On a qualifying return the gateway no longer starts with `run_bg_oneliner`. It wakes the crewmate that owns the thread for one turn. In that turn the crewmate:
 
@@ -295,11 +296,20 @@ A fact is **volatile** when it can change without a row in this thread. The gate
 |---|---|---|---|
 | Work item state, status, reason, decision, verdict | yes | gateway, reads the ledger at assembly | n/a (local read) |
 | Worker session running, idle, closed, waiting on an approval | yes | gateway, reads the session registry at assembly | n/a (local read) |
-| Pull request state, checks, review, mergeability | yes | the section 3.8 wake turn, with the crewmate's own tools | "not checked since" its last ledger or report time |
+| Pull request state, checks, review, mergeability | yes | gateway, reads GitHub during preparation on the return (rules below); the section 3.8 wake turn too, when it ships | "not checked since" its last good read, or "never" |
 | Deployment, ticket, any other remote state named by an acceptance | yes | the section 3.8 wake turn | same |
 | Goal, original request, the conductor's last message | no | gateway, from the transcript and ledger | n/a |
 
-The gateway does not read GitHub itself: the owner closed that approach in favor of the wake (section 3.8, #25307). Until the wake ships, and on every one-call fallback, remote facts are shown with their last read time. The prompt names the `read_at` fields and forbids stating a volatile fact without one.
+**The gateway reads pull requests on return** (GitHub-read amendment, 2026-11-01, owner decision; supersedes the earlier rejection in #25307, where the owner closed a gateway-side read in favor of the wake). Rules, as #26666 implements them:
+
+- **When.** Only while preparing a brief on a qualifying return: after the durable claim and before the model call, inside each of the at most two attempts (`WARM_TASK_BRIEF_ATTEMPTS`). The trigger is unchanged (section 3.2 as amended: at least 30 minutes away, then a return). A tab or chat switch, a short return, an unchanged fingerprint and a quiet return decided locally read nothing. There is no polling.
+- **Which.** Only pull requests the brief's open asks name, with their repository taken from ledger data or a full URL: each open `question` or `blocked` item's own PR (its `pr`, or its acceptance's `pr`, in its acceptance's `repo`), then each `https://github.com/<owner>/<repo>/pull/<n>` URL in the source ask and those items' text. A bare `#N` is never resolved to a repository, so it is never read. At most five per brief (`MAX_LIVE_PRS`).
+- **Rate.** Each good read is cached in the gateway process for 15 minutes (`LIVE_PR_TTL_SECS`), shared by every thread, so the same pull request is read at most once per 15 minutes; within that window only failed reads are retried. This sits under the one-brief-per-qualifying-return rule and the 48-per-thread daily ceiling.
+- **How.** Read-only, through the structured monitor's existing GitHub probe (`GitHubPullRequestProvider`) with the owner's existing `gh` credential. No new credential, route, listener or service, and no remote write.
+- **Failure.** A read never blocks or fails the brief. A failed, timed-out or rate-limited read gives `checked: false` with `not_checked_since` (its last good read, or `never`), and the brief says "not checked since HH:MM". A check read that did not finish says `"checks": "not fully read"`.
+- **Use.** Each entry reaches the model as `live_prs`, with `source` and `read_at`. A live state is not listed under "Since you left", because the read cannot tell when a pull request merged. The prompt allows a merged, green, approved or conflicting state only from `live_prs` or a newer change. The section 3.9.6 check drops a result that names a pull request the input never named.
+
+On the one-call path every other remote fact is still shown with its last read time. The prompt names the `read_at` fields and forbids stating a volatile fact without one.
 
 #### 3.9.2 Message shape
 
@@ -348,7 +358,7 @@ Note, 2026-10-31 (owner decision, the redesign's answer 6: show only useful data
 
 #### 3.9.6 Output check
 
-Before posting, the gateway checks the model's fields. Every `#N` reference and every commit SHA must appear in the input; every HH:MM must equal a `read_at` in the input; every volatile fact stated as current must cite a field read after the away anchor. On any failure the model's fields are dropped and the gateway posts what it built itself: the asks from the source marker and the `waiting` list, their buttons, and one line saying the summary could not be written. The existing invalid-output failure line still covers an empty or malformed result.
+Before posting, the gateway checks the model's fields. Every `#N` reference and every commit SHA must appear in the input; every HH:MM must equal a `read_at` or a `not_checked_since` time in the input; every volatile fact stated as current must cite a field read after the away anchor. On any failure the model's fields are dropped and the gateway posts what it built itself: the asks from the source marker and the `waiting` list, their buttons, and one line saying the summary could not be written. The existing invalid-output failure line still covers an empty or malformed result.
 
 #### 3.9.7 One message and the indicator
 
@@ -366,14 +376,14 @@ The 2026-10-26 leave rule now reads from the claim, not the opener: once claimed
 
 #### 3.9.8 What does not change
 
-The return trigger and its rules (sections 3.2 and 3.3 as amended), the 30-minute minimum, the durable claim, fingerprint dedup (an unchanged fingerprint still posts nothing), deferral behind a running turn, the 48-per-thread daily ceiling, the section 3.8 wake and its caps and allowlist, the reader filters of section 3.5, privacy and authorization (sections 6 and 7), and the cold-welcome non-goals. No new route, listener, credential or remote read is added: the only remote reads are the wake's, already accepted.
+The return trigger and its rules (sections 3.2 and 3.3 as amended), the 30-minute minimum, the durable claim, fingerprint dedup (an unchanged fingerprint still posts nothing), deferral behind a running turn, the 48-per-thread daily ceiling, the section 3.8 wake and its caps and allowlist, the reader filters of section 3.5, privacy and authorization (sections 6 and 7), and the cold-welcome non-goals. No new route, listener or credential is added. The remote reads are the wake's, already accepted, and, since the GitHub-read amendment of 2026-11-01, the gateway's bounded read-only pull-request read of section 3.9.1.
 
 **Supersedes.** The fixed opener and two-message shape (2026-10-15 and 2026-10-16 amendments, section 3.4's preparing message, section 4's opener step); "nothing retracts" for the opener, since none is written; the whole-board progress fallback of section 5.1; the "no link" and full defang rules of section 5.1 for the gateway-built `link` and the gateway-copied marker only; the language-from-original-request rule; the slot-mode choice of the conductor prompt; and the report idea of preparing the brief at leave time, which the owner rejected.
 
 **Alternatives considered.**
 
 - **Prepare at leave time.** Rejected by the owner: tab switches would fire it often, and short absences need no reminder.
-- **Gateway reads GitHub on return.** Rejected earlier by the owner (#25307) in favor of the wake, which covers every task kind.
+- **Gateway reads GitHub on return.** Rejected earlier by the owner (#25307) in favor of the wake, which covers every task kind. Superseded on 2026-11-01: the owner chose it for pull requests ("允许回来时查 GitHub"), bounded as section 3.9.1 says; the wake still covers the other kinds.
 - **Let the model write the `[OPTIONS: ...]` line.** Rejected: model text could invent or rename a choice that becomes a one-click send. Copying the source marker keeps the buttons exactly what the owner was offered.
 - **Keep the opener and edit it into the brief.** Rejected: rewriting a posted row changes history that readers and exports already hold. The display-only flag needs no rewrite.
 
@@ -381,6 +391,7 @@ The return trigger and its rules (sections 3.2 and 3.3 as amended), the 30-minut
 
 - A snapshot larger than the old 40,000-character cap still carries the source ask and transcript slice; no JSON is sliced; terminal items before the anchor are absent.
 - A volatile fact read before the anchor renders as "not checked since HH:MM"; one read after it renders as current with its source.
+- The live pull-request read (GitHub-read amendment): at most five are read; a good read is reused for 15 minutes and only failed reads are retried; a failed read gives `checked: false` and does not block the brief; only ledger PRs and full URLs are read, never a bare `#N`; a live merged PR is not listed as a change since the owner left.
 - The brief row's `content` ends with the source marker verbatim and the chip bar shows its buttons; a model-written marker stays defanged; a resolved ask posts no marker.
 - The gateway's source pick equals `deriveFollowUpOptions` on shared fixtures: a patrol row or note row with newer choices posted while away is the source; a later row without a marker, a Stop card or a queued row means no marker is copied; a failed turn is crossed as the chip bar crosses it.
 - Option labels the model renamed are replaced by the source labels.
@@ -410,6 +421,7 @@ sequenceDiagram
     G->>D: check away >= 30m and task changed
     G->>D: claim episode + fingerprint
     G-->>U: show the catch_up preparing indicator (3.9.7; no opener row)
+    G->>G: read up to 5 named PRs from GitHub, read-only, 15m cache (3.9.1); a failure marks them not checked
     G->>M: wake turn with the 3.8 tool allowlist, or one tool-free fallback call
     alt snapshot still current
         M-->>G: published or structured task brief
@@ -472,6 +484,8 @@ The card draws them in that reading order: status chip and headline, Needs you (
 Prompt input can include the user's original request, bounded transcript excerpts, session-ledger state, and shared work-ledger reports. All input stays within the model provider and account already configured for Kiro Crew. No project code, transcript, ledger, credential, or user data is sent to a new service. Existing transcript privacy modes still win; an incognito or otherwise derivation-withheld transcript is ineligible.
 
 The section 3.8 wake path is not tool-free. The wake is a crewmate turn that calls the crewmate's own tools with the crewmate's own credentials and approval scope, so its read tools (`gh pr view`, check runs, deploy and ticket status) reach the same remote systems a normal turn of that crewmate reaches. The wake adds no new service, credential, listener or route. It is narrower than a normal turn: the gateway refuses every tool outside the 3.8 allowlist, including pushes, comments and other remote writes, and caps the turn at `WARM_TASK_BRIEF_WAKE_MAX_TOOL_CALLS`. Only the one-call fallback of section 3.6 stays tool-free.
+
+Since the GitHub-read amendment of 2026-11-01, the gateway itself also reads, before the one-call brief, the state of at most five pull requests the brief names (section 3.9.1). The read is read-only, goes through the structured monitor's existing GitHub probe with the owner's existing `gh` credential, and sends GitHub only the pull-request URLs it reads. It adds no service, credential, listener or route, and its answers stay in the gateway process and the model provider already configured.
 
 The implementation PR body must repeat this spend statement, name the 30-minute away threshold, state that return is the only trigger, and state that the deterministic preparing message costs no model call.
 
@@ -547,3 +561,5 @@ Amended by the owner's 2026-10-31 decision (section 5.1): the model writes words
 Amended by the owner's 2026-10-28 decision (section 3.8): a qualifying return wakes the crewmate for one read-only, background-priority turn that checks live task state with its own tools, updates its records and Dashboard, and writes the brief; progress stays gateway-counted; the one-call brief is the fallback on a running turn, a cap, host pressure, failure or a 180-second timeout.
 
 Amended by the owner's 2026-10-31 redesign decision (section 3.9): volatile facts are stated only after a check after the away anchor, else as "not checked since HH:MM"; asks carry what, why the owner, every option with its consequence, a recommendation and a link, and the pending choices come back as working buttons copied from the source message; one message replaces a display-only preparing indicator in place, with no opener row; a quiet return is one line; only goal-scoped counts are shown; the trigger and scope (crewmate threads and Crew Mode roots, which Settings labels "Ultra Mode") are unchanged.
+
+Amended by the owner's 2026-11-01 GitHub-read decision ("改设计稿，允许回来时查 GitHub"), which supersedes the earlier rejection in #25307: on a qualifying return the gateway reads, read-only, at most five pull requests the open asks name (ledger data or full URLs, never a bare `#N`), each good read cached 15 minutes; a failed read never blocks the brief and shows "not checked since HH:MM"; no new credential, route or listener.
