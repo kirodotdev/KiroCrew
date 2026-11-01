@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-ui/react-popover"))
 
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
@@ -48,7 +48,8 @@ function pressChord(): KeyboardEvent {
   const ev = new KeyboardEvent('keydown', {
     code: 'Enter', key: 'Enter', altKey: true, shiftKey: true, bubbles: true, cancelable: true,
   })
-  document.dispatchEvent(ev)
+  // The chord moves focus, which re-renders the composer, so the dispatch is an action the test causes.
+  act(() => { document.dispatchEvent(ev) })
   return ev
 }
 
@@ -200,7 +201,7 @@ describe('Alt+Shift+Enter focuses the pending approval', () => {
     // composer. Safe here only because the chord moves focus and nothing else.
     renderWithProviders(<Harness />, { store: createTestStore(stateWithApproval()) })
     const composer = document.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')!
-    composer.focus()
+    act(() => { composer.focus() })
     expect(document.activeElement).toBe(composer)
     pressChord()
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /Allow once/ }))
