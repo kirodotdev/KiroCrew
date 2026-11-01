@@ -17885,6 +17885,7 @@
         "ssh_agent_since": "自 {{time}} 起",
         "ssh_agent_save_failed": "无法保存 SSH 代理设置。",
         "ssh_agent_load_failed": "无法读取会话是否可以使用你的 SSH 代理。",
+        "ssh_agent_owner_only": "只有仪表板所有者才能查看或更改会话是否可以使用 SSH 代理。",
         "credential_redaction_section": "文件视图中的凭证脱敏",
         "credential_redaction_toggle": "对仪表板为你打开的文件脱敏凭证",
         "credential_redaction_toggle_help": "关闭后，仪表板为你打开的文件（聊天侧边面板“文件”标签，以及“库”和“工件”预览）按原样显示，且仅限你自己的仪表板。默认开启。本仪表板中的对话、Slack 和消息频道仍会脱敏。更改此项会重新加载已打开的文件（未保存的编辑会保留）并关闭文件比较（diff）视图。",

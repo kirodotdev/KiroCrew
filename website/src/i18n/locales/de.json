@@ -18225,6 +18225,7 @@
         "ssh_agent_since": "Seit {{time}}",
         "ssh_agent_save_failed": "Die SSH-Agent-Einstellung konnte nicht gespeichert werden.",
         "ssh_agent_load_failed": "Konnte nicht lesen, ob Sitzungen deinen SSH-Agenten verwenden dürfen.",
+        "ssh_agent_owner_only": "Nur der Dashboard-Eigentümer kann sehen oder ändern, ob Sitzungen den SSH-Agenten verwenden dürfen.",
         "credential_redaction_section": "Schwärzung von Zugangsdaten in Dateiansichten",
         "credential_redaction_toggle": "Zugangsdaten in Dateien schwärzen, die das Dashboard für dich öffnet",
         "credential_redaction_toggle_help": "Ausgeschaltet erscheinen Dateien, die das Dashboard für dich öffnet – der Tab „Dateien“ der Chat-Seitenleiste sowie die Vorschauen in Bibliothek und Artefakte – so, wie sie geschrieben wurden, nur in deinem eigenen Dashboard. Standardmäßig eingeschaltet. Unterhaltungen in diesem Dashboard, Slack und Messaging-Kanäle bleiben geschwärzt. Eine Änderung lädt offene Dateien neu (ungespeicherte Änderungen bleiben erhalten) und schließt Dateivergleichs-Ansichten (Diff).",

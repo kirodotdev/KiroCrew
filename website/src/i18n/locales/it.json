@@ -18565,6 +18565,7 @@
         "ssh_agent_since": "Dal {{time}}",
         "ssh_agent_save_failed": "Impossibile salvare l’impostazione dell’agente SSH.",
         "ssh_agent_load_failed": "Impossibile leggere se le sessioni possono usare il tuo agente SSH.",
+        "ssh_agent_owner_only": "Solo il proprietario della dashboard può vedere o modificare se le sessioni possono usare l'agente SSH.",
         "credential_redaction_section": "Oscuramento delle credenziali nelle viste dei file",
         "credential_redaction_toggle": "Oscura le credenziali nei file che la dashboard apre per te",
         "credential_redaction_toggle_help": "Disattivato, i file che la dashboard apre per te (la scheda File del pannello laterale della chat e le anteprime di Libreria e Artefatti) vengono mostrati com'è stati scritti, solo nella tua dashboard. Attivo per impostazione predefinita. Le conversazioni in questa dashboard, Slack e i canali di messaggistica restano oscurati. Modificarlo ricarica i file aperti (le modifiche non salvate vengono conservate) e chiude le viste di confronto file (diff).",

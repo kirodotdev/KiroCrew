@@ -16,9 +16,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 import { renderWithProviders } from '../../test/helpers'
+import { refocusWindow } from '../../test/focusBarrier'
 import type { SshAgentConsentStatus } from '../../api/client'
 
-vi.mock('../../api/client', () => ({
+vi.mock('../../api/client', async () => ({
+  // The real class: the card's retry policy tells an owner-gate 403 apart with `instanceof`.
+  ApiError: (await vi.importActual<typeof import('../../api/apiError')>('../../api/apiError')).ApiError,
   api: {
     // The panel's rail reads these on mount regardless of the selected section,
     // and they must RESOLVE: a bare vi.fn() returns undefined, which react-query
@@ -36,6 +39,7 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { api } from '../../api/client'
+import { ApiError } from '../../api/apiError'
 import { SecurityPanel } from './SecurityPanel'
 
 const GRANTED_AT = '2026-10-09T07:00:06+00:00'
@@ -43,6 +47,7 @@ const RISK = /Anything a session runs can push, fetch and sign commits as you/
 const PURPOSE = 'Turn this on if git push, git fetch over SSH, or commit signing fails inside a session.'
 const LOAD_FAILED = 'Could not read whether sessions can use your SSH agent.'
 const SAVE_FAILED = 'Could not save the SSH agent setting.'
+const OWNER_ONLY = 'Only the dashboard owner can see or change whether sessions can use the SSH agent.'
 
 function consent(overrides: Partial<SshAgentConsentStatus> = {}): SshAgentConsentStatus {
   return {
@@ -61,6 +66,12 @@ const LABELS = { claude: 'claude', codex: 'OpenAI Codex', kiro: 'Kiro CLI' }
 
 const mocked = (fn: unknown) => fn as ReturnType<typeof vi.fn>
 
+/** The first wait after a render settles a chain: `SecurityPanel` loads the card
+ *  through a lazy `import()`, and only then does the card start its consent query.
+ *  Both must finish before the first card state shows, so that wait gets more than
+ *  Testing Library's one-second default. */
+const LAZY_CARD_MOUNT = { timeout: 5000 }
+
 /** Render the panel on the ssh-agent section with the consent query pre-resolved.
  *
  *  Waits on the ROW rather than the card title: the title is present while the
@@ -68,7 +79,7 @@ const mocked = (fn: unknown) => fn as ReturnType<typeof vi.fn>
 async function renderSshAgent(data: SshAgentConsentStatus) {
   mocked(api.sshAgentConsent).mockResolvedValue(data)
   const utils = renderWithProviders(<SecurityPanel />, { route: '/?section=ssh_agent' })
-  await screen.findByTestId('ssh-agent-row')
+  await screen.findByTestId('ssh-agent-row', {}, LAZY_CARD_MOUNT)
   return utils
 }
 
@@ -247,10 +258,57 @@ describe('SecurityPanel - SSH agent forwarding consent', () => {
     mocked(api.sshAgentConsent).mockRejectedValue(new Error('boom'))
     renderWithProviders(<SecurityPanel />, { route: '/?section=ssh_agent' })
 
-    expect(await screen.findByText(LOAD_FAILED)).toBeInTheDocument()
+    expect(await screen.findByText(LOAD_FAILED, {}, LAZY_CARD_MOUNT)).toBeInTheDocument()
     expect(screen.queryByText('Not allowed')).not.toBeInTheDocument()
     expect(screen.queryByTestId('ssh-agent-row')).not.toBeInTheDocument()
     expect(screen.queryByTestId('ssh-agent-allow')).not.toBeInTheDocument()
+  })
+
+  it('a non-owner is told only the owner can see it, and the refused read is not repeated on focus', async () => {
+    mocked(api.sshAgentConsent).mockRejectedValue(
+      new ApiError(403, 'dashboard owner required', JSON.stringify({ code: 'dashboard_owner_required' })),
+    )
+    const { queryClient } = renderWithProviders(<SecurityPanel />, { route: '/?section=ssh_agent' })
+
+    expect(await screen.findByTestId('ssh-agent-owner-only', {}, LAZY_CARD_MOUNT)).toHaveTextContent(OWNER_ONLY)
+    expect(screen.queryByText(LOAD_FAILED)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('ssh-agent-row')).not.toBeInTheDocument()
+    expect(api.sshAgentConsent).toHaveBeenCalledTimes(1)
+
+    // The barrier returns once react-query's focus pass has run, so the count
+    // below is read after the pass that would have re-read the route.
+    await refocusWindow(queryClient)
+    expect(api.sshAgentConsent).toHaveBeenCalledTimes(1)
+  })
+
+  it('a stale pre-owner session that signs in again as the owner re-reads the grant', async () => {
+    // A read that worked, then a restart that left this tab's session predating
+    // the owner claim: the refusal keeps the earlier data, which the client's
+    // own recovery refetch skips.
+    mocked(api.sshAgentConsent)
+      .mockResolvedValueOnce(consent({ granted: true, granted_at: GRANTED_AT }))
+      .mockRejectedValueOnce(
+        new ApiError(401, 'sign in again', JSON.stringify({ code: 'stale_session_reauth' })),
+      )
+      .mockResolvedValue(consent({ granted: true, granted_at: GRANTED_AT }))
+    const { queryClient } = renderWithProviders(<SecurityPanel />, { route: '/?section=ssh_agent' })
+    await screen.findByTestId('ssh-agent-row', {}, LAZY_CARD_MOUNT)
+
+    await queryClient.refetchQueries({ queryKey: ['ssh-agent-consent'] })
+    expect(await screen.findByTestId('ssh-agent-owner-only')).toBeInTheDocument()
+
+    window.dispatchEvent(new CustomEvent('mc-auth-recovered'))
+    expect(await screen.findByTestId('ssh-agent-row')).toBeInTheDocument()
+    expect(screen.queryByTestId('ssh-agent-owner-only')).not.toBeInTheDocument()
+    expect(api.sshAgentConsent).toHaveBeenCalledTimes(3)
+  })
+
+  it('a re-auth 403 (X-Auth-Required) is not the owner gate: the generic failed read', async () => {
+    mocked(api.sshAgentConsent).mockRejectedValue(new ApiError(403, 'sign in', '', true))
+    renderWithProviders(<SecurityPanel />, { route: '/?section=ssh_agent' })
+
+    expect(await screen.findByText(LOAD_FAILED, {}, LAZY_CARD_MOUNT)).toBeInTheDocument()
+    expect(screen.queryByTestId('ssh-agent-owner-only')).not.toBeInTheDocument()
   })
 
   it('a failed RE-READ after Allow does not keep rendering the stale state', async () => {

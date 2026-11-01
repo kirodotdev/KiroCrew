@@ -18565,6 +18565,7 @@
         "ssh_agent_since": "Desde {{time}}",
         "ssh_agent_save_failed": "Não foi possível salvar a configuração do agente SSH.",
         "ssh_agent_load_failed": "Não foi possível ler se as sessões podem usar seu agente SSH.",
+        "ssh_agent_owner_only": "Só o proprietário do painel pode ver ou alterar se as sessões podem usar o agente SSH.",
         "credential_redaction_section": "Ocultação de credenciais nas visualizações de arquivos",
         "credential_redaction_toggle": "Ocultar credenciais nos arquivos que o painel abre para você",
         "credential_redaction_toggle_help": "Desativado, os arquivos que o painel abre para você (a aba Arquivos do painel lateral do chat e as prévias de Biblioteca e Artefatos) aparecem como foram gravados, apenas no seu próprio painel. Ativado por padrão. As conversas deste painel, o Slack e os canais de mensagens continuam ocultados. Alterá-lo recarrega os arquivos abertos (edições não salvas são mantidas) e fecha as visualizações de comparação de arquivos (diff).",

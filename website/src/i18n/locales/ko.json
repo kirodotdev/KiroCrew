@@ -17885,6 +17885,7 @@
         "ssh_agent_since": "{{time}}부터",
         "ssh_agent_save_failed": "SSH 에이전트 설정을 저장하지 못했습니다.",
         "ssh_agent_load_failed": "세션이 내 SSH 에이전트를 사용할 수 있는지 읽을 수 없습니다.",
+        "ssh_agent_owner_only": "세션이 SSH 에이전트를 사용할 수 있는지 확인하거나 변경할 수 있는 사람은 대시보드 소유자뿐입니다.",
         "credential_redaction_section": "파일 보기의 자격 증명 마스킹",
         "credential_redaction_toggle": "대시보드가 열어 주는 파일의 자격 증명 마스킹",
         "credential_redaction_toggle_help": "끄면 대시보드가 열어 주는 파일(채팅 사이드 패널의 파일 탭, 라이브러리와 아티팩트 미리보기)이 쓰인 그대로, 본인의 대시보드에서만 표시됩니다. 기본값은 켜짐입니다. 이 대시보드의 대화, Slack, 메시징 채널은 계속 마스킹됩니다. 변경하면 열려 있는 파일이 다시 로드되고(저장하지 않은 편집은 유지됨) 파일 비교(diff) 보기는 닫힙니다.",

@@ -18565,6 +18565,7 @@
         "ssh_agent_since": "Depuis {{time}}",
         "ssh_agent_save_failed": "Impossible d’enregistrer le réglage de l’agent SSH.",
         "ssh_agent_load_failed": "Impossible de lire si les sessions peuvent utiliser ton agent SSH.",
+        "ssh_agent_owner_only": "Seul le propriétaire du tableau de bord peut voir ou modifier si les sessions peuvent utiliser l'agent SSH.",
         "credential_redaction_section": "Masquage des identifiants dans les vues de fichiers",
         "credential_redaction_toggle": "Masquer les identifiants dans les fichiers que le tableau de bord ouvre pour toi",
         "credential_redaction_toggle_help": "Désactivé, les fichiers que le tableau de bord ouvre pour toi (l'onglet Fichiers du panneau latéral du chat et les aperçus Bibliothèque et Artefacts) s'affichent tels qu'ils ont été écrits, dans ton propre tableau de bord seulement. Activé par défaut. Les conversations de ce tableau de bord, Slack et les canaux de messagerie restent masqués. Le changer recharge les fichiers ouverts (les modifications non enregistrées sont conservées) et ferme les vues de comparaison de fichiers (diff).",

@@ -8741,6 +8741,7 @@
         "ssh_agent_since": "Since {{time}}",
         "ssh_agent_save_failed": "Could not save the SSH agent setting.",
         "ssh_agent_load_failed": "Could not read whether sessions can use your SSH agent.",
+        "ssh_agent_owner_only": "Only the dashboard owner can see or change whether sessions can use the SSH agent.",
         "credential_redaction_section": "Credential redaction in file views",
         "credential_redaction_toggle": "Redact credentials in files the dashboard opens for you",
         "credential_redaction_toggle_help": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views.",

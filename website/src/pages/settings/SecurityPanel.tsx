@@ -14,7 +14,7 @@
  * - `SecurityPanelGovernance.tsx`: Governance policy
  * Callers import from this file; an owner never imports it.
  */
-import React, { useState } from 'react'
+import React, { Suspense, lazy, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ShieldCheck, EyeOff, Terminal, Layers, ExternalLink, Gavel, Gauge, Boxes, BookOpen,
@@ -29,7 +29,6 @@ import { i18nT } from '../../i18n/t'
 import { fmtDateFields, fmtTime, toDate } from '../../i18n/format'
 import { CODE_BASE, PostureSection } from './SecurityPanelPosture'
 import { type KirocrewCfgShape, YoloDurationCard } from './SecurityPanelApprovals'
-import { SshAgentConsentCard } from './SecurityPanelSshAgent'
 import { DeniedCommandsSection } from './SecurityPanelDeniedCommands'
 import { TAILNET_STATE_KEY, TailnetOriginCard } from './SecurityPanelTailnet'
 import { ThirdPartyAppsCard, TrustedRegistriesCard } from './SecurityPanelTrust'
@@ -42,6 +41,12 @@ export { FEATURE_LABEL_KEY, FEATURE_DESCRIPTION_KEY } from './SecurityPanelLayer
 export { SCOPE_LABEL_KEY, humaniseScopeLeaf, GOV_PLANE_TITLE_KEY } from './SecurityPanelGovernance'
 
 /* ── Documentation section ── */
+// Its own chunk: the section is opened rarely, and inlining it put the
+// SettingsPage chunk over its bundle budget.
+const SshAgentConsentCard = lazy(async () => ({
+  default: (await import('./SecurityPanelSshAgent')).SshAgentConsentCard,
+}))
+
 function DocsSection() {
   return (
     <SettingsSection title={i18nT('pages.settings.securityPanel.documentation')}>
@@ -315,7 +320,9 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
             {key === 'redaction' && <RedactionSection />}
             {key === 'ssh_agent' && (
               <SettingsSection title={i18nT('pages.settings.securityPanel.ssh_agent_section')}>
-                <SshAgentConsentCard />
+                <Suspense fallback={<div className="h-24" aria-hidden />}>
+                  <SshAgentConsentCard />
+                </Suspense>
               </SettingsSection>
             )}
             {key === 'layers' && <LayersSection />}
