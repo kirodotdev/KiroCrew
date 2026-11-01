@@ -106,8 +106,11 @@ describe('CoAuthorPanel body', () => {
 })
 
 describe('CoAuthorPanel header', () => {
-  it('offers the open-in-chat-page shortcut only with a session', () => {
+  it('offers the open-in-chat-page shortcut only with a session', async () => {
     const { onOpenFull } = setup({ slotKey: 'zzq-slot-1' })
+    // The switch to the session resolves after the render; wait for the chat
+    // it leads to, so that update is not left running after the test ends.
+    await screen.findByTestId('zzq-chatpage')
     fireEvent.click(
       screen.getByRole('button', { name: i18nT('apps.papyrus.coAuthor.open_in_chat_page') }),
     )
@@ -121,8 +124,10 @@ describe('CoAuthorPanel header', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('closes the panel', () => {
+  it('closes the panel', async () => {
     const { onClose } = setup({ slotKey: 'zzq-slot-1' })
+    // Same wait as above: the switch's resolution must land inside the test.
+    await screen.findByTestId('zzq-chatpage')
     fireEvent.click(
       screen.getByRole('button', {
         name: i18nT('apps.papyrus.coAuthor.close_co_author_panel'),
