@@ -14419,7 +14419,9 @@
         "crewmate_harness": "Harness del agente por compañero",
         "crewmate_harness_desc": "Añade un ajuste Harness del agente al perfil de cada compañero, para que uno pueda usar otra herramienta de programación con IA, como Claude Code, con sus modelos, mientras los demás siguen con el predeterminado.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Permite que un chat entregue tareas a un equipo y las siga en un tablero."
+        "crew_mode_desc": "Permite que un chat entregue tareas a un equipo y las siga en un tablero.",
+        "explore": "Explorar",
+        "explore_desc": "Añade Explorar a la barra superior: funciones para probar, tu progreso y una tarjeta «Prueba hoy» en un chat nuevo."
       },
       "kasBundleCard": {
         "toggle_label": "Ejecutar KAS con el motor propio de {{productName}}",

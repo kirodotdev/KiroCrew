@@ -14419,7 +14419,9 @@
         "crewmate_harness": "Harness dell’agente per compagno",
         "crewmate_harness_desc": "Aggiunge un’impostazione Harness dell’agente al profilo di ogni compagno, così uno può usare un altro strumento di programmazione IA, come Claude Code, con i suoi modelli, mentre gli altri restano su quello predefinito.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Permette a una chat di affidare attività a una crew e seguirle su una bacheca."
+        "crew_mode_desc": "Permette a una chat di affidare attività a una crew e seguirle su una bacheca.",
+        "explore": "Esplora",
+        "explore_desc": "Aggiunge Esplora alla barra in alto: funzioni da provare, i tuoi progressi e una scheda «Prova oggi» in una nuova chat."
       },
       "kasBundleCard": {
         "toggle_label": "Esegui KAS con il motore di {{productName}}",

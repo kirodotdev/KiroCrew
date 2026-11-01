@@ -578,6 +578,18 @@ describe('index assembly', () => {
     expect(byId['setting:chat.a-setting'].placements[0].requires).toEqual(want)
   })
 
+  it('gives one setting its own preview requirement on an ungated tab', () => {
+    const { index, errors } = build({
+      settingPreview: { 'chat.a-setting': 'mc-preview-x' },
+      previewEnablers: { 'mc-preview-x': 'chat.a-setting' },
+    })
+    expect(errors).toEqual([])
+    const byId = Object.fromEntries(index.locations.map(l => [l.id, l]))
+    expect(byId['settings.tab.chat'].placements[0].requires).toEqual([])
+    expect(byId['setting:chat.a-setting'].placements[0].requires)
+      .toEqual([{ kind: 'preview_flag', flag: 'mc-preview-x', location: 'setting:chat.a-setting' }])
+  })
+
   it('derives a chain through a registered parent', () => {
     const descriptors = {
       ...baseInputs().descriptors,
@@ -1424,6 +1436,12 @@ describe('the committed index', () => {
     for (const loc of onTab) expect(loc.placements[0].requires).toEqual(want)
     // The switch that shows the tab is not itself behind it.
     expect(byId.get('setting:developer.session-environments')!.placements[0].requires).toEqual([])
+  })
+
+  it('keeps Display > Explore behind the Explore preview, and not its own switch', () => {
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-explore', location: 'setting:developer.explore' }]
+    expect(byId.get('setting:display.explore')!.placements[0].requires).toEqual(want)
+    expect(byId.get('setting:developer.explore')!.placements[0].requires).toEqual([])
   })
 
   it('shows Mates with no prerequisite', () => {

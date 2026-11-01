@@ -13893,7 +13893,9 @@
         "crewmate_harness": "クルーメイトごとのエージェントハーネス",
         "crewmate_harness_desc": "各クルーメイトのプロフィールにエージェントハーネスの設定を追加し、1 人を Claude Code などの別の AI コーディングツールとそのモデルで動かし、ほかは既定のままにできるようにします。",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "チャットがタスクをクルーに任せ、ボードで追跡できるようにします。"
+        "crew_mode_desc": "チャットがタスクをクルーに任せ、ボードで追跡できるようにします。",
+        "explore": "探索",
+        "explore_desc": "トップバーに探索を追加します。試せる機能、進捗、新しいチャットの「今日試す」カードが表示されます。"
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",
