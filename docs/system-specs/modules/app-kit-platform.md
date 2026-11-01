@@ -1088,6 +1088,12 @@ miss this function exists to prevent.
 
 Writer: `apps/bridges_sources.py::_app_resource_root`.
 
+The package root is chosen by `execution.shipped_builtin_app_root`, where the
+shipped `app.json` is authoritative and installed metadata can only REMOVE that
+provenance: for a name whose wheel copy is released (an adopted former built-in,
+or a user app occupying the name) it answers None, and every root chooser
+resolves the data-home tree (§ Former built-in adoption).
+
 ### 5.1 Resource-path containment is host-independent and flavour-explicit
 
 Every manifest resource path (`agents`/`skills`/`sops`, `ui.entry`,
@@ -4925,6 +4931,160 @@ Writers: `apps/routes.py`, `apps/routes_lifecycle.py`, `apps/routes_proxy.py`,
 `apps/routes_static.py`, `apps/routes_art.py`, `apps/routes_listing.py`,
 `apps/routes_install.py`, `apps/routes_uninstall.py`, `apps/routes_enable.py`,
 `apps/routes_registry.py`.
+
+## 31. Former built-in adoption
+
+A built-in app that moves to its own repository keeps working for everyone who
+already has it. A release that pins the app still ships its wheel copy; on a host
+whose record is builtin-owned, the gateway swaps the record **in place** onto the
+pinned repository tree, keeping `data/`, `.app_secret`, the approved grants and
+`enabled`. A host that cannot adopt keeps running the wheel copy unchanged. Core
+names no app anywhere in this machinery: the pin table is data, and
+`test_builtin_adoption_pins.py` fails on a shipped built-in name in any adoption
+module.
+
+**Pins.** `apps/adoption-pins.json` (packaged; each row is the output of
+`scripts/adoption_pin.py compute`, re-checked with `adoption_pin.py verify`, and the
+whole table is pinned by
+`test_the_shipped_pin_file_validates_and_pins_exactly_the_shipped_table`) holds one
+row per app: `name`, `repository` (`https://github.com/<owner>/<repo>`,
+no `.git`, byte-equal to the catalog row `url`), `commit`, `version`,
+`treeSha256`, `archiveSha256`, `minAppSdkLevel` and `legacyNav {route, icon}`.
+The codeload archive URL is derived from `repository` and `commit`, never
+authored. `builtin_adoption_pins.load_adoption_pins` reads it once per process; a
+bad row is dropped, a duplicated name drops every row with it, more than 64 rows
+or an unreadable file is an empty table, which is today's behaviour. A
+first-adoption pin's `version` must equal the wheel built-in's (D12, so a
+one-release downgrade is data-safe).
+
+**The released predicate.** `builtin_adoption.builtin_released(name)` is True
+when the wheel copy must not register, serve or execute: the record is not
+builtin-owned (adopted, or a user app shadowing the name), or there is no record
+and the name is marked `adopted` (uninstalled after adoption). A pinned name with
+no record and no marker is a fresh install and is NOT released:
+`register_builtin_apps` registers the built-in as today, and that record then
+adopts through STAGE and APPLY exactly like an upgrading host's. A record that cannot be read, a path occupied by something
+else, or a swap in flight (`_update_in_progress`) keeps today's behaviour. It can
+only remove first-party status, never grant it. It gates:
+
+- the `BUILTIN_NAMES` route loop (`dashboard/routes/system.py`, through
+  `released_builtin_packages`, which maps every package dir to its manifest name
+  in one walk of the shipped manifests, without importing a package): no route,
+  `on_startup` or `on_cleanup` from a released package;
+- the `on_disable` import of `apps/routes_enable.py`, and the `mcp-<pkg>` CLI verb
+  (refused with a pointer to `kirocrew app mcp <name>`), through the one-package
+  form `builtin_package_released`;
+- `execution.shipped_builtin_app_root`, so every root chooser
+  (`hooks_integration._app_hook_root`, `bridges_sources`, `lifecycle`,
+  `manager_lookup`, `manager_activation`, `bridges_crons`, `bridges_mcp`,
+  `backend_runtime.startup`, `cron_sdk`, `backend`) resolves the data-home tree for
+  a released name, and `is_builtin_app` and the PreToolUse first-party sets drop
+  it;
+- `register_builtin_apps`: a released name with no record, or an adopted record,
+  gets no directory, record, snapshot or secret. A shadowing user app keeps the
+  stand-down warning.
+
+**The seam level.** `apps/app_sdk_level.APP_SDK_LEVEL` is the App Kit seam level the
+gateway provides, and every pin's `minAppSdkLevel` is at least 1. A tree without the
+level-1 seams (the structural route registry, `route_registry._route_fields`, and
+the legacy-route rendering) reports 0, so APPLY refuses every pin there with
+`host_sdk_too_old`, retried each boot, and the wheel copy keeps serving: an adopted
+app on such a tree would run with every route skipped.
+`test_no_shipped_pin_adopts_on_a_host_without_the_seams` ties the two.
+
+A pinned name is never an orphan (`detect_orphaned_builtins`,
+`migrated_builtin_cleanup_applies`), and `install_from_registry` refuses a pinned
+name whose record is still builtin-owned with `code: "adoption_pending"` before
+any clone, since such an install would keep `origin=builtin`.
+
+**STAGE** (`builtin_adoption_apply.staging_pass`, kicked by
+`_kick_builtin_adoption_staging` after the listener serves) never mutates a record.
+Per pin, for a builtin-owned record, it fetches the commit with the catalog's
+credential-free `strict`-sandbox git clone into `app-sources/<name>/`, falling back
+in the same attempt to the codeload archive (redirects refused, 60 s, 64 MiB cap,
+`archiveSha256` checked) when git is absent or the network fails. The staged
+artifact is copied into a throwaway owner-only directory, its `treeSha256` checked
+there and the tree checks run (below). The data-home ledger
+`<home>/app-adoption/<name>.json` records `pending` (with `attempts` and
+`nextAttemptAt`: 5 minutes doubling to a 24-hour cap, no jitter, on an injected
+clock), `staged`, `blocked` or `adopted`; a new pin commit resets it.
+
+**APPLY** (`_apply_builtin_adoptions`, awaited in `start_dashboard` after
+`_precompute_telemetry` and before `_register_mcp_routes`, so before
+`register_all`, `register_builtin_apps`, the warm caches, the resource reconcile,
+hooks, backends and crons) is network-free. Per pin, under `app_lifecycle_lock`:
+recovery of a hard-killed swap (`manager.recover_interrupted_adoption`, only on an
+unambiguous state: one retired tree, data in one place); finalize when a
+`granting` marker meets an already-swapped record; else the staged artifact is
+copied into a private temp dir and `treeSha256` re-verified **on that copy**
+(a tree changed after STAGE is never executed), then:
+
+| Check | Reason code | Retried |
+|---|---|---|
+| E7 identity, version (= pin, = wheel, not below the record) | `manifest_identity_mismatch`, `version_mismatch` | never for this pin |
+| E8 no root build input or `.gitattributes` | `tree_requires_build` | never |
+| E10 no `mcpServers`, `ui.overlays`, `defaultEnabled: true`, nor a name a core table keys on | `pinned_feature_unsupported` | never |
+| E3/E5 host version, `APP_SDK_LEVEL`, `platform.os` | `host_too_old`, `host_sdk_too_old`, `platform_mismatch` | every boot |
+| E4 admission (`action="update"`, no exemption) | `admission_denied` | every boot |
+| E9 permission parity: nothing held back, no new `sessionApproval` | `permission_widening` | every boot |
+| E6 trust: a grant to another repository is never overwritten | `trust_conflict`, `trust_overlay_owned`, `config_unreadable` | every boot |
+| a transient failure (the config or the disk) | `config_unreadable`, `disk_full` | every boot, from the kept staged artifact |
+
+Then ONE trust-writer transaction (`agent_config_writer.mutate_trust_settings`)
+writes the grant exactly as `default_installs._grant` does (`apps_trusted`,
+`apps_trusted_repositories[name]`, the name removed from `apps_trusted_local`)
+together with a `granting` marker whose flags record what it changed; a
+same-repository grant is reused with no trust write. The swap is
+`manager.adopt_builtin_record`, which is `update_app` with an adoption provenance:
+refused before anything moves unless the record is builtin-owned and nothing would
+widen, and otherwise the record becomes `origin=registry`, `lifecycle=gateway`,
+`source=registry:<name>`, `sourceUrl=<repository>`, `sourceCommit=<commit>` in the
+same file transaction, with the update rollback. A failed swap rolls back exactly
+what the flags say; success sets the marker `adopted`.
+
+**Durable state.** `agent.apps_builtin_adoption` in `config.json` (sealed
+read-only by the sandbox) is the marker map, read as base UNION effective so an
+overlay cannot hide a tombstone. An `adopted` entry is never removed: after an
+uninstall the name stays released, so nothing re-registers, re-stages or
+re-grants it, and a later install is an ordinary registry install. The ledger is
+operational only; tampering with it changes retry timing or the shown state,
+never what runs.
+
+**After adoption** the app is an ordinary registry app: enable and disable go
+through admission like any registry app (the one intended trust delta), update
+matches the catalog `git` row by `sourceUrl`, and `/api/apps` rows carry
+`adoption: {state, reason?, legacyNav?, hostTooOld?}` (`builtin_adoption.adoption_row`;
+`legacyNav` only for a record adopted from the pin's repository). Every
+transition writes one SEL row `caller=app_adoption`,
+`operation=app_builtin_adoption`, outcome `staged | stage_failed | blocked |
+applied | apply_failed | rolled_back | recovered | finalized`, with
+`resources="name=… commit=<12> path=git|archive|- code=…"` and never a URL.
+
+**Downgrade.** N to N-1 (no adoption code): N-1 stands the record down, still
+mounts the wheel routes, and those direct routes win over the RouteRegistry
+catch-all, so the same-version wheel code serves the same data. An app uninstalled
+on N-1 comes back on N-1 as a disabled built-in; N cannot prevent that. N+k to N:
+the record stays adopted, is never re-registered or re-adopted, and a
+`minKiroCrewVersion` newer than the host shows `hostTooOld`. There is no automatic
+revert: rewriting a newer record back to `origin=builtin` would run older code over
+data a newer version may have migrated.
+
+**Security residual (recorded, not fenced).** Before adoption the app's in-process
+Python lived in the read-only installed package; after it, it lives in
+`apps/<name>/` and `app-sources/<name>/`, protected by the tool gate only, like
+every trusted registry app. No seal is added here: the sandbox scope is the
+operator's to widen.
+
+Not covered: the headless `start_api_server` registers no built-in routes and does
+not adopt; hosts without git cannot update any registry app afterwards (pin-follow
+is deferred to the first release that bumps a pin).
+
+Writers: `apps/builtin_adoption.py`, `apps/builtin_adoption_apply.py`,
+`apps/builtin_adoption_checks.py`, `apps/builtin_adoption_fetch.py`,
+`apps/builtin_adoption_pins.py`, `apps/builtin_adoption_state.py`,
+`apps/builtin_adoption_markers.py`, `apps/manager_adopt.py`,
+`apps/agent_config_writer.py`, `apps/adoption-pins.json`, `apps/app_sdk_level.py`,
+`scripts/adoption_pin.py`. Tests: `test/test_builtin_adoption_*.py`.
 
 ## Windows stale-backend cleanup capacity
 

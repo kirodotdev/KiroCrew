@@ -229,6 +229,8 @@ from kiro_crew.dashboard.server_runtime.api_entrypoint import (  # noqa: F401
     start_api_server,
 )
 from kiro_crew.dashboard.server_runtime.app_platform import (  # noqa: F401
+    _apply_builtin_adoptions,
+    _kick_builtin_adoption_staging,
     _kick_default_app_installs,
     _reconcile_app_resources,
     _start_app_backends,
@@ -901,6 +903,11 @@ async def start_dashboard(
 
     _precompute_telemetry(state)
 
+    # Former built-in adoption, BEFORE any route is registered: a released wheel
+    # copy must not mount its routes beside the adopted one (app-kit-platform.md
+    # § Former built-in adoption).
+    await _apply_builtin_adoptions()
+
     # MCP tool routes (shared with start_api_server)
     _register_mcp_routes(app)
 
@@ -1265,6 +1272,7 @@ async def start_dashboard(
     # via _start_site with no reservation step, still exports post-listen.)
     await _start_bound_port_app_backends()
     _kick_default_app_installs(state)
+    _kick_builtin_adoption_staging(state)
     # Additional kernel-verifiable transport for the internal API (POSIX only;
     # degrades to TCP-only on any failure — see _start_unix_site).
     _unix_socket_holder["path"] = await _start_unix_site(runner, port)

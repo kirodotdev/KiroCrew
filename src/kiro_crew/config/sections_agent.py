@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 from kiro_crew import model_registry
 from kiro_crew.acp_backends import DEFAULT_ACP_BACKEND
@@ -559,6 +560,15 @@ class AgentConfig:
             "them defaultInstall. A name here is never installed again "
             "automatically, so an app you uninstall or disable stays that way. "
             "Remove a name to let it be installed again on the next start.",
+        ),
+    )
+    apps_builtin_adoption: dict[str, dict[str, Any]] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Adopted Built-in Apps",
+            "Former built-in apps this gateway moved to their own repository. "
+            "A name here is never registered as a built-in again, so "
+            "uninstalling the app sticks. Written by the gateway; do not edit.",
         ),
     )
     apps_ui_stream_timeout_secs: int = field(

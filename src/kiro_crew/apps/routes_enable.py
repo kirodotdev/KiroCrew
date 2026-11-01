@@ -607,7 +607,10 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         # multi-word builtin, which is all of them but `meetings`, `mochi` and
         # `papyrus`.
         module_name = name.replace("-", "_")
-        if module_name in BUILTIN_NAMES:
+        from kiro_crew.apps.builtin_adoption import builtin_package_released
+
+        # An adopted app's hooks are its own; the wheel package's must not run.
+        if module_name in BUILTIN_NAMES and not builtin_package_released(module_name):
             try:
                 mod = importlib.import_module(f"kiro_crew.apps.builtins.{module_name}")
                 if hasattr(mod, "on_disable"):

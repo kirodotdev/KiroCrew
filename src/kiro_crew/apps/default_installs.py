@@ -148,57 +148,17 @@ def _list(agent_raw: dict, key: str) -> list[str]:
 
 
 async def _write_agent(mutate: Any) -> None:
-    """Edit the base ``config.json`` ``agent`` section through the trust writer.
+    """Edit the base ``agent`` section through the trust writer (``agent_config_writer``)."""
+    from kiro_crew.apps.agent_config_writer import mutate_trust_settings
 
-    ``security_trusted_apps._mutate_agent_config`` is the one writer every trust
-    grant goes through: the shared config lock, the file lock, the refusal of a
-    corrupt file, the refusal when ``config.local.json`` owns a trust key (so a
-    grant is never written where it cannot take effect), and the cache
-    invalidation. Raises its ``ConfigCorruptError`` / ``TrustSettingOverlayOwned``.
-    """
-    from kiro_crew.dashboard.handlers.security_trusted_apps import _mutate_agent_config
-
-    await _mutate_agent_config(mutate)
+    await mutate_trust_settings(mutate)
 
 
 async def _write_agent_marker(mutate: Any) -> None:
-    """Edit the base ``agent`` section for a key that is not a trust setting.
+    """Edit the base ``agent`` section for a non-trust key (``agent_config_writer``)."""
+    from kiro_crew.apps.agent_config_writer import mutate_agent_marker
 
-    Same locking as :func:`_write_agent` (the shared config lock, the file lock
-    and corrupt-file refusal of ``update_config_locked``, the cache invalidation,
-    off the event loop), without its refusal when ``config.local.json`` owns a
-    trust key: that refusal exists because a base GRANT would be inert, and the
-    applied marker is read from the base file, so writing it there always takes
-    effect. Raises ``ConfigCorruptError`` on an unreadable file.
-    """
-    from kiro_crew.config.loader import (
-        ConfigReadError,
-        _invalidate_config_cache,
-        config_path,
-        update_config_locked,
-    )
-    from kiro_crew.dashboard.handlers.agents import _get_config_lock
-    from kiro_crew.dashboard.handlers.security_audit import ConfigCorruptError
-
-    def _read_modify_write() -> None:
-        path = config_path()
-
-        def _apply(raw: dict) -> dict:
-            agent_raw = raw.get("agent")
-            if not isinstance(agent_raw, dict):
-                agent_raw = {}
-                raw["agent"] = agent_raw
-            mutate(agent_raw)
-            return raw
-
-        try:
-            update_config_locked(path, mutate=_apply, stamp_meta=False)
-        except ConfigReadError as exc:
-            raise ConfigCorruptError(f"{path} is unreadable: {exc}") from exc
-        _invalidate_config_cache()
-
-    async with _get_config_lock():
-        await asyncio.get_running_loop().run_in_executor(None, _read_modify_write)
+    await mutate_agent_marker(mutate)
 
 
 async def _mark_applied(name: str) -> None:

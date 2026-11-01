@@ -225,6 +225,17 @@ def _install_script_platform_refusal() -> str | None:
     return f"install script not run: {NATIVE_WINDOWS_HOOK_REFUSAL}"
 
 
+def _adoption_pending(name: str) -> bool:
+    """Whether *name* is pinned for adoption and its record is still builtin-owned."""
+    from kiro_crew.apps.builtin_adoption_pins import adoption_pin_names
+
+    if name not in adoption_pin_names():
+        return False
+    from kiro_crew.apps.manager import builtin_owns_installed
+
+    return builtin_owns_installed(name)
+
+
 async def install_from_registry(
     name: str,
     log_lines: list[str] | None = None,
@@ -296,6 +307,20 @@ async def install_from_registry(
         if is_reserved_app_name(name):
             outcome_early["code"] = RESERVED_APP_NAME_CODE
         return outcome_early
+
+    # A pinned former built-in whose record is still the built-in's moves to its
+    # repository through adoption, at the next boot. A registry install here would
+    # keep `origin=builtin`/`lifecycle=locked` on a registry tree, so refuse it
+    # before any clone.
+    if await asyncio.to_thread(_adoption_pending, name):
+        return {
+            "ok": False,
+            "name": name,
+            "code": "adoption_pending",
+            "error": (
+                "this app moves to its repository automatically; restart Kiro Crew to finish"
+            ),
+        }
 
     entry: dict[str, Any] | None
     if resolved_entry is not None:

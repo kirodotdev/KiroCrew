@@ -170,6 +170,15 @@ package and now lives outside it. The page tells you whether to install the exte
 version, or clean up what the old one left behind. Your app data is not touched
 either way.
 
+Some built-in apps move to their own repository. When one of yours does, there is
+nothing to do: Kiro Crew fetches the repository version in the background and
+switches the app over the next time it starts, keeping your data, your settings,
+its permissions and whether it is enabled. Until then the built-in keeps running.
+If the switch cannot happen yet (for example an app admission policy on this
+machine refuses it), the app's page says why, and the built-in keeps running.
+After the switch the app updates and uninstalls like any App Store app, and once
+uninstalled it stays uninstalled.
+
 ## From the command line
 
 ```bash
