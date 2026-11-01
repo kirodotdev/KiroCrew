@@ -41,7 +41,6 @@
 2 test/test_ensure_python_symlink.py
 2 test/test_harness_parity.py
 2 test/test_installer_node_floor.py
-2 test/test_instances.py
 6 test/test_ios_simulator_preview_skill.py
 1 test/test_issue_summary_workflow.py
 2 test/test_issue_triage_workflow.py
