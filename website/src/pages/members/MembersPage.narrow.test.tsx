@@ -893,5 +893,64 @@ describe('MembersPage default member, memory and URL', () => {
       // against when the panel already spans the window (the chat page's rule).
       expect(overlay.querySelector('[role="separator"][aria-orientation="vertical"]')).toBeNull()
     })
+
+    it('a phone keeps the overlay per visit: a remembered desktop overlay does not cover the thread (issue #27334)', async () => {
+      localStorage.setItem('mc-members-overlay-open', '1')
+      setWindowWidth(390)
+      await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=beta' })
+      await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      // Opening it on the phone writes nothing either way.
+      localStorage.setItem('mc-members-overlay-open', '0')
+      fireEvent.click(screen.getByTestId('member-panel-toggle'))
+      expect(await screen.findByTestId('member-side-panel', undefined, PANE_READY)).toHaveAttribute('data-placement', 'overlay')
+      expect(localStorage.getItem('mc-members-overlay-open')).toBe('0')
+    })
+  })
+
+  describe('a desktop window too narrow to dock the side panel (issue #27334)', () => {
+    // Above the md breakpoint, below the 904px dock threshold with the roster
+    // folded: the panel can only be an overlay.
+    const OVERLAY_WINDOW = 880
+
+    it('the overlay is remembered across visits, under its own key', async () => {
+      setWindowWidth(OVERLAY_WINDOW)
+      const first = await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
+      await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      fireEvent.click(screen.getByTestId('member-panel-toggle'))
+      expect(await screen.findByTestId('member-side-panel', undefined, PANE_READY)).toHaveAttribute('data-placement', 'overlay')
+      expect(localStorage.getItem('mc-members-overlay-open')).toBe('1')
+      first.unmount()
+
+      // Back on the page: the overlay is up again.
+      const second = await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
+      expect(await screen.findByTestId('member-side-panel', undefined, PANE_READY)).toHaveAttribute('data-placement', 'overlay')
+      // Dismissing it is remembered too, and leaves the docked column's flag alone.
+      const dockedBefore = localStorage.getItem('mc-members-panel-open')
+      fireEvent.click(screen.getByTestId('member-panel-toggle'))
+      await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull())
+      expect(localStorage.getItem('mc-members-overlay-open')).toBe('0')
+      expect(localStorage.getItem('mc-members-panel-open')).toBe(dockedBefore)
+      second.unmount()
+
+      await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
+      await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+    })
+
+    it('a visit wide enough to dock clears a remembered overlay', async () => {
+      localStorage.setItem('mc-members-overlay-open', '1')
+      setWindowWidth(WIDE_WINDOW)
+      const wide = await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
+      expect(await screen.findByTestId('member-side-panel', undefined, PANE_READY)).toHaveAttribute('data-placement', 'docked')
+      await waitFor(() => expect(localStorage.getItem('mc-members-overlay-open')).toBe('0'))
+      wide.unmount()
+
+      setWindowWidth(OVERLAY_WINDOW)
+      await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
+      await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+    })
   })
 })
