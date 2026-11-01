@@ -74,7 +74,6 @@
   "src/test/ChatSidebar.renameFailureRecovery.test.tsx",
   "src/test/ChatSidebar.sourceLinkUnlink.test.tsx",
   "src/test/ChatSidebar.toolStatusSetting.test.tsx",
-  "src/test/ChatSidebarCoverage.test.tsx",
   "src/test/ChatSidebarMoreCoverage.test.tsx",
   "src/test/CodeReviewSageLabelFilter.test.tsx",
   "src/test/ConnectionsPage.coverage.test.tsx",

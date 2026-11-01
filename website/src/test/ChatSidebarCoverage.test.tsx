@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatFolder } from '../types'
@@ -122,6 +123,9 @@ const FOLDERS: ChatFolder[] = [
   { id: 'f2', name: 'Beta', order: 1 },
 ]
 
+// The query client of the sidebar the test last rendered, for `settleSidebarReads`.
+let sidebarClient: QueryClient | undefined
+
 function renderSidebar(opts: {
   slots?: TestSlot[]
   folders?: ChatFolder[]
@@ -187,6 +191,7 @@ function renderSidebar(opts: {
   // by default because the board-lane tests here depend on their queries
   // refetching.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  sidebarClient = qc
   qc.setQueryData(['chat-folders'], folders)
   qc.setQueryData(['tag-columns'], [])
   const view = render(
@@ -212,9 +217,16 @@ function openHeaderMenu() {
   fireEvent.keyDown(screen.getAllByLabelText('More options')[0], { key: 'Enter' })
 }
 
+/** Wait out the reads an opened panel starts, so their state updates land inside the wait: the
+ *  model roster the Switch All panel fetches when it opens. */
+async function settleSidebarReads() {
+  await waitFor(() => expect(sidebarClient?.isFetching()).toBe(0), namedCeiling('SIDEBAR_READS_SETTLED', 5000))
+}
+
 async function openHeaderPanel(itemText: string) {
   openHeaderMenu()
   fireEvent.click(await screen.findByText(itemText))
+  await settleSidebarReads()
 }
 
 /** Expand the Older Sessions pane. */
