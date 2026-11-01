@@ -24,9 +24,9 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.knowledge.store_parts.bundle_transfer import KnowledgeBundleError, _bundle_item_group
 from kiro_crew.knowledge.store_parts.item_ownership import (
+    _CLAIM_HASH_COL,
     _DOC_STATE_KEY_COL,
     _DOC_STATE_TABLES,
-    _OWNERSHIP_HASH_COL,
 )
 
 if TYPE_CHECKING:
@@ -564,7 +564,7 @@ def _import_bundle_state(
             if not group:
                 continue
             existing = self.db.execute(
-                f"SELECT {_OWNERSHIP_HASH_COL[table]} AS owned_hash, item_ids "  # noqa: S608
+                f"SELECT {_CLAIM_HASH_COL[table]} AS owned_hash, item_ids "  # noqa: S608
                 f"FROM {table} WHERE source_id = ? AND {key_col} = ?",
                 (target_source, key),
             ).fetchone()

@@ -190,6 +190,7 @@ _ADDED_COLUMNS = {
         "status": "pending",
         "error_message": None,
         "merged_into_source_id": None,
+        "claimed_hash": None,
         "text_hash": None,
         "attempts": 0,
     },
@@ -197,9 +198,15 @@ _ADDED_COLUMNS = {
         "name": None,
         "status": "active",
         "merged_into_source_id": None,
+        "claimed_hash": None,
         "kind": None,
     },
-    "agent_item_state": {"status": "active", "merged_into_source_id": None, "source_uri": None},
+    "agent_item_state": {
+        "status": "active",
+        "merged_into_source_id": None,
+        "claimed_hash": None,
+        "source_uri": None,
+    },
 }
 
 

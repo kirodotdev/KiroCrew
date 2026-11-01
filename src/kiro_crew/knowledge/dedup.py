@@ -39,6 +39,7 @@ from difflib import SequenceMatcher
 from kiro_crew.sel import sel
 
 from .embedder import bytes_to_floats
+from .store import _CLAIM_HASH_COL
 
 logger = logging.getLogger(__name__)
 
@@ -898,6 +899,12 @@ def _collapse_doc(store, loser: DocRef, winner: DocRef) -> None:
     as a second document over one physical item set, and collapsing that pair would
     delete the surviving copy.
 
+    What the marker cannot say is WHICH content the claim is now on, and every later
+    release and adoption needs that: they resolve the claim by hash. After a fuzzy
+    collapse the loser's own hash names no item, so the winner's hash is written to
+    ``claimed_hash`` -- on the loser's row, and on every row of the other holders
+    whose claim was on the loser's copy and has just moved with it.
+
     A source is still removed once provably empty -- no items and no document-state
     rows -- which keeps a one-shot upload from lingering as an empty row in the
     Sources UI. A source that still holds documents is never touched.
@@ -928,11 +935,16 @@ def _collapse_doc(store, loser: DocRef, winner: DocRef) -> None:
     # items this row owns" and no second state row may name them, so the only other
     # references were the location claims just migrated.
     store.delete_items_batch(loser.item_ids)
+    _move_claims_to_winner(store, holders, loser, winner)
+    # COALESCE: an exact collapse supplies no claim hash, and must not erase one an
+    # earlier fuzzy collapse recorded on this row.
+    claimed = _fuzzy_claim_hash(loser, winner)
     if loser.file_path is not None:
         store.db.execute(
             "UPDATE folder_file_state SET status = 'deduped', item_ids = '[]', "
-            "merged_into_source_id = ? WHERE source_id = ? AND file_path = ?",
-            (winner.source_id, loser.source_id, loser.file_path))
+            "merged_into_source_id = ?, claimed_hash = COALESCE(?, claimed_hash) "
+            "WHERE source_id = ? AND file_path = ?",
+            (winner.source_id, claimed, loser.source_id, loser.file_path))
         store.db.commit()
         return
     for table in ("artifact_item_state", "agent_item_state"):
@@ -956,11 +968,63 @@ def _collapse_doc(store, loser: DocRef, winner: DocRef) -> None:
                 continue
             store.db.execute(
                 f"UPDATE {table} SET status = 'deduped', item_ids = '[]', "  # noqa: S608
-                "merged_into_source_id = ? WHERE source_id = ? AND slug = ?",
-                (winner.source_id, loser.source_id, r["slug"]))
+                "merged_into_source_id = ?, claimed_hash = COALESCE(?, claimed_hash) "
+                "WHERE source_id = ? AND slug = ?",
+                (winner.source_id, claimed, loser.source_id, r["slug"]))
     store.db.commit()
     if _source_is_now_empty(store, loser.source_id):
         store.delete_source_cascade(loser.source_id)
+
+
+def _fuzzy_claim_hash(loser: DocRef, winner: DocRef) -> str | None:
+    """The ``claimed_hash`` a collapse records: the winner's hash on a FUZZY collapse only.
+
+    Written at the one moment the kind of collapse is known, from two hashes in the
+    same (item) domain. An exact claim never carries one, so every later reader
+    takes a set ``claimed_hash`` to mean "moved to different content" and an unset
+    one to mean "the row's own hash", and none of them has to tell the two apart by
+    comparing hashes from different domains -- an artifact row's own hash is of its
+    raw text, while the items' is of the extracted prose.
+    """
+    if loser.content_hash and winner.content_hash and loser.content_hash != winner.content_hash:
+        return winner.content_hash
+    return None
+
+
+def _move_claims_to_winner(store, holders: set[str], loser: DocRef, winner: DocRef) -> None:
+    """Re-point the recorded claims that just moved from the loser's copy to the winner's.
+
+    A holder's row that owns nothing and claims the loser's hash was claiming the
+    copy that is now gone; its location rows were moved onto the winner's items, so
+    its claim hash has to move with them, or releasing it later matches nothing. A
+    row that deferred to the loser's source defers to the winner's now, or deleting
+    the loser's source would revive it while it still holds the winner's items.
+    The deferral moves on an exact collapse too; the claim hash only on a fuzzy one,
+    since an exact collapse leaves the claimed content unchanged. The loser's own row is written by the caller, which knows
+    its key. Not committed here: the caller's marker write commits both.
+    """
+    if not loser.content_hash or not winner.content_hash:
+        return
+    # The winner's own source is left as it was. Its rows would otherwise defer to
+    # their own source, which only that source's own cascade -- the one that deletes
+    # them -- could ever revive; kept deferring to the loser's source, deleting that
+    # source revives them exactly as before.
+    for table, claim_col in _CLAIM_HASH_COL.items():
+        for holder in holders - {winner.source_id}:
+            try:
+                store.db.execute(
+                    f"UPDATE {table} SET claimed_hash = COALESCE(?, claimed_hash), "  # noqa: S608
+                    "merged_into_source_id = CASE WHEN merged_into_source_id = ? "
+                    "THEN ? ELSE merged_into_source_id END "
+                    f"WHERE source_id = ? AND {claim_col} = ? "
+                    "AND TRIM(COALESCE(item_ids, '')) IN ('', '[]')",
+                    (_fuzzy_claim_hash(loser, winner), loser.source_id, winner.source_id,
+                     holder, loser.content_hash))
+            except Exception:
+                # Same reasoning as the marker loop below: the items are already
+                # gone, so one table's failure must not abort the whole sweep.
+                logger.debug("dedup: could not move claims in %s for source %s",
+                             table, holder, exc_info=True)
 
 
 def _action_dict(action: DedupAction) -> dict:
