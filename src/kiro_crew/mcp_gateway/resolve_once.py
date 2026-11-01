@@ -713,7 +713,7 @@ async def install(
     # relative to the prefix it was given, so a prefix reached through a symlink
     # makes it compute a traversing path instead of a plain ``node_modules/x``.
     # One install could absorb that, but a clean tree costs nothing.
-    real_target = os.path.realpath(staging_target)
+    real_target = await asyncio.to_thread(os.path.realpath, staging_target)
 
     argv = [
         npm_cmd,
