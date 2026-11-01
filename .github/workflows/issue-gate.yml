@@ -141,7 +141,12 @@ concurrency:
 jobs:
   issue-gate:
     name: Issue Gate
-    runs-on: ubuntu-latest
+    # A merge-path utility lane: seconds of work whose wall clock is almost all
+    # queue wait in the shared standard pool, on the path `PR Readiness` holds
+    # the merge button for. The move buys queue position, not capacity. The
+    # group is a GitHub-hosted Ubuntu VM carrying no fleet credentials, so the
+    # default-branch checkout below keeps the same isolation contract.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       # The DEFAULT branch, not the PR's merge ref and not its base: this
