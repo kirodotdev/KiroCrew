@@ -167,14 +167,8 @@ line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	worker_pool.py:4
 line-ref	docs/request-for-change/rfc-durable-run-coordinator.md	src/kiro_crew/mcp_tools/spawn.py:484-598
 line-ref	docs/request-for-change/rfc-durable-run-coordinator.md	src/kiro_crew/subagent_persistence.py:1-7
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	admission.py:154-156
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/admission.py:200
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/admission.py:25-30
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/context.py:51-67
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/execution.py:459-460
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/permissions.py:71
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/route_registry.py:122
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/version.py:32-33
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	dashboard/handlers_system.py:168-172
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:247
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:249
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:386
@@ -187,11 +181,8 @@ line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:712
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:718-763
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:976
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	slack/gateway.py:653
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/apps/manifest.py:1010
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/apps/module_loader.py:34-39
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/hooks.py:931
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/security.py:4436
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	website/src/pages/OverviewPage.tsx:193-198
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	website/src/pages/overviewStatCards.tsx:32
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	website/src/pages/settings/OverviewPanel.tsx:1-4
 line-ref	docs/request-for-change/rfc-global-workflow-library.md	src/kiro_crew/workflows/store.py:1-17
