@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kiro_crew.browser_cli import install as browser_cli_install
+from kiro_crew.browser_cli import npm_registry_auth
 
 KIND_CLI_SETUP = "cli_setup"
 KIND_ENGINE_DOWNLOAD = "engine_download"
@@ -45,6 +46,10 @@ ERROR_STEP_FAILED = "step_failed"
 ERROR_TIMEOUT = "timeout"
 ERROR_EXCEPTION = "exception"
 ERROR_INTERRUPTED = "interrupted"
+ERROR_REGISTRY_AUTH = npm_registry_auth.ERROR_REGISTRY_AUTH
+ERROR_PUBLIC_REGISTRY_REFUSED = npm_registry_auth.ERROR_PUBLIC_REGISTRY_REFUSED
+#: Codes an install step may carry itself; any other step value is ignored.
+_STEP_ERROR_CODES = frozenset({ERROR_REGISTRY_AUTH, ERROR_PUBLIC_REGISTRY_REFUSED})
 
 #: The panel renders the detail verbatim, so it is bounded the same way the
 #: ``last_error`` string always was.
@@ -86,6 +91,9 @@ class BrowserInstallJob:
     finished_at: float | None = None
     error_code: str | None = None
     error_detail: str | None = None
+    #: Values the dashboard's translated message for *error_code* names, e.g.
+    #: the registry that refused npm. ``None`` for codes that need none.
+    error_params: dict[str, str | None] | None = None
 
     @classmethod
     def start(cls, kind: str, engine: str | None = None) -> BrowserInstallJob:
@@ -119,6 +127,7 @@ class BrowserInstallJob:
         status: str,
         error_code: str | None = None,
         error_detail: str | None = None,
+        error_params: dict[str, str | None] | None = None,
     ) -> bool:
         """Record the terminal outcome once; a stale id or second call is ignored."""
         if job_id != self.id or not self.running:
@@ -127,6 +136,7 @@ class BrowserInstallJob:
         self.status = status
         self.error_code = error_code
         self.error_detail = error_detail
+        self.error_params = error_params
         self.finished_at = now
         self.updated_at = now
         return True
@@ -146,6 +156,7 @@ class BrowserInstallJob:
             "elapsed_s": round(max(0.0, end - self.started_at), 1),
             "error_code": self.error_code,
             "error_detail": self.error_detail,
+            "error_params": self.error_params,
         }
 
 
@@ -188,4 +199,28 @@ def outcome_of(result: dict[str, Any], default_step: str) -> tuple[str, str | No
     # install._run reports an expired subprocess budget as TIMEOUT_RC.
     if returncode == browser_cli_install.TIMEOUT_RC:
         return STATUS_FAILED, ERROR_TIMEOUT, detail
+    # A registry refusal the installer recognised names itself, so the panel can
+    # explain it in the reader's language and offer the public-registry retry.
+    if last.get("error_code") in _STEP_ERROR_CODES:
+        return STATUS_FAILED, str(last["error_code"]), detail
     return STATUS_FAILED, ERROR_STEP_FAILED, detail
+
+
+def error_params_of(result: dict[str, Any]) -> dict[str, str | None] | None:
+    """The parameters behind a recognised step error code, else ``None``.
+
+    Read from the LAST step, the same one :func:`outcome_of` judges. Values are
+    redacted and bounded again here: they reach the dashboard as data.
+    """
+    steps = result.get("steps") or []
+    if result.get("ok") or not steps:
+        return None
+    last = steps[-1]
+    params = last.get("error_params")
+    if last.get("error_code") not in _STEP_ERROR_CODES or not isinstance(params, dict):
+        return None
+    return {
+        str(key): bounded_detail(str(value), 512) if value is not None else None
+        for key, value in params.items()
+        if key in ("registry", "npm_code")
+    }

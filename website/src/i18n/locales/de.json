@@ -16949,6 +16949,10 @@
         "backfill_folder_gone_nothing_filed": "Der Ordner {{folder}} wurde entfernt, während dies lief, daher wurde nichts einsortiert. Speichern Sie diese Einstellungen zuerst, um ihn neu zu erstellen."
       },
       "browserPanel": {
+        "public_registry_refused_message": "Auch die öffentliche npm-Registry ({{url}}) hat die Anfrage abgelehnt (npm {{code}}). Möglicherweise blockiert ein Proxy oder eine Netzwerkrichtlinie auf diesem Rechner sie. Melde dich erneut bei deiner eigenen npm-Registry an und installiere dann noch einmal.",
+        "registry_auth_message": "npm konnte sich nicht bei deiner konfigurierten npm-Registry anmelden ({{registry}}, npm {{code}}). Die Anmeldung dort ist wahrscheinlich abgelaufen. Melde dich erneut bei dieser Registry an und installiere noch einmal, oder installiere einmalig aus der öffentlichen npm-Registry ({{url}}). Deine npm-Einstellungen bleiben unverändert: Nur diese eine Installation nutzt die öffentliche Registry.",
+        "registry_auth_message_unknown": "npm konnte sich nicht bei deiner konfigurierten npm-Registry anmelden (npm {{code}}). Die Anmeldung dort ist wahrscheinlich abgelaufen. Melde dich erneut bei dieser Registry an und installiere noch einmal, oder installiere einmalig aus der öffentlichen npm-Registry ({{url}}). Deine npm-Einstellungen bleiben unverändert: Nur diese eine Installation nutzt die öffentliche Registry.",
+        "retry_public_registry": "Aus der öffentlichen npm-Registry installieren",
         "use_builtin_label": "Integrierten Browser verwenden",
         "use_builtin_desc": "Öffnet Seiten im integrierten Panel von {{productName}}. Deaktivieren, um stattdessen mit playwright-cli zu surfen.",
         "browsing": "Surfen",
