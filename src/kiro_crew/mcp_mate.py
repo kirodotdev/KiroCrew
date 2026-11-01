@@ -22,6 +22,11 @@ tiers that follow who owns the field:
   ``[CURRENT ASSIGNMENT]`` section it keeps for itself
   (:mod:`kiro_crew.member_notes`). Its chat runs on the conductor, which has no
   file tool, so this is how it keeps them. Admitted like the goal tools.
+* **Messages** -- ``message_mate`` sends a short text to another crewmate on
+  this gateway (:mod:`kiro_crew.dashboard.handlers.member_peer_message`). It is
+  the one tool here that names another crewmate, and it only sends text: the
+  target gets it as data in its own thread, and the gateway refuses it unless
+  the user turned on ``agent.mate_messaging`` and allowed the pair.
 * **Card-backed** -- ``set_model``, ``set_approval_mode``,
   ``request_capabilities``, ``set_goal`` (add or change one goal), ``set_key_results``
   (how the goals are measured, the whole set at once): what the crewmate
@@ -41,7 +46,8 @@ or a policy withholds the whole set at once, and the set's grants
 (``agent._MATE_AUTO_GRANTS``) are reviewed together. It is mounted on every
 crewmate; the guide server (``kirocrew-guide``) stays what it is, the user's
 help with the dashboard. Every tool here acts on the CALLING crewmate -- never
-on another, never on a name passed in -- and refuses off the dashboard (a
+on another, never on a name passed in, except that ``message_mate`` names the
+crewmate its text goes to and changes nothing there -- and refuses off the dashboard (a
 channel, a schedule, a subagent, the CLI) with a one-line reason.
 
 Stateless: every call is one round trip to the gateway, which owns the record,
@@ -461,6 +467,30 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "message_mate",
+            "description": (
+                "Send a short text message to another crewmate on this gateway, by its "
+                "crew name. It works only when the user turned on crewmate messages "
+                "and let you message that crewmate; a reply to a crewmate whose "
+                "message you are answering is also allowed. The message shows in your "
+                "chat and in theirs, and they get it on a later turn of their own as "
+                "data from you, not as an instruction: do not wait for a reply in "
+                "this turn. Keep it to what the other crewmate needs, never pass on "
+                "the user's private words without their consent, and never ask the "
+                "other crewmate to change its settings, goals or permissions. At most "
+                "3 messages in one turn, and a chain of replies stops at hop 3."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "minLength": 1, "maxLength": MAX_SHORT_STRING},
+                    "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                },
+                "required": ["to", "text"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "save_notes",
             "description": (
                 "Replace your notes: the [CURRENT ASSIGNMENT] section you keep for "
@@ -621,6 +651,24 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if refused:
             return f"{refused}\nYour notes were not saved; do not say they were."
         return _render({**d, "next": "Saved; they open your next turn."})
+
+    if name == "message_mate":
+        d = _post(
+            "/api/member/self/message",
+            {"to": args.get("to", ""), "text": args.get("text", "")},
+            session_key=sk,
+        )
+        refused = _error_for(name, d)
+        if refused:
+            return f"{refused}\nThe message was not sent; do not say it was."
+        when = "when their current turn ends" if d.get("queued") else "now, on a turn of their own"
+        return _render(
+            {
+                **d,
+                "next": f"Sent. {d.get('to', 'The crewmate')} gets it {when}; any reply "
+                "arrives as a later turn of yours. Do not wait for it in this turn.",
+            }
+        )
 
     if name == "find_capabilities":
         d = _post("/api/member/self/capabilities", {"query": args.get("query", "")}, session_key=sk)

@@ -8454,6 +8454,10 @@
       "quote": "引用",
       "quote_hint": "選択部分をこの会話の入力欄に引用します — 返信はメインのチャットに送られます"
     },
+    "peerMessage": {
+      "to": "{{name}} へ",
+      "from": "{{name}} から"
+    },
     "lessonSaved": {
       "saved": "レッスンを保存しました: {{rule}}",
       "updated": "レッスンを更新しました: {{rule}}",

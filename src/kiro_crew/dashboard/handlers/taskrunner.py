@@ -443,6 +443,13 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     Body: ``{"spec": "path/to/file.md"}`` or ``{"spec": "__inline__:# Task content..."}``
     Inline specs are written to a temp file in the work directory.
     """
+    # A turn under another crewmate's influence may not start work the
+    # peer-influence walk cannot follow (``mate_peer_messages``).
+    from kiro_crew.dashboard.mate_peer_messages import refuse_under_peer_influence
+
+    peer_refused = refuse_under_peer_influence(request, "taskrunner.start")
+    if peer_refused is not None:
+        return peer_refused
     owner_denied = await _require_taskrunner_owner(request, "taskrunner.start")
     if owner_denied is not None:
         return owner_denied

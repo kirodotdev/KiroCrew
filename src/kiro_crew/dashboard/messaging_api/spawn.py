@@ -455,6 +455,11 @@ async def api_spawn(request: web.Request) -> web.Response:
         await child_admission.abandon()
     else:
         await child_admission.attach_child(info.id, session_key=f"subagent:{info.id}")
+        # A sub-agent a caller under another crewmate's influence started
+        # holds that caller's words (``mate_peer_messages.note_delegation``).
+        from kiro_crew.dashboard.mate_peer_messages import note_delegation
+
+        note_delegation(state, parent_session, f"subagent:{info.id}")
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
         # refused for capacity — tell the client so it does NOT reconcile
@@ -723,6 +728,13 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
             info.id,
             session_key=getattr(info, "conversation_key", "") or f"subagent:{info.id}",
             also=(f"subagent:{info.id}",),
+        )
+        from kiro_crew.dashboard.mate_peer_messages import note_delegation
+
+        note_delegation(
+            state,
+            parent_session,
+            getattr(info, "conversation_key", "") or f"subagent:{info.id}",
         )
     if not info:
         return web.json_response(

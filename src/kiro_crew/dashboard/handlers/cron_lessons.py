@@ -220,6 +220,36 @@ async def _surface_lesson_saved(
         logger.warning("could not draw a saved lesson in its conversation", exc_info=True)
 
 
+def _peer_influence_refusal(
+    request: web.Request, state: DashboardState, sk: str, operation: str = "learn_add"
+) -> web.Response | None:
+    """403 ``peer_message_turn`` for an agent's lesson write under peer influence.
+
+    A lesson is injected into every later turn, so another crewmate's message
+    must not be able to save or remove one (``dashboard.mate_peer_messages``).
+    Only the agent's own MCP call (internal secret) is checked; a person's click
+    is not.
+    """
+    if request.get("internal_auth") is not True or not sk:
+        return None
+    from kiro_crew.dashboard.mate_peer_messages import (
+        PEER_TURN_REFUSAL,
+        peer_influenced_session,
+    )
+
+    if not peer_influenced_session(state, sk):
+        return None
+    _sel().log_api_access(
+        caller=sk,
+        operation=operation,
+        outcome="denied",
+        source="dashboard",
+        resources="peer_message_turn",
+        error=PEER_TURN_REFUSAL,
+    )
+    return web.json_response({"error": PEER_TURN_REFUSAL, "code": "peer_message_turn"}, status=403)
+
+
 async def api_lessons_create(request: web.Request) -> web.Response:
     """POST /api/lessons — add a lesson (vector store or JSONL fallback)."""
     from kiro_crew.learn import Lesson, lesson_contains_injection  # noqa: F811
@@ -241,6 +271,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
+    peer_refusal = _peer_influence_refusal(request, state, sk)
+    if peer_refusal is not None:
+        return peer_refusal
     if _is_restricted_session(state, request):
         sk = request.headers.get("X-Session-Key", "")
         logger.warning("Blocked learn_add from restricted session %s", sk)
@@ -624,6 +657,9 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
+    peer_refusal = _peer_influence_refusal(request, state, sk, "lessons.delete")
+    if peer_refusal is not None:
+        return peer_refusal
     if _is_restricted_session(state, request):
         _sel().log_api_access(
             caller=sk,

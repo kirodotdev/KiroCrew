@@ -228,6 +228,10 @@ def _resolve_one_shot_at(
     return at_ts, None
 
 
+#: The cron tools that change nothing, so they run under peer influence too.
+_CRON_READ_TOOLS = frozenset({"cron_list"})
+
+
 async def api_cron_tools(request: web.Request) -> web.Response:
     """Run cron tools with ordinary authenticated session routing."""
     if request.get("internal_auth") is not True:
@@ -276,6 +280,18 @@ async def api_cron_tools(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if name not in _CRON_READ_TOOLS:
+        # A schedule is later work in this crewmate's name, so another
+        # crewmate's message must not be able to change one.
+        from kiro_crew.dashboard.mate_peer_messages import (
+            PEER_TURN_REFUSAL,
+            peer_influenced_session,
+        )
+
+        if peer_influenced_session(state, actual):
+            return web.json_response(
+                {"error": PEER_TURN_REFUSAL, "code": "peer_message_turn"}, status=403
+            )
 
     def dispatch() -> str:
         # ContextVars are isolated by to_thread. Restore the prior value even

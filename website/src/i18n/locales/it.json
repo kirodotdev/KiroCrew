@@ -8742,6 +8742,10 @@
       "quote": "Cita",
       "quote_hint": "Cita la selezione nel compositore di questa conversazione: la tua risposta va nella chat principale"
     },
+    "peerMessage": {
+      "to": "A {{name}}",
+      "from": "Da {{name}}"
+    },
     "lessonSaved": {
       "saved": "Lezione salvata: {{rule}}",
       "updated": "Lezione aggiornata: {{rule}}",

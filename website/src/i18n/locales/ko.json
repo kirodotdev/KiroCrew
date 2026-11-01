@@ -8454,6 +8454,10 @@
       "quote": "인용",
       "quote_hint": "선택한 부분을 이 대화의 입력창에 인용합니다 — 답장은 메인 채팅으로 전송됩니다"
     },
+    "peerMessage": {
+      "to": "{{name}}에게",
+      "from": "{{name}}에게서"
+    },
     "lessonSaved": {
       "saved": "학습 내용 저장됨: {{rule}}",
       "updated": "학습 내용 업데이트됨: {{rule}}",

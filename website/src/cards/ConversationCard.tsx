@@ -24,6 +24,10 @@
  * A fourth surface, `lesson`, is a lesson the agent saved (`learn_add`): also
  * already applied, one row per write, drawn as one quiet line with a link to
  * the Memory page (`LessonSavedRow`).
+ *
+ * A fifth surface, `peer`, is a message one crewmate sent to another
+ * (`message_mate`), recorded in both threads and drawn as plain text
+ * (`PeerMessageRow`).
  */
 import type { ChatMessage } from '../types'
 import { useAppSelector } from '../store'
@@ -40,6 +44,7 @@ import GuideOfferCard from '../guide/GuideOfferCard'
 import ErrorNotice from '../components/ErrorNotice'
 import SelfChangeRow, { type SelfChangeRef, type SelfField } from './SelfChangeRow'
 import LessonSavedRow, { type LessonSavedRef } from './LessonSavedRow'
+import PeerMessageRow, { type PeerMessageRef } from './PeerMessageRow'
 
 export const CARD_ROLE = 'card'
 
@@ -101,6 +106,22 @@ export function readLessonSavedRef(m: Pick<ChatMessage, 'role' | 'meta'>): Lesso
   const rule = str(c.rule)
   if (!id || !rule) return null
   return { surface: 'lesson', id, slot: str(c.slot, 256), rule, status: c.status === 'enriched' ? 'updated' : 'saved' }
+}
+
+/** The row's crewmate-message reference, or null when the row is not one. */
+export function readPeerMessageRef(m: Pick<ChatMessage, 'role' | 'meta'>): PeerMessageRef | null {
+  if (m.role !== CARD_ROLE) return null
+  const raw = (m.meta as { card?: unknown } | undefined)?.card
+  if (!raw || typeof raw !== 'object') return null
+  const c = raw as Record<string, unknown>
+  if (c.surface !== 'peer') return null
+  const id = str(c.id, 64)
+  const peer = str(c.peer, 128)
+  const text = str(c.text, 4000)
+  const direction = c.direction === 'in' || c.direction === 'out' ? c.direction : null
+  if (!id || !peer || !text || !direction) return null
+  const hop = typeof c.hop === 'number' && Number.isFinite(c.hop) ? c.hop : 0
+  return { surface: 'peer', id, slot: str(c.slot, 256), direction, peer, text, hop }
 }
 
 /** The row's card reference, or null when the row does not carry a usable one. */
@@ -209,6 +230,14 @@ export default function ConversationCard({ message, slot }: { message: ChatMessa
     return (
       <div className="min-w-0" data-testid="conversation-card" data-card-surface="lesson" data-card-id={lesson.id}>
         <LessonSavedRow lesson={lesson} />
+      </div>
+    )
+  }
+  const peer = readPeerMessageRef(message)
+  if (peer) {
+    return (
+      <div className="min-w-0" data-testid="conversation-card" data-card-surface="peer" data-card-id={peer.id}>
+        <PeerMessageRow message={peer} />
       </div>
     )
   }

@@ -8742,6 +8742,10 @@
       "quote": "Citer",
       "quote_hint": "Cite la sélection dans le composeur de cette discussion — ta réponse part dans la discussion principale"
     },
+    "peerMessage": {
+      "to": "À {{name}}",
+      "from": "De {{name}}"
+    },
     "lessonSaved": {
       "saved": "Leçon enregistrée : {{rule}}",
       "updated": "Leçon mise à jour : {{rule}}",

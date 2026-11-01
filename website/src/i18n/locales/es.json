@@ -8742,6 +8742,10 @@
       "quote": "Citar",
       "quote_hint": "Cita la selección en el redactor de esta conversación: tu respuesta va al chat principal"
     },
+    "peerMessage": {
+      "to": "Para {{name}}",
+      "from": "De {{name}}"
+    },
     "lessonSaved": {
       "saved": "Lección guardada: {{rule}}",
       "updated": "Lección actualizada: {{rule}}",

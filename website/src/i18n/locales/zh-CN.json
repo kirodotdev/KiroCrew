@@ -8454,6 +8454,10 @@
       "quote": "引用",
       "quote_hint": "把选中内容引用到本对话的输入框——你的回复会发到主聊天"
     },
+    "peerMessage": {
+      "to": "发给 {{name}}",
+      "from": "来自 {{name}}"
+    },
     "lessonSaved": {
       "saved": "已保存经验：{{rule}}",
       "updated": "已更新经验：{{rule}}",
