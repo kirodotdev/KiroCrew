@@ -14151,6 +14151,8 @@
         "decisions_runtime_retry": "Erneut versuchen",
         "folder_conductor": "Ordner-Conductor",
         "folder_conductor_desc": "Hebt den Chat, der die anderen Chats eines Ordners gestartet hat, an den Anfang dieses Ordners: ein farbiger Balken am linken Rand und ein kleines conductor-Label neben dem Agentennamen. Das ändert die Reihenfolge der Sitzungsliste, daher bleibt die Liste unverändert, bis du es einschaltest. Der Chat-Eintrag im Ordnermenü ist immer da.",
+        "visual_refresh": "Visuelle Auffrischung",
+        "visual_refresh_desc": "Schaltet die laufende Neugestaltung des Dashboards ein. Noch ist nichts neu gestaltet: Teile erscheinen, sobald sie fertig sind, und können unfertig aussehen oder sich zwischen Updates ändern. Schalte sie aus, um zum aktuellen Aussehen zurückzukehren.",
         "crewmate_harness": "Agent-Harness pro Crewmate",
         "crewmate_harness_desc": "Fügt dem Profil jedes Crewmates eine Einstellung Agent-Harness hinzu, damit ein Crewmate mit einem anderen KI-Coding-Tool wie Claude Code und dessen Modellen laufen kann, während die übrigen beim Standard bleiben.",
         "crew_mode": "Ultra Mode",

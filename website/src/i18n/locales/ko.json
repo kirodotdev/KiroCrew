@@ -13888,6 +13888,8 @@
         "decisions_runtime_retry": "다시 시도",
         "folder_conductor": "폴더 지휘자",
         "folder_conductor_desc": "폴더의 다른 채팅을 시작한 채팅을 그 폴더의 맨 위로 올립니다. 왼쪽 가장자리에 강조 막대가 생기고 에이전트 이름 옆에 작은 conductor 태그가 붙습니다. 세션 목록의 순서가 바뀌므로 켜기 전에는 목록이 그대로입니다. 폴더 메뉴의 채팅 항목은 항상 있습니다.",
+        "visual_refresh": "비주얼 리프레시",
+        "visual_refresh_desc": "진행 중인 대시보드 새 디자인을 켭니다. 아직 바뀐 것은 없습니다. 완성되는 대로 하나씩 나타나며, 미완성으로 보이거나 업데이트마다 바뀔 수 있습니다. 끄면 현재 모습으로 돌아갑니다.",
         "crewmate_harness": "크루메이트별 에이전트 하네스",
         "crewmate_harness_desc": "각 크루메이트의 프로필에 에이전트 하네스 설정을 추가해, 한 크루메이트는 Claude Code 같은 다른 AI 코딩 도구와 그 모델로 실행하고 나머지는 기본값을 유지할 수 있게 합니다.",
         "crew_mode": "Ultra Mode",
