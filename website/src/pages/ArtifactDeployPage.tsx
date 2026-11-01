@@ -544,8 +544,15 @@ export default function ArtifactDeployPage() {
           <table className="w-full border-collapse table-striped">
             <thead>
               <tr>
-                {['', 'Name', 'Account', 'Region', 'Status', 'Actions'].map(h => (
-                  <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>
+                {/* The first column is the default-profile star and carries no label. */}
+                {['',
+                  i18nT('pages.artifactDeployPage.col_name'),
+                  i18nT('pages.artifactDeployPage.col_account'),
+                  i18nT('pages.artifactDeployPage.col_region'),
+                  i18nT('pages.artifactDeployPage.col_status'),
+                  i18nT('pages.artifactDeployPage.col_actions'),
+                ].map((h, i) => (
+                  <th key={i} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -764,8 +771,16 @@ export default function ArtifactDeployPage() {
           <table className="w-full border-collapse table-striped">
             <thead>
               <tr>
-                {['Name', 'Type', 'Status', 'Profile', 'URL', 'Cost', 'Actions'].map(h => (
-                  <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>
+                {[
+                  i18nT('pages.artifactDeployPage.col_name'),
+                  i18nT('pages.artifactDeployPage.col_type'),
+                  i18nT('pages.artifactDeployPage.col_status'),
+                  i18nT('pages.artifactDeployPage.col_profile'),
+                  i18nT('pages.artifactDeployPage.col_url'),
+                  i18nT('pages.artifactDeployPage.col_cost'),
+                  i18nT('pages.artifactDeployPage.col_actions'),
+                ].map((h, i) => (
+                  <th key={i} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>
                 ))}
               </tr>
             </thead>

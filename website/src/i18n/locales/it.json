@@ -11349,7 +11349,13 @@
       "col_status": "Stato",
       "col_est_cost": "Costo stimato",
       "col_profile": "Profilo",
-      "col_expiry": "Scadenza"
+      "col_expiry": "Scadenza",
+      "col_account": "Account",
+      "col_region": "Regione",
+      "col_actions": "Azioni",
+      "col_type": "Tipo",
+      "col_url": "URL",
+      "col_cost": "Costo"
     },
     "artifactDetailPage": {
       "published_to_provider": "Pubblicato su {{provider}}",

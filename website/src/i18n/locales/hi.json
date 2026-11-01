@@ -11174,7 +11174,13 @@
       "col_status": "स्थिति",
       "col_est_cost": "अनु. लागत",
       "col_profile": "प्रोफ़ाइल",
-      "col_expiry": "समय-सीमा"
+      "col_expiry": "समय-सीमा",
+      "col_account": "खाता",
+      "col_region": "क्षेत्र",
+      "col_actions": "कार्रवाइयाँ",
+      "col_type": "प्रकार",
+      "col_url": "लिंक",
+      "col_cost": "लागत"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} पर प्रकाशित",

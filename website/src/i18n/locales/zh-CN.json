@@ -10999,7 +10999,13 @@
       "col_status": "状态",
       "col_est_cost": "预估费用",
       "col_profile": "配置文件",
-      "col_expiry": "过期时间"
+      "col_expiry": "过期时间",
+      "col_account": "账户",
+      "col_region": "区域",
+      "col_actions": "操作",
+      "col_type": "类型",
+      "col_url": "链接",
+      "col_cost": "费用"
     },
     "artifactDetailPage": {
       "published_to_provider": "已发布到 {{provider}}",
