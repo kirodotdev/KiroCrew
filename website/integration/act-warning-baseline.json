@@ -50,7 +50,6 @@
   "src/test/ChatSidebar.toolStatusSetting.test.tsx",
   "src/test/ChatSidebarMoreCoverage.test.tsx",
   "src/test/ConnectionsPage.coverage.test.tsx",
-  "src/test/DesignTweakHistoryCov80.test.tsx",
   "src/test/DevFleetPage.test.tsx",
   "src/test/EditableCodeBlock.editorActions.test.tsx",
   "src/test/ExportSessionItem.test.tsx",
