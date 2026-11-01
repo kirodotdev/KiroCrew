@@ -34,6 +34,7 @@ from kiro_crew.history_consolidation import (
     _SEMANTIC_OMISSION_NOTICE,
     _SEMANTIC_OMISSION_NOTICE_UNSCORED,
     _bounded_semantic_table,
+    _select_semantic_rows,
 )
 from kiro_crew.history_consolidation_memory import _recency
 from kiro_crew.vector_memory_constants import (
@@ -202,6 +203,50 @@ def _assert_invariants(
     assert [key for key in table.keys if key not in shown and cost[key] <= left] == []
 
 
+def _assert_selection(table: _Table, cap: int, after: object, scores: object) -> None:
+    """The counts beside a block describe that block, in whichever branch built it."""
+    block, selection = _select_semantic_rows(
+        table.rows, table.entries, cap, scores=scores, rotation_after=after
+    )
+    whole = table.whole()
+    if len(whole) <= cap:
+        assert selection is None
+        return
+    assert selection is not None
+    total = len(table.keys)
+    valid = (
+        isinstance(scores, list)
+        and len(scores) == total
+        and all(isinstance(score, float) and math.isfinite(score) for score in scores)
+    )
+    assert (selection.table_rows, selection.table_chars, selection.cap) == (total, len(whole), cap)
+    assert (selection.scored, selection.resumed) == (valid, isinstance(after, str))
+    assert selection.ranked == (valid and any(score > 0 for score in scores))
+    # Each shown row is counted once, in the pool that took it.
+    assert sum(selection.pool_rows) == selection.shown_rows == len(block.visible_keys)
+    assert sum(selection.pool_chars) == selection.shown_chars
+    assert selection.ranked or selection.pool_rows[3] == selection.pool_chars[3] == 0
+    body, notice = _split(block.text)
+    if notice is None:
+        # The cap has no room for the notice: no row, no notice, no slice.
+        assert selection.shown_rows == selection.shown_chars == 0
+        assert (selection.rotation_start, selection.rotation_wrapped) == (0, False)
+        return
+    assert selection.shown_chars == len(body) - 2
+    scored_line = _SEMANTIC_OMISSION_NOTICE.format(count=block.omitted, total=total, limit=cap)
+    assert selection.ranked == (notice == scored_line)
+    # The rotation counts the run it walked, placed by ordinals in the key order.
+    cycle = _cycle(table.keys, after)
+    run = cycle[: cycle.index(block.rotation_last) + 1]
+    rotated = [key for key in run if key in block.visible_keys]
+    assert selection.pool_rows[0] == len(rotated)
+    assert selection.pool_chars[0] == sum(table.cost[key] for key in rotated)
+    start = table.keys.index(cycle[0])
+    assert selection.rotation_start == start
+    past_the_end = isinstance(after, str) and all(key <= after for key in table.keys)
+    assert selection.rotation_wrapped == (past_the_end or start + len(run) > total)
+
+
 # ── one property over every shape ─────────────────────────────────────────────────────
 
 #: Characters JSON escapes (quotes, backslashes, controls), non-ASCII the default
@@ -280,6 +325,7 @@ def test_every_block_shows_what_it_reports_inside_the_cap_and_rotates_without_sk
     result = table.render(cap, scores=scores, rotation_after=after)
 
     _assert_invariants(table, cap, after, result, scores=scores)
+    _assert_selection(table, cap, after, scores)
 
 
 def test_the_rendered_length_is_the_sum_of_the_row_costs(seeded_rng) -> None:

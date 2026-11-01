@@ -733,6 +733,28 @@ within N advances (N its live rows), and typically within N·(row + 2)/8,192,
 about eleven 700-character rows an advance; the rotation allowance is the knob
 for a faster sweep.
 
+Each over-cap pass logs one INFO line on `kiro_crew.history` once its block is
+selected (`_select_semantic_rows`), so a gateway running at `agent.log_level`
+INFO shows what the pools did: the whole table's rows and characters, the cap,
+the rows and characters shown, and then each pool's rows and characters in pool
+order (`rotation`, `lessons`, `recency`, `relevance`, `backfill`). A row counts
+once, in the pool that took it, and a character is what the cap measures, a
+row's one-element render less two, so the pools sum to what the block shows.
+`scores=` says what became of relevance: `used` when some row scored above zero
+(the notice, when the cap leaves room for one, then names relevance),
+`no_positive`, `no_signal` when the scorer answered nothing usable or did not
+run because another pass's scorer still held `_SCORER_IN_FLIGHT`,
+`space_changed`, `timeout` or `error`. The rotation is placed by ordinals, never
+by its cursor, which is a key: `cursor=set` or `none`, `rotation_start=`, the
+position in key order its slice began at, and `rotation_wrapped=`, whether the
+slice came round from the last key to the first. The line holds counts, sizes
+and those words only, never a memory key, value, span text or exception
+message; like every consolidation line it names the pass by its session key. A
+table that fits, and a pass that returns before it selects a block (an
+Incognito or Temporary chat among them), log nothing; a pass that fails after
+selection and runs again logs again, so the lines count blocks built, not
+answers applied.
+
 Lessons have an allowance of their own rather than an exclusion. A delete is
 the one lesson verb consolidation leaves in `semantic`, and the fence withholds
 a delete of a key the block did not show, so a block without lessons could never

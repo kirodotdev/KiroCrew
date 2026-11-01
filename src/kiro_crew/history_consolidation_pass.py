@@ -28,8 +28,8 @@ Instance fields read: ``_archive_after_days``, ``_auto_skills_enabled``,
 Instance fields written: ``_event_loop``, ``_last_lifecycle``, ``_running``.
 
 Part of the ``kiro_crew.history_consolidation`` family: that module is the import path and
-the patch surface; this owner imports only ``history_consolidation_span`` and
-``history_consolidation_memory``.
+the patch surface; this owner imports only ``history_consolidation_span``,
+``history_consolidation_selection`` and ``history_consolidation_memory``.
 """
 
 from __future__ import annotations
@@ -46,7 +46,6 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
 from kiro_crew.history_consolidation_memory import (
     _audit_oversized_semantic,
-    _bounded_semantic_table,
     _is_plausible_memory_file,
     _refuse_oversized_semantic,
     _reroute_lesson_semantic_keys,
@@ -54,6 +53,7 @@ from kiro_crew.history_consolidation_memory import (
     _session_facets,
     _withhold_unseen_deletes,
 )
+from kiro_crew.history_consolidation_selection import _select_semantic_rows
 from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_BUSY,
     _CONSOLIDATION_EMPTY,
@@ -90,6 +90,9 @@ from kiro_crew.vector_memory_constants import (
 )
 
 if TYPE_CHECKING:
+    # Typing-only, so it adds no module name to the facade's frozen set.
+    from typing import Literal
+
     from kiro_crew.history_consolidation import HistoryConsolidator
 
 
@@ -663,7 +666,7 @@ async def _consolidate(
             ]
             # Over the cap the block shows the rows relevant to this span, the
             # newest, and a slice that rotates through the rest from pass to
-            # pass (``_bounded_semantic_table``). A table that fits needs no
+            # pass (``_select_semantic_rows``). A table that fits needs no
             # signal, so it costs no embed and leaves the rotation alone.
             # Offloaded like the fetch: the table can run to megabytes, and
             # this coroutine is on the gateway event loop.
@@ -671,6 +674,7 @@ async def _consolidate(
                 lambda: len(json.dumps(semantic_entries, indent=1))
                 > _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION
             )
+            relevance_failure: Literal["timeout", "error", "space_changed"] | None = None
             if overflows:
                 # Both reads are still before the billed turn, where an error
                 # would re-arm the pass every idle tick, so each degrades on its
@@ -752,6 +756,7 @@ async def _consolidate(
                         # The rows' vectors predate a model swap the query's
                         # embed may not: a cosine across two spaces is noise.
                         semantic_scores = None
+                        relevance_failure = "space_changed"
                 except TimeoutError:
                     self._logger.warning(
                         "Consolidation relevance scores for %s took over %.0fs; this pass "
@@ -760,24 +765,30 @@ async def _consolidate(
                         wait_secs,
                     )
                     semantic_scores = None
+                    relevance_failure = "timeout"
                 except Exception:
                     self._logger.debug(
                         "Consolidation relevance signal unavailable for %s", key, exc_info=True
                     )
                     semantic_scores = None
+                    relevance_failure = "error"
             # The PROMPT's copy of the table is bounded; ``current_semantic``
             # itself stays whole, because the writers below read it as the
             # snapshot that decides update-versus-create and the revision a
             # correction is checked against. The keys the bounded copy shows
             # travel with it: a row the model never read is not its to delete.
-            semantic_json, _, semantic_visible, rotation_last = await asyncio.to_thread(
-                _bounded_semantic_table,
-                current_semantic,
-                semantic_entries,
-                _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
-                scores=semantic_scores,
-                rotation_after=rotation_after,
+            (semantic_json, _, semantic_visible, rotation_last), selection = (
+                await asyncio.to_thread(
+                    _select_semantic_rows,
+                    current_semantic,
+                    semantic_entries,
+                    _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
+                    scores=semantic_scores,
+                    rotation_after=rotation_after,
+                )
             )
+            if selection is not None:
+                selection.log(relevance_failure, key, self._logger)
             semantic_fields = (
                 '"delete": false, "metadata": {"category": "contact", "subject": "user", '
                 '"predicate": "work_email", "scope": "", "source_ref": "brief evidence", '
