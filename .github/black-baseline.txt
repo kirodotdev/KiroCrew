@@ -691,7 +691,6 @@ test/test_slack_dashboard_live_sync.py
 test/test_slack_home_tab.py
 test/test_slack_linked_approval.py
 test/test_slack_mirror_unlink.py
-test/test_slack_pins_reactions.py
 test/test_slack_render_pipeline.py
 test/test_slack_scope_probe.py
 test/test_slack_sessions_view.py

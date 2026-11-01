@@ -213,9 +213,7 @@ class TestSlackReactions:
                     },
                 )
         assert resp.status == 200
-        slack.remove_reaction.assert_awaited_once_with(
-            TRACKED, TS, "eyes", raise_on_error=True
-        )
+        slack.remove_reaction.assert_awaited_once_with(TRACKED, TS, "eyes", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_reaction_untracked_channel_denied(self):
@@ -275,9 +273,7 @@ class TestSlackReactions:
                     },
                 )
         assert resp.status == 502
-        slack.add_reaction.assert_awaited_once_with(
-            TRACKED, TS, "eyes", raise_on_error=True
-        )
+        slack.add_reaction.assert_awaited_once_with(TRACKED, TS, "eyes", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_reaction_non_string_emoji(self):
