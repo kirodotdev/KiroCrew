@@ -30,7 +30,6 @@ src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/http.py 53.8  
 src/kiro_crew/apps/builtins/workflows/server.py 61.2   # 82/134
 src/kiro_crew/cli_cloud.py 61.2   # 178/291
 src/kiro_crew/cloud/wizard.py 65.8   # 283/430
-src/kiro_crew/computer_use/cli.py 68.8   # 130/189
 src/kiro_crew/computer_use/macos_skylight.py 54.8   # 142/259
 src/kiro_crew/conpty.py 27.9   # 12/43
 src/kiro_crew/dashboard/_types.py 0.0   # 0/3
