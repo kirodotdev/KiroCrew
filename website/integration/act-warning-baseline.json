@@ -344,7 +344,6 @@
   "src/test/SubagentProgressBar.stalledRow.i18n.test.tsx",
   "src/test/SubagentRunCard.test.tsx",
   "src/test/SystemPage.test.tsx",
-  "src/test/TerminalKeyBar.test.tsx",
   "src/test/TerminalRegistryCoverage.test.tsx",
   "src/test/ToolCallLine.labelClamp.test.tsx",
   "src/test/ToolCallLine.mcpAppAbsent.test.tsx",
