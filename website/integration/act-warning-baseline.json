@@ -6,7 +6,6 @@
   "src/apps/papyrus/CoAuthorPanel.cov80.test.tsx",
   "src/components/FilePickerMenu.cov80.test.tsx",
   "src/components/LinkedSurfacesSection.menuKeyboard.test.tsx",
-  "src/components/SketchDialog.test.tsx",
   "src/pages/members/DeployMyCrew.test.tsx",
   "src/pages/members/MembersPage.newCrewmate.test.tsx",
   "src/pages/members/MembersPage.schedules.test.tsx",
