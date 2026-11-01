@@ -79,8 +79,8 @@ def test_the_setting_round_trips_through_to_dict(tmp_path: Path):
     assert KiroCrewConfig.load().to_dict()["work_ledger"] == {
         "max_depth": 4,
         "remote_dispatch": False,
-        "remote_dispatch_memory_gb": 2.0,
-        "remote_dispatch_disk_gb": 10.0,
+        "remote_dispatch_memory_gb": 5.0,
+        "remote_dispatch_disk_gb": 5.0,
     }
 
 

@@ -107,11 +107,41 @@ def _app(state, *, app_name: str = "", user: str = "local-app") -> web.Applicati
 # -- config -----------------------------------------------------------------
 
 
-def test_config_defaults_are_off_with_the_rfc_estimates():
+#: Wave 6 measured defaults (session-control spec, "Wave 6: estimate defaults").
+MEASURED_MEMORY_GB = 5.0
+MEASURED_DISK_GB = 5.0
+
+
+def test_config_defaults_are_off_with_the_measured_estimates():
     cfg = _build_work_ledger_config({})
     assert cfg.remote_dispatch is False
-    assert cfg.remote_dispatch_memory_gb == 2.0
-    assert cfg.remote_dispatch_disk_gb == 10.0
+    assert cfg.remote_dispatch_memory_gb == MEASURED_MEMORY_GB
+    assert cfg.remote_dispatch_disk_gb == MEASURED_DISK_GB
+
+
+def test_nothing_configured_falls_back_to_the_measured_estimates(monkeypatch):
+    """Switch on, no estimate keys: the gate charges the measured defaults."""
+    _config_load(monkeypatch, remote_dispatch=True)
+    assert headroom_mod.remote_dispatch_settings() == headroom_mod.RemoteDispatchSettings(
+        True, MEASURED_MEMORY_GB, MEASURED_DISK_GB
+    )
+
+
+def test_flag_off_ignores_the_estimates(monkeypatch):
+    """Switch off: no estimate reaches the gate, defaults or configured."""
+    _config_load(monkeypatch)
+    assert headroom_mod.remote_dispatch_settings() == headroom_mod.RemoteDispatchSettings(
+        False, 0.0, 0.0
+    )
+    _config_load(
+        monkeypatch,
+        remote_dispatch=False,
+        remote_dispatch_memory_gb=7,
+        remote_dispatch_disk_gb=70,
+    )
+    assert headroom_mod.remote_dispatch_settings() == headroom_mod.RemoteDispatchSettings(
+        False, 0.0, 0.0
+    )
 
 
 @pytest.mark.parametrize("raw", ["true", 1, None, "yes"])
@@ -125,7 +155,10 @@ def test_a_bad_estimate_uses_the_default(raw):
     cfg = _build_work_ledger_config(
         {"remote_dispatch_memory_gb": raw, "remote_dispatch_disk_gb": raw}
     )
-    assert (cfg.remote_dispatch_memory_gb, cfg.remote_dispatch_disk_gb) == (2.0, 10.0)
+    assert (cfg.remote_dispatch_memory_gb, cfg.remote_dispatch_disk_gb) == (
+        MEASURED_MEMORY_GB,
+        MEASURED_DISK_GB,
+    )
 
 
 def test_estimates_and_depth_read_together():

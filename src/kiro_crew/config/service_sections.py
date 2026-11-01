@@ -373,22 +373,27 @@ class WorkLedgerConfig:
             "request, so no restart is needed.",
         ),
     )
+    # Measured defaults (RFC wave 6; method and numbers in
+    # docs/system-specs/modules/session-control.md, "Wave 6: estimate defaults").
     remote_dispatch_memory_gb: float = field(
-        default=2.0,
+        default=5.0,
         metadata=_meta(
             "Remote dispatch memory estimate (GB)",
             "Free memory one dispatched worker needs. A work-item create is refused "
-            "as crew_busy when less is free. Used only with remote_dispatch on; a "
+            "as crew_busy when less is free. The default covers the largest measured "
+            "worker session process tree. Used only with remote_dispatch on; a "
             "value that is not a positive number uses the default.",
         ),
     )
     remote_dispatch_disk_gb: float = field(
-        default=10.0,
+        default=5.0,
         metadata=_meta(
             "Remote dispatch disk estimate (GB)",
             "Free scratch disk one dispatched worker needs. A work-item create is "
-            "refused as crew_busy when less is free. Used only with remote_dispatch "
-            "on; a value that is not a positive number uses the default.",
+            "refused as crew_busy when less is free. The default is about twice the "
+            "measured size of one self-contained clone with its dependencies. Used "
+            "only with remote_dispatch on; a value that is not a positive number "
+            "uses the default.",
         ),
     )
 

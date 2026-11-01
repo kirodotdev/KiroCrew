@@ -5582,8 +5582,8 @@
       "defaultValue": {
         "max_depth": 2,
         "remote_dispatch": false,
-        "remote_dispatch_memory_gb": 2.0,
-        "remote_dispatch_disk_gb": 10.0
+        "remote_dispatch_memory_gb": 5.0,
+        "remote_dispatch_disk_gb": 5.0
       }
     },
     {
@@ -5623,10 +5623,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Remote dispatch memory estimate (GB)",
-      "help": "Free memory one dispatched worker needs. A work-item create is refused as crew_busy when less is free. Used only with remote_dispatch on; a value that is not a positive number uses the default.",
+      "help": "Free memory one dispatched worker needs. A work-item create is refused as crew_busy when less is free. The default covers the largest measured worker session process tree. Used only with remote_dispatch on; a value that is not a positive number uses the default.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 2.0
+      "defaultValue": 5.0
     },
     {
       "path": "work_ledger.remote_dispatch_disk_gb",
@@ -5637,10 +5637,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Remote dispatch disk estimate (GB)",
-      "help": "Free scratch disk one dispatched worker needs. A work-item create is refused as crew_busy when less is free. Used only with remote_dispatch on; a value that is not a positive number uses the default.",
+      "help": "Free scratch disk one dispatched worker needs. A work-item create is refused as crew_busy when less is free. The default is about twice the measured size of one self-contained clone with its dependencies. Used only with remote_dispatch on; a value that is not a positive number uses the default.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 10.0
+      "defaultValue": 5.0
     },
     {
       "path": "power",
