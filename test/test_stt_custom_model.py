@@ -390,7 +390,6 @@ async def test_a_file_swapped_after_a_good_load_is_refused_on_the_next(placed, n
     assert await store.ensure(_custom()) is None
 
 
-@_POSIX_ONLY
 @pytest.mark.asyncio
 async def test_a_hard_linked_file_is_refused_and_both_names_kept(placed, tmp_path, no_download):
     """A second name is a writable handle onto the bytes the hash just passed, so the
