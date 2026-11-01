@@ -952,12 +952,68 @@ def _identity_matches_account(api_arn: object, identity: dict[str, object]) -> b
     a platform-specific app-data path), so a lone readable credential does not
     establish that whoami used it.
 
-    Consequence, deliberately: accounts with no profile ARN at all (individual /
-    Builder ID) can never be proven, so they show no identity. Under-reporting an
-    identity is a cosmetic gap; mislabelling whose overage bill this is, is not.
+    Consequence: accounts with no profile ARN at all (individual / Builder ID)
+    cannot be proven THIS way. Under-reporting an identity is a cosmetic gap;
+    mislabelling whose overage bill this is, is not. That is why the ARN match is
+    required here -- but it is not the only same-account proof available: see
+    :func:`_arnless_email_fields`, which carries the email proof the ARN check
+    structurally cannot apply to an account that has no ARN.
     """
     whoami_arn = identity.get("_profile_arn")
     return isinstance(api_arn, str) and isinstance(whoami_arn, str) and api_arn == whoami_arn
+
+
+def _arnless_email_fields(
+    api_arn: object, api_email: object, identity: dict[str, object]
+) -> dict[str, object]:
+    """The whoami identity fields to attach to an ARN-less reading, tied to the bill.
+
+    The ARN match in :func:`_identity_matches_account` is the proof for an
+    account that has a profile ARN, and it rejects every account that does not --
+    an individual / Builder ID account, which reports no ARN on either side. This
+    names that account instead, and only when the name provably belongs to the
+    credential that was billed.
+
+    The tie is ``api_email``: the e-mail GetUsageLimits returned for the token it
+    actually read (``isEmailRequired``, requested on the ARN-less path in
+    :func:`kiro_crew.dashboard.handlers.kiro_usage_api.fetch_usage_limits`). That
+    is the billing account's own address, so attaching a whoami e-mail only when
+    it EQUALS ``api_email`` ties the displayed identity to the credential that
+    supplied the numbers -- not to a whoami that merely stayed unchanged across
+    the read.
+
+    That extra tie matters because the before/after whoami bracket
+    (:func:`_whoami_agreement`) proves whoami did not change during the read, NOT
+    that the credential :func:`...kiro_usage_api.fetch_usage_limits` selected
+    belongs to that whoami account. On the ARN-less path that credential is
+    chosen by SOURCE ANCHORING -- it must come from kiro-cli's own store
+    (``from_cli_store``) -- which narrows but does not uniquely pin the account:
+    a host with two trusted kiro-cli stores (the Windows Local and legacy Roaming
+    locations) can rank a still-valid token from the signed-out account first, so
+    the numbers can be one account's while whoami names another. Requiring the
+    billed e-mail to match closes that gap; if source anchoring were ever widened
+    (e.g. re-admitting an IDE cache), this equality check would still refuse a
+    mismatch rather than mislabel the bill.
+
+    Returns exactly ``email`` and the ``account_type`` the provider badge renders
+    from (never ``start_url`` or the private ``_profile_arn``), or ``{}`` to
+    attach nothing -- when the account has an ARN (handled above), when whoami
+    carries no e-mail, when the API returned no billed e-mail, or when the two
+    differ. An ARN-less reading that attaches nothing still publishes its numbers
+    alone, exactly as before this change.
+    """
+    if api_arn is not None:
+        return {}
+    whoami_email = identity.get("email")
+    if not (isinstance(whoami_email, str) and whoami_email):
+        return {}
+    if not (isinstance(api_email, str) and api_email and api_email == whoami_email):
+        return {}
+    fields: dict[str, object] = {"email": _redact_strings(whoami_email)}
+    account_type = identity.get("account_type")
+    if isinstance(account_type, str) and account_type:
+        fields["account_type"] = _redact_strings(account_type)
+    return fields
 
 
 #: Outcome of a refresh whose API read returned no plan while the scrape was
@@ -1329,12 +1385,24 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 _cache_transient_failure(fresh_identity, user_id=fresh_user_id)
                 return None
             if agreement == _WHOAMI_SAME:
+                # The billed account's own e-mail, which the ARN-less path asked
+                # GetUsageLimits for (want_email). Pulled OUT of the reading here
+                # so it can never be published on its own: it is proof, not a
+                # field to show -- the panel must name the account that is signed
+                # in NOW (the adjacent whoami), never the one that happened to be
+                # billed. Absent on the ARN path (it does not ask) and on a
+                # Builder ID whose service refused the e-mail.
+                api_email = api_usage.pop("email", None)
                 # Attach the signed-in identity ONLY when it provably belongs to
-                # the account these credits were billed to (see
-                # _identity_matches_account) -- the ADJACENT identity, so the
-                # fields published are the account's current ones. The no-ARN
-                # (Builder ID) case carries no proof and publishes the numbers
-                # alone.
+                # the account these credits were billed to -- the ADJACENT
+                # identity, so the fields published are the account's current
+                # ones. Two proofs, and they never overlap: an ARN-bearing
+                # account matches by ARN (_identity_matches_account); an account
+                # with no ARN (a Builder ID) matches when the signed-in whoami's
+                # e-mail equals the billed account's own e-mail
+                # (_arnless_email_fields), which ties the name to the credential
+                # that supplied the numbers, not merely to a steady whoami. An
+                # ARN-less reading that cannot be tied publishes its numbers alone.
                 if _identity_matches_account(api_arn, fresh_identity):
                     api_usage.update(
                         {
@@ -1343,6 +1411,8 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                             if not k.startswith("_")
                         }
                     )
+                else:
+                    api_usage.update(_arnless_email_fields(api_arn, api_email, fresh_identity))
                 _publish_usage(api_usage, user_id=api_user_id)
                 logger.info(
                     "Kiro usage refreshed (api): %s / %s credits",

@@ -1225,8 +1225,28 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
             # point. The ARN still rides back (see _get_usage) because matching
             # on ``None`` -- two Builder ID accounts both present none -- is
             # consistent but not proof; ``_identity_matches_account`` decides
-            # whether an email may sit next to an overage figure.
-            attempt = _get_usage(token, arn, name_anchor=expected_arn, endpoint=endpoint)
+            # whether an email may sit next to an overage figure, and on the
+            # ARN-less path the billed e-mail below is what proves it.
+            #
+            # Ask for the billed account's e-mail ONLY on the ARN-less path
+            # (``expected_arn is None``). That is the account whose credential
+            # just answered GetUsageLimits -- the billing account itself -- so
+            # ``_fetch_usage_bg`` can attach a whoami e-mail only when it equals
+            # this one, tying the displayed identity to the credential that
+            # supplied the numbers rather than to a whoami that merely stayed
+            # unchanged. The ARN path is unchanged: its ARN match is already the
+            # proof, so it does not ask and this is byte-for-byte as before.
+            want_email = expected_arn is None
+            attempt = _get_usage(
+                token, arn, name_anchor=expected_arn, endpoint=endpoint, want_email=want_email
+            )
+            if want_email and attempt.result is None and attempt.reason == _EMAIL_REJECTED_REASON:
+                # The e-mail is an extra, never a condition of the reading: a 400
+                # may be the service refusing ``isEmailRequired`` for this kind
+                # of sign-in, so ask once more without it before giving up -- the
+                # same fallback the vault path takes. A reading with no billed
+                # e-mail then simply attaches no whoami e-mail downstream.
+                attempt = _get_usage(token, arn, name_anchor=expected_arn, endpoint=endpoint)
             if attempt.result is not None:
                 return attempt.result._replace(user_id=active_user_id)
             reason = attempt.reason

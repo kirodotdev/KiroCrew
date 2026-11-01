@@ -1122,6 +1122,49 @@ class TestExpectedArnAnchor:
         assert out is not None
         assert out["credits_used"] == 3.0
 
+    def test_arnless_path_asks_for_the_billed_email_and_returns_it(self):
+        # The ARN-less path requests the billed account's e-mail (isEmailRequired)
+        # so the caller can tie a shown identity to the credential that answered.
+        # The billed e-mail rides back as `email`.
+        usage = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 3.0, "usageLimit": 50.0}]}
+        seen_email_flag: list[object] = []
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": []})
+            seen_email_flag.append(payload.get("isEmailRequired"))
+            return _resp(200, {**usage, "userInfo": {"email": "solo@b.com"}})
+
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("builder", own=True)]), \
+             patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=None).usage
+        assert out is not None
+        assert seen_email_flag == [True], "the ARN-less GetUsageLimits must ask for the email"
+        assert out["email"] == "solo@b.com"
+
+    def test_arn_path_does_not_ask_for_the_email(self):
+        # Regression guard: the ARN path's proof is the ARN match, so it must NOT
+        # request the email -- byte-for-byte the pre-change request. A userInfo in
+        # the body is ignored because isEmailRequired was never set.
+        usage = {"tok": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 1.0, "usageLimit": 10.0}]}}
+        seen_email_flag: list[object] = []
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": self.ARN_A}]})
+            seen_email_flag.append(payload.get("isEmailRequired"))
+            return _resp(200, usage[token])
+
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
+             patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=self.ARN_A).usage
+        assert out is not None
+        assert seen_email_flag == [None], "the ARN path must not set isEmailRequired"
+        assert "email" not in out
+
     def test_cli_store_credential_wins_over_a_foreign_arnless_one(self):
         # Ordering puts the foreign credential first; provenance must reach past it
         # rather than taking the first thing that is merely readable.
