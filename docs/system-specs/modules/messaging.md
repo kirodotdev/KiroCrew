@@ -3692,7 +3692,10 @@ pure-aiohttp Discord Gateway WebSocket client (`client_gateway.py`): identify wi
 also request `GUILD_MESSAGES` and privileged `MESSAGE_CONTENT`. Heartbeat uses
 the server interval with jitter,
 resume via `resume_gateway_url`/sequence tracking, exponential-backoff
-reconnect, and hard stop on non-recoverable close codes (4004/4010-4014).
+reconnect (every close that means to reconnect — op-7, op-9, a missed or failed
+heartbeat — sends close code `4000`, because Discord ends the session on a
+`1000`/`1001` close and the RESUME would fail; only `DiscordClient.close()`
+shuts down with `1000`), and hard stop on non-recoverable close codes (4004/4010-4014).
 Outbound is REST v10 (send/edit/typing/reactions/interaction acks) through one
 ladder that spends the rate-limit accounting Discord hands back on every
 response: a bucket whose last response reported `Remaining: 0` is waited out

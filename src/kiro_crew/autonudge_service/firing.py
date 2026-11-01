@@ -476,7 +476,9 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
                     self._arm_timer(loop, delay=0.0)
                     self._pushed_ticks.add(loop.id)
                 else:
-                    self._arm_from_deadline(loop)
+                    # The deferred turn-end re-arm: announce the deadline it sets,
+                    # as ``notify_turn_complete`` does when nothing defers it.
+                    self._arm_and_announce_deadline(loop)
 
 
 async def _settle_refused_claim(

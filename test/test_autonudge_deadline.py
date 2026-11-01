@@ -114,6 +114,61 @@ async def test_delivered_fire_clears_deadline_then_turn_end_starts_fresh(svc, mo
 
 
 @pytest.mark.asyncio
+async def test_turn_end_after_fire_announces_the_new_deadline(svc):
+    """The ``fired`` frame carries a cleared deadline; the re-arm must publish one.
+
+    Without a frame the dashboard keeps the 0 and reads "not yet scheduled" until reload.
+    Resuming an unchanged countdown after a user turn publishes nothing.
+    """
+
+    async def on_fire(loop):
+        return True
+
+    svc._on_fire = on_fire
+    events: list[tuple[str, float]] = []
+    svc.subscribe(lambda event, loop: events.append((event, loop.next_due_ts if loop else -1)))
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=100)
+    svc._arm_timer(loop, delay=0)
+    await svc._timers[loop.id]
+    assert ("fired", 0.0) in events
+    events.clear()
+    svc.notify_turn_complete("chat-1-123")
+    assert events == [("updated", loop.next_due_ts)]
+    assert loop.next_due_ts > 0
+    events.clear()
+    svc.notify_user_input("chat-1-123")
+    svc.notify_turn_complete("chat-1-123")
+    assert events == []
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_deferred_turn_end_rearm_announces_the_new_deadline(svc):
+    """A turn that ends inside the fire window is re-armed when the window closes.
+
+    That deferred re-arm sets the deadline too, so it must publish it as well.
+    """
+    events: list[tuple[str, float]] = []
+
+    async def on_fire(loop):
+        # The nudge turn ends while the fire window is still open.
+        svc.notify_turn_complete("chat-1-123")
+        return True
+
+    svc._on_fire = on_fire
+    svc.subscribe(lambda event, loop: events.append((event, loop.next_due_ts if loop else -1)))
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=100)
+    events.clear()
+    svc._arm_timer(loop, delay=0)
+    await svc._timers[loop.id]
+    assert loop.next_due_ts > 0
+    assert events[-1] == ("updated", loop.next_due_ts)
+    svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_restart_resumes_persisted_countdown(tmp_path):
     """Remaining time survives a gateway restart; an overdue loop fires soon."""
     svc1 = AutoNudgeService(base_dir=tmp_path)

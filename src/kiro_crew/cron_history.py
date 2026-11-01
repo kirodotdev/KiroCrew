@@ -55,6 +55,24 @@ _MAX_INDEX_RECORDS = 2000
 _DENIAL_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS})
 
 
+def _sandbox_confined() -> bool:
+    """True when this process shows evidence of agent-shell confinement.
+
+    ``cli.main`` pops ``KIROCREW_SANDBOX_ACTIVE`` before any subcommand runs, so
+    the launch mark it noted first is asked as well as the live probe. Used
+    only to pick a log level, never to grant anything.
+    """
+    from kiro_crew import sandbox_launch_mark
+    from kiro_crew.sandbox_unavailable import agent_confinement_evidence
+
+    if sandbox_launch_mark.launched_in_sandbox():
+        return True
+    try:
+        return agent_confinement_evidence() is not None
+    except Exception:  # a failed probe keeps the WARNING
+        return False
+
+
 #: A URL run, stopped only at whitespace and at the characters that cannot
 #: appear in one. Which trailing characters actually belong to the address is
 #: decided by ``_trim_url``, because a bracket can be either. The scheme is
@@ -468,12 +486,50 @@ class CronHistoryStore:
                     exc,
                 )
                 return True
+            if self._dir_masked():
+                logger.debug(
+                    "cron history not available in this sandbox: %s is masked "
+                    "(%s); the gateway records runs",
+                    self._dir,
+                    exc,
+                )
+                return False
             logger.warning(
                 "cron history disabled: %s is unusable (%s). Scheduling is "
                 "unaffected; run records will not be persisted.",
                 self._dir,
                 exc,
             )
+            return False
+
+    def _dir_masked(self) -> bool:
+        """True when the directory exists but this process may not look at it.
+
+        That is the signature of an agent sandbox masking the leaf: this process
+        shows evidence of agent confinement, the parent lists the name, and stat
+        on the leaf answers a denial. The gateway runs unsandboxed and records
+        runs, so a disabled store here is expected, not a fault. The mkdir errno
+        is not used: it is EEXIST or EPERM depending on which mkdir route ran
+        and on the Python version.
+
+        Every other shape keeps the WARNING: an unconfined process such as the
+        gateway (whatever the denial), a regular file at the path (stat works),
+        a refused parent (the listing fails), a missing directory (the name is
+        not listed). A check that cannot run answers False, which is the old,
+        loud behaviour. The answer only picks a log level; it grants nothing.
+        """
+        if not _sandbox_confined():
+            return False
+        try:
+            os.stat(self._dir)
+        except OSError as stat_exc:
+            if stat_exc.errno not in _DENIAL_ERRNOS:
+                return False
+        else:
+            return False
+        try:
+            return self._dir.name in os.listdir(self._dir.parent)
+        except OSError:
             return False
 
     def _probe_usable(self) -> bool:

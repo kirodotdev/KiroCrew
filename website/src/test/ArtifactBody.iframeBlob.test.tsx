@@ -217,7 +217,7 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
     // so a second call to the gateway is the behaviour under test.
     mintSpy.mockResolvedValue({ url: DOC_URL })
     const retry = screen.getByRole('button', { name: /retry/i })
-    retry.click()
+    act(() => { retry.click() })
 
     await waitFor(() => {
       expect(document.querySelector('iframe')?.getAttribute('src')).toBe(DOC_URL)
@@ -497,7 +497,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     await act(async () => { vi.advanceTimersByTime(4000) })
 
     mintSpy.mockResolvedValue({ url: '/sandbox-doc/fresh/tok' })
-    screen.getByRole('button', { name: /show artifact/i }).click()
+    act(() => { screen.getByRole('button', { name: /show artifact/i }).click() })
 
     await waitFor(() => {
       expect(pointedAt()).toBe('/sandbox-doc/fresh/tok')
@@ -591,7 +591,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     let settle: (v: { url: string }) => void = () => {}
     mintSpy.mockImplementationOnce(() => new Promise((res) => { settle = res }))
     const button = screen.getByRole('button', { name: /show artifact/i }) as HTMLButtonElement
-    button.click()
+    act(() => { button.click() })
     // Flush the passive effect first: the mint (and with it the deferred
     // resolver) does not exist until the [srcdoc, attempt] effect runs.
     await act(async () => { await Promise.resolve() })
@@ -621,7 +621,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     let settle: (v: { url: string }) => void = () => {}
     mintSpy.mockImplementationOnce(() => new Promise((res) => { settle = res }))
     const button = screen.getByRole('button', { name: /show artifact/i }) as HTMLButtonElement
-    button.click()
+    act(() => { button.click() })
     await act(async () => { await Promise.resolve() })
     expect(button.disabled).toBe(true)
 

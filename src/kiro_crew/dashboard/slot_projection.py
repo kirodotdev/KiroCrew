@@ -277,10 +277,16 @@ class SlotProjection:
         # must not answer (the artifact freshness nudge).
         last_agent_ts = ""
         found_conv = False
+        # A goal-loop cycle's prompt is a ``nudge`` row, and a cycle that ends with
+        # ``nothing_to_do`` writes no reply after it. The loop has run past an
+        # ``[OPTIONS:]`` ask older than that row, so that ask does not hold it.
+        cycle_after_reply = False
         for message in reversed(rows):
             role = message.get("role")
             msg_meta = message.get("meta") or {}
             notice = is_system_notice(role, msg_meta)
+            if role == "nudge" and not found_conv and not notice:
+                cycle_after_reply = True
             if not last_activity_ts and role not in transient_roles and not notice:
                 last_activity_ts = message.get("ts") or ""
             if (
@@ -295,7 +301,7 @@ class SlotProjection:
                     if not found_conv:
                         found_conv = True
                         last_conv_role = role
-                        if role == "assistant":
+                        if role == "assistant" and not cycle_after_reply:
                             options = parse_options(text)
                             has_options = bool(options)
                             if has_options:

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import errno
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -631,6 +632,8 @@ class TestRunResultFreshness:
 #   mkdir denied, stat ok,  open ok   -> enabled  (existing but un-mkdir-able)
 #   mkdir denied, stat DENIED, open ok-> disabled (lock file alone is not proof)
 #   mkdir denied, all denied          -> disabled
+#   mkdir EEXIST, stat DENIED         -> disabled, DEBUG only (sandbox mask)
+#   mkdir EEXIST, stat ok, not a dir  -> disabled, WARNING (a real fault)
 #   constructed enabled, later OSError-> degrades to disabled, never raises
 
 
@@ -691,6 +694,135 @@ def test_stat_denied_disables_history_even_when_lock_opens(tmp_path: Path) -> No
     with _deny_leaf("mkdir", "stat", "scandir", "listdir"):
         store = CronHistoryStore(base_dir=tmp_path)
         assert store.enabled is False
+
+
+def _exists_mkdir(func, leaf: str):
+    def _wrapped(path, *a, **kw):
+        if isinstance(path, (str, os.PathLike)) and leaf in os.fspath(path):
+            raise FileExistsError(errno.EEXIST, "File exists")
+        return func(path, *a, **kw)
+
+    return _wrapped
+
+
+def _confined(value: bool):
+    return patch.object(cron_history_mod, "_sandbox_confined", return_value=value)
+
+
+def _masked_mkdir_eexist():
+    return patch("os.mkdir", _exists_mkdir(os.mkdir, "cron-history"))
+
+
+def _masked_mkdir_eperm():
+    return _deny_leaf("mkdir")
+
+
+@pytest.mark.parametrize("mkdir_shape", [_masked_mkdir_eexist, _masked_mkdir_eperm])
+def test_sandbox_masked_dir_logs_debug_not_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, mkdir_shape
+) -> None:
+    """A sandbox mask is expected, so it must not print a fault warning.
+
+    Under an agent's sandbox the healthy history dir answers EPERM to stat,
+    and mkdir answers EEXIST or EPERM depending on the route. History stays
+    off in that process because the gateway records runs, so a WARNING on
+    every ``kirocrew cron`` CLI run would only be misread as a fault.
+    """
+    (tmp_path / "cron-history").mkdir()
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.cron_history")
+    with _confined(True), mkdir_shape(), _deny_leaf("stat", "scandir", "listdir"):
+        store = CronHistoryStore(base_dir=tmp_path)
+    assert store.enabled is False
+    ours = [r for r in caplog.records if r.name == "kiro_crew.cron_history"]
+    assert not [r for r in ours if r.levelno >= logging.WARNING]
+    assert any(
+        r.levelno == logging.DEBUG and "not available in this sandbox" in r.getMessage()
+        for r in ours
+    )
+
+
+def test_regular_file_at_history_path_still_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A regular file where the dir should be is a real fault: keep the WARNING."""
+    (tmp_path / "cron-history").write_text("not a directory")
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.cron_history")
+    with _confined(True):
+        store = CronHistoryStore(base_dir=tmp_path)
+    assert store.enabled is False
+    assert any(
+        r.levelno == logging.WARNING and "cron history disabled" in r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.cron_history"
+    )
+
+
+def test_denied_missing_dir_still_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Stat denied on a name the parent does not list is not a mask: warn."""
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.cron_history")
+    with _confined(True), _deny_leaf("mkdir", "stat", "scandir", "listdir"):
+        store = CronHistoryStore(base_dir=tmp_path)
+    assert store.enabled is False
+    assert any(
+        r.levelno == logging.WARNING and "cron history disabled" in r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.cron_history"
+    )
+
+
+def test_unconfined_process_with_mask_shape_still_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The gateway is not sandboxed, so the same denial there is a real fault.
+
+    A listed name whose stat is refused can also come from an operator's
+    symlink into storage with an unsearchable ancestor. Without evidence of
+    agent confinement that must stay a WARNING.
+    """
+    (tmp_path / "cron-history").mkdir()
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.cron_history")
+    with _confined(False), _deny_leaf("mkdir", "stat", "scandir", "listdir"):
+        store = CronHistoryStore(base_dir=tmp_path)
+    assert store.enabled is False
+    assert any(
+        r.levelno == logging.WARNING and "cron history disabled" in r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.cron_history"
+    )
+
+
+def test_sandbox_confined_reads_the_launch_mark_and_the_probe() -> None:
+    """``cli.main`` pops the env marker, so the noted launch mark must count."""
+    from kiro_crew import sandbox_launch_mark
+
+    with (
+        patch.object(sandbox_launch_mark, "launched_in_sandbox", return_value=True),
+        patch("kiro_crew.sandbox_unavailable.agent_confinement_evidence", return_value=None),
+    ):
+        assert cron_history_mod._sandbox_confined() is True
+    with (
+        patch.object(sandbox_launch_mark, "launched_in_sandbox", return_value=False),
+        patch(
+            "kiro_crew.sandbox_unavailable.agent_confinement_evidence",
+            return_value="cgroup scope",
+        ),
+    ):
+        assert cron_history_mod._sandbox_confined() is True
+    with (
+        patch.object(sandbox_launch_mark, "launched_in_sandbox", return_value=False),
+        patch("kiro_crew.sandbox_unavailable.agent_confinement_evidence", return_value=None),
+    ):
+        assert cron_history_mod._sandbox_confined() is False
+    with (
+        patch.object(sandbox_launch_mark, "launched_in_sandbox", return_value=False),
+        patch(
+            "kiro_crew.sandbox_unavailable.agent_confinement_evidence",
+            side_effect=RuntimeError("probe broke"),
+        ),
+    ):
+        assert cron_history_mod._sandbox_confined() is False
 
 
 def test_unwritable_dir_disables_history_without_raising(tmp_path: Path) -> None:

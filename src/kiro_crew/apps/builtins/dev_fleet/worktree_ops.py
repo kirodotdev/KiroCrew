@@ -163,7 +163,7 @@ async def _prunable(path: str, branch: str | None) -> dict:
     # looking at, and whether a discard is even offerable.
     dirt_tracked, dirt_untracked = await repository._dirty_split(path) if dirty else (None, [])
     try:
-        age_h = round((time.time() - Path(path).stat().st_ctime) / 3600, 1)
+        age_h = round((time.time() - (await asyncio.to_thread(Path(path).stat)).st_ctime) / 3600, 1)
     except OSError:
         age_h = None
     base = {

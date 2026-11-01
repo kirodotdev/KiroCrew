@@ -141,8 +141,9 @@ afterEach(() => {
 })
 
 describe('ChatPane shared scroll chrome', () => {
-  it('pays for a host band floating over its top edge (`topInset`, #18325)', () => {
-    const { container } = renderPane({ topInset: 48 })
+  it('pays for a host band floating over its top edge (`topInset`, #18325)', async () => {
+    let container!: HTMLElement
+    await act(async () => { container = renderPane({ topInset: 48 }).container })
     // The scroller pads its rows below the band on top of its own 12px, so
     // at scroll top nothing hides under it while rows still scroll under it.
     const scroller = container.querySelector('.chat-container') as HTMLElement
@@ -153,9 +154,10 @@ describe('ChatPane shared scroll chrome', () => {
     expect(pinBand).not.toBeNull()
     expect(pinBand.style.top).toBe('48px')
     // Default: no band, nothing paid.
-    const plain = renderPane()
-    expect((plain.container.querySelector('.chat-container') as HTMLElement).style.paddingTop).toBe('12px')
-    expect((plain.container.querySelector('.relative.z-\\[2\\]') as HTMLElement).style.top).toBe('')
+    let plain!: HTMLElement
+    await act(async () => { plain = renderPane().container })
+    expect((plain.querySelector('.chat-container') as HTMLElement).style.paddingTop).toBe('12px')
+    expect((plain.querySelector('.relative.z-\\[2\\]') as HTMLElement).style.top).toBe('')
   })
 
   it('renders the top edge fade only; the composer dock floats over the scroller', () => {

@@ -56,6 +56,10 @@ _PROXY_VARS = (
 
 _REAL_SLEEP = asyncio.sleep
 
+# The wire code a reconnect close must send. Spelled out rather than imported:
+# Discord's rule is about this number, and a 1000/1001 close ends the session.
+_RESUME_CLOSE_CODE = 4000
+
 
 # ── Stub transports ────────────────────────────────────────────────────────
 
@@ -76,6 +80,8 @@ class FakeWS:
         self.close_code = close_code
         self.sent: list[dict] = []
         self.close_calls = 0
+        # Every close code sent, in order. 1000 is aiohttp's own default.
+        self.close_codes: list[int] = []
         self.send_error: BaseException | None = None
 
     async def send_json(self, payload: dict) -> None:
@@ -83,8 +89,9 @@ class FakeWS:
             raise self.send_error
         self.sent.append(payload)
 
-    async def close(self) -> None:
+    async def close(self, *, code: int = 1000) -> None:
         self.close_calls += 1
+        self.close_codes.append(code)
         self.closed = True
 
     def __aiter__(self) -> Any:
@@ -286,6 +293,8 @@ class TestLifecycle:
 
         assert client._closed is True
         assert ws.close_calls == 1
+        # A real shutdown ends the session on purpose: plain 1000.
+        assert ws.close_codes == [1000]
         assert client._task is None
         assert session.close_calls == 1
         assert client._session is None
@@ -297,7 +306,7 @@ class TestLifecycle:
         client = _make_client()
 
         class _BadWS(FakeWS):
-            async def close(self) -> None:
+            async def close(self, *, code: int = 1000) -> None:
                 self.close_calls += 1
                 raise RuntimeError("already gone")
 
@@ -930,6 +939,9 @@ class TestHandleFrame:
         ws = FakeWS()
         await client._handle_frame(ws, {"op": _OP_RECONNECT})
         assert ws.close_calls == 1
+        # Discord ends the session on a 1000/1001 close, so the RESUME
+        # that op-7 asks for would fail and the gap's events would be lost.
+        assert ws.close_codes == [_RESUME_CLOSE_CODE]
 
     @pytest.mark.asyncio
     async def test_invalid_session_non_resumable_clears_state(
@@ -944,6 +956,7 @@ class TestHandleFrame:
         assert client._session_id == ""
         assert client._seq is None
         assert ws.close_calls == 1
+        assert ws.close_codes == [_RESUME_CLOSE_CODE]
         assert 1.0 <= slept[0] <= 5.0
 
     @pytest.mark.asyncio
@@ -959,6 +972,7 @@ class TestHandleFrame:
         assert client._session_id == "sid"
         assert client._seq == 9
         assert ws.close_calls == 1
+        assert ws.close_codes == [_RESUME_CLOSE_CODE]
 
     @pytest.mark.asyncio
     async def test_dispatch_opcode_is_routed_with_defaults(
@@ -1040,6 +1054,7 @@ class TestHeartbeat:
         ws = FakeWS()
         await client._heartbeat_loop(ws, 1.0)
         assert ws.close_calls == 1
+        assert ws.close_codes == [_RESUME_CLOSE_CODE]
         assert ws.sent == []
 
     @pytest.mark.asyncio
@@ -1050,6 +1065,7 @@ class TestHeartbeat:
         ws.send_error = RuntimeError("socket wedged")
         await client._heartbeat_loop(ws, 1.0)
         assert ws.close_calls == 1
+        assert ws.close_codes == [_RESUME_CLOSE_CODE]
 
     @pytest.mark.asyncio
     async def test_recycle_close_failure_is_swallowed(
@@ -1059,14 +1075,16 @@ class TestHeartbeat:
         _patch_sleep(monkeypatch)
 
         class _BadWS(FakeWS):
-            async def close(self) -> None:
+            async def close(self, *, code: int = 1000) -> None:
                 self.close_calls += 1
+                self.close_codes.append(code)
                 raise RuntimeError("close failed too")
 
         ws = _BadWS()
         ws.send_error = RuntimeError("socket wedged")
         await client._heartbeat_loop(ws, 1.0)
         assert ws.close_calls == 1
+        assert ws.close_codes == [_RESUME_CLOSE_CODE]
 
     @pytest.mark.asyncio
     async def test_cancellation_is_absorbed(self, monkeypatch: pytest.MonkeyPatch) -> None:

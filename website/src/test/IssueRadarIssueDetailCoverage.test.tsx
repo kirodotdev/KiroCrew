@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
+import { act, render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -384,10 +384,9 @@ describe('IssueDetail — header and first paint', () => {
     )
     await waitFor(() => expect(api.issueDetail).toHaveBeenCalledTimes(2))
 
-    settle()
-    // Drain the resolved write's continuation and the state flush it would cause.
-    await new Promise((r) => setTimeout(r, 0))
-    await new Promise((r) => setTimeout(r, 0))
+    // Settle the stale write and drain its continuation and the state flush it
+    // would cause, inside act so that update is part of this test.
+    await act(async () => { settle() })
 
     // No tick: it would vouch for the issue the pane has already left.
     expect(screen.queryByRole('menuitem', { name: 'Link copied' })).toBeNull()

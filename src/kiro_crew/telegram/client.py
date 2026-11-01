@@ -1444,6 +1444,10 @@ class TelegramClient:
             largest.setdefault("mime_type", "image/jpeg")
             attachments.append(largest)
         for key in ("document", "audio", "voice", "video_note", "video", "animation"):
+            # A GIF arrives as ``animation`` AND, for Bot API back-compat, as a
+            # ``document`` for the same file: take it once, as the animation.
+            if key == "document" and isinstance(msg.get("animation"), dict):
+                continue
             if key in msg and isinstance(msg[key], dict):
                 attachments.append(msg[key])
         # Stickers are intentionally excluded — they are decorative, not

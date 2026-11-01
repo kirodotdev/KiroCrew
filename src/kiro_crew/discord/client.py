@@ -1108,6 +1108,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OP_INVALID_SESSION,
         _OP_RECONNECT,
         _OP_RESUME,
+        _RESUME_CLOSE_CODE,
         _WS_HEARTBEAT_SECS,
         _command_options,
         _find_button_label,
