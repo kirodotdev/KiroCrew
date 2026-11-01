@@ -641,8 +641,8 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     if project:
-        project = os.path.realpath(os.path.expanduser(project))
-        if not os.path.isdir(project):
+        project = await asyncio.to_thread(os.path.realpath, os.path.expanduser(project))
+        if not await asyncio.to_thread(os.path.isdir, project):
             return web.json_response({"error": "Not a directory"}, status=400)
         if is_sensitive_path(project):
             sel().log_api_access(
