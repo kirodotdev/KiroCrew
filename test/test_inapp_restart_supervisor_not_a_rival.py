@@ -59,7 +59,7 @@ _NEW_GATEWAY = textwrap.dedent("""
     import os, sys
     from pathlib import Path
     check, port, old_pid, sock = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
-    if check == "marker":
+    if check in ("marker", "served"):
         from kiro_crew.instances import run_marker
         record = run_marker.read_pid_record_path(run_marker.pid_path(port))
         token_matches = (
@@ -69,7 +69,11 @@ _NEW_GATEWAY = textwrap.dedent("""
             and run_marker.pid_start_token(old_pid) == record[1]
         )
         run_marker.write_marker(port)
-        print(os.getpid(), os.getppid(), token_matches, run_marker.read_pid(port))
+        if check == "served":
+            # What a daemon whose --owner-pid is the old gateway reads.
+            print(os.getpid(), os.getppid(), token_matches, run_marker.port_served_by(old_pid))
+        else:
+            print(os.getpid(), os.getppid(), token_matches, run_marker.read_pid(port))
     else:
         from kiro_crew.mcp_gateway import manager as m
         g = m.GatewayManager(m.GatewaySpec(socket_path=Path(sock)))
@@ -82,7 +86,7 @@ _NEW_GATEWAY = textwrap.dedent("""
 _OLD_GATEWAY = textwrap.dedent("""
     import os, subprocess, sys
     layout, check, port, sock, new_gateway = sys.argv[1:6]
-    if check == "marker":
+    if check in ("marker", "served"):
         from kiro_crew.dashboard import server as dashboard_server
         from kiro_crew.instances import run_marker
         p = run_marker.pid_path(int(port))
@@ -177,6 +181,24 @@ class TestTheRunMarkerSurvivesASupervisingRestart:
         old, _new, parent, recorded = _restart("nested", "marker", home, tmp_path)
         assert parent != old, "a live Python gateway must sit between the two"
         assert int(recorded) == old
+
+
+@posix_exec
+class TestAnAdoptedDaemonFindsTheSuccessorsPort:
+    """A daemon adopted after the restart still names the supervisor as its owner;
+    ``run_marker.port_served_by`` must find the port its successor serves."""
+
+    def test_the_exec_supervisors_successor_serves_the_port(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        old, _new, parent, served = _restart("exec", "served", home, tmp_path)
+        assert parent == old
+        assert served == str(_PORT)
+
+    # The refusals (a Python gateway in between, a stale or empty token, two
+    # candidates) are pinned in test_mcp_policy_instance_binding.py: in the
+    # "live" and "nested" layouts here the writer declines, so no complete
+    # marker exists and a None would prove nothing about the walk.
 
 
 @posix_exec

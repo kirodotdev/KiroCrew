@@ -88,14 +88,7 @@ def control_plane_identity_env(
     # circular import: agent's module graph is heavy (it imports config), and
     # port_resolution reaches config.loader, whose provider-backend path imports
     # members. Both resolved at call time, as session_mcp.py resolves them.
-    from kiro_crew.agent import _managed_mcp_env
-    from kiro_crew.port_resolution import resolve_serving_port
-
-    env: dict[str, str] = {}
-    try:
-        env.update(_managed_mcp_env())
-    except Exception:  # pragma: no cover - defensive; the helper is fail-soft
-        logger.warning("%s session MCP: could not resolve the managed home", label, exc_info=True)
+    env = control_plane_instance_env(label=label)
     if session_token:
         env[STUB_SESSION_TOKEN_ENV] = session_token
     if session_key:
@@ -107,6 +100,40 @@ def control_plane_identity_env(
         team_id = slack_team_id_for(channel_id)
         if team_id:
             env[SLACK_TEAM_ID_ENV] = team_id
+    return env
+
+
+def control_plane_instance_env(*, label: str) -> dict[str, str]:
+    """The env that names WHICH gateway a Kiro Crew server belongs to, and nothing else.
+
+    The managed data home (only under an override, exactly as
+    :func:`control_plane_identity_env` emits it) and ``KIROCREW_BOUND_PORT``. No
+    session key and no token: this is the instance half of the identity, for an
+    element that carries its session some other way.
+
+    A pooled broker stub is that element. On a backend whose launcher clears the
+    environment (codex starts every stdio MCP server from an allowlist plus the
+    element's own ``env``), a stub for a Crew server otherwise carries only its
+    token, and when the broker is unreachable the stub's fallback execs the real
+    server with that environment: no bound port, no home override, so the server
+    resolves its gateway by fallback (``dashboard.url``, a run-marker the sandbox
+    cannot verify, or the default port) and can authenticate against another
+    instance. Carrying the instance env on the stub keeps that fallback bound to
+    the gateway that composed the session. The pooled path does not read it:
+    gatewayd spawns the real backend from its own environment.
+
+    Fail-soft, like the identity helper: a config-plane failure must not fail a
+    spawn.
+    """
+    # circular import: see control_plane_identity_env.
+    from kiro_crew.agent import _managed_mcp_env
+    from kiro_crew.port_resolution import resolve_serving_port
+
+    env: dict[str, str] = {}
+    try:
+        env.update(_managed_mcp_env())
+    except Exception:  # pragma: no cover - defensive; the helper is fail-soft
+        logger.warning("%s session MCP: could not resolve the managed home", label, exc_info=True)
     try:
         env["KIROCREW_BOUND_PORT"] = str(resolve_serving_port())
     except Exception:  # pragma: no cover - defensive

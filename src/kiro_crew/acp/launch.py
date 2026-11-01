@@ -51,6 +51,11 @@ from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import describe_search_path, mise_data_dir
+
+# Re-exported: the launcher was this helper's first home, and its callers and tests
+# still import it from here. It lives in port_resolution now so the MCP gateway
+# daemon can apply it without importing the launcher.
+from kiro_crew.port_resolution import drop_foreign_inherited_port  # noqa: F401
 from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST, ssh_auth_sock_consent_notice
 
 # The client's logger name, because the helpers below were the client's and every
@@ -946,47 +951,6 @@ async def _note_ssh_auth_sock_withheld(
     if not notice:
         return
     tools.logger.warning("%s", notice)
-
-
-def _well_formed_port(value: str) -> bool:
-    """1-5 ASCII decimal digits naming a port in 1..65535 (the KAS projection's gate)."""
-    return 1 <= len(value) <= 5 and value.isascii() and value.isdecimal() and 0 < int(value) < 65536
-
-
-def drop_foreign_inherited_port(env: dict[str, str]) -> None:
-    """Remove an inherited ``KIROCREW_PORT`` that names a gateway other than this one.
-
-    A gateway started from a shell that already exports ``KIROCREW_PORT`` (an
-    agent shell of ANOTHER gateway carries one) keeps that value in its own
-    environment beside the ``KIROCREW_BOUND_PORT`` its listener exports
-    (``dashboard.server_runtime.listener._export_bound_port``). Every child it
-    spawns -- the agent CLI and the managed MCP servers that CLI starts --
-    inherits both, and ``port_resolution.resolve_client_port_src`` reads
-    ``KIROCREW_PORT`` first. The child then dials the OTHER gateway with THIS
-    gateway's credential and every tool call fails ``internal_auth_mismatch``.
-
-    Dropping the foreign value, rather than overwriting it with the bound port,
-    is deliberate: the listener keeps the two variables apart so the transient
-    bound port is never written under the operator-intent name (which
-    ``service_environment()`` would bake into a unit file), and nothing here is
-    persisted -- it shapes one child's environment at spawn time. With the
-    foreign value gone the child's chain falls to ``KIROCREW_BOUND_PORT``, the
-    gateway that spawned it.
-
-    A no-op when no well-formed bound port is exported (nothing to prove the
-    inherited value foreign) or when the inherited value already equals it (the
-    operator's own ``KIROCREW_PORT`` that this gateway bound). Mutates *env*.
-    """
-    bound = env.get("KIROCREW_BOUND_PORT", "")
-    if not _well_formed_port(bound):
-        return
-    inherited = env.get("KIROCREW_PORT")
-    if inherited is None:
-        return
-    value = inherited.strip()
-    if value.isascii() and value.isdecimal() and int(value) == int(bound):
-        return
-    env.pop("KIROCREW_PORT", None)
 
 
 def process_directory(host: LaunchHost) -> tuple[str, int | None]:

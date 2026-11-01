@@ -227,7 +227,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         """.split()),
     "kiro_crew.platform_compat_identity": tuple("""
         process_cwd get_ppid _ANCESTRY_MAX_DEPTH _PYTHON_INTERPRETER_NAME
-        process_executable_path _is_python_interpreter_path is_exec_supervisor_of_this_process
+        process_executable_path _is_python_interpreter_path is_exec_supervisor_of_this_process is_exec_supervisor_of _exec_supervisor_walk
         get_process_start_identity get_process_start_id process_namespaces_match
         process_is_sandboxed process_can_read_under_sandbox ProcessIdentitySource
         _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS _WINDOWS_EXIT_FILETIME_POLL_SECS
