@@ -117,6 +117,7 @@ from kiro_crew.messaging.renderer import (
     Renderer,
     SilentRenderer,
 )
+from kiro_crew.messaging.script_hooks import ScriptHookTurn
 from kiro_crew.messaging.session_resume import persisted_session_agent
 from kiro_crew.messaging.turn_bracket import consume_reinjection  # noqa: F401 (re-exported)
 from kiro_crew.messaging.turn_bracket import driver_turn_landed  # noqa: F401 (re-exported)
@@ -853,6 +854,20 @@ class ChannelTurns:
             # title, dashboard surfacing -- over an existing conversation.
             turn_is_new: bool | None = None
             replaying = False
+            # One per inbound message, so a replay below does not run
+            # UserPromptSubmit again. The operator's hooks run for the operator's
+            # own conversation only: a guest or a room others read gets none, as it
+            # gets none of the operator's private context.
+            hook_turn = (
+                None
+                if deny_all_tools or minimal_context
+                else ScriptHookTurn(
+                    session_key,
+                    text,
+                    cancelled=lambda: session_stop_generation(sessions, session_key)
+                    != stop_gen_at_entry,
+                )
+            )
             while True:
                 if not claimed:
                     if deny_all_tools:
@@ -895,9 +910,11 @@ class ChannelTurns:
                         provider,
                         authored_before_spawn=toolless_before_spawn,
                     )
+                # Keep the first acquisition's snapshot across replays: a Stop
+                # during a reset or a hook must not become a new attempt's baseline.
+                if stop_gen_at_entry is None:
+                    stop_gen_at_entry = session_stop_generation(sessions, session_key)
                 if recovery:
-                    if stop_gen_at_entry is None:
-                        stop_gen_at_entry = session_stop_generation(sessions, session_key)
                     if conv_gen_at_entry is None:
                         conv_gen_at_entry = session_conversation_generation(sessions, session_key)
                 if turn_is_new is None:
@@ -1046,6 +1063,7 @@ class ChannelTurns:
                     audit_agent=agent or "kirocrew",
                     closing_gate=closing_gate,
                     undelivered_watch_key=session_key,
+                    script_hooks=hook_turn,
                     **driver_extra,
                 )
                 if replaying and retry_guard is not None:
