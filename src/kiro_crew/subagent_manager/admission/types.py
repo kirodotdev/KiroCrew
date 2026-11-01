@@ -14,6 +14,13 @@ if TYPE_CHECKING:
 #: can tell "nothing was accepted, retry later" from a policy refusal.
 TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
 
+#: The ``cause`` of the tombstone a persisted spawn refused BEFORE its row was
+#: claimed writes (``write_refusal_tombstone``). It is distinct from every cause
+#: a run that started can leave behind, so the boot reconcile's queued pass can
+#: settle a ``queued`` row on it and on nothing else: a ``queued`` row may be one
+#: an earlier attempt already ran, and that attempt's ending is not this row's.
+REFUSAL_TOMBSTONE_CAUSE = "refused"
+
 #: The shortest delay an admission re-check timer whose delay derives from
 #: ``admit_wait_secs`` or a row's wake is armed with: the pump's waiting-row
 #: wake and the retained-claim and boundary-cancel retries. A delay that reaches
@@ -115,6 +122,9 @@ def tombstone_terminal_state(cause: str, outcome: str = "") -> str | None:
         "stage_cancel": taskq.CANCELLED,
         "cancelled": taskq.CANCELLED,
         "error": taskq.FAILED,
+        # A spawn refused before its row was claimed: ``failed`` to every
+        # reader; the boot reconcile's probe answers it as ``REFUSED`` first.
+        REFUSAL_TOMBSTONE_CAUSE: taskq.FAILED,
         "timeout": taskq.FAILED,
         "turn_limit": taskq.FAILED,
         "child_escalation_limit": taskq.FAILED,
