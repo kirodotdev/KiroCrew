@@ -58,15 +58,19 @@ Instance fields read: none.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import platform_compat, shutdown_event
 from kiro_crew.config.paths import config_dir
 from kiro_crew.executors import maintenance_executor, subprocess_executor
+from kiro_crew.history import ConversationLog
+from kiro_crew.history_schema import _parse_transcript_ts
 from kiro_crew.member_memory_auth import prune_legacy_member_pid_bindings
 from kiro_crew.metrics.events import SESSION_IDLE_EXPIRED, emit_counter
 from kiro_crew.pycache_gc import PYCACHE_GC_INTERVAL_SECS, prune_pycache
@@ -112,6 +116,57 @@ logger = logging.getLogger("kiro_crew.session")
 def runtime_reconciler(self: SessionManager) -> Any:
     """The retained runtime reconciler, or ``None`` before the first cleanup tick."""
     return self._cleanup_state_boundary().runtime_reconciler
+
+
+FAILED_TURN_TEXT = "⚠️ This message failed before it started. The gateway log has the details."
+TURN_FAILED_META = "turn_failed"
+DISPLAY_ONLY_ROLES = frozenset({"notice", "card"})
+
+
+def _is_unanswered_prompt_row(row: dict[str, Any]) -> bool:
+    if row.get("role") != "user":
+        return False
+    if row.get("cls") != "msg msg-u":
+        return False
+    meta = row.get("meta")
+    if isinstance(meta, dict):
+        if meta.get("steer") or meta.get("steerState") in {"requeued", "retracted"}:
+            return False
+    content = row.get("content")
+    if not isinstance(content, str):
+        content = str(content or "")
+    if content.startswith("[Subagent completion event]") or content.startswith(
+        "[Cron notification from "
+    ):
+        return False
+    return True
+
+
+def _prompt_age(row: dict[str, Any]) -> float:
+    ts = row.get("ts")
+    if isinstance(ts, (int, float)):
+        return max(0.0, time.time() - float(ts))
+    if isinstance(ts, str) and ts:
+        dt = _parse_transcript_ts(ts)
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            return max(0.0, (now - dt).total_seconds())
+    return 0.0
+
+
+def _find_unanswered_turn_age(messages: list[dict[str, Any]]) -> float | None:
+    for row in reversed(messages):
+        if not isinstance(row, dict):
+            continue
+        role = row.get("role")
+        if role in DISPLAY_ONLY_ROLES:
+            continue
+        if not _is_unanswered_prompt_row(row):
+            return None
+        return _prompt_age(row)
+    return None
 
 
 def _cleanup_deps(self: SessionManager) -> CleanupDeps:
@@ -172,6 +227,8 @@ def _cleanup_deps(self: SessionManager) -> CleanupDeps:
         has_attached_subagents=lambda key: self._has_attached_subagents(key),
         # Same reason, different owner: the gateway installs this one.
         has_pending_injection=lambda key: self._has_pending_injection(key),
+        unanswered_turn_age=lambda key: self._unanswered_turn_age(key),
+        mark_turn_failed=lambda key: self._mark_turn_failed(key),
     )
 
 
@@ -263,6 +320,96 @@ def _has_pending_injection(self: SessionManager, key: str) -> bool:
     if probe is None:
         return False
     return bool(probe(key))
+
+
+def set_live_slot_resolver(self: SessionManager, fn: "Callable[[str], Any | None] | None") -> None:
+    """Install the resolver from session key to active dashboard slot."""
+    self._live_slot_resolver = fn
+
+
+def set_conversation_log(self: SessionManager, log: Any) -> None:
+    """Install the shared ConversationLog instance."""
+    self._conversation_log = log
+
+
+def _get_conversation_log(self: SessionManager) -> ConversationLog:
+    conv_log = getattr(self, "_conversation_log", None)
+    if conv_log is not None:
+        return conv_log
+    return ConversationLog()
+
+
+async def _unanswered_turn_age(self: SessionManager, key: str) -> float | None:
+    slot = None
+    resolver = getattr(self, "_live_slot_resolver", None)
+    if resolver is not None:
+        try:
+            slot = resolver(key)
+        except Exception:
+            logger.debug("Failed to resolve live slot for %s", key, exc_info=True)
+            slot = None
+    if slot is not None and hasattr(slot, "messages"):
+        return _find_unanswered_turn_age(list(slot.messages))
+
+    conv_log = self._get_conversation_log()
+
+    def _read() -> float | None:
+        try:
+            path = conv_log._path(key)
+            if not path.exists():
+                return None
+            messages = conv_log._read_tail_messages(path, 10, None)
+            return _find_unanswered_turn_age(messages)
+        except Exception:
+            logger.debug("Failed to read tail messages for %s", key, exc_info=True)
+            return None
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(maintenance_executor(), _read)
+
+
+async def _mark_turn_failed(self: SessionManager, key: str) -> None:
+    slot = None
+    resolver = getattr(self, "_live_slot_resolver", None)
+    if resolver is not None:
+        try:
+            slot = resolver(key)
+        except Exception:
+            logger.debug("Failed to resolve live slot for %s", key, exc_info=True)
+            slot = None
+    if slot is not None and hasattr(slot, "messages") and hasattr(slot, "append"):
+        messages = list(slot.messages)
+        if _find_unanswered_turn_age(messages) is not None:
+            slot.append(
+                "error",
+                FAILED_TURN_TEXT,
+                "msg msg-err",
+                meta={TURN_FAILED_META: True},
+            )
+        return
+
+    conv_log = self._get_conversation_log()
+
+    def _append_if_unanswered() -> None:
+        try:
+            with conv_log._locked(key):
+                path = conv_log._path(key)
+                if not path.exists():
+                    return
+                messages = conv_log._read_tail_messages(path, 10, None)
+                if _find_unanswered_turn_age(messages) is not None:
+                    conv_log.append(
+                        key,
+                        role="error",
+                        content=FAILED_TURN_TEXT,
+                        cls="msg msg-err",
+                        extra_meta={TURN_FAILED_META: True},
+                    )
+        except Exception:
+            logger.debug("Failed to append turn_failed row for %s", key, exc_info=True)
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(maintenance_executor(), _append_if_unanswered)
 
 
 # ── Idle cleanup ──

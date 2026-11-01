@@ -369,3 +369,11 @@ def wire_session_subagent_probe(state: DashboardState) -> None:
         return await subagents_attached_async(state, slot, session_key, "rss_recycle")
 
     state.sessions.set_subagent_probe(_probe)
+
+    def _resolve_slot(session_key: str) -> Any | None:
+        slot_key = dashboard_slot_key(session_key)
+        return state.get_slot(slot_key) if slot_key else None
+
+    state.sessions.set_live_slot_resolver(_resolve_slot)
+    if state.conversation_log is not None:
+        state.sessions.set_conversation_log(state.conversation_log)
