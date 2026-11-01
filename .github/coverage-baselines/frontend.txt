@@ -29,7 +29,6 @@ src/apps/issue-radar/components/ReviewButton.tsx 0.0   # 0/17
 src/apps/issue-radar/views/ComingSoon.tsx 0.0   # 0/2
 src/apps/issue-radar/views/OverviewView.tsx 29.5   # 23/78
 src/apps/issue-radar/views/SettingsView.tsx 0.0   # 0/3
-src/apps/issue-radar/views/settings/GeneralSettings.tsx 0.0   # 0/29
 src/apps/md-notebook/SettingsPage.tsx 64.0   # 73/114
 src/apps/meetings/MeetingView.tsx 0.0   # 0/32
 src/apps/meetings/TaskReviewView.tsx 0.0   # 0/20
