@@ -134,15 +134,19 @@ def start_enabled_app_backends() -> list[str]:
 
         denied = gov_denied or adm_denied or execution_denied
         if denied:
-            try:
-                _deregister_agents(name)
-                _deregister_skills(name)
-                _deregister_mcp_servers(name)
-            except Exception as exc:  # noqa: BLE001
+            # Each revocation runs on its own: a refusal on the shared agents
+            # directory must not leave this instance's own skills registered.
+            failures = []
+            for revoke in (_deregister_agents, _deregister_skills, _deregister_mcp_servers):
+                try:
+                    revoke(name)
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(exc)
+            if failures:
                 logger.error(
                     "Boot resource reconcile: FAILED to revoke resources for " "denied app %s: %s",
                     name,
-                    exc,
+                    "; ".join(str(exc) for exc in failures),
                 )
             else:
                 logger.warning(

@@ -635,7 +635,9 @@ class TestTopLevel:
         assert result.crons == []
         assert result.mcp_servers == []
         assert any("blocked by execution policy" in error for error in result.errors)
-        assert not any(app_env["kiro_agents"].iterdir())
+        # The agent-spec lock's sidecar is shared by every spec writer of the
+        # directory, not an app resource.
+        assert [p.name for p in app_env["kiro_agents"].iterdir()] in ([], [".kirocrew-agents.lock"])
         assert not (app_env["home"] / "skills" / "test-app").exists()
         assert load_app_cron_defs("test-app") == []
         assert not (tmp_path / "mcp.json").exists()
