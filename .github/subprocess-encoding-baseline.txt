@@ -18,7 +18,6 @@
 2 test/test_cli_manifest_signature.py
 2 test/test_config_baseline.py
 1 test/test_connections_tool_aliases.py
-6 test/test_ios_simulator_preview_skill.py
 1 test/test_perf_boot_path.py
 1 test/test_pr_readiness_publish.py
 2 test/test_prepare_pr_prove.py
