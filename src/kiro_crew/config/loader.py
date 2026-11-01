@@ -772,6 +772,8 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         CRED_SLACK_BOT_TOKEN,
         CRED_TELEGRAM_BOT_TOKEN,
         CRED_WAKATIME_API_KEY,
+        CRED_WAKATIME_OAUTH_CLIENT_SECRET,
+        CRED_WAKATIME_OAUTH_TOKENS,
         CRED_WEBEX_BOT_TOKEN,
         CRED_WECOM_BOT_ID,
         CRED_WECOM_SECRET,

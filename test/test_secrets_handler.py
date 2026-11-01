@@ -1106,3 +1106,27 @@ class TestApiSecretsChannelCredentialRemote:
             status, _ = await self._call(tmp_path, "delete", name, headers=_REMOTE)
             assert status == 200, name
             assert SecretVault(tmp_path).get(name) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["post", "delete"])
+async def test_wakatime_oauth_tokens_entry_is_not_edited_here(vault_dir: Path, method: str) -> None:
+    """The OAuth flow rotates WAKATIME_OAUTH_TOKENS under its own lock, so the
+    generic routes refuse it with 409 and leave the stored entry untouched."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.config.loader import CRED_WAKATIME_OAUTH_TOKENS
+
+    SecretVault(vault_dir)._set_sync(CRED_WAKATIME_OAUTH_TOKENS, "{}")
+    with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(vault_dir)):
+        async with TestClient(TestServer(_app())) as client:
+            if method == "post":
+                resp = await client.post(
+                    "/api/secrets", json={"name": CRED_WAKATIME_OAUTH_TOKENS, "value": "x"}
+                )
+            else:
+                resp = await client.delete(f"/api/secrets/{CRED_WAKATIME_OAUTH_TOKENS}")
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "managed_by_wakatime_oauth"
+    stored = SecretVault(vault_dir).get(CRED_WAKATIME_OAUTH_TOKENS)
+    assert stored is not None and stored.reveal() == "{}"
