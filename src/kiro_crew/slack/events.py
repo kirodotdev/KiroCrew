@@ -793,7 +793,18 @@ async def _route_message(
     # Observe mode: record history from authorized users only, so non-owner
     # messages cannot influence LLM context.
     if activation == ACTIVATION_OBSERVE:
-        if should_record_observe_history(orch.channel_history, _user_authorized):
+        # A Slack @mention arrives as a ``message`` event (is_mention False) AND
+        # an ``app_mention`` event (is_mention True) with the same ``msg_ts``,
+        # and socket mode can redeliver an envelope. Both reach this observe
+        # push, which runs above the ``msg_ts`` turn-dedup further down, so
+        # without a guard one message is recorded twice. Dedup the push under
+        # its OWN ``observe:`` key, never the bare ``msg_ts``: the ``message``
+        # event returns at the thread-follow gate below before reaching the
+        # turn-dedup (so it never marks the bare ts), and marking the bare ts
+        # here would wrongly drop the paired ``app_mention`` turn.
+        if should_record_observe_history(
+            orch.channel_history, _user_authorized
+        ) and not seen.check_and_add(f"observe:{msg_ts}"):
             assert orch.channel_history is not None  # narrowed by helper
             orch.channel_history.push(channel, sender_id, text, thread_ts=thread_ts, msg_ts=msg_ts)
         if not is_mention and not _thread_follow_admits(
