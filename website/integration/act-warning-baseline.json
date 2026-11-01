@@ -273,6 +273,5 @@
   "src/test/useQueuedMessageActions.test.tsx",
   "src/test/useRefreshScheduler.test.tsx",
   "src/test/useSessionActions.test.tsx",
-  "src/test/useTheme.authReplay.test.tsx",
-  "src/test/useWebSocket.workflowRunSync.test.ts"
+  "src/test/useTheme.authReplay.test.tsx"
 ]
