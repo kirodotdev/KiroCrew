@@ -1,0 +1,51 @@
+{
+  "name": "kiro-byo",
+  "displayName": "Kiro BYO",
+  "version": "0.3.0",
+  "description": "Provider-neutral ACP Harness for KiroCrew with bring-your-own provider/model support, governed tools, steering, and diagnostics.",
+  "author": "Kiro BYO contributors",
+  "license": "MIT",
+  "minKiroCrewVersion": "0.11.0-rc.1",
+  "tags": [
+    "backend",
+    "models",
+    "api",
+    "acp",
+    "providers"
+  ],
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
+  "permissions": {
+    "api": [
+      "/api/apps/kiro-byo/*"
+    ],
+    "network": true,
+    "storage": false,
+    "cron": false
+  },
+  "backend": {
+    "hooks": {
+      "routes": "backend.routes:register_routes"
+    }
+  },
+  "ui": {
+    "entry": "index.mjs",
+    "pages": [
+      {
+        "route": "/kiro-byo",
+        "label": "Kiro BYO",
+        "iconUrl": "icon.svg"
+      }
+    ],
+    "sidebar": {
+      "section": "Apps",
+      "order": 5
+    }
+  },
+  "iconPath": "assets/icon.png"
+}

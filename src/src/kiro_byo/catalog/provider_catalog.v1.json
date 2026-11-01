@@ -1,0 +1,4123 @@
+{
+  "schema_version": 1,
+  "transport_labels": {
+    "openai-compatible": "OpenAI Compatible",
+    "openai-chat-completions": "Chat Completions",
+    "openai-responses": "原生 Responses API",
+    "deepseek-responses": "原生 Responses API",
+    "ark-responses": "原生 Responses API",
+    "xai-responses": "原生 Responses API",
+    "groq-responses": "官方 Responses API",
+    "anthropic-messages": "原生 Messages API",
+    "gemini-interactions": "原生 Interactions API",
+    "cohere-v2": "原生 Chat V2",
+    "qwen-chat-v1": "官方 Qwen Chat API",
+    "qwen-responses": "官方 Responses API",
+    "hunyuan-responses": "官方 Responses API",
+    "mistral-chat-v1": "原生 Chat API",
+    "moonshot-chat-v1": "官方 Kimi Chat API",
+    "xiaomi-mimo-chat": "官方 MiMo Chat API",
+    "minimax-messages": "官方 Messages 兼容 API",
+    "qianfan-responses": "原生 Responses API",
+    "zhipu-chat-v4": "官方 GLM Chat API"
+  },
+  "presets": [
+    {
+      "id": "deepseek",
+      "display_name": "DeepSeek",
+      "default_base_url": "https://api.deepseek.com",
+      "transport": "deepseek-responses",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "原生 Responses API：保留 reasoning/tool items，使用 DeepSeek 自动上下文缓存。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [
+        "balance"
+      ],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "moonshot",
+      "display_name": "Moonshot / Kimi",
+      "default_base_url": "https://api.moonshot.cn/v1",
+      "transport": "moonshot-chat-v1",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "原生 Kimi Chat：完整保留 reasoning_content/tool_calls；K3 自动利用上下文缓存，K2.7/K2.6 保留式思考按模型契约处理。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [
+        "balance"
+      ],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [
+        "https://api.moonshot.ai/v1"
+      ],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "xiaomi",
+      "display_name": "小米 MiMo / Xiaomi",
+      "default_base_url": "https://api.xiaomimimo.com/v1",
+      "transport": "xiaomi-mimo-chat",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "统一的小米 MiMo 入口：sk- Key 使用按量付费 API；tp-/ttp- Key 会自动切换到 Token Plan 中国集群。也可手动填写新加坡/欧洲 Token Plan 官方 Base URL。",
+      "discovery_url": "https://api.xiaomimimo.com/v1/models",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [
+        "https://token-plan-cn.xiaomimimo.com/v1",
+        "https://token-plan-sgp.xiaomimimo.com/v1",
+        "https://token-plan-ams.xiaomimimo.com/v1"
+      ],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "xiaomi-tokenplan",
+      "display_name": "小米 MiMo Token Plan",
+      "default_base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+      "transport": "xiaomi-mimo-chat",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "官方 Token Plan（tp-/ttp- Key）。默认中国集群；新加坡/欧洲套餐可在高级设置中改为对应官方 Base URL，仍保持 MiMo 原生适配。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [
+        "https://token-plan-cn.xiaomimimo.com/v1",
+        "https://token-plan-sgp.xiaomimimo.com/v1",
+        "https://token-plan-ams.xiaomimimo.com/v1"
+      ],
+      "static_model_ids": [
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
+        "mimo-v2.5-pro",
+        "mimo-v2.5"
+      ],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "qwen",
+      "display_name": "阿里云百炼 / Qwen",
+      "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "transport": "qwen-chat-v1",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "按模型优化：Qwen Chat 保留 reasoning_content、模型级 enable_thinking 与流式 usage；支持 Responses API 的 Qwen 3.5–3.8 系列进一步使用 Responses + previous_response_id 与百炼 Session 缓存。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": true,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "zhipu",
+      "display_name": "智谱 AI / GLM",
+      "default_base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "transport": "zhipu-chat-v4",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "原生 GLM Chat 扩展：保留 reasoning_content/tool_calls，按模型发送 thinking 与 reasoning_effort，并利用官方隐式上下文缓存。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "volcengine",
+      "display_name": "火山引擎 / Ark / 豆包",
+      "default_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "transport": "ark-responses",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "原生 Responses API：回传完整 reasoning/tool items，并使用稳定 prompt_cache_key 提升隐式缓存命中。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "hunyuan",
+      "display_name": "腾讯混元",
+      "default_base_url": "https://tokenhub.tencentmaas.com/v1",
+      "transport": "openai-compatible",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "当前腾讯官方 TokenHub 接口；Hy3 / Hy4 preview 自动使用 Responses，其余模型按官方协议能力回退到 Chat Completions。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": true,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "qianfan",
+      "display_name": "百度千帆 / ERNIE",
+      "default_base_url": "https://qianfan.baidubce.com/v2",
+      "transport": "qianfan-responses",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "原生 Responses API：使用 previous_response_id 复用服务端会话状态，并完整保留 reasoning/tool items。深度思考开关仅在模型能力明确时显示。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "minimax",
+      "display_name": "MiniMax",
+      "default_base_url": "https://api.minimax.io/anthropic/v1",
+      "transport": "minimax-messages",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "官方推荐 Anthropic Messages 兼容接口：保留 interleaved thinking/tool blocks，并启用显式 prompt caching。中国大陆站 API Key 请把 API 地址改为 https://api.minimax.cn/anthropic/v1。",
+      "discovery_url": "",
+      "discovery_auth": "x-api-key",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {
+        "https://api.minimax.io/v1": "https://api.minimax.io/anthropic/v1",
+        "https://api.minimax.io/anthropic/v1": "https://api.minimax.io/anthropic/v1",
+        "https://api.minimaxi.com/v1": "https://api.minimax.cn/anthropic/v1",
+        "https://api.minimax.cn/v1": "https://api.minimax.cn/anthropic/v1",
+        "https://api.minimax.cn/anthropic/v1": "https://api.minimax.cn/anthropic/v1"
+      }
+    },
+    {
+      "id": "stepfun",
+      "display_name": "阶跃星辰 / StepFun",
+      "default_base_url": "https://api.stepfun.com/v1",
+      "transport": "openai-compatible",
+      "requires_api_key": true,
+      "available": true,
+      "category": "china",
+      "note": "官方当前公开推理接口即 OpenAI Chat 兼容协议；Kiro BYO 保持该官方协议，不伪造未公开的原生能力。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "openai",
+      "display_name": "OpenAI",
+      "default_base_url": "https://api.openai.com/v1",
+      "transport": "openai-responses",
+      "requires_api_key": true,
+      "available": true,
+      "category": "global",
+      "note": "原生 Responses API（store=false）：完整回传加密 reasoning items，并按会话固定 prompt_cache_key。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "anthropic",
+      "display_name": "Anthropic / Claude",
+      "default_base_url": "https://api.anthropic.com/v1",
+      "transport": "anthropic-messages",
+      "requires_api_key": true,
+      "available": true,
+      "category": "global",
+      "note": "原生 Messages API：保留 thinking/signature、tool_use/tool_result 与 prompt caching。",
+      "discovery_url": "",
+      "discovery_auth": "x-api-key",
+      "discovery_headers": [
+        [
+          "anthropic-version",
+          "2023-06-01"
+        ]
+      ],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "gemini",
+      "display_name": "Google Gemini",
+      "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "transport": "gemini-interactions",
+      "requires_api_key": true,
+      "available": true,
+      "category": "global",
+      "note": "原生 Interactions API：保留 thought signatures，并优先使用 previous_interaction_id 复用服务端状态。",
+      "discovery_url": "https://generativelanguage.googleapis.com/v1beta/models",
+      "discovery_auth": "x-goog-api-key",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {
+        "https://generativelanguage.googleapis.com/v1beta/openai": "https://generativelanguage.googleapis.com/v1beta",
+        "https://generativelanguage.googleapis.com/v1beta": "https://generativelanguage.googleapis.com/v1beta"
+      }
+    },
+    {
+      "id": "grok",
+      "display_name": "xAI / Grok",
+      "default_base_url": "https://api.x.ai/v1",
+      "transport": "xai-responses",
+      "requires_api_key": true,
+      "available": true,
+      "category": "global",
+      "note": "原生 Responses API：完整回传加密 reasoning items，按会话固定 prompt_cache_key，并读取 xAI 完整语言模型能力目录。",
+      "discovery_url": "https://api.x.ai/v1/language-models",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "mistral",
+      "display_name": "Mistral AI",
+      "default_base_url": "https://api.mistral.ai/v1",
+      "transport": "mistral-chat-v1",
+      "requires_api_key": true,
+      "available": true,
+      "category": "global",
+      "note": "原生 Chat API：保留 Mistral ThinkChunk/tool_calls，并按会话发送 prompt_cache_key 提高缓存命中率。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "cohere",
+      "display_name": "Cohere",
+      "default_base_url": "https://api.cohere.com",
+      "transport": "cohere-v2",
+      "requires_api_key": true,
+      "available": true,
+      "category": "global",
+      "note": "原生 Chat V2：保留 Cohere thinking/tool-call 结构。",
+      "discovery_url": "https://api.cohere.com/v1/models",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "groq",
+      "display_name": "Groq",
+      "default_base_url": "https://api.groq.com/openai/v1",
+      "transport": "groq-responses",
+      "requires_api_key": true,
+      "available": true,
+      "category": "global",
+      "note": "官方 Responses API；保持无状态完整上下文回传（Groq 当前不支持 previous_response_id / prompt_cache_key）。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    },
+    {
+      "id": "custom",
+      "display_name": "自定义 / 中转站（OpenAI Compatible）",
+      "default_base_url": "",
+      "transport": "openai-compatible",
+      "requires_api_key": false,
+      "available": true,
+      "category": "custom",
+      "note": "用于中转站、自建服务或其他 OpenAI Compatible endpoint。",
+      "discovery_url": "",
+      "discovery_auth": "bearer",
+      "discovery_headers": [],
+      "account_capabilities": [],
+      "model_transport_overrides": false,
+      "discovery_model_allowlist": [],
+      "official_base_urls": [],
+      "static_model_ids": [],
+      "legacy_base_url_migrations": {}
+    }
+  ],
+  "routing_rules": [
+    {
+      "presets": [
+        "openai"
+      ],
+      "match": {
+        "exact": [
+          "gpt-6-astra"
+        ]
+      },
+      "routing": {
+        "quality": 1.0,
+        "speed": 0.42,
+        "economy": 0.18,
+        "tiers": [
+          "strong"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "OpenAI flagship positioning; migrated from 0.2.2 curated routing profile."
+      }
+    },
+    {
+      "presets": [
+        "openai"
+      ],
+      "match": {
+        "exact": [
+          "gpt-6.1-sol",
+          "gpt-6-sol"
+        ]
+      },
+      "routing": {
+        "quality": 0.94,
+        "speed": 0.7,
+        "economy": 0.72,
+        "tiers": [
+          "strong",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "OpenAI near-flagship/value positioning; migrated from 0.2.2 curated routing profile."
+      }
+    },
+    {
+      "presets": [
+        "openai"
+      ],
+      "match": {
+        "exact": [
+          "gpt-6-luna",
+          "gpt-5.6-luna"
+        ]
+      },
+      "routing": {
+        "quality": 0.72,
+        "speed": 0.96,
+        "economy": 0.98,
+        "tiers": [
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "OpenAI latency/cost positioning; migrated from 0.2.2 curated routing profile."
+      }
+    },
+    {
+      "presets": [
+        "openai"
+      ],
+      "match": {
+        "exact": [
+          "gpt-5.6-sol",
+          "gpt-5.6",
+          "gpt-5.6-terra"
+        ]
+      },
+      "routing": {
+        "quality": 0.86,
+        "speed": 0.7,
+        "economy": 0.7,
+        "tiers": [
+          "strong",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "OpenAI balanced/strong positioning; migrated from 0.2.2 curated routing profile."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "opus"
+        ]
+      },
+      "routing": {
+        "quality": 0.98,
+        "speed": 0.42,
+        "economy": 0.22,
+        "tiers": [
+          "strong"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Anthropic family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "sonnet",
+          "fable"
+        ]
+      },
+      "routing": {
+        "quality": 0.91,
+        "speed": 0.7,
+        "economy": 0.62,
+        "tiers": [
+          "strong",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Anthropic family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "haiku"
+        ]
+      },
+      "routing": {
+        "quality": 0.72,
+        "speed": 0.95,
+        "economy": 0.95,
+        "tiers": [
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Anthropic family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "contains_any": [
+          "argon",
+          "pro"
+        ]
+      },
+      "routing": {
+        "quality": 0.96,
+        "speed": 0.55,
+        "economy": 0.42,
+        "tiers": [
+          "strong"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Gemini family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "contains_any": [
+          "flash-lite"
+        ]
+      },
+      "routing": {
+        "quality": 0.68,
+        "speed": 0.98,
+        "economy": 0.98,
+        "tiers": [
+          "fast"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Gemini family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "contains_any": [
+          "flash"
+        ],
+        "exclude_contains_any": [
+          "tts",
+          "live",
+          "image"
+        ]
+      },
+      "routing": {
+        "quality": 0.84,
+        "speed": 0.92,
+        "economy": 0.9,
+        "tiers": [
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Gemini family heuristic excluding non-agent variants; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "qwen"
+      ],
+      "match": {
+        "contains_any": [
+          "max"
+        ]
+      },
+      "routing": {
+        "quality": 0.95,
+        "speed": 0.58,
+        "economy": 0.5,
+        "tiers": [
+          "strong"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Qwen family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "qwen"
+      ],
+      "match": {
+        "contains_any": [
+          "plus"
+        ]
+      },
+      "routing": {
+        "quality": 0.86,
+        "speed": 0.76,
+        "economy": 0.72,
+        "tiers": [
+          "strong",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Qwen family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "qwen"
+      ],
+      "match": {
+        "contains_any": [
+          "flash",
+          "turbo"
+        ]
+      },
+      "routing": {
+        "quality": 0.74,
+        "speed": 0.95,
+        "economy": 0.95,
+        "tiers": [
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Qwen family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "qwen"
+      ],
+      "match": {
+        "contains_any": [
+          "coder-plus"
+        ]
+      },
+      "routing": {
+        "quality": 0.86,
+        "speed": 0.76,
+        "economy": 0.72,
+        "tiers": [
+          "strong",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Legacy source-order rule retained for behavioral equivalence."
+      }
+    },
+    {
+      "presets": [
+        "qwen"
+      ],
+      "match": {
+        "contains_any": [
+          "coder-flash"
+        ]
+      },
+      "routing": {
+        "quality": 0.74,
+        "speed": 0.95,
+        "economy": 0.95,
+        "tiers": [
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Legacy source-order rule retained for behavioral equivalence."
+      }
+    },
+    {
+      "presets": [
+        "xiaomi",
+        "xiaomi-tokenplan"
+      ],
+      "match": {
+        "contains_any": [
+          "pro-ultraspeed"
+        ]
+      },
+      "routing": {
+        "quality": 0.96,
+        "speed": 0.98,
+        "economy": 0.58,
+        "tiers": [
+          "strong",
+          "fast"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "MiMo UltraSpeed positioning; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "xiaomi",
+        "xiaomi-tokenplan"
+      ],
+      "match": {
+        "suffix": [
+          "-pro"
+        ]
+      },
+      "routing": {
+        "quality": 0.96,
+        "speed": 0.58,
+        "economy": 0.48,
+        "tiers": [
+          "strong"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "MiMo Pro positioning; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "xiaomi",
+        "xiaomi-tokenplan"
+      ],
+      "match": {
+        "contains_any": [
+          "flash"
+        ]
+      },
+      "routing": {
+        "quality": 0.82,
+        "speed": 0.96,
+        "economy": 0.94,
+        "tiers": [
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "MiMo Flash positioning; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "xiaomi",
+        "xiaomi-tokenplan"
+      ],
+      "match": {
+        "exact": [
+          "mimo-v2.5"
+        ]
+      },
+      "routing": {
+        "quality": 0.8,
+        "speed": 0.73,
+        "economy": 0.7,
+        "tiers": [
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "MiMo V2.5 balanced positioning; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "deepseek"
+      ],
+      "match": {
+        "contains_any": [
+          "pro"
+        ]
+      },
+      "routing": {
+        "quality": 0.94,
+        "speed": 0.58,
+        "economy": 0.62,
+        "tiers": [
+          "strong"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "DeepSeek family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "deepseek"
+      ],
+      "match": {
+        "contains_any": [
+          "flash"
+        ]
+      },
+      "routing": {
+        "quality": 0.82,
+        "speed": 0.93,
+        "economy": 0.93,
+        "tiers": [
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "DeepSeek family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "zhipu"
+      ],
+      "match": {
+        "contains_any": [
+          "flash"
+        ]
+      },
+      "routing": {
+        "quality": 0.78,
+        "speed": 0.94,
+        "economy": 0.94,
+        "tiers": [
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "GLM family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "zhipu"
+      ],
+      "match": {
+        "prefix": [
+          "glm-5"
+        ]
+      },
+      "routing": {
+        "quality": 0.92,
+        "speed": 0.66,
+        "economy": 0.64,
+        "tiers": [
+          "strong",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "GLM-5 family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "moonshot"
+      ],
+      "match": {
+        "contains_any": [
+          "highspeed"
+        ]
+      },
+      "routing": {
+        "quality": 0.88,
+        "speed": 0.95,
+        "economy": 0.7,
+        "tiers": [
+          "strong",
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Kimi high-speed family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "moonshot"
+      ],
+      "match": {
+        "any": [
+          {
+            "prefix": [
+              "kimi-k3"
+            ]
+          },
+          {
+            "contains_any": [
+              "code"
+            ]
+          }
+        ]
+      },
+      "routing": {
+        "quality": 0.93,
+        "speed": 0.62,
+        "economy": 0.58,
+        "tiers": [
+          "strong"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Kimi K3/code family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "moonshot"
+      ],
+      "match": {
+        "prefix": [
+          "kimi-k2"
+        ]
+      },
+      "routing": {
+        "quality": 0.85,
+        "speed": 0.72,
+        "economy": 0.7,
+        "tiers": [
+          "strong",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Kimi K2 family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "grok"
+      ],
+      "match": {
+        "contains_any": [
+          "mini",
+          "fast"
+        ]
+      },
+      "routing": {
+        "quality": 0.76,
+        "speed": 0.93,
+        "economy": 0.9,
+        "tiers": [
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Grok low-latency family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "grok"
+      ],
+      "match": {
+        "prefix": [
+          "grok-"
+        ]
+      },
+      "routing": {
+        "quality": 0.93,
+        "speed": 0.64,
+        "economy": 0.48,
+        "tiers": [
+          "strong"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Grok flagship family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "mistral"
+      ],
+      "match": {
+        "contains_any": [
+          "large"
+        ]
+      },
+      "routing": {
+        "quality": 0.9,
+        "speed": 0.67,
+        "economy": 0.62,
+        "tiers": [
+          "strong",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Mistral family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "mistral"
+      ],
+      "match": {
+        "contains_any": [
+          "small",
+          "mini"
+        ]
+      },
+      "routing": {
+        "quality": 0.74,
+        "speed": 0.92,
+        "economy": 0.92,
+        "tiers": [
+          "fast",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Mistral family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "cohere"
+      ],
+      "match": {
+        "contains_any": [
+          "plus",
+          "reasoning"
+        ]
+      },
+      "routing": {
+        "quality": 0.88,
+        "speed": 0.68,
+        "economy": 0.62,
+        "tiers": [
+          "strong",
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Cohere family heuristic; curated routing estimate."
+      }
+    },
+    {
+      "presets": [
+        "cohere"
+      ],
+      "match": {
+        "contains_any": [
+          "command"
+        ]
+      },
+      "routing": {
+        "quality": 0.8,
+        "speed": 0.78,
+        "economy": 0.76,
+        "tiers": [
+          "balanced"
+        ],
+        "source": "official-profile",
+        "confidence": "medium",
+        "provenance": {
+          "quality": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "speed": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "economy": {
+            "source": "official-profile",
+            "confidence": "medium"
+          },
+          "tiers": {
+            "source": "official-profile",
+            "confidence": "medium"
+          }
+        }
+      },
+      "source": {
+        "note": "Cohere family heuristic; curated routing estimate."
+      }
+    }
+  ],
+  "model_rules": [
+    {
+      "presets": [
+        "deepseek"
+      ],
+      "match": {
+        "exact": [
+          "deepseek-flash",
+          "deepseek-v4.1-flash",
+          "deepseek-v4-flash",
+          "deepseek-v4-flash-vision-exp"
+        ]
+      },
+      "profile": {
+        "context_window": 1048576,
+        "max_output_tokens": 393216,
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "effort_supported_levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "disable_value": "none",
+          "effort": {
+            "levels": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified DeepSeek Flash-family contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "deepseek"
+      ],
+      "match": {
+        "exact": [
+          "deepseek-v4-pro"
+        ]
+      },
+      "profile": {
+        "context_window": 1048576,
+        "max_output_tokens": 393216,
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "effort_supported_levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "disable_value": "none",
+          "effort": {
+            "levels": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified DeepSeek V4 Pro contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "openai"
+      ],
+      "match": {
+        "exact": [
+          "gpt-6-astra",
+          "gpt-6.1-sol"
+        ]
+      },
+      "profile": {
+        "context_window": 1050000,
+        "max_output_tokens": 128000,
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "medium",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "medium"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified OpenAI reasoning/model contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "openai"
+      ],
+      "match": {
+        "exact": [
+          "gpt-6-sol",
+          "gpt-6-luna"
+        ]
+      },
+      "profile": {
+        "context_window": 1050000,
+        "max_output_tokens": 128000,
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "medium",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "disable_value": "none",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "medium"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified OpenAI reasoning/model contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "openai"
+      ],
+      "match": {
+        "exact": [
+          "gpt-5.6",
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna"
+        ]
+      },
+      "profile": {
+        "context_window": 1050000,
+        "max_output_tokens": 128000,
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "medium",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "disable_value": "none",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "medium"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified OpenAI 5.6 family contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "grok"
+      ],
+      "match": {
+        "exact": [
+          "grok-4.7"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        },
+        "context_window": 500000
+      },
+      "source": {
+        "note": "Verified xAI Grok 4.7 contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "grok"
+      ],
+      "match": {
+        "exact": [
+          "grok-4.6"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified xAI Grok 4.6 contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "grok"
+      ],
+      "match": {
+        "exact": [
+          "grok-4.5"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified xAI Grok 4.5 contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "grok"
+      ],
+      "match": {
+        "exact": [
+          "grok-4.3"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "disable_value": "none",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified xAI Grok 4.3 contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "moonshot"
+      ],
+      "match": {
+        "exact": [
+          "kimi-k3"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "max_output_tokens": 1048576,
+        "effort_supported_levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "effort_default_level": "max",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": "max"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified Kimi K3 contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "moonshot"
+      ],
+      "match": {
+        "exact": [
+          "kimi-k2.7-code",
+          "kimi-k2.7-code-highspeed"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 262144,
+        "max_output_tokens": 32768,
+        "reasoning": {
+          "mode": "fixed",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified Kimi K2.7 code contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "moonshot"
+      ],
+      "match": {
+        "exact": [
+          "kimi-k2.6"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 262144,
+        "max_output_tokens": 32768,
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified Kimi K2.6 contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "xiaomi",
+        "xiaomi-tokenplan"
+      ],
+      "match": {
+        "exact": [
+          "mimo-v2.6-pro"
+        ]
+      },
+      "profile": {
+        "name": "MiMo-V2.6-Pro",
+        "context_window": 1000000,
+        "max_output_tokens": 131072,
+        "input_modalities": [
+          "text",
+          "image",
+          "audio",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        },
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Xiaomi MiMo model contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "xiaomi",
+        "xiaomi-tokenplan"
+      ],
+      "match": {
+        "exact": [
+          "mimo-v2.6-flash"
+        ]
+      },
+      "profile": {
+        "name": "MiMo-V2.6-Flash",
+        "context_window": 1000000,
+        "max_output_tokens": 131072,
+        "input_modalities": [
+          "text",
+          "image",
+          "audio",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        },
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Xiaomi MiMo model contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "xiaomi",
+        "xiaomi-tokenplan"
+      ],
+      "match": {
+        "exact": [
+          "mimo-v2.6-pro-ultraspeed"
+        ]
+      },
+      "profile": {
+        "name": "MiMo-V2.6-Pro-UltraSpeed",
+        "context_window": 1000000,
+        "max_output_tokens": 131072,
+        "input_modalities": [
+          "text",
+          "image",
+          "audio",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        },
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Xiaomi MiMo model contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "xiaomi",
+        "xiaomi-tokenplan"
+      ],
+      "match": {
+        "exact": [
+          "mimo-v2.5-pro"
+        ]
+      },
+      "profile": {
+        "name": "MiMo-V2.5-Pro",
+        "context_window": 1000000,
+        "max_output_tokens": 131072,
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        },
+        "capability_source": "official-profile",
+        "lifecycle": "retiring"
+      },
+      "source": {
+        "note": "Verified Xiaomi MiMo model contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "xiaomi",
+        "xiaomi-tokenplan"
+      ],
+      "match": {
+        "exact": [
+          "mimo-v2.5"
+        ]
+      },
+      "profile": {
+        "name": "MiMo-V2.5",
+        "context_window": 1000000,
+        "max_output_tokens": 131072,
+        "input_modalities": [
+          "text",
+          "image",
+          "audio",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        },
+        "capability_source": "official-profile",
+        "lifecycle": "retiring"
+      },
+      "source": {
+        "note": "Verified Xiaomi MiMo model contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "zhipu"
+      ],
+      "match": {
+        "exact": [
+          "glm-5.3",
+          "glm-5.3-flash",
+          "glm-5.3-flashx"
+        ]
+      },
+      "profile": {
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "effort_supported_levels": [
+          "low",
+          "high",
+          "max"
+        ],
+        "effort_default_level": "max",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "effort": {
+            "levels": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": "max"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified GLM 5.3 family contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "zhipu"
+      ],
+      "match": {
+        "prefix": [
+          "glm-5.2"
+        ]
+      },
+      "profile": {
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "effort_supported_levels": [
+          "high",
+          "max"
+        ],
+        "effort_default_level": "max",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "effort": {
+            "levels": [
+              "high",
+              "max"
+            ],
+            "default": "max"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified GLM 5.2 family contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "zhipu"
+      ],
+      "match": {
+        "exact": [
+          "glm-5v-turbo"
+        ]
+      },
+      "profile": {
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        },
+        "input_modalities": [
+          "text",
+          "image",
+          "video",
+          "file"
+        ]
+      },
+      "source": {
+        "note": "Verified multimodal GLM contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "zhipu"
+      ],
+      "match": {
+        "exact": [
+          "glm-5",
+          "glm-5.1",
+          "glm-5-turbo",
+          "glm-4.7"
+        ]
+      },
+      "profile": {
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified GLM toggle-thinking contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "minimax"
+      ],
+      "match": {
+        "exact": [
+          "minimax-m3.1-flash-preview"
+        ]
+      },
+      "profile": {
+        "context_window": 1000000,
+        "max_output_tokens": 524288,
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "max",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "enable_value": "adaptive",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "max"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified MiniMax M3.1 contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "minimax"
+      ],
+      "match": {
+        "exact": [
+          "minimax-m3"
+        ]
+      },
+      "profile": {
+        "context_window": 1000000,
+        "max_output_tokens": 524288,
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": false,
+          "enable_value": "adaptive",
+          "disable_value": "__omit__",
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified MiniMax M3 contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "minimax"
+      ],
+      "match": {
+        "exact": [
+          "minimax-m2",
+          "minimax-m2.1",
+          "minimax-m2.1-highspeed",
+          "minimax-m2.5",
+          "minimax-m2.5-highspeed",
+          "minimax-m2.7",
+          "minimax-m2.7-highspeed"
+        ]
+      },
+      "profile": {
+        "context_window": 204800,
+        "max_output_tokens": 204800,
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "reasoning": {
+          "mode": "fixed",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "source": "official-profile"
+        },
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified MiniMax M2 family contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "mistral"
+      ],
+      "match": {
+        "exact": [
+          "mistral-large-4-0",
+          "mistral-large-4",
+          "mistral-large-latest"
+        ]
+      },
+      "profile": {
+        "effort_supported_levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "disable_value": "none",
+          "enable_value": "high",
+          "effort": {
+            "levels": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "source": {
+        "note": "Verified Mistral Large reasoning contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "mistral"
+      ],
+      "match": {
+        "exact": [
+          "mistral-small-latest",
+          "mistral-medium-3-5"
+        ]
+      },
+      "profile": {
+        "effort_supported_levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "disable_value": "none",
+          "enable_value": "high",
+          "effort": {
+            "levels": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Mistral adjustable reasoning contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "qwen"
+      ],
+      "match": {
+        "all": [
+          {
+            "prefix": [
+              "qwen3.8-"
+            ]
+          },
+          {
+            "exclude_contains_any": [
+              "omni"
+            ]
+          }
+        ]
+      },
+      "profile": {
+        "transport": "qwen-responses",
+        "capability_source": "official-profile",
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "xhigh"
+        ],
+        "effort_default_level": "xhigh",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "disable_value": "none",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "xhigh"
+            ],
+            "default": "xhigh"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Verified Qwen 3.8 Responses + reasoning contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "qwen"
+      ],
+      "match": {
+        "all": [
+          {
+            "prefix": [
+              "qwen3.8-"
+            ]
+          },
+          {
+            "contains_any": [
+              "omni"
+            ]
+          }
+        ]
+      },
+      "profile": {
+        "transport": "qwen-responses",
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Qwen 3.8 Omni transport override migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "qwen"
+      ],
+      "match": {
+        "any": [
+          {
+            "prefix": [
+              "qwen3.7-max",
+              "qwen3.7-plus",
+              "qwen3.7-flash",
+              "qwen3.6-plus",
+              "qwen3.6-flash",
+              "qwen3.5-plus",
+              "qwen3.5-flash"
+            ]
+          },
+          {
+            "exact": [
+              "qwen3.6-35b-a3b",
+              "qwen3.5-397b-a17b",
+              "qwen3.5-122b-a10b",
+              "qwen3.5-27b",
+              "qwen3.5-35b-a3b"
+            ]
+          }
+        ]
+      },
+      "profile": {
+        "transport": "qwen-responses",
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Qwen model-specific Responses transport support migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "qwen"
+      ],
+      "match": {
+        "any": [
+          {
+            "prefix": [
+              "qwq"
+            ]
+          },
+          {
+            "all": [
+              {
+                "any": [
+                  {
+                    "regex_any": [
+                      "^qwen3-[0-9]"
+                    ]
+                  },
+                  {
+                    "prefix": [
+                      "qwen3-vl-"
+                    ]
+                  }
+                ]
+              },
+              {
+                "contains_any": [
+                  "thinking"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "profile": {
+        "reasoning": {
+          "mode": "fixed",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "source": "official-profile"
+        },
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified fixed-thinking Qwen/QwQ contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "qwen"
+      ],
+      "match": {
+        "any": [
+          {
+            "regex_any": [
+              "^qwen3-[0-9]"
+            ]
+          },
+          {
+            "prefix": [
+              "qwen3-vl-"
+            ]
+          }
+        ]
+      },
+      "profile": {
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "true",
+          "disable_value": "false",
+          "source": "official-profile"
+        },
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Qwen3 toggle-thinking contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "hunyuan"
+      ],
+      "match": {
+        "exact": [
+          "hy4-preview"
+        ]
+      },
+      "profile": {
+        "transport": "hunyuan-responses",
+        "context_window": 1024000,
+        "max_output_tokens": 64000,
+        "effort_supported_levels": [
+          "high"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "disable_value": "none",
+          "effort": {
+            "levels": [
+              "high"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Hunyuan Hy4 Responses contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "hunyuan"
+      ],
+      "match": {
+        "exact": [
+          "hy3",
+          "hy3-preview",
+          "hy3-202608"
+        ]
+      },
+      "profile": {
+        "transport": "hunyuan-responses",
+        "context_window": 256000,
+        "max_output_tokens": 128000,
+        "effort_supported_levels": [
+          "low",
+          "high"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "disable_value": "none",
+          "effort": {
+            "levels": [
+              "low",
+              "high"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Hunyuan Hy3 Responses contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "prefix": [
+          "gemini-3.8-flash",
+          "gemini-3.7-flash"
+        ]
+      },
+      "profile": {
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "effort_default_level": "medium",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "medium"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Gemini 3.7/3.8 Flash effort contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "prefix": [
+          "gemini-3.6-flash",
+          "gemini-3.5-flash"
+        ]
+      },
+      "profile": {
+        "effort_supported_levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "effort_default_level": "medium",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "medium"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Gemini 3.5/3.6 Flash effort contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "prefix": [
+          "gemini-3.5-flash-lite"
+        ]
+      },
+      "profile": {
+        "effort_supported_levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "effort_default_level": "medium",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "medium"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Gemini Flash Lite effort contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "prefix": [
+          "gemini-3.1-pro-preview"
+        ]
+      },
+      "profile": {
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Gemini 3.1 Pro Preview effort contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "prefix": [
+          "gemini-3.1-flash-lite-image"
+        ]
+      },
+      "profile": {
+        "effort_supported_levels": [
+          "minimal",
+          "high"
+        ],
+        "effort_default_level": "minimal",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "minimal",
+              "high"
+            ],
+            "default": "minimal"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Gemini image Flash Lite effort contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "prefix": [
+          "gemini-3-flash-preview"
+        ]
+      },
+      "profile": {
+        "effort_supported_levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Gemini 3 Flash Preview effort contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "prefix": [
+          "gemini-3-pro-preview"
+        ]
+      },
+      "profile": {
+        "effort_supported_levels": [
+          "low",
+          "high"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "low",
+              "high"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Gemini 3 Pro Preview effort contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "gemini"
+      ],
+      "match": {
+        "prefix": [
+          "gemini-2.5-pro",
+          "gemini-2.5-flash"
+        ]
+      },
+      "profile": {
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "levels",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Gemini 2.5 effort contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "fable-5-1"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "max_output_tokens": 128000,
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "adaptive",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "enable_value": "adaptive",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude Fable 5.1 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "opus-5-5"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "max_output_tokens": 128000,
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "medium",
+        "reasoning": {
+          "mode": "adaptive",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "enable_value": "adaptive",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "medium"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude Opus 5.5 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "sonnet-5-5"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "max_output_tokens": 128000,
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "adaptive",
+          "supported": true,
+          "can_disable": false,
+          "default_enabled": true,
+          "enable_value": "adaptive",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude Sonnet 5.5 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "haiku-5-5"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "max_output_tokens": 128000,
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "medium",
+        "reasoning": {
+          "mode": "adaptive",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "adaptive",
+          "disable_value": "disabled",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "medium"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude Haiku 5.5 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "sonnet-5"
+        ],
+        "exclude_contains_any": [
+          "5-5"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "max_output_tokens": 128000,
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "adaptive",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "adaptive",
+          "disable_value": "disabled",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude Sonnet 5 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "opus-5"
+        ],
+        "exclude_contains_any": [
+          "5-5"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "max_output_tokens": 128000,
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "adaptive",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "adaptive",
+          "disable_value": "disabled",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude Opus 5 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "opus-4-8",
+          "opus-4-7"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "max_output_tokens": 128000,
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "adaptive",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": false,
+          "enable_value": "adaptive",
+          "disable_value": "disabled",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude Opus 4.7/4.8 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "opus-4-6",
+          "sonnet-4-6"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 1000000,
+        "max_output_tokens": 128000,
+        "effort_supported_levels": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "effort_default_level": "high",
+        "reasoning": {
+          "mode": "adaptive",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": false,
+          "enable_value": "adaptive",
+          "disable_value": "disabled",
+          "effort": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "max"
+            ],
+            "default": "high"
+          },
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude 4.6 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "opus-4-5"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 200000,
+        "max_output_tokens": 64000,
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": false,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude Opus 4.5 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "haiku-4-5"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 200000,
+        "max_output_tokens": 64000,
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": false,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude Haiku 4.5 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "contains_any": [
+          "sonnet-4-5"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile",
+        "context_window": 200000,
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": false,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        }
+      },
+      "source": {
+        "note": "Claude Sonnet 4.5 contract. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "anthropic"
+      ],
+      "match": {
+        "prefix": [
+          "claude-"
+        ]
+      },
+      "profile": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Claude generic modality/tool fallback. Migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "cohere"
+      ],
+      "match": {
+        "exact": [
+          "command-a-plus-05-2026"
+        ]
+      },
+      "profile": {
+        "context_window": 128000,
+        "max_output_tokens": 64000,
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Cohere Command A Plus contract migrated from 0.2.2."
+      }
+    },
+    {
+      "presets": [
+        "cohere"
+      ],
+      "match": {
+        "exact": [
+          "command-a-reasoning-08-2025"
+        ]
+      },
+      "profile": {
+        "context_window": 256000,
+        "max_output_tokens": 32000,
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "reasoning": {
+          "mode": "toggle",
+          "supported": true,
+          "can_disable": true,
+          "default_enabled": true,
+          "enable_value": "enabled",
+          "disable_value": "disabled",
+          "source": "official-profile"
+        },
+        "tool_use": true,
+        "capability_source": "official-profile"
+      },
+      "source": {
+        "note": "Verified Cohere reasoning contract migrated from 0.2.2."
+      }
+    }
+  ]
+}

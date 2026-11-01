@@ -1,3261 +1,1027 @@
+## 0.3.0 — SSSP-BYO user-supplied icon update (icon-only candidate)
+- Adopt the user-provided black-and-white horizontal SSSP-BYO logo without redesign. Store its original RGBA PNG byte-for-byte in `assets/logo_bw_text.png`.
+- Render the same artwork in the KiroCrew app gallery, sidebar and BYO heading. Gallery uses an unbordered white square preview; the sidebar/heading SVG embeds the exact uploaded raster and inverts it in dark mode.
+- Keep the host app id, backend routes, all Mode policies, integration logic and runtime configuration unchanged.
+- Status: offline asset and packaging checks only; KiroCrew desktop visual validation is still required.
+
+## 0.3.0 V16 — 0.11.1-rc.2 strict compatibility candidate (2026-11-01)
+
+- Recognize KiroCrew 0.11.1 prerelease versions (`-rc.N` / `rcN`) in the guarded local Source audit. The previous V15 preflight blocked them before checking source.
+- All installed 23 Crew semantic patch seams, cross-file import contracts, and the model picker DOM are still validated before any Crew source mutation. Unknown 0.11.2 / 0.12 releases remain blocked.
+- Source-audited baseline remains 0.11.0-rc.1; 0.11.1-rc.2 is **not** independently source-audited or desktop-E2E-verified.
+- No changes to Tiga/Dyna, Provider credentials, recovery, app icon, or the existing mode-switch reload workaround.
+
+## 0.3.0 V15 compatibility hotfix (2026-11-01)
+
+- Source audit and dashboard preflight read the UI timing JavaScript from the **candidate BYO App bundle**, not an obsolete copied Crew runtime. This repairs false incompatibility failures when site-packages has a stale/missing resource.
+- Exact KiroCrew 0.11.1 can enter source-contract preflight; it is **not** declared upstream source-audited, and installation still fails closed if source or UI contracts differ. Future 0.11.2 / 0.12 remain blocked until their own review.
+- Integration settings distinguish actual installed-source semantic checks from pinned upstream audit provenance in five UI languages.
+- No modifications to routing policies, ACP wire model IDs, data records, backups or removal behavior.
+
+## 2026-10-31 — 0.3.0 V13 Crew identity + first-turn native artifacts candidate
+- Supply factual KiroCrew host identity and current BYO runtime Mode/Type in the provider system context on **every turn**. Preserve Crew-authored agent persona and distinguish concrete-model bypass from active Type routing.
+- Advise the native inline `<mcwidget>` workflow on visualization requests; prefer Crew's verified widget Skill when available rather than silently writing an unrelated HTML file. Never claim that an artifact was saved without host confirmation, or invent numeric data for comparisons.
+- Expose a small set of verified first-party `kirocrew-core` artifact tools on explicit artifact requests. Respect saved-Agent MCP permissions, verified live brokers and existing tool approval; do not auto-preload artifact deletion or rollback.
+- Add multilingual intent, actual provider-prompt, Dyna/Type, authorization, provenance and safe tool-discovery tests. No independent artifact storage, no Mode routing changes, no ACP protocol or Durable Run changes.
+- Candidate only: Windows/macOS/Linux Crew Widget auto-registration, cross-session editing, versioning and live MCP permission flows still require actual host end-to-end validation.
+
+## 2026-10-31 — 0.3.0 V11 Provider preflight and diagnostic minimization candidate
+- Moved slow Provider discovery outside the cross-process `providers.json` read-modify-write lock for configure and refresh. Both commits re-read current state within the lock; a refresh rejects changed endpoint, provider family, credential reference, or credential contents instead of persisting stale results.
+- Restricted public Durable Run payloads to explicit status/identity/timing fields, lease status without owner token, and the model identifier consumed by the Records UI. No raw tool receipts, step objectives, checkpoints, or arbitrary metadata leave the diagnostics projection.
+- Added deterministic slow-discovery, stale-endpoint/credential, and public-data-leak regression tests. Recovery ledger storage, route weights, ACP protocol, and model IDs remain unchanged.
+- This is a candidate: Windows/macOS/Linux desktop E2E, live Provider and long-run stress tests remain outstanding. See `V11_OPTIMIZATION_REPORT_2026-10-31.md`.
+
+## 2026-10-31 — 0.3.0 V10 bounded security and state-governance candidate
+- Runtime Trace now masks known secret headers, embedded URL credentials, sensitive (including encoded) query keys, and auth fragments in both metadata and full diagnostic data. Existing previously written trace files are not modified.
+- Turn telemetry history clearing shares the same cross-process file transaction lock as appends and trimming.
+- Provider control-plane mutations serialize their entire read-modify-write transaction across processes using a stable sidecar lock; nested migration calls reuse the outer transaction.
+- Durable Run ordinary clear and history pruning use a shared protective rule: only safely completed records are eligible; running/failed/cancelled and uncertain records remain intact.
+- Added isolated concurrency, secret-scrubbing, and Durable Run regression tests. No Mode/Type routing, ACP protocol, user data or model ID migrations.
+- Cross-platform Crew UI E2E and live-provider endurance testing remain unverified.
+
+## 2026-10-31 — 0.3.0 Records Center phase 1 (read-only candidate)
+- Unified Records overview/timeline over existing bounded Turn, Runtime Trace and Durable Run ledgers; retained counts and safe correlation IDs.
+- Five-language Records Center copy and locale-aware time/number display. No Durable Run deletion or route-policy changes.
+- Added `GET /records` with bounded, metadata-only events. Original `/diagnostics` and `/runtime-trace` interfaces remain unchanged.
+
+## 2026-10-31 — 0.3.0 V5 模型目录同步观察与安全刷新（Windows E2E 待验收）
+
+## 0.3.0 V6 model-sync draft visibility hotfix (2026-10-31)
+
+- Skip hidden/invisible editor nodes when checking for unsent drafts before a guarded Crew reload; keep visible drafts and running turns protected.
+- Add five injected-script regression scenarios and a Windows acceptance checklist. This is a release candidate, not a verified zero-reload React cache fix.
+
+
+- Crew 主界面检测到后端返回 Dyna/Tiga 新模型目录时，若全部会话确认为空闲则自动刷新。
+- 当 `/api/chat/slots` 不可用、会话忙碌或存在未发送草稿时，展示同步阻塞信息而不是静默跳过；避免强制中断任务。
+- 两次自动重载后仍不收敛时给出提示而非无限循环；刷新防循环标记升级为 v3。
+- 只读 `/mode-sync` 诊断识别 V5 注入脚本；不更改模型路由、模型 ID 或用户数据。
+- 详细验证参见 `FIX_REPORT_0.3.0_MODEL_SYNC_V5_2026-10-31.md`；**未通过 Windows 实机端到端验收**。
+
+## 0.3.0 追加修复候选 — Crew 模型目录与当前 Mode 对齐（2026-10-31）
+
+- 修正此前的刷新收敛误判：composer 显示 Dyna 不等于菜单已经切到 Dyna，必须验证真实模型选项。
+- 模型列表探测改用真实 ARIA option 路径；打开模型菜单后立即检查，提供两次限速安全重试及跨 Mode 的防重载状态清理。
+- 新增只读 `/api/apps/kiro-byo/mode-sync` 和模式页异常提示，区分 Host 配置源差异、旧集成补丁和 React 模型缓存陈旧。
+- 不修改 Policy Pack、权限、具体模型 ID 和 Durable Run。Windows KiroCrew 0.11.0-rc.5 实机 E2E 仍待验证。
+
+## 0.3.0 追加修复候选 — Dyna → Tiga 空闲 ACP 会话同步（2026-10-31）
+
+- 修复已有聊天回复结束后 ACP Provider 仍保持 warm，导致切换 Dyna → Tiga 时 `_kiro_byo_reconcile_slot_routing` 将该会话错误视为活跃并保留 Dyna Type 的缺陷；反向 Tiga → Dyna 也使用同一安全路径。
+- 不再只改变聊天右下角的显示字段。跨 Mode 的空闲 ACP 会话经 Crew 原生会话重置事务及锁/忙碌/子代理检查之后，才提交新的 `kiro-byo-type:<mode>:<type>`；后续消息按新 Mode 创建 ACP 会话。
+- 保留同 Mode 手动 Type、具体模型直连、官方后端、运行中的回合、链接会话和其他 App 的会话。重置拒绝或宿主接口不可用时，保留旧选择并记录失败，避免假显示；如用户与模式页之间仍有不一致，可检查 `host_sync` 状态并重新加载会话。
+- 为重复切换、运行中、子代理、重置失败、缺失宿主接口及并发手动固定模型竞争增加独立回归测试。不改变 Tiga/Dyna Policy Pack、Provider 凭据、Durable Run 或原有 Model ID。
+- Linux 分组回归：1249 通过，1 跳过，58 subtest 通过；13 项 Playwright/Chromium 几何测试在当前环境中未完成（单进程运行同样于浏览器测试附近超时），不得计为通过。Windows KiroCrew 实机 UI/真实 ACP 验收仍待完成。
+
+## 0.3.0 修复候选 — Mode 切换同步与架构门禁（2026-10-31）
+
+- 修复冷会话从 Tiga 切换 Dyna 后仍保存旧 Type 的状态协调问题；同 Mode 手动 Type、具体模型固定选择与活跃 ACP 会话不强制迁移，官方后端与 BYO 隔离。
+- BYO 模式 PUT 成功后尝试同步 KiroCrew 冷会话状态，并从 App 广播跨界面模型目录刷新信号。0.11 注入脚本触发正常模型列表读取和宿主窗口重新验证，不强制刷新整页；React Query 缓存端到端仍需 Windows 验收。
+- KiroCrew v0.11.0 正式版可进入受限源码预检候选集合，所有语义源码依赖及前端 DOM 校验继续失败关闭；不宣称 Windows E2E 通过，未来 0.12 不自动允许。
+- 将兼容性检查中的独立导出契约验证提取为单独函数，使超过 100 行的函数从 55 降至 54，不更改架构预算。
+- 142 个测试文件分六组回归：1260 通过、1 跳过、58 subtest 通过；单进程全量运行未获取正常完成结果（环境中断），不能替代 Windows 宿主测试。
+- 保留 0.3.0 的产品版本号，通过 BUILD_INFO 的新运行时内容摘要区分修复构建。
+
+## 0.3.0 — Dyna 三形态发布候选（2026-10-31）
+
+- 将内置 Dyna 正式注册为可执行 Mode，形态显示顺序为 Miracle → Flash → Strong，默认形态仍为 Flash；Tiga 保持系统默认 Mode，直到用户主动切换。
+- 三种 Type 分别引入完整路由、推理、独立复核和有界 Worker 协作策略，共用原有 Provider、ACP、权限、Trace、Durable Run 和安全边界。
+- Kiro BYO 模式页根据实际当前 Mode 动态切换卡片和只读路由统计；消除异步加载旧 Mode 统计的视觉混用。
+- Crew 模型选择基于当前活动 Mode 的有序 Type 列表，保留不变的 `kiro-byo-type:<mode>:<type>` 协议 ID。具体模型直连仍然不走 Type 路由。
+- 内置 Dyna 策略只能随签名/受控发布安装包更新，自定义同名策略不允许覆盖；五语言文案基于既有模型名称和类型名称显示规则。
+- 仍未完成 Windows KiroCrew 0.11.0-rc.5 端到端实机验收，尤其需实测宿主模型菜单刷新和真实多 Agent 效果。
+
+## 0.2.5 — ACP V3 能力契约与 MCP 错误信息安全收口（2026-10-31）
+
+- 新增 `scripts/acp_capability_audit.py`，静态检查 `initialize` 公布的 ACP 扩展与实际分发器是否一致，输出公开与未公开 Crew/旧兼容方法清单；发布检查自动执行该契约审计。不会自动暴露已有私有 API，也不冒充 `session/fork` 已实现。
+- 为 MCP 2026 `input_required` 增加专用异常类别 `McpInputRequired`；保持拒绝未支持的交互输入、保留远端调用可能产生未知副作用的安全状态，不伪造 MCP Elicitation 功能。
+- MCP 已派发调用的异常信息不再把不可信上游原文传入模型/会话 Trace。对协议、JSON-RPC、交互需求、连接故障返回稳定、无敏感数据的错误文本。工具正常返回的业务内容及原有 `isError` 状态仍按原规则处理。
+- 补充安全故障注入、ACP 未声明扩展、未知方法返回 `-32601`、错误文本敏感数据不泄露回归测试；未触碰 Tiga/Dyna Policy Pack、Crew/UI/模型来源和 Durable Run 数据格式。
+- Windows KiroCrew `0.11.0-rc.5` E2E、完整 MCP Elicitation、操作系统 Shell 沙箱均未在本轮实现或宣称通过。
+
+## 0.2.5 — Architecture V7–V10 工具批次、恢复对账与稳定性收尾（2026-10-30）
+
+- V7：工具批次保护停止分支独立为 `_handle_tool_guard_stop`，保留原有 Durable Run 先准入/后收据顺序、Worker handback 与灾难级上限；工具批次主方法从 246 行降至 191 行。
+- V8：ACP Session 恢复时的孤儿 Durable Run 对账拆为 `_reconcile_restored_durable_runs`，保留活跃租约保护、不确定副作用分类、对账竞争处理；恢复主方法从 219 行降至 182 行。
+- V9：新增 AST 依赖边界检查，约束七个路由/内容/执行叶模块禁止反向导入 ACP Server / Turn Runner，并接入发布检查。
+- V10：新增 8 项故障路径、架构与跨系统稳定性检查；136 个测试文件分 16 组，全量回归 1,175 通过、1 跳过、58 个子测试通过。超 200 行 Python 函数预算收紧至 9。
+- 产品 0.2.5、Tiga/Dyna 策略、具体模型直连、Crew 联动、五语言、UI 和 Provider 逻辑不变；仍需 KiroCrew 0.11.0-rc.5 Windows 实机验证。
+
+## 0.2.5 — Architecture V6 Provider 循环终止边界（2026-10-30）
+
+- 从 `turn_runner.py` 抽出 `provider_loop_terminal.py`，统一处理取消前置检查、最终 Provider 错误和内部异常收尾；仅在原有 `RecoveryPolicy` 决策之后执行，不承担重试、回退或工具重放。
+- `_run_provider_tool_loop` 从 284 行降至 200 行，保留 10 条原有 `continue`、4 次逻辑步数回退及 Durable Run 安全边界；原 Provider/内部异常处理语句通过 AST 对比保持一致。
+- 新增六项故障注入/契约测试，覆盖传输重试耗尽、无副作用的模型回退、可见流中断不回退、工具副作用后的内部异常保护、调用前取消和终止处理模块职责边界。
+- 架构预算的超 200 行函数上限从 12 收紧为 11；发布检查新增终止处理模块的集成及 fail-closed 约束。没有更改 Tiga/Dyna 策略、Crew 联动、Provider 模型选择与 UI。
+
+## 0.2.5 — Architecture V5 原生工具调度边界（2026-10-30）
+
+- 将原生工具执行从 Turn Runner 拆到 `native_tool_dispatch.py`，保留原有权限、隔离、执行、审计顺序和 `_execute_native_tool` 对外方法。
+- 拆分一次性目录授权与实际调用，新增 9 项故障注入测试，覆盖审批取消/转向、执行失败撤销授权、重复调用 ID 防重入等关键安全边界。
+- 超过 200 行函数数从 13 降至 12；调整发布检查为实际 Mixin 结构验证。Dyna 保持禁用，Tiga、Crew、Durable Run 及五语言不变。
+- 全量代码回归为 1,161 项通过、1 项跳过、58 个子测试通过；未进行 Windows Crew 0.11.0-rc.5 实机验证。
+
+## 0.2.5 — 形态菜单顶部定位补丁（2026-10-30）
+
+- 当 Crew 复用先前的滚动位置、选中 Multi Type 但形态标题已被裁掉时，重新打开会话模型菜单强制从 Type 组顶部显示；狭小窗口中只做必要补偿。
+- 具体模型继续定位自身（包括长列表最末行），仅对会话模型下拉框生效，不干涉手动滚动及官方 / Mate / Settings 模型选择。
+- 新增旧补丁确实会失败的 Chromium 反例测试，并回归四种形态与新建/复用 Portal。Mode、Type、Provider 路由均未修改。
+
+## 0.2.5 — Crew 0.11 会话模型菜单重新打开时定位选中项（2026-10-30）
+
+- 修复选中列表底部的具体模型后再次打开菜单却从顶部显示的问题：优先按 composer 真实选中标签定位，严格只滚动会话模型菜单的滚动视口，不滚动页面。
+- 兼容 Portal 延迟挂载、隐藏复用、鼠标及键盘打开；手动滚动后不抢走位置，选中顶部 Type 时不会误滚到下方模型。
+- 缩减 BYO 分组标题多占用的行外间距，避免将菜单撑得过长；不覆盖 Crew/Radix 的弹窗定位算法，Windows RC3 实机仍需验收。
+- 保留 Tiga 四形态、Multi 默认、Type wire ID、具体模型的选择回调、官方 Auto 隔离、Mate 和 Settings 语义。
+
+## 0.2.5 — Kiro 风格的单次工具操作描述（2026-10-29）
+
+- 原生工具 Schema 增加可选 `description`：模型可为本次具体操作提供简短说明，按 BYO 界面语言（简体、繁体、英语、日语、韩语）请求生成；旧工具调用无需提供该字段。
+- ACP `tool_call.title` 优先采用经长度、控制字符、命令形态与常见凭据筛选的操作说明；缺失或不合适则回退已有五语言工具类型标题。模型描述是非可信的展示提示，绝不参与授权、执行或审计身份。
+- 工具事件继续保留原始 `rawInput`、`kind`、`toolCallId`、`_meta.kiro`，不改变原始命令、文件路径与已有权限路径；MCP 工具仍保持自有标题与真实身份，不挪用其参数中的同名字段。
+- 原生工具 Schema 的展示语言按会话隔离，防止中日英等并发会话互相污染；新增 5 语言、合法与恶意描述、旧调用兼容、工具执行等回归测试。
+- 尚未在 Windows Crew RC3 观察其是否最终采用 `title` 或 `rawInput.description`，需要实机验收；`auto` 模式仍按系统语言回退。
+
+## 0.2.5 — ACP 工具标题五语言本地化（2026-10-29）
+
+- ACP `tool_call.title` 采用 BYO 的界面语言（简体中文、繁體中文、English、日本語、한국어），工具名、命令参数、权限判定和 `_meta.kiro` 身份保持不变。
+- Shell 默认显示中立的“执行终端命令”一类标题，不把不可信的原始命令猜成安全操作；未知工具保留原名，避免误导。
+- BYO 界面语言选“自动”时，ACP 子进程只能按系统语言回退；尚无官方 Crew 实时前端语言字段可供获取，不能保证跟随 Crew 单独修改的语言设置。
+- 补充五语言、MCP 身份、失败回退、Mode/Type 兼容测试；Crew 活动面板若选择呈现 rawInput 而非 title，仍需实际前端结构确认。
+
+## 0.2.5 — Crew 0.11 模型菜单分组标题恢复（2026-10-29）
+
+- 当新版 Crew 在挂载时已显示 `Sky Type` / `Multi Type` 等名称时，通过 `data-model-id` 识别 Type 行，恢复「形态 · 默认复合型，可手动切换」分组标题。
+- 补充延迟挂载 DOM 回归测试，保持默认 Multi、原生 Settings 作用域及模型 wire ID 不变；无 Type / Model 语义改动。
+
+## 0.2.5 — 第六阶段：MCP 调用状态与异常闭环（2026-10-29）
+
+- MCP Manager 新增 `call_with_status()` 结构化响应，按协议 `isError` 而非 `Error:` 文本判断失败；旧版 `call() -> str` 保持可用。正常的 `Error:` 文本不会被误标为执行失败。
+- 工具派发阶段统一捕获非致命异常（包括非 `OSError`），不暴露异常细节，写入 `failed` 终态与副作用不确定事件，禁止自动重试；`KeyboardInterrupt` / `SystemExit` 不被吞掉。
+- 调用前不可执行的 MCP 状态与已发起远端调用但失败的状态分离：前者不虚报远端副作用不确定，后者保守提示核查外部状态。
+- 尊重已有会话级 `call` 覆盖/测试桩；兼容传统只返回字符串的客户端，但不能从字符串获得可靠的协议错误标志。
+- 新增结构化结果/异常回归测试；未修改 Tiga Mode / Type / 模型池、Crew 21 个源码适配点、Cron 原生读写与 ACP 主路由。
+- 仍需 RC3 Windows 实机 Mate/Worker 验收；Crew 原生 Cron 与 BYO 之间的原子 CAS 仍未解决。
+
+## 0.2.5 — Crew 0.11 RC2+ 受限候选预检（2026-10-29）
+
+- 修复 `0.11.0-rc.3` 在源码预检前就被 `resolve_target()` 与适配器元数据的 RC1/RC2 白名单拦截的问题。RC2 及之后同一 0.11.0 系列的 RC 都可进入只读预检，稳定版及其他系列仍拒绝。
+- 对所有新 RC **继续强制**验证 21 个语义注入点、overlay 未修改依赖的符号/导出/标记，以及实际安装的前端模型菜单 DOM 契约；任意不匹配均不得写入 Crew。
+- 更新只读预检脚本、发布检查、RC 候选回归测试和构建元数据；RC1 仍是唯一源码审查基线，RC3 未获 Windows E2E 验证。
+- `mode_router.py`、`protocol.py`、Tiga 策略、ACP 引擎、Mate/Worker 路由守卫、原生任务同步与前端显示代码均未改动。
+
+## 0.2.5 — Crew 0.11.0-rc.2 预检式兼容支持（2026-10-29）
+
+- RC2 不再因为 `resolve_target()` 的 RC1 版本硬编码直接失败；`0.11.0-rc.2` / `0.11.0rc2` 被列为**候选**（非已验收版本），RC1 仍为已检查的基线。
+- 接入仍需全部 21 个 Crew Python 语义适配点、未修改模块的依赖契约及已安装 0.11 前端的模型菜单 DOM 契约均通过。任何一处缺失、变化或不收敛均拒绝安装，不回退到官方后端。
+- RC2 继续使用 Crew 0.11 专属形态标签显示桥接，避免回退旧版前端补丁。新增只读预检脚本 RC2 支持与专门测试。
+- 不修改 Tiga 四形态、Mode/Type 命名空间、Provider 路由、ACP 执行器及 Crew 原生设置双向同步行为。
+- **限制：尚无 RC2 真实上游源码及 Windows E2E 验收；此构建并不保证当前用户的 RC2 源码一定通过契约检查。** 若检查失败须依据报告修复对应源码接口，不允许绕过安全检查。
+
+## 0.2.5 — 第四阶段：Crew 0.11 RC1 成员后端补丁完整性防护（2026-10-29，构建更新）
+
+- Stage 5: isolate Crew-governed MCP tool dispatch into a dedicated mixin without changing the TurnRunner entrypoint, Mode/Type policies or existing approval order; treat post-dispatch MCP transport exceptions as uncertain effects without auto-retry. See `CODE_REVIEW_FIX_STAGE5_2026-10-29.md`.
+
+- 已安装的 BYO 成员会话路由守卫不能只凭注释 marker 视为有效：现在逐行核对完整的 fail-closed 守卫块，缺失/篡改立即抛出 PatchError，阻止静默回退官方后端。
+- Crew 0.11 RC1 的 loader 成员默认后端守卫也不再只凭 marker 判断；必须保持完整 BYO 主后端接管逻辑，否则安装事务拒绝继续。
+- 新增 `tests/test_crew11_guard_integrity_stage4.py` 共 8 项回归测试，覆盖已安装幂等、损坏/重复 marker、失效后端判定；验证 legacy 成员升级路径不受影响。
+- 未修改 Mode/Type、四种 Tiga 形态、Provider 模型路由、ACP 执行器及 RC1 harness overlay。无 Windows E2E 验收，不将此项等同 Mate/Worker 真实执行链验证。
+- 保留已知限制：Crew 原生 Cron 与 BYO 编辑器尚无跨界面原子 CAS。
+
+## 0.2.5 — 第三阶段：Crew 原生 Cron 写入后校验（2026-10-29，构建更新）
+
+- BYO 日程模型和 AI 执行上下文提交后，重新从 Crew 原生 Cron 服务读取任务并核对实际存储值，不再将 `update_job_async` 返回对象直接当作持久化成功证据；任务消失、存储值不一致时明确报错。
+- 如果异步日程写入期间 Crew 主后端从 BYO 切走，拒绝将该请求报告为成功，并明确告知该写入可能已发生，应检查 Crew 原生任务；**不做危险的自动回滚**。
+- 服务端拒绝对 Script/Command 日程修改 AI 会话上下文，与 BYO 任务 UI 的隐藏逻辑一致。
+- 新增 6 项异常路径回归测试，继续保护原有的 `expected_model`、执行上下文过期检查和同 Gateway 串行提交。
+- 完全不改动 Mode/Type、Tiga 四形态、具体模型直连、ACP 执行器、Crew 0.11 RC1 适配器、Mate/Worker 投影和 UI 文件。
+- **仍未实现 Crew 原生编辑器与 BYO 之间的原子 Cron CAS**；读回验证是后置完整性检查，不是防止跨界面并发覆盖的替代品。Windows E2E / 真实 Provider 调用仍未验收。
+
+## 0.2.5 — 第一阶段代码审查修复（2026-10-28，构建更新）
+
+- 在 Crew 原生配置锁内复核主代理后端：聊天、Crew 队友 / Worker 和后台模型写入在后端已切回官方时拒绝提交；`config.local.json` 对主后端的覆盖会使 BYO 写入失败关闭，防止配置检查与实际写入之间的竞态。
+- 在没有 BYO 可执行具体模型时，不再将启用 Mode 的 Type 列入任务页模型选项或写入白名单；与 Crew 主模型目录的可用性条件保持一致。
+- 同一个 Gateway 事件循环内对 BYO 的 Cron 模型写入和执行上下文更新串行处理，旧页面使用 `expected_model` 的冲突检查不会被另一个 BYO 任务请求绕过。**仍未实现与 Crew 原生独立 Cron 写入者之间的原子 CAS**；需要官方 Cron 接口或同一存储事务支持，不能宣称该项完全解决。
+- 修正无法读取 `VERSION` 时回退到过期版本号的问题；修正 RC1 Worker Kit 适配文档的过期描述。
+- 新增针对并发后端切换、`config.local.json`、无 Provider 以及两个 BYO Cron 并发编辑的回归用例。全项目 pytest：1006 passed, 1 skipped, 52 subtests passed（本地隔离执行；Windows KiroCrew 真实运行仍未验收）。
+
+## 0.2.5 — BYO 模型目录隔离修复（2026-10-28，构建更新）
+
+- BYO 任务页的日程与后台模型下拉框只列出当前 BYO 模型目录里的 Type/具体模型，以及 Crew 原生“继承”或“Auto”配置项；历史官方或未知模型只作为只读告警显示，不能被再次选入 BYO。
+- 主后端为官方时，BYO 任务页仅显示 Crew 当前原生模型值，不呈现可操作的 BYO 模型选择器；保留之前的不可写保护。
+- Crew 原生模型发现的 BYO 适配不再将宿主的 `configured_default`（可能是旧官方模型）加入 BYO 模型目录。已成功读到空 Provider 目录时，也不再从旧 ACP 广告缓存复活过期模型。
+- 保留原生 Cron 与 `agent.role_models.background` 的读写及 `expected_model` 冲突校验；保留之前的 Mate/Worker 执行路由保护。
+- 对已有 0.2.5 安装中**已知的、未修改的旧 BYO 模型目录 helper**提供可验证的热升级兼容，未知第三方修改仍拒绝覆盖。
+- 新增六项回归测试（其中 UI 测试实际执行组件逻辑、旧版 helper 使用语义升级模拟）；未进行 Windows KiroCrew RC1 实机端到端验收，官方计费亦未验证。
+
+## 0.2.5 — Crew 0.11 RC1 Task Console unified patch (build-specific)
+
+- One-page Tasks console now displays native Crew scheduled jobs and the background role only. Chat and crew-mate models remain in Crew's native UI; no duplicate global Harness switcher.
+- The Task console reads native Crew config, schedule entries, and the current main Harness through one read endpoint; refreshes every 12 seconds. BYO-only edits write native Crew state. Official Harness mode is read-only.
+- Optimistic checks reject stale background/scheduled-model selections. Script and command schedules do not have AI model pins.
+- A BYO-only recent background execution card distinguishes configured Auto, Crew-resolved configuration, selected provider/model, and success/failure.
+- Turn telemetry tags the actual Crew lightweight background role even for pinned concrete models and captures metadata-only error location (`file:line:function`) for new internal failures.
+- The existing mate Conductor/Worker fail-closed routing safeguard is retained.
+- **Limitations:** the screenshot's historical `AttributeError` cannot be repaired without its runtime traceback. Neither Windows live execution nor official credit billing has been verified; the new metadata will help isolate a fresh reproduction.
+
+## 0.2.5 · Crew 0.11 RC1 Mate 2.0 older-BYO member recovery hotfix
+
+- Fix `agent_sdk/backends_members.py` being rejected as an incompatible partial BYO patch when a previous successful Kiro BYO integration already registered member dispatch/panel but lacked Mate Worker Kit capability registration.
+- Allow *only* the previous structural BYO signature (real backend import + both member capability declarations) and *only* the single deterministic Mate capability addition. The generated text must be idempotent and compilable; all other partial or unknown changes continue to fail closed.
+- Preserve App version 0.2.5, original Crew/teammate/schedule model linkage and user data. This hotfix has unit/regression coverage but has **not** been verified against the user's actual Windows Crew tree.
+
+## 0.2.5 (Crew 0.11.0-rc.1 compatibility candidate)
+
+- Added session-scoped bounded Plan tool; improved historical MCP refusal diagnostics (Crew still owns permission).
+- Kept 0.11.0-rc.1 exact-source installer gate and retired 0.10 path; no Windows desktop E2E claim.
+
+## 0.2.5 · Crew 0.11 RC1 trust permission bridge and read-only Tool Center (candidate)
+
+- A requested Crew MCP tool can revalidate against its existing, authenticated session-projected server before the ordinary ACP `session/request_permission` is sent. Missing/expired broker catalogues no longer force an immediate false-negative refusal; unmounted, unverified, excluded or Crew-rejected tools remain blocked.
+- Verified-only tool search now waits (bounded) for the *live* Crew broker handshake rather than using a disk-cached catalogue as authority. No permission bypass, new host server or inferred grant is introduced.
+- Emit precise `crew_binding_absent`, `crew_binding_unverified`, or `agent_scope_denied` refusal diagnostics. Add a read-only Tool Center displaying native tools, last-known Crew MCP tool names/health and recent refusals; historical data is expressly not a live grant. The UI never writes Crew authorization settings.
+- Preserve the already-correct status bar, model picker, Tiga/Dyna routing, background Auto and Mate 2.0 safety guard. Crew trust/allow is still decided by Crew itself; real Windows `learn_add` and all Mate Worker tools remain pending E2E verification.
+
+## 0.2.5 · Crew 0.11 RC1 picker/settings presentation update (candidate)
+
+- In BYO conversation model menus, hide only the native `auto` and `auto:jev` rows when Type selections are available; keep the underlying IDs, backend default routing and Crew Settings Auto unchanged.
+- Group Type choices separately from fixed provider models, deriving the Mode group caption from the installed policy pack; do not modify Tiga/Dyna policies.
+- In Settings → Chat → Models, display `Tiga · Sky Type` and other friendly Mode/Type labels in both the default-model control and the selectable-model checkboxes without altering their React/API values.
+- Keep the already-correct bottom status bar display logic unchanged. Scope to Crew 0.11 RC1 DOM seams and fail closed if the compiled frontend lacks those seams.
+- Add cross-platform UI contract CI; real Windows desktop rendering, keyboard search semantics and native dropdown variations remain to be verified.
+
+## 0.2.5
+
+- Target **Crew 0.11.0-rc.1** (or `0.11.0rc1` version spelling) with a new isolated, fail-closed semantic adapter candidate. Crew 0.10 is retired as a supported installation target.
+- Do not infer Mate 2.0 Conductor/Worker backend authority from the legacy global teammate default. Disable Stage 3 linkage mutations under Crew 0.11 until upstream integration tests validate that contract.
+- Add non-destructive upstream-source preflight and CI checkout targeting the 0.11 RC1 tag. A successful version check is not proof of compatible Crew source structure.
+- Preserve existing Tiga four Types, Dyna preview, provider configurations, ACP engine, Stage 7/8 safety and Stage 10 Mode lifecycle.
+- **Candidate only:** the exact tagged Crew sources and Windows desktop E2E were unavailable in this build environment. Installation must fail closed on unknown source layouts.
+
+## 0.2.3 · Stage 10 data-only Mode upgrade compatibility (engineering candidate)
+
+- Prevent a managed upgrade of an **enabled** custom Mode from deleting its existing Type identifiers; stored Crew session/task Type selections may still refer to these IDs. Additions and policy parameter changes remain supported without disrupting the Mode identity.
+- Allow intentional breaking Type migrations only after the custom Mode is explicitly disabled, preserving the existing no-implicit-enable rule. No claim that already-running work is automatically migrated or stopped.
+- Verify that JSON policy updates appear on new registry reads while old immutable policy objects are not mutated; test actual routing/plan selection for all four Tiga Types and Dyna's fail-closed preview status.
+- Add regression coverage to Windows, macOS and Linux CI (remote runs pending). Do not change Tiga/Dyna policy JSON, Crew member priority, or Auto/Jev model picker logic. No executable plugin hot-swap or external MCP exactly-once guarantee is added.
+
+## 0.2.3 · Stage 8 engineering candidate (unreleased)
+
+- Add atomic, persistent, per-Run tool-batch admission receipts. Deterministic opaque batch identifiers reject duplicated dispatch attempts under the same cross-process ledger lock and active Stage 7 owner lease.
+- Verify completed receipts belong to the active Step/Attempt and reject duplicate or unmatched completion; block a successful Run terminal state while a tool admission remains unresolved.
+- Retain the conservative unknown-side-effect recovery policy. These local receipts do **not** guarantee external HTTP/MCP operations execute exactly once, and no automatic replay is added.
+- Add Linux-tested separate-process contention tests and a Windows/macOS/Linux CI matrix (remote CI and real Crew installation pending).
+
+## 0.2.3 Stage 7 (engineering candidate; version unchanged)
+
+- Introduce cross-process Run Lease ownership, periodic renewals and generation fencing for durable Run/Step/Attempt/Checkpoint writes.
+- Prevent `session/new` / `session/load` from misclassifying live leased runs as crashed; allow explicit recovery only after lease expiry and safety checks.
+- Deny late writes from an expired/replaced owner and prevent concurrent double-admission; never auto-replay a possibly side-effecting tool.
+- Redact lease tokens from ACP and App diagnostics while leaving explicit Run cleanup semantics unchanged.
+- Add three-OS regression matrix without changing Crew backend, Tiga, or Auto/Jev semantics.
+
+## 0.2.3 Stage 6 (engineering candidate; version unchanged)
+
+- Fence HTTP MCP session shutdown: bounded daemon network workers, prompt local cancellation and rejection of late responses; remote side effects remain unknown.
+- Reject new HTTP MCP operations after closure and serialize concurrent JSON-RPC request IDs.
+- Reject unknown durable Step/Attempt completion IDs without changing the persisted ledger, including completion under non-running steps.
+- Add cross-platform regression test job; keep Crew backend selection, Stage 3 linkage, Tiga and Auto/Jev logic unchanged.
+
+## 0.2.3 Stage 5 MCP shutdown integrity candidate (2026-10-25)
+
+- Stop stdio MCP requests immediately when the session closes or the peer dies; no misleading 120-second pending call after closure.
+- Fence each MCP process lifetime from stale reader messages and explicitly refuse post-close manager tool calls.
+- Isolate stdio MCP subprocess groups and kill their owned process tree on close with cross-platform best effort and process-exit verification.
+- Add red/green regression coverage and a Windows/macOS/Linux MCP shutdown CI matrix without altering the Crew native integration or Tiga.
+
+## v0.2.3 — Stage 4 execution integrity candidate (same product version)
+
+- Fix ProcessManager termination truth: after unsuccessful grace/force attempts, an OS-live process remains `running` and an explicit `ProcessError` is returned, rather than incorrectly freeing the process slot or claiming `killed`.
+- Fail closed on late writes to completed/cancelled Durable Runs; preserve their persisted terminal status and revision, preventing delayed tool checkpoints/step updates from silently rewriting finished execution records.
+- Admit new durable attempts only into running steps belonging to running Runs; prevent duplicate simultaneous attempts within one step. Recovery remains explicit and session-owned.
+- Add red/green regression tests and a Windows/macOS/Linux CI job for these boundaries. Preserve Crew-native backend selection, Tiga Type/Model routing, and Stage 3 linkage semantics.
+- Does not claim hard termination of unkillable OS processes, exactly-once tool effects, Crew `.5` verified integration, or real three-platform E2E. See `STAGE4_EXECUTION_INTEGRITY_REPORT.md`.
+
+## 0.2.3 · Crew/ACP Stage 2 contract-hardening candidate (2026-10-25)
+
+- Legacy `session/set_model` no longer returns fake success when a session is unknown or `modelId` is missing; invalid requests return JSON-RPC `-32602` without updating state.
+- Model/config selection now excludes concurrent prompt turns via the session's existing `turn_lock`, returning `-32002` rather than changing the provider/model midway through a task. Valid idle-session selections retain the previous wire response and config-update event.
+- ACP conformance reports list legacy `session/set_model` separately from stable protocol methods; no expanded capability claims.
+- Add a real cross-process stdio ACP smoke test, negative-path tests, and Windows/macOS/Linux ACP contract CI matrix. Existing Crew backend selection, member priority, BYO Auto/Jev display compatibility, Tiga and Stage 1 task-management semantics are unchanged.
+- App/Source candidate archives only (not a production-certified build) until exact Crew host contracts and native three-platform end-to-end tests are run. See `ACP_STAGE2_IMPLEMENTATION_REPORT.md`.
+
+## 0.2.3 · Global Audit Fix 02 (2026-10-24)
+
+- ACP session snapshots gain cross-process revision fencing and fail-closed stale-write detection, including migration of legacy filenames without duplicate session-list entries.
+- Cross-process active-turn exclusion prevents overlapping prompts for one session.
+- Model/tool execution stops if the required user-event checkpoint cannot be saved.
+- New KiroCrew v0.10.0-insider.5 release is a pending source-contract target; no unverified parity claim.
+- CI checks both v0.10.0-insider.4 and v0.10.0-insider.5, and extends Windows process tests.
+- See `CREW_0105_AUDIT_FIX02_REPORT.md` for validation boundaries.
+
+## v0.2.3 — Global Audit Fix 01: cross-process integrity and recovery-state consistency (same version)
+
+- Serialize Durable Run, AgentState, Workspace manifest, Runtime Trace and Turn Telemetry mutations across Windows/POSIX cooperating processes via `state_io.py` stable sidecar advisory locks; preserve atomic writes and fsync file bytes before rename.
+- Add monotonically increasing Run ledger revisions; do not lose side-effect history in concurrent checkpoint updates.
+- Reject cancelled and already-active Run recovery consistently; share one recovery eligibility function between `RecoveryPolicy`, durable admission, and resumable UI lists.
+- Fail closed on corrupt AgentState/Workspace manifest instead of silently erasing it; treat AgentState as optional projection on ACP session restore.
+- Add real spawned-process and file fault-injection regression tests. No Crew patch, Tiga routing, Dyna execution, Provider or main UI change.
+- Windows KiroCrew real E2E and cross-process **execution owner** lease remain unresolved. See `GLOBAL_AUDIT_FIX_REPORT_2026-10-24.md`.
+
+## v0.2.3 — S4-02 data-only Mode lifecycle and version checks (same product version)
+
+- Add optional semantic `plugin_version` and `registry_api` declarations; reject incompatible Mode packs before activation while remaining compatible with legacy unversioned JSON.
+- Provide explicit install/update, enable/disable, single-step rollback and content-hash status for custom Mode packs with atomic writes and advisory locking.
+- Reject attempted built-in Tiga/Dyna lifecycle modifications, downgrades and post-update manual-edit conflicts. Preserve the previous active pack when an update fails.
+- Keep Tiga four Types, Dyna non-execution, existing Policy Pack APIs, Crew ACP, Provider routing and UI unchanged. Managed lifecycle is available through Python API only at this stage.
+- Windows KiroCrew parity test pending. See `S4_02_MODE_LIFECYCLE_REPORT.md`.
+
+## v0.2.3 — S3-02 Run event correlation & recovery diagnostics (same version, new build)
+
+- Repair sparse `RuntimeTraceStore.recent` filtered searches so Run/Turn/Session queries inspect the whole retained bounded trace rather than a small tail.
+- Attach stable top-level Run correlation to accepted/rejected recovery requests; include checkpoint's persisted session-event anchor in the corresponding runtime trace.
+- Provide a read-only, content-free Run diagnosis assembled from existing Durable Run records, RecoveryPolicy and optional Runtime Trace. Summarize Step/Attempt lineage, recovery decisions and side-effect risk without duplicating user prompts or tool arguments.
+- Extend `_kiro/run/get` with a bounded correlated trace timeline and `_kiro/run/list` with a lightweight summary; keep existing wire fields intact.
+- Preserve explicit-client recovery ownership; no automatic retry, no second task database, no Crew UI or Tiga/Dyna behavior change. Trace loss never proves safety.
+- Full regression and release checks documented in `S3_02_EVENT_CORRELATION_REPORT.md`; Windows end-to-end comparison pending.
+
+## v0.2.3 — S3-01 Durable Run recovery safety (same version, new build)
+
+- Keep unfinished, failed and cancelled Run records when the completed-history retention cap is reached; protecting recovery evidence takes precedence over a strict file-count limit.
+- Persist a monotonic `side_effect_seen` bit independent of the rolling 64-entry checkpoint window; classify legacy saturated windows without that bit as unsafe to replay.
+- Reject resume/retry/replan when durable evidence shows unverified tool side effects, even if the recovery-state field has an optimistic value.
+- Require an existing durable checkpoint for potentially mutating tool batches in real ACP prompt transactions; low-level non-ACP characterization calls remain unchanged.
+- Expose pending Runs beyond the nominal completed-history retention cap (up to the existing bounded response limit).
+- Retain Crew ownership, Tiga Mode/Type/Model, disabled Dyna, all Provider mappings and current UI. Does not claim cross-process exactly-once execution, power-loss fsync durability or Windows desktop parity.
+- Verification: 771 passed, 1 skipped, 52 subtests in the complete Python suite; Windows E2E not verified. See `S3_01_DURABLE_SAFETY_REPORT.md`.
+
+## v0.2.3 — S2-04 child task lifecycle & resume admission (same version, new build)
+
+- Prevent concurrent resume requests from launching more than one execution for the same BYO child Agent task; use a separate admission lock rather than blocking the worker's task state lock.
+- Make AgentRuntime Future registration atomic and reject duplicate submissions before an in-flight task can be overwritten in the registry.
+- While a child is running, keep new continuation text in its existing mailbox. Return an explicit `inProgress` / `messageQueued` acknowledgement instead of implying the task has completed.
+- When a queued child is cancelled before a worker slot is acquired, report `cancelled`, not an artificial provider failure.
+- Keep Crew's own member/schedule queues, existing ACP integrations, Tiga routing and disabled Dyna unchanged. Do not treat this as full Crew background-task parity or durable exactly-once execution.
+- Verification: `761 passed, 1 skipped, 52 subtests passed` in local automation; Windows Crew E2E pending. See `S2_04_CHILD_LIFECYCLE_REPORT.md`.
+
+## v0.2.3 — S2-03 Saved Agent tool scope & restore hardening (same version, new build)
+
+- Align with Crew 0.10 projected Saved Agent semantics: absent `tools` means **no tools**, not an unrestricted default tool surface; ordinary sessions without an Agent retain normal host-governed tool access.
+- Enforce Saved Agent's native-tool visibility again at actual execution, prior to approval or side effects. Reject model-invented/stale forbidden native calls with `refused` and audit evidence.
+- Treat a fresh `_meta.kiro` envelope on session restore as authoritative: do not revive a retired Saved Agent from BYO's saved record when Crew no longer projects it.
+- Add targeted regression coverage. Automatic Python suite: 756 passed / 1 skipped / 52 subtests; Windows Crew end-to-end comparison remains pending. See `S2_03_TOOL_SCOPE_REPORT.md`.
+
+## v0.2.3 — S2 native Saved Agent / Skills / MCP parity guards (same version, new build)
+
+- Fail closed when KiroCrew requests a saved Agent not present in its current trusted projection, or supplies multiple Agents without an active identity; do not silently pick another Agent.
+- Validate tool visibility/auto-approval projection types before starting session MCP commands. Keep intentionally empty Agent prompts valid while preserving their tool restrictions.
+- Match qualified MCP glob selectors and exclusions; prevent native read/write tags from accidentally granting similarly named third-party MCP tools. Expand native tool visibility/exclusion globs only over known native tools.
+- Surface a session-verified, currently allowed `kirocrew-core/skill_search` MCP tool directly alongside the previously implemented Crew browser; cached/unverified servers and third-party lookalikes never gain the privilege.
+- Preserve Crew ownership of schedules/agents, Tiga Mode/Type/model routing, disabled Dyna, Steering, tool governance, language and existing UI. Windows end-to-end/native Saved Agent feature-completeness remain unverified. See `S2_NATIVE_PARITY_REPORT.md`.
+
+## v0.2.3 — S2-01 Tiga routing explainability (same version, new build)
+
+- Preserve Mode → Type → Model and Sky/Multi/Power/Glitter policy weights; no random model rotation and no router LLM.
+- Persist content-free per-turn routing diagnostics: selected Type, tier/capability candidate pools, scores, exclusions, selection source, selected model vs actually served model.
+- Fence restored sticky pins to this turn's executable in-tier/capability fallback pool rather than all diagnostic/review candidates.
+- Make completed-turn records explain why the Type selected a model; retain route evidence when the transient trace is gone. Add UI labels for all five locales.
+- Retain disabled Dyna and current KiroCrew integration; full Windows model-routing parity remains unverified. See `S2_01_TIGA_ROUTE_EXPLAIN_REPORT.md`.
+
+## v0.2.3 — S1-04 Tool execution & permission race guards (same version, new build)
+
+- Recheck Crew cancel/steering signals between approval and dispatch for native and MCP tools; reject after control changes instead of sending stale operations.
+- Revalidate the exact MCP `(server_name, tool_name)` identity, live-session verification and Saved Agent allowlist after Crew approval; invalidate replaced/revoked grants before effects.
+- Do not trust unverified MCP `readOnlyHint` or `idempotentHint` to classify an external call as replay-safe; preserve uncertain side-effect boundaries on failed/cancelled turns.
+- Surface potentially unknown outcome for failed dispatched MCP calls, and diagnose requests completed after steering/cancel without claiming remote side effects were rolled back.
+- Reject duplicate `call_id` within the same provider tool-call batch, not across separate turns; new focused tests and suite-order-independent session restoration test.
+- **Evidence limit:** still no hard cancel for every MCP transport, no cross-restart exactly-once, and no Windows KiroCrew end-to-end verification. See `S1_04_TOOL_EXECUTION_GUARD_REPORT.md`.
+
+## v0.2.3 — S1-02 Steering / Queue reliability (same version, new build)
+
+- Preserve Crew ownership of idle/follow-up queue while fencing late steering at the last provider response candidate; late messages return `queued: false` instead of being acknowledged and silently discarded at turn teardown.
+- Add session-scoped message-ID receipt tracking: duplicate steering requests no longer inject the same text twice; reuse of one ID with different text is rejected.
+- Correlate `steering_queued` and `steering_injected` with the same `messageId` in the Kiro session-info metadata, retaining the compatible `kind` and `content` fields.
+- Append injected corrections to the provider-facing conversation under the session lock; publish injection only after the transcript update. Emit `steering_cleared` for any accepted-but-uninjected message during terminal cleanup or cancellation.
+- Reject new steering after cancellation/closing begins; bound the in-process correction queue and the recent receipt ledger. Existing member/browser permissions, Crew-provided tools, Tiga routing and disabled Dyna are unchanged.
+- **Evidence boundary:** `steering_injected` means the message entered the next model-facing transcript, *not* proof that the model completed the requested work; on-disk session persistence remains best-effort. Windows Crew Steering/Queue E2E verification is still outstanding.
+
+## v0.2.3 — S0 基线固定与 S1-01 Crew 浏览器能力适配（同版本新构建）
+
+- 固定 Language Fix Source 为规范源码：用户提供的安装 ZIP 与源码 ZIP 内所有 108 个公共文件完全一致；本构建继续保留既有语言、Tiga 单屏、Dyna 禁用、Crew 0.10 兼容逻辑。
+- 对 Crew 核心 MCP 中**确实由宿主授予**的 `browser` 工具直接展示工具 Schema；不依赖模型事先执行 `tool_search` 才能发现内置浏览器。
+- 对明确的浏览器交互请求，冷会话最多等待 8 秒同步 MCP 目录；第三方同名工具不自动提升为 Crew 浏览器。
+- 严格遵守 Saved Agent 工具白名单与排除项；是否使用内置面板、是否建议 Playwright 回退、是否拒绝浏览由 Crew 原有浏览器工具决策，不新造第二套浏览器或绕过审批。
+- Build ID 与 Runtime SHA-256 写入 `BUILD_INFO.json`，仍保留 `0.2.3` 展示版本；增加独立回归测试与 Windows 对照验收手册。
+- **范围说明**：这是 S1-01 的静态与模拟环境修复，不表示 Crew 设置快照、Steering/Queue 状态机及 Windows 端到端验收已经完成。
+
+## v0.2.3 — 语言识别与回复一致性修复（版本号不变）
+
+- 修复简体中文误判为繁体中文：使用具有区分性的字形，剔除简繁通用字；中性短句继承最近用户的简繁习惯。
+- 自动语言识别遇到仅含技术缩写的短消息时，优先使用最近用户消息；没有有效历史时可回退到手动选择的界面语言。
+- 用户明确指定回答语言时，自动推理语言与最终回答语言保持一致；手动指定的推理语言仍独立有效。
+- 明确要求可见 Thinking/reasoning summary 和最终自然语言回复使用所选语言及简繁字形，避免跟随英文 API/工具描述漂移。
+- Detached review 的输出也继续继承同一语言策略，不翻译原始工具参数、代码、专有名词、引用文本。
+- 不更改 Tiga、Dyna、ACP、Crew 集成、Provider 或模型路由；保留版本号 v0.2.3。
+- 提示：这是对上游模型的语言约束，不能保证所有 Provider 都服从，也不会改变隐藏的内部推理内容。
+
+### 0.2.3 — Modes one-page layout restoration (2026-10-21; same version, UI only)
+
+- Restore the original Tiga Modes screen to a single viewport: all four Type cards and the two flexible detail panels fit the available content area without an extra bottom Dyna section.
+- Keep Dyna's built-in Flash / Strong / Miracle definitions and runtime activation guards untouched. Until the in-place preview selector is implemented, Dyna remains a disabled entry in the Mode dropdown rather than a second panel below Tiga.
+- Put Tiga first in the Mode dropdown. This changes presentation only; no Mode activation, routing, Crew integration, provider or ACP logic is modified.
+
+### 0.2.3 — Overview setup-card layout hotfix (2026-10-21; same version, UI only)
+
+- The Overview "Getting Started" panel now places all three steps in compact, content-height cards at the top of the panel, keeping each action immediately below its explanation instead of pinned to the viewport bottom.
+- Keep the system-status panel alongside the cards without full-height stretching. Layout responds to BYO's actual embedded width (three/two/one cards); translations can wrap without clipping.
+- Provider setup, integration checks, Agent Harness actions, APIs, policies and Dyna preview are unchanged.
+
+## 0.2.3 — Crew parity guards, safe harness switching, Dyna preview (2026-10-21)
+
+- Preserve explicit Crew member `backend_override` (including the empty-string official Kiro backend) when BYO is globally selected; upgrade existing BYO-owned 0.2.2 injection in place.
+- Reconcile 0.10 model routing per **actual live session Provider**, using the new configured default only for cold slots, preserving native and BYO sessions during harness switching; upgrade the earlier injected helper in place.
+- Report unavailable BYO model catalogues as HTTP 503 rather than silently returning an apparently healthy empty list, while preserving known concrete and ACP fallback entries.
+- Reserve Dyna with non-executable Flash / Strong / Miracle Type previews; prohibit activation through UI, persisted config, API/ACP router, or custom-pack ID override. Keep Tiga functional.
+- Make the BYO Modes page preview scrollable without displacing the existing Tiga execution details; unify App, Python, ACP and worker version labels.
+- Regression: 699 passed, 1 skipped, 47 subtests passed; real Windows KiroCrew end-to-end parity is not yet certified. See `RELEASE_NOTES_0.2.3.md`.
+
+### 0.2.2 — Overview responsive two-column layout hotfix (same SemVer)
+
+- Keep the Overview performance chart as the flexible **left** column (about 68–70% of the remaining Kiro BYO content width) and provider health as the **right** column; both cards stretch to the same remaining viewport height after the heading, alert and stats cards.
+- Constrain only the provider list's body to an independent vertical scroll region, so additional providers do not stretch the page or the chart. Keep provider card header visible.
+- Measure the SVG chart's allocated space with a local `ResizeObserver` so it fills the actual available plot area rather than letterboxing a fixed 600×260 viewBox. Preserve the real hourly samples and gap semantics.
+- Use a container query on the embedded BYO content width to fall back to a stacked, page-scrollable layout when the KiroCrew host leaves insufficient room for two readable columns.
+- Add Chromium browser tests for 1555, 1440, 1300, 1200 and 1100px host viewports, including 25 simulated providers. All changes are UI-only; routing, telemetry, ACP and cancellation remain unchanged.
+
+### 0.2.2 — trend layout and cancellation diagnostics hotfix
+
+- Align hourly latency samples with the successful-turn average (exclude cancelled/failed durations, while retaining their request counts).
+- Remove forced full-height overview trend panel and match SVG dimensions to the available width. A lone hourly sample is shown as a point with an explicit explanation instead of a fabricated line.
+- Expose the already-recorded `cancel_source` in the request list and request detail. The `client_session_cancel` indicator means an ACP client issued `session/cancel`, **not** that the user manually clicked Stop.
+- Do not change Provider, ACP cancellation behavior, request outcomes, or historical records. Five-locale resources are maintained.
+
+## 0.2.2 — Overview, retained task features and Sky response tuning (same version)
+
+- Replace the misleading "当前执行" view (which inferred a live process from a persisted Durable Run) with a 24-hour request trend and measured runtime performance breakdown. Only completed/error telemetry contributes; empty hours stay empty, and the Records page retains individual request details.
+- Store content-free route feature vectors inside the same bounded TurnTelemetry entries as completed calls. Each feature vector is trimmed and cleared with its request. The Modes panel no longer searches an unrelated 200-event RuntimeTrace tail for the last task feature.
+- Make the request-history clear action clear both TurnTelemetry and RuntimeTrace (including trace-derived failure evidence) rather than leaving stale adaptive evidence or orphan feature displays; this does not delete KiroCrew sessions or durable recovery state.
+- Retune Sky's built-in route scoring toward speed/economy over quality, while retaining capability gates, fast-tier routing and rare exceptional-risk review. This changes model preference, not upstream network/runtime guarantees.
+- Show per-Type measured median completion time, plus aggregate upstream/tool timings on the overview, to distinguish provider latency from tool-bound scheduled jobs. KiroCrew-owned schedule execution logic remains unchanged.
+
+## 0.2.2 — Mode-level sidebar card + responsive navigation fix (same version)
+
+- Correct the sidebar status card to describe the active **Mode Pack** instead of the active Type: dynamically use the active pack's public name and description (Tiga now; future Dyna packs need no UI changes). Do not show Type names, worker limits or Type-specific review policy in the compact card.
+- Keep mode-neutral integration, provider/model and native-tool counts, and link to mode settings. Update Tiga's public mode description to be mode-level and Type-free, without changing execution policy.
+- Separate the scrollable navigation region from the docked mode summary card to prevent the card from colliding with the last navigation buttons on shorter windows; preserve the compact horizontal navigation at narrow widths.
+
+## 0.2.2 — Management UI polish + failure-state color pass (same version)
+
+- Replace geometric Unicode navigation placeholders with consistent semantic outlined SVG icons in the Kiro BYO App sidebar; no new icon library or runtime dependency.
+- Widen the desktop management rail and enlarge the bottom-left Mode card using the selected policy's real public catalog metadata: new-session default Type, short explanation, delegation/parallelism/review policy, integration/tool status, and navigation to the detailed Mode page. Sidebar remains scrollable on short windows; selected navigation is marked by a short rounded accent inside the active row, with matching icon tint and visible keyboard focus.
+- Apply danger-red consistently to failure/error counts and labels in overview, sidebar, records, four-Type usage, account queries, task status and legacy local diagnostics; keep cancelled/interrupted/retry/missing-credentials in the warning category. All changes are presentation-only; schedule-task Type guard and model routing are unchanged.
+
+## 0.2.2 — Scheduled-task model picker hotfix (A only; same version)
+
+- Exclude scheduled-task editor dialogs from chat-only Type presentation, including dialogs opened above a chat route and model popovers rendered through a portal. Hide the whole Type option row, make non-chat Type options inert, and restore the normal chat picker on dialog close.
+- Preserve KiroCrew's one stable shared catalogue, native Auto/concrete models, SPA navigation, and Type selections in real chat pickers. No changes to routing, telemetry, or the four-Type task-feature panel in this hotfix.
+
+## 0.2.2 — ACP lifecycle and stdout safety (same version, new build)
+
+- Reject concurrent session replacement or restore while a turn owns the runtime; protect reused session IDs with lifecycle reservations.
+- Retire sessions atomically, and defer MCP/native close until the outgoing turn has quiesced rather than force-closing after a timeout.
+- Make outbound stdout failures terminal and cap queued frames at 2048; preserve nonblocking enqueue under turn/state locks.
+- Add event-controlled concurrency regressions and `LOCK_AND_SESSION_OWNERSHIP.md`.
+
+## 0.2.2
+
+- **Interactive Type advertisement hotfix (same version):** Kiro BYO now advertises the active Mode's namespaced Type selections in each interactive ACP session, with the session's real Type wire id as `models.currentModelId` and as the model config `currentValue`. This makes `Tiga — Sky/Multi/Power/Glitter` pass KiroCrew's per-session model allowlist before `session/set_model` is forwarded. The shared/global catalogue and the `kirocrew-lite` background worker remain `auto + concrete models` only, so Type routing ids do not leak into background/system-task model surfaces. Config updates preserve the same truthful session-scoped catalogue after every Type/concrete switch.
+
+- **Provider-boundary refactor (same version):** remove remaining vendor-id control flow from `config.py`, `provider_admin.py`, `account_status.py` and `provider_products.py`. Historical official endpoint migrations, commercial product/profile differences, credential-family hints/rejections and account-query strategy selection are now catalogue/capability data. The generic layers ask for verified endpoint/product capabilities instead of branching on Gemini/MiniMax/Xiaomi/DeepSeek/Moonshot names.
+- **Responses transport capabilities (same version):** replace provider-brand conditionals inside `providers/responses_api.py` with immutable `ResponsesCapabilities` descriptors. Stateful continuation, retryable response-id expiry, cache headers, store/cache policy, reasoning wire style and sampling-field stripping are now transport capabilities; `registry.py` derives every shared Responses adapter from that capability registry.
+- **Mistral shared Chat/SSE engine (same version):** reduce `mistral_chat.py` from 402 to 223 lines by injecting a `ChatContentCodec` into `chat_completions_common.run_native_chat_completion`. Mistral keeps its native ThinkChunk/TextChunk merge/replay semantics while request opening, SSE parsing, usage accounting, tool-call deltas, interruption and provider-context serialization are owned by the shared engine. Boundary tests now prevent these three abstractions from regressing back into vendor branches or duplicated streaming loops.
+
+- **Turn-loop structural refactor (same version):** split the historical ~995-line `_run_provider_tool_loop` into a 273-line orchestration method plus focused routing/round/tool/telemetry/post-stage helpers. A `_ProviderLoopState` dataclass now owns cross-round mutable state, while all ten historical `continue` edges remain explicit in the main loop with the original four `step -= 1` rewinds preserved exactly. The existing fail-closed durable checkpoint, cancellation partial-text recovery, worker hand-back, retry/fallback and ExecutionGuard semantics are unchanged and regression-tested.
+- **Declarative provider catalogue (same version):** move provider presets, transport labels, routing scores and verified model capability profiles out of `provider_catalog.py` into versioned `src/kiro_byo/catalog/provider_catalog.v1.json`. The Python module now performs load/validation/query/merge only; declarative model match rules support exact/family matching so adding a profiled model no longer requires editing Python branches. Every routing score row carries a source/note field and malformed bundled data fails at load with a precise schema path.
+- **Provider catalogue layering cleanup:** `ProviderPreset.public_dict()` now serializes preset-owned fields only; Platform/Product/Profile enrichment moved to the `public_presets()` API assembly layer, preserving the public payload while removing the data-class -> product-catalog dependency inversion.
+- **Latest-tree test/release alignment:** update stale tests from the renamed provider-neutral `tool_specs()` API, follow the moved `task_profile_for_signals()` ownership in `mode_router.py`, preserve the new recovery-busy `-32002` contract, and fix one stale `_official_endpoint_for_preset` reference in the current source tree.
+
+- **Shared-catalogue / SPA hotfix (same version, supersedes the earlier boundary-reload workaround):** Kiro BYO now returns one stable `Types + concrete models` catalogue for KiroCrew 0.10 instead of changing `/api/models` by page. The dashboard no longer wraps `window.fetch`, never calls `window.location.reload()`, and keeps every KiroCrew rail/page transition SPA-native. Non-Chat surfaces hide BYO Type sentinels only at presentation time.
+- **Existing-chat Jev migration (same version):** when the configured harness changes to Kiro BYO, stale native `Auto (Jev)` slot state (`model=auto`, `jev_route=true`) is reconciled in place to the active Mode default Type (for Tiga, normally Multi) and broadcast to the current composer. The user no longer needs to close/reopen a conversation. Explicit concrete-model pins are preserved. The reverse transition clears BYO-private Type sentinels before another harness sees them.
+- **Insider.4 contract lock (same version):** retain the cross-platform `index.html`/`data-model-id` presentation seam and the composed-owner backend adapter, now explicitly audited against KiroCrew `v0.10.0-insider.4` commit `e9bfada`. Windows, macOS and Linux use the same semantic adapter; no Vite hash, minified helper shape, drive letter or OS install path is part of compatibility detection.
+- **Regression coverage (same version):** add a navigation test proving BYO preserves the original `fetch` function and performs zero full-page reloads across Chat/Settings/Agents transitions, plus executable slot-routing tests for Jev→Type migration, concrete-pin preservation, reverse Type cleanup and reconciliation idempotence.
+
+- **KiroCrew 0.10 dashboard compatibility hotfix (same version):** remove the compiled `withJevRoute` / Auto(Jev) bundle patch entirely. Real Insider builds may inline, split, lower or rename that helper differently across Vite/Rollup outputs, so a minified callable is no longer treated as an integration contract.
+- **Surface-pure shared catalogue (same version):** interactive Chat pages explicitly tag `/api/models` and receive the active Mode Types plus concrete models; non-Chat pages receive concrete models only. Crossing the Chat/non-Chat SPA boundary performs one controlled reload so KiroCrew's shared React-Query `availableModels` cache is rebuilt for the destination surface. Chat-to-Chat and non-Chat-to-non-Chat navigation stays SPA-native.
+- **Cross-platform dashboard integration (same version):** dashboard installation now modifies only the BYO-owned block in `static/dist/index.html` after proving the authored `data-model-id` DOM contract. No `App-*.js`, content hash, minified identifier, Windows path, macOS bundle path or Linux package path participates in compatibility detection.
+- **Fail-closed contract retained:** a missing `static/dist`, missing `index.html`, malformed shell insertion point or disappearance of the authored `data-model-id` picker contract still aborts before commit. Unknown compiled helper shapes no longer matter because no compiled helper is patched.
+- **Regression coverage:** add 0.10-style fixtures with intentionally unrecognizable/split helper shapes, arbitrary chunk names, idempotent HTML-only installation, Chat model tagging, and a boundary-reload simulation proving no reload occurs for Chat-to-Chat navigation.
+
+- **Background-system-task integration + observability cleanup (same version):** the BYO Tasks page now exposes KiroCrew's host-owned `agent.role_models.background` as a dedicated “后台系统任务” model control instead of pretending title/status-card/summary work is a scheduled cron. `kirocrew-lite` background `auto` is materialized to one concrete BYO model through the current Mode/Type policy rather than entering interactive Type orchestration, and the dashboard auto-title path now honors the same background-role pin when Kiro BYO is the active harness. The system overview renames “当前任务” to “当前执行” and shows the active Type plus a separate Run id.
+- **Host-compatibility surface simplification (same version):** keep only the actually managed KiroCrew row in the Settings host-compatibility card. Generic ACP conformance remains in the separate protocol-check card and unverified third-party host rows are no longer presented as product integrations.
+- **KiroCrew Insider.4 source audit (same version):** re-audit the semantic adapter against the user-supplied `0.10.0-insider.4` source tree, including the moved/composed chat seams and the new background-title seam; the adapter verifier compiles every transformed owner and passes the Crew-authoritative registry/capability contract before `verified_through` is advanced.
+- **KiroCrew 0.10 shared-catalogue/Chat-overlay correction (same version):** align the BYO Type projection with Insider.4's actual frontend source contract. KiroCrew deliberately uses one `['available-models', provider.id]` React-Query value for Chat, Settings, Agents and other model surfaces, so BYO Type sentinels are now captured from a Chat-tagged `/api/models` response and removed before that shared query resolves. The compiled Chat-only `withJevRoute` seam receives the active Mode Types as a local overlay instead. Settings therefore derives its native count/options from `auto + concrete provider models` (four configured MiMo models => five entries), while the conversation picker keeps the active Mode's Types and concrete models with native Auto/Jev suppressed. This is Mode-pack-driven rather than Tiga-count-driven, so future Dyna Types use the same boundary.
+- **Chat/Settings surface-boundary hotfix (same version):** stop treating every route containing a `chat` segment as the interactive conversation surface. KiroCrew Settings -> Chat is now explicitly excluded, so only the real conversation route receives `kiro_byo_surface=chat`; global Default/Selectable model settings keep `auto` plus concrete provider models and never receive Tiga Type sentinels. A fail-closed stale-cache guard also hides any cached Type row that survives SPA navigation into Settings.
+- **Picker visual-stability hotfix (same version):** scope the dashboard MutationObserver to actual Type-picker mutations instead of redecorating the whole picker after unrelated transcript/context/capability DOM updates. Decoration writes are idempotent and frame-batched, and Type pickers reserve stable scrollbar space, reducing visible refresh/jump when KiroCrew refreshes per-selection context or capability UI. No context-window value or model capability is fabricated.
+- **Integration fixed-point repair (same version):** make generated KiroCrew seams converge to an inspector-proven `patched` state before commit instead of assuming every owned `upgradeable` seam finishes in exactly one rewrite. The transaction now performs a second semantic commit audit after byte verification, preventing `install_from_app()` from returning success while the immediate App verification still reports `upgradeable`.
+- **Dashboard guard fixed-point repair (same version):** stabilize the Type/model safety guard in memory before writing `static/dist/index.html`, then re-audit the committed dashboard shell before installing the runtime. Integration status now reports a missing-or-stale guard accurately instead of describing every mismatch as simply uninstalled.
+- **Type/model boundary cleanup (same version):** keep KiroCrew model-only surfaces real-model-only while restoring Tiga Types to the interactive `/chat` picker through a chat-scoped integration projection. Default/Background/Subagent/Fallback/App model pickers no longer treat Sky/Multi/Power/Glitter as real models, and a non-chat UI guard prevents short-lived shared-cache carry-over after SPA navigation. The Type wire ids remain a KiroCrew chat transport shim only; product semantics stay `Mode != Type != Model`.
+- **Mode/Type UI semantics:** system overview and the sidebar current-configuration card now report the global Mode as `Tiga` only. Sky/Multi/Power/Glitter cards on the Modes page are view-only: clicking a card changes only the inspected Type, survives the periodic status refresh, and never writes the global configuration. A new chat still defaults to the Mode pack's default Type (Multi for Tiga), while a chat can select another Type independently.
+- **Scheduled-task model/context routing:** add a BYO Tasks page between Accounts and Records that reads KiroCrew's existing schedules and lets each job leave its model unpinned (`Auto`) or pin one real provider model. The page also exposes KiroCrew's existing persistent-session/minimal-context execution flags so long-running jobs can choose fresh/minimal context instead of indefinitely replaying history. Scheduling remains KiroCrew-owned; its native model-unavailable fallback semantics are preserved rather than silently reimplemented.
+- **Routing diagnostics and thinking hard locks:** request records now expose start/end timing, session, selection source/request and thinking preference/effective mode, and failed requests surface the provider failure reason directly in the detail drawer. Provider metadata refresh preserves explicit Thinking On/Off/Auto, and the generic OpenAI-compatible transport either maps an explicit Off safely or fails closed instead of silently ignoring the user lock.
+- **UI / Tiga refinement (same version):** make failed-mode usage counts use the danger/red state, stack ACP protocol and host compatibility cards vertically, render Glitter's real heterogeneous strong-lead/fast-worker scope as `mixed`, and replace the awkward “未物理测试” label with “未实机验证” without claiming certification.
+- **Type-specific parallel budgets:** keep Sky/Multi at 1/2 while raising Power/Glitter to 3/4 maximum read-only workers respectively. These are ceilings only; the planner still keeps narrow or write-heavy work single-worker/single-writer as appropriate.
+- **KiroCrew 0.10 compatibility:** add a separately source-audited `v0.10-adaptive` adapter for `0.10.0-insider.4`. The ACP/runtime/backend registry seams remain semantically compatible; the dashboard effort bridge now patches the moved `dashboard/chat_api/slot_effort.py` owner and imports its BYO helpers into `dashboard/chat_handlers.py`, matching KiroCrew 0.10's `chat_api.compose` namespace contract.
+- **Fail-closed 0.10 composition contract:** verify the composed-owner rebinding seam and the unmodified overlay dependencies before any write. Unknown owner/composition shapes are refused instead of guessed.
+- **Regression coverage:** add a 0.10 dry-run verifier, adapter unit tests, and installation/rollback validation while retaining the existing 0.9 adapter unchanged.
+
+## 0.2.0
+
+- **Productized one-screen management UI:** replace the older vertically stacked/debug-oriented surface with the compact Overview / Providers / Models / Modes / Accounts / Records / Settings information architecture. The removed Tasks and standalone Integration pages are not product surfaces in the final 0.2.0 UI.
+- **Truthful Modes observability:** Type cards and detail panels read execution semantics from the Policy Pack/runtime projection instead of duplicating policy tables in JavaScript. Recent task-shape values come from real `model.route.selected` signals; missing evidence renders as unknown rather than attractive fixed percentages. The right-hand panel shows the selected Type's real model usage over the latest 60 hours.
+- **Records instead of a debug-console-first Diagnostics page:** request outcomes, token/cache usage, routing evidence and durable recovery are presented as user-readable records. Raw Runtime Trace JSON remains available only as drill-down evidence. Internal Agent/Worker/Reviewer terminology is not exposed as a top-level product concept.
+- **Provider/model/account surfaces:** Providers use shared native transports where wire formats match; Models are grouped by Provider with verified/declared capabilities; Accounts only reports official account/quota facts that the configured credential can actually query and leaves unknown facts unknown.
+- **Settings consolidation:** KiroCrew integration and ACP conformance move under Settings. The standalone Integration navigation entry, external-ACP-Agent management UI and workspace diff/apply management UI are removed; their underlying runtime/control-plane code remains isolated from the normal product surface where still required by ACP execution contracts.
+- **Management/backend contract hardening:** remove unused workspace/external-agent management HTTP routes, trim the bounded records projection to data actually consumed by the UI, reject editor/patch backup artifacts at build/release time, and add release checks for undefined UI pages and UI/backend route drift.
+- **0.1.7 runtime retained:** deterministic adaptive routing, Policy Pack schema v4 orchestration, bounded internal execution, durable Run recovery, canonical session events and provider-neutral ACP semantics continue underneath 0.2.0. The UI productization does not create a second execution engine.
+- **Version bump:** App/package/ACP surfaces move from `0.1.7` to `0.2.0`.
+
+## 0.1.7
+
+- **Agent Fabric completion batch:** add a bounded `AgentTeam` coordination layer over the existing Agent Runtime with a stable Leader/member roster, shared task board, limited team messaging, dynamic spawn/recycle, and explicit `max_agents` / `max_parallel` / `max_depth` limits. Dynamic workers and specialists remain read-only by default; nested spawn is bounded rather than swarm-like. Internal/package/App/ACP version remains `0.1.7`.
+- **Agent Fabric completion batch:** add isolated multi-writer candidates through fail-closed Git worktrees. Writer AgentTasks receive a private NativeToolRuntime rooted in the worktree; candidates can be inspected, checked and compared independently, and one explicitly selected diff can be applied only to a clean parent checkout after `git apply --check`. There is no automatic conflict resolution, implicit merge or commit.
+- **Agent Fabric completion batch:** add external ACP Agent workers behind the same `AgentTask` / `AgentResult` contract as raw-model children. A local `config/acp_agents.json` catalog can launch a configured stdio ACP Agent, initialize it, create a child session, stream its visible agent message and project the result back to the Leader. External ACP workers are read-only at the current trust boundary and permission requests fail closed by default.
+- **Agent Fabric completion batch:** separate generic ACP-v1 host semantics from KiroCrew `_meta.kiro` model/effort/thinking hints with explicit host adapters. Add a protocol-level conformance report and `scripts/acp_conformance.py` process smoke harness with generic/KiroCrew/Zed/JetBrains/Qwen Code profile labels. These named profiles describe protocol expectations and do not claim physical certification against every proprietary client/version.
+- **Agent Fabric completion batch:** extend Diagnostics/Agent projection with backend, workspace and Fabric/conformance metadata; exclude `data/agent_workspaces` from all archives; close isolated writer NativeToolRuntime instances on every terminal child path; preserve generation `0` for a dynamically spawned AgentTask's first execution and increment only on later continuation/resume.
+
+- **Retry / Resume / Replan + durable-recovery batch:** add a single provider-neutral `RecoveryPolicy` used by live turns, Subagents and persisted Runs. Clean retryable provider failures may perform one bounded same-model retry before fallback/replan; non-retryable provider failures become `replan_required` rather than being mislabeled as transport-retryable. Internal/package/App/ACP version remains `0.1.7`.
+- **Retry / Resume / Replan + durable-recovery batch:** turn the durable ledger into an executable recovery boundary. `_kiro/run/retry`, `_kiro/run/resume` and `_kiro/run/replan` reconstruct the original prompt from its persisted `user/message` event, rewind to the recorded transcript boundary only after winning the session turn lock, close orphaned attempts/steps as `interrupted`, and continue under the same stable Run id with explicit recovery counters/events.
+- **Retry / Resume / Replan + durable-recovery batch:** make Type replan semantically real by clearing only the stale Tiga route pin before fresh routing, while concrete-model selections remain pinned and can only retry/resume. Recovery requests are revalidated again inside the acquired turn boundary so a concurrent ordinary prompt cannot be rewound by an out-of-band recovery request.
+- **Retry / Resume / Replan + durable-recovery batch:** checkpoint mutating tool admission before execution. A restart that crosses that boundary is classified `unknown_side_effect` and recovery fails closed instead of replaying an uncertain write. Clean/read-only interrupted Runs surface safe recovery methods through ACP session metadata and Diagnostics.
+- **Retry / Resume / Replan + durable-recovery batch:** add one bounded transient-provider retry to isolated read-only Subagents and regression coverage for clean cross-process resume, transcript rewind, Type replan, turn-lock races, side-effect rejection and host-visible recovery metadata. Background scheduling remains owned by KiroCrew.
+
+- **Agent observability / durable-run batch:** project Subagent lifecycle state into a bounded cross-process metadata snapshot so the Kiro BYO management UI can show real `task_id`, role, provider/model, continuation generation and which ACP-native controls (`send` / `cancel` / `resume`) are valid without duplicating child transcripts or queued message text. The authoritative control path remains the live ACP session boundary.
+- **Agent observability / durable-run batch:** add a provider-neutral durable execution ledger with explicit `Run → Step → Attempt → Checkpoint` identities. Every real prompt turn now creates a durable Run, checkpoints the ready boundary, completed subagent groups and tool batches, then closes the attempt/step/run with a recovery state. Checkpoints reference the canonical session event log instead of copying conversation content.
+- **Agent observability / durable-run batch:** mark interrupted non-terminal Runs as `pending_restart` on session reload and mark stale in-process child projections as paused rather than pretending their isolated transcript survived a process restart. Automatic cross-process replay remains intentionally disabled until side-effect-safe resume/replan semantics are implemented.
+- **Agent observability / durable-run batch:** expose recent Agent Runtime and Durable Run state in Diagnostics plus ACP `_kiro/run/list` / `_kiro/run/get` inspection endpoints. Runtime state directories are excluded from both release/source archives. Internal/package/App/ACP version remains `0.1.7`.
+
+- **Subagent Runtime / parallel-continuation batch:** promote planned workers into real child tasks with stable `task_id`, plan-local names, isolated transcript snapshots, per-child sticky concrete model pins, read-only tool contracts, cancellation tokens, mailbox continuation, structured `AgentResult` hand-back and bounded in-memory lifecycle state. Child transcripts are not merged wholesale into the parent; only explicit findings are handed back to the Leader. Internal/package/App/ACP version remains `0.1.7`.
+- **Subagent Runtime / parallel-continuation batch:** allow broad, parallelisable, low-write work to plan up to two read-only workers under the existing single-writer authority rule. Multi uses fast children when its adaptive delegation gate admits them; Power uses strong children; Glitter uses fast children. Distinct eligible models are preferred for sibling workers, with safe same-model reuse when the configured pool has only one teammate.
+- **Subagent Runtime / parallel-continuation batch:** execute admitted child model calls concurrently through a bounded `AgentRuntime` while serialising shared NativeToolRuntime execution to avoid sandbox/audit races. Child tools remain fail-closed: only BYO-owned native gathering capabilities are admitted in this batch; mutating tools and third-party/MCP tools remain outside the child boundary. Parent cancellation interrupts children and session close tears down the child executor.
+- **Subagent Runtime / parallel-continuation batch:** add in-process continuation controls (`_kiro/agent/list`, `_kiro/agent/send`, `_kiro/agent/cancel`, `_kiro/agent/resume`). A completed child can be continued by the same `task_id` with its retained isolated context and pinned model; messages sent to a running child are consumed at the next model boundary. Process-restart durability is intentionally deferred to the later Run/Checkpoint layer.
+- **Subagent Runtime / parallel-continuation batch:** account child token/provider-round usage in the parent turn, emit Agent Runtime Inspector/session lifecycle events, and add concurrency, isolation, stable-identity, continuation, multi-worker planning and hand-back regression coverage.
+
+- **Unified Agent Runtime / four-Type orchestration batch:** add provider-neutral `TaskProfile`, `ExecutionPlan`, `AgentSpec`, `AgentTask`, `AgentResult` and a bounded in-memory `AgentRegistry`. The Turn Engine now consumes a generic execution graph and records role lifecycle events instead of treating Glitter collaboration as a Type-specific execution branch. Internal/package/App/ACP version remains `0.1.7`.
+- **Unified Agent Runtime / four-Type orchestration batch:** promote the built-in Tiga Policy Pack to schema v4 with data-driven orchestration objectives, worker pools/budgets and bounded single-writer constraints while retaining schema-v1/v2/v3 compatibility. Sky stays latency-first/single by default; Multi can admit a fast read-only worker for broad low-write gathering; Power can admit a strong read-only worker plus strong verification; Glitter maps to the same generic strong Leader + fast read-only Worker + strong Reviewer runtime.
+- **Unified Agent Runtime / four-Type orchestration batch:** replace scalar-only orchestration decisions with a deterministic multi-dimensional task shape (`breadth`, `parallelizability`, `risk`, `tool_intensity`, `write_intensity`, `context_demand`, `verification_value`, `latency_sensitivity`) while keeping existing model-capability gates and adaptive model scoring intact. Broad read-only work can be delegated; mutation-heavy work stays with the single writer.
+- **Unified Agent Runtime / four-Type orchestration batch:** add Selection Truth to session state/persistence and Runtime Inspector events. Every selection records `type` vs `concrete`, source/requested id, and whether Tiga routing is actually applied; explicit concrete-model pins remain supported but can no longer masquerade as an active Type in diagnostics.
+- **Unified Agent Runtime / four-Type orchestration batch:** add regression/release-contract coverage for Agent lifecycle identity/bounds, four-Type execution graphs, fast-vs-strong worker pools, write-heavy delegation suppression, Selection Truth persistence/switching, and the invariant that generic execution planning contains no Type-name branches. Parallel/background child execution remains intentionally out of scope for this batch.
+
+- **Recovery / hardening batch:** normalize premature HTTP/SSE EOF, `IncompleteRead`, socket/timeout and connection-open failures into provider-neutral transport errors instead of leaking raw exceptions to ACP `-32603`. A pristine transport failure receives one bounded same-model retry before the existing Type fallback policy is considered.
+- **Recovery / hardening batch:** make every failed provider/tool turn return the session to a reusable state. Read-only/pristine turns roll back transactionally; turns that admitted potentially mutating tools preserve their transcript and add a recovery boundary so the next model verifies unknown external side effects instead of blindly replaying writes. Unexpected harness exceptions use the same recovery boundary rather than poisoning the conversation.
+- **Recovery / hardening batch:** classify native/MCP tool side effects conservatively (`pure`, `read`, idempotent/non-idempotent/unknown write), add explicit failed/cancelled/rollback/runtime events, and record the source plus elapsed time of incoming `session/cancel` notifications for investigation of the observed ~45-second cancellation cluster.
+- **Recovery / hardening batch:** extend metadata-only diagnostics with error categories, transport retry/fallback counters and per Provider/model health summaries. Transport errors now count as diagnostic failures instead of disappearing behind the ACP catch-all.
+- **Recovery / hardening batch:** strengthen the existing Reasoning Language generation hint so user-visible reasoning begins in the resolved conversational language and does not default to English merely because technical material is English. This remains a provider-side presentation hint: no reasoning translation or hidden chain-of-thought request is introduced.
+- **Recovery / hardening batch:** add regression coverage for truncated streaming/non-streaming bodies, clean retry, partial-stream rollback, post-mutation recovery, continued use of the same session after an unexpected runtime exception, cancellation-source tracing, provider-health aggregation and the stronger visible-reasoning language contract. Internal/package/App/ACP version remains `0.1.7`.
+
+- **Hotfix 2:** close the remaining Type-effort presentation race in KiroCrew's model picker. Crew keys `selection-capabilities` by slot rather than the selected model, so after switching from an effort-capable concrete model to a Tiga Type the previous `effort_supported=true` answer can remain rendered while the invalidated query refetches. The BYO-owned dashboard guard now uses the picker's authoritative selected `kiro-byo-type:*` row to hide only the embedded effort block during that stale-capability window.
+- **Hotfix 2:** preserve KiroCrew's native concrete-model effort UI unchanged. The browser guard performs no provider/model capability fetch or name heuristic; selecting any concrete model removes the Type annotation and Crew continues to render its native `更快 ↔ 更聪明` control from live capabilities. Cold/live backend Type suppression and the REST `effort_managed_by_type` boundary remain the protocol/state authorities.
+
+- **Hotfix 1:** harden the KiroCrew 0.9 dashboard integration against same-version Insider source reshaping. The `chat_handlers.py` transformer now locates cold/live capability and reasoning-effort seams by AST semantics rather than exact local names/one-line source strings, so harmless `_live`/`backend` renames, wrapping and formatter changes no longer make `0.9.0-insider.7` appear incompatible.
+- **Hotfix 1:** keep the integration fail-closed at the semantic boundary. If Crew removes or materially restructures the effort commit contract, installation still refuses the patch instead of guessing an insertion point; already-owned older BYO dashboard seams remain upgradeable in place.
+
+- Promote the built-in Tiga pack to **Policy Pack schema v3** so Type character is not hidden in Router Core magic numbers. Complexity-response shares, runtime-evidence shaping/blend, fit biases, capability-fallback scoring, verifier/reviewer scoring, Glitter worker routing and same-provider affinity are now data-driven policy facts; schema-v1/v2 custom packs keep compatibility defaults.
+- Keep the hard-coded part intentionally small and correctness-oriented: image/tool/context eligibility, explicit user Thinking locks, concrete model capability truth and fail-closed tier semantics remain core invariants. Model preference/tuning remains policy/runtime data.
+- Add **Tiga Adaptive Routing v1** without a Router Model. Sky/Multi/Power/Glitter remain deterministic, inspectable Policy-Pack strategies; hard capability gates still run before scoring.
+- Blend real recent runtime evidence into model ranking. Recent TTFT/total latency dynamically adjusts effective Speed, while bounded global and same-task success history contributes a separate Reliability signal. Recent observations decay more slowly than old ones and low-sample evidence is automatically shrunk toward static priors.
+- Keep epistemic boundaries explicit: Quality and Economy remain provider/curated catalogue priors until Kiro BYO has trustworthy provider-neutral measurements. Runtime success is not mislabeled as model intelligence and token volume is not mislabeled as cost.
+- Add deterministic coarse Task Profiles (`Code`, `Vision`, `Tool`, `Long Context`, `Research`, `Casual`) for task-local reliability evidence. No semantic Router LLM, random exploration or hidden model-selection call is introduced.
+- Extend metadata-only TurnTelemetry to schema v2 with Mode/Type, task profile, selected routing score and runtime confidence. Existing telemetry remains readable; older Type turns can still be identified from their namespaced selection id.
+- Add a bounded mtime-keyed adaptive snapshot cache so Glitter/relay subroutes reuse one telemetry snapshot instead of rereading the ledger for every worker invocation.
+- Add a read-only `/routing` App API and integrate Adaptive Routing directly into the existing **Modes** page. The UI shows four Type internals, learned-turn/model counts, Static Prior -> Runtime Evidence -> Effective model profiles, runtime latency/reliability statistics and recent route traces/candidates. It intentionally exposes no routing-weight controls.
+- Add regression/release-contract coverage for adaptive latency/reliability behavior, Task Profile classification, read-only routing observability and preservation of all existing Tiga Thinking/Effort/Glitter boundaries.
+
+## 0.1.6
+
+- Add a provider-neutral **Reasoning Language Policy** for user-visible Thinking/reasoning presentation. `Auto` follows the user's current conversational language using the current message plus recent user turns rather than the KiroCrew UI locale.
+- Preserve technical terminology in its natural/original form instead of mechanically translating ACP, LLM, Token, API/provider/model names, code identifiers, parameter names, paths, commands and mathematical notation.
+- Keep the policy explicitly separate from hidden/private chain-of-thought: it is a generation-time presentation hint for reasoning text/summaries the upstream model already exposes, with no post-hoc translation pass and no request for additional private reasoning.
+- Resolve the language once per turn and reuse it across the primary model, tool-loop continuation rounds, Tiga relay workers and detached verifier/reviewer stages. Mid-turn user steering re-resolves the policy for subsequent rounds.
+- Add `Settings -> 推理语言` to both the KiroCrew App UI and localhost management UI with Auto, Simplified Chinese, Traditional Chinese, English, Japanese and Korean manual choices. The persisted preference is provider-neutral and does not alter Thinking enable/disable, effort, routing or an explicit final-answer language request.
+- Add script/lexical Auto detection for Chinese (Simplified/Traditional), Japanese, Korean, English and several additional writing systems/languages; terse technical-only turns such as `ACP?` inherit recent user-language context instead of being mistaken for English.
+- Add release-contract and regression coverage for language switching, mixed Chinese/English technical prompts, management persistence, real ACP provider-message injection and the hidden-reasoning boundary.
+
+## 0.1.5
+
+- **Hotfix 1:** fix the remaining live-session Type effort leak in KiroCrew. Once a BYO ACP provider was prewarmed/live, Crew treated the backend as effort-capable and its generic "supported but no advertised levels" fallback synthesized a default effort slider even though the active Tiga Type intentionally published no session-wide `effortLevel`. The Crew semantic bridge now identifies an active BYO Type before that fallback and reports effort as known-but-not-user-selectable; concrete-model sessions still use their live ACP vocabulary unchanged.
+- **Hotfix 1:** reject KiroCrew REST reasoning-effort writes while a BYO Type is active, before Crew can persist a stale slot-level effort. This mirrors the existing BYO ACP protocol rejection and makes cold UI, live UI, REST state and Type routing agree. Existing 0.1.5 `chat_handlers.py` integration is recognized as an in-place upgrade rather than a foreign partial patch.
+- Tiga Types now own reasoning effort internally; the Crew effort slider is shown only for fixed concrete-model sessions.
+- Type routing no longer treats stale/manual effort as a candidate constraint, and upgrading clears legacy Type effort locks.
+- Per-invocation effort maps only to the selected model's advertised levels; models without effort remain eligible.
+- Deep-thinking capability boundaries remain independent: user On/Off is hard, Auto is Type-adaptive, fixed-on/unsupported/unknown states are never overridden.
+- Crew cold-session and live ACP capability surfaces now agree on hiding effort for Types while preserving concrete-model controls.
+
+# Kiro BYO Changelog
+
+## 0.2.3 · Stage 3 linkage candidate (2026-10-25)
+
+- Add a Crew-authoritative one-time ACP backend switch preview and apply workflow, with follow/keep/fixed member handling. Only `agent.acp_backend` and `agent.member_acp_backend` are written together under Crew config lock.
+- Detect incompatible Agent Cron / background / Subagent model pins without rewriting them; do not infer running session, TaskRunner, or Heartbeat backends.
+- Bind apply to a configuration + Cron model preview fingerprint; reject stale requests and local config overlays. Verify effective results after write, and perform compare-and-swap rollback on mismatch.
+- Keep the existing manual member sync, official member precedence, ACP Stage 2 error handling, and Auto/Jev dashboard hiding logic unchanged.
+- Add localized UI in five languages and cross-platform synthetic-host regression tests; real Windows/macOS/Linux Crew E2E remains unverified.
+
+
+## 0.2.3 · Backend Linkage Stage 1 Candidate (2026-10-25)
+
+- Extend Tasks with a read-only, provenance-conscious Crew backend linkage overview. Expose the main backend, shared member backend, Cron's per-task/session decision boundary, background/subagent configured-vs-resolved model, and runtime/workflow/heartbeat caveats.
+- Add an explicit, confirmed one-time member backend sync using Crew's own `agent.member_acp_backend`. Verify host registry membership, stale UI state and known local overrides; do not install an automatic override of Crew's selection logic.
+- Correct `role_models.background=auto` verification (raw model vs resolved model), protect BYO-only model pins when the host's selected backend is not BYO, and keep foreign existing model pins visible rather than silently switching them.
+- Hide AI model controls on Script/Command Cron jobs. Translate new UI in five existing locales.
+- Add dedicated linkage API tests and macOS to Linux/Windows CI process/linkage checks; no native platform E2E or insider.5 source-contract assertion is made.
+- Document limitations and next-stage conditions in `BACKEND_LINKAGE_STAGE1_REPORT.md`. This same-SemVer build remains a separate candidate, not a replacement for the original Fix 03 source.
+
+## 0.1.4
+
+- **Hotfix 5:** fix KiroCrew's cold-session reasoning-effort surface at the actual native endpoint. Before the first ACP provider exists, Crew normally reports selection capabilities as unknown and hides its own effort selector; the Kiro BYO semantic adapter now bridges that cold interval from the authoritative BYO model catalog, while live sessions continue to use ACP-advertised `configOptions`.
+- **Hotfix 5:** keep cold effort discovery provider/model/vocabulary neutral. Concrete selections expose only their exact `selectable_effort_levels`; Type selections expose the ordered union that can actually route under that Type with each level as a hard constraint. Future safe effort names are registered through Crew's native validation seam before the user can select them. Models with no adjustable effort remain explicitly known-without-effort, and unknown catalog selections fail closed.
+- **Hotfix 4:** make deep-thinking capability handling future-mode-safe and fully fact-driven. Provider-declared new `reasoning.mode` names are preserved instead of being collapsed to `unknown`; unfamiliar modes still fail closed unless explicit `supported` / `can_disable` facts prove a switch. A declared `toggle` mode itself proves switchability without fabricating effort levels.
+- **Hotfix 4:** fix the Models UI distinction between `fixed on` and `supported but switchability unknown`, and make native Cohere/Qianfan thinking bodies prefer each concrete model's advertised enable/disable wire literals over hard-coded values.
+- **Hotfix 3:** decouple Crew effort visibility from provider family and thinking-mode names. Any concrete model that explicitly advertises at least two effort levels can expose the native Crew selector, including adaptive-thinking Claude and future/custom 2/4/5-level vocabularies; unknown capability remains fail-closed.
+- **Hotfix 2:** stop shadowing KiroCrew's native reasoning-effort selector from injected dashboard JavaScript. The live ACP session `configOptions` are now the single authority: DeepSeek-class models that actually advertise low/high/max render Crew's native control, while binary-thinking-only models such as MiMo omit the effort option and therefore still render no fake strength selector.
+- **Hotfix 2:** remove the redundant per-card “思考力度 …（在 KiroCrew 对话右下角调整）” sentence from the Models page; the compact capability row remains sufficient.
+- **Hotfix 2:** make the Kiro BYO chat footer's elapsed time measure the whole visible turn from runner entry through completion, including pre-dispatch session/context/cold-start work, instead of resetting the clock just before provider streaming. Other KiroCrew backends keep their upstream timing semantics.
+- **Hotfix 1:** make KiroCrew reasoning-effort visibility fail closed per concrete model instead of inheriting a backend-wide capability. `/api/models` now carries private BYO capability metadata; the injected Crew dashboard guard leaves the native effort UI untouched only for dynamic Types or concrete models with at least two explicitly selectable effort levels. Binary-thinking-only models such as MiMo keep Auto / On / Off in BYO but no longer show a fake low/high/max-style strength control in Crew. Unknown/new models also hide the effort UI until live discovery, a verified official profile, or a local override proves selectable levels.
+- **Hotfix 1:** clear an explicit session effort lock when the user switches to a concrete model that cannot express that level, while preserving the same explicit effort when switching to a Type where it remains a valid routing constraint. This prevents stale `high/max` state from leaking across concrete-model capability boundaries.
+- **Hotfix 1:** clarify the BYO Models page so binary thinking switches read as “no effort levels (deep thinking on/off only)” instead of the ambiguous “no adjustable strength / undeclared”, and add regression coverage for DeepSeek -> MiMo switching plus the Crew dashboard capability guard.
+- Put **reasoning effort** on the KiroCrew session/config-option seam instead of the Kiro BYO management control: compatible models advertise `effortLevel` to Crew, so the official conversation-side effort UI can render low/high/max (or the provider's verified vocabulary). Kiro BYO continues to own only the per-model **deep-thinking Auto / On / Off** preference.
+- Fix official DeepSeek V4.1 Flash capability enrichment for saved/discovered aliases such as `deepseek-v4.1-flash` / `DeepSeek-V4.1-Flash`; the current official API exposes low/high/max reasoning effort with high as default. Official-endpoint enrichment may also fill verified facts from the official display name when the wire/catalogue id differs, while live provider facts still win.
+- Add end-to-end regression coverage for Type -> concrete model -> `config_option_update`: the update must contain `effortLevel`, must not contain the BYO deep-thinking toggle, and must preserve the provider's effort vocabulary/default. Strengthen the Crew 0.9 integration test for `ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`.
+- Clarify the Models UI: deep thinking remains configurable in Kiro BYO; reasoning effort is labelled separately and points users to KiroCrew's conversation-side control.
+- Keep the release/source dual-package workflow and exclude generated `*.egg-info` metadata from both archives.
+
+## 0.1.3
+
+- Hotfix a concrete-model prompt regression introduced during the 0.1.3 Turn Engine refactor: routed Type turns populate a `RouteDecision`, but concrete-model turns intentionally bypass routing. The request coordinator now initializes the optional routing decision explicitly so switching from a Tiga Type to a concrete model no longer raises `UnboundLocalError: decision`. Add an end-to-end regression that switches Type -> concrete model and starts a prompt.
+- Refactor the live Agent loop around explicit provider-neutral Turn phases (`PREPARE / ROUTE / INVOKE / STREAM / TOOL / CONTINUE / POST_STAGE / COMPLETE`) and freeze the pre-refactor behavior with characterization tests before moving code. Provider round execution, tool-batch execution and provider interruption/steering handling now have explicit boundaries instead of sharing one monolithic control path.
+- Promote typed session events to the durable backend truth. Schema-v3 session files derive transcript, sticky routing pins and provider continuation projections from events; schema-v1/v2 sessions remain loadable and migrate forward on save.
+- Split Policy Pack v2 into user-facing semantics and machine execution policy. The assistant/UI can still explain Tiga Types on demand, while the Turn Engine receives only a compiled product-neutral `ExecutionIntent`; Type selection remains user-owned in KiroCrew and no model/tool setter is introduced.
+- Add narrow `ModelRouter`, `ProviderInvoker`, `ToolExecutor`, `SessionProjection`, `PostStageRunner` and `ReasoningResolver` capability seams without introducing an everything-is-a-plugin framework. Add static dependency-direction regression tests so provider protocol modules, model intelligence and Turn Engine leaf contracts cannot silently grow upward/provider-brand dependencies.
+- Add field-level routing metadata provenance/confidence for quality, speed, economy and tier roles. Authority is explicit local override > live provider discovery > verified curated profile > historical cache > generic model-name inference. Historical cache is demoted below curated facts; low-confidence routing hints are damped and name inference remains a last-resort prior rather than catalogue truth.
+- Formalize dual-package release engineering. `scripts/build_release.py` builds a slim end-user `release.zip`, a complete audit/development `source.zip`, a wheel and `SHA256SUMS.txt`, while verifying that the runtime-bearing release/source file sets have identical content fingerprints and excluding mutable user state/caches/build artifacts.
+- Promote the audited Core Refinement tree to **0.1.3** without adding Dyna/Gaia/Cosmos, new Tiga Types, a second multi-agent scheduler or a general plugin runtime.
+
+## 0.1.2
+
+- Make backend session state event-sourced. Durable schema v2 persists one append-only typed event log and derives provider messages on load; rollback, review replacement, steering and compaction are represented as new events instead of rewriting the durable history. Schema-v1 sessions migrate in memory and upgrade on their next save. Runtime-owned transcript mutations now commit through the same event helpers, while a compatibility sync records direct legacy mutations explicitly rather than dropping them.
+- Keep the default harness path thin. Multi remains the default all-model Auto policy but automatic second-model verification is now reserved for exceptional complexity (`>=0.92`) or explicit `xhigh/max`; Sky's rare fast-pool verifier moves to `>=0.97` or explicit maximum reasoning. Ordinary Sky/Multi work therefore stays on the normal model -> tool -> model loop instead of being over-orchestrated. Power and Glitter retain their intentionally stronger verification semantics.
+- Split the detached verification/review phase out of the main provider/tool loop into an explicit post-stage seam. Sky, Multi and Power now share the same normal agent loop; Glitter still adds collaboration only through its declared relay policy. This reduces control-path coupling without weakening provider continuation, tool permissions, steering, execution guards or Tiga routing.
+- Add canonical session lifecycle events for session start/resume, turn start/end, model selection, tool calls/results and review stages. Runtime Trace records the nearest session event sequence for correlation while remaining a bounded diagnostic surface rather than session truth.
+- Promote the audited tree to 0.1.2 while preserving KiroCrew ownership boundaries, Provider/Product/Profile, dynamic model catalogues, many-to-many model routing roles, user-owned Type selection and per-model Thinking/Effort locks.
+
+## 0.1.1
+
+- Run an end-to-end simplification audit before promoting the 0.1 line. Ordinary inference turns now receive no Mode/Type product prompt at all; the authoritative installed Mode/Type catalogue is injected only when the user explicitly asks about Kiro BYO/Tiga forms. This reduces prompt pollution and keeps default Multi behavior closer to a transparent provider/model router instead of making unrelated agent work reason about product UI semantics.
+- Broaden current-turn tool-intent recognition for natural local inspection without returning to the old “tools are installed, therefore tools are required” bug. Requests such as checking a Windows drive, reviewing a project directory, locating cache/temp/log files, or equivalent Chinese/Japanese phrasing now gate to a tool-capable model when usable tools exist, while conceptual requests such as algorithm analysis remain tool-free.
+- Persist sticky Mode/Type route pins with provider-neutral session state. Glitter can therefore keep the same eligible Strong leader across ACP session reloads; restored pins are still revalidated against the current routed candidate set and never bypass capability gates.
+- Harden copied-runtime freshness for the branded 0.1.x line. A matching public version without the integration build fingerprint is now treated as stale instead of being accepted merely by version string, while historical pre-brand integration records retain their compatibility behavior.
+- Promote the audited tree to 0.1.1 without changing the Provider/Product/Profile, dynamic model catalogue, many-to-many routing-pool, permission, or KiroCrew ownership boundaries established in 0.1.0.
+
+## 0.1.0
+
+- Make Tiga routing roles many-to-many and dynamic-catalog aware: models may advertise multiple `routing.tiers` plus quality/speed/economy hints, live provider facts win over curated fallbacks, and saved discovery/cache metadata preserves those roles. This fixes strong models such as GPT-6.1 Sol being misclassified as generic `balanced` solely because their names lack `pro/max/opus`, while allowing dual-role endpoints such as MiMo Pro UltraSpeed to participate in both strong and fast pools.
+- Lock the product contract that a Tiga Type is a model-pool/execution strategy, not a fixed model assignment. Sky, Multi, Power and Glitter may each use multiple concrete models when their verification/collaboration policy calls for it, without changing Type.
+
+- Complete the final 0.1.0 edge audit without changing the version. Provider/model defaults are repaired transactionally when catalogue refresh or provider deletion removes the selected model; Mode changes no longer erase independent concrete-model defaults; official Product/Profile identity is reconciled from the selected official endpoint rather than trusting stale cached commercial metadata; and local management mutations are serialized and committed with unique fsynced temporary files so concurrent ThreadingHTTPServer requests cannot overwrite one another.
+- Harden background/runtime persistence. Metadata refresh now uses compare-before-replace semantics so a stale background discovery snapshot cannot clobber a newer explicit provider edit, while durable ACP sessions use collision-resistant hashed filenames, per-write unique temporaries and ordered in-process writes with backward-compatible reads/deletes of the legacy sanitized filename format.
+- Finish the data/code boundary for fast-moving provider products: Product metadata may declare credential prefixes for future plans/regions that reuse an installed adapter, but an override cannot mint a new executable wire protocol or smuggle a different adapter through a newly declared Platform. The Type-picker group caption is also derived from each Policy Pack's declared default Type instead of hard-coding Tiga/Multi in CSS.
+- Add `FINAL_AUDIT_0.1.0.md` and final regression coverage for stale defaults, concurrent management writes, background refresh races, Product/Profile reconciliation, future-plan credential routing, malicious adapter metadata, session-id filename collisions and dynamic Policy Pack captions. Final source-tree QA passes 448 tests + 42 subtests, branch coverage 70%, release metadata, compileall, JavaScript syntax, wheel build and fresh virtualenv install.
+- Rework model/catalogue handling around current domestic/international platform patterns without changing 0.1.0. Model identity is now distinct from the inference invocation target (model / endpoint / deployment / inference profile); rich paginated catalogues normalize modalities, function-calling, reasoning, context/output limits and lifecycle; live provider facts beat curated fallback facts, while explicit local overrides remain final authority. Catalogue resolution is live → saved cache → profile-declared bundled fallback → manual ids, and unknown capabilities remain unknown rather than false.
+- Make fast-moving products/models data-driven. `provider_products.override.json` can add plans/regions that reuse an installed protocol adapter, while `model_catalog.override.json` can describe a newly launched/private model without code. Xiaomi Token Plan now attempts live discovery before fallback, accepts future chat models without a generation allowlist, excludes obvious ASR/TTS-only products from the agent picker, and its current bundled agent fallback reflects the official V2.6 + retiring V2.5 text-agent set rather than assuming two models. Add `MODEL_CATALOG_ARCHITECTURE.md` plus regression tests for Model Studio-style pagination, plan overlays, invocation targets, catalogue cache/outages, lifecycle changes and stale-metadata precedence.
+- Separate provider protocol code from commercial connection identity. `provider_products.py` introduces Platform → Product → Profile metadata while existing `preset_id` remains a 0.1.0 compatibility alias. Configured instances persist/infer `platform_id`, `product_id`, `profile_id` and `entitlement`; Xiaomi pay-as-you-go and Token Plan (CN/SGP/AMS) share the same `xiaomi-mimo-chat` adapter, and MiniMax region endpoints are profiles rather than new adapters. The management API now exposes the structured catalogue alongside legacy presets.
+- Complete the follow-up provider-adapter audit: replace per-vendor registry forwarding classes with one `_ModuleAdapter`, and route ordinary JSON POST opening for OpenAI-compatible, Anthropic Messages, Mistral Chat and Cohere V2 through provider-neutral `http_sse.post_json`. Only Responses and Gemini retain protocol-local request opening because their continuation-expiry fallback needs the original HTTP status code.
+- Stabilize the KiroCrew Type/model picker headings so selection re-renders no longer remove and re-add margin-bearing markers, eliminating the visible scrollbar-thumb jump. The caption now states the actual default: “形态 · 默认复合型，可手动切换”.
+- Collapse the duplicated Zhipu/Moonshot/Qwen/Xiaomi native Chat Completions wire stacks onto two provider-neutral layers without changing 0.1.0. `http_sse.py` now owns stdlib HTTP/SSE interruption, error normalization and response mechanics, while `chat_completions_common.py` owns the shared OpenAI-shaped native message replay, usage, streamed reasoning and tool-call assembly. The four vendor adapters now contain only real request-policy differences (thinking/effort/sampling/tool quirks) and total 416 lines instead of 1,493; provider-specific interruption types are preserved rather than leaking `OpenAICompatibleInterrupted` across adapters.
+- Refine the four Tiga Types without changing 0.1.0: Sky keeps capability-only cross-tier fallback; Multi remains all-tier task-aware Auto; Power now fails closed when no capable strong-tier model exists instead of silently downgrading; Glitter requires a strong-tier leader/final reviewer and re-routes each gathering worker from the concrete subtask across eligible fast-tier models. Same-provider affinity is only a small preference, and per-model Thinking preferences participate as routing tie-breakers without overriding user locks.
+- Keep Type changes as a KiroCrew control-plane action rather than a prompt-level prohibition. Tiga defaults to Multi; Sky/Power/Glitter are manual picker choices. Runtime Mode/Type metadata explains the active policy but no longer injects “never switch”/“user-owned” command text into the model prompt; there is no model/tool path that mutates the session Type.
+- Make Multi's task-difficulty signal language-resilient instead of depending primarily on a growing English/Chinese complexity-keyword list. Request shape (information density, clause fan-out, sentence/list structure, structured constraints and code) is now the main short-request signal; task vocabulary is only a weak hint. Equivalent substantive Chinese/English/Japanese/Spanish requests stay in the same complexity band while short greetings remain cheap.
+- Make Glitter's `adaptive_per_call` reasoning genuinely **per subtask** for relay workers. Each worker invocation now derives a local reasoning signal from the most recent gathering tool batch, its fan-out and bounded result volume instead of inheriting the original turn's complexity. A hard overall task can therefore delegate a mechanical read with thinking off, while a later multi-file/high-volume gathering subtask can independently enable thinking/effort. Runtime Trace records the per-round reasoning complexity; explicit user Thinking/Effort locks remain authoritative.
+- Freeze the 2026-10-14 continuation baseline from the last complete 0.1.0 archive (396 tests + 38 subtests passing before changes), and separate tool **availability** from current-turn tool **requirement**. Type routing no longer treats a Personal Agent merely having tools configured as proof that every turn needs tool use; neutral pre-prompt routes are tool-free, explicit external web/file/shell actions still gate to tool-capable models when usable tools exist, Runtime Trace records both dimensions, and compatibility callers may continue using `tools_expected` with its corrected requirement semantics. Add multilingual/current-tool regression coverage without changing the 0.1.0 version.
+- Replace the fixed 24-round turn stopper and Glitter's fixed six-worker-round handback with an adaptive execution guard. Productive long runs may continue; repeated identical tool+argument+result work and short action cycles first receive an internal re-plan request and stop only if stagnation continues. A very high emergency tool-call backstop remains for catastrophic runaway protection. Runtime Trace records threshold, re-plan, handback and halt events.
+- Add per-model deep-thinking policy controls: `Auto / On / Off` for models that can actually switch thinking. Explicit On/Off are hard user locks; Auto delegates each invocation to the selected Type. Fixed-on, fixed-off and unknown-capability models expose disabled controls rather than fabricated choices. Reasoning effort remains an independent axis and is only selectable when the concrete model exposes real effort levels.
+- Stream provider-authentic reasoning/thinking into Crew's thinking lane without mirroring normal answer content. Provider continuation state remains private/model-scoped, and fallback is disabled after visible reasoning has begun so one model's thinking cannot precede another model's final answer.
+- Make Auto thinking and Auto effort policy-driven per invocation. Tiga uses speed-biased Sky, task-adaptive Multi, reliability-biased Power, and per-call collaborative Glitter; explicit user settings and concrete model capability always win.
+
+- Namespace virtual Type wire ids as `kiro-byo-type:<mode-id>:<type-id>` and reject the old unnamespaced form. Type identity is now Mode-local, so future Dyna/Gaia packs can expose different Type sets or reuse local Type ids without collision. Dashboard Type labels/order are generated from installed pack metadata instead of hardcoding Tiga's four forms.
+
+- Under Kiro BYO, show the Type outside the picker list as "<Mode> — <Type>" (e.g. "Tiga — Multi") instead of the raw wire id: composer model chip, status bar, and the "将 … 置顶到 default 代理" pin row. Done by a small label script inside the existing BYO `index.html` guard; it only rewrites visible text matching `kiro-byo-type:*`, so the official backend is unaffected. Labels come from all installed Mode packs.
+- Under Kiro BYO, a session with no pinned model no longer shows Crew's "auto": `GET /api/agents/resolved-model` now reports the active Mode's default Type (Tiga: Multi), the same Type a new BYO session actually runs. Other backends and pinned models pass through Crew's answer unchanged, so switching back to Kiro restores "auto". Implemented as a BYO-owned wrapper rebound in `dashboard/handlers/agents.py`; `tests/test_type_labels.py` covers it.
+- Fix false "Integration 已安装 / 运行正常" after Install/Update while the Gateway still runs pre-install code. The `.pth` hook runs in every Python started from Crew's interpreter (the Kiro BYO ACP child, MCP servers, scripts), and each of them overwrote `activation.json` with its own PID, so the App concluded a restart had happened. Only `python -m kiro_crew gateway` now records activation (`process_role.is_crew_gateway_process`), and inside the Gateway an integration counts as active only when the activation record belongs to the serving process and that process did not perform the install. Symptom fixed: BYO selected, but the picker kept old in-memory `/api/models` code (no Sky/Multi/Power/Glitter Types) with no restart banner.
+- Add `tests/test_activation_truth.py`: process-role and activation-truth regressions for the incident, plus an opt-in end-to-end test (`KIRO_BYO_E2E_CREW=1`, Crew's bundled python) that calls Crew's real `api_models` through `KiroCrewConfig` backend resolution and asserts the four `kiro-byo-type:*` rows come first with no `auto` / `auto:jev`.
+
+- Fix KiroCrew 0.9.0-insider.6 integration against the shipped dashboard: stop matching minified `withAutoFirst` / Jev helper bodies, validate the stable `data-model-id` picker DOM contract instead, and inject a backend-conditional HTML/CSS guard. This removes the false `expected one dashboard Auto helper asset, found 0` failure while keeping official Auto/Jev untouched outside BYO.
+- Fix KiroCrew BYO model-picker semantics: expose the active Mode's Type rows before concrete BYO models, and suppress Crew-native `Auto` / `Auto (Jev)` only when a `kiro-byo-type:*` list is present.
+- Allow a provably Kiro BYO-owned patched Crew seam with a missing pristine backup to stop blocking upgrades; destructive uninstall remains fail-closed when a pristine baseline cannot be proven.
+- Keep Mode as its own management navigation surface instead of nesting it inside Models.
+
+- Rename the product/display brand from **Kiro BYO** to **Kiro BYO**, subtitle **ACP Harness for KiroCrew**, and unify the unreleased project's internal identity at the same time: backend/application ID `kiro-byo`, Python package `kiro_byo`, CLI `kiro-byo`, `KIRO_BYO_*` environment variables, BYO config/data locations, Crew overlay module names, and session/backend identity.
+- Clarify the architecture boundary: Kiro BYO is a provider-neutral Agent Backend that sits alongside the official Kiro CLI under KiroCrew; KiroCrew chooses the Agent Backend, while Kiro BYO chooses the Provider/Model. It is not a Kiro CLI child backend and not a KAS wrapper.
+- Preserve the existing semantic compatibility probe and the Crew-authoritative 9/10 capability contract; no provider/model ownership or member-backend inheritance behavior changes in this branding release.
+- Add a bounded provider-neutral Runtime Inspector event stream without changing 0.1.0. `TurnTelemetryStore` remains metadata-only; the new `RuntimeTraceStore` records ACP/provider/tool lifecycle events in `metadata` mode by default, supports explicit local `full` content tracing with recursive credential redaction, and can be disabled with the `KIRO_BYO_RUNTIME_TRACE` environment variable.
+- Re-audit Personal/custom-agent fit: Kiro BYO continues to consume Crew-owned JSON/Markdown agent projections (prompt, tool visibility, allowed/excluded tools, MCP and resources) on new/load while leaving hooks, saved-member lifecycle and Provider/Model ownership in their existing layers. `member_saved_agent` remains deliberately unclaimed.
+- Separate **Mode / Type / Model** in the user interaction model. The Kiro BYO management page selects the active Mode (Tiga today; Dyna/Gaia reserved) and only displays its Types. KiroCrew's conversation picker receives the active Mode's Type entries (`Sky Type`, `Multi Type`, `Power Type`, `Glitter Type`) ahead of real provider models; Type choice is per-session, while concrete-model choice bypasses Mode routing. Remove the obsolete `kiro-byo-mode` virtual model sentinel.
+
+> Historical entries below retain the **Kiro BYO** name because that was the project name when those releases and audits were written.
+
+## 1.0.0
+
+- Fix a false KiroCrew incompatibility on the member-backend seam without changing 1.0.0. The adapter no longer depends on the exact text/formatting of `members.select_provider_backend`; it inserts a narrow AST-validated Kiro BYO inheritance guard and leaves every non-Kiro-BYO path under Crew ownership. Compatibility is now version-advisory rather than exact-release-pinned: newer semver-like Crew builds enter full semantic preflight and, if all source contracts still validate, are accepted as `semantic compatible / unaudited version` instead of being rejected solely for a version bump. Runtime self-heal now validates the same saved overlay dependency contract before writing after a Crew update.
+- Re-audit the complete 1.0.0 release tree against the current KiroCrew `v0.9.0-insider.6` commit `b4cf148` (2026-10-13). The 9/10 capability claim remains correct; `member_saved_agent` is still deliberately unclaimed. Refresh the Crew source-contract CI target from insider.5 to insider.6, isolate process-lifecycle tests from the app home, and add fail-closed release checks so mutable session/telemetry/audit state or live provider/native-tool configuration cannot be shipped accidentally.
+- Correct stale historical/current wording around projected agents: ACP active-mode acknowledgement verifies the session-specific active projection but does not imply the full saved-member capability contract.
+- Harden the adaptive Crew integration's fail-closed boundary: the owned Kiro BYO Harness now has an AST-validated contract for 35 executable Crew bindings across 15 unmodified source files plus 3 verified dynamic facade exports, so moved symbols cannot be masked by stale comments/strings. Remove vendor-specific DeepSeek/provider-label patch anchors in favor of Crew's native/default backend symbols.
+- Fix Xiaomi MiMo Token Plan as a first-class official connection path without changing the 1.0.0 version. Token Plan `tp-`/`ttp-` credentials now use Xiaomi's subscription Base URLs (`token-plan-cn/sgp/ams.xiaomimimo.com/v1`) while retaining the native MiMo Chat adapter, reasoning/tool continuation, and official V2.6 Pro/Flash model profiles. The UI auto-selects Token Plan when a Token Plan key is pasted, and mismatched pay-as-you-go vs subscription credentials fail with an actionable message instead of an opaque upstream auth error.
+- Fix the Overview 2×2 card alignment at the actual CSS specificity root cause: the generic `.ka-panel+.ka-panel{margin-top:12px}` stacking rule outranked the old per-card `margin:0`, shifting grid items 2–4. Overview cards now use a later, equally/more specific grid-child reset and fill their fixed row track. Add App-bundle/UI fingerprint diagnostics so stale installed copies can be distinguished from a development checkout and the separate site-packages ACP runtime.
+- Promote the hardened Kiro BYO line to 1.0.0 while keeping KiroCrew 0.9 as the currently verified host contract; Kiro BYO and KiroCrew version numbers are independent.
+- Make mid-turn steering cooperative across provider generation, permission waits and native process execution. A user steer interrupts an in-flight shell/Python/test process tree, marks remaining same-plan tool calls as skipped, injects the new user instruction and replans without cancelling the whole session.
+- Add host-mediated directory-scope escalation for explicit out-of-root filesystem work. The user can allow a single call or the current session; sensitive paths remain hard-denied and grants are never persisted as global roots.
+- Tune the provider-neutral Agent Harness for fast-first project reconnaissance: prefer structured filesystem tools and batched reads, avoid unsolicited exhaustive scans/tests/builds, and keep shell for genuine process execution.
+- Add Xiaomi MiMo V2.6 as a first-class native provider adapter, including thinking on/off semantics, streaming/tool-call handling and provider-native `reasoning_content` continuation across Agent tool turns.
+- Redesign the App information hierarchy across Overview, Providers, Models, Accounts, Diagnostics and Integration. Diagnostics now separates request health from token/cache usage, empty statistical samples render as unknown rather than fake 0 ms values, advanced provider fields are folded out of the primary connection flow, and responsive layouts waste less space.
+- Refine the final 1.0.0 management UI without changing the version: Overview now uses one true 2×2 equal-track grid instead of independently stacked columns, Native Tools are summarized by count, model capabilities are summarized from live metadata, sidebar counters are compact/localized, and wrapped model fact grids retain proper row separators on narrower windows.
+- Fix whole-Crew backend inheritance for KiroCrew `v0.9.0-insider.6` without changing the 1.0.0 version. When `agent.acp_backend` is `kiro-byo`, Crew member/teammate sessions now resolve to the same Kiro BYO harness instead of falling through the separate `agent.member_acp_backend` axis; switching away from Kiro BYO restores Crew's native member-backend behavior. Kiro BYO now declares Crew's existing member-dispatch/member-panel mounts and consumes their per-session flags, with no provider or model names crossing the integration boundary.
+- Re-project the active Crew agent on Kiro BYO `session/load` through the same narrow shared-runtime resume seam used by KAS. Authorization grants remain non-persistent and are rebuilt from the fresh Crew projection, preventing stale member/tool grants from surviving restart.
+- Add genuine KiroCrew Markdown-agent support without changing 1.0.0. Kiro BYO now joins insider.6's `ACP_BACKENDS_MARKDOWN_AGENT_SPECS` and matching user-level-only spec scope because its harness delegates discovery/parsing/prompt resolution to Crew's KAS agent resolver and consumes the resulting projection on `session/new` / `session/load`. `member_saved_agent` remains deliberately unclaimed: insider.6 defines it as loading the full saved member spec, including the member template's model pin, while Kiro BYO intentionally keeps Provider/Model selection inside the backend.
+- Keep the provider boundary regression gate and KiroCrew `v0.9.0-insider.6` semantic integration audit. Unknown upstream Crew source shapes still fail closed before any integration write.
+- Centralize runtime HTTP/MCP identity strings on the package version so future releases cannot silently advertise stale User-Agent/clientInfo versions.
+
+## 0.9.19
+
+- Fix the Provider page render regression where `customEndpoint` was referenced before definition; custom official-endpoint detection is now explicit and the preset form also tolerates asynchronous preset discovery safely.
+- Add an App-local React error boundary so a future Kiro BYO view render failure is contained inside the Kiro BYO surface instead of escalating to KiroCrew's whole-App crash boundary.
+- Re-audit the adaptive integration against KiroCrew `v0.9.0-insider.5` (`dbdb3e7`, 2026-10-12), surface that source-audit target in Integration status, and extend the semantic verifier to validate the current process-reclaim name derived from `ACP_BACKEND_LAUNCH`.
+- Add an automated provider-boundary regression gate: the ACP Agent Harness may consume the provider-neutral facade but cannot import concrete vendor adapters or branch on vendor identity.
+- Add provider wire-format roundtrip regression coverage for both normal JSON responses and streaming/SSE paths across the major native adapter families, protecting text streaming, tool-call assembly, usage accounting and provider-native continuation/reasoning state.
+
+- Add Xiaomi MiMo as a first-class provider using the official OpenAI-shaped Chat API, preserving `reasoning_content` across tool turns, supporting the V2.6 thinking toggle and multimodal capability metadata, and filtering the mixed Xiaomi model catalogue to the current V2.6 Agent-capable Pro / Flash / Pro-Ultraspeed models.
+
+- Upgrade verified official providers to higher-fidelity transports without changing the 0.9.19 package version: Responses-family paths for DeepSeek, OpenAI, xAI, Ark, Qianfan and Groq; Anthropic Messages; Gemini Interactions; Cohere Chat V2; Mistral Chat with ThinkChunk replay; Kimi Chat with preserved reasoning/tool state; GLM Chat with native reasoning extensions; MiniMax's recommended Messages-compatible path; provider-aware Qwen Chat plus model-scoped Responses for supported Qwen 3.5–3.8 and current Tencent TokenHub Hunyuan models. StepFun stays on its documented OpenAI Chat API rather than receiving a fabricated transport.
+- Preserve provider reasoning/tool continuation data between agent steps, enable documented provider caching/state features (including Qwen Session cache, xAI/Mistral prompt-cache keys, Anthropic/MiniMax prompt caching and provider Responses state), and safely fall back to OpenAI Compatible on custom relay endpoints. Diagnostics now separate cache-read hits from cache-write/creation tokens instead of collapsing them into one counter.
+- Keep deep-thinking state and reasoning effort independent per model: exact provider-specific effort vocabularies are published, unavailable Off controls are omitted, and effort controls disappear while deep thinking is explicitly Off. Add current OpenAI GPT-5.6/GPT-6, Grok 4.3-4.7, Claude 5.x and Mistral reasoning profiles without fabricating unsupported levels.
+- Expand provider presets and model capability discovery while keeping provider/model features capability-driven rather than fabricated.
+- Redesign the KiroCrew App UI into separate Overview, Providers, Models, Accounts, Diagnostics, and Integration surfaces, including multimodal/reasoning capability display.
+- Support multiple independent instances of the same provider family (for example multiple OpenAI accounts/endpoints), each with its own credential reference, model catalog, account status, and routing id.
+- Add a fail-closed Integration uninstall path that restores exact pristine KiroCrew seams, removes the Kiro BYO runtime/bootstrap, and can optionally purge provider credentials and local Kiro BYO data.
+- Preserve the 0.9.19 package/version surface; this is a packaging/documentation synchronization of the current release rather than a version bump.
+
+## 0.9.18
+
+- Fix a Web native-tool boundary bug discovered by real KiroCrew Cron execution: a DNS/SSRF rejection during `web_fetch` preflight previously leaked `WebToolError` past `NativeToolRuntime`, escalated into ACP `-32603`, and aborted the entire Agent turn. Web policy rejections are now normalized to `NativeToolError`, producing an ordinary failed tool result so the model can choose another source instead of killing the Cron job.
+- Make DNS answer selection compatible with split/multi-address resolver results without weakening IP pinning: if a lookup contains at least one genuine public address, Kiro BYO pins and connects only to a validated public candidate and ignores unused blocked siblings. A pure blocked result remains rejected.
+- Preserve the narrow RFC2544 Fake-IP exception from 0.9.16. Pure Fake-IP DNS remains supported; Fake-IP mixed with blocked answers remains fail-closed because final routing is delegated to the transparent proxy/TUN rather than to a directly validated public address.
+- Improve Web rejection diagnostics by reporting the hostname plus blocked destination categories (`loopback`, `private`, `link-local`, `multicast`, `unspecified`, `special-use`) instead of the ambiguous generic `local/private` message.
+- Add ACP-level regression coverage proving that a blocked `web_fetch` is returned to the model as a tool failure and does not become a prompt-fatal error.
+
+## 0.9.17
+
+- Fix integration readiness so a stale copied ACP runtime can no longer be reported as Ready after an App-only upgrade.
+- Compare the live `site-packages/kiro_byo/_bootstrap_state.json` runtime version with the current App `VERSION`; mismatches are now `No / update required`.
+- Surface the live runtime/App version mismatch in the Integration UI.
+- This closes the failure mode where the App showed 0.9.16 while Cron still executed 0.9.15-or-earlier WebTool code.
+
 # Changelog
 
-All notable changes to KiroCrew are documented in this file.
-
-## [0.11.1] - 2026-10-31
-
-A hot patch for 0.11.0: memory stays fast and intact under load, the KAS
-engine follows your agent specs the way kiro-cli does, and a set of security,
-chat and desktop fixes lands.
-
-### Notable fixes
-
-**Memory.** Reading memory no longer waits behind a write, a busy memory pool
-ends a turn with a retryable error instead of leaving it waiting, and the
-first replies after a restart start sooner. The memory database keeps its
-write log when another process closes it, so recent memories are no longer
-lost, and the startup prefetch can no longer let the memory index be
-corrupted.
-
-**KAS engine.** KAS auto-approves the built-in tools a spec grants once Crew's
-own checks pass, honors a spec's allowed shell commands at the gate and
-refuses the rest when the spec denies by default, refuses a file write outside
-a deny-by-default spec's allowed paths, and mounts web search under the name
-the engine expects. Agent spec hooks block a tool only on exit code 2, as on
-kiro-cli, an MCP server gets its boolean env flags but never its secrets, and
-a relative prompt file may use `..` as on kiro-cli. A resumed KAS session
-replays its history when no turns come back.
-
-**Chat and settings.** File changes from kiro-cli v3 write tools show in the
-transcript again, each background tool approval gets its own id so one answer
-no longer settles another, and kiro-cli's read-only file searches are approved
-after the safety checks. A workflow run that stored an infinite or not-a-number
-value opens again, Settings refuses a save that `config.local.json` would
-override, and a schedule's time label keeps its wall-clock hour across a
-daylight saving change. Background work such as the live crew log, knowledge
-ingest and sub-agent events now runs to the end instead of stopping without a
-word.
-
-**Security.** The shell reader finds a `-c` script placed after options and
-redirections, and every agent process counts as an agent in the cloud guard
-for human-only actions. A deny rule that wrongly refused commands such as
-`find -type f` and `od -tx1` as a curl upload is removed. The local decision
-models install a `filelock` with its published advisory fixed.
-
-**Desktop and CLI.** The one-line and `install.sh` installers download Crew's
-built-in KAS engine by default (`--no-kas` skips it), `kirocrew restart` says
-when another gateway still serves the port, and `kirocrew stop` and `kirocrew
-restart` refuse a gateway the desktop app supervises. Quitting the desktop app
-while it starts no longer leaves a gateway running behind it, and Windows
-recovery retries a failed network check before it gives up. A new terminal
-stays above the iPhone keyboard, a working icon in the Crew stack blinks and
-sits flush, and a host-wide out-of-memory kill is no longer blamed on a single
-sandbox limit.
-
-## [0.11.0] - 2026-10-24
-
-Mates become teammates with a setup of their own: each one gets its own
-configuration, a conductor that works with you and a worker that does the
-hands-on part, and "crewmate" now reads "Mate" wherever you see it. New installs
-start on the KAS engine, which no longer needs kiro-cli, and chat gains Escape
-to stop, a manual sidebar order and forks from the message menu. The Schedule
-form sets time and failure limits per job, long chats stream lighter, and a long
-list of security and platform fixes lands.
-
-### Mates with a conductor and a worker of their own
-
-- **Mate 2.0**: every mate owns an agent file under `~/.kiro/mates/agents/`,
-  talks to you through a conductor chat that keeps its notes, and hands hands-on
-  work to a worker session that follows its Profile and gets its skills;
-  existing mates move over once at startup, with a notice saying what changed.
-- **Workers that come back**: a conductor can message an archived worker and
-  revive it first, a worker's report wakes its mate after a restart, and a
-  worker tab marks a released worker.
-- **Say Mate**: the Mates page, roster, dialogs, settings rows and chat header
-  now say Mate where they said crewmate, and the translations follow.
-- **Check-ins and imports**: an opt-in Heartbeat check-in on the Goals tab wakes
-  a mate every 30, 60, 120 or 240 minutes, the Profile shows monitor status, and
-  one mate can be imported from a `.crewmate` file.
-- **Pages a mate writes**: a mate builds and themes its own Dashboard page,
-  which goes live on apply with one call to roll back; it can look at its page
-  as a PNG, keep progress on the page instead of in chat, show its worker
-  sessions there and send its weekly report as a printable page.
-- **Tools on request (preview)**: with a mate's own preview switched on, off by
-  default, it can find tools its worker lacks and request them through a card.
-- **Easier to follow**: reopening a mate's chat lands on the last message you
-  read, older history loads as you scroll up, your message is steered into the
-  running turn and answered promptly, and a mate's direct message posts a
-  notification.
-
-### Chat you can stop, fork and read
-
-- **Stop and switch mid-turn**: Escape in the composer stops the running turn, a
-  model picked while a reply streams takes effect at the turn boundary instead
-  of failing, and Optimize prompt works while a turn runs and can be cancelled.
-- **Fork from the message menu**: with Tail-only Fork on, a message's menu
-  offers Fork with later messages only and Fork with earlier messages.
-- **Small conveniences**: the message right-click menu adds Open link in new
-  tab, and Tab and Shift+Tab indent and outdent list lines in the composer.
-- **Clearer transcripts**: a row tells you when the agent saves a lesson and
-  links to Review lessons, image reads show thumbnails of what they looked at,
-  consecutive edits to one file merge into one row, every mid-conversation
-  session reset is marked, and a reply cut off by compaction continues.
-- **Tabs and side panel**: Settings → Chat → Sessions can open sidebar sessions
-  in their own session tab, and Settings → Chat → Side panel gains Keep Side
-  Panel Open and Pin Summary in Side Panel.
-- **Files, Git and comments**: the Git tab lists every repo a chat works in, a
-  folder the file tree cuts off opens in its own folder tab, code blocks in
-  artifacts take line-anchored comments, and a mate's side panel documents take
-  inline comments.
-
-### A sidebar, search and notifications that keep up
-
-- **Your own order**: dropping a session between two unpinned rows switches the
-  sort to Manual and offers Sorted by hand with Undo, Alt+Up and Alt+Down move a
-  focused row, and the order and sort choice live on the gateway so every
-  browser shows the same list.
-- **Broadcast and defaults**: the sidebar's Broadcast message sends one message
-  to many sessions, Settings → Chat names a Default Sidebar Folder for New
-  Chats, and the pinned band is labeled while a tag filter narrows the list.
-- **Search**: a `title:` prefix limits a session search to titles, and Chinese
-  queries are split into words instead of single characters.
-- **Notifications**: notes stack by sender and clear by group, Fix with Crew
-  opens a new chat pre-filled with the notification and a request for next
-  steps, and a note an agent publishes links back to its session.
-
-### Schedules and the command line
-
-- **Limits per job**: the Schedule job form sets a run time limit and an
-  auto-pause limit (0 means never), the board says when a job is in failure
-  backoff, and a Runs as switch picks Custom agent or Mate, with a mate's jobs
-  listed as Mate with a by-mate filter; an `app.json` cron can set
-  `strict_schedule` to start on the minute.
-- **Command line**: `kirocrew spawn run` takes `--model`, `--agent` and
-  `--crew`, `kirocrew agent create` and `update` take `--model`,
-  `kirocrew cron add` and `update` take `--auto-pause-after`, and a chat
-  permission prompt accepts a typed reply; `spawn_run` tasks can carry a short
-  label.
-
-### Voice and themes
-
-- **Voice**: a setting picks the Text-to-Speech language, Settings → Voice →
-  Fine-tuning can send a dictation when you deliberately stop it, voice settings
-  answer "Is my audio kept?" for the chosen provider, and Read aloud speaks on
-  your device when the gateway host cannot.
-- **Themes**: Nu Disco joins the built-in themes, the Create Theme dialog gains
-  a Paste CSS tab with a copyable design prompt for an AI, overlays can draw
-  behind content, and installed packs can replace the welcome-screen ghost.
-
-### KAS by default, more from every backend
-
-- **KAS first**: new installs with no saved harness choice start on KAS, listed
-  before Kiro CLI and shown as Kiro Agent with each harness's logo; an explicit
-  Kiro CLI choice is kept.
-- **No kiro-cli needed**: the desktop app ships the pinned KAS engine,
-  `install.sh` can fetch it, the app stops bundling kiro-cli and detects your
-  own install, credit usage is read from Crew's sign-in, and the engine switch
-  now sits in Settings → Developer → Feature Previews.
-- **MCP on KAS**: elicitation requests from MCP servers are now answered, an MCP
-  change applies to a live session in place instead of resetting every chat, and
-  `agent.kas_persist_mcp_sign_in`, off by default, keeps remote MCP sign-ins
-  across sessions.
-- **Other backends**: a running pi turn can be steered, pi member threads get
-  the mate panel, opencode takes a message added to a running turn, Side Chat
-  runs read-only tools on the DeepSeek harness, and Kiro side chats refuse
-  credential paths.
-- **Models and usage**: Opus 5.5, Sonnet 5.5, Fable 5.1 and MiniMax windows are
-  registered, and the Usage tab no longer shows estimated kiro-cli tokens.
-
-### Remote sessions, apps and skills
-
-- **Coder workspaces**: a chat can run its workspace on a Coder workspace while
-  the agent engine stays on the gateway, with files, a terminal, a Settings card
-  and a composer chip.
-- **More sources**: Bitbucket Server pull requests read through
-  `dashboard.bitbucket_server_hosts`, Azure DevOps watches wake on edited review
-  comments, and first-run and Settings import can read an Amazon Quick setup.
-- **Apps**: an installed app learns when a newer version is published, the store
-  offers updates for external-registry apps, the install consent gate shows a
-  community registry's review tier, and ChatEmbed hosts can hide parts of the
-  chat and show a stop button.
-- **Living UI skill**: a built-in `living-ui` skill teaches agents how motion,
-  focus and readouts should behave in widgets and Dashboard pages, with a
-  preview harness and a gallery example.
-
-### Lighter and faster
-
-- **Smoother streaming**: a streaming reply re-parses only its last paragraph,
-  background sessions notify the page once per frame, and settled rows no longer
-  redraw on every chunk.
-- **Quicker starts**: a new chat's memory lookup runs beside session startup,
-  the prompt leaves out the Browser section when browsing is not set up, skills
-  a turn cannot use are not injected, Crew's own MCP servers load less at start,
-  and cold searches share one scoring pass.
-
-### Notable fixes
-
-**Chat and sessions.** A new chat, fork or import stays open when an older
-session list arrives late, Back during a new chat returns to the session you
-left, the composer draft survives a memory mode switch, a staged @mention
-deletes whole, a throttled turn is re-sent with one copy of the prompt, and a
-Claude seat usage limit is reported as a limit, not retried as throttling. A
-side conversation comes back after a reload.
-
-**Channels.** Slack mirrors a turn's whole reply to a linked thread, clears its
-working status on cancel and uploads inline images from the session's own
-folder, the Slack App Home cron list honors each job's timezone, Telegram stops
-re-announcing a held message, and Weixin keeps its QR-signed token after
-reconnecting.
-
-**Schedules.** A cron mutation whose save fails is rolled back, a run that hits
-its deadline raises an alert, and chat and schedules keep working on a host with
-no timezone data.
-
-**Desktop and updates.** The system-wide summon hotkey is opt-in on new
-installs, the updater installs the newest build instead of a superseded download
-and honors proxy settings, macOS Back and Forward swipes walk history, and the
-macOS updater no longer crashes on updates above 1 GiB.
-
-**Security and access.** Shell expansion no longer slips past the cloud metadata
-denial, `rm -rf` of root or home is denied in its common spellings, a remote MCP
-probe URL is vetted for SSRF, the CLI proves the gateway peer before sending the
-local secret, the owner gate covers session history, knowledge reads and task
-actions, mate records live in a gateway-only directory, and each harness's own
-permission files are write-protected. A split AWS key pair or a cut link in a
-stream is redacted as one piece, and certifi is updated for an advisory.
-
-## [0.10.0] - 2026-10-15
-
-Crewmates start to plan with you: Mate greets a new user, goals carry milestones
-and check-ins, and a crewmate proposes changes you confirm as cards. Dashboards
-leave preview for everyone and a crewmate can write its own page, while chat,
-the sidebar and every backend get faster ways to move, steer and recover.
-
-### Crewmates that plan with you (Preview)
-
-- **Meet Mate**: with Settings → Developer → Feature Previews → Crewmates on,
-  your first visit to the Crewmates page opens Mate, a first crewmate that
-  explains what crewmates do and lets you give it a name, and New crewmate opens
-  as one card in a window over the chat.
-- **Goals with milestones**: a crewmate keeps its goals with linked milestones,
-  offers check-ins and reports as cards you confirm, and keeps your draft when
-  you edit, remove or undo a goal.
-- **Changes you confirm**: a crewmate proposes changes as cards you accept,
-  updates its own name and description from its chat, points you to the
-  control on your screen, and gets a workspace of its own when it is created.
-
-### Dashboards for everyone
-
-- **Out of preview**: the Dashboard tab no longer needs a Feature Preview, a
-  main session's side panel shows a dashboard of its own, and Automatic cards
-  for all sessions moves to its own card under Settings → Developer, still off
-  by default.
-- **Pages a crewmate writes**: a crewmate composes its own page with the
-  `dashboard` skill, starting from a gallery, and you keep or discard the staged
-  page from the Dashboard tab.
-- **Your own pages, better defaults**: pages you put in
-  `~/.kiro/crew/panel-templates/` are offered beside the shipped ones, a
-  conductor opens on its board, a crewmate's default page shows what it
-  published, and the built-in pages follow your UI language.
-
-### Agents that lead and hand off
-
-- **A team lead agent**: `kirocrew-team-lead` ships as a default agent that
-  splits a goal into work items, opens a session for each, and does the small
-  ones itself.
-- **Pick the backend per task**: `spawn_run` takes a backend for each task, and
-  the Subagents card lists every tool call a sub-agent makes.
-- **Questions that wait for you**: an agent's question card now waits for your
-  answers and hands them back to the agent, never as a message in your name.
-
-### A chat you move through faster
-
-- **Copy a reply your way**: a reply's right-click menu offers Copy as rich
-  text, which pastes into Outlook or Word with headings, lists and tables
-  intact, beside Copy as Markdown.
-- **Jump between prompts**: Alt+Up and Alt+Down step through the open chat's
-  prompts, and a file the agent names shows as an Open file chip under its
-  reply.
-- **Less to scroll**: a running turn shows only its last five activity rows,
-  Settings → Chat → Transcript → Tool calls start expanded opens tool rows when
-  you want them, and the session menu's Export as readable Markdown saves a
-  transcript a person can read.
-
-### Turns that finish
-
-- **Time limits you set**: Settings → Chat → Advanced → Turn Time Limit
-  (seconds) sets how long a turn may run, and the timeout card lets one session
-  run under its own limit.
-- **Ride out a dropped connection**: a short network drop to the model provider
-  is waited out instead of failing the turn.
-- **No endless retries**: a conversation too full to continue offers a fresh
-  session instead of retrying.
-
-### More from every backend
-
-- **Steer, effort and compaction**: a message sent while a Claude Code or goose
-  turn runs is steered into that turn, the reasoning effort control reaches
-  goose and opencode, and a manual `/compact` works on KAS and pi.
-- **KAS without kiro-cli**: Settings → Agent Harness → Use the built-in KAS
-  engine, off by default, installs and runs KAS from an engine build pinned to
-  this release, so kiro-cli no longer needs to be installed for it.
-- **Side Chat that can look**: Side Chat runs read-only tools on Claude Code,
-  goose and KAS, and pi sessions get Crew's MCP servers.
-
-### A sidebar that shows what is busy
-
-- **Filter by model**: the sidebar filter menu gains Filter by model, with a
-  session count per model and a Hide sessions on these models row.
-- **See what is working**: a pulsing dot leads the name of a working session,
-  and a crew's group header counts the chats waiting on an approval, an answer,
-  or still working.
-- **Crew folders and full titles**: a crew's own folders show inside its crew
-  group, and Settings → Chat → Sessions → Show Full Titles While Scrolling keeps
-  long titles readable.
-
-### Settings for proxies, profiles and trust
-
-- **Variables for every agent**: `agent.env` sets variables such as
-  `HTTPS_PROXY` or `NODE_EXTRA_CA_CERTS` for every agent process, and
-  `aws.project_profiles` starts a session with the AWS profile mapped to its
-  project folder.
-- **Trust that expires**: the chat approval prompt offers this command, or every
-  command of its kind, for an hour or for the rest of today, beside the grant for
-  the session.
-- **More hosts and secrets**: `dashboard.github_hosts` adds GitHub Enterprise
-  hosts, channel tokens accept `secret://` references and store new ones in the
-  vault, and `agent.model_context_tokens` declares the context window a model is
-  served with.
-
-### Memory you control
-
-- **Forget on purpose**: `kirocrew memory forget` removes a memory, and the
-  Memory page shows where each lesson came from.
-- **Switches for what is kept**: `memory.writes_enabled` and
-  `memory.lesson_extraction_enabled` turn off memory writes and lesson
-  extraction.
-- **Move only your memory**: Settings → Import / Export offers Export memory
-  only and Import memory only, and a crew config export can carry its agent
-  templates with their secrets replaced.
-
-### Remote crews
-
-- **A crew on a Lambda MicroVM**: a `microvm` block in `cloud.json` adds a lane
-  that runs a crew in an AWS Lambda MicroVM billed per second, with a one hour
-  default lifetime after which its home is gone.
-- **Keep crews in step**: the Remote Crew row and the crew window header show
-  when a crew runs an older build and offer to update it, and the owner can
-  disable one remote crew.
-
-### Usage, voice and sounds
-
-- **Spend over time**: the Usage tab's Overview gains a Spend over time
-  (credits) chart stacked by channel, agent, model or week, and Developer →
-  Telemetry gets one time window for every card.
-- **Voice**: `stt.transcribe_languages` lets Amazon Transcribe detect two to five
-  languages in one stream, a sound plays when dictation stops on its own, and a
-  bar above the composer offers Stop reading while a reply is read aloud.
-- **Your own sounds**: Settings → Notifications → Custom sounds adds named tones
-  you can test before you save them, and a crewmate's notifications show its
-  avatar.
-
-### Issue Radar
-
-- **CI failures on your pull requests**: Issue Radar can alert you when CI fails
-  on your own pull requests, with a CI runs tab and a per-repository switch.
-- **GitLab groups**: following a GitLab group now brings its review requests
-  from every subgroup, new projects included.
-
-### Lighter and faster
-
-- **Less memory**: the embedding model unloads after an hour idle
-  (`memory.embedding_idle_evict_secs`), and the gateway holds far less memory on
-  hosts with many cores.
-- **Faster reads**: Knowledge search returns in about a fifth of the time, and
-  long sessions render warm instead of re-checking every message.
-- **Faster tools**: Crew's own MCP servers start faster and answer a finished
-  tool at once.
-
-### Notable fixes
-
-**Chat and sessions.** A send made while a page is loading or a Stop is settling
-is kept, a scrolled-up reader stays in place while a reply streams (and Firefox
-stays pinned to the bottom when you are not scrolled up), and the
-composer goes idle when a turn ends without a closing signal. `/clear` works on
-KAS, codex, opencode, pi and deepseek, and editing a message on Claude Code forks
-its conversation.
-
-**Channels.** Slack, Telegram and Discord never post a reply twice after a
-disconnect, and they mark a reply part that could not be delivered. A Feishu
-group message is served only when it mentions the bot, and Slack follows a new
-default agent without a gateway restart.
-
-**Schedules.** A one-shot cron that fails, times out or is cancelled is kept and
-parked instead of lost, a spring-forward time runs once, and each agent cron run
-checks the Kiro sign-in first. Cron store writes survive a crash.
-
-**Windows.** Store writes retry a rename that Windows briefly holds, a host sleep
-is no longer read as a dead gateway, and MCP servers answer pings while a tool
-runs.
-
-**Security and access.** Git is no longer auto-approved as a read-only shell
-command, a trust grant for a program no longer covers a write redirect, and the
-desktop app keeps the dashboard token out of its logs. The gateway refuses to
-start on a truncated signing key, and webapp previews run without `unsafe-eval`.
-
-## [0.9.0] - 2026-10-09
-
-Crewmates become colleagues you can check on at a glance. Opening one greets you
-with where its work stands, a profile card holds its permission, model and
-schedules, and in preview each crewmate gets a dashboard page read from its own
-record. The composer warns before a prompt outgrows the model, the sidebar hides
-and tidies what you do not need, remote crews open as live windows onto the
-other machine, and the Usage tab estimates Kiro tokens and the day your credits
-run out.
-
-### Crewmates you can read at a glance
-
-- **A crewmate greets you on open**: opening a crewmate on the Crewmates page
-  shows a card with its goal, what is finished, running or waiting on you and
-  one next step, or after six idle hours the goals it left open and its recent
-  sessions, without spending a chat turn.
-- **A profile behind the name**: the pill at the top of a crewmate's thread says
-  what it is doing now and opens a Profile card with its memory, workspace and
-  notes, its own Permission, Model and Reasoning effort, a Schedules tab for
-  what wakes it and a Sessions tab for the work it drives.
-- **Switch crewmates from the header**: with a thread open the roster folds
-  into a switcher of faces in the thread header, whose Show the full roster
-  action brings the column back, and the roster lists only crewmates you
-  created, chatted with, starred or set as the default.
-
-### A dashboard for every crewmate (Preview)
-
-- **Twelve pages to choose from**: with Settings → Developer → Feature Previews
-  → Dynamic Dashboard on, a crewmate's side panel opens a Dashboard tab that
-  shows a project report by default, and you ask the crewmate in chat for
-  another shipped page such as a standup, a roadmap or a kanban of its work.
-- **Numbers from the record**: every figure is read from the crewmate's crew
-  log, a cost nobody measured shows a dash rather than 0, and a value the
-  crewmate wrote itself is tagged crewmate wrote this.
-- **Cards for every session**: the same preview adds a status row above the
-  composer and an All Dashboards page, and its Automatic cards for all sessions
-  switch keeps a summary of each session's recent work and next steps.
-
-### A composer that knows its limits
-
-- **Context window warning**: the composer warns when a prompt nears or passes
-  the model's context window, and a send over the limit is held until you send
-  it a second time.
-- **Style Markdown While Typing**: Settings → Chat → Composer draws bold,
-  italic, strikethrough and inline code as you type and continues a list on
-  the next line; it is off by default because it switches to a rich-text input
-  that is still in beta.
-- **Faster ways in**: drag a file or folder row from the Files tab onto the
-  composer to mention it where you drop it, press Cmd+Up or Ctrl+Up to edit
-  your last message, and type `! <command>` to review and run a shell command
-  in the session's workspace.
-
-### Messages you can quote, widen and hand off
-
-- **Quote a message**: hover a message and choose Quote, or right-click it, to
-  carry the whole message into your next send as a quote card that jumps back
-  to the original.
-- **Widen a table**: a table in a reply gets a Widen toggle that spreads it into
-  the pane's spare width, and its columns drag wider or narrower from the edge
-  of each header cell.
-- **Add to main chat**: a settled Side Chat answer offers Add to main chat,
-  which puts the answer in the main composer for you to send, and a hung side
-  turn can now be stopped.
-
-### A sidebar that keeps up
-
-- **Hide by status, pause your filters**: the filter menu hides Unread, In
-  progress or Pinned sessions with an eye-slash button, Pause all filters lifts
-  every status chip at once, and a pinned session stays in view while a tag or
-  status filter narrows the rest.
-- **Folders that tidy themselves**: the sidebar header's menu offers Clean up
-  empty folders with a list of what goes first, clicking an open folder's
-  connector line collapses it, and a folder path written in chat becomes a chip
-  that reveals the folder.
-- **Titles and unread marks that help**: a session's row menu offers
-  Regenerate title, and Settings → Notifications → Alerts → Mark sessions unread
-  only when they need you marks a background session unread only when its agent
-  finishes or waits on you.
-
-### Remote crews as live windows (Preview)
-
-- **A window onto the other machine**: with Settings → Developer → Feature
-  Previews → Remote crew sessions on, a peer crew's session opens as a window
-  onto that crew's own transcript, running state and approvals, and New chat on
-  crew creates the session on the peer, so nothing is stored on this machine.
-- **Grouped per machine**: the Sessions list puts Local first, then one
-  collapsible group per crew with an online, reconnecting, error or offline
-  badge.
-- **Old relay chats stay readable**: a chat an older build ran on a peer
-  through the retired turn relay opens read-only.
-
-### Channels that follow your sessions
-
-- **Slack threads for new sessions**: Settings → Channels → Slack → Connect new
-  sessions to Slack automatically gives every new dashboard session a thread in
-  your direct message with the bot on its first message.
-- **Telegram topics and proxies**: Telegram serves each forum topic in a private
-  chat as its own session, and `TELEGRAM_API_BASE_URL` routes the Bot API
-  through a reverse proxy where the public host is blocked.
-- **A busy session queues instead of refusing**: a Telegram or Teams message
-  that reaches a session mid-turn is steered into the turn or queued, and the
-  conversation says which.
-
-### Usage you can plan by
-
-- **Estimated tokens for Kiro**: the Usage tab gains an Estimated Tokens card
-  and an Est. tokens column in Daily History, because Kiro CLI reports credits
-  but no token counts.
-- **When your credits run out**: the Kiro Account modal says under its meter
-  whether your credits last until the reset or, at your current pace, the day
-  they run out.
-- **Credits on more surfaces**: a subagent run reports its credits beside its
-  elapsed time, and a cron run's result carries the same usage footer as a chat
-  turn.
-
-### Schedules, memory and the CLI
-
-- **Hand a failed run to the agent**: an expanded failed or timed-out run in a
-  job's history on the Schedule page carries a button that opens a chat with
-  that run's trace.
-- **Restore a memory**: the memory records editor offers Restore an earlier
-  version with a Now and After restoring preview, and
-  `kirocrew memory create-store` creates a declared store.
-- **CLI and export additions**: `kirocrew cron add --managed-by` lets a tool own
-  a cron by key, `kirocrew cloud launch` takes `--ami` and `--extra-packages`,
-  and Settings → Import / Export can include persistent chat history in an
-  export.
-
-### Desktop, terminal and voice
-
-- **Terminal settings and keys**: Settings → Display → Terminal gains Cursor
-  style and Reuse the current terminal, Ctrl+` toggles the terminal and
-  Ctrl+Shift+` adds one, and a tab closes when its shell exits.
-- **Copy images, open decks**: copy an image to the clipboard from the image
-  viewer or the desktop app's right-click menu, and a PowerPoint deck opened in
-  the side panel renders as slides when LibreOffice is on the gateway host.
-- **Voice on your terms**: Settings → Voice gains a Use a key to start
-  dictation switch, a microphone level test and a Custom vocabulary list for
-  Amazon Transcribe.
-
-### Look, layout and defaults
-
-- **Translucent panels are opt-in**: Settings → Display → View → Translucent
-  panels shows the top bar, the message box and the search fields as frosted
-  glass, and solid cards are the default.
-- **Settings that moved**: Agent Capabilities is now Customize, Subagent
-  Settings and Warm Pool move to Settings → Agent Harness, Settings → Chat →
-  Advanced → Compaction Time Limit (seconds) is editable, and Settings →
-  Display → Zoom takes an exact percent.
-- **Quieter by default**: a new install starts Settings → Chat → Transcript →
-  Response Verbosity at Answer only, the Ultra level is retired, Settings → Chat
-  → Sessions → Dim Inactive Panes can be turned off, and the project picker
-  gains a Favorites tab.
-
-### Notable fixes
-
-**Chat and sessions.** A channel, cron or subagent turn whose backend lost its
-session reloads it instead of failing, queued messages survive a recycling
-reset, and a stalled sub-agent no longer holds back your messages. Closing a
-busy session from the sidebar asks first, and Back and Forward keep working
-after a session closes. On Windows, a briefly locked file no longer wipes the
-saved context readings of your other tabs.
-
-**Windows and installs.** The Windows command line is read as UTF-8, `.env`
-files and Claude project settings saved with a byte order mark read correctly,
-and one-shot Kiro CLI calls no longer open a console window. The
-installer shows live progress, a Windows installer exit 17 names its cause, and
-an update verifies a rebuilt environment before it drops the backup.
-
-**Security and access.** Every built-in app's write routes accept only the
-dashboard owner, data-home files are created readable by you alone, and agent
-specs that carry projected secrets are written owner-only. An untrusted
-checkout's agent spec hooks no longer reach the turn loop, config-defined git
-hooks are disabled for host-side git, and the dashboard serves its fonts
-locally.
-
-**Updates and agents.** The dashboard's Update and `kirocrew update` no longer
-fail with "could not fetch latest-cli.json" when they download a new version. A
-crewmate whose template uses a name the KAS engine reserves, such as `default`,
-now runs on KAS instead of being refused, and a tool that waits no longer holds
-up the other tools of its session.
-
-## [0.8.0] - 2026-10-08
-
-Kiro Crew spends less of your attention. A monitoring loop now screens what it
-finds and wakes you only for a tick that needs a decision, a removed credential
-explains itself instead of leaving a blank, and a fresh desktop install runs the
-agent after sign-in alone because it carries its own agent CLI. Folders can steer
-every chat filed under them, the chat settings are a rail of named groups rather
-than one long scroll, and the transcript takes a font size of your choosing; in
-preview, crewmates group into teams with their own notes and work log, and Jev
-routes a session's turns. Remote crews chain, so a crew you reach through
-another crew becomes a tab of its own, and on a phone the chat page folds into
-one bar.
-
-### Watches that wake you only when it matters
-
-- **A wake judge screens a monitoring loop**: say what is worth waking for when
-  you arm the loop, or leave it to the shipped default, and a tick that finds
-  nothing new costs no model turn while a merged or closed pull request ends the
-  watch.
-- **A reviewer's words count too**: a pull request watch wakes the agent when a
-  review or a comment asks for a change or asks a question, not only when a check
-  goes red.
-- **Judge verdicts go on the record**: every screening writes a wake judge notice
-  into the chat, and the Decisions (Jev) card under Settings → Developer →
-  Feature Previews adds an opt-in row that lets Jev read what a loop is watching
-  and choose which judge answers.
-
-### The desktop app arrives ready
-
-- **It carries its own agent CLI**: a fresh macOS, Linux or Windows install runs
-  the agent after sign-in alone, and the setup screen shows the sign-in command
-  for the bundled copy.
-- **Reach another machine from the failure dialog**: when no local gateway
-  answers at launch, Add Remote Crew opens a four-field form whose Save and Retry
-  dials that crew straight away.
-- **Focus mode gets out of the way**: the hover-revealed sidebar and top bar
-  close once the cursor leaves the window, and only one reveal shows at a time.
-
-### Redaction you can read
-
-- **A removed credential explains itself**: a lock tag in the reply opens a card
-  naming what matched, which file or command it came from and how to reach the
-  value safely, with a one-time coach on the first removal in a session.
-- **A blocked link says why**: the card names the destination and the rule and
-  offers Open once, Allow for this host and Inspect, with the hosts you allowed
-  listed under Settings → Security → Allowed link hosts.
-- **Read a secret file unredacted, on purpose**: Settings → Security gains a
-  Credential redaction in file views toggle, on by default, that unmasks files
-  the dashboard opens for you while chat, channels and history stay redacted.
-
-### Chat, sized and steered your way
-
-- **Message Font Size scales the whole conversation**: one stepper under
-  Settings → Chat → Transcript sizes text, code, diffs, tables, chips and the
-  composer in every session, and the Compact column widens to match.
-- **The turn minimap becomes a scrub rail**: press and drag along it to scrub the
-  chat, hover for a preview of a turn and its neighbours, and move it to the
-  right edge with the new Minimap location setting.
-- **Small conveniences**: a Cancel upload button while a file uploads, an opt-in
-  Double-click to edit your messages toggle, a Search box in the Keyboard
-  shortcuts dialog, and Rename on a terminal tab.
-
-### Folders that carry their own steering and order
-
-- **Steer every chat in a folder**: a folder's settings take a list of additional
-  steering directories, and every chat filed under it or its subfolders starts
-  with that steering on any agent backend.
-- **Sort folders your way**: the sidebar's sort menu gains a Folder order choice
-  of your own arrangement, by name or by date created, and every folder picker
-  follows it.
-- **See a conductor and its workers as one tree**: the sidebar's lane button
-  offers a conductor view that nests each session under the one that opened it,
-  with child and needs-you counts on the collapsed row, and every crew arrives
-  collapsed to one row. It reads the crew log, which now records unless you
-  switch it off.
-
-### Tags, folders and titles you steer
-
-- **Say which tags an agent may set**: every tag in the sidebar's Manage Tags
-  panel carries an Agent permissions choice of Human only, Agent: add only or
-  Agent: add and remove, and a tag made before this release reads Set up agent
-  permissions until you opt it in. While that permission store cannot be read the
-  panel says so and still lets you rename and recolour.
-- **Right-click a folder**: a right-click or a long press on a folder row opens
-  the same menu its three-dots button shows, at the pointer, with Rename, New
-  subfolder, New ephemeral chat, Move folder to, Folder settings, Hide folder,
-  Hide when empty and Delete folder.
-- **Session titles keep up with a long chat**:
-  `dashboard.title_refresh_every_turns` in `config.json` re-examines an
-  auto-generated title every N turns instead of only at the eighth and
-  twenty-fourth, and renames it when the topic has moved. It is off by default,
-  costs one background call per refresh, and never touches a title you wrote
-  yourself.
-
-### Settings you can find
-
-- **Chat settings in named groups**: Settings → Chat is a rail of Transcript,
-  Composer, Sessions, Side panel, Model, About You, Discovery and Advanced
-  instead of one long scroll.
-- **Search settings from the sidebar**: the settings search box is pinned at the
-  top of the Settings sidebar on desktop and stays put while the tabs scroll.
-- **Credits by the day**: the Usage drill-in's Daily History table shows each
-  day's credits used and its share of the plan allowance, and the balance is read
-  automatically with no setting to flip.
-
-### Agent templates, and crewmates with names
-
-- **An Agent templates tab under Agent Capabilities**: see every installed
-  template grouped by origin, create, duplicate, edit or delete your own, start a
-  one-off chat with one, or enroll it as a crewmate, while package and built-in
-  templates stay read-only with Duplicate to edit. The Schedule page's Agent list
-  groups the same two kinds under Crewmates and Agent templates, and a template
-  job runs on the default crewmate's workspace and memory without creating
-  anything new.
-- **A display name for a crewmate**: the Display name field on the crew form
-  under Agent Capabilities → Agents labels the crewmate across the dashboard
-  while its id keeps driving schedules and the CLI.
-- **Twin skills told apart**: when two packages ship a skill under one name, the
-  agent editor's skill picker and chips show where each copy lives, and a failed
-  skill catalog load says why.
-
-### Sessions that fork, nest and follow you into a DM
-
-- **An agent can fork a transcript**: the new session inherits what the
-  dashboard's Fork button gives it, and the agent can adopt or release another
-  session so it nests under, or leaves, the caller in the sidebar.
-- **Your own Discord or Telegram DM can run a conductor**: it dispatches workers
-  and uses the work ledger, where a channel session used to be refused outright.
-- **A conductor can rebuild its work ledger**: the crew log's record of every
-  write is enough to reconstruct it.
-
-### What an agent may do with your sessions
-
-- **An agent can choose a session's model**: a session an agent opens for you can
-  start on a model it names, and an agent can move an idle session of yours to
-  another model, which takes hold at that session's next turn. The pick shows in
-  that session's model chip like one you made yourself, a choice you make in the
-  meantime wins over it, and a session with a turn or sub-agents in flight keeps
-  its model until it is stopped.
-- **An agent can pin a session**: pinning or unpinning a live session at the top
-  of the sidebar follows the same ownership rules as filing or tagging it. Both
-  this and the model pick need an agent whose template mounts the dashboard tool
-  set, and an agent talking to you from a messaging channel is refused.
-- **The crew log records out of the box**: every chat's redacted record is kept
-  without setting anything, so session ledgers, the conductor work board and the
-  Issue Radar crew ledger work on a fresh install. Deleting or trashing a
-  conversation takes its crew log with it, the storage screen counts the log with
-  the session, and `KIROCREW_CREW_LOG=0` switches the whole thing off.
-
-### Crewmates grow into teams (Preview)
-
-- **Group crewmates into teams**: with the Crew Members preview on under
-  Settings → Developer → Feature Previews, the roster's plus menu gains New team,
-  and opening a team shows what each crewmate is doing now, the questions waiting
-  on you, and the week's activity.
-- **A crewmate keeps its own notes, work log and panel**: opening one shows its
-  standing notes, the sessions it is driving with its patrol, and the panel it
-  publishes for you.
-- **Create your first one from the page**: an empty roster shows a New crewmate
-  button, and the plus menu offers the same once crewmates exist, opening a dialog
-  for its name, what it is built from and what it looks after, with workspace,
-  model, triggers and colour under Advanced. Meet CrewMates still walks four steps
-  and gives it a standing job with a schedule. Either way its chat opens with a
-  greeting already seeded, and returning to the page reopens the crewmate you used
-  last.
-
-### Decisions (Jev) grows up (Preview)
-
-- **A wake judge without a Jev key**: the Quiet check-ins row on the Decisions
-  (Jev) card under Settings → Developer → Feature Previews lets a monitoring
-  loop's judge run on the model provider this machine already uses.
-- **Routing without arming each chat**: with the switch on, any session left on
-  Auto is routed for each turn and its composer chip reads Auto (Jev).
-- **A risky badge you can believe**: a tool call is flagged risky only when the
-  provider is at least 80 percent sure, and a decision may carry the last two or
-  three turns within the ceiling you agreed to.
-
-### Memory you can switch off
-
-- **Automatic memory writes are optional**: `memory.persistence_enabled` in
-  `config.json` stops the gateway distilling your sessions into memory at all.
-- **Each injected block is separately switchable**: `memory.inject_memory`,
-  `memory.inject_lessons` and `memory.inject_activity` drop the memory, lessons
-  and activity blocks from a turn.
-- **See what recall cost**: with Developer Mode on, the context breakdown adds a
-  Facts recalled for this task row and draws the whole breakdown as a stacked
-  area chart over the session.
-
-### Approvals and apps reach further
-
-- **Approve a sub-agent from Discord**: an agent working in a Discord channel,
-  thread or DM posts its Approve and Deny buttons there instead of leaving the
-  request unanswered.
-- **An MCP app can send a message into the chat**: a click or a form submission
-  in a server-authored app lands in the conversation labelled Sent by the app,
-  never as your own words.
-- **Papyrus panels are yours to size**: drag the file tree, PDF preview and
-  co-author panel boundaries, and Papyrus remembers the layout and whether the
-  co-author panel was open.
-
-### Apps that finish the round trip
-
-- **See what a shared MCP backend will run**: with Developer Mode on, turning a
-  server's Stub switch on under Developer → MCP Management opens a review of the
-  exact command and environment one shared backend would launch, and nothing
-  changes until you approve. A server whose command changes afterwards is marked
-  needs approval and keeps running inside each session until you approve the new
-  one.
-- **A file sent to WeCom arrives as a file**: a PNG or JPEG lands as a picture, an
-  MP4 or WebM as a video and anything else as a download, where WeCom used to
-  receive only a link back to the dashboard. Pictures are capped at 2 MB and files
-  and videos at 20 MB, and a larger picture is still delivered, as a file.
-- **Code Review Sage lists the reviews waiting on you**: a Requests tab beside
-  Pull requests and Reviews shows the open pull requests across your repositories
-  that ask for your review, and ticking one starts a Sage review the same way. It
-  needs a signed-in GitHub CLI and refreshes when you open the tab or press
-  refresh.
-
-### More backends, and hooks you can author (Preview)
-
-- **DeepSeek Harness joins the selectable backends**: with Developer Mode on,
-  pick it on the Developer page's Agent Backend tab after installing `dsh` on the
-  gateway host, and hand it its provider key by mapping an environment variable
-  to a Settings → Secrets entry in `agent.deepseek_env`.
-- **Write a hook for any of the eleven Kiro Agent triggers**: the event picker
-  under Agent Capabilities → Hooks adds task, file and manual triggers, each
-  marked not fired yet or never fires until something fires them, and Test runs
-  any of them now.
-- **A welcome message and Powers reach a KAS session**: what the dashboard
-  transcript gets, that session gets too.
-
-### The sandbox, on your terms
-
-- **A strict sandbox tier**: set `agent.sandbox` to strict, in `config.json`,
-  with `kirocrew config set`, or on the Developer page's Config tab, to hide the
-  cloud, ssh, kube and gh credential directories from every agent subprocess.
-- **Fewer false refusals**: a command that only mentions a dangerous verb as
-  data, and an ordinary command or file read while the host is under load, now go
-  through.
-- **Images are not tokens**: an ordinary JPEG passes the credential scan on every
-  delivery path instead of being refused as a bot token.
-
-### Remote crews, pinned and chained
-
-- **Pin a remote crew to a subnet**: with `instances.enabled` on in
-  `config.json`, the launch form under Settings → Remote Crew gains an optional
-  Subnet ID field, and a launch that names one lands in that subnet and its VPC.
-  Leave it empty to keep automatic discovery, and give the subnet internet egress.
-- **A crew behind a crew gets its own tab**: connecting to a remote crew from
-  inside another crew's pane adopts it as a top-level tab of this dashboard,
-  drawn indented under the crew whose tunnel it rides, and it greys out with that
-  parent when the tunnel is down. A chain is two hops at most, the parent must be
-  reached over SSH, and removing the parent removes what is chained behind it.
-- **Run a Fargate crew unsandboxed, on your own say-so**: a Fargate task cannot
-  give the model subprocess a user-namespace sandbox, so the crew container used
-  to refuse to start there. Setting the Fargate lane's `internal_only` in
-  `cloud.json` declares that the task runs your own crews and that you accept
-  what they can read, and the container then starts and warns at startup. Off by
-  default and never written by the product.
-
-### Appearance and the composer
-
-- **Choose your font**: Settings → Display gains a Font Family list with a Custom
-  option and an Enable ligatures switch.
-- **Effort levels come from the live session**: the composer's model chip lists
-  the effort levels the running session actually offers, and a Codex pair
-  collapses to one row.
-- **A welcome screen you can start from**: an empty chat shows a card grid, with
-  the memory chip sitting above the composer.
-
-### Glass, tiles and one bar on the phone
-
-- **A frosted composer and coloured Settings tiles**: the composer sits on a pane
-  that blurs the transcript behind it, milky in light themes and smoked in dark
-  ones, and every Settings section icon sits on a coloured rounded tile. Reduced
-  transparency, high contrast and a browser without backdrop blur get a solid pane
-  instead.
-- **One bar on the phone**: the chat page's title row folds into the top bar,
-  leaving the sessions toggle, the session title with its menu, the bell and one
-  More actions menu holding pop out, activity panel and split view. The sessions
-  drawer gains a rail of the main destinations, a Kiro Account entry opens the
-  balance and sign-in card, and a strip under the bar reads Gateway offline while
-  the connection is down.
-- **Hover the top bar for the machine's vitals**: resting the pointer on the
-  System metrics control opens the CPU, memory and disk card with its absolute
-  figures, whichever form that control is in, and the card says when the last
-  update failed or is more than ninety seconds old.
-
-### Faster to paint, steadier under load
-
-- **Half the JavaScript on first load**: route-only pages load on demand, an
-  installed theme is applied from the first frame, and split view stops lagging
-  while a reply streams. A non-English dashboard also fetches only the catalog for
-  the language you picked instead of bundling all eleven, and Settings → Display →
-  Language says so if that catalog cannot be fetched.
-- **Session search leaves the gateway process**: indexing now runs outside it and
-  its character pass measured 28 to 46 times faster on multi-megabyte
-  transcripts, so a search no longer stalls the dashboard.
-- **A large sidebar no longer starves your subagents**: the gateway serializes
-  its session list once per push and caches the tool-policy read, so the adaptive
-  subagent cap stops collapsing to its floor on an idle host.
-
-### From the command line
-
-- **`kirocrew cron add` registers every kind of job**: script, command and
-  one-shot jobs take the same options the dashboard offers.
-- **`kirocrew doctor` reports skills out of step with the build**: it also counts
-  the skill-view alias backlog waiting to be reclaimed.
-- **The Browser panel works over a tunnel**: it is served through the dashboard's
-  own address, so a remote dashboard reached over SSH needs no second forwarded
-  port.
-
-### Notable fixes
-
-**Chat and sessions.** The transcript keeps your place, so coming back to a
-session or to a phone tab shows the current state rather than a stale or
-far-scrolled one, and a long prompt hands over to its pinned card without a jump
-while its copy, pin and edit actions stay reachable. Nothing you type is lost:
-text entered while a new chat is opening is kept, a send intercepted by a lapsed
-sign-in comes back to the composer, un-toggling a follow-up chip removes only
-what it added, a large paste collapses to a chip in split panes and Side Chat
-too, and files on a steer or a cancelled queued message keep their chips. A turn
-in progress reads Thinking, a background pane that started while you were
-disconnected shows as running after reconnect, and a session start that keeps
-timing out stops offering Resume and says why. Searching History for a short or
-numeric term such as a case number now puts the chat whose title is that term
-first instead of burying it under long transcripts that repeat the digit,
-finishing a rename in the header returns focus to the title, the effort popover
-under the composer's model chip stays on screen beside the right edge, and
-switching a session's model in place keeps the effort level you chose. A
-tool-call row for one of Kiro Crew's own tools reads as what the call does,
-Start sub-agent or Pause schedule, rather than a spaced-out tool name.
-
-**Replies, queues and watches.** Inline code looks like code rather than a link
-and says Copied on a click, a code block's editor scrolls in place and says edits
-are not saved back, a long diff no longer lags while it streams, and Mermaid
-labels are no longer clipped. Run now on a queued card works while a sub-agent is
-still running, a failed auto-compact waits for those sub-agents instead of
-killing them, and a session with sub-agents still active is not swept away as
-idle. A pull request watch no longer reports a cancelled re-run as a live
-failure, and a refused revision of a monitoring loop is reported in the chat
-instead of leaving the loop silently on its old instruction. A request the gateway
-could not apply now writes Monitor was not set up, Monitor was not changed or
-Monitor was not stopped into the chat, a loop you stopped stays stopped because a
-wake already in flight can no longer arm a replacement,
-`monitoring.max_runtime_secs` raises the runtime ceiling for a new or updated
-watch to thirty days, and every stop leaves one line in the gateway log naming
-the reason, the cycle count and the run time. A link whose destination is refused
-now renders as plain text instead of a link that pointed back at the page you
-were reading.
-
-**Sidebar, board and settings.** Hiding a folder now takes effect in the board
-and conductor lanes as well, each lane says how many folders are hidden and its
-Show button opens the filter menu where the hide is undone, and a folder's
-collapsed row says how many dormant sessions it holds. Settings → Chat → Default
-Model applies without a restart and says when the default agent's own model pin
-overrides it, with one click back, while Settings → Display lists installed theme
-packs after sign-in and offers Retry when the list cannot load. The dashboard
-reconnects on its own after a phone changes networks, streamed text flows every
-frame instead of lurching, a plain link inside a widget opens outside the frame,
-and the file diff masks credentials on both sides. Closing the session you are in
-lands on the row below it, a folder's name stays pinned while its sessions scroll
-under it, the first open-session tab no longer hides under the collapsed sidebar's
-toggle, and a session whose turn was cut off by an app restart comes back marked
-interrupted and offers Resume. Open file tabs no longer slow the whole dashboard,
-a query typed into the command bar returns its best match first, dragging a file
-in while a menu is open lands the drop, the System page's Sessions tab counts a
-shared runtime once instead of once per co-tenant, and the data-handling warning
-that opened Settings → Security, sat at the top of the Slack Home Tab and printed
-on every command-line start is gone.
-
-**Agents, skills and apps.** An agent spec's hooks and permissions now take
-effect on the KAS backend, a sub-agent spawn there reaches the approval card
-instead of being denied outright, and an older agent CLI no longer refuses the
-generated spec and loses every Kiro Crew tool with it. The Skills queue says why
-an approval was refused and flags a candidate that will fail before you click,
-and Settings links straight to that queue. Disabling or uninstalling an app
-really stops it, scheduled jobs included, the store no longer offers a built-in
-this build does not ship, and a server disabled in the shared agent
-configuration stays listed as disabled instead of vanishing. One unreadable
-lesson no longer stops every chat and scheduled job from starting, the bad row is
-skipped and the log names it; reinstalling a skill keeps the copy you had when the
-new one fails to write; a crewmate can be named with spaces, periods or letters
-outside ASCII; a crewmate whose Kiro CLI settings turn off inherited defaults no
-longer receives your global steering anyway; and a model pin is judged against the
-backend the crewmate actually runs on. An OpenCode session on a machine whose own
-configuration carries a per-tool rule starts, a pi release too old for the adapter
-is refused up front with the upgrade command instead of a chat that spins, and
-goose with no provider configured names `goose configure` rather than showing a
-raw protocol error. Updating an installed app on Windows no longer fails while its
-backend is running, AsciiDoc joins the formats knowledge ingest reads, and a Word
-document's tables are indexed so a fact that lived in a table cell is found.
-
-**Subagents and the agent runtime.** A large wave of background subagents no
-longer loses healthy starts to a startup timeout or drains the host's memory, and
-a queued spawn's chip says whether it is waiting on memory, a paused cap or the
-concurrency limit. A run you stopped is recorded as stopped rather than as a
-runtime death, a run cut off by a gateway restart is delivered as cut off rather
-than as its answer, and the notice names the resume handle when the conversation
-is still on disk. Disabling one Kiro Crew tool no longer breaks every session of
-the default agent, a refusal names the unreadable spec or the unreachable
-gateway, and a project path with a Windows drive letter is accepted. An agent may
-hand off a single task again, because the refusal that demanded a reason for a
-one-task delegation is gone. Background sub-agents no longer die a few minutes in
-with a provider shutdown message every time another chat takes a turn, an agent
-running tests in a container limited to a few cores stops starting one worker per
-core of the whole host, and pressing Stop on a goose or pi session while an
-approval card is open ends the turn at once.
-
-**Channels and notifications.** An Approve pressed the moment the card appears
-now counts on Telegram, Slack, Teams and Discord, a Discord turn that ends with
-no text says so instead of hanging on a placeholder, and queued direct messages
-from different people are answered as separate turns under the right sender.
-Slack no longer splits a streamed word at a flush boundary and reports a file
-upload it made as delivered, every other channel now posts the same security
-notice Slack did when something was redacted, and a credential can no longer slip
-through by straddling two messages. A desktop notification fires once per
-approval and only while the window is away, and a conversation that answers
-itself is paused after ninety turns in an hour. Choices the agent offers at the
-end of a reply reach Slack, Webex, Telegram and WhatsApp even when prose followed
-them, and a model's refusal to write a label no longer becomes a conversation name
-or a session summary. When two people write while the agent is busy, the second
-person's Queued acknowledgement is no longer overwritten by the first person's
-answer. A session driven from a Discord DM or a Slack thread can be unlinked from
-the session menu and not only paused. In a WhatsApp group you configured, only you
-and the numbers on your allowlist can make it reply, anyone else is dropped even
-when they mention it, and a person you do admit talks to an agent with no tools at
-all.
-
-**Approvals, install and update.** A command that merely mentions chmod, chown or
-netcat is no longer refused, and an auto-approve list you wrote yourself in
-`mcp.json` or an agent file is now kept, so those tools skip the approval card;
-set `mcp.honour_auto_approve` to false to put every verb no server declares back
-through the gate, and an app's own list is never honoured either way. An Approve
-given from any surface, a channel or a sub-agent included, is checked once more
-against the denied-command list and the protected-path rules before it is
-honoured, and an approval for a request the transport never recorded is refused
-instead of running. The desktop app starts itself
-once a still-finishing install completes, offers a retry after you quit another
-copy holding the port, and leaves no ghost window behind on macOS. An update that
-removes the running interpreter defers or exits cleanly instead of serving a
-stale version, the install script recovers from a package manager's
-optional-dependency bug on its own, and pods provision on a Windows host with a
-stock Python.
-
-**Chats, files and the gateway.** Incognito and temporary chats survive a restart
-and reopen from History while still teaching the product nothing, and a chat
-holding a pasted screenshot gets its title and summary again. Code and diff cards
-keep their controls and their height while highlighting loads, the Files tree
-says why a folder is empty, linked or unreadable, and PDFs are searchable again
-from the file browser and from knowledge ingest. Member chats made on the
-previous release work after upgrading, a custom embedding model no longer aborts
-the gateway, and changing the log level reaches the log file without a restart. On
-Linux a gateway whose own memory had ever passed a gigabyte lost every PDF it
-tried to read, because the extractor's watchdog measured the gateway's peak rather
-than its own. A terminal opened from a gateway that was started in the background
-now answers Ctrl+C and hangs up on close, the limits on how much run history a
-scheduled job keeps apply while the gateway runs instead of only at start, and on
-Linux the service commands see a gateway installed as your own user's systemd
-unit, naming the scope they act on. A hostname that merely begins with the letters
-a token header begins with is left alone in chat, history and channel output, and
-on the KAS backend every Kiro Crew tool call had been refused as unattested and
-answers again.
-
-**Sessions that start and resume.** A session start on a slow host gets ninety
-seconds to come up, a start that keeps failing stops retrying in the background
-after three tries and cleans up the MCP servers it launched, and a start that
-waited behind another request or got a reply too large to read says so at once.
-Resume on a turn cut off by a restart or a crash carries on with that turn
-instead of the one before it, a chat whose backend lost its session reconnects
-and retries once instead of failing every prompt, and a chat holding an image the
-model no longer accepts recovers. Old chats bound to a crewmate the startup
-cleanup removed, or to a generated skill view, resume on their agent, the
-Crewmates roster drops the generated rows you never chatted with, and a
-crewmate's own chat keeps dispatching workers after a restart.
-
-**Kiro Crew's own tools.** Kiro Crew's tools stay available after an update
-prunes the previous install, across an in-app restart, and when a shared MCP
-backend falls back to running per session, instead of refusing every call as
-unattested until the gateway restarts. With kiro-cli 2.27 or later those tools
-load on demand under Tool Search, and the desktop app now bundles kiro-cli
-2.27.1. An installed agent can be made the default agent and stays the default
-while its workspace still declares it, and a project's always-on skill that does
-not fit, or a SKILL.md that is not UTF-8, is skipped with a warning instead of
-failing every session in that project.
-
-**Subagents and memory under load.** A subagent start is admitted when 2 GB
-would remain after it, where it used to want 4.5 GB free, it is priced by
-whether it shares its parent's runtime, and on a Mac it also waits while the
-kernel reports memory pressure, with the queued chip naming that reason. A
-concurrency cap cut under load climbs back once the host sits idle,
-`kirocrew spawn run` works from the host's own command line, and a Claude
-session running a background command or workflow is not recycled while that
-work runs. Chats accept messages a few seconds after a restart instead of about
-two minutes later, guide files over a crewmate's budget or behind a symlinked
-home are left out or read correctly instead of refusing the turn, and history
-consolidation stays bounded however large the memory table grows.
-
-**Config files and Windows.** A `config.json`, `mcp.json`, workspace settings
-file or SKILL.md saved with a UTF-8 byte order mark, as Windows editors do by
-default, is read like any other file, and an empty `mcp.json` reads as no
-servers instead of refusing every session. A `config.json` that does not parse
-is never overwritten with defaults by a theme, language or onboarding change,
-and the first-run Import setup offers Close setup for now when it cannot save.
-On Windows a gateway whose running version an install manager pruned recovers
-instead of looping behind the loading screen, an MCP server whose launcher is
-strict about the case of its `.exe` name starts, and a slow shutdown of a
-process tree is reported as still exiting rather than as a failure.
-
-**Security and scheduled jobs.** Every dashboard route that installs, opens or
-enables an app, edits, runs, acknowledges or cancels a scheduled job, reads host
-files or drives an agent now requires the dashboard owner, and an app token
-manages only its own scheduled jobs. Agent subprocesses can no longer rewrite
-`config.json`, `config.local.json` or the kiro-cli MCP registry, Windows
-directory junctions get the same checks as symlinks, and the link exfiltration
-check no longer flags an ordinary query string. Command crons run on Linux and
-macOS hosts whose `/bin/sh` is bash, because brace expansion in the stored
-command is refused instead, and the refusal names the cause for each platform.
-
-**Dashboard and desktop.** Open session tabs come back after a restart, the
-answer stays visible when a recycle notice follows it, your own queued and
-steered messages show as you typed them, and the file and code editors keep the
-caret while you type. A dashboard that fails to boot names the script that broke
-and refetches it on Clear cache and retry, the desktop app clears its page cache
-once after an upgrade, a busy long chat no longer reloads in a loop after a
-crash, and Connect your phone opens above the sessions panel. The desktop app
-reaches a remote crew whose SSH config runs a helper from Homebrew or
-`/usr/local/bin`, and on Linux a gateway started in an SSH session keeps starting
-agents, crons and apps after you log out.
-
-## [0.7.2] - 2026-09-28
-
-A small fix.
-
-## [0.7.1] - 2026-09-24
-
-A hot patch for two ways the dashboard had become slow: slow to start a chat, and slow to
-move between them.
-
-### Notable fixes
-
-**Sessions and subagents.** The per agent view files Kiro Crew publishes for its agent
-backend are now reclaimed as soon as no running session holds one, so that directory no
-longer grows without bound. On hosts where it had reached thousands of entries every new
-chat and every background subagent paid several seconds before its first reply, and past a
-few thousand the backend stopped loading agents at all, so chats failed to start. The
-cleanup runs by itself on the next session you open.
-
-**Chat panes.** Switching between chat tabs no longer stalls the dashboard: a pane that
-reconnects asks only for the rows it displays instead of the session's entire transcript,
-and a message read again reuses the redaction already computed for it.
-
-## [0.7.0] - 2026-09-15
-
-Kiro Crew stops asking you to restart it: almost every setting now reaches the
-running gateway the moment you save it, updates check on a schedule and wait for
-your work to finish, and queued work survives a gateway restart. Long chats get
-a minimap, readable tool-call titles, a model picker that no longer hides
-reasoning effort behind a drill in and, in preview, Jev choosing the model for
-each turn. Windows gets isolated pods and a gateway that starts about four times
-faster, a pull request watch now covers GitLab, Bitbucket and Azure DevOps as
-well as GitHub, and a Fargate crew is reachable from your laptop.
-
-### Settings that apply while you work
-
-- **Almost every setting now reaches the running gateway**: saving `config.json`,
-  or changing a value in Settings, takes effect at once instead of waiting for a
-  restart.
-- **A boot-only setting can flag itself in place**: the Slack slash command field
-  under Settings → Channels carries a changes need a restart badge that the
-  gateway's own config schema drives, and it is the only field that shows one.
-
-### Chat that keeps up with you
-
-- **A turn minimap in the left gutter of a desktop chat** shows one marker per
-  turn, with hover previews, click to jump and an end cap that loads older
-  history; it does not render on a phone or on a touch pointer.
-- **A session's short name opens it**: writing a name like `chat-1380` in a
-  dashboard chat now renders a chip that switches to that session when it is
-  open, where before only the full slot key did, and a name no open session
-  answers to stays plain text.
-- **An oversized diff can be expanded line by line**: the simplified view gains a
-  Show line-by-line diff control that computes the real patch in the background
-  and folds the unchanged ranges away.
-
-### Chat, tuned to your habits
-
-- **The composer's model chip no longer hides reasoning effort behind a drill in
-  step**, and Settings → Chat → Selectable Models decides which models the list
-  offers, though Auto and a session's active model always stay visible.
-- **Choose what Enter does while the agent is working**: Settings → Chat sets
-  Steer or Queue as the default, and, while the split send button is showing and
-  your send shortcut is set to Enter sends, Cmd or Ctrl plus Enter does the
-  opposite for one send.
-- **New dashboard chats can start in the memory mode you prefer**, from Settings
-  → Chat → Default Memory Mode, and ticket ids or any other plain text can become
-  links by pairing a pattern with a URL template under Settings → Chat → Text
-  Link Patterns.
-
-### Side Chat, tables and code blocks
-
-- **Side Chat can run read only tools on Kiro CLI**: open it with `/side` or the
-  new `/btw` alias and it auto approves read only shell commands and a short list
-  of built in read tools under a stripped down agent definition, while everything
-  else, including a read only tool served over MCP, is refused because a side
-  turn has no approval card.
-- **Every markdown table in a reply gets a small action row** to copy it as
-  Markdown or as CSV.
-- **Long code blocks repeat their copy and edit buttons at the bottom**, so you
-  never scroll back up to use them.
-
-### Around the dashboard
-
-- **A bookmarkable All sessions page**: open `/sessions` for a chooser that never
-  auto creates or auto selects a session, with search, All and Unread filters,
-  status tag chips and Today, Yesterday and Earlier grouping.
-- **Back and Forward arrows for the dashboard's own history**: a desktop-width
-  window's top bar carries two arrows, with Cmd or Ctrl plus the left and right
-  arrow keys as the keyboard twin.
-- **Start a chat in a folder without leaving the one you are reading**: Cmd or
-  Ctrl click, or middle click, a folder's plus in the sidebar or on the board now
-  opens the new chat as a background tab, the same gesture the New button takes.
-
-### Coding hours, and an alert when work finishes
-
-- **Coding hours on Settings → Overview**: a WakaTime card shows the last seven
-  days and opens a drill in with per language and per project bars plus Export
-  hours as CSV or JSON, once `wakatime.enabled` is on and the API key is stored
-  in the secrets vault.
-- **Get told when a background chat finishes**: Settings → Notifications →
-  Desktop alerts adds a default off Notify when a background chat finishes
-  toggle, and flipping it is what asks the operating system for permission.
-
-### Faster and steadier under load
-
-- **The Windows desktop app's gateway starts about four times faster from cold**,
-  moving the measured import of its bundled Python from about seventeen seconds
-  to about four.
-- **Session search returns results sooner on large histories** once a background
-  index pass finishes after the gateway starts, and the sidebar repaints a
-  bounded window of top rows instead of every row when a new chat lands.
-- **Browsing the knowledge library no longer risks freezing the gateway**: a busy
-  Knowledge tab on Agent Capabilities, or a contended sync, no longer stalls
-  chat, cron and other sessions at the same time.
-
-### Isolated pods, on Windows and from the agent
-
-- **Isolated pods run on Windows**: `kirocrew pod up` and its down, ls, status,
-  token, url, logs, prune and provision verbs work through Task Scheduler, for a
-  git worktree of a source checkout on a host where your own user may create a
-  scheduled task, while `pod api` is the one verb refused there because Windows
-  has no unix-domain socket for the pod's private request.
-- **An agent can bring a preview pod up by itself**: with the Dev Fleet app
-  enabled under Apps → Library, new pod tools let an agent session start a
-  worktree's pod and receive its address, port and short lived token, which its
-  own sandbox blocked before.
-
-### Windows catches up
-
-- **Turns work again behind a TLS inspecting proxy**, because the gateway no
-  longer replaces the Windows trust store for the agent process.
-- **A directory junction now trips the same defences a symlink does**, so seeding
-  into a junctioned data home is refused by name instead of silently detaching
-  it, while a skill install and a source rebuild of the dashboard bundle no
-  longer fail over one.
-- **Two apps stop refusing Windows work they can now do**: Issue Radar reads
-  Azure DevOps without WSL once you enable it under Apps → Library and install an
-  authenticated `az` with the azure-devops extension, and PPTX Maker finds a
-  LibreOffice for its previews at the default Windows install location even when
-  it is not on `PATH`.
-
-### Updates that land
-
-- **Update checks recur instead of running once at boot**: the gateway looks for
-  a new version every twelve hours, and an automatic apply pauses new turns and
-  defers scheduled runs until the work already in flight finishes.
-- **A source checkout update that needs a newer Python than this install's
-  virtual environment runs is refused before the checkout moves**, with that
-  environment and its interpreter path named.
-- **A managed install's update can now be armed from the update and What's new
-  dialogs too**: both offer the same host approval step Settings → About already
-  had, showing one command to run on the gateway host inside a countdown that
-  says when the approval window closes.
-
-### Channels carry more
-
-- **Any file type reaches the agent from a chat channel**: a video, archive, SVG
-  or otherwise unrecognized attachment sent through Slack, Discord, Telegram,
-  Teams, Webex, WeChat or WeCom is downloaded up to fifty megabytes and handed to
-  the agent as a local path with its original name, type and size.
-- **A message that arrives while the gateway is restarting gets an answer**: on
-  the next start the sender is told in the same conversation that it was never
-  processed, with the original text quoted back to resend and nothing replayed as
-  a turn, unless it came from an incognito or temporary conversation or a
-  WhatsApp group.
-- **The agent can edit a Slack message it already sent**: the new
-  `update_message` tool updates a message in place instead of deleting and
-  reposting, in a tracked channel or the owner's own direct message.
-
-### Voice and dictation
-
-- **Local Piper replies stream as they synthesize** instead of waiting for the
-  whole clip, and a blocked playback now says why instead of staying silent.
-- **Dictation stops losing text**: dictated words splice into the draft without
-  gluing onto what is already there or dropping a selection, an unselectable
-  anonymous microphone no longer appears in the Microphone picker under Settings
-  → Voice, and an over long recording is refused with a reason instead of being
-  silently cut.
-
-### The Browser panel gets hands
-
-- **Annotate mode in the packaged desktop app's built-in Browser panel**, on a
-  page open in that app's own embedded browser view, lets you pick page elements
-  and attach notes, then sends the numbered list and a screenshot into the chat
-  composer for the agent to act on.
-- **The address bar now opens a real public website whose address carries no
-  query string or fragment**: in an ordinary web browser the page opens in the
-  gateway host's own managed browser and is framed back into the panel, so it
-  needs that browser installed and only the owner can drive it.
-
-### Watches beyond GitHub
-
-- **A pull request watch now accepts GitHub, GitLab, Bitbucket Cloud or Azure
-  DevOps Services URLs**: paste one into the composer's Watch a pull request
-  instead form, which needs `glab` for GitLab, `az` with its azure-devops
-  extension plus either an `az login` session or a stored `AZURE_DEVOPS_EXT_PAT`
-  for Azure DevOps, and `BITBUCKET_EMAIL` with `BITBUCKET_API_TOKEN` for a
-  private Bitbucket pull request.
-- **Azure DevOps Server and Bitbucket Data Center are not supported**, and an
-  Azure DevOps or private Bitbucket watch must be started from a dashboard
-  conversation.
-- **Stopping a monitoring loop works whichever kind is armed**: asking the agent
-  to stop or inspect the loop on your session now reaches a plain timer loop as
-  well as a pull request or workflow watch, and answers from a Webex session too,
-  where a stop used to be refused or silently do nothing.
-
-### Guided OAuth app setup
-
-- **GitHub and Asana now show setup cards in Agent Capabilities →
-  Connections**: Needs configuration leads to Settings → OAuth Apps instead of
-  offering a connection that cannot yet work.
-- **The owner can configure an OAuth app in Settings → OAuth Apps**: follow the
-  provider guide, copy the required redirect URI, and save the client ID and
-  write-only client secret without exposing the stored secret in the UI.
-- **Configuration is not a verified connection**: after setup, return to the
-  provider's normal Connect flow, which still performs its first-connection
-  checks rather than treating saved credentials as proof of readiness.
-
-### New seams for app developers
-
-- **An installed app you enable under Apps → Library can add its own tab to the
-  chat side panel**, and its own rows to the file overflow menu, workspace tree
-  and folder panel.
-- **App developers get `ctx.scrub` and `ctx.audit`**: the first redacts
-  credentials and exfiltration URLs from outbound data using the same patterns
-  the gateway enforces internally, the second writes an app's own
-  security-relevant decisions into the same audit log the gateway uses.
-- **An MCP server's embedded UI inherits the dashboard's colours, font families,
-  radii and shadows**, and re-inherits them when you change theme, for a server
-  you route through the gateway stub under Developer → MCP Management with
-  Developer Mode on.
-
-### Agents you can shape
-
-- **On the Kiro backend, an agent can inherit its capabilities from a parent
-  template**: Agent Capabilities → Agents → the agent's Capabilities pane offers
-  Follow the parent template with per row Inherited, Override or Removed choices,
-  a review step for incoming template changes, and a preview of what a save will
-  write.
-- **The model and skills on an agent's template are editable in place, unless
-  that agent follows a parent template**: the Agent Template pane shows the
-  definition's main fields and your first edit forks a private copy rather than
-  changing the shared template, with a Customized marker, a live count of your
-  changes and Save as new template.
-- **Agents interrupt with a question far less often**: the question card is
-  reserved for a permission, an irreversible or costly action and a preference
-  nothing can infer, with everything else decided and the choice reported in one
-  line.
-
-### Cheaper cron runs, broader knowledge
-
-- **A cron job can ask for minimal context**: creating or editing an agent job on
-  the Schedule page offers a Minimal context toggle with an inline hint
-  suggesting when it fits, cutting the token cost of jobs that do not need the
-  full injected context.
-- **Ask the agent to audit your scheduled-job costs**: the new
-  `cron-cost-optimize` skill uses recorded run history to recommend a cheaper
-  execution mode and never applies a change on its own.
-- **Knowledge takes four more languages and reports what it holds**: C#, Kotlin,
-  Swift and Scala files are ingested by a folder scan that used to skip them,
-  `local_knowledge_search` can be scoped to one namespace, and `kirocrew
-  knowledge stats` reports how many sources, documents and items the library
-  holds.
-
-### More agent backends (Preview)
-
-- **OpenCode joins Claude Code, Codex and KAS as a selectable backend**: turn on
-  Developer Mode under Settings → Developer and install the `opencode` binary on
-  the gateway host, then pick the opencode option on the Developer page's Agent
-  Backend tab.
-- **Kiro Crew's own tools now reach OpenCode and Codex sessions** the same way
-  they already reached Claude, except that an OpenCode session withholds one of
-  Crew's own servers whole when any of that server's tools is switched off.
-- **A policy-blocked tool call on Codex no longer silently ends the chat**, and
-  an agent that an installed app registers now starts on KAS, resolved by the
-  name it declares rather than by its file name.
-
-### Pi, with its limits up front (Preview)
-
-- **Pi is another choice on the Developer page's Agent Backend tab once Developer
-  Mode is on under Settings → Developer**: install both `pi` and `pi-acp` on the
-  gateway, with the selector naming missing components and Kiro Crew refusing a
-  session whose tool-permission gate cannot be verified.
-- **Pi sessions do not carry Kiro Crew's own MCP tools**, which `kirocrew doctor`
-  reports, so choose another backend when you need its subagents, scheduling or
-  memory tools.
-
-### Jev decides for the turn (Preview)
-
-- **Jev picks the model for a turn**: set a session's model to Auto (Jev) in
-  the chat model picker and each turn runs on the model you mapped to a simple,
-  medium or complex request through `decisions.model_route` in `config.json`,
-  once the Decisions (Jev) card under Settings → Developer → Feature Previews
-  is on.
-- **Jev decides steer or queue**: choose Auto (Jev) on the send button and a
-  message you type mid turn is judged to interrupt the turn or to wait for the
-  next one, instead of you guessing about a reply you have not finished reading.
-- **The decisions are on the record**: a strip under the reply names the skills
-  the turn loaded, what memory recall dropped and what left the machine, takes
-  your verdict on whether the pick was right, and a governance profile can turn
-  the whole preview off with `capabilities.decisions`.
-
-### Work that survives the host
-
-- **Queued work outlives a restart**: every subagent, task-runner step and
-  workflow call is a durable queued row, a gateway restart revives what was
-  queued instead of losing it, and concurrency adapts to the host's real
-  headroom, with the live picture under Tasks and capacity on the System page's
-  Services tab.
-- **A per-session record of what happened**: each session keeps an append-only
-  log of what it actually did, so long-horizon work survives compaction; a Crew
-  log view in the chat right panel folds it into status, usage, timeline, tools
-  and approvals when the gateway runs with `KIROCREW_CREW_LOG` on, and a
-  read-only `kirocrew-crew-log` MCP server lets an agent verify the trail.
-- **Sessions release what they held**: ending a session tears down its whole
-  process tree, its subagents and its per-session MCP servers, so a long-running
-  host stops accumulating hundreds of megabytes per ended session.
-
-### Notifications you notice
-
-- **A banner beside the bell**: a new notification arrives as a card under the
-  top bar, hides itself into the bell for a normal note and waits for you on a
-  critical one, several stack into a deck, and a prompt offers to turn on system
-  notifications so you are alerted while away.
-- **Waiting versus working**: a monitoring loop whose newest reply asks you
-  something shows Waiting on you on its sidebar row instead of a pulsing
-  progress row.
-- **Mute means mute**: muting a channel silences its banners and its unread
-  count, and the attention chime sounds only when a conversation hands control
-  back to you rather than at every intermediate pause.
-
-### The composer and the Files panel
-
-- **Paths, pastes and spelling**: typing `./` or `../` in the composer opens a
-  file picker scoped to that directory, Settings → Chat → Composer gains Show
-  Pasted Text in Full (off by default) so a long paste stays editable text, and
-  Spell Check Message Input (on by default) turns the browser's red underlines
-  off in every composer.
-- **Search inside your files**: the chat side panel's Files tab gains a
-  Name/Content toggle that searches what is inside your files and opens a hit at
-  its line, a right-click on a file offers Download, and the Project menu in the
-  tab's header opens a terminal already in the project directory.
-- **More attachments render**: the attachment picker accepts a `.drawio`
-  diagram, a Word document previews with its real headings and lists, and a
-  rendered Mermaid diagram exports as SVG or PNG from its action menu.
-
-### Tool calls and replies that read well
-
-- **Readable tool-call titles**: tool rows in the transcript read as what the
-  call does, Read file, Search, Git, instead of a raw shell command or a bare
-  tool name, and keep the raw command when a segment cannot be classified.
-- **A content-filter fallback**: a refused message is retried once on the model
-  chosen next to the throttle fallback under Settings → Chat
-  (`agent.refusal_fallback_model`, off by default), and the primary model
-  returns on the next turn.
-- **Response length reaches every agent**: the Response Verbosity setting under
-  Settings → Chat now applies to every agent, built in, custom or scheduled, and
-  an agent that declares a welcome message has it shown when it becomes active.
-
-### Folders, sessions and the command bar
-
-- **Folders with icons, found from anywhere**: a chat folder takes an emoji in
-  its settings Icon field, typed in or Auto-generated, folders appear in the
-  Command Bar (Cmd+K), in Search Everywhere and in the sidebar search, and a
-  nested subfolder can be dragged into a new position among its siblings.
-- **Artifacts from Cmd+K**: a Search Artifacts row lists the newest artifacts,
-  filters by name as you type and opens the one you pick, and a row under From
-  your chats on the Artifacts page opens a read-only preview with the save star
-  in its header.
-- **Sessions travel as files**: the sidebar's Import a session from a file
-  action takes an exported session back, a session pushed from a peer machine is
-  filed under Imported and then under who sent it, and
-  `dashboard.export_include_layer_b` (off by default) lets an export carry the
-  exact model context so an import resumes instead of replaying a prefix.
-
-### Crew members, at home and in the cloud
-
-- **Is my crew deployed**: a Cloud button on the Crew Members page opens a panel
-  that answers in plain language with one action per state, each crew's drawer
-  can show a live webview of what it holds, and the Wake sources block creates
-  a schedule already bound to that member's private memory.
-- **Fargate crews from your laptop**: Fargate joins SSH and AWS SSM as a
-  connection method under Settings → Remote crews, forwarding to the task over
-  AWS SSM with no ingress (needs the AWS CLI and the Session Manager plugin),
-  and a task lives six hours by default with ten running at most, set by
-  `fargate.task_ttl_seconds` and `fargate.max_running_tasks` in `cloud.json`.
-- **Ghost reactions**: a ghost crew plays a motion when a turn finishes or
-  fails, chosen per crew in the avatar builder's Reactions pane, and a crew
-  wearing an appearance pack plays that pack's own sound.
-
-### Apps, from more places
-
-- **Filter the store by source**: the Apps page filters by where an app comes
-  from, and a pinned registry shows its label and review tier so you can judge
-  how vetted a source is before installing.
-- **Bring a plugin in**: `kirocrew app import <dir>` converts a plugin package
-  written for another agent harness into an installable app, reporting what does
-  not map, without executing anything from the package.
-- **Apps that act**: an app can start, steer and stop sessions once you grant it
-  that in its trust dialog (off per app), an installed app's rail icon shows
-  whether one of its scheduled jobs is running, finished or broken, and Ops
-  Mission Control accepts incident.io as a provider.
-
-### Agents, backends and skills
-
-- **Agents as one markdown file**: an agent written as a markdown file with YAML
-  frontmatter in `~/.kiro/agents` is listed and usable with no JSON twin, the
-  agent picker lists templates alongside crew members without enrolling them as
-  members, and an agent can move its session between board tags with the
-  `chat_tag` tool under permissions you set in the tag manager.
-- **Backends as a list**: Developer → Agent Backend is a list of harnesses with
-  a capability card per row saying what it can do and how it treats your MCP
-  settings, goose joins as a selectable backend (Developer Mode), and Codex and
-  OpenCode sessions now compact.
-- **Skills by search, not by word overlap**: `skills.max_triggered` defaults to
-  0, so an agent discovers skills from a short index and `skill_search` instead
-  of having whole skill bodies injected (set a positive integer to restore the
-  old behaviour), Settings → Skills → Discover imports from
-  `owner/repo[@ref][:path]` pinned to its commit, and a saved lesson declares
-  whether it is a standing rule or a past finding (`applies`: `always` or
-  `on_topic`).
-
-### Watches, schedules and subagents
-
-- **Watches that know when to stop**: a structured pull-request watch retires
-  once its verdict stops changing, wakes on an edited review comment and on
-  named urgent conditions, and several watched pull requests cost one batched
-  query per check instead of three calls each.
-- **Schedules that fire when asked**: a low-frequency job wakes on its scheduled
-  minute instead of being skipped, each job's schedule is shown in its own
-  timezone, a persistent job's tab can be filed in a chat folder from the
-  Schedule page, and a job whose tool call the security gate refused reports the
-  refusal instead of success.
-- **Delegation with a reason**: `spawn_run` refuses a single task that names no
-  reason and no different model, agent or crew, a subagent is told at spawn which
-  of its MCP servers failed or await authorization, and `resource_status`
-  reports the concurrency cap actually in force against the configured maximum.
-
-### Security you can operate
-
-- **Approve a flagged file**: the owner can allow delivery of a file the
-  credential scanner flagged, armed in Settings → Security and completed with
-  `kirocrew file-delivery approve` on the host, and the Denied Commands card
-  states what that tier cannot see: the command line, not the body of a script.
-- **SSH agent forwarding, by consent**: git commit signing and git over SSH work
-  inside the sandbox when the operator writes `ssh_auth_sock_consent.json` from
-  outside it, and the private keys never enter the sandbox.
-- **Policies fail closed**: a ceiling folded from two policy tiers has its rules
-  read, a tool the operator denied is refused when the policy cannot be read,
-  and creating or editing a skill over the API requires the owner.
-
-### Windows, Linux and the installer
-
-- **Settings shortcut moves off Ctrl+,**: on Windows and Linux, Open settings is
-  Alt+, so a Chinese or Japanese input method can type a comma again, and macOS
-  keeps Cmd+,.
-- **Installs that say why**: the installer takes prebuilt wheels only and, when
-  no release publishes one for the host, stops with a message naming the host
-  and the packages (`KIROCREW_ALLOW_SOURCE_BUILDS=1` opts back in), and the
-  Linux AppImage starts on distributions without the older FUSE library.
-- **A desktop app that recovers**: on a host whose GPU process cannot start the
-  app relaunches in software rendering instead of exiting with no window, the
-  reconnect splash carries its own Close window control, and name-based command
-  auto-approval now works on Windows.
-
-### Faster where it hurt
-
-- **A backlog no longer freezes the rest**: the agent transport yields while
-  draining, the status endpoint reads its counts off the event loop, and memory
-  ranking falls back to lexical order past five seconds, so one busy session
-  cannot hold the dashboard and every other session behind it.
-- **Lighter startup**: skill discovery leaves the request path, a fresh session
-  no longer injects daily history and old project notes, and a scheduled job
-  that reuses its session stops re-sending full session-start context on every
-  run.
-- **Measured wins**: System page session rows sample in about 150 ms instead of
-  about 500 ms, opening a terminal holds the gateway for 0.5 ms instead of
-  107 ms, and a dashboard left on a long autonomous session no longer grows its
-  memory without bound.
-
-### Notable fixes
-
-For anyone checking whether their particular annoyance is gone.
-
-**Chat and sessions.** Rewinding or regenerating a message no longer discards a
-workflow or cron message that arrived at the same moment, and a compaction
-summary folds into one expandable Context compacted card instead of a multi
-kilobyte reply in the middle of the conversation. You can fork an incognito or
-temporary session, and download a persistent one from its session menu with
-Export to a file to move it to another machine. A sub-agent wave also stops
-claiming completion while a member's own nested work is still running.
-
-**On a phone.** Chat opens and stays at the bottom of the transcript, composer
-menus follow the box when the on screen keyboard opens or closes, nested menus
-open inline instead of running off screen, and the empty strip above the header
-in Android browsers is gone. The dashboard also makes fewer small requests at
-startup, which removes one source of mobile loading failures behind proxied
-connections, and a failed boot-critical script now shows a visible failure panel
-instead of a blank screen.
-
-**Security.** Inbound WeCom media downloads now connect only to the addresses
-that were checked, and the dashboard's link preview fetch uses the same pinned
-connector. Configuration import vets an archive's declared inventory before
-extracting anything, and a configuration export no longer follows a link out of
-the crew directory. A local security policy that cannot be read is skipped with
-one warning where a central governance document is present, and a signature it
-cannot verify reads as unverified rather than ungoverned.
-
-**Approvals and the command gate.** A file edit is now judged by the path it
-writes rather than by scanning its text, so an edit that merely quotes a blocked
-command goes through while one naming no resolvable target is denied. A narrower
-auto-approve grant correctly covers a matching subagent tool call, and an
-approval card for a command the gateway could not fully parse keeps its
-session-wide Trust option. Channel agents can no longer create or retarget a
-scheduled job, so move that scheduling to a dashboard session.
-
-**Tools and files under load.** A failed re-probe of an MCP server keeps its last
-known tool list instead of reporting a server that lost every tool, and on an
-install that has stubbed a server under Developer → MCP Management, slow replies
-no longer make the shared broker's supervisor kill a healthy daemon. Files with
-punctuation or emoji in the path open again, and the dashboard's file endpoints
-do their filesystem work off the gateway loop, so a wedged mount can no longer
-freeze chat, scheduled runs and tunnels.
-
-**Messaging.** Prose that merely mentions the steering marker is no longer cut
-off mid sentence on any chat channel, and several more option marker spellings
-whose brackets do not pair up render as plain text instead of reply buttons.
-Slack no longer shows a false error when a progress card update is merely
-rate-limited.
-
-**Lessons and remote crews.** Removing a lesson can name one repository scope, so
-a repo scoped lesson and a global one that share the same wording no longer both
-vanish. A chat bound to a remote instance also fills its model list instead of
-showing an empty one, allowing the remote gateway a longer first read and
-re-polling a partial answer rather than caching it.
-
-**Dashboard polish.** Switching between chats honors each conversation's
-folded-steps preference from the first paint, without briefly expanding the
-transcript and moving your reading position. Reading a session in one open window
-clears its unread badge everywhere else, a session link to a closed session
-declines gracefully instead of navigating to a dead page, and widgets detected as
-hardcoded light canvases stay readable in dark mode wherever they render,
-including artifact pages and library thumbnails.
-
-**The terminal, artifacts and shortcuts.** Ctrl+Shift+C copies the selection in
-the packaged desktop app, Enter runs the line you typed rather than a completion
-you never arrowed onto, and command completion can be switched off under Settings
-→ Display. The Add comment popover on artifact pages copies the original selected
-text, including surrounding whitespace, with a Copy button or Cmd/Ctrl+C while
-the comment draft is empty, and reports a clipboard failure instead of false
-success. Settings → Shortcuts records Control separately from Command on macOS,
-so custom Control-based Search Everywhere and panel-toggle shortcuts work as
-configured.
-
-**Error reports and privacy.** Ask the agent opens a pre-filled error report at
-its first line and keeps the taller composer until you start editing. Failed
-Browser installs mask npm credentials before displaying or handing errors to
-chat, and structured legacy assistant or tool messages render safely with
-consistent redaction in both live chat and history.
-
-**Windows links and file reads.** A file read can no longer be redirected by a
-junction or symlink planted at the last part of a path, which is how it has
-always behaved on macOS and Linux. Rebuilding the dashboard from source replaces
-a broken directory link instead of failing partway, and removes obsolete links
-without deleting the folders they point to.
-
-**Streaming and rendering.** Scrolling back into a streaming reply holds your
-place instead of snapping to the end or sliding the text up from under you, on a
-phone as well as a desktop, and find-in-chat paints its matches without
-reflowing the message. Math written with LaTeX's own delimiters renders as math,
-a diff block opens and closes from the same chip, an options footer with prose
-glued after it still renders as clickable choices, and text a model writes after
-its own footer is labelled as the model's own. A message whose markdown fails
-to render degrades on its own instead of blanking the view.
-
-**Queued prompts and plans.** A prompt typed while a turn is running survives a
-gateway restart and returns as a queue card, answering a question the agent
-raised mid-turn reaches that turn rather than queuing behind it, and every
-composer honours the send-shortcut setting so a stray Enter no longer sends a
-half-written prompt from the session grid or side panel. A message sent between
-the stages of a running plan is queued for that plan instead of starting a
-second turn, and a stage that produced nothing is retried rather than counted
-as done.
-
-**Dashboard.** Settings → Channels is now Messaging Channels, so it stops
-colliding with the Channels app where several agents share a room, and the
-composer's git badge is gone as a stale duplicate of the Git panel, which keeps
-the full view. Hovering a row, badge or card changes only its colour so
-neighbours stop shifting, a session you close stays gone from the sidebar, a
-session opened from a pasted link is renamed from its first real turn instead of
-keeping the URL as its name, and a failed artifact-library load says so and
-offers Retry. The Git panel no longer draws a clean badge over a working tree it
-never read and says the status is unavailable instead.
-
-**Memory stores and members.** Your standing rules reach the model again at
-session start, after the startup allowance had collapsed to about a fifth of
-its size and on one library delivered 8 of 607 rules. The daily backup covers
-the default memory store, deleting a lesson from the Memory tab removes exactly
-that row, a named store whose directory was lost is refused instead of being
-silently recreated empty, and picking a private member in a brand-new chat binds
-the conversation to that member's memory. A member stuck on an old private
-store name can be moved to a current store or back to the shared one.
-
-**MCP servers and agent backends.** A session on an extended thinking model no
-longer becomes permanently unusable, a server that fails on every attempt stops
-being respawned each discovery pass, a value you edit on a server source reaches
-the generated spec on the next rebuild, and a server pinned to a path that has
-vanished is reported as out of sync with a re-sync offered. Sessions on the
-managed KAS backend start instead of timing out, a backend's tool-approval
-prompt is delivered rather than read as a cancelled call, and codex, opencode,
-goose and pi sessions are no longer refused before the first prompt. Approving
-a tool by its `@server/tool` name survives a rename, a disable and a purge.
-
-**Slack, Teams, WeCom and the rest.** Teams answers each queued message under
-its own sender instead of merging several people's text into one reply, and an
-over-long Teams message is truncated and delivered instead of rejected. A
-credential the model split with markup is scrubbed on WeCom, Weixin and Feishu
-before the platform reassembles it, internal control tags stop reaching Slack,
-Discord, Telegram and Webex readers as literal text, and a reply whose
-suspicious link was rewritten now says so. Pressing Stop from a channel stops
-the linked dashboard turn, a Slack turn counts as delivered only once the
-answer and its choices reach the reader, and a voice memo past the recognizer's
-limit is refused with a visible note.
-
-**Crons, watches and subagents.** A cron script whose sandbox is torn down under
-it fails loudly instead of reporting a run that persisted nothing, a long run
-summary keeps its outcome line and links, and Autopilot recognises a plan
-whatever its heading style. A pull-request watch keeps reading on the other
-rate-limit budget instead of retiring itself, stops waking you on a cancelled
-check a newer run already replaced, and a session whose monitor its owner
-stopped is told the arm was refused. Agent process trees whose launcher exited
-early are reclaimed, where field evidence found ten such trees holding 4 GB on
-one host, and a subagent already running when the page reconnected reappears
-in the Subagents panel.
-
-**Windows and macOS.** A killed runtime reports its real exit status instead of
-"not reaped", the crash log survives non-ASCII text, MCP servers connect under
-a path with a space, a percent sign or mixed-case segments, and files behind a
-junction path open. A toolbox-launched or version-swapped Windows gateway is
-recognised as its own so sign-in retries, recovery and quit work, the Windows
-app offers its own updater and release stream, and a running MCP gateway daemon
-is detected so `doctor` stops calling it absent. On macOS a zombie provider
-process is reaped, a Homebrew `mise` is found without the shell's PATH, and the
-desktop View menu's zoom items work again.
-
-**Apps and the terminal.** An enabled app whose backend exits unexpectedly is
-restarted, `kirocrew app enable` and `disable` take effect in the running
-gateway, the uninstall dialog shows what else depends on the app, and a slow
-reader can no longer stop every app UI from loading. A failed Run in terminal
-cleans up the tab it created, and dock tabs whose shells are gone do not come
-back on reload.
-
-**Diagnostics and sign-in.** An expired Kiro sign-in is reported as such
-instead of as advice to enable a billed fallback that spends credits failing,
-company SSO sign-in completes instead of reporting the auth service
-unreachable, and a crew that registered without finishing its sign-in offers
-its device code on its own row. `kirocrew doctor` finds the AWS CLI where AWS's
-installer puts it, names the sandbox that really confines a delegated spawn, and
-reports that it cannot verify user namespaces inside a confined shell rather
-than claiming the host lacks them. `kirocrew stop` and `restart` work against a
-gateway the desktop app spawned.
-
-**Privacy and safety.** A bearer token carried in a `?token=` URL is redacted
-everywhere the shared scrubber runs, an exported session bundle no longer
-carries the host name or checkout paths, and a spawned agent cannot redirect
-its own scratch marker at a protected file. Risky tool call flagging takes its
-own consent switch under Decisions, off even for someone who consented before
-it existed, because it sends the tool's arguments. An exact command trust grant
-shows the whole command, and a sensitive-path check that ran out of budget says
-it could not verify the path rather than claiming a match.
-
-## [0.6.0] - 2026-09-05
-
-Kiro Crew stops being one agent on one machine: choose the harness that runs
-your sessions, start a chat on another crew you are connected to, and let crew
-members dispatch workers of their own. Chat gets quieter, with folded diffs,
-resumed sessions that stop re-reading their own context, and refused commands
-that tell the agent what it may do instead. Python 3.12 is the new floor.
-
-### Before you upgrade
-
-- **Python 3.12 is now the floor**: a host on 3.10 or 3.11 must move up before
-  installing or updating, and every installer provisions 3.12 itself when the
-  system package manager has none.
-- **The installer now brings its own Python**: `curl -fsSL
-  https://download.crew.kiro.dev/cli.sh | sh` provisions a pinned CPython
-  rather than using the system one, so pass `--system-python` if you
-  deliberately build against yours.
-- **The command gate no longer fences credential paths by reading the command
-  text**: the sandbox's bind masks are the fence now, so check that
-  `agent.sandbox` in `config.json` is not `off` if you were relying on that
-  text gate.
-- **An unattended auto-run plan now stops after two hours**: raise it with
-  `orchestrator.max_plan_duration_seconds` in `config.json`, or set 0 to
-  remove the ceiling; a stage-gated plan is never cut.
-
-### Pick the harness that runs your sessions (Preview)
-
-- **Claude Code, Codex and KAS are selectable harnesses**: turn on Developer
-  Mode in Settings → Developer (off by default), then pick one under
-  Developer → Agent Backend, where each option says whether it is installed,
-  missing on this machine, or waiting on a gateway restart.
-- **A tool pre-approved in Claude's own settings never reaches Crew's approval
-  path**, so its deny rules and audit log do not see that call, and Codex
-  refuses to start while the sandbox is off.
-- **Monitor loops, project changes, follow-up cards and conversation reset work
-  on every backend**, where they previously failed closed outside Kiro CLI.
-
-### Remote crews become one dashboard (Preview)
-
-- **Run a chat on another crew you are connected to**: set `instances.enabled`
-  in `config.json` and turn on Settings → Developer → Feature Previews → Chat
-  on a crew (both off by default), then pick the peer under New chat on crew in
-  the sidebar's new-chat menu; the transcript stays local while every turn runs
-  on that crew.
-- **A session that runs elsewhere carries a server badge and the crew's name
-  in your sidebar**, so remote work is openable from the list you already read.
-- **Crews connect themselves** on app load and on tab focus, on by default and
-  switchable at Settings → Remote Instances → Auto-connect crews.
-
-### Chat that stays out of the way
-
-- **Diffs start folded** as a chip naming the file and its +N/-M counts, and
-  Settings → Chat → Plain diffs (off by default) renders patches as plain
-  monospace text instead.
-- **A sketch pad and a share action**: the composer's + menu gains a Sketch row
-  that draws an image and attaches it, and an assistant reply's Share as image
-  action exports a branded PNG or prefills an X or LinkedIn post.
-- **The composer says where you are, and gets out of the way**: its footer
-  shows the project's branch and uncommitted file count, the context popover's
-  threshold slider sets compaction for this session alone, and the + menu's
-  Collapse the message input hands the room back to the transcript.
-
-### Sessions you can find, file and leave open
-
-- **Search sessions by the pull request, review or issue on their badge** from
-  the sidebar search box, not just by title.
-- **A resumed session no longer re-injects its full memory, lessons and skills
-  block**, so an idle session that comes back reaches compaction far later.
-- **Folders auto-tag the chats you start in them**, set under the folder
-  menu's Folder settings, and the sidebar's Collapse dormant sessions picker
-  now defaults to 7 days instead of 2.
-
-### Agents that dispatch and watch
-
-- **Agents arm their own watch**: an agent can start, revise and stop a
-  monitoring loop on its own session from the dashboard, a Slack thread or a
-  Discord DM, and a loop that names one pull request wakes the agent only when
-  that pull request moves.
-- **Crew members dispatch work into worker sessions** from their own thread on
-  the Claude and KAS backends, and each worker inherits its creator's trust
-  posture so it no longer stalls on a first tool call.
-- **Session control is on by default**; set `agent.session_control` to false
-  in `config.json` to withdraw it from every agent at once.
-
-### Work that runs for hours, not minutes
-
-- **A chat turn now runs up to four hours**: `agent.chat_turn_timeout_secs` in
-  `config.json` rises from 7200 to 14400 seconds, and a genuinely thinking
-  model on macOS is attested instead of probed and cancelled at ninety
-  seconds.
-- **A sub-agent gets three hours and up to 1000 tool calls**:
-  `agent.subagent_timeout_secs` rises from 1800 to 10800 and
-  `agent.subagent_max_turns` now reaches 1000, where the ceiling was 200.
-- **A monitor loop shows its cycle cap** on the composer's goal chip, reading
-  `23/24` as the backstop approaches, re-arms after stopping on an unanswered
-  approval, and now actually arms on the KAS backend.
-
-### Crew members get faces (Preview)
-
-- **Give a crew a face that reacts**: build its ghost avatar trait by trait or
-  upload a picture at Agent Capabilities → Agents → Avatar → Customize, then
-  set per-state eyes, mouth and a sound cue for working, done and failed on
-  its Expressions pane.
-- **The member drawer shows recent activity, its auto patrol, and the
-  schedules and webhooks that can wake it** when you pick a member on the Crew
-  Members page, where you can also star a crew and filter the roster to
-  Starred, Mine, Built-in or From packages; the desktop-only Crew Companion
-  app, enabled from Apps → Library, shows one avatar across all displays.
-- **Crew is a preview opt-in**: turn on Developer Mode in Settings →
-  Developer, then Settings → Developer → Feature Previews → Crew, to get the
-  Crew Members entry and the new-crew-chat entry back.
-
-### Apps get a Launchpad
-
-- **Installed apps show as a Launchpad grid** under Apps → Library, each an
-  icon tile with a pin badge for the sidebar, an Open button and a menu for
-  Details, Update, Disable and Uninstall, and Create Folders From Project is
-  new there: point it at a project and it makes one nested sidebar folder per
-  package you tick.
-- **An app can own background work, Command Bar rows, an embedded chat and
-  chips beside the composer**: its manifest declares `permissions.jobs` for
-  server-side runs that continue when you navigate away,
-  `contributes.commands` for rows in the Cmd+K Command Bar, and
-  `contributes.sessionControls` for up to two live controls next to the agent
-  and project chips.
-- **Dev mode for a UI folder outside an app's install now needs the terminal**:
-  the dashboard and the API refuse it, and only
-  `kirocrew app dev <name> --confirm-out-of-install-root` grants it.
-
-### Your cloud drive, inside the app
-
-- **AWS Control opens on an Overview** naming accounts, key health, drive use,
-  month-to-date spend, live links and the backup schedule, then navigates by
-  Files, Library, Backup and Access, each with its own URL; the app ships off,
-  so enable it from Apps → Library first.
-- **The Files pane previews and renames in place**: images, video, audio, PDFs
-  and text open inline, a pencil renames a file, a search box finds one by name
-  across the whole section, and drag to move, drop to upload and delete behind
-  an inline confirm all still work.
-- **A backup survives leaving the page, and an account can be taken back
-  out**: coming back to Backup shows it still going, and an account registered
-  by mistake is removed from its row's overflow menu, which drops only the
-  local registry entry and its consent grants, never anything in AWS.
-
-### Meetings, Jira and the Changes panel
-
-- **Meeting minutes are editable in place**: press Edit this output on an
-  agent's card, then Save, or Discard my edits to get the agent's version back.
-- **Meetings prepares the meeting about to start** once you set a calendar
-  under Meetings → Settings → Calendar; the background polling is already on.
-- **A Jira issue keeps its formatting and shows its Fix Version** in the Issues
-  panel once a Jira API token is in your environment, and the Changes panel
-  now opens instantly from what it already holds and refreshes behind you.
-
-### Channels and MCP servers
-
-- **Saving an MCP server no longer resets your session** on Kiro CLI 2.10.0 or
-  newer, and the chat session menu's MCP servers view reports what this
-  session actually mounted.
-- **An agent can message a channel by name** with `send_message`, reaching
-  Slack, Discord, Telegram, WhatsApp, Webex, Teams, iMessage and Feishu.
-- **Search your sessions from Telegram** with `/sessions <words>` in a direct
-  message; with no words it lists the ten most recent.
-
-### A gate that explains itself
-
-- **A blocked tool call now explains the way forward**, so the agent stops
-  retrying the same blocked shape, and `kirocrew doctor` prints a Credentials
-  section that lists your AWS profiles without opening a secret.
-- **Deny rules survive re-spelling, and ordinary work stops being refused**:
-  quoting, escapes, command substitution and wildcard-spelled program names
-  still reach the rule they used to dodge, while a recursive `grep` over a
-  worktree, a `cd` followed by a pipe and a heredoc carrying backticks now run
-  instead of being blocked.
-- **A host that cannot sandbox refuses to run the agent**: armv7l, riscv64,
-  ppc64le and s390x Linux, a libc without `prctl`, and Windows with Kiro CLI's
-  internal sandbox off all fail closed unless you set `agent.sandbox` to `off`
-  or `agent.sandbox_allow_unsandboxed_exec` to true in `config.json`.
-
-### Approvals you can shape
-
-- **A sandboxed command can no longer rewrite your ceiling**: the security
-  policy, admission policy, profiles and denied-command list are sealed
-  read-only in every sandbox mode, so an app script, a hook or a command cron
-  cannot grant itself more than you did.
-- **A restart says when it dropped your auto-approve grant**, and Settings →
-  Security → Denied Commands tags any deny rule your edition contributed so
-  you can switch it off by id.
-
-### The terminal, themes and artifacts
-
-- **The built-in terminal draws all sixteen ANSI colours from your theme**, and
-  setting `dashboard.terminal.completion.enabled` to false in `config.json`
-  silences its inline completion menus.
-- **An installed theme pack can rebrand the whole dashboard shell**, product
-  name, logo and favicon included, once you add a pack that declares branding
-  at Settings → Display → Install Theme.
-- **Saving an artifact warns when its colours are hardcoded**, in the agent's
-  tool result and on `kirocrew artifact save`, which now takes `--slug` for an
-  exact handle and refuses a taken one instead of renaming it.
-
-### Faster, lighter, and measured
-
-- **Every turn reports its tokens, spend and latency across cron, heartbeat,
-  subagents, workflows and every messaging channel**, on Developer → Telemetry
-  with Developer Mode on; the latency and fault-rate charts also need
-  `telemetry.enabled` set to true (off by default).
-- **Semantic memory uses about 1.2 GB less**, the session list is over twice
-  as fast on a large store, and credential scanning is 2.6 to 2.9x faster,
-  with nothing to turn on.
-- **The command gate decides a very long command in milliseconds** instead of
-  seconds, and the gateway stays responsive while other sessions read large
-  transcripts or synthesize speech.
-
-### Installing and the desktop app
-
-- **Setup catches a Kiro CLI too old for agent sessions**: the startup gate
-  shows Kiro CLI update needed with an Update Kiro CLI button that runs the
-  update for you.
-- **Answer a default that changed under you**: `kirocrew config defaults`
-  lists stored values still holding a superseded default, `--adopt` takes the
-  new defaults and `--keep` records yours as intentional.
-- **The desktop app raises OS notifications for alerts and approvals** with
-  nothing to switch on, and an externally managed install now reads its update
-  commands only from a marker file this user cannot rewrite.
-
-### Around the dashboard
-
-- **Write your own prompts, and see and set each steering document's inclusion
-  mode**, on the Prompts and Steering tabs of the Agent Capabilities page.
-- **`.docx` and `.pptx` files show their text inline in the file viewer**,
-  in-page tab strips are all one pill control, and the PR and issue chips on
-  session cards switch off at Settings → Chat.
-- **Automatic knowledge folders are gone**: a folder enters the Library only
-  when you add and confirm it, and a folder an older install registered by
-  itself is held pending until you do.
-
-### Failures you can see
-
-- **Every page, settings panel and app view names a failure**: a failed read
-  or save renders one notice with Retry and an Ask the agent hand-off, instead
-  of grey text, a toast that vanishes, or a false empty state.
-- **A switch reports what really happened**: changing the agent, reasoning
-  effort, project or workspace on a chat now says when it failed, rather than
-  reporting success and quietly keeping the old value.
-- **A tool the host declined says who declined it**: an approval that timed
-  out, an exhausted turn budget or a failed Slack delivery no longer reaches
-  the agent as "the user denied this".
-
-### Voice input, publishing and your saved settings
-
-- **Dictation works on a macOS desktop install again**, where every attempt
-  used to fail at audio decode, and a source install can fetch a verified
-  decoder from Settings → Voice → Download decoder instead of installing
-  ffmpeg by hand.
-- **An artifact can be published to a public HTTPS URL in your own AWS
-  account** from its Publish menu, which needs an AWS profile plus
-  `capabilities.publish` and `publish.allowed_destinations`, and is never the
-  default destination.
-- **Dashboard settings survive an upgrade**: chat preferences, diff and
-  file-viewer toggles, artifact view and app nav order are mirrored on the
-  host, so a port change or a channel switch no longer resets them.
-
-### Notable fixes
-
-For anyone checking whether their particular annoyance is gone.
-
-**Chat and sessions.** The transcript holds your place through new messages,
-reloads and a reply that grows, and each turn renders exactly once. Cancelling
-a queued message returns exactly what you typed with your files re-staged. A
-backend that cannot compact says so at once instead of hanging for five
-minutes.
-
-**Approvals and the sandbox.** Denying one tool call denies that call only, so
-the agent can revise and ask again. Sandboxed commands run on hosts that
-restrict unprivileged namespaces, and the sandbox reclaims its leftover mount
-directories. Ordinary commands that merely mention a credential variable now
-run.
-
-**Credentials.** Credentials are redacted before long text is shortened
-anywhere, so a key straddling the cut no longer survives. Log output escapes
-every control character. A URL carrying genuine sign-in parameters is no longer
-refused as a bare secret.
-
-**The gateway.** It restarts itself when a package update prunes the running
-install, and survives a workspace on a synced or network volume. An interrupted
-first start can no longer leave an empty signing key that fails every signed
-action forever. Knowledge ingestion, embedding and session teardown do their
-disk work off the gateway loop.
-
-**Sub-agents and jobs.** A run parked on an unanswered spawn approval says so
-everywhere it is listed. A task run keeps its worktree, branch and lessons
-across a gateway restart. A script job can perform state-mutating tool calls
-instead of reporting success while writing nothing.
-
-**MCP and channels.** The built-in tool surface comes back within minutes when
-a long-lived helper goes stale. A Slack turn that dies mid-reply keeps the
-partial answer you already saw. A rerouted thread keeps the agent you bound to
-it.
-
-**Knowledge and skills.** Keyword search finds Chinese, Japanese and Korean
-text on its own. The skill editor preserves comments, quoted keys and
-indentation it does not own. A negative retention value is clamped instead of
-wiping all daily memory.
-
-**Windows, desktop and CLI.** A non-ASCII account name or path no longer breaks
-diagnostics, the service install or a network-drive permission check. The
-signed macOS app no longer reports itself as damaged on a managed Mac. Kiro Crew
-imports on Python 3.13 and 3.14, and setup finishes under a C or POSIX locale.
-
-## [0.5.0] — 2026-08-29
-
-Your AWS account gets a control room and your whole fleet gets one centrally
-published security policy. Chat grows up: sessions open as tabs, an idle
-sidebar folds itself away, and approvals can be answered in bulk or refused
-one call at a time. Dictation now works out of the box with no install, agents
-can seed and steer other agents' sessions, and a script-installed Kiro Crew
-updates itself atomically instead of asking you to re-run the installer.
-
-### Before you upgrade
-
-- **Dictation providers consolidate into one `local` provider** — The
-  `whisper`, `mlx`, `parakeet` and `faster` speech-to-text providers are
-  retired; a saved setting falls back to the new in-process `local` provider,
-  which downloads its own model on first use and needs no external binary.
-  The default model is now `base` (a 148 MB download; a stored `turbo` still
-  resolves but pulls 1.6 GB), and live streaming text is on by default for
-  new installs. `kirocrew doctor` now reports stored defaults that an earlier
-  build materialized, so you can decide which to adopt.
-- **Snapshot-to-S3 is retired** — `kirocrew snapshot --to s3://…`,
-  `--aws-profile`, and the `s3://` fetch path are gone; cloud backup moves to
-  the AWS Control app. Snapshots gain restore-into-live-state (replace or
-  merge, with a rollback ledger) in exchange.
-- **App execution trust is bound to the code you consented to** — A grant now
-  records the repository it covers; an app whose name later resolves to
-  different code is refused, and a legacy grant that cannot be tied to a
-  repository asks for one-time re-consent. Installed app checkouts are also
-  write-protected against agent edits.
-- **Some commands that ran silently now ask first** — Looking like a help or
-  version probe no longer counts as approval, a command name that resolves to
-  something other than the trusted system program falls back to a prompt, and
-  durable "always allow" grants no longer cover structured non-shell tools.
-- **Kiro CLI is reached through its published relay** — Kiro Crew no longer
-  probes kiro-cli's internal bundle layout or mints access tokens itself; the
-  two bundle-path environment overrides are gone.
-- **A misspelled security-policy `sandbox` key now fails validation** instead
-  of silently leaving the sandbox floor ungoverned, and a malformed `publish`
-  section now denies publishing rather than quietly dropping its restriction.
-- **A release can declare a minimum supported version** — An install below the
-  floor gets an update prompt that cannot be snoozed, skipped or dismissed.
-
-- **Knowledge moves into Agent Capabilities** — The standalone Knowledge page
-  leaves the sidebar; its content lives in the Knowledge & instructions tab of
-  the Agent Capabilities page, and old `/knowledge` links redirect there.
-- **The standalone Auto-Triage Pipeline app is retired** — Its boards move
-  into Issue Radar as a fourth board that follows the selected repository; the
-  separate app, its store listing and its per-app saved repository are gone.
-- **Disconnect now really disconnects** — Removing a connection also revokes
-  the locally stored OAuth grant, so reconnecting means signing in again. If
-  another agent or scope still shares the endpoint — or the survey cannot be
-  read — the grant is kept and the dialog says why.
-- **Malformed agent specs fail loudly** — Every remaining reader of an agent
-  spec goes through the hardened path: an oversized file, a symlink into a
-  sensitive location, or a non-object spec is refused with a clear error
-  instead of being silently skipped or half-applied.
-- **`kirocrew gateway --no-tunnel`** — A gateway started with the new flag
-  refuses to publish a tunnel for its whole lifetime, regardless of
-  `tunnel.enabled`. Dev Fleet pods pass the flag whenever the target checkout
-  understands it — an older checkout keeps its previous behavior — and pods
-  are reached with SSH port forwarding either way.
-
-### Your AWS account gets a control room
-
-- **AWS Control** — A new built-in app puts your AWS accounts on one surface:
-  an Accounts page with a health light and reconnect guidance per account,
-  and a per-account console with Library, Drive, Backup, Bill and Access
-  views over a private, versioned, owner-only S3 bucket — consent-gated, with
-  audited mutations.
-- **A cloud drive you can browse** — The drive is its own page: browse and
-  create folders, delete a folder and everything under it, and see the share
-  ledger alongside.
-- **Restore a snapshot into live state** — Replace or merge a snapshot into
-  the running install, per component, with a rollback ledger to undo it.
-
-### One policy for the whole fleet
-
-- **Centrally published security policy** — An administrator can publish one
-  `security_policy.json` at a URL and have every host fetch, cache and
-  periodically refresh it. A policy change binds fleet-wide with no restart
-  and no host visit; an unreachable source serves the cached copy, and a bad
-  document is rejected rather than lowering the running ceiling.
-- **Enterprise MCP governance** — On an enterprise Kiro account with an
-  admin-configured MCP registry, org-level MCP controls (including a version
-  pin) now take effect. Personal accounts are unaffected.
-- **A tamper-evident audit log under concurrency** — Two Kiro Crew processes
-  writing at once no longer break the audit chain's verification.
-
-### Dictation that just works
-
-- **No-install local dictation** — One whisper.cpp model stays resident in
-  the gateway: a short utterance transcribes in tens of milliseconds, live
-  text appears as you speak, and a session keeps transcribing across pauses.
-- **Silence stays silent** — A filter drops the model's silence
-  hallucinations and caption boilerplate instead of turning them into notes.
-- **Settings apply without leaving the panel** — Speech settings that need a
-  gateway restart now offer the restart button inline.
-
-- **Watch words settle** — While you dictate, in-flight words fade in as they
-  stabilize and flash when a revision changes them, so you can see the
-  transcription firm up; the panel never mounts under reduced-motion.
-
-### Sessions become tabs
-
-- **Session tabs** — Keep several sessions open as tabs above the transcript:
-  middle-click or modifier-click a sidebar row to open one, each tab shows
-  live status, and the set persists per surface.
-- **Dormant sessions fold away** — Sessions idle past a threshold you choose
-  collapse behind a "Dormant sessions (N)" expander per folder; pinned,
-  running and unread rows always stay visible.
-- **Deep-linkable settings** — Settings pages live at real URLs like
-  `/settings/display/session-colors`, so any screen can be bookmarked and
-  shared.
-- **A project folder shows its files** — Project tabs gain a full expandable
-  file tree with search and refresh, opening files in de-duplicated tabs with
-  find and save chords that act on the tab you can see.
-- **Wide notes** — A markdown note can be lifted out of the reading column to
-  full width, and the choice is remembered per device.
-
-- **Ephemeral chats from the + New menu** — The create menu gains an
-  Ephemeral submenu: Incognito (reads memory, writes none) and Temporary
-  (neither) sessions, one tap from the sidebar.
-- **Agents can color their sessions** — An agent's `session_color` tints
-  every session it starts that has no color of its own, applied at render
-  time so editing the agent re-tints them live; a manual pick always wins.
-
-### Approvals you can steer
-
-- **Approve or reject everything at once** — When several tool calls wait on
-  you, one click answers all of them, and the confirmation lists every
-  command it covers — not just the newest.
-- **Reject once** — Refuse a single tool call and still get asked about the
-  rest, instead of rejecting the whole batch.
-- **Commands you can read** — A long shell call with no stated purpose shows
-  a short readable digest of what it does; the verbatim command stays one
-  hover away.
-- **Approvals in the CLI** — `kirocrew chat` now shows tool permission
-  prompts and lets you answer them, so a turn no longer hangs silently until
-  it times out.
-- **The approval bar teaches the modes** — It now points at the
-  approval-mode picker, so Reads, Trust and YOLO are discoverable instead of
-  confirming every step forever.
-
-- **Name-grants verify identity on every surface** — An "always allow" for a
-  shell command now checks, on every auto-approve path including headless
-  runs, that each program name still resolves to the program it named; a
-  shadowed or agent-writable resolution falls back to the prompt — or to the
-  headless deny — instead of inheriting the grant.
-- **Trusted Slack bots** — `slack.trusted_bot_ids` lets named bots through
-  the bot filter for multi-gateway meshes, with a per-thread turn limit so
-  two trusting gateways cannot answer each other forever.
-
-### Agents that drive other agents
-
-- **Seed and steer peer sessions** — `session_send` delivers a message into
-  another session as its next turn, so a coordinator can direct peers instead
-  of only opening, reading or stopping them.
-- **A conductor for goals too big for one session** — The built-in conductor
-  agent decomposes a goal, stands up a session per work item, checks
-  acceptance, and decides each next round — patrolling on a monitoring loop
-  that survives tab closes and turn caps.
-- **A durable workflow library** — Promote a session's workflow into a global
-  library, manage revisions and lineage from Agent Capabilities, and invoke
-  saved definitions with `/workflow`; task-runner plans share the same
-  library.
-- **Watches that wake on change** — A babysat pull request wakes its watcher
-  on human comments, reviews and verdicts — not just check results — and the
-  new interrupt controller turns polling monitors into wake-on-change
-  interrupts for any script cron.
-- **Auditable fan-outs** — Wave digests name the model that actually served
-  each member, the live panel flags a downgraded model while the run is still
-  going, and a finished subagent's results survive a gateway restart.
-
-### Update itself, anywhere
-
-- **Atomic self-update** — `kirocrew update` installs the new version into a
-  fresh, signature-verified tree and switches to it atomically, so a
-  script-installed Kiro Crew updates itself.
-- **Windows updates install in place** — "Restart & Update" shows installer
-  progress and relaunches the new build instead of nesting a copy and
-  reopening the old one; kept Start Menu and Desktop shortcuts are repointed,
-  and installs are much faster.
-- **An honest About page** — Settings › About shows when the last update
-  check ran and when the next is due, reports your real OS and architecture,
-  and the post-upgrade "What's new" modal shows the notes for the version you
-  are actually running.
-- **No more downgrade nags** — Running ahead of your channel's published
-  release no longer produces an older-build update offer, and a hotfix
-  published on an old release line can never move a channel's update feed
-  backward.
-
-### Secrets leave more files
-
-- **`kirocrew secrets import`** — Move plaintext credentials out of `.env`
-  into the encrypted vault, leaving a `secret://` reference behind; dry-run
-  by default, `--apply` to commit.
-- **Redaction happens before truncation** — Credentials near a truncation
-  boundary are redacted before the text is cut, so partial secrets stop
-  leaking into audit rows, logs and dashboard payloads; hook output is
-  redacted too.
-- **Owner-only from the first byte** — Windows `config.json` writes are
-  locked to your account (over a thousand times faster than before), and
-  secrets written during pod setup and snapshot restore are locked down
-  before publication.
-
-### Phones and touch
-
-- **One-click phone access** — A single "Set up & show QR" action enables
-  trust, restarts the gateway, publishes over Tailscale, and hands you a
-  sign-in QR code — and a phone session now survives gateway restarts and
-  updates instead of needing a fresh scan.
-- **A sign-in link for a phone that lost its session** — A signed-in device
-  can mint a one-time link; the CLI recovery path remains when nothing else
-  is signed in.
-- **Video in the composer** — Attach videos up to 512 MB, streamed straight
-  to disk and offered by the phone photo picker alongside images.
-- **Touch that behaves** — The sessions drawer tracks your finger and can be
-  abandoned mid-swipe, pinch zooms the image and diagram viewers instead of
-  the whole dashboard, the terminal gains a Paste soft key, and pasted text
-  with trailing blank lines stops vanishing on iOS Safari.
-
-- **Copy from a touch terminal** — The terminal gains Select and Copy soft
-  keys, so a device with no mouse can select terminal output and copy it —
-  the clipboard write stays inside the tap, and an empty selection coaches
-  instead of copying the screen.
-- **Rotation recovers** — The dashboard re-reads the mobile breakpoint when
-  the device rotates, and renaming a session on a phone no longer hides the
-  input caret behind the status strip.
-
-### Apps, members, and the store
-
-- **Discover and Library split** — The App Store becomes two pages with their
-  own URLs, plus an Updates tab listing every installed app with a pending
-  update and an Update All button.
-- **Real artwork everywhere** — Every built-in app has a product screenshot,
-  light and dark artwork, and use-case guidance on its detail page, in all 12
-  languages.
-- **Crew Members** — A roster page gives every member a durable pinned DM
-  thread, sorted by recent activity, with previews and name search.
-- **Apps schedule in your timezone** — An app can set a cron job's timezone
-  and skipped dates in code or `app.json`, so "06:00 for this user" fires at
-  the right local hour.
-- **App backends that fail loudly and heal** — A backend that dies after
-  startup is reported as down, stops receiving requests, and recovers on its
-  own after a brief wedge; a multi-module backend can import its own sibling
-  modules.
-
-- **App art works offline** — Detail hero images, screenshots and icons fall
-  back to the locally installed bytes when the registry CDN is unreachable,
-  and the detail page shows the version actually installed on this machine
-  rather than an older registry number.
-- **See who's unread** — The crew members roster marks members with unread
-  messages with a dot, orders itself by the latest message rather than file
-  mtime, and the badge drains when you actually read the thread.
-
-### MCP servers stop degrading silently
-
-- **A failure count you can see** — A server that keeps failing its health
-  probe shows a running consecutive-failure count with one-click reset, so a
-  blip is distinguishable from a server broken for days.
-- **OAuth sign-in from the servers tab** — Sign in to a remote OAuth MCP
-  server directly from MCP Servers instead of being routed through a chat
-  session.
-- **Misbehaving servers get isolated, not shared** — A server caught behaving
-  per-client is given a private backend per connection until it is fixed, a
-  broker restart reconnects sessions instead of stranding them, and a stale
-  gateway daemon from an older configuration is replaced automatically.
-
-### Meetings translate themselves
-
-- **Line-by-line transcript translation** — Pick a target language and the
-  meeting transcript translates as it arrives, on a bounded queue that never
-  blocks the transcript itself; a line whose translation fails keeps its
-  original text, and nothing leaves your configured model session.
-- **No more racing the room** — Opening a meeting now holds until its agents
-  finish initializing, and lines spoken during initialization are delivered
-  to exactly the agents that were listening when they were said.
-
-### Issue Radar and Dev Fleet level up
-
-- **Triage becomes a board** — The auto-triage pipeline is now Issue Radar's
-  fourth board, following the repository you have selected instead of keeping
-  its own — so titles, sessions and quotas can no longer cross repositories.
-- **Pods wear gauges** — Every Dev Fleet pod shows its memory against the
-  cgroup ceiling, CPU, task count and disk, so a heavy pod is visible before
-  it becomes a problem.
-- **Reclaim closed-PR worktrees** — Manual cleanup gains a closed-PR group
-  (each worktree 0.7–2.2 GB) with dirty-tree refusal and unmerged-commit
-  warnings; automatic reclamation still touches only merged ones.
-- **A pinnable preview port** — `dashboard.browser_view_port` fixes the
-  browser live-preview server to one port, so an SSH-forwarded remote
-  gateway can expose it.
-
-### Faster and lighter
-
-- **Chat stays smooth under load** — The sidebar no longer re-renders on
-  every streaming token, subagent output paints once per frame, and the
-  sidebar skips off-screen work above a few hundred sessions.
-- **Transcripts load a page at a time** — Opening a session loads one page of
-  history with older messages fetched as you scroll, instead of the whole
-  transcript up front.
-- **Big inputs stopped hurting** — Large-PDF knowledge ingestion and local
-  embedding generation use far less memory, the storage screen streams its
-  trash summary, and log writes no longer stall the gateway on a slow disk.
-- **Windows sizes itself honestly** — The concurrent sub-agent limit is
-  derived from real free memory instead of being pinned at three.
-
-- **Long answers render smoothly** — Thinking output batches per animation
-  frame and long transcripts share turn-group structure between renders, so
-  a streaming reply no longer staccatos the page.
-- **A 200-session sidebar stays quick** — Session rows memoize individually
-  and subscribe per slot, so a background event repaints one row, not the
-  whole list.
-
-### Notable fixes
-
-For anyone checking whether their particular annoyance is gone.
-
-**Chat and the transcript.** A turn's reasoning collapses into a single
-"Thought process" row that shimmers while it thinks, instead of stacking
-duplicate rows. Stopping a turn during startup actually cancels it. Follow-up
-option pills return after a failed turn, appear in split-view panes, and each
-chip now carries a complete instruction on its own. Links whose URL contains
-raw spaces render as working links. Images hold a fixed placeholder while
-loading. Gateway notices render as proper cards. A message you just sent can
-be pinned immediately, and un-pinning right after pinning sticks.
-
-**Sessions, history, and search.** Polling a long session for new messages
-survives trimming with exact cursors instead of a permanent error. A `?sid=`
-deep link opens the session you linked. Switching to a dead session snaps you
-back instead of stranding the dashboard, and a server error during the switch
-no longer replaces a live session. A chat created in a project-scoped folder
-starts in that folder's project every time. Auto-generated titles name the
-topic instead of reacting to a cut-off sentence.
-
-**Voice.** Cancelling a transcription or spoken reply reliably stops the
-audio process and removes its temp files — across macOS helpers, streaming
-dictation, hardware-keyboard touch devices, and voice replies — instead of
-leaking processes and files.
-
-**Approvals and security.** The Approve buttons stay visible while a tool
-group is expanded. A batch file read nesting a credential path inside an
-array argument is caught by the sensitive-path gate. The sandbox refuses to
-run when a credential-hiding mount fails. A crafted deny-list regex can no
-longer freeze the security gate, and adding a pattern that copies a built-in
-names the unsafe fragment. Trust-all sessions stop re-prompting once per
-remote MCP call during a fan-out.
-
-**Subagents and automation.** A finished subagent's undelivered results stay
-recoverable across a gateway shutdown. A stalled run keeps showing how long
-it has been idle after a reconnect. When a turn ends with the model writing a
-tool call as text instead of running it, you get a visible notice instead of
-a silently stalled monitor loop. When every model in a fallback chain fails,
-the error reports the whole walk. Script crons can call MCP tools on
-enterprise profiles.
-
-**Windows and the desktop app.** Signing in to kiro-cli sticks on hosts that
-keep their identity store under Roaming AppData, and the credit pill reads
-tokens there too. The gateway starts under non-UTF-8 Python encodings and
-legacy console locales. The app stops yanking itself in front of your work on
-reconnect, waits through a slow first gateway start, and detects a Kiro CLI
-installed while it was running. The Changes panel works on Windows. MD
-Notebook retries a save when another program holds the file.
-
-**Channels.** Streamed Slack replies keep working in Slack Connect shared
-channels. Webex accepts binary connection frames. Telegram gets native file
-delivery and keeps every restored reference when several images fail.
-Discord delivers real files with real names. Feishu is configurable from
-Settings like every other channel, and Settings shows the exact install
-command when a channel's client library is missing.
-
-**Localization and accessibility.** Counted labels, confirmation dialogs and
-sign-in guidance are fully translated in all 12 languages, destructive
-prompts quote the resource in your language's own quote marks, and five more
-menus gain arrow-key navigation, focus return and screen-reader announcements.
-
-**Since the last insider build.** Dialogs now contain keyboard shortcuts, so
-a chord typed into a half-filled form no longer navigates away and destroys
-the draft — Escape still dismisses, and an Escape the IME owns never does;
-Outlook and Exchange calendar invites with Windows time-zone names land at
-the right hour; the image and diagram lightboxes share one set of zoom
-controls and shortcuts; a permanently deleted session can no longer be
-resurrected by a save that was waiting on a lock; artifact stores opened
-twice on one directory share a lock instead of corrupting each other's
-writes; WhatsApp outbound messages encode again; and macOS gains a New
-Window command.
-
-**Costs and language.** Claude-backed sessions carry cost and cache-token
-fields through background consumers and drop a non-USD cost rather than
-mislabeling it; product names come from the i18n catalog in every language;
-the Simplified Chinese UI consistently says 产物 for artifacts; and unchecking
-a follow-up option removes only its generated suffix, never your edits.
-
-### Contributors
-
-@adiarora06 @anant-kaushik @andreyaurelien @aniruddhaadak80 @billsbdb3 @billygerhard
-@bolichen97 @buluoray @c020627 @chenmingwei23 @cixuuz @CrysisDeu @DeryFerd
-@dwu96 @flukschander @GoZippy @helenastafford @iamwhatever @isotope14
-@jeeshofone @jingchaodev @kaizawa97 @kyleseaman @leonlaiyc @leozhad
-@LucaButBoring @mbriones98 @md-abusayeed @mrbeag @NicholasRBowers @Pearcekieser @pepmach
-@peterhieuvu @piyushrajyadav @pkot98121 @psantus @ptias @rnoack1 @robomnis @RohanK6
-@royosherove @rubencu @SebastianYuSun @ShotaroKataoka @shrihan-vijay @Tiger-0512
-@unstablebrainiac @warren830 @welikoiwanenko @xuejinT
-
-## [0.4.1] — 2026-08-28
-
-A display fix for stable-channel installs: the About page no longer shows the
-running build or an available update under its internal release-candidate stamp.
-
-### Notable fixes
-
-- **Available updates show their release version** — On the stable channel, the About panel's "a new version is available" line now shows the clean release number (0.4.0) instead of the internal candidate stamp it was built from (0.4.0rc14). The update mechanism itself is unchanged and keeps using the exact published version.
-- **The version chip shows the release you installed** — The About page's version badge and the Settings footer now show the clean release number on the stable channel too, instead of the candidate stamp baked into the published build.
-- **The update popup names the release, not the candidate stamp** — The "a new version is available" popup now announces the clean release number on the stable channel. Skipping or snoozing a version keeps working exactly as before.
-
-### Contributors
-
-@bolichen97
-
-## [0.4.0] — 2026-08-25
-
-Windows and Linux stop being second-class: both get signed, self-updating native
-installers, and Windows gains desktop automation and a real resource ceiling.
-Every messaging channel catches up to Slack, three new ones arrive, and secrets
-finally live in an encrypted vault instead of your config file. The dashboard
-turns into a place to edit code, not just discuss it.
-
-### Windows and Linux become first-class installs
-
-- **Signed Windows installer** — Windows ships a signed installer with in-app auto-updates, published on the stable channel alongside macOS and Linux.
-- **Linux deb and rpm packages** — The desktop app installs from `.deb` or `.rpm` with a fixed install path, a desktop entry, and per-format in-app updates. The Linux desktop app needs glibc 2.34 or newer; on an older host use the one-line CLI install.
-- **Computer use on Windows** — Kiro Crew can read and drive native Windows applications through UI Automation, so desktop work is no longer macOS-only.
-- **A resource ceiling for Windows agents** — The Windows agent tree now runs under a Job-object process and memory limit, mirroring the Linux cgroup control that previously had no Windows equivalent.
-- **Provider CLI trust on Windows** — Issue Radar and Code Review Sage now work on Windows, because `gh` and `glab` trust is established by reading ACLs.
-- **Managed Python for old distros** — The installer can provision a pinned interpreter into a user directory with `--managed-python`, which works on hosts whose system Python is too old, and stays on that interpreter across updates.
-- **Bring your existing setup** — First-run setup imports from Gemini CLI and Antigravity, including their MCP servers and workspaces.
-- **Switch Kiro accounts from the CLI** — `kirocrew cloud logout` ends the current sign-in so you can log back in as someone else.
-
-### Every messaging channel catches up, and three new ones arrive
-
-- **WhatsApp** — A new channel links a personal account by QR code, with tool approvals answered by typing a number.
-- **iMessage** — A new channel routes through your own Messages.app via a local bridge on macOS, deny-by-default with an explicit handle allowlist.
-- **Feishu** — A native Feishu (Lark / 飞书) channel joins the roster.
-- **Teams, Telegram, and Webex reach parity with Slack** — Each gains the same commands and capabilities, and Webex adds group spaces, file uploads, and Adaptive Cards. Shared fixes along the way mean `/yolo` and per-session Trust now actually take effect on Teams, Webex, WeCom, WeChat, and iMessage, where they were silently inert.
-- **Discord gets a command menu** — Nine slash commands, a model picker, runtime stats, ephemeral replies, and cron delivery, with rate limiting so bursts stop dropping. Images an agent produces upload as real attachments instead of appearing as a filesystem path.
-- **Tables survive the trip** — Markdown tables in a reply are re-rendered to fit each channel's formatting instead of arriving broken.
-
-### Secrets leave your config file
-
-- **An encrypted vault** — Secrets are stored encrypted and can be withheld from agents on a denylist, managed from a new Settings → Secrets page where values stay masked and are never sent to the browser.
-- **Reference secrets from MCP servers** — An MCP server's environment can name a secret as `secret://NAME`, resolved from the vault at spawn time so the value never sits in on-disk config.
-- **Share pooled servers safely** — An operator can declare which environment keys carry per-session identity, which lets MCP servers that use per-session credentials be pooled instead of relaunched.
-- **Read what is blocked** — `kirocrew policy show` prints the built-in denied-command rules grouped by category, so the agent can read the list instead of discovering it by refusal.
-
-### The dashboard becomes a place to edit code
-
-- **Real diffs and inline editing** — Side-by-side diff rendering, per-file editing inside the transcript, and a project file tree in the side panel.
-- **Tool edits are visible by default** — A file edit made by a tool renders as an always-visible diff card instead of hiding inside collapsed tool details.
-- **Many more file types preview inline** — Video and audio play in place, XLSX spreadsheets render with sheet tabs, and notebook previews show embedded images, highlighted code, and Mermaid diagrams.
-- **Find and attach files faster** — Folder tabs gain recursive search, right-clicking any file or folder adds it to chat as an @-mention, and you can drop files anywhere on the chat pane.
-- **A command bar** — A launcher opens by keystroke and names each row's kind, replacing a full-corpus scan on every keypress. It ships on by default.
-- **Live reasoning** — The model's reasoning streams on the collapsed thinking row instead of showing a static label.
-- **A terminal dock for the whole app** — The terminal is an app-wide dock tab rather than living inside one chat, and its font comes from a searchable, previewed picker that detects your local fonts.
-- **The footer names who chose the model** — Left on auto, the turn footer says which model auto actually picked.
-- **Choose which browser the agent drives** — A Settings toggle picks the built-in panel, falling back to playwright-cli (desktop app only).
-
-### Sessions you can find, organize, and hand off
-
-- **Search every instance at once** — Session search spans all connected gateways and interleaves local and remote results.
-- **Search by PR or issue number** — A query like `4411`, `/pull/4411`, or `owner/repo#4411` all find the same session.
-- **Scroll back through history** — Reaching the top of a long transcript loads older turns instead of stopping.
-- **Organize how you like** — Filter by tag, assign any custom hex colour, pin crews as chips, and jump past the ninth session with keyboard letters shown on each row.
-- **Apps can file their own work** — An app can create, rename, and reparent chat folders it owns; deleting a folder stays yours alone.
-- **Reload without losing the thread** — A Reload action relaunches the agent process in place so newly added MCP servers and config take effect while the conversation survives.
-- **Hand work between sessions** — An opt-in dashboard MCP set lets one session message, stop, and read another to pass work along with its context, deny-by-default and gateway-key authorized.
-- **Drop a note without spending a turn** — A note appears in the transcript and reaches the agent on your next message, costing no model call.
-- **See every linked item** — The sidebar's "+N" source-link chip expands to list every linked pull request and issue.
-- **The summary panel stays bounded** — It caps its height and raises its storage rails, so a long summary no longer takes over the panel.
-- **Subagents share one ceiling** — Concurrent subagents count against a single memory and process ceiling, so many small spawns cannot exhaust the host between them.
-- **Task Runner shows its trust state** — The compose panel gains an auto-approve checkbox and a badge naming the trust state before you run.
-
-### Apps you can install, pin, and build on
-
-- **Install from the official catalog at a pinned commit** — A catalog app installs directly at its pinned revision, so an app can reach you without waiting for a release.
-- **Pin your organization's own registry** — A deployment can pin its own app registry and mark it owner-trusted, so its apps clone with credentials from a private forge.
-- **Design Tweak** — Point at a local web project, right-click an element in the preview, describe the change, and it lands in a per-project chat session.
-- **A Kanban task board** — A one-sentence intent becomes a runnable card that executes in a linked dashboard chat session, and columns can derive from live session state so cards move as the agent's state changes.
-- **Auto-Triage Pipeline** — A built-in app showing every crew work item's phase and how long it has been stuck.
-- **Issue Radar grows** — Azure DevOps repositories and work items join GitHub and GitLab, with dependency edges, an unblocked-dependency signal, and a Focus Tree graph. Investigations now lead with a plain explanation of the issue before the verdict, written in your dashboard language.
-- **External registries appear when the catalog is online** — The store lists apps from registries beyond the bundled catalog.
-- **Each app has its own icon** — Channels, Dev Fleet, and Workflows drop the generic placeholder.
-- **Crew Mode is labelled experimental** — The create menu says so rather than presenting it as settled.
-
-### MCP servers stop guessing
-
-- **Measure shareability on purpose** — A Measure action assesses whether a server can safely share a process, comparing tool sets rather than only capabilities, and remembers the verdict. MCP Management adds a read-only view of each server's evidence tier and current run mode.
-- **The Online badge means the tools are usable** — It says when it was last checked instead of presenting a stale reading as current.
-- **Apply & Restart actually mounts a newly installed server** — and says so honestly when it could not, rather than skipping the change or reporting success.
-- **Colliding tool names stay reachable** — Registry aliases keep tools from two servers that ship the same name, such as Linear and Vercel and GitHub, both usable.
-
-### Memory, knowledge, and skills
-
-- **Scope a lesson to one repository** — A lesson no longer has to apply to every session, and the scope option that previously did nothing now works.
-- **Tune how memories age** — Episodic memory decay is configurable per tag, so different kinds of memory fade at different speeds.
-- **Search one knowledge source** — Knowledge search takes a source filter with source discovery, and the graph view gains a source dropdown, physics layout, community clustering, and adjustable depth.
-- **Project-local skills** — Kiro Crew can load a project's own skills, gated behind per-directory consent.
-- **Hooks explain themselves** — Hooks gain regex and contains matcher modes plus declarative skill injection, and the UI shows why a hook last failed as a badge tooltip.
-- **A guided five-whys mode** — A built-in skill walks a dive-deep investigation one question at a time and folds the log into a report.
-
-### Voice, themes, and accessibility
-
-- **Faster local speech-to-text** — A Parakeet provider runs locally on Apple Silicon, faster than Whisper.
-- **Stop the read-back** — Escape stops the assistant speaking.
-- **OpenDyslexic** — Available as a built-in font family, with a matching monospace face for code and diffs.
-
-### Faster and lighter
-
-- **Boot uses ~875MB less memory** — The embedding model is no longer loaded at startup when there is no embedding work to do; it loads on first real use.
-- **The bytecode cache stops growing without bound** — It had been reaching tens of gigabytes; foreign Python processes no longer mirror their standard library under the Crew home, and the gateway prunes its own cache.
-- **The dashboard opens immediately** — Boot prints the URL and opens the browser without waiting on MCP probing, and probes each server once instead of twice.
-- **Sandboxed spawns are ~1.45s faster each** — A needless credential and hardlink scan on every sandboxed spawn is gone.
-- **Graphs and grids load instantly** — The Issue Radar dependency graph serves from cache and refreshes in the background instead of blocking its tab for about eleven seconds, and the multi-session grid loads a bounded slice of each pane instead of full history.
-- **Long chats stop leaking** — An abandoned streamed turn no longer holds its entire token stream for the life of the process.
-- **CLI commands start more than twice as fast** — `kirocrew` startup drops from 1.3s and 112 MB of imports to 0.5s and 54 MB.
-
-### Notable fixes
-
-**Reliability of the gateway itself.** A slow filesystem used to take the whole gateway down: the sidebar's pull-request status refresh resolved `gh` and `glab` on the event loop, and once those syscalls turned slow the loop stopped serving everything, heartbeat included, until the watchdog killed the process — one host took three such kills in fourteen hours, each ending every live chat session. That walk is now offloaded, as are vector-store initialization, per-agent tool filtering, audit-log reads, session teardown, and knowledge folder-watcher flushes, so a slow disk costs one widget its latency instead of the process.
-
-**Chat and the transcript.** Transcript cards line up with the rows around them instead of sitting inset and narrower in one pane and flush to the edge in another. Lists keep their contents while refreshing rather than flashing empty on every live update. Composing in a non-Latin input method no longer submits mid-composition across the surfaces where Enter, Tab, and Escape are handled, and the folder-suggestion prompt names the folder it is asking about.
-
-**Sessions, history, and search.** Reopening an unchanged history costs a stat instead of a full re-read, saving history updates the index in place, and an auto-compaction that frees no headroom stops immediately re-triggering and burning summaries. A session dropped onto its own pane keeps its own copy, and the header rename editor stays pinned to the session it opened on.
-
-**Cron and tasks.** A job's timeout is charged to its execution rather than to time spent waiting in a queue, so a busy pool no longer kills jobs before they start and one-shots that never dispatched are not deleted. Deleting a single job is recorded in the audit log from the dashboard, MCP, and CLI alike, and the Schedule page shows which session owns a job so you can tell why its results are not arriving in chat.
-
-**Subagents and long-running loops.** Monitoring loops stop when they detect no progress instead of running to their cycle cap, and durable working state on disk keeps per-cycle cost from growing and survives compaction. Each spawned agent gets its own scratch directory, and completion cards name the model a run actually used so a downgrade from a requested pin is visible.
-
-**Approvals, security, and the sandbox.** Several approval-gate and validator bypasses are closed, including a forged flag that could create a git ref and a credential-directory read that auto-approved itself. Two long commands sharing a prefix no longer collapse into one trust label, and the full command is available on hover. Snapshot and restore are hardened against symlink and hardlink attacks, and a partial restore no longer reports success.
-
-**Windows and the desktop app.** Settings survive the package rename instead of silently resetting, a failed app clone actually removes its partial checkout, and starting a task no longer briefly freezes while the memory store initializes. Signing runs once per artifact rather than twice, shortening builds.
-
-**Updates and install.** `kirocrew update` refuses to discard local commits on a diverged checkout and tells you how to override it. `kirocrew doctor` gained a stored-defaults view, detection of agent specs pointing at removed virtualenvs or relocated tools with repair for managed ones, and a warning when an editable-install checkout is stale or on the wrong branch.
-
-**Localization.** Product names stay in English across every locale and are interpolated through a shared placeholder, so the application name renders consistently, and a CI gate now flags catalog entries left untranslated.
-
-## [0.3.0] — 2026-08-17
-
-The agent gained its own browser and can now run several threads of your work at
-once. Sessions explain themselves when you come back to them, the dashboard grew
-a Git panel and a docking side panel, Linux ARM64 and Windows join the
-first-class builds, and you can talk to it by holding a key.
-
-### Before you upgrade
-
-- **Node.js 22 is now the minimum** (24 LTS recommended). A Node 20 install is
-  refused rather than failing partway through a frontend build.
-- **Multi-account Telegram is withdrawn.** Only a single bot token is accepted;
-  move the token you want served to `telegram.bot_token`. Existing config is
-  still parsed and preserved, but nothing reads the account map.
-- **`kirocrew logout` now revokes refresh tokens**, not just access tokens, so
-  logging out actually ends the session everywhere.
-- **The terminal no longer scans its output for credentials.** That scan was
-  corrupting CJK text and emoji in the PTY stream, and it swallowed secrets you
-  printed deliberately. Terminal output is now passed through untouched.
-- **Knowledge auto-ingest is opt-in.** A fresh install ingests nothing, and
-  spends nothing on extraction, until you switch it on.
-
-### Run several threads at once
-
-- **Crew Mode** — Send the next message without waiting for the last one. Topics
-  are dispatched to parallel sub-sessions and answers arrive independently, so
-  one chat advances several pieces of work at the same time.
-- **Session summaries** — A side-panel tab says what each thread of a session was
-  trying to do and where it landed, with anything still open hoisted to the top.
-  Old sessions can be summarised on demand. Opt-in, with its token cost stated.
-- **Sessions resume instantly** — An earlier chat loads in the background while
-  you read it, so the first message sends immediately instead of waiting on a
-  cold start, and switching back restores your reading position.
-- **You can watch the context fill up** — The composer reports consumption as a
-  percentage and a token count, and the turn-stats footer names the model that
-  actually served the turn, which matters when you are running on Auto.
-- **A wedged turn recovers itself** — A stuck tool, a dead process, or a frozen
-  model call is detected and nudged back to life instead of hanging silently.
-- **Pinned messages, and a session that admits it needs you** — Pin messages for
-  reference; a session waiting on your answer says so instead of looking idle,
-  and one running a monitoring loop stays under "In progress" between cycles.
-
-### The agent gets its own browser
-
-- **The Browser panel is the browser** — The agent drives the dashboard's own
-  side panel directly: navigate, click, type, screenshot. Browsing happens where
-  you are already looking, with no second window and no security prompt. The
-  Playwright CLI remains for remote sessions and for a browser you are already
-  logged into.
-- **Nothing to install first** — Browsing no longer needs Node or npm on the
-  machine. A private, verified copy is fetched for you, so a locked-down laptop
-  is one click from a working browser rather than a dead end.
-- **Computer Use is offered only where it works** — Native desktop automation
-  appears on macOS, instead of everywhere and then failing.
-
-### New surfaces in the dashboard
-
-- **A Git panel** — Repository status and commit log in the side panel, opening
-  automatically alongside the folder tab once a session has a project.
-- **The side panel docks to the bottom** — As well as the right, toggled from the
-  panel header, which suits a tall or narrow monitor.
-- **Issue links become chips** — GitHub, GitLab, and Jira issue, PR, and MR URLs
-  render inline as icon plus `owner/repo#N`, and a Jira link shows the issue's
-  details in the side panel instead of sending you away.
-- **Feature Previews has its own page** — Preview opt-ins moved out of Developer
-  → Config into per-feature cards, and Webhooks moved into Settings rather than
-  holding a top-level nav slot.
-- **A redesigned session list** — Tighter rows with a colour bar, a status gutter
-  and a meta line, so session state is scannable; folders can be dragged onto
-  each other to nest them in board view.
-- **Crew members keep an activity log** — Each member of a crew gets its own
-  space with a persistent log of what it has been doing.
-- **Link previews, and previews that explain themselves** — URL unfurls now work
-  in your own messages as well as the agent's, and previewing the dashboard's own
-  address explains the loop instead of rendering a blank frame.
-
-### Faster
-
-- **The first message no longer stalls** — Embedding thread pinning cuts the
-  opening turn's latency from roughly 7.4 seconds to about 350 milliseconds.
-- **A cold dashboard load moves a quarter of the bytes** — Pre-compressed assets
-  take it from 7.8 MB to 1.85 MB, which is what a remote or tunnelled dashboard
-  feels most.
-- **Dictation is about twice as fast** on a many-core host, and no longer spikes
-  to thirty seconds under load.
-- **Streaming is smoother** — Block parsing is throttled during a stream, so a
-  long reply no longer builds quadratic pressure as it renders.
-
-### Two new apps, and a store worth browsing
-
-- **Personal Shopper** — Researches real stores on your behalf and recommends
-  something only when buying actually helps. It diagnoses the problem first, and
-  never touches a cart.
-- **Issue Radar Crews** — Put autonomous workers on claimed issues. Each crew
-  takes an issue into its own worktree, posts progress to a public claim ledger,
-  and pushes a pull request: hands-free from triage to code review.
-- **A curated App Store** — Discover renders editorial spotlights, themed
-  collections, and category rails with curator artwork, not one flat list.
-- **Meetings keeps the transcript** — Stored and shown beside the agent's notes,
-  and it survives a reload.
-- **Ask Code Review Sage why** — The reviewer stays available after it posts, so
-  you can question a finding instead of starting over.
-- **Research Lab and Spec Builder pick their own model** — Instead of always
-  falling through to your chat default.
-- **A public deploy asks first** — Publishing an artifact publicly requires an
-  explicit acknowledgement, and an operator can close the path entirely.
-
-### Reach it from anywhere
-
-- **Linux ARM64** — A native aarch64 desktop build, published with an
-  architecture check so nobody downloads the wrong one.
-- **Windows is a first-class build** — The same targets as macOS and Linux, with
-  its own install guide.
-- **Summon it from any app** — A system-wide hotkey (Cmd+Shift+K on macOS,
-  Alt+Shift+K elsewhere) raises the dashboard. Reconfigurable, or off.
-- **Change release channel without reinstalling** — Move between Stable, Insider,
-  and Nightly from About, and the gateway restarts in place after an update.
-- **Publish it on your tailnet** — `kirocrew tailnet up` puts the dashboard on
-  your Tailscale network, reachable from your other devices.
-- **Launch a cloud crew from the dashboard** — Remote EC2 provisioning, device
-  sign-in included, as a restartable job rather than a CLI session you must not
-  close, and `--subnet` pins it into a private subnet.
-- **One title bar on GNOME** — On desktops that draw their own decorations the
-  duplicate native title bar is gone; the dashboard header does the job.
-- **Connect to a gateway you run elsewhere** — A Developer setting stops the
-  desktop app from starting its own local one.
-- **Keep on Top** — Pin the window above everything else, remembered across
-  restarts.
-
-### Voice, terminal, and files
-
-- **Push to talk** — Hold a key to dictate, or tap to latch it on. The key, the
-  mode, and a live test strip are in Settings.
-- **The terminal docks where you want it** — Bottom or right, opening in the
-  session's own project directory, with your preferred shell.
-- **Images are kept as artifacts** — Screenshots and diagrams the agent produces
-  are preserved with a gallery, a detail page, and metadata.
-- **Reveal a file on disk** — Jump from the file viewer to its folder, named for
-  the file manager your platform actually has.
-- **Mermaid diagrams enlarge** — Click one for a lightbox instead of squinting at
-  inline width.
-
-### Channels
-
-- **Dashboard replies mirror back** — An answer you send from the dashboard is
-  relayed into the Discord or Telegram conversation it came from.
-- **Telegram has a real command menu** — Type `/` for autocomplete, switch models
-  with inline buttons, toggle auto-approve, and see markdown tables render as
-  tables rather than raw pipes.
-- **WeChat accepts attachments** — Photos, voice memos, and documents reach the
-  agent instead of being dropped.
-- **A channel can file its own sessions** — Point a channel at a named sidebar
-  folder and its conversations group themselves there.
-- **Too many choices degrade gracefully** — An option list past a platform's cap
-  becomes a numbered text list instead of silently losing the extra choices.
-
-### Tools and connections
-
-- **Connecting takes one click** — Connect mints the provider's approval link
-  immediately and consent finishes on the card, instead of waiting for a later
-  chat to trigger the challenge.
-- **Pooling works itself out** — Kiro Crew probes which MCP servers can safely
-  share a process. A per-server choice replaces the old global switch and its
-  guesswork.
-- **Per-agent tool sets** — Assign servers to particular agents so each sees its
-  own surface without editing global config, and the agent picker offers the
-  project-local agents found in the active session.
-- **Tune how tools defer** — Decide how aggressively Tool Search hides tools
-  until they are needed, trading context for immediacy.
-- **Authenticated custom servers** — Supply request headers when adding a remote
-  MCP server, instead of hand-editing a file.
-- **`kirocrew policy show` lists the denied-command catalog**, so you can read
-  what is blocked without going to the source.
-
-### Autonomy with a governor
-
-- **It knows when the machine is full** — Scheduled jobs defer and new subagents
-  are refused when memory is critically low, and the header shows the posture so
-  you know before heavy work fails.
-- **Each job sets its own time budget** — Up to 24 hours, replacing one fixed
-  thirty-minute cap, and a job's instructions can run to 50,000 characters.
-- **Read a script job without a terminal** — Its Python source is shown,
-  highlighted and read-only, in the job's detail view.
-- **Monitoring keeps its schedule** — Talking to a session mid-loop no longer
-  restarts the countdown, so checks land when they were meant to.
-- **A blip is not a failure** — Transient throttles and server errors retry
-  instead of counting toward auto-pause, a success resets the failure count, and
-  an unattended loop that loses tool approval says so instead of dying quietly.
-- **Subagents ask for permission like the main agent** — A subagent's approval
-  request now goes through trust, auto-approve, or a prompt, instead of being
-  dropped and leaving the child wedged.
-
-### Memory and knowledge
-
-- **Lessons surface by relevance** — Applicable older corrections stop decaying
-  out of context as the library grows, and a lesson keeps its "not this" clause
-  as a field of its own.
-- **Knowledge spending is bounded** — A sweep budget, per-source rate limits and
-  caps, a configurable extraction model, visible per-source cost, the files it
-  failed on, and JSON Lines, NDJSON and Org Mode among the formats it accepts.
-- **A tidier artifact library** — Sortable columns that remember their order, a
-  copy-content button, and a header that stays put while you scroll.
-- **Your own skills survive an upgrade** — A skill you wrote whose name collides
-  with a bundled one is no longer deleted on startup.
-
-### Security and governance
-
-- **An app sees only its own events** — Installed apps receive the event scopes
-  their manifest declares, and can no longer observe your chats, your scheduled
-  job results, or another app's activity.
-- **Scheduled jobs are re-vetted every run** — Checked against current policy
-  each time they fire rather than only when created, and a restored backup can no
-  longer smuggle shell commands past the approval system.
-- **The memory ceiling covers everything at once** — The cap applies to all
-  concurrent agents together, so many small spawns can no longer exhaust the host
-  between them.
-- **Credentials are scrubbed on the live stream** — Redaction now covers
-  real-time output as well as replayed history.
-- **A pinned policy floor cannot be lowered locally** — On a governed host the
-  policy wins over local configuration, including over the unsandboxed-exec
-  opt-in.
-- **Memory edits require a recognised session**, closing a path where a forged
-  key could delete stored memory.
-- **Bring your own identity provider** — Administrators can authorise their own
-  OAuth providers by configuration, without waiting for a release.
-
-### Notable fixes
-
-For anyone who wants to know whether their particular annoyance is gone.
-
-**Chat and composer.** Dropping a folder inserts its path instead of uploading
-it. A hover preview shows what a collapsed paste chip contains. An abandoned CJK
-composition no longer disables Enter until reload, and the side-panel composer is
-IME-safe too. Scrolling up through a long history stops skipping messages.
-Auto-scroll survives a content shrink. Tool rows animate in and out rather than
-teleporting the transcript, and a tool's elapsed timer survives navigating away.
-Queued-message controls are visible on light themes, and "run this next" promotes
-the card you clicked. A long session title stops pushing the header controls off
-screen. Closing the find bar returns focus to the composer. Bold-wrapped links,
-and URLs followed by CJK punctuation, render correctly.
-
-**Sessions and stopping.** Stopping a turn stops the session it is actually
-running on. A stalled subagent card reports how long it has been idle. A channel
-conversation keeps its thread identity when compaction fails or a context
-overflow recycles it. A resumed session keeps its pooled MCP servers. A mid-turn
-reset can no longer leave two turns interleaved in one session.
-
-**Apps and settings.** Editing agent config in the dashboard no longer breaks the
-agent until restart, and an agent spec Kiro CLI rejects is reported instead of
-silently degraded. The settings tab strip shows scroll cues and scrolls the active
-tab into view. Deep links highlight the right control in every language. An app
-installed from a path or from git reports honestly, runs its MCP server on its own
-interpreter, and starts its crons on `kirocrew app enable` without a restart. The
-skill browser serves the skill you asked for rather than another of the same leaf
-name. A folder knowledge source added from the dashboard can now actually be
-started. Speech-to-text settings stop offering to install Whisper on a machine
-that cannot run it. Notes render markdown tables, follow the active theme, and
-remember collapsed folders. Dev Fleet discovers your clone instead of assuming
-`~/kirocrew`, reattaches to an in-flight Pull and Build, and can force-remove kept
-worktrees.
-
-**Channels and notifications.** A Teams answer is no longer silently truncated
-when a send is rate-limited. Slack works in private channels out of the box (the
-shipped manifest requests the scopes), surfaces a permission problem instead of
-delivering nothing, judges an OPTIONS click against the right turn, evicts the
-prior owner when a thread is relinked, and reports its real connect state on the
-System page. WeCom recognises a command after the mandatory mention. Discord keeps
-a code fence open across message rotation. Notifications deep-link to the item,
-stay dismissed when a stale fetch resolves, clear across every open window, and
-retire themselves when the skill they refer to is handled.
-
-**Desktop, install, and CLI.** `kirocrew stop` and `restart` find a macOS
-framework Python. Ctrl+C exits `kirocrew chat` cleanly. Ctrl+Cmd+F toggles full
-screen instead of opening the find bar. The macOS tray icon follows the menu bar's
-theme. A failed update's card survives a reload. The installer's probe cannot hang
-forever. `kirocrew` commands start up to about 0.8 s faster. A remote instance's
-token-mint timeout is configurable for a slow network. A proxy-only host gets its
-proxy variables forwarded to the identity check, and a slow SSO refresh no longer
-parks you at the first-run gate. The frontend builds against a private npm
-registry.
-
-**Security and resources.** `agent.dangerously_skip_permissions` no longer treats
-any non-empty string as true, so a `"false"` in config cannot silently grant
-blanket approval. MCP gateway daemons no longer leak when their launcher dies.
-Computer use costs no backend process on a chat that never uses it. Folder-write
-audit lines name the component that made the write.
-
-**Everywhere else.** Every major panel collapses to a usable single pane at phone
-width, and the software keyboard no longer covers the composer. History search
-works in Chinese, Japanese, and Korean. Session storage loads in seconds and
-deletes in bulk. Theme packs report the CSS rules that were dropped and why, and
-their declared fonts now actually apply. The Online badge means "tools usable" and
-says when it was last checked, and Apply & Restart really mounts a newly installed
-server. Doctor warns about missing swap, gives an honest sandbox verdict, points at
-the thread that is genuinely stuck, and diagnoses an enterprise registry that has
-silently removed the managed tools.
-
-## [0.2.0] — 2026-08-09
-
-The first feature release after launch: a real browser for the agent, four new
-built-in apps, a native Windows desktop build, Korean and Japanese interfaces,
-setup that no longer assumes Slack, and several hundred fixes from the first
-weeks in the open.
-
-### The agent gets a browser
-
-- **Persistent Browser Mode** — Flip one switch in Settings and the agent can
-  operate a real browser: navigate, click, type, and fill forms, with the live
-  view streaming into the dashboard's Browser panel. Installation happens for
-  you and recovers on its own — enabling it never errors out — and the agent can
-  also serve browser work from the native embedded view.
-
-### Eight new built-in apps
-
-- **Spec Builder** — a spec-driven development surface: shape requirements into
-  a spec, then hand it to the agent to implement.
-- **Ops Mission Control** — an autonomous ops first responder with an incident
-  board and a knowledge ledger of fix patterns.
-- **Crew Companion** — a desk companion that reflects what your agent is doing.
-- **Auto-Improvement** — measurement-first self-improvement that proposes,
-  lands, and verifies its own changes GitHub-natively.
-- **Meetings** — transcribes a live meeting, keeps structured notes and diagrams
-  as it goes, and extracts action items you can review afterwards. Recordings
-  and notes can now be deleted from the app.
-- **Papyrus** — a LaTeX paper editor with a split-pane view, live PDF preview,
-  and an AI co-author.
-- **Mochi** — a desktop companion that lives on your screen in its own panel,
-  watches pages and feeds for you, and plans its day around your schedule.
-- **PPTX Maker** — describe the deck you want in chat and get a real `.pptx`
-  back, by way of an agent that interviews you and writes a brief, an outline,
-  and an art direction first.
-- Every one of these is **opt-in**: install it from the App Store and enable it
-  before it does anything.
-- Installed apps are searchable and launchable from the command palette, and
-  third-party apps now run under **per-app trust grants**, with a denial that
-  tells you exactly what to do about it.
-- **MCP Apps has its own switch** instead of riding the connection-pooling
-  toggle, and the shared MCP gateway follows it.
-- **Connections** gained a provider registry, so an integration declares what it
-  is asking for and its consent URL is validated before you are sent to it.
-- Pasting an OAuth return address for an approval that has already expired now
-  says so, instead of blaming the paste — a spent approval is told apart from a
-  failed delivery, so you know to start a fresh one rather than re-copy a dead
-  address.
-- Clicking **Connect** now asks for the provider's approval link instead of
-  waiting for one, so the card offers it within seconds rather than only after
-  some later chat happens to reach that server.
-- Code Review Sage works against **GitHub Enterprise Server** hosts.
-- An MCP server that authenticates with OAuth now receives the scope list and
-  client id in the fields kiro-cli actually reads, so those connections
-  authorize instead of silently failing.
-
-### Windows, properly
-
-- The desktop build moved to an **NSIS installer** with an integrated titlebar,
-  launcher spawn/stop fixes, and a configurable sandbox tier for agent
-  subprocesses. Skills, the usage ledger, and build tooling all learned the
-  platform's rules.
-
-### A dashboard you can operate
-
-- **System is now a task manager** — live per-session resource usage, plus a
-  **Storage** screen that reports what sessions cost on disk and reclaims space
-  to a trash, with an inventory that no longer calls idle sessions "in use".
-- **Releases tab** — this changelog, rendered per version in Settings.
-- **Webhooks** — named tokens, HMAC signing, and a kill switch for inbound
-  automation. The page is still being finished, so it now sits behind a
-  per-device **Preview pages** toggle under Developer and is hidden by default.
-- Redesigned sidebar folders, drag a session into an open chat to reference it,
-  suggested folders for new sessions, consistent empty states with a next step,
-  and a notification sound when an approval prompt needs you.
-- **Continue instead of retyping** — resume an interrupted turn from where it
-  stopped, on any idle session, and recover cleanly from tool-hook blocks and
-  failed restores. Queued messages can be reordered before they send.
-- The terminal panel pops out into its own window, completes subcommands and
-  flags (not just paths), and takes a configurable font.
-- **Agent Templates became a two-pane inspector**, and agents defined in the
-  project you are working in are discovered alongside your user-level ones.
-- **Send a copy of a session to another instance** — hand a conversation, with
-  its context, to a different Kiro Crew you run.
-- Jira issue URLs and setting references render as **link chips** you can click
-  straight through.
-- Stale auto-titles refresh in the background, the command palette tells a
-  failed scoped search apart from an empty one, sidebar search keeps its
-  relevance order, and the chat action footer grows to 40px targets on touch
-  devices.
-- Bold, italic, and strikethrough now render correctly in **CJK prose**.
-- While the agent is waiting on something, the wait shows a **live countdown**
-  with a button to end it early instead of leaving you guessing.
-
-### Channels, and setup that no longer assumes Slack
-
-- **`kirocrew setup` stops asking for Slack tokens.** The wizard finishes on the
-  dashboard and points at the full set of chat channels; walk through the Slack
-  credentials only when you ask for them with `kirocrew setup --slack`. Docs and
-  in-app copy describe Kiro Crew as multi-channel rather than Slack-first.
-- **Telegram** accepts inbound attachments — images for vision, documents, and
-  audio that is transcribed on arrival. Serving **multiple bot accounts per
-  gateway** was withdrawn before this release: a second bot is a second inbound
-  door, and it is only worth having once a bot can be turned off, given its own
-  security posture, and named honestly in the audit log on its own. A
-  `telegram.accounts` entry written by an earlier release candidate is preserved
-  in config but no longer starts a bot — move the token you want served to
-  `telegram.bot_token`.
-- A sub-agent's completion now reports back into **non-Slack** parent sessions,
-  Discord continues the connected session when a reply arrives, and Slack
-  renders an `OPTIONS` prompt as a real control everywhere it appears.
-
-### Voice, language, and models
-
-- **Korean and Japanese** join the dashboard — twelve interface languages.
-- **On-device Apple speech-to-text** with live streaming; switch the microphone
-  mid-recording; dictation lands at the cursor.
-- The model picker shows each model's **credit multiplier** and scopes itself to
-  what the account can actually use; background and sub-agent work take a
-  **configurable per-role model** and reasoning effort.
-
-### Autonomy with a governor
-
-- Sub-agents can be steered with queued follow-ups, scoped to exactly the
-  context a task needs, and report completions as cards in the chat.
-- Monitoring loops accept a **wall-clock runtime budget**; cron jobs group into
-  collapsible folders and start from a **template gallery** of 15 presets.
-- Skills show their **per-injection context cost** on a budget screen, can opt
-  out of injection, and the knowledge library adds documents automatically,
-  dedupes per document, and honors `.kiroignore`.
-
-### Diagnostics and trust
-
-- **Report a Problem** collects a support bundle from the CLI or the UI, and
-  every error message carries an "Ask the agent" hand-off.
-- Loopback requests no longer leak the internal secret to a proxy; sensitive
-  paths and credential redaction got faster without getting looser.
-- The ACP runtime survives oversize output frames, worker sessions are no longer
-  reaped as orphans, and `kirocrew update` works for wheel and `cli.sh` installs.
-- A refusal from one of **your own** deny patterns can carry your note
-  explaining it, and the seven always-on git-publish rules now render locked in
-  Settings instead of offering a toggle that never took effect.
-- The gateway **refuses to boot when its data home cannot persist state**,
-  rather than running and losing your work silently.
-- The tool-approval window and the watchdog's stall windows are both bounded by
-  the turn ceiling, so neither outlives the turn it belongs to.
-
-Plus roughly 280 further fixes across the dashboard, chat, the chat channels,
-ACP transport, history consolidation, packaging, and CI.
-
-## [0.1.3] — 2026-08-07
-
-A hot patch for model entitlement: the model picker scopes itself to what the
-account can use, a model the account cannot use is never sent, and an
-unavailable model is reported as an access problem instead of a capacity error
-or a raw JSON-RPC dump.
-
-## [0.1.2] — 2026-07-30
-
-First public release of KiroCrew — an open-source personal AI agent that runs on
-your own machine, driving [kiro-cli](https://kiro.dev) over the Agent Client
-Protocol. Install it, sign in once, and it is yours: no server to rent, no
-account to create, and your conversations, memory, and files stay on your disk.
-
-### Chat from wherever you already are
-
-- **One agent, ten ways in** — A web dashboard, a native desktop app, a terminal
-  CLI (`kirocrew chat`, plus a full TUI), and bots for **Slack, Discord,
-  Telegram, Microsoft Teams, Webex, WeCom (企业微信), and WeChat** all drive the
-  same gateway with the same memory and the same tools. Start
-  something at your desk, follow up from your phone. Each Slack thread or
-  Discord DM is its own isolated session, and a dashboard session can be handed
-  off to a Slack thread and stay in sync both ways.
-- **A dashboard built for long sessions** — Multiple concurrent chats with
-  auto-generated titles, live streaming tool status, and a context-usage ring.
-  Edit and resend an earlier message, rewind a conversation to any point, fork a
-  session into a new tab with its full context, or regenerate a reply and browse
-  the variants. Organize with project folders, tags, Trello-style columns, and
-  per-session colors; search across every session by content. 18 color themes,
-  a Monaco code editor, `@filename` fuzzy file attach, and an incognito mode
-  whose sessions never write to memory.
-- **Speak and be spoken to** — Live streaming speech-to-text over WebSocket,
-  voice memos transcribed on arrival, and local Piper text-to-speech for replies
-  with no cloud round-trip.
-- **Ten languages** — The interface ships in English, German, Spanish, French,
-  Italian, Portuguese, Russian, Hindi, Bengali, and Chinese.
-
-### Work that continues while you are away
-
-- **Unattended multi-step tasks** — Hand it a spec and it decomposes, executes,
-  tests, and retries (`kirocrew run TASK.md`), designed for 10+ hour runs. It
-  checkpoints to disk, so a crash or Ctrl+C resumes where it stopped; if
-  kiro-cli dies it rebuilds the session and carries on; a watchdog catches
-  stalls; and an LLM reviewer checks the result against the spec before calling
-  it done. Failed steps become lessons it keeps.
-- **Autopilot** — A per-session toggle that turns ordinary chat into
-  plan-then-execute, with visible, editable plans, for when a request is bigger
-  than one turn.
-- **Cron scheduling** — Recurring jobs with per-job timezones, skip-dates for
-  holidays, per-job timeouts, and jitter to spread load. Each job chooses
-  whether it remembers the previous run. A job that finds a broken build at 3am
-  can fix it and tell you over breakfast.
-- **Parallel subagents** — Split one job across background agents
-  (`kirocrew spawn run`), blocking or fire-and-forget, with progress visible in
-  the chat header and completions delivered back into the conversation.
-- **Dynamic workflows** — For work too structured for one agent, an authored
-  Python script drives many agents through fan-out, pipelines, and
-  judge-and-verify stages. An agent will usually write the script for you from a
-  plain-English goal.
-- **Proactive push** — The agent can pause mid-session to poll something, or
-  register a webhook so an external system (CI, an alert, an inbox) wakes it up
-  later.
-
-### It remembers, and it learns
-
-- **Memory that survives restarts** — Preferences, project context, and daily
-  conversation history persist and are searched both by keyword and by meaning.
-  Embeddings run **locally and in-process**, so nothing leaves your machine to
-  make memory work. A graph explorer shows how memories relate.
-- **Corrections stick** — Correct the agent once and it is kept as a lesson
-  injected into every future session, so the same mistake does not return next
-  week.
-- **Knowledge Library** — Ingest your own documents and code into a searchable
-  personal knowledge graph the agent can consult.
-- **Snapshot and restore** — One command backs up config, memory, lessons,
-  crons, skills, and history; restore all of it or just selected components,
-  with a dry-run preview.
-
-### Extend it
-
-- **Apps, with six built in** — An App Store in the dashboard, an `app.json`
-  manifest, TypeScript and Python SDKs, and gateway lifecycle hooks. Shipping in
-  the box: **Auto Research** (multi-cycle research campaigns that keep going
-  after you walk away), **Code Review Sage** (reviews each changed file of a PR
-  in its own agent session), **Issue Radar** (GitHub/GitLab triage that
-  remembers its notes), **Workflows**, **File Explorer**, and **Dev Fleet**.
-- **Skills** — Plain markdown files that teach the agent a workflow, loaded
-  automatically when a message matches or on demand when it decides it needs
-  one. Twelve ship built in; write your own with no code and no rebuild.
-- **Any MCP server** — Discover, probe, enable, and disable MCP servers from the
-  dashboard. KiroCrew's own capabilities are exposed the same way, so the agent
-  calls structured tools instead of shelling out.
-- **Artifacts** — Documents, code files, and interactive widgets with a stable
-  identity, version history, and a dashboard library. Deploy a webapp artifact
-  to **your own** AWS account and get a public HTTPS link with a TTL.
-
-### Drive your desktop, not just a browser tab
-
-- **Computer use** — The agent can read a native application through the
-  accessibility layer and operate it: take a window as a numbered outline of its
-  buttons, fields, and rows, then press, type, set a value, scroll, or drag.
-  This reaches work with no web UI — pulling a figure out of a spreadsheet,
-  walking a desktop-only internal tool, reading an error dialog and telling you
-  what it says. **Your mouse pointer never moves by accident**: actions are
-  delivered to the target app, so a background window works without stealing
-  your cursor or focus, and the one path that does take your real pointer has to
-  be named explicitly by the model — the automatic choice never resolves onto it.
-  **Off by default and macOS-only in this release**; enable it in Settings →
-  Computer Use. Password fields are never read and a window holding one is never
-  photographed, destructive-command-shaped text is refused rather than typed, and
-  every call — allowed or refused — is written to the audit log.
-- **Browser automation** — Playwright-driven navigation, form filling, and
-  screenshots, including the ability to look at its own front-end changes and
-  judge them.
-
-### Security you can reason about
-
-- **An OS sandbox you can switch on** — kiro-cli subprocesses can be confined by
-  Linux namespaces or macOS Seatbelt, with three modes controlling which
-  credential directories are even visible. This ships **opt-in**: the default
-  (`agent.sandbox: "off"`) defers to whatever sandboxing kiro-cli applies itself,
-  so set `agent.sandbox` to `"auto"` to have KiroCrew wrap the subprocess.
-- **Layered controls** — 137 built-in denied-command patterns that hold even in
-  YOLO mode, credential redaction scanning everything the model emits, blocked
-  access to `~/.aws` and `~/.ssh`, XSS sanitization with CSP, and an audit log of
-  every command.
-- **A ceiling the agent cannot raise** — A two-level governance model
-  (`POLICY ∩ PROFILE`, tightest-wins) enforced at KiroCrew's own tool gate. The
-  policy files live where the agent can neither read nor write them, so a
-  prompt-injected agent cannot widen its own limits. Tool calls are auto-approved
-  by default (`agent.approval_mode: "auto"`) with the deny and governance gates
-  still applied first — set it to `"interactive"` to be asked before each call.
-  The dashboard is loopback-only and the Slack bot is locked to its owner.
-
-### Run it your way
-
-- **Install however suits you** — A signed and notarized universal macOS DMG, a
-  Linux AppImage, a multi-arch Docker image for always-on servers, and a
-  `pip`-installable wheel. The desktop app bundles its own Python, so end users
-  need no toolchain. Runs on **macOS, Linux, and Windows**.
-- **Three release channels** — **stable** is the default; **insider** gets
-  release candidates a week or two early and is a switch away in Settings, since
-  the two share one app and just follow different update lanes; **nightly**
-  tracks the latest code and installs alongside your production app rather than
-  replacing it, so you can run both. The desktop app updates itself, and nothing
-  downloads or installs without you asking.
-- **Always on** — Install as a systemd or launchd service, and manage several
-  remote instances (dev boxes, EC2, a home server) from one hub over SSH.
-
-### For app developers
-
-- **`ctx.cron` mutators stay synchronous, with `*_async` siblings.** The App Kit
-  surface (`add_job` / `remove_job` / `update_job` / `remove_all`) is
-  synchronous, as published. Called from a genuinely loop-less context (CLI, MCP
-  process, worker thread — what apps overwhelmingly use) they run inline as
-  before. Called from a **running event loop** — an on-loop `on_startup` hook or
-  route handler — they now raise `CronSyncOnLoopError` instead of parking the
-  gateway loop for the cron-store lock window and stalling chat, timers, and
-  heartbeats for every session. Migration is one line:
-  `ctx.cron.add_job(...)` → `await ctx.cron.add_job_async(...)`, identical
-  arguments and return value. The error is raised before any mutation, so a
-  refused call never half-applies.
-
-### Notes
-
-- **kiro-cli is required** — KiroCrew orchestrates it. `kirocrew setup` walks you
-  through installing and signing in; `kirocrew doctor` verifies the whole wiring.
-- **Data lives in `~/.kiro/crew`** — override with `KIROCREW_HOME`. Installs
-  using the earlier `~/.kirocrew` layout migrate automatically on first launch.
-- **The dashboard defaults to `http://localhost:5476`** — override with
-  `KIROCREW_PORT`.
-- **Optional extras** — speech-to-text needs `pip install kirocrew[voice]`; the
-  OS sandbox is POSIX-only; computer use is macOS-only in this release.
+## 0.2.2 · 2026-10-18 — Overview / Task Features / Sky responsiveness
+
+- The overview no longer treats stale durable Run records as live execution. It displays real 24-hour request-volume buckets, completion rate, latency and provider health; no synthetic points are inserted.
+- Task feature vectors are stored as content-free fields in the bounded completed-turn telemetry record, instead of queried from the last 200 runtime-trace events. Clearing or trimming a request also removes its feature vector; clearing request history now clears the associated trace and adaptive evidence too.
+- Sky's built-in policy gives speed greater scoring priority while keeping eligibility checks, fast-tier restrictions and exceptional-risk verification. Model speed is not guaranteed; service latency, tools and task content remain external variables.
+- Per-Type recent usage shows measured median completion time, enabling Sky/Multi comparisons. The overview shows upstream-versus-tools timing to help diagnose slow scheduled tasks. No host-owned KiroCrew scheduler logic was modified.
+
+
+
+- **Shared-cache model-count hotfix (same version):** KiroCrew 0.10 reuses the chat model catalogue in Settings, so hidden Mode Type sentinels could leave `全部模型 (N)` inflated (for example 4 MiMo models + Auto displayed as 9 after a four-Type Tiga chat response). The dashboard guard now passively observes `/api/models` responses, derives the concrete provider-model count without mutating chat data, and repairs only Settings model-count controls to `Auto + concrete models`. The conversation picker, Mode Type roster, and future Dyna/policy packs are unchanged.
+- **Hotfix 3:** make Crew reasoning-effort visibility independent from the provider's thinking-mode vocabulary. Any concrete model that explicitly advertises two or more selectable effort values now exposes exactly those values, including adaptive-thinking Claude models and future/custom providers; provider name, reasoning-mode label, level count and low/high/max naming are not hard-coded. Add OpenAI, Anthropic adaptive-mode, 2/4/5-level custom-vocabulary, and contradictory-capability regression coverage.
+## 0.9.16
+
+- Fix Web Fetch/Search compatibility with transparent TUN/Fake-IP DNS environments by accepting RFC 2544 `198.18.0.0/15` only when it is returned by DNS for a hostname; literal benchmark addresses remain blocked.
+- Preserve SSRF fail-closed behavior for loopback, private, link-local, CGNAT, ULA, and other special-use destinations; mixed Fake-IP plus genuinely blocked answers are still rejected.
+- Prefer a genuine public DNS answer when both public and Fake-IP answers are present, while preserving single-resolution IP pinning and TLS SNI hostname validation.
+- Update the native Web User-Agent to the actual release version.
+
+## 0.9.15
+
+- Fix backend-scoped Crew agent model pins for Kiro BYO models. When the active chat backend is `kiro-byo` but `agent.member_acp_backend` uses a different model namespace (for example KAS), Kiro BYO now detects a Kiro-BYO-only model before Crew probes the unrelated member backend entitlement catalog. The request is refused with an accurate model-scope explanation instead of the misleading “not available on your account; choose Claude/GPT…” message.
+- Preserve Crew's model-pin safety contract: the patch does **not** bypass `_pin_entitlement_backend`, does not write an incompatible `agents.<name>.model`, does not silently change `member_acp_backend`, and does not claim member-dispatch capabilities. Current-session Kiro BYO model selection remains unchanged.
+- Extend the Crew 0.9 semantic verifier with the model-scope guard so an older 0.9.14 `agents.py` integration is recognized as incomplete and regenerated from its proven pristine backup during Install / Update integration.
+- Document an upstream UI limitation: Crew 0.9's current model picker always renders the “set as agent default” action based on current-session withholding only; Kiro BYO can safely reject an incompatible cross-namespace pin server-side, but does not patch compiled Crew frontend assets to hide that row.
+
+## 0.9.14
+
+- Fix KiroCrew theme integration on Windows/WebView: resolve native form-control polarity from Crew `data-mode`, so system/custom dark themes render native provider dropdowns in dark mode.
+- Stop styling native `<option>` popups with app colors; the host/WebView now owns native menu rendering once `color-scheme` is correct.
+- Fix overly bright sidebar metric wells by using Crew `--bg` + `--border` roles instead of the `--muted` ramp.
+- Use Crew `--panel` / `--bg-hover` roles for secondary/hover surfaces.
+
+## 0.9.13
+
+- Fixed KiroCrew integration upgrades so a Kiro BYO-created harness file from the previous successful install is recognized by its exact runtime snapshot and can be safely replaced by the new version; genuinely foreign bytes at the same path still fail closed.
+- Diagnostics are now user-manageable: the persistent telemetry ledger is bounded to the most recent 500 metadata-only turns, and the Kiro BYO App exposes a **Clear diagnostics** action.
+- Reworked the App UI to consume KiroCrew theme CSS variables (`--bg`, `--card`, `--text`, `--muted`, `--border`, `--input`, `--accent`, status roles) and `useTheme()` rather than inventing independent light/dark colors. Native form controls now receive the host color scheme.
+- Retains the 0.9.12 Process Model, Code Intelligence, Crew `allowedTools` projection fix, DNS-rebinding-hardened Web Fetch, and adaptive Crew 0.9 integration.
+
+## 0.9.12-dev.2 (development)
+
+- Fixed KiroCrew unattended/cron tool execution parity at both sides of the adapter: the Crew `KiroByoHarness` now carries the active saved agent's *safe* `allowedTools` projection, and Kiro BYO consumes that projection. Exact/glob-matched native and MCP tools emit normal tool lifecycle updates but skip `session/request_permission`, matching official Kiro semantics; unmatched tools still enter Crew's permission gate.
+- The Crew-side projection is fail-closed rather than a raw copy: each no-prompt candidate must survive the live governance ceiling, Crew's own KAS `allowedTools` permission classifier, and PreToolUse-hook withholding. Broad shell/filesystem grants that would bypass Crew's deny/sensitive-path floor stay prompt-only.
+- The local native sandbox, schema validation, and hard-deny policy run before any `allowedTools` grant, so auto-approval cannot widen filesystem/process safety boundaries. Authorization grants are deliberately not persisted by Kiro BYO; `session/load` requires a fresh Crew projection or falls back to prompting.
+- Added regression coverage for the real failure shape (`@kirocrew-core` / `skill_search` in an unattended surface), MCP wildcard matching, native allowed-tools matching, and non-granted tools remaining gated.
+
+- Corrected the development version spelling to strict SemVer (`0.9.12-dev.2`) so KiroCrew App installation accepts `app.json`. The release metadata checker now validates SemVer explicitly, preventing Python-only PEP 440 spellings such as `0.9.12dev1` from reaching a Drop-in ZIP.
+- Added a session-owned long-running Process Model with stable `process_id`,
+  bounded stdout/stderr ring buffers, stdin control, status/read/terminate/kill
+  actions, process-group/tree cleanup, concurrent-process limits and bounded
+  completed-process history. ACP session replacement/close/delete and server
+  shutdown now close native runtimes so background processes cannot outlive the
+  session that owns them.
+- Added `execute_shell_process` and `control_shell_process` under the existing
+  Crew-owned `shell` permission capability. `session/cancel` deliberately cancels
+  the current turn without implicitly terminating persistent dev servers.
+- Added a Code Intelligence adapter with `code_symbols` and optional `code_query`.
+  Python symbol/overview extraction has an explicit stdlib-AST fallback;
+  JavaScript/TypeScript and raw structural queries require Tree-sitter.
+- Tree-sitter is an optional `code-intel` dependency set rather than a silent App
+  install. `code_query` is hidden from advertised runtime tools unless the full
+  Tree-sitter core + Python/JavaScript/TypeScript grammar set imports successfully.
+- Updated saved-agent `read`/`shell` visibility tags so the new Harness-owned tools
+  obey Crew projection and explicit `tools=[]` continues to disable all Native/MCP
+  tools. Read-only native policy preserves structural code reads but removes both
+  one-shot and long-running shell execution.
+- Added Process Model, session-resource cleanup, Code Intelligence/fallback and
+  capability-honesty tests. CI now has dedicated Windows/Linux Process Model jobs
+  and a networked Tree-sitter-extra job in addition to the existing core, static
+  analysis and Crew 0.9 source-contract gates.
+
+## 0.9.11rc1 (release candidate)
+
+- Re-audited Kiro BYO against the latest public KiroCrew 0.9 pre-release,
+  `v0.9.0-insider.3` (`7cb49e9`, published 2026-10-10), and the public
+  `release/0.9.0` branch. Both expose project metadata `0.9.0-rc.1` and the same
+  registry/capability architecture inspected here. Public stable remains v0.8.0,
+  while `main` has already advanced to 0.10.0; `main` is therefore only
+  forward-looking architecture evidence, not the 0.9 runtime target.
+- Updated the Crew 0.9 adaptive transformer for the release-candidate backend
+  registry contract. Current 0.9 source uses `agent_sdk/backends.py` as the
+  capability truth source and `register_selectable_backend()` as the selectability
+  extension point. Kiro BYO now uses that dynamic contract when present and falls
+  back to the legacy `BASELINE_SELECTABLE_BACKENDS` seam only for older compatible
+  0.9 Insider source shapes.
+- Added evidence-backed support for Crew's `HONOR_ZERO_TOOL_BAN` capability when the
+  upstream capability exists. Kiro BYO satisfies it through its own saved-agent
+  projection: explicit `tools=[]` hides both native and MCP tools. This is distinct
+  from Crew's mirrored `AcpClient` / `SessionProjection.zero_tools` enforcement path.
+- Preserved the deliberate orchestration boundary: Kiro BYO still does not claim
+  Crew's full member saved-agent, member dispatch, or markdown-agent contracts merely
+  to increase the legacy capability-card score. Crew owns those higher-level product
+  and orchestration surfaces.
+- Hardened native Web Fetch/Search against DNS-rebinding TOCTOU by resolving and
+  validating a destination once per request hop, then connecting the socket directly
+  to that validated `sockaddr`. HTTPS preserves the original hostname for HTTP Host,
+  TLS SNI, and certificate hostname verification.
+- Redirects are resolved, validated, and pinned again hop-by-hop. Mixed public/private
+  DNS answers fail closed. Ambient proxy environment variables are intentionally not
+  consumed by the pinned transport; a future proxy mode must use an explicitly trusted
+  egress-proxy contract.
+- Added `ARCHITECTURE_BOUNDARY.md` to make Crew-owned, Kiro-BYO-owned, shared-contract,
+  and explicitly-out-of-scope responsibilities normative before future parity work.
+- Added release engineering gates: synchronized release metadata checks, branch-aware
+  coverage configuration, CI test/build/wheel-smoke jobs, and configured Ruff/mypy
+  static-analysis jobs. The current local environment cannot install Ruff/mypy because
+  outbound package installation is unavailable, so this release candidate does not
+  claim those static-analysis jobs passed locally.
+- Current local RC evidence: `140 passed, 5 subtests passed`; branch coverage 61%
+  against a 60% fail-under gate; `compileall` succeeds; release metadata check passes;
+  wheel build and clean-venv CLI/import smoke tests pass.
+- Final `0.9.11` remains blocked on execution-level validation against the user's exact
+  installed Crew 0.9 package: semantic verifier, App integration install, runtime
+  status, startup self-repair, and transactional rollback. A source audit is not
+  recorded as a runtime PASS.
+
+## 0.9.10
+
+- Expanded the native Agent Harness tool surface from 6 to 11 tools with
+  `read_files`, `list_directory`, `delete_file`, `web_fetch`, and `web_search`
+  while preserving the existing `read`, `glob`, `grep`, `write`, `edit`, and
+  `shell` contracts.
+- Added Kiro V3 visibility tags for the new read/write/web tools and legacy
+  aliases (`readFiles`, `listDirectory`, `deleteFile`, `webFetch`, `webSearch`)
+  without moving authorization out of KiroCrew.
+- Added dependency-free native web execution with SSRF-sensitive destination
+  checks, redirect re-validation, response-size/time limits, text/HTML extraction
+  and a lightweight public search backend. Local/private/link-local destinations
+  and embedded URL credentials fail closed.
+- Added batched multi-file reads, explicit directory listing, and regular-file-only
+  deletion with the same allowed-root/sensitive-path sandbox used by existing
+  filesystem tools.
+- Extended `native_tools.json` hard policy with `web_enabled`, web timeout, and
+  web response-size limits. Per-tool trust remains Crew-owned.
+- Kept the single-screen Overview compact when the native tool count grows by
+  summarizing tool families instead of rendering all tool names in the stat row.
+- Verification baseline: 131 source tests pass; the supplied KiroCrew
+  0.9.0-insider.1 source still reports clean semantic seams, shared
+  `AcpRuntime=True`, legacy `AcpClient` spawn=False, native Kiro 8/10 and
+  Kiro BYO 7/10. Full transactional install and two-file startup self-repair
+  (one semantic seam plus the create-only harness) are also verified.
+
+## 0.9.9
+
+- Refactored the KiroCrew App management surface into a persistent status/navigation sidebar plus a compact single-screen Overview. The sidebar now keeps health, Provider/model counts, recent turns, Crew/Integration state, credential backend and native-tool count visible while managing Providers, Diagnostics or Integration.
+- Added a backend-owned `overview` status snapshot (`schema_version: 1`) so health/alert policy is computed once in Python instead of duplicated in the React UI. The snapshot derives `ready`, `needs_integration`, `repairable`, `needs_provider`, `degraded` and `incompatible` states from real runtime, provider, integration and telemetry facts without exposing secrets.
+- Removed the remaining KiroCrew 0.8 integration overlays, semantic patchers,
+  manual PowerShell overlay installers and their dedicated tests/docs.
+- Restricted App integration to the Crew 0.9 `adaptive09` semantic transformer
+  plus the create-only `KiroByoHarness` module; static fingerprint overlays are
+  no longer a supported install path.
+- Kept Crew's shared `HarnessAdapter` / `AcpRuntime` architecture authoritative
+  and corrected the advertised capability result to the verifiable **7/10**.
+  `member_saved_agent` remains intentionally unclaimed until Kiro BYO can satisfy
+  Crew's complete saved-member activation contract.
+- Split ACP dispatch and the prompt/tool runtime into smaller handlers. The main
+  `_handle_prompt_request()` coordinator is reduced from 739 lines to 113 lines;
+  provider/tool looping and native/MCP/deferred tool execution are isolated.
+- Hardened MCP modern/legacy negotiation: `-32022 UnsupportedProtocolVersion`
+  no longer causes blind legacy fallback, and modern `tools/list` cache metadata
+  (`ttlMs`, `cacheScope`) is validated.
+- Retained transactional integration preflight, exact rollback and startup
+  semantic self-repair for known-clean Crew 0.9 seams.
+- Updated Windows/App documentation so all supported installation instructions
+  go through `Kiro BYO -> Integration`.
+- Verification baseline: 122 source tests pass and the supplied
+  KiroCrew 0.9.0-insider.1 source reports clean semantic seams, shared
+  `AcpRuntime=True`, legacy `AcpClient` spawn=False, native Kiro 8/10 and
+  Kiro BYO 7/10.
+
+### 0.2.2 settings layout hotfix (2026-10-18)
+- Fix horizontal scrolling in the embedded KiroCrew integration settings panel caused by non-shrinking two-column setting rows.
+- Let setting columns and integration metadata shrink and wrap safely, and stack the settings navigator in narrower host windows without changing runtime/session behavior.
+- Add optional Chromium viewport regression coverage for the settings panel (1555–1100px host widths).
+
+### 0.2.2 management and schedule selector corrective patch (2026-10-18)
+- Keep failure/error/account-exception labels neutral while coloring failure **values** red and success **values** green, including zero. Apply the rule to the legacy standalone management view as well.
+- Fix Overview trend's data source: use full status/diagnostics hourly summaries (with ops summary as a fallback), not a partial Overview diagnostic projection; only chart actual recorded hourly latency observations.
+- Stop scheduled-task Model and Context selectors overflowing their cards with shrinkable grid columns, constrained triggers and a container-width responsive fallback.
+- Harden the KiroCrew schedule-edit Type guard for unmarked React portals, plain-text Type rows and model menus mounted *after* the editor; the chat Type picker remains available outside the editor. No shared model catalogue mutations, compiled bundle patches or page reloads.
+- Add regression coverage including an optional real Chromium test for asynchronous task editor/model-list ordering.
+
+### 0.2.3 — S1-03 Crew capability sync (2026-10-23, same product version)
+- Added per-session live MCP broker verification instead of treating persisted Crew tool schemas as active grants.
+- Added bounded host catalogue refresh and non-secret capability snapshots at prompt boundaries.
+- Rejects unverified/revoked MCP tools and prunes stale deferred tool selections.
+- On explicit browser requests, waits for the actual Crew core session handshake rather than cached catalogue readiness.
+- Explicitly withdrawn Saved Agent projections are not resurrected from durable session history.
+- Kept Tiga/Dyna semantics, App ID, Crew integration patches, and product version unchanged.
+
+### 0.2.3 — S2-05 Crew background role handoff (2026-10-24, same product version)
+- Normalize KiroCrew `kirocrew-lite` background `auto`/Type selections to a concrete model already at `session/new`, matching the existing subsequent `session/set_model` semantics.
+- Preserve host-selected concrete models and interactive Tiga Type routing; only the explicit Crew lite-agent projection activates this behavior.
+- Normalize legacy persisted lite-worker Type sessions on restore while preserving persisted concrete choices.
+- Add regression coverage for startup, restore and host precedence without changing KiroCrew integration patches or claiming full schedule/member parity.
+
+### 2026-10-24 · 0.2.3 S3-03 故障注入与恢复状态机加固
+
+- Durable Run 恢复在 Ledger 原子更新阶段二次判定，避免同进程重复准入和进行中恢复重放。
+- Step/Attempt 持久化创建失败时停止本轮 Provider 与工具执行，明确返回运行错误。
+- 新增 S3-03 写入中断、并发恢复、副作用阻断等故障注入测试；不改变 Tiga/Dyna、Crew 数据或界面。
+- 实机故障恢复、跨进程 exactly-once 及远程副作用撤销不在本轮验证范围内。
+
+### 2026-10-24 · 0.2.3 S4-01 Mode Registry 兼容层
+- 新增 data-only Mode Registry，将磁盘 Policy Pack 发现与模式激活/解析分离。
+- 旧 API、Tiga 四 Type 的动态选模与会话标识保持兼容；Dyna 三 Type 仍仅预览、不可执行。
+- 保留用户 Policy Pack 热加载，不开放第三方任意 Python 代码执行。
+- 新增注册表回归测试；Crew Windows 端到端验收另行进行。
+
+### 2026-10-24 · 0.2.3 S4-03 Tiga 内置 Mode 插件迁移
+
+- Added explicit built-in Mode plug-in declarations for Tiga and preview-only Dyna.
+- Validate built-in Mode/Type IDs, default Type and activation state before registry admission; incompatible resources fail closed.
+- Kept Tiga/Dyna policy JSON byte-identical to S4-02 and preserved Mode → Type → Model, Crew selection IDs and legacy Policy Pack API.
+- Retained JSON-only custom Mode hot reload and legacy manual Tiga override compatibility; Dyna remains unavailable for execution.
+- Did not change Provider, ACP, tool permissions, Crew integration patch, UI, or product version.
+
+### 2026-10-24 · 0.2.3 Crew 0.9 退役 / Crew 0.10-only 兼容清理
+
+- 删除 `v0.9-adaptive` 适配目录和 `verify_crew09_integration.py`，最低 Crew 要求提升到 `0.10.0`。
+- `resolve_target()` 显式限定 Crew 0.10 家族，移除 `adaptive09` 分发分支；启动修复拒绝 0.9 旧快照。
+- 0.10 仍使用的通用语义变换函数更名为 `crew_shared_patch.py`，保留原有 0.10 行为。
+- CI 上游源码验证改为 0.10；新增旧版拒绝测试，当前发行说明同步更新。
+- 不自动卸载既有 Crew 0.9 补丁；应在原版本中先卸载，然后升级 Crew 再安装新版。Windows 实机验收仍待完成。
+
+### 2026-10-24 · 0.2.3 Global Audit Fix 03 · Crew 队友兼容修复
+- 恢复 Crew 原生的队友私聊后端选择优先级；`agent.acp_backend=kiro-byo` 不再覆盖 `agent.member_acp_backend`。
+- 旧 BYO-owned `members.py` selector 及队友模型 entitlements helper 可原位升级，不对未知 Crew 源码强制改写。
+- 单独识别有会话身份的 Crew member dispatch/panel MCP：缺省/空 Saved Agent `tools` 不再意外屏蔽 Crew 的会话级控制面，同时坚持 excludedTools、真实连接、权限请求和派发前复核。
+- 同名 MCP 服务声明拒绝；Crew member 服务缓存不再被当作真实连接验证；无完整 Agent 投影但有 member mount 时默认收紧原生及外部 MCP 可见性。
+- 不增加完整 Saved Agent 能力声明、不改 Tiga/Dyna/Provider 策略和 Crew 数据库；Windows 真实集成验收仍待完成。
+
+### 0.3.0 V12 client-latency observer candidate (2026-10-31)
+- Add a separate conservative client-observed send-to-reply timing readout for the Crew 0.11 chat; do not overwrite server Turn or Provider telemetry.
+- Fail closed when a live turn cannot be uniquely associated with the visible chat, and preserve existing host install/change isolation.
+- Keep Windows/macOS/Linux Electron UI verification pending; this is not a claim of pixel-perfect end-to-end timing.

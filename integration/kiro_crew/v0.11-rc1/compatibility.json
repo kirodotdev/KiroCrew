@@ -1,0 +1,250 @@
+{
+  "family_regex": "^\\d+\\.\\d+\\.\\d+(?:(?:-[0-9A-Za-z][0-9A-Za-z._-]*)|(?:rc\\d+))?(?:\\+[A-Za-z0-9._-]+)?$",
+  "transformer": "adaptive11",
+  "generated_files": [
+    "src/kiro_crew/agent_sdk/backends.py",
+    "src/kiro_crew/agent_sdk/backends_mcp.py",
+    "src/kiro_crew/agent_sdk/backends_members.py",
+    "src/kiro_crew/agent_sdk/backends_sessions.py",
+    "src/kiro_crew/agent_sdk/backends_turns.py",
+    "src/kiro_crew/agent_sdk/backends_models.py",
+    "src/kiro_crew/agent_sdk/backends_routing.py",
+    "src/kiro_crew/agent_sdk/backends_launch.py",
+    "src/kiro_crew/acp_backends.py",
+    "src/kiro_crew/acp/types.py",
+    "src/kiro_crew/agent_sdk/host_auth.py",
+    "src/kiro_crew/agent_sdk/tool_gate.py",
+    "src/kiro_crew/acp/harness/__init__.py",
+    "src/kiro_crew/acp/runtime_session_load.py",
+    "src/kiro_crew/providers/mirrors/registry.py",
+    "src/kiro_crew/members_parts/member_sessions.py",
+    "src/kiro_crew/config/loader_builders.py",
+    "src/kiro_crew/dashboard/handlers/agents.py",
+    "src/kiro_crew/dashboard/chat_api/slot_effort.py",
+    "src/kiro_crew/dashboard/chat_handlers.py",
+    "src/kiro_crew/dashboard/chat_title.py",
+    "src/kiro_crew/dashboard/chat_turn/turn_dispatch_gates.py",
+    "src/kiro_crew/dashboard/chat_turn/turn_stats.py"
+  ],
+  "baseline": "0.11.0-rc.1 source-specific adapter with BYO Mate 2.0 projection",
+  "hash_mode": "normalized_utf8_lf",
+  "mode": "adaptive_semantic",
+  "base_sha256": {},
+  "accepted_prior_overlay_sha256": {},
+  "created_files": [
+    "src/kiro_crew/acp/harness/kiro_byo.py"
+  ],
+  "verified_through": "0.11.0-rc.1",
+  "verified_commit": "",
+  "verified_at": "2026-10-26",
+  "required_contract_symbols": {
+    "src/kiro_crew/agent.py": [
+      "require_fork_governance",
+      "ensure_agent_materialized",
+      "_MEMBER_DASHBOARD_GRANTS",
+      "_MEMBER_PANEL_GRANTS",
+      "_EXPORTS_BY_OWNER",
+      "__getattr__"
+    ],
+    "src/kiro_crew/acp/kas_agents.py": [
+      "pre_tool_hook_matchers",
+      "load_agent_spec",
+      "resolve_prompt"
+    ],
+    "src/kiro_crew/acp/kas_permissions.py": [
+      "allowed_tools_to_permissions",
+      "withhold_hook_gated_auto_approval",
+      "auto_approved_capabilities"
+    ],
+    "src/kiro_crew/acp/launch.py": [
+      "resolve_self_served_launch"
+    ],
+    "src/kiro_crew/acp/harness/_common.py": [
+      "MembershipHarness"
+    ],
+    "src/kiro_crew/acp/harness/base.py": [
+      "NotificationAliases",
+      "SessionExtras",
+      "SpawnContext",
+      "SpawnPlan",
+      "TeardownPolicy"
+    ],
+    "src/kiro_crew/acp/session_handle.py": [
+      "AcpRuntimeError"
+    ],
+    "src/kiro_crew/acp/session_mcp.py": [
+      "IDENTITY_BOUND_SERVERS",
+      "acp_server_element",
+      "session_mcp_projection"
+    ],
+    "src/kiro_crew/config/paths.py": [
+      "kiro_agents_dir"
+    ],
+    "src/kiro_crew/platform/governance.py": [
+      "may_skip_gate_now"
+    ],
+    "src/kiro_crew/providers/mirrors/base.py": [
+      "Concern",
+      "Disposition",
+      "Ruling",
+      "SessionProjection"
+    ],
+    "src/kiro_crew/providers/mirrors/identity.py": [
+      "control_plane_identity_env",
+      "with_env"
+    ],
+    "src/kiro_crew/agent_materialization/worker_agent.py": [
+      "require_fresh_derived_spec",
+      "DerivedSpecStale"
+    ],
+    "src/kiro_crew/agent_materialization/managed_mcp.py": [
+      "managed_mcp_spec_entry"
+    ],
+    "src/kiro_crew/apps/manager_records.py": [
+      "app_data_dir"
+    ],
+    "src/kiro_crew/acp/harness/kas.py": [
+      "resolve_projected_spec",
+      "mate_worker_projection"
+    ],
+    "src/kiro_crew/mate_worker.py": [
+      "MATE_WORKER_AGENT",
+      "WorkerKitUnreadable"
+    ],
+    "src/kiro_crew/config/loader_document.py": [
+      "member_acp_backend_declared"
+    ],
+    "src/kiro_crew/config/loader_builders.py": [
+      "_read_backend_choice",
+      "_MEMBER_HARNESS_KEY"
+    ]
+  },
+  "required_contract_exports": {
+    "src/kiro_crew/agent.py": {
+      "_EXPORTS_BY_OWNER": [
+        "require_fresh_derived_spec",
+        "DerivedSpecStale",
+        "managed_mcp_spec_entry"
+      ]
+    }
+  },
+  "verified_family_regex": "",
+  "min_version": "0.11.0",
+  "required_contract_markers": {
+    "src/kiro_crew/apps/manager.py": [
+      "from kiro_crew import _facade_mirror",
+      "_facade_mirror.install"
+    ],
+    "src/kiro_crew/dashboard/chat_handlers.py": [
+      "_facade_compose(",
+      "_owner_slot_effort"
+    ],
+    "src/kiro_crew/_facade_compose.py": [
+      "def compose(",
+      "new = FunctionType(fn.__code__, namespace",
+      "for holder in [namespace, *(vars(owner) for owner in owners)]"
+    ]
+  },
+  "max_version_exclusive": "0.11.2",
+  "allowed_crew_versions": [
+    "0.11.0-rc.1",
+    "0.11.0rc1"
+  ],
+  "verified_versions": [
+    "0.11.0-rc.1",
+    "0.11.0rc1"
+  ],
+  "source_audit": "2026-10-26: exact uploaded rc.1 archive pinned; 21 semantic seams compile and are idempotent; BYO member dispatch and Mate Worker projection verified at source/unit level; Windows desktop E2E still pending; 2 additional 0.11 turn-clock owner seams validated by strict semantic anchors only (not exact RC1 source hashes; OS E2E pending)",
+  "pinned_source_sha256": {
+    "src/kiro_crew/agent_sdk/backends.py": {
+      "pristine": "c4718b62def70b57c4bbe5dce78f963752227975dcece50e672da12870d26621",
+      "patched": "d9e0735c5881df72615040dc6ac080a8a8ac54ab29da88dcb20b72b2aa186913"
+    },
+    "src/kiro_crew/agent_sdk/backends_mcp.py": {
+      "pristine": "4cbf660afba3e2608c2d1b06eab8bb546aa4c6c8030dd6b252086d1c8031a0a9",
+      "patched": "4087ea6f44853cd0a7d80e3acf23919b54b99216996baf3cadc1984b29ee0aeb"
+    },
+    "src/kiro_crew/agent_sdk/backends_members.py": {
+      "pristine": "e6abbd98c442852bdaa23da6a933bb5fdcd33c9e3930843cc01e95e9ab5ba7cf",
+      "patched": "b45c845a420d876987917a4ad1a50ac4c6948ac86db4901e1ae3f9b9bbb05ab7"
+    },
+    "src/kiro_crew/agent_sdk/backends_sessions.py": {
+      "pristine": "ac468192865597825055166b181ff483ec87637c955760f0afc058ce161df14f",
+      "patched": "1934c2d918a435357b301d8f0e34daf6c69bb1bfb4fe8afd1ed0480c439cdd6e"
+    },
+    "src/kiro_crew/agent_sdk/backends_turns.py": {
+      "pristine": "a36b5a7764f0e62f5bb0967237e317e9ba0633890029e3f9907c82b8c21da034",
+      "patched": "16cc400682ad67e77e0362d397304f3c32bc0bd29cced655cf348be74d6e9c6b"
+    },
+    "src/kiro_crew/agent_sdk/backends_models.py": {
+      "pristine": "205e564d31df4aa35e8c82fd19c26292ef30538630fb919081cc85cae362e2e3",
+      "patched": "44214b3e752a101e8595a348d096b57c2cd905de95d0212b30e1d3b472c603ca"
+    },
+    "src/kiro_crew/agent_sdk/backends_routing.py": {
+      "pristine": "9aea72e2250d7521dac51787802bb86c60e82158b990e591596b9e519c0837a4",
+      "patched": "1a6a04e7a2c735818113f23215b6bdea130d6c84cfeb6b2df36d0e27f00ffd2d"
+    },
+    "src/kiro_crew/agent_sdk/backends_launch.py": {
+      "pristine": "1a2f527d27a085c700e986c52ed2f035661154e179a64fd9b7c6263e05ea386d",
+      "patched": "6d4d9abf608cf074765ccd3f60485776d824577beeaa2a179d61c5642477d15a"
+    },
+    "src/kiro_crew/acp_backends.py": {
+      "pristine": "d52dbbdbc0801fafced584d67fa63a80956d1a4991d3c28eecce53b3bd5d8e22",
+      "patched": "dafd3df557c42fd2e98af0c721da6ee00db3db4d932e121bcee5014926b662fd"
+    },
+    "src/kiro_crew/acp/types.py": {
+      "pristine": "be295b9f9e7c196f70b2d246c07bef6fe2caac36c0c5d56c525e15967bd84748",
+      "patched": "7b3e84c1365ad67cfd82d6724b9a06d6e99c7e5fbc5ab311e90104611134f5a0"
+    },
+    "src/kiro_crew/agent_sdk/host_auth.py": {
+      "pristine": "933eb5d0d102aa836f5799259a5ec3b382a7a8633e93877cc9ebc5158064597b",
+      "patched": "631c8dbbff6b1ea21405253dd3040c664b592e3b716f60fa78d45efb49a59e00"
+    },
+    "src/kiro_crew/agent_sdk/tool_gate.py": {
+      "pristine": "3a3f9ffa16447849a5dfc5c65be5b761ecf41631f2a9f73be8972f94127fcab4",
+      "patched": "157b33384c926dad090e937b76bf363f375173d4613ab50a64dc2284f0d2ee64"
+    },
+    "src/kiro_crew/acp/harness/__init__.py": {
+      "pristine": "244a4974bd0eb804a6dd1bfe4bbf38aea8e0dba3c0a97ef9a8f1bd1ead1efb34",
+      "patched": "1e36393ccaff9dd44a6f6a2215d1e75f0ea71d3ac5fd26ad5e7d66c023b9b3a2"
+    },
+    "src/kiro_crew/acp/runtime_session_load.py": {
+      "pristine": "73a81cfbf37fafa02c9e1318a3e6ce5580486e837ad8be0101fc8f00ae19d471",
+      "patched": "6dac52169ca07b2536e88946a78a8f0b9ad353c76dd7cec76a6cf68366c431f1"
+    },
+    "src/kiro_crew/providers/mirrors/registry.py": {
+      "pristine": "ee2f51b5e3e45ba52bfa2d0743a75f357237d0b52861d915c582eda113ca8830",
+      "patched": "f3be61802d8f2b8733eaa6e9e0c5664a22f5606549a0f3193d586c2f364360a8"
+    },
+    "src/kiro_crew/members_parts/member_sessions.py": {
+      "pristine": "06b73266dd0ebf3b495b2cc63e845b53f0e38bde38c7d4ff6540a3a8eb4a70ae",
+      "patched": "ffbd53e2062f2270312d79aae9631d4daa25f7336f3690b11ea110e1eca03fbb"
+    },
+    "src/kiro_crew/config/loader_builders.py": {
+      "pristine": "f8a142d9771450e878d0fe165b330f4ad2cb3567b53974771ae6abeb1d15688d",
+      "patched": "28e791ff1a0564063168ec85c6faa33eb184253239c63ac66ecfd079a3dc7774"
+    },
+    "src/kiro_crew/dashboard/handlers/agents.py": {
+      "pristine": "5052b48d7047d7eecec59a733ba047e6ed53d9c2f5c71925fd2a2638ae518dd7",
+      "patched": "907da18ae75fcd389b2c29fcc5e457b053730ca4860c96090d1a9dc8729ff816"
+    },
+    "src/kiro_crew/dashboard/chat_api/slot_effort.py": {
+      "pristine": "f69d9da3eb7a9defdee2ac7c7c2856630373154c22c3dff1eaf2b35f523f3d48",
+      "patched": "8ff0c3b6720797489f4546cbf48ee07a586f50c4787257db073f154a84d86884"
+    },
+    "src/kiro_crew/dashboard/chat_handlers.py": {
+      "pristine": "727cba097793474ddcce841c6d2f66514a6ff9a94e188ce8884319cab43ff8c8",
+      "patched": "fde4d27f46773ec698edb3ac7a67328c64f7c88abac80b8b323dc0a33ccbe1ea"
+    },
+    "src/kiro_crew/dashboard/chat_title.py": {
+      "pristine": "8bdf4083813dab46bb1abb2cc63eea82266809f919d34f10fd04350f02280b05",
+      "patched": "711cc73b9d19e75fdffe3623eef9cf69cc49779ae7dc34a3cf260dac449f52c4"
+    }
+  },
+  "candidate_policy": "0.11.0-rc.2+ and 0.11.1-rc.1+ may attempt strict local semantic source and dashboard preflight only; success never implies independently audited official tag or desktop E2E validation. 0.11.2 and 0.12 remain blocked.",
+  "semantic_candidate_regex": "^0\\.11\\.(?:0(?:-rc\\.|rc)(?:[2-9]|[1-9][0-9]+)|1(?:-rc\\.|rc)(?:[1-9]|[1-9][0-9]+))$",
+  "semantic_clock_seams_unpinned": [
+    "src/kiro_crew/dashboard/chat_turn/turn_dispatch_gates.py",
+    "src/kiro_crew/dashboard/chat_turn/turn_stats.py"
+  ]
+}

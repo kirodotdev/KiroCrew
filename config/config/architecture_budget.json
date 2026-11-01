@@ -1,0 +1,25 @@
+{
+  "comment": "0.2.5 Architecture V10 (2026-10-30). V7 guard-stop extraction; V8 orphan-Run reconciliation boundary; V9 dependency direction contract; V10 stability gate. Budgets require review on increases.",
+  "functions_over_100_lines": 54,
+  "functions_over_200_lines": 9,
+  "hotspot_file_lines": {
+    "src/kiro_byo/turn_runner.py": 4429,
+    "src/kiro_byo/acp_server.py": 3628,
+    "src/kiro_byo/prompt_routing.py": 240,
+    "src/kiro_byo/native_tool_dispatch.py": 361,
+    "src/kiro_byo/provider_loop_terminal.py": 131
+  },
+  "hotspot_function_lines": {
+    "src/kiro_byo/integration_manager.py::install_from_app": 198,
+    "src/kiro_byo/turn_runner.py::_handle_prompt_request": 92,
+    "src/kiro_byo/turn_runner.py::_execute_prompt_request_locked": 162,
+    "src/kiro_byo/prompt_routing.py::_select_type_prompt_route": 90,
+    "src/kiro_byo/native_tool_dispatch.py::_execute_native_tool": 183,
+    "src/kiro_byo/turn_runner.py::_run_provider_tool_loop": 200,
+    "src/kiro_byo/provider_loop_terminal.py::_finish_provider_loop_internal_error": 60,
+    "src/kiro_byo/turn_runner.py::_handle_tool_round": 191,
+    "src/kiro_byo/turn_runner.py::_handle_tool_guard_stop": 61,
+    "src/kiro_byo/acp_server.py::_restore_session_impl": 182,
+    "src/kiro_byo/acp_server.py::_reconcile_restored_durable_runs": 40
+  }
+}

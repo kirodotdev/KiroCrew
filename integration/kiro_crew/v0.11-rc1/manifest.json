@@ -1,0 +1,29 @@
+{
+  "baseline": "v0.11-rc1",
+  "files": [
+    "src/kiro_crew/agent_sdk/backends.py",
+    "src/kiro_crew/agent_sdk/backends_mcp.py",
+    "src/kiro_crew/agent_sdk/backends_members.py",
+    "src/kiro_crew/agent_sdk/backends_sessions.py",
+    "src/kiro_crew/agent_sdk/backends_turns.py",
+    "src/kiro_crew/agent_sdk/backends_models.py",
+    "src/kiro_crew/agent_sdk/backends_routing.py",
+    "src/kiro_crew/agent_sdk/backends_launch.py",
+    "src/kiro_crew/acp_backends.py",
+    "src/kiro_crew/acp/types.py",
+    "src/kiro_crew/agent_sdk/host_auth.py",
+    "src/kiro_crew/agent_sdk/tool_gate.py",
+    "src/kiro_crew/acp/harness/__init__.py",
+    "src/kiro_crew/acp/runtime_session_load.py",
+    "src/kiro_crew/providers/mirrors/registry.py",
+    "src/kiro_crew/members_parts/member_sessions.py",
+    "src/kiro_crew/config/loader_builders.py",
+    "src/kiro_crew/dashboard/handlers/agents.py",
+    "src/kiro_crew/dashboard/chat_api/slot_effort.py",
+    "src/kiro_crew/dashboard/chat_handlers.py",
+    "src/kiro_crew/dashboard/chat_title.py",
+    "src/kiro_crew/dashboard/chat_turn/turn_dispatch_gates.py",
+    "src/kiro_crew/dashboard/chat_turn/turn_stats.py",
+    "src/kiro_crew/acp/harness/kiro_byo.py"
+  ]
+}

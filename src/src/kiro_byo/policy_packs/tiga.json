@@ -1,0 +1,529 @@
+{
+  "schema_version": 4,
+  "id": "tiga",
+  "display_name": "Tiga Policy Pack",
+  "short_name": "Tiga",
+  "description": "Tiga 是 Kiro BYO 的通用智能路由模式，综合任务需求、模型能力与运行反馈动态决定执行方式，兼顾效率与可靠性。",
+  "default_policy": "multi",
+  "policies": [
+    {
+      "id": "sky",
+      "semantics": {
+        "display_name": "Sky Type",
+        "localized_name": "空中型",
+        "description": "空中型。把所有可承担快速角色的模型作为候选池，目标是最快、最省；普通任务保持单一自然 Agent loop。只有极端高风险或用户显式最高推理要求时才追加快速角色复核；只有快速角色池全部因能力、模态或上下文无法完成任务时才允许跨档能力兜底。模型的深度思考为 Auto 时偏关闭；思考力度由 Sky 在选中具体模型后自动取该模型可用的偏低档，不支持力度的模型照常可用。",
+        "short_description": "快 · 省｜只用快速档模型，最快最省"
+      },
+      "execution": {
+        "reasoning_intent": "economy",
+        "routing": {
+          "tier_pool": "fast",
+          "quality": 0.12,
+          "speed": 0.62,
+          "economy": 0.26,
+          "complexity_shift": {
+            "mode": "adaptive",
+            "strength": 0.12,
+            "center": 0.5,
+            "speed_share": 0.55,
+            "economy_share": 0.45
+          },
+          "tier_fallback": "capability",
+          "adaptive": {
+            "enabled": true,
+            "history_limit": 500,
+            "half_life_days": 3.0,
+            "reliability_prior": 0.94,
+            "reliability_prior_weight": 6.0,
+            "sample_full": 24,
+            "task_sample_full": 16,
+            "confidence_medium": 8,
+            "confidence_high": 30,
+            "latency_ttft_weight": 0.32,
+            "latency_total_weight": 0.68,
+            "runtime_speed_floor": 0.3,
+            "runtime_speed_span": 0.6,
+            "runtime_speed_single": 0.58,
+            "speed_alpha_base": 0.22,
+            "speed_alpha_speed_weight": 0.85,
+            "speed_alpha_min": 0.2,
+            "speed_alpha_max": 0.68,
+            "speed_blend_ceiling": 0.75,
+            "reliability_base": 0.12,
+            "reliability_quality_weight": 0.26,
+            "reliability_min": 0.1,
+            "reliability_max": 0.34,
+            "reliability_task_weight": 0.75,
+            "reliability_adjustment_floor": -0.12,
+            "reliability_adjustment_ceiling": 0.08
+          },
+          "fit": {
+            "deep_reasoning_bonus": 0.1,
+            "reasoning_unsupported_penalty": 0.22,
+            "effort_match_bonus": 0.04,
+            "code_tool_bonus": 0.03,
+            "code_quality_bonus": 0.0,
+            "image_unknown_penalty": 0.08,
+            "tool_unknown_penalty": 0.05,
+            "context_headroom_bonus": 0.0,
+            "thinking_on_align_bonus": 0.035,
+            "thinking_off_align_bonus": 0.025,
+            "thinking_on_conflict_penalty": 0.05,
+            "thinking_off_conflict_penalty": 0.035
+          },
+          "fallback_scoring": {
+            "quality": 0.0,
+            "speed": 0.55,
+            "economy": 0.45,
+            "reliability": 0.0
+          }
+        },
+        "secondary": {
+          "role": "verify",
+          "objective": "economy",
+          "reviewer": "not_weaker",
+          "trigger": {
+            "complexity_gte": 0.97,
+            "reasoning_any": [
+              "xhigh",
+              "max"
+            ],
+            "verification_value_gte": 0.92
+          },
+          "reason": "exceptional-risk turn; fast-role cross-check",
+          "rationale": "rare verifier reserved for exceptional task risk",
+          "single_mode": "fast_single_pass",
+          "multi_mode": "fast_verified",
+          "reasoning_intent": "economy",
+          "requires_substantive_work": true,
+          "scoring": {
+            "quality": 0.16,
+            "speed": 0.4,
+            "economy": 0.34,
+            "reliability": 0.1
+          },
+          "prefer_different_provider": true
+        },
+        "reasoning": {
+          "thinking_auto": "prefer_off",
+          "effort_auto": "lowest"
+        },
+        "orchestration": {
+          "objective": "latency",
+          "topology": "adaptive",
+          "max_agents": 2,
+          "max_parallel": 1,
+          "max_depth": 1,
+          "worker_mode": "none",
+          "worker_tier_pool": "fast",
+          "worker_reasoning_intent": "economy",
+          "single_writer": true
+        }
+      }
+    },
+    {
+      "id": "multi",
+      "semantics": {
+        "display_name": "Multi Type",
+        "localized_name": "复合型",
+        "description": "复合型。默认 Auto 形态：不仅按任务选择模型，也按任务形状决定是否需要隔离的只读 Worker 或第二模型复核；简单任务保持单 Agent，广泛的信息收集可委派给快速角色，高风险/高验证价值任务再追加复核。深度思考与力度均按每次具体调用动态决定。",
+        "short_description": "默认 · Auto｜在所有模型里按任务挑选"
+      },
+      "execution": {
+        "reasoning_intent": "inherit",
+        "routing": {
+          "tier_pool": "any",
+          "quality": 0.5,
+          "speed": 0.25,
+          "economy": 0.25,
+          "complexity_shift": {
+            "mode": "adaptive",
+            "strength": 0.35,
+            "center": 0.5,
+            "speed_share": 0.55,
+            "economy_share": 0.45
+          },
+          "tier_fallback": "capability",
+          "adaptive": {
+            "enabled": true,
+            "history_limit": 500,
+            "half_life_days": 3.0,
+            "reliability_prior": 0.94,
+            "reliability_prior_weight": 6.0,
+            "sample_full": 24,
+            "task_sample_full": 16,
+            "confidence_medium": 8,
+            "confidence_high": 30,
+            "latency_ttft_weight": 0.32,
+            "latency_total_weight": 0.68,
+            "runtime_speed_floor": 0.3,
+            "runtime_speed_span": 0.6,
+            "runtime_speed_single": 0.58,
+            "speed_alpha_base": 0.22,
+            "speed_alpha_speed_weight": 0.85,
+            "speed_alpha_min": 0.2,
+            "speed_alpha_max": 0.68,
+            "speed_blend_ceiling": 0.75,
+            "reliability_base": 0.12,
+            "reliability_quality_weight": 0.26,
+            "reliability_min": 0.1,
+            "reliability_max": 0.34,
+            "reliability_task_weight": 0.75,
+            "reliability_adjustment_floor": -0.12,
+            "reliability_adjustment_ceiling": 0.08
+          },
+          "fit": {
+            "deep_reasoning_bonus": 0.1,
+            "reasoning_unsupported_penalty": 0.22,
+            "effort_match_bonus": 0.04,
+            "code_tool_bonus": 0.03,
+            "code_quality_bonus": 0.0,
+            "image_unknown_penalty": 0.08,
+            "tool_unknown_penalty": 0.05,
+            "context_headroom_bonus": 0.0,
+            "thinking_on_align_bonus": 0.035,
+            "thinking_off_align_bonus": 0.025,
+            "thinking_on_conflict_penalty": 0.05,
+            "thinking_off_conflict_penalty": 0.035
+          },
+          "fallback_scoring": {
+            "quality": 1.0,
+            "speed": 0.0,
+            "economy": 0.0,
+            "reliability": 0.0
+          }
+        },
+        "secondary": {
+          "role": "verify",
+          "objective": "value",
+          "reviewer": "not_weaker",
+          "trigger": {
+            "complexity_gte": 0.92,
+            "reasoning_any": [
+              "xhigh",
+              "max"
+            ],
+            "verification_value_gte": 0.82
+          },
+          "reason": "exceptionally hard turn; bounded value-oriented verification",
+          "rationale": "rare verifier enabled only when the normal Auto path is not enough",
+          "single_mode": "balanced_single_pass",
+          "multi_mode": "balanced_verified",
+          "reasoning_intent": "balanced",
+          "requires_substantive_work": true,
+          "scoring": {
+            "quality": 0.47,
+            "speed": 0.21,
+            "economy": 0.2,
+            "reliability": 0.12
+          },
+          "prefer_different_provider": true
+        },
+        "reasoning": {
+          "thinking_auto": "adaptive",
+          "effort_auto": "adaptive"
+        },
+        "orchestration": {
+          "objective": "value",
+          "topology": "adaptive",
+          "max_agents": 5,
+          "max_parallel": 2,
+          "max_depth": 2,
+          "worker_mode": "adaptive",
+          "worker_tier_pool": "fast",
+          "worker_reasoning_intent": "economy",
+          "worker_breadth_gte": 0.5,
+          "worker_parallelizability_gte": 0.38,
+          "worker_tool_intensity_gte": 0.55,
+          "worker_write_intensity_lte": 0.28,
+          "single_writer": true
+        }
+      }
+    },
+    {
+      "id": "power",
+      "semantics": {
+        "display_name": "Power Type",
+        "localized_name": "强力型",
+        "description": "强力型。质量与可靠性优先，只在强力档中执行。普通任务由强模型直接完成；广泛且适合分工的读取/调查可交给另一个强力角色，高风险、代码或高验证价值工作追加等强或更强复核。若强力档无法满足硬能力要求则明确失败。",
+        "short_description": "强 · 稳｜只用强力档模型，质量可靠优先"
+      },
+      "execution": {
+        "reasoning_intent": "high",
+        "routing": {
+          "tier_pool": "strong",
+          "quality": 0.76,
+          "speed": 0.14,
+          "economy": 0.1,
+          "tool_bias": 0.06,
+          "complexity_shift": {
+            "mode": "adaptive",
+            "strength": 0.3,
+            "center": 0.5,
+            "speed_share": 0.55,
+            "economy_share": 0.45
+          },
+          "tier_fallback": "strict",
+          "adaptive": {
+            "enabled": true,
+            "history_limit": 500,
+            "half_life_days": 3.0,
+            "reliability_prior": 0.94,
+            "reliability_prior_weight": 6.0,
+            "sample_full": 24,
+            "task_sample_full": 16,
+            "confidence_medium": 8,
+            "confidence_high": 30,
+            "latency_ttft_weight": 0.32,
+            "latency_total_weight": 0.68,
+            "runtime_speed_floor": 0.3,
+            "runtime_speed_span": 0.6,
+            "runtime_speed_single": 0.58,
+            "speed_alpha_base": 0.22,
+            "speed_alpha_speed_weight": 0.85,
+            "speed_alpha_min": 0.2,
+            "speed_alpha_max": 0.68,
+            "speed_blend_ceiling": 0.75,
+            "reliability_base": 0.12,
+            "reliability_quality_weight": 0.26,
+            "reliability_min": 0.1,
+            "reliability_max": 0.34,
+            "reliability_task_weight": 0.75,
+            "reliability_adjustment_floor": -0.12,
+            "reliability_adjustment_ceiling": 0.08
+          },
+          "fit": {
+            "deep_reasoning_bonus": 0.1,
+            "reasoning_unsupported_penalty": 0.22,
+            "effort_match_bonus": 0.04,
+            "code_tool_bonus": 0.03,
+            "code_quality_bonus": 0.0,
+            "image_unknown_penalty": 0.08,
+            "tool_unknown_penalty": 0.05,
+            "context_headroom_bonus": 0.0,
+            "thinking_on_align_bonus": 0.035,
+            "thinking_off_align_bonus": 0.025,
+            "thinking_on_conflict_penalty": 0.05,
+            "thinking_off_conflict_penalty": 0.035
+          }
+        },
+        "secondary": {
+          "role": "verify",
+          "objective": "quality",
+          "reviewer": "not_weaker",
+          "trigger": {
+            "complexity_gte": 0.5,
+            "code": true,
+            "reasoning_any": [
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "verification_value_gte": 0.54
+          },
+          "reason": "reliability-first verification by an equal or stronger model",
+          "self_reason": "no equal or stronger peer; self-verification",
+          "rationale": "strong verifier enabled for reliability",
+          "single_mode": "strong_single_pass",
+          "multi_mode": "strong_verified",
+          "reasoning_intent": "high",
+          "requires_substantive_work": true,
+          "scoring": {
+            "quality": 0.82,
+            "speed": 0.0,
+            "economy": 0.0,
+            "reliability": 0.18
+          },
+          "prefer_different_provider": true
+        },
+        "reasoning": {
+          "thinking_auto": "prefer_on",
+          "effort_auto": "highest"
+        },
+        "orchestration": {
+          "objective": "quality",
+          "topology": "adaptive",
+          "max_agents": 5,
+          "max_parallel": 3,
+          "max_depth": 2,
+          "worker_mode": "adaptive",
+          "worker_tier_pool": "strong",
+          "worker_reasoning_intent": "high",
+          "worker_breadth_gte": 0.48,
+          "worker_parallelizability_gte": 0.4,
+          "worker_tool_intensity_gte": 0.55,
+          "worker_write_intensity_lte": 0.38,
+          "single_writer": true
+        }
+      }
+    },
+    {
+      "id": "glitter",
+      "semantics": {
+        "display_name": "Glitter Type",
+        "localized_name": "闪耀型",
+        "description": "闪耀型。最大能力协作策略：强力 Leader 负责规划、修改与最终责任，快速 Worker 只承担安全的信息收集，强力 Reviewer 做最终复核。所有角色由统一 Agent Runtime 规划和追踪，而不是 Turn Engine 内的特殊形态分支。",
+        "short_description": "长任务 · 协作｜多模型分工协作，汇聚全部力量"
+      },
+      "execution": {
+        "reasoning_intent": "maximum",
+        "routing": {
+          "tier_pool": "strong",
+          "quality": 0.94,
+          "speed": 0.04,
+          "economy": 0.02,
+          "context_bias": 0.1,
+          "tool_bias": 0.08,
+          "primary_tier_pool": "strong",
+          "tier_fallback": "strict",
+          "adaptive": {
+            "enabled": true,
+            "history_limit": 500,
+            "half_life_days": 3.0,
+            "reliability_prior": 0.94,
+            "reliability_prior_weight": 6.0,
+            "sample_full": 24,
+            "task_sample_full": 16,
+            "confidence_medium": 8,
+            "confidence_high": 30,
+            "latency_ttft_weight": 0.32,
+            "latency_total_weight": 0.68,
+            "runtime_speed_floor": 0.3,
+            "runtime_speed_span": 0.6,
+            "runtime_speed_single": 0.58,
+            "speed_alpha_base": 0.22,
+            "speed_alpha_speed_weight": 0.85,
+            "speed_alpha_min": 0.2,
+            "speed_alpha_max": 0.68,
+            "speed_blend_ceiling": 0.75,
+            "reliability_base": 0.12,
+            "reliability_quality_weight": 0.26,
+            "reliability_min": 0.1,
+            "reliability_max": 0.34,
+            "reliability_task_weight": 0.75,
+            "reliability_adjustment_floor": -0.12,
+            "reliability_adjustment_ceiling": 0.08
+          },
+          "fit": {
+            "deep_reasoning_bonus": 0.1,
+            "reasoning_unsupported_penalty": 0.22,
+            "effort_match_bonus": 0.04,
+            "code_tool_bonus": 0.03,
+            "code_quality_bonus": 0.0,
+            "image_unknown_penalty": 0.08,
+            "tool_unknown_penalty": 0.05,
+            "context_headroom_bonus": 0.0,
+            "thinking_on_align_bonus": 0.035,
+            "thinking_off_align_bonus": 0.025,
+            "thinking_on_conflict_penalty": 0.05,
+            "thinking_off_conflict_penalty": 0.035
+          },
+          "complexity_shift": {
+            "center": 0.5,
+            "speed_share": 0.55,
+            "economy_share": 0.45
+          }
+        },
+        "secondary": {
+          "role": "review",
+          "objective": "quality",
+          "reviewer": "not_weaker",
+          "trigger": {
+            "always": true
+          },
+          "reason": "independent maximum-quality final review",
+          "self_reason": "no equal or stronger peer; self-review by the primary model",
+          "rationale": "maximum-quality final review is mandatory",
+          "single_mode": "maximum_quality_single_pass",
+          "multi_mode": "maximum_quality_reviewed",
+          "reasoning_intent": "maximum",
+          "scoring": {
+            "quality": 0.82,
+            "speed": 0.0,
+            "economy": 0.0,
+            "reliability": 0.18
+          },
+          "prefer_different_provider": true
+        },
+        "reasoning": {
+          "thinking_auto": "adaptive_per_call",
+          "effort_auto": "adaptive_per_call"
+        },
+        "sticky": true,
+        "collaboration": "relay",
+        "collaboration_tier_pool": "fast",
+        "collaboration_provider_affinity": 0.025,
+        "collaboration_routing": {
+          "tier_pool": "fast",
+          "quality": 0.22,
+          "speed": 0.46,
+          "economy": 0.32,
+          "complexity_shift": {
+            "mode": "adaptive",
+            "strength": 0.3,
+            "center": 0.0,
+            "speed_share": 0.4666666667,
+            "economy_share": 0.5333333333
+          },
+          "tier_fallback": "strict",
+          "tool_bias": 0.08,
+          "adaptive": {
+            "enabled": true,
+            "history_limit": 500,
+            "half_life_days": 3.0,
+            "reliability_prior": 0.94,
+            "reliability_prior_weight": 6.0,
+            "sample_full": 24,
+            "task_sample_full": 16,
+            "confidence_medium": 8,
+            "confidence_high": 30,
+            "latency_ttft_weight": 0.32,
+            "latency_total_weight": 0.68,
+            "runtime_speed_floor": 0.3,
+            "runtime_speed_span": 0.6,
+            "runtime_speed_single": 0.58,
+            "speed_alpha_base": 0.66,
+            "speed_alpha_speed_weight": 0.0,
+            "speed_alpha_min": 0.66,
+            "speed_alpha_max": 0.66,
+            "speed_blend_ceiling": 0.75,
+            "reliability_base": 0.18,
+            "reliability_quality_weight": 0.14,
+            "reliability_min": 0.18,
+            "reliability_max": 0.26,
+            "reliability_task_weight": 0.75,
+            "reliability_adjustment_floor": -0.12,
+            "reliability_adjustment_ceiling": 0.08
+          },
+          "fit": {
+            "deep_reasoning_bonus": 0.1,
+            "reasoning_unsupported_penalty": 0.22,
+            "effort_match_bonus": 0.04,
+            "code_tool_bonus": 0.03,
+            "code_quality_bonus": 0.04,
+            "image_unknown_penalty": 0.08,
+            "tool_unknown_penalty": 0.06,
+            "context_headroom_bonus": 0.025,
+            "thinking_on_align_bonus": 0.035,
+            "thinking_off_align_bonus": 0.025,
+            "thinking_on_conflict_penalty": 0.05,
+            "thinking_off_conflict_penalty": 0.035
+          }
+        },
+        "orchestration": {
+          "objective": "capability",
+          "topology": "leader-worker",
+          "max_agents": 6,
+          "max_parallel": 4,
+          "max_depth": 2,
+          "worker_mode": "always",
+          "worker_tier_pool": "fast",
+          "worker_reasoning_intent": "economy",
+          "single_writer": true
+        }
+      }
+    }
+  ],
+  "default": true,
+  "localized_name": ""
+}

@@ -1,0 +1,15 @@
+Kiro BYO 0.2.5 · Crew 0.11 RC1 / dashboard/handlers/agents.py 兼容升级修复
+
+直接安装：内层 Kiro_BYO_0.2.5-release.zip 或外层同名“安装包” ZIP。
+完整包包含安装包、开发源码、Wheel 和 SHA256 文件。
+
+操作：
+1. 备份 KiroCrew 现有数据，尤其 D:\APP\KiroCrewData，严禁使用卸载并清除数据。
+2. KiroCrew 应用更新中安装新的安装包。
+3. 完全退出 KiroCrew，包括后台进程，重新启动。
+4. 在 BYO → 设置 → KiroCrew 中执行安装/更新集成。
+5. 更新成功后重新启动 KiroCrew，检查集成状态和新会话后端。
+
+该热修复只对历史已知的 BYO agents.py 版本差异提供有证据的升级路径；如果用户本机 agents.py 有未知手工修改，将继续安全阻止并提示。未在用户 Windows 本机进行 E2E 验证。高消耗队友任务暂勿测试。
+
+验证：90 项安装/兼容回归通过，发布校验和 ZIP 一致性校验通过；全量测试本轮超时未完成，不能称全量通过。
