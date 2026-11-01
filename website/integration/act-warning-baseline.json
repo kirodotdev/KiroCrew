@@ -134,7 +134,6 @@
   "src/test/SessionTitleControl.test.tsx",
   "src/test/SessionsTab.renderLoop.test.tsx",
   "src/test/SettingsChatPanelCoverage.test.tsx",
-  "src/test/SettingsRemoteCrewPanelCoverage.test.tsx",
   "src/test/SettingsVoicePanelCoverage.test.tsx",
   "src/test/SideChat.imeEnter.test.tsx",
   "src/test/SideChat.thinking.test.tsx",

@@ -227,6 +227,11 @@ afterEach(() => {
 
 /** Open a crew row's overflow menu — Edit / Stop / Start / Delete / Remove live there. */
 async function openRowMenu(u: ReturnType<typeof setup>, name: RegExp = /More actions/i) {
+  // An open menu takes focus in an effect, inside React's own flush, which blurs a field the test typed in. user-event
+  // answers that blur with a `change` event through a nested act(), and that nested act ends the flush's act scope early:
+  // every update after it in the same flush warns. Blur the field first, in an act() of its own, as pressing the trigger does.
+  const typing = document.activeElement
+  if (typing instanceof HTMLInputElement) act(() => typing.blur())
   await u.click(await screen.findByRole('button', { name }))
 }
 
