@@ -234,7 +234,6 @@
   "src/test/TunnelStatus.test.tsx",
   "src/test/TurnNavigationMinimap.test.tsx",
   "src/test/UserMessage.quote.test.tsx",
-  "src/test/UserMessage.test.tsx",
   "src/test/WebPreviewPanel.test.tsx",
   "src/test/WidgetFrame.test.tsx",
   "src/test/WorkflowRunGraph.test.tsx",
