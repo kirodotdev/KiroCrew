@@ -191,7 +191,9 @@ first build; `--viewport mobile --cpu 4` approximates a phone.
   coordinator, coverage maps, happy-dom state, and the operating system on a
   standard hosted runner; without it one fork per core exceeds host RAM and the
   kernel OOM-kills a worker, which surfaces as "Worker exited unexpectedly"
-  even though every test passed.
+  even though every test passed. CI's `frontend-test` job overrides the cap
+  with `--maxWorkers`, sized to its runner: cores minus one, and at most one
+  fork per 1.5 GiB of RAM (3 on a hosted runner, 7 on the 8-core fleet).
 
 Backend-side test determinism and suite-speed rules (they apply to the same CI run)
 are in
