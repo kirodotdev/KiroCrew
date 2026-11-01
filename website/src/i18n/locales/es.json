@@ -13586,6 +13586,7 @@
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
       "before_you_connect": "Antes de conectar",
+      "before_you_disconnect": "Antes de desconectar",
       "cancel": "Cancelar",
       "complete_connection": "Completar",
       "connect": "Conectar",
@@ -13635,6 +13636,7 @@
       "prerequisite_gitlab": "Activa GitLab Duo con las funciones beta y experimentales, y permite el acceso al servidor MCP para tu grupo de nivel superior; sin ellos, la conexión se establece pero no expone ninguna herramienta.",
       "prerequisite_gitlab_steps": "Activa GitLab Duo con las funciones beta y experimentales, y permite el acceso al servidor MCP para tu grupo de nivel superior.",
       "prerequisites_for_provider": "Requisitos previos de {{provider}}",
+      "shared_signin_for_provider": "Inicio de sesión compartido de {{provider}}",
       "reconnect": "Reconectar",
       "reconnecting": "Reconectando…",
       "relaying": "Enviando…",

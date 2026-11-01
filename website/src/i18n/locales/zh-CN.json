@@ -13130,6 +13130,7 @@
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
       "before_you_connect": "连接前",
+      "before_you_disconnect": "断开前",
       "cancel": "取消",
       "complete_connection": "完成",
       "connect": "连接",
@@ -13179,6 +13180,7 @@
       "prerequisite_gitlab": "启用 GitLab Duo（包含测试版和实验性功能），并为你的顶级群组允许 MCP 服务器访问——否则连接虽会成功，但不会提供任何工具。",
       "prerequisite_gitlab_steps": "启用 GitLab Duo（包含测试版和实验性功能），并为你的顶级群组允许 MCP 服务器访问。",
       "prerequisites_for_provider": "{{provider}} 前提条件",
+      "shared_signin_for_provider": "{{provider}} 共享登录",
       "reconnect": "重新连接",
       "reconnecting": "正在重新连接…",
       "relaying": "正在发送…",

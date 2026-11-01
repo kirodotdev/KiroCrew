@@ -13358,6 +13358,7 @@
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",
       "before_you_connect": "Vor dem Verbinden",
+      "before_you_disconnect": "Vor dem Trennen",
       "cancel": "Abbrechen",
       "complete_connection": "Abschließen",
       "connect": "Verbinden",
@@ -13407,6 +13408,7 @@
       "prerequisite_gitlab": "Aktiviere GitLab Duo mit Beta- und experimentellen Funktionen und erlaube MCP-Serverzugriff für deine oberste Gruppe — ohne sie gelingt die Verbindung, stellt aber keine Tools bereit.",
       "prerequisite_gitlab_steps": "Aktiviere GitLab Duo mit Beta- und experimentellen Funktionen und erlaube MCP-Serverzugriff für deine oberste Gruppe.",
       "prerequisites_for_provider": "Voraussetzungen für {{provider}}",
+      "shared_signin_for_provider": "Geteilte Anmeldung für {{provider}}",
       "reconnect": "Erneut verbinden",
       "reconnecting": "Erneute Verbindung…",
       "relaying": "Wird gesendet…",

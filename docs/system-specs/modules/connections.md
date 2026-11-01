@@ -1095,7 +1095,12 @@ slug-keyed `prerequisite_<slug>` catalog entries, kept in lockstep by a test;
 a state-level caveat, like the setup explanation, is an ordinary catalog key
 (`needs_configuration_help`). Both ride under the one `before_you_connect`
 heading with the `prerequisites_for_provider` accessible name — a new state
-reuses them rather than adding a second tooltip component or heading.
+reuses them rather than adding a second tooltip component or heading. The one
+exception is the connected card's shared-grant tip beside **Disconnect**: it
+uses the `before_you_disconnect` heading and the `shared_signin_for_provider`
+name, because the card is already connected (#26890). Its copy is unchanged:
+who shares the grant, and that Disconnect keeps the shared token (revoke at the
+provider to force a new sign-in).
 
 ## Pre-registered OAuth clients
 

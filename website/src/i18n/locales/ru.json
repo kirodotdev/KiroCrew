@@ -13814,6 +13814,7 @@
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
       "before_you_connect": "Перед подключением",
+      "before_you_disconnect": "Перед отключением",
       "cancel": "Отмена",
       "complete_connection": "Завершить",
       "connect": "Подключить",
@@ -13863,6 +13864,7 @@
       "prerequisite_gitlab": "Включите GitLab Duo с бета- и экспериментальными функциями и разрешите доступ к серверу MCP для вашей группы верхнего уровня — без этого подключение выполняется, но не предоставляет ни одного инструмента.",
       "prerequisite_gitlab_steps": "Включите GitLab Duo с бета- и экспериментальными функциями и разрешите доступ к серверу MCP для вашей группы верхнего уровня.",
       "prerequisites_for_provider": "Предварительные требования {{provider}}",
+      "shared_signin_for_provider": "Общий вход {{provider}}",
       "reconnect": "Подключить снова",
       "reconnecting": "Повторное подключение…",
       "relaying": "Отправка…",
