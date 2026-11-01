@@ -186,7 +186,6 @@
   "src/test/McpAppFrame.test.tsx",
   "src/test/McpBrowserModal.test.tsx",
   "src/test/McpManagement.test.tsx",
-  "src/test/McpRowSignIn.test.tsx",
   "src/test/MdNotebookPageCoverage.test.tsx",
   "src/test/MeetingsMeetingTitle.test.tsx",
   "src/test/MeetingsSettingsViewCoverage.test.tsx",

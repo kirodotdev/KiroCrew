@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 
 /* ── Mocks: must run before importing the component ── */
 
@@ -34,6 +34,10 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // A test that ends on the relay's delivered state leaves the 60s delivery-timeout timer armed.
+  // Unmount first so the component's effect cleanup clears it; draining it on a live tree would
+  // fire the probe and the dead-end state updates outside any act scope.
+  cleanup()
   vi.runOnlyPendingTimers()
   vi.useRealTimers()
   vi.restoreAllMocks()
