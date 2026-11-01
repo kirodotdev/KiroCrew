@@ -972,5 +972,9 @@ def _guidance(session_key: str) -> list[str]:
     from kiro_crew.context_assembly import turn
 
     return turn.interactive_guidance(
-        interactive=True, session_key=session_key, agent=None, minimal_context=False
+        interactive=True,
+        session_key=session_key,
+        agent=None,
+        minimal_context=False,
+        producer_is_user_facing=True,
     )
