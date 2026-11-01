@@ -1029,7 +1029,22 @@ def notify_turn_complete(
         )
         self._arm_timer(loop, delay=0.0)
         return
+    self._arm_and_announce_deadline(loop)
+
+
+def _arm_and_announce_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
+    """Re-arm toward the deadline, and announce a deadline this re-arm set.
+
+    A delivered fire clears ``next_due_ts`` and its ``fired`` frame carries that 0,
+    so the dashboard caches a loop with no deadline. The first re-arm after the
+    nudge turn sets the next deadline here, and without a frame the popover reads
+    "not yet scheduled" until a reload re-seeds it from REST. Only a deadline this
+    re-arm SET is announced: resuming an unchanged countdown publishes nothing new.
+    """
+    cleared = loop.next_due_ts <= 0
     self._arm_from_deadline(loop)
+    if cleared and loop.next_due_ts > 0 and self._loops.get(loop.id) is loop:
+        self._emit("updated", loop)
 
 
 def notify_user_input(self: AutoNudgeService, slot_key: str, *, human: bool = False) -> None:

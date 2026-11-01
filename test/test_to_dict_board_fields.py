@@ -48,6 +48,36 @@ def test_options_ts_empty_without_options():
     assert s.to_dict()["options_ts"] == ""
 
 
+def test_no_options_after_a_goal_loop_cycle_ran_past_the_ask():
+    """A silent cycle (``nothing_to_do``) writes only its ``nudge`` row.
+
+    The loop has run past the ask, so the slot must not read as waiting on it.
+    """
+    s = _slot(
+        {"role": "assistant", "content": "Armed.\n[OPTIONS: Stop | Keep going]", "ts": "t1"},
+        {"role": "nudge", "content": "Check the PR and report.", "ts": "t2"},
+        {"role": "tool_call", "content": "", "ts": "t3"},
+    )
+    d = s.to_dict()
+    assert d["has_options"] is False
+    assert d["options"] == []
+    assert d["options_ts"] == ""
+    assert d["prompt_preview"] == ""
+
+
+def test_options_kept_when_the_cycle_reply_carries_them():
+    """A cycle whose own reply ends in an ask still holds for the user."""
+    s = _slot(
+        {"role": "assistant", "content": "Old.\n[OPTIONS: A | B]", "ts": "t1"},
+        {"role": "nudge", "content": "Check the PR and report.", "ts": "t2"},
+        {"role": "assistant", "content": "Red CI.\n[OPTIONS: Fix it | Skip]", "ts": "t3"},
+    )
+    d = s.to_dict()
+    assert d["has_options"] is True
+    assert d["options"] == ["Fix it", "Skip"]
+    assert d["options_ts"] == "t3"
+
+
 def test_no_options_when_user_last():
     s = _slot(
         {"role": "assistant", "content": "Here you go.\n[OPTIONS: X | Y]", "ts": "t1"},
