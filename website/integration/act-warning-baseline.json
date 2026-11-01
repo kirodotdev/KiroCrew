@@ -268,7 +268,6 @@
   "src/test/UserMessage.test.tsx",
   "src/test/WebPreviewPanel.test.tsx",
   "src/test/WidgetFrame.test.tsx",
-  "src/test/WorkflowRunGraph.test.tsx",
   "src/test/WorkflowRunTree.agentTiming.test.tsx",
   "src/test/WorkflowRunTree.cancelledAgents.test.tsx",
   "src/test/WorkflowRunTree.storageError.test.tsx",
