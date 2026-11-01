@@ -1488,7 +1488,7 @@ the routes still read that cache.
 | `slot` | string | required | The board's key: the conductor slot this mutation belongs to. A worker's report names the conductor's slot, not its own, so one board folds under one key whichever party wrote the entry. | |
 | `actor` | string | required | Which party wrote this entry. The field sets the two may set are disjoint. | `conductor`, `worker` (closed) |
 | `by` | string | required | The acting session's slot key: equal to `slot` for a conductor entry, the bound worker's key for a report. | |
-| `action` | string | required | The one mutation this entry records. The fields below are the ones that action set; an omitted field means unchanged. | `create`, `goal`, `bind`, `decide`, `verdict`, `close`, `accept`, `report` (closed) |
+| `action` | string | required | The one mutation this entry records. The fields below are the ones that action set; an omitted field means unchanged. | `create`, `goal`, `bind`, `decide`, `verdict`, `close`, `accept`, `report`, `retire`, `destroy` (closed) |
 | `item_id` | string | optional | The item acted on. Absent only for `goal`, the board-level header write. | |
 | `goal` | string | optional | The board's objective, when `goal` set one. | |
 | `round` | int | optional | The board's or the item's round counter, when set. | |
@@ -1502,13 +1502,14 @@ the routes still read that cache.
 | `decision` | string | optional | The conductor's decision text, set by `decide`. | |
 | `worker_session_key` | string | optional | The worker slot bound to the item, set by `bind`. | |
 | `worker_instance_id` | string | optional | The remote crew the bound worker runs on, set by a remote `bind` beside `worker_session_key` (then the peer's slot key). | |
+| `retired_bindings` | array of object | optional | The remote bindings the hub retired, oldest first, set by `retire` and `destroy`. Each holds the pair, its branch, state (retired or destroyed), reason and stamps; `retire` logs the pair as empty when it left the item unbound. | |
 | `fails` | int | optional | The item's failed-verdict count, when it moved. | |
 | `status` | string | optional | The worker's status, set by `report`. | `progress`, `done`, `blocked`, `question`, `reply` (closed) |
 | `summary` | string | optional | The worker's summary, set by `report`. | |
 | `artifacts` | object | optional | String-to-string pointers replacing the item's map, set by `report`. The members are the worker's own keys and are checked for shape. | |
 | `pr` | int | optional | The pull request number, set by `report`. | |
 | `event` | string | optional | The one-line item event this mutation appends to the item's tail. | |
-| `event_kind` | string | optional | Which kind of item event this is. Absent only for `goal`. | `create`, `bind`, `report`, `decision`, `verdict`, `close` (closed) |
+| `event_kind` | string | optional | Which kind of item event this is. Absent only for `goal`. | `create`, `bind`, `report`, `decision`, `verdict`, `close`, `retire`, `destroy` (closed) |
 | `event_id` | string | optional | The store's content-addressed id of the event this write appended. | |
 | `event_ts` | string | optional | The store's stamp on that event. | |
 | `created_at` | string | optional | The item's committed creation stamp, carried by `create`. | |
