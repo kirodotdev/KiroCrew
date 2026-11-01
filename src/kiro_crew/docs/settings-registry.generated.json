@@ -746,6 +746,13 @@
       "configKey": "dashboard.prevent_sleep"
     },
     {
+      "id": "chat.preview-lines-on-session-cards",
+      "label": "Preview Lines on Session Cards",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.preview-lines-on-session-cards",
+      "description": "How many lines the latest-message preview can use before it is cut off"
+    },
+    {
       "id": "chat.quick-send",
       "label": "Quick Send",
       "tab": "chat",
@@ -917,6 +924,13 @@
       "tab": "chat",
       "route": "/settings/chat/transcript?highlight=chat.text-streaming-style",
       "hint": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace."
+    },
+    {
+      "id": "chat.title-lines-on-session-cards",
+      "label": "Title Lines on Session Cards",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.title-lines-on-session-cards",
+      "description": "How many lines a session title can use before it is cut off"
     },
     {
       "id": "chat.tool-calls-start-expanded",

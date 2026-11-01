@@ -1331,6 +1331,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.prevent_sleep"
   },
   {
+    "id": "chat.preview-lines-on-session-cards",
+    "label": "Preview Lines on Session Cards",
+    "labelKey": "pages.settings.chatPanel.session_preview_lines",
+    "description": "How many lines the latest-message preview can use before it is cut off",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.quick-send",
     "label": "Quick Send",
     "labelKey": "pages.settings.chatPanel.quick_send",
@@ -1627,6 +1639,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "transcript"
+    }
+  },
+  {
+    "id": "chat.title-lines-on-session-cards",
+    "label": "Title Lines on Session Cards",
+    "labelKey": "pages.settings.chatPanel.session_title_lines",
+    "description": "How many lines a session title can use before it is cut off",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
     }
   },
   {
