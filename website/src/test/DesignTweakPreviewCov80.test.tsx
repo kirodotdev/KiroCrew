@@ -138,9 +138,13 @@ afterEach(() => {
 
 // ── Helper to render and wait for the initial data fetch to settle ────────────
 
+/** The mocked fetches land on React Query's fake-clock notify timer, and the page's mount effects follow; advance it inside act. */
+const landQueries = () => act(async () => { await vi.advanceTimersByTimeAsync(50) })
+
 async function renderAndSettle(projects = [STATIC_PROJECT], activeId = 'proj-1') {
   setupDefaultMocks(projects, activeId)
   const result = renderWithProviders(<DesignTweak />)
+  await landQueries()
   // Let the initial React Query fetches fire and resolve.
   await waitFor(() => {
     expect(mockFetchProjects).toHaveBeenCalled()
@@ -241,6 +245,7 @@ describe('DesignTweakPage — Preview Pane', () => {
       // mark the localStorage disconnected to suppress auto-connect.
       localStorage.setItem('ste_disconnected', '1')
       renderWithProviders(<DesignTweak />)
+      await landQueries()
       await waitFor(() => { expect(mockFetchProjects).toHaveBeenCalled() })
       await act(async () => { await Promise.resolve() })
 
@@ -383,6 +388,7 @@ describe('DesignTweakPage — Preview Pane', () => {
 
       setupDefaultMocks([STATIC_PROJECT], 'proj-1')
       renderWithProviders(<DesignTweak />)
+      await landQueries()
       await waitFor(() => { expect(mockFetchProjects).toHaveBeenCalled() })
       await act(async () => { await Promise.resolve() })
 
@@ -398,6 +404,7 @@ describe('DesignTweakPage — Preview Pane', () => {
 
       setupDefaultMocks([DEV_PROJECT], 'proj-2')
       renderWithProviders(<DesignTweak />)
+      await landQueries()
       await waitFor(() => { expect(mockFetchProjects).toHaveBeenCalled() })
       await act(async () => { await Promise.resolve() })
 
@@ -413,6 +420,7 @@ describe('DesignTweakPage — Preview Pane', () => {
 
       setupDefaultMocks([STATIC_PROJECT], 'proj-1')
       renderWithProviders(<DesignTweak />)
+      await landQueries()
       await waitFor(() => { expect(mockFetchProjects).toHaveBeenCalled() })
       await act(async () => { await Promise.resolve() })
 
@@ -571,6 +579,7 @@ describe('DesignTweakPage — Preview Pane', () => {
 
       setupDefaultMocks([STATIC_PROJECT], 'proj-1')
       renderWithProviders(<DesignTweak />)
+      await landQueries()
       await waitFor(() => { expect(mockFetchProjects).toHaveBeenCalled() })
       await act(async () => { await Promise.resolve() })
 
@@ -585,6 +594,7 @@ describe('DesignTweakPage — Preview Pane', () => {
 
       setupDefaultMocks([STATIC_PROJECT], 'proj-1')
       renderWithProviders(<DesignTweak />)
+      await landQueries()
       await waitFor(() => { expect(mockFetchProjects).toHaveBeenCalled() })
       await act(async () => { await Promise.resolve() })
 
@@ -604,6 +614,7 @@ describe('DesignTweakPage — Preview Pane', () => {
       localStorage.setItem('ste_disconnected', '1')
       setupDefaultMocks([STATIC_PROJECT], '')
       renderWithProviders(<DesignTweak />)
+      await landQueries()
       await waitFor(() => { expect(mockFetchProjects).toHaveBeenCalled() })
       await act(async () => { await Promise.resolve() })
 

@@ -156,7 +156,6 @@
   "src/test/CrewStateAvatarPackCue.test.tsx",
   "src/test/DesignTweakHistoryCov80.test.tsx",
   "src/test/DesignTweakOverlayBridgeCov80.test.tsx",
-  "src/test/DesignTweakPreviewCov80.test.tsx",
   "src/test/DevFleetPage.test.tsx",
   "src/test/DevFleetPageCoverage.test.tsx",
   "src/test/DiffBlock.test.tsx",
