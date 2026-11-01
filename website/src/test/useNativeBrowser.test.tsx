@@ -94,10 +94,10 @@ describe('useNativeBrowser', () => {
     expect(result.current.available).toBe(false)
   })
 
-  it('reports available inside the Electron shell', () => {
+  it('reports available inside the Electron shell', async () => {
     installBridge()
     const { result } = renderHook(() => useNativeBrowser(PANEL, true))
-    expect(result.current.available).toBe(true)
+    await waitFor(() => expect(result.current.available).toBe(true))
   })
 
   it('hides — but does NOT close — while disabled, so page state survives', async () => {

@@ -90,6 +90,13 @@ const POP_BODY_KEY: Record<string, string> = {
   chat: 'components.onboardingFlow.pop_chat_body',
 }
 
+/** Catalog key for each button of the look step's mode switch. */
+const MODE_LABEL_KEYS: Record<ModePreference, string> = {
+  system: 'components.onboardingFlow.mode_system',
+  light: 'components.onboardingFlow.mode_light',
+  dark: 'components.onboardingFlow.mode_dark',
+}
+
 // Steps 1-2 are the centered Customize modals; 3-5 are the anchored tour
 // popovers. Popovers 3-4 show "Next"; popover 5 is the last step of first-run,
 // so it shows "Done", drops its Skip, and finishes the flow.
@@ -619,10 +626,12 @@ export default function OnboardingFlow({
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
         <LookPreview className="w-full shrink-0 sm:w-[52%]" />
         <div className="min-w-0 flex-1">
-        <div className="flex gap-1 border border-border rounded-[10px] p-1" style={{ background: 'var(--panel-strong)' }}>
+        <div className="flex gap-1 border border-border rounded-[10px] p-1" style={{ background: 'var(--panel-strong)' }} role="group" aria-label={i18nT('components.onboardingFlow.mode_switch_label')}>
           {(['system', 'light', 'dark'] as ModePreference[]).map(m => (
             <button
               key={m}
+              type="button"
+              aria-pressed={modePref === m}
               onClick={() => setModePref(m)}
               className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-[7px] text-[13px] cursor-pointer border-none transition-colors ${
                 modePref === m ? 'font-medium' : 'bg-transparent text-muted hover:text-text'
@@ -630,7 +639,7 @@ export default function OnboardingFlow({
               style={modePref === m ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
             >
               {m === 'system' ? <Monitor size={14} /> : m === 'light' ? <Sun size={14} /> : <Moon size={14} />}
-              {m[0].toUpperCase() + m.slice(1)}
+              {i18nT(MODE_LABEL_KEYS[m])}
             </button>
           ))}
         </div>

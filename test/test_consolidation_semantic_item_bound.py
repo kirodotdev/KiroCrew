@@ -700,7 +700,7 @@ async def test_discarded_result_logs_no_refusal(caplog: pytest.LogCaptureFixture
     with caplog.at_level(logging.DEBUG, logger=_LOGGER):
         outcome, _ = await _run(c, _item(_LARGE_KEY, _LARGE))
 
-    assert outcome is _CONSOLIDATION_REFUSED
+    assert outcome is history_consolidation._CONSOLIDATION_STALE
     assert [r for r in caplog.records if _CODE in r.getMessage()] == []
     assert any("conversation changed during extraction" in r.getMessage() for r in caplog.records)
     vector_store.set_semantic.assert_not_called()

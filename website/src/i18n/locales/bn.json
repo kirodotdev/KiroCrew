@@ -8082,6 +8082,10 @@
       "e_g_solutions_architect_sre_founder": "যেমন সলিউশন আর্কিটেক্ট, SRE, প্রতিষ্ঠাতা",
       "how_technical_are_you": "আপনি কতটা প্রযুক্তি-জ্ঞানসম্পন্ন?",
       "make_it_yours": "নিজের মতো সাজিয়ে নাও।",
+      "mode_dark": "ডার্ক",
+      "mode_light": "লাইট",
+      "mode_switch_label": "মোড",
+      "mode_system": "সিস্টেম",
       "next": "পরবর্তী",
       "pick_your_look": "আপনার লুক বেছে নিন",
       "pop_apps_body": "বিশেষভাবে তৈরি টুল ইনস্টল করো, যেগুলো নতুন সক্ষমতা আর ওয়ার্কফ্লো খুলে দেয়।",
@@ -15994,7 +15998,11 @@
         "showing_semantic_one": "{{total}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে",
         "showing_semantic_other": "{{total}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে",
         "showing_semantic_filtered_one": "{{matched}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে ({{total}}টি থেকে ফিল্টার করা)",
-        "showing_semantic_filtered_other": "{{matched}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে ({{total}}টি থেকে ফিল্টার করা)"
+        "showing_semantic_filtered_other": "{{matched}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে ({{total}}টি থেকে ফিল্টার করা)",
+        "view_audit": "অডিট",
+        "view_episodic": "এপিসোডিক",
+        "view_semantic": "সিমান্টিক",
+        "view_switch_label": "মেমরি ভিউ"
       },
       "wakatimeTab": {
         "active_projects": "আপনি যে প্রকল্পগুলোতে কাজ করেছেন",

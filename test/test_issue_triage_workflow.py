@@ -154,7 +154,7 @@ class Runner:
             ["bash", "-c", self.scripts[name]],
             cwd=self.work,
             env={**self.env, **extra},
-            text=True,
+            text=True, encoding="utf-8",
             capture_output=True,
         )
 
@@ -307,7 +307,7 @@ def runner(tmp_path: Path, scripts: dict[str, str]) -> Runner:
 def test_step_scripts_are_valid_shell(scripts: dict[str, str]) -> None:
     for name, script in scripts.items():
         check = subprocess.run(  # noqa: S603
-            ["bash", "-n"], input=script, text=True, capture_output=True
+            ["bash", "-n"], input=script, text=True, encoding="utf-8", capture_output=True
         )
         assert check.returncode == 0, f"{name}: {check.stderr}"
 

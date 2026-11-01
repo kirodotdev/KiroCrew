@@ -520,25 +520,28 @@ def test_ci_resolvers_share_actor_policy_and_emit_large_labels() -> None:
         script = step["run"]
         assert 'if [ "$ELIGIBLE" = "true" ]; then' in script
         assert f'echo "{output}=$LABEL instance-size:large"' in script
-        if os_name == "linux":
-            # Two non-fleet branches, and BOTH must exist. A run executing in
-            # this repository takes the `kirocrew-runners` group's own runner
-            # label, keeping this matrix off the enterprise-shared standard
-            # pool. A run executing anywhere else -- a fork's own CI -- cannot
-            # reach an organization group, so it must stay on the hosted image
-            # rather than request a label no runner carries. Pinned together
-            # because dropping the second branch strands every consumer in
-            # every fork, which no other check in this file would catch.
-            assert step["env"]["IN_REPO"] == "${{ github.repository == 'kirodotdev/KiroCrew' }}"
-            assert 'elif [ "$IN_REPO" = "true" ]; then' in script
-            assert f'echo "{output}=kirocrew-linux-4-core"' in script
-            assert f'echo "{output}=ubuntu-latest"' in script
-        else:
-            # Windows stays hosted on every non-fleet path: the group is
-            # Linux-only, and group targeting dispatches to any member, so a
-            # Windows definition added to it would make every Linux consumer
-            # eligible to land on Windows.
-            assert f'echo "{output}=windows-latest"' in script
+        # Both resolvers carry the SAME three branches, and all three must
+        # exist on each. A run executing in this repository takes its
+        # platform's larger-runner label, keeping the matrix off the
+        # enterprise-shared standard pool. A run executing anywhere else -- a
+        # fork's own CI -- cannot reach an organization group, so it must stay
+        # on the hosted image rather than request a label no runner carries.
+        # Pinned together because dropping the third branch strands every
+        # consumer in every fork, which no other check in this file would
+        # catch.
+        #
+        # Each platform names its OWN group's runner by LABEL. The label form
+        # matters beyond fork reachability: a bare `group:` dispatches to any
+        # member, so one group holding both platforms would let a Linux
+        # consumer land on Windows. Two groups plus two labels cannot.
+        group_label, hosted = {
+            "linux": ("kirocrew-linux-4-core", "ubuntu-latest"),
+            "windows": ("kirocrew-windows-4-core", "windows-latest"),
+        }[os_name]
+        assert step["env"]["IN_REPO"] == "${{ github.repository == 'kirodotdev/KiroCrew' }}"
+        assert 'elif [ "$IN_REPO" = "true" ]; then' in script
+        assert f'echo "{output}={group_label}"' in script
+        assert f'echo "{output}={hosted}"' in script
 
 
 def test_build_desktop_routes_only_the_x64_leg_through_the_shared_policy() -> None:
@@ -573,6 +576,46 @@ def test_build_desktop_routes_only_the_x64_leg_through_the_shared_policy() -> No
     # The release matrix (nightly/release) builds the shipped bytes on hosted.
     release = yaml.safe_load((_WORKFLOWS_DIR / "build-desktop.yml").read_text(encoding="utf-8"))
     assert release["jobs"]["build-desktop"]["runs-on"] == "${{ matrix.os }}"
+
+
+def test_both_ci_label_matrix_lanes_route_each_leg_to_its_own_group() -> None:
+    """`backend-test-ipv6` and `new-test-stability` share ONE routing string.
+
+    Both run a Linux and a Windows leg off `matrix.os` and reach the two
+    larger-runner groups by LABEL inside a `github.repository` conditional, so a
+    fork running its own copy -- which cannot reach an organization group --
+    degrades to the hosted image instead of queueing until the 24-hour cancel.
+
+    Pinned as one shared string across both jobs because the lanes are not
+    equally protected on their own: `test_ci_ipv6_routing.py` pins
+    `backend-test-ipv6`, while nothing else reads `new-test-stability`'s line.
+    The trailing `|| matrix.os` makes a dropped arm quiet rather than fatal --
+    the leg still runs, just back on the enterprise-shared pool -- and dropping
+    the Windows arm on `new-test-stability` alone would otherwise let
+    `New-test stability (windows-latest)` keep reporting green with no check
+    saying it had moved.
+    """
+    workflow = yaml.safe_load((_WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
+    expected = (
+        "${{ matrix.os == 'ubuntu-latest' && "
+        "(github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
+        "|| 'ubuntu-latest') || matrix.os == 'windows-latest' && "
+        "(github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' "
+        "|| 'windows-latest') || matrix.os }}"
+    )
+    for job_name, rendered in (
+        ("backend-test-ipv6", "Backend Tests (IPv6, ${{ matrix.os }})"),
+        ("new-test-stability", "New-test stability (${{ matrix.os }})"),
+    ):
+        job = workflow["jobs"][job_name]
+        assert job["runs-on"] == expected, job_name
+        # `matrix.os` itself must stay the hosted image names: the rendered
+        # check name interpolates it, so changing a value renames the context
+        # branch protection and the readiness poll look for.
+        matrix = job["strategy"]["matrix"]
+        legs = matrix["os"] if "os" in matrix else [e["os"] for e in matrix["include"]]
+        assert legs == ["ubuntu-latest", "windows-latest"], job_name
+        assert job["name"] == rendered, job_name
 
 
 def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:

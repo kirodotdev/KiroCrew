@@ -7951,6 +7951,10 @@
       "e_g_solutions_architect_sre_founder": "예: 솔루션 아키텍트, SRE, 창업자",
       "how_technical_are_you": "기술 수준은 어느 정도인가요?",
       "make_it_yours": "나에게 맞게 만드세요.",
+      "mode_dark": "다크",
+      "mode_light": "라이트",
+      "mode_switch_label": "모드",
+      "mode_system": "시스템",
       "next": "다음",
       "pick_your_look": "모습 선택",
       "pop_apps_body": "목적에 맞게 만들어진 도구를 설치해 새로운 기능과 워크플로를 활용하세요.",
@@ -15704,7 +15708,11 @@
         "showing_events_other": "{{n}}개 이벤트 표시 중",
         "showing_events_filtered_other": "{{n}}개 이벤트 표시 중(총 {{total}}개)",
         "showing_semantic_other": "{{total}}개 중 {{shown}}개 표시 중",
-        "showing_semantic_filtered_other": "{{matched}}개 중 {{shown}}개 표시 중({{total}}개에서 필터링됨)"
+        "showing_semantic_filtered_other": "{{matched}}개 중 {{shown}}개 표시 중({{total}}개에서 필터링됨)",
+        "view_audit": "감사",
+        "view_episodic": "일화",
+        "view_semantic": "의미",
+        "view_switch_label": "기억 보기"
       },
       "wakatimeTab": {
         "active_projects": "작업한 프로젝트",

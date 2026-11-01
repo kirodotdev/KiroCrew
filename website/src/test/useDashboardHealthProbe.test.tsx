@@ -15,7 +15,7 @@
  *     interval is cleared.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import type { RootState } from '../store'
 import { createTestStore } from './helpers'
@@ -74,7 +74,7 @@ async function renderProbeAfterDisconnect(forceReconnect: () => void) {
     { wrapper: wrapper(store) },
   )
   // Drop to disconnected -- the recovery scenario the probe handles.
-  store.dispatch({ type: 'dashboard/sseDisconnected' })
+  act(() => { store.dispatch({ type: 'dashboard/sseDisconnected' }) })
   rerender()
   return { store, rerender, unmount }
 }
@@ -131,13 +131,13 @@ describe('useDashboardHealthProbe', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(apiStatusMock).not.toHaveBeenCalled()
     // Step 2: simulate WS connect -> connected=true
-    store.dispatch({ type: 'dashboard/sseConnected' })
+    act(() => { store.dispatch({ type: 'dashboard/sseConnected' }) })
     rerender()
     await vi.advanceTimersByTimeAsync(5_000)
     // Still no probe -- we're connected, no recovery needed
     expect(apiStatusMock).not.toHaveBeenCalled()
     // Step 3: simulate WS drop -> connected=false; probe SHOULD now fire
-    store.dispatch({ type: 'dashboard/sseDisconnected' })
+    act(() => { store.dispatch({ type: 'dashboard/sseDisconnected' }) })
     rerender()
     await vi.advanceTimersByTimeAsync(0)
     await Promise.resolve()

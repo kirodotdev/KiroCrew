@@ -20,7 +20,9 @@ monitor_start(
           "'Rebased: main moved in' and naming the files and both bases; "
           "that opening is the string the cap counts, so do not reword it. "
           "green_age 31: the re-sync cap is spent. Do NOT rebase: report "
-          "which files the base keeps moving in and call autonudge_stop. "
+          "which files the base keeps moving in, say a maintainer's "
+          "'Re-sync budget reset' comment is what resumes the loop, never "
+          "post one yourself, and call autonudge_stop. "
           "pr_status 10: stay silent. Exit 20: read "
           "pr_findings.py and triage; a red main follows When main is red; "
           "once you have decided to change code, harvest the failing log and "
@@ -64,6 +66,14 @@ call, so they are named here as well as written into it:
   cancel.** SKILL.md's no-push-while-runs-are-in-flight rule still holds, so
   exit 30 waits a cycle. Cancelling the head's in-flight runs belongs to exit
   20, after a decision to change code — never to a re-sync.
+- **The reset is a person's comment, never the loop's.** A comment opening with
+  `Re-sync budget reset` restarts the count 31 reads, so a cycle that posted one
+  would re-arm its own budget and the cap would bound nothing. `green_age.py`
+  accepts it only from a member of the project — and the account the loop runs as
+  may well be one, so nothing server-side stops a cycle from writing it. That is
+  why the `message` says to ask for the reset rather than post it: the whole
+  point of 31 is to buy a person's decision, and a self-issued reset spends the
+  budget without ever getting one.
 
 Keep the whole call inside the host's argument budget (**3800 characters** on
 the dashboard, counted across every argument, not just `message`). A longer call

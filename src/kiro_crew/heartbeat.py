@@ -15,7 +15,7 @@ import re
 import threading
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Coroutine
+from typing import TYPE_CHECKING, Callable, Coroutine, NamedTuple
 
 from kiro_crew import memory_backup, platform_compat, shutdown_event
 from kiro_crew.atomic_write import atomic_write
@@ -45,18 +45,23 @@ _DELIVER_RE = re.compile(r"<!--\s*deliver:(\S+)\s*-->")
 _COMMENT_TOKEN_RE = re.compile(r"<!--[ \t]*deliver:\S+[ \t]*-->|<!--|--!?>")
 
 
-def _strip_comments(content: str) -> str:
-    """Return *content* with every HTML comment except a bare deliver tag removed.
+# A leading list bullet (``-``, ``*``, ``+``, ``1.``, ``1)``), then a leading
+# checkbox (``[ ]``, ``[x]``, ``[X]``). Each is a marker only when whitespace or
+# the end of the text follows it, so ``-flag`` or ``[x]y`` stay task text.
+_LIST_BULLET_RE = re.compile(r"^(?:[-*+]|\d{1,9}[.)])(?:\s+|$)")
+_CHECKBOX_RE = re.compile(r"^\[[ xX]\](?:\s+|$)")
+
+
+def _comment_spans(content: str) -> list[tuple[int, int]]:
+    """Return the ``(start, end)`` offsets of every hidden HTML comment in *content*.
 
     One scan, left to right. Outside a comment a deliver tag is kept for the
     per-line parse. Inside one, a deliver tag is part of the comment, so a task
-    commented out together with its tag stays hidden. A closed comment becomes
-    just its newlines, so text on either side of it keeps its own line. A
-    ``<!--`` with no ``-->`` after it hides only the rest of its own line and
-    logs a warning: hiding every later line would drop those tasks without a
-    word, and the next rewrite would then erase them from the file.
+    commented out together with its tag stays hidden. A ``<!--`` with no
+    ``-->`` after it hides only the rest of its own line and logs a warning:
+    hiding every later line would drop those tasks without a word.
     """
-    parts: list[str] = []
+    spans: list[tuple[int, int]] = []
     pos = 0
     while True:
         opener = next(
@@ -64,9 +69,7 @@ def _strip_comments(content: str) -> str:
             -1,
         )
         if opener == -1:
-            parts.append(content[pos:])
-            return "".join(parts)
-        parts.append(content[pos:opener])
+            return spans
         closer = next(
             (
                 m.end()
@@ -82,10 +85,66 @@ def _strip_comments(content: str) -> str:
                 content.count("\n", 0, opener) + 1,
             )
             end_of_line = content.find("\n", opener)
-            pos = len(content) if end_of_line == -1 else end_of_line
-            continue
-        parts.append("\n" * content.count("\n", opener, closer))
+            closer = len(content) if end_of_line == -1 else end_of_line
+        spans.append((opener, closer))
         pos = closer
+
+
+def _hide_spans(content: str, spans: list[tuple[int, int]]) -> str:
+    """Replace each span with just its newlines, so every line keeps its index."""
+    parts: list[str] = []
+    pos = 0
+    for start, end in spans:
+        parts.append(content[pos:start])
+        parts.append("\n" * content.count("\n", start, end))
+        pos = end
+    parts.append(content[pos:])
+    return "".join(parts)
+
+
+class _FileLine(NamedTuple):
+    """One ``\\n``-separated line of HEARTBEAT.md as the rewrite sees it.
+
+    ``head`` is the part of a comment that began on an earlier line and ends on
+    this one; ``tail`` is the part of a comment that begins here and runs on.
+    Dropping a finished task's line keeps both, so a comment never loses its
+    opener or closer.
+    """
+
+    raw: str
+    tasks: list[tuple[str, str]]
+    head: str
+    tail: str
+
+
+def _parse_lines(content: str) -> list[_FileLine]:
+    """Split *content* on ``\\n`` and parse the tasks each line holds."""
+    spans = _comment_spans(content)
+    visible = _hide_spans(content, spans).split("\n")
+    lines: list[_FileLine] = []
+    start = 0
+    first = 0  # index of the first span that ends after this line starts
+    for index, raw in enumerate(content.split("\n")):
+        end = start + len(raw)
+        while first < len(spans) and spans[first][1] <= start:
+            first += 1
+        head = tail = ""
+        if first < len(spans) and spans[first][0] < start:
+            head = content[start : spans[first][1]]
+        last = first
+        while last + 1 < len(spans) and spans[last + 1][0] < end:
+            last += 1
+        if last < len(spans) and start <= spans[last][0] < end < spans[last][1]:
+            tail = content[spans[last][0] : end]
+        tasks = [t for piece in visible[index].splitlines() if (t := _parse_task(piece))]
+        lines.append(_FileLine(raw, tasks, head, tail))
+        start = end + 1
+    return lines
+
+
+def _format_task(task_text: str, deliver: str) -> str:
+    suffix = f"  <!-- deliver:{deliver} -->" if deliver else ""
+    return f"- {task_text}{suffix}"
 
 
 # Agent can include this sentinel in its response to signal the task is not done
@@ -139,10 +198,18 @@ def append_heartbeat_task(entry: str, path: Path | None = None) -> None:
         with platform_compat.file_lock(lock_file.fileno(), exclusive=True):
             if not target.exists():
                 atomic_write(target, _HEADER, fsync=True)
+            # A file whose last line has no newline (a hand edit, or a pass
+            # that kept such a line) would glue the entry onto that line.
+            unterminated = False
+            with open(target, "rb") as existing:
+                if existing.seek(0, os.SEEK_END) > 0:
+                    existing.seek(-1, os.SEEK_END)
+                    unterminated = existing.read(1) != b"\n"
             with open(
                 target, "a", encoding="utf-8", opener=owner_only_opener_for(target)
             ) as heartbeat_file:
-                heartbeat_file.write(entry.rstrip("\n") + "\n")
+                prefix = "\n" if unterminated else ""
+                heartbeat_file.write(prefix + entry.rstrip("\n") + "\n")
                 heartbeat_file.flush()
                 os.fsync(heartbeat_file.fileno())
 
@@ -152,33 +219,63 @@ def _rewrite_heartbeat_locked(
     original_tasks: list[tuple[str, str]],
     keep: list[tuple[str, str]],
 ) -> int:
-    """Re-read, merge, and atomically replace HEARTBEAT.md under an OS lock."""
+    """Re-read the file and drop the finished tasks, all under an OS lock.
+
+    Only the lines that hold a finished task change. Every other line --
+    headings, notes, commented-out tasks, kept tasks and tasks appended while
+    the cycle ran -- is written back byte for byte, in order. Returns how many
+    tasks were appended mid-cycle.
+    """
     lock_path = heartbeat_lock_path(path)
     with open(lock_path, "a+b", opener=owner_only_opener_for(lock_path)) as lock_file:
         with platform_compat.file_lock(lock_file.fileno(), exclusive=True):
             try:
-                current_tasks = _extract_tasks(path.read_text(encoding="utf-8"))
+                # newline="" on both ends: the line endings stay as they were.
+                with open(path, encoding="utf-8", newline="") as heartbeat_file:
+                    content = heartbeat_file.read()
             except FileNotFoundError:
-                current_tasks = []
+                # Nothing left to preserve: seed a fresh file with the kept tasks.
+                body = "".join(_format_task(t, d) + "\n" for t, d in keep)
+                atomic_write(path, _HEADER + body, fsync=True)
+                return 0
             except (OSError, UnicodeDecodeError) as exc:
                 # Rewriting would replace content nobody could read; leave it.
                 logger.warning("HEARTBEAT.md unreadable, not rewriting it: %s", exc)
                 return 0
 
-            remaining = Counter(t for t, _ in original_tasks)
-            appended: list[tuple[str, str]] = []
-            for task_text, deliver in current_tasks:
-                if remaining.get(task_text, 0) > 0:
-                    remaining[task_text] -= 1
-                else:
-                    appended.append((task_text, deliver))
-
-            lines = _HEADER
-            for task_text, deliver in keep + appended:
-                suffix = f"  <!-- deliver:{deliver} -->" if deliver else ""
-                lines += f"- {task_text}{suffix}\n"
-            atomic_write(path, lines, fsync=True)
-            return len(appended)
+            snapshot = Counter(t for t, _ in original_tasks)
+            # Keyed on text AND deliver target: of two same-text tasks bound
+            # for different channels, the finished one goes, the kept one stays.
+            finished = Counter(original_tasks) - Counter(keep)
+            appended = 0
+            out: list[str] = []
+            lines = _parse_lines(content)
+            for index, line in enumerate(lines):
+                # Each kept line keeps its own terminator: only the last
+                # line of the split has none, so dropping it never strips
+                # the newline off the line before it.
+                newline = "\n" if index < len(lines) - 1 else ""
+                left: list[tuple[str, str]] = []
+                for task in line.tasks:
+                    if snapshot[task[0]] > 0:
+                        snapshot[task[0]] -= 1
+                    else:
+                        appended += 1
+                    if finished[task] > 0:
+                        finished[task] -= 1
+                    else:
+                        left.append(task)
+                if len(left) == len(line.tasks):
+                    out.append(line.raw + newline)
+                    continue
+                pieces = [line.head, *(_format_task(t, d) for t, d in left), line.tail]
+                pieces = [p.removesuffix("\r") for p in pieces if p]
+                if pieces:
+                    # A line split in two keeps the file's own line ending.
+                    cr = "\r" if line.raw.endswith("\r") else ""
+                    out.append(f"{cr}\n".join(pieces) + cr + newline)
+            atomic_write(path, "".join(out), fsync=True, newline="")
+            return appended
 
 
 def _ensure_heartbeat_file(path: Path) -> None:
@@ -553,28 +650,26 @@ def _extract_tasks(content: str) -> list[tuple[str, str]]:
     ``deliver_target`` comes from an inline ``<!-- deliver:xxx -->`` comment.
     Empty string when absent.
     """
-    tasks: list[tuple[str, str]] = []
-    for line in _strip_comments(content).splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        # Standalone comment line (<!-- ... --> on one line, no task text)
-        if stripped.startswith("<!--") and stripped.endswith("-->"):
-            continue
-        if stripped.startswith("#"):
-            continue
-        # Extract inline deliver target before stripping comments
-        deliver = ""
-        m = _DELIVER_RE.search(stripped)
-        if m:
-            deliver = m.group(1)
-            stripped = stripped[: m.start()].rstrip()
-        # Strip leading list markers
-        for prefix in ("- [x] ", "- [ ] ", "- ", "* "):
-            if stripped.startswith(prefix):
-                stripped = stripped[len(prefix) :]
-                break
-        stripped = stripped.strip()
-        if stripped and stripped != "-":
-            tasks.append((stripped, deliver))
-    return tasks
+    return [task for line in _parse_lines(content) for task in line.tasks]
+
+
+def _parse_task(line: str) -> tuple[str, str] | None:
+    """Parse one comment-free line into ``(text, deliver_target)``, or ``None``."""
+    stripped = line.strip()
+    if not stripped:
+        return None
+    # Standalone comment line (<!-- ... --> on one line, no task text)
+    if stripped.startswith("<!--") and stripped.endswith("-->"):
+        return None
+    if stripped.startswith("#"):
+        return None
+    # Extract inline deliver target before stripping comments
+    deliver = ""
+    m = _DELIVER_RE.search(stripped)
+    if m:
+        deliver = m.group(1)
+        stripped = stripped[: m.start()].rstrip()
+    # Strip a leading list bullet, then a leading checkbox
+    stripped = _LIST_BULLET_RE.sub("", stripped, count=1)
+    stripped = _CHECKBOX_RE.sub("", stripped, count=1).strip()
+    return (stripped, deliver) if stripped else None

@@ -46,11 +46,14 @@ the PR had already earned. SKILL.md caps that at ``RESYNC_CAP`` re-syncs and the
 hands the PR to a person, so with ``--pr`` this script counts the re-sync comments
 the loop itself posted and reports exit ``EXIT_CAP_SPENT`` once the cap is spent.
 The count is the PR's own comment history because a loop wakes with no memory:
-there is no local state a later cycle could read. It is a TOTAL, not a
-consecutive run -- a PR that has needed this many rebases at any point is one a
-person should look at -- and it is read only when an overlap was already found, so
-a FRESH answer still costs no API call. A count that cannot be read leaves the
-verdict at ``EXIT_STALE``, exactly as before: only a proven spent cap diverts.
+there is no local state a later cycle could read. It runs from the most recent
+``RESET_MARKER`` comment rather than from the PR's first, so a maintainer who has
+looked at a capped PR can hand it back without deleting the comments the count is
+read from -- deleting those is what SKILL.md forbids, since they ARE the record.
+With no reset comment it is the PR's whole lifetime, as it was before. It is read
+only when an overlap was already found, so a FRESH answer still costs no API call.
+A count that cannot be read leaves the verdict at ``EXIT_STALE``, exactly as
+before: only a proven spent cap diverts.
 
 Usage:  python3 green_age.py [--base BRANCH] [--pr N]
 Exit:   0 FRESH (no overlap) | 30 STALE (rebase and re-run)
@@ -87,6 +90,21 @@ RESYNC_CAP = 3
 # Phase 3 step 5 fixes the wording). Counting these is what gives a fresh cycle,
 # which remembers nothing, a way to know how many it has already done.
 RESYNC_MARKER = "Rebased: main moved in"
+
+# The first words of the comment that hands a capped PR back to the loop: the
+# count restarts after it, so a person who has looked at the PR and decided it
+# should carry on grants it another RESYNC_CAP re-syncs. Deleting the re-sync
+# comments would clear the count too, which is why this exists -- they are the
+# record the count is read from, so removing them destroys the audit trail.
+#
+# Only WRITE_ASSOCIATIONS match it, deliberately NOT the author clause the
+# re-sync count also accepts. The loop drives a PR as its author, so an author
+# who could reset would be a loop re-arming its own budget, and the cap would
+# bound nothing. What this does not separate is a maintainer from an agent
+# running as that maintainer -- one account, indistinguishable here -- so the
+# rule that a cycle asks for a reset instead of writing one is stated where the
+# cycle reads it, in SKILL.md and in the arming template, not enforced here.
+RESET_MARKER = "Re-sync budget reset"
 
 # The `authorAssociation` values that place a commenter INSIDE the project, used
 # with the author clause to decide whose re-sync record is believable.
@@ -538,6 +556,15 @@ def resync_selector():
     Named and returned rather than inlined because ``gh`` evaluates it remotely:
     a stubbed runner answers a number without the program ever running, so the
     only way to test what it actually selects is to hand this string to ``jq``.
+
+    A fold rather than a filtered length, because the question is how many
+    re-syncs happened SINCE the last reset and no filter over comments can say
+    that: a reset has to discard whatever preceded it. Folding in order does that
+    in one pass, needs no index arithmetic, and handles repeated resets for free.
+    It reads ``.comments[]`` oldest-first, which is the order the API returns and
+    ``gh`` preserves; a payload in another order would misplace a reset rather
+    than fail, so the ordering is an assumption worth stating rather than a check
+    that could be made here.
     """
     # Spelled as plain equality rather than `IN` or `index`: this program is
     # evaluated by whatever jq the installed `gh` carries, and an `index` over a
@@ -546,15 +573,19 @@ def resync_selector():
     can_push = " or ".join(
         '.authorAssociation == "{}"'.format(assoc) for assoc in WRITE_ASSOCIATIONS
     )
+    # The reset arm takes `can_push` ALONE while the re-sync arm also accepts the
+    # author: see RESET_MARKER for why those two must not be the same test.
     return (
-        ".author.login as $author | [.comments[] | select("
-        "(.author.login == $author or {}) "
-        'and (.body | startswith("{}")))] | length'
-    ).format(can_push, RESYNC_MARKER)
+        ".author.login as $author | reduce (.comments[] | "
+        'if ({push}) and (.body | startswith("{reset}")) then "reset" '
+        "elif (.author.login == $author or ({push})) "
+        'and (.body | startswith("{resync}")) then "resync" '
+        'else empty end) as $kind (0; if $kind == "reset" then 0 else . + 1 end)'
+    ).format(push=can_push, reset=RESET_MARKER, resync=RESYNC_MARKER)
 
 
 def _resync_count(pr, runner=None):
-    """How many re-syncs this PR has already had, or -1 when that cannot be read.
+    """Re-syncs this PR has had since its last reset, or -1 when that cannot be read.
 
     Counted from the PR's own ``Rebased: main moved in`` comments, because a loop
     cycle wakes with no memory of its earlier ones and there is no local state to
@@ -562,6 +593,13 @@ def _resync_count(pr, runner=None):
     here: a comment body is free-form Markdown and can contain anything,
     including this marker quoted inside someone else's comment, so the match is
     anchored at the start of the body the way the loop writes it.
+
+    A ``Re-sync budget reset`` comment from inside the project restarts the count,
+    which is the only supported way a capped PR returns to the loop: SKILL.md
+    forbids deleting the re-sync comments, since they are this count's record. The
+    reset does not widen the cap -- it still buys exactly ``RESYNC_CAP`` more
+    re-syncs -- so every budget the PR gets after the first is one a person asked
+    for by name.
 
     Only a comment from inside the project counts: one by the PULL REQUEST
     AUTHOR, or by an account whose ``authorAssociation`` is in
@@ -741,11 +779,19 @@ def main(argv=None):
             # read prose to tell them apart.
             code = EXIT_CAP_SPENT
             err(
-                "CAP SPENT: this PR has already been re-synced {} time(s), the limit "
-                "is {}, and origin/{} has moved again in {} file(s) it touches. Do NOT "
-                "rebase: each one discards a green the PR already earned. Report which "
-                "files the base keeps moving in and hand the PR to a person.".format(
-                    summary["resyncs"], RESYNC_CAP, args.base, len(summary["overlap"])
+                "CAP SPENT: this PR has been re-synced {} time(s) since its last "
+                "reset, the limit is {}, and origin/{} has moved again in {} file(s) "
+                "it touches. Do NOT rebase: each one discards a green the PR already "
+                "earned. Report which files the base keeps moving in and hand the PR "
+                'to a person. To hand it back, a member of the project comments "{}" '
+                "on the PR, which grants another {}; do not delete the re-sync "
+                "comments, which are the record this count reads.".format(
+                    summary["resyncs"],
+                    RESYNC_CAP,
+                    args.base,
+                    len(summary["overlap"]),
+                    RESET_MARKER,
+                    RESYNC_CAP,
                 )
             )
         elif summary["stale"]:

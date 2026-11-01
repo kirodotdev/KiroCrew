@@ -266,7 +266,10 @@ def test_vet_rejects_every_special_purpose_range(prefix: str) -> None:
 @pytest.mark.parametrize("host", ["8.8.8.8", "[2606:4700::1111]", "93.184.216.34"])
 def test_vet_allows_globally_routable_literals(host: str) -> None:
     """The allowlist must not be so tight that ordinary public addresses fail."""
-    lu.vet_unfurl_url(f"http://{host}/", resolve=_public)
+    vetted = lu.vet_unfurl_url(f"http://{host}/", resolve=_public)
+    # A literal is dialled as written, never swapped for a resolver answer.
+    literal = host.strip("[]")
+    assert (vetted.ip, vetted.addresses, vetted.port) == (literal, (literal,), 80)
 
 
 @pytest.mark.parametrize(

@@ -60,6 +60,7 @@ from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_EMPTY,
     _CONSOLIDATION_MAX_HEAD_SLICES,
     _CONSOLIDATION_REFUSED,
+    _CONSOLIDATION_STALE,
     AttemptedSpan,
     _consolidation_chunk,
     _consolidation_head_content,
@@ -921,7 +922,7 @@ async def _consolidate(
                 "Discarding consolidation result for %s: conversation changed during extraction",
                 key,
             )
-            return _CONSOLIDATION_REFUSED
+            return _CONSOLIDATION_STALE
 
         if member_memory:
             stage = "member memory"

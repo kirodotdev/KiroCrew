@@ -2315,6 +2315,11 @@ writer:
 
 Background task that fires once a session's message count reaches
 `_CONSOLIDATION_THRESHOLD` (30) messages past its last consolidation offset.
+A preference-only pass whose result is discarded because the user spoke while
+the model read the window (`_CONSOLIDATION_STALE`, "conversation changed during
+extraction") keeps the window pending and waits
+`_CONSOLIDATION_STALE_RETRY_SECS` (300 s) before the next turn may start another,
+so a live chat does not start and bill a discarded pass on every turn.
 Global history extraction uses its own lazily created `_consolidate` session to extract:
 - `history_entry` → appended to today's daily history file
 - `preferences_update` → overwrites `preferences.md` if changed

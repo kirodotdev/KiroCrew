@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import fnmatch
 import logging
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
@@ -140,6 +143,42 @@ def _is_prefix_collision(name: str) -> bool:
     return folded not in _MANAGED_EXACT_NAMES and not folded.startswith(_MANAGED_NAME_STEMS)
 
 
+_RootTable = tuple[list[Path], list[Path], dict[Path, Path]]
+#: The root table of the one :func:`documents_for_member` read running on this
+#: context, or ``None`` outside one.
+_managed_roots: contextvars.ContextVar[_RootTable | None] = contextvars.ContextVar(
+    "kirocrew_member_managed_roots", default=None
+)
+
+
+def _managed_root_table() -> _RootTable:
+    """The admin roots, the workspace roots, and their compared spellings, read now."""
+    cfg = KiroCrewConfig.load()
+    roots = [config_dir(), Path.home() / ".kiro/crew", Path.home() / ".kirocrew"]
+    workspaces = [config_dir() / "workspace"]
+    workspaces.extend(workspace_dir_for(name) for name in cfg.workspaces)
+    resolved_roots = {root: _comparable_root(root) for root in dict.fromkeys([*roots, *workspaces])}
+    return roots, workspaces, resolved_roots
+
+
+@contextlib.contextmanager
+def _managed_roots_scope() -> Iterator[None]:
+    """Read the root table once for one document read; nested scopes reuse it.
+
+    One member turn checks ~37 paths, and each fresh table costs a config load per
+    workspace plus a guarded resolve per root (~16 ms). The table lives only for
+    this read: the next turn reads configuration and link targets again.
+    """
+    if _managed_roots.get() is not None:
+        yield
+        return
+    token = _managed_roots.set(_managed_root_table())
+    try:
+        yield
+    finally:
+        _managed_roots.reset(token)
+
+
 def _refuse_managed_source(path: Path) -> None:
     """Resources cannot reopen Global V1 or a peer's managed member state.
 
@@ -163,14 +202,8 @@ def _refuse_managed_source(path: Path) -> None:
     resolved, so those comparisons are exact; ``_read`` additionally re-checks the
     validated path, so the pre-validation call never has to be the deciding one.
     """
-    cfg = KiroCrewConfig.load()
-    roots = [config_dir(), Path.home() / ".kiro/crew", Path.home() / ".kirocrew"]
-    workspaces = [config_dir() / "workspace"]
-    workspaces.extend(workspace_dir_for(name) for name in cfg.workspaces)
+    roots, workspaces, resolved_roots = _managed_roots.get() or _managed_root_table()
     candidate = Path(os.path.abspath(path))
-    # Reuse only within this check. A later call must observe new configuration
-    # and link targets through the same guarded resolver, never a cached grant.
-    resolved_roots = {root: _comparable_root(root) for root in dict.fromkeys([*roots, *workspaces])}
     in_workspace = False
     for workspace in workspaces:
         workspace = resolved_roots[workspace]
@@ -777,6 +810,7 @@ def member_inherits_default_resources(project: str | None) -> bool:
     return acp_driver.inherits_default_resources(_admitted_project_root(project))
 
 
+@_managed_roots_scope()
 def documents_for_member(
     template: str,
     project: str | None,

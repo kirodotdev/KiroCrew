@@ -620,9 +620,10 @@ unexecuted branch. An available attribute such as `budget` remains allowed here;
 write protection belongs to the separate budget lint and runtime property.
 This preserves the host check's existing limits: helper-local methods outside
 the available surface can be conservatively rejected; helpers receiving the real
-context through their own parameters are under-enforced. The host walk uses the
-first ordinary positional parameter, so positional-only entrypoints do not gain
-host-surface coverage from the budget lint's positional-only support.
+context through their own parameters are under-enforced. The host walk reads the
+context name from the first positional parameter, positional-only included, so a
+`def workflow(ctx, /)` entrypoint gets the same host-surface check as
+`def workflow(ctx)` and the plan preview draws it the same way.
 
 ## Structured output (`schema=`)
 
@@ -1627,10 +1628,11 @@ title and the runner emits that title whole: without the number, a cut title wou
 read as a phase the plan missed.
 
 An `unknown` node is the whole safety property. A construct whose shape depends on a
-runtime value is never guessed at: `if` / `for` / `while` / `try` / `match`, a
+runtime value is never guessed at: `if` / `for` / `while` / `try` (and `try` with
+`except*`) / `match`, a
 conditional expression, a comprehension, `ctx.parallel` over anything but a literal
 list or tuple, `ctx.pipeline`, `ctx.workflow`, a `ctx.phase` whose title is not a
-literal, and
+literal (the title is read positionally or as `title=`, as the runner accepts both), and
 a call into a helper the script defines each contribute exactly one `unknown` node
 naming the construct, and every node found inside such a region is `certain: false`.
 `MAX_PLAN_PHASES` / `MAX_PLAN_NODES` bound the output and set `truncated`.

@@ -13,6 +13,14 @@ import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { fmtDateNumeric, fmtDateTimeNumeric, fmtNumber } from '../../i18n/format'
 
+/** Catalog key for each text-only button of the view switch. The Inspector
+ * button carries an icon and renders its own label. */
+const VIEW_LABEL_KEYS = {
+  semantic: 'pages.overview.vectorMemoryCard.view_semantic',
+  episodic: 'pages.overview.vectorMemoryCard.view_episodic',
+  audit: 'pages.overview.vectorMemoryCard.view_audit',
+} as const
+
 /** Whether an element with `id` is in the document, read when `watch` turns on.
  *
  * Effects run after the whole tree has committed, so a sibling card's field
@@ -560,9 +568,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             </div>
           </div>
           <div className="flex gap-2 flex-wrap items-center">
-            <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit">
+            <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit" role="group" aria-label={i18nT('pages.overview.vectorMemoryCard.view_switch_label')}>
             {(['semantic','episodic','audit','inspector'] as const).filter(v => !diagnosticsOnly || v === 'audit' || v === 'inspector').map(v => (
-              <button key={v} onClick={() => {
+              <button key={v} type="button" aria-pressed={view === v} onClick={() => {
                 setView(v)
                 if (v === 'episodic') {
                   if (view === v) loadEpisodic()
@@ -572,7 +580,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                 if (v === 'inspector' && view === v) loadPreview(previewQuery)
               }}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${view === v ? 'bg-bg-hover text-accent' : 'bg-transparent text-muted hover:text-text'}`}>{
-                  v === 'inspector' ? <><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.inspector')}</> : v[0].toUpperCase() + v.slice(1)
+                  v === 'inspector' ? <><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.inspector')}</> : i18nT(VIEW_LABEL_KEYS[v])
                 }</button>
             ))}
             </div>

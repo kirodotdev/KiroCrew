@@ -519,18 +519,23 @@ async def test_a_stalled_tab_does_not_delay_a_reading_tab(ws_state):
                     n, _ = await _broadcast(state, n, 1)
         except TimeoutError:
             pass
+        # Read the level in the same step that saw writing pause, with no await
+        # between: once the test yields, a kernel that grows its send buffer
+        # (macOS does) can take every queued byte and empty the level.
+        paused_at = stalled._req.transport.get_write_buffer_size()
         assert stalled._req.protocol._paused, (
             f"precondition: writing to the stalled tab never paused after {n} frames of "
-            f"{FRAME // 1024} KiB ({stalled._req.transport.get_write_buffer_size()} bytes buffered)"
+            f"{FRAME // 1024} KiB ({paused_at} bytes buffered)"
         )
         await _wait_received(received, n)
-        # The reading tab got every frame while writing to the stalled tab is
-        # paused, so no frame waited on the stalled tab's buffer.
+        # The reading tab got every frame sent while writing to the stalled tab
+        # was paused, so no frame waited on the stalled tab's buffer.
         assert stalled in state._ws_clients, "a tab under the limit must stay registered"
-        # Under the selector loops the stalled tab's frames show in its level. The
-        # proactor loop's level can read 0 by now, once the kernel holds them all.
+        # Under the selector loops a paused transport holds its frames in its
+        # level. The proactor loop's level can read 0 even then, once the kernel
+        # holds them all.
         if _level_moves_on_this_loop():
-            assert stalled._req.transport.get_write_buffer_size() > 0
+            assert paused_at > 0, f"writing paused with {paused_at} bytes buffered"
         assert reading in state._ws_clients
 
     await _harness(ws_state, body)

@@ -5153,6 +5153,10 @@
       "describe_your_role": "Describe your role",
       "e_g_solutions_architect_sre_founder": "e.g. solutions architect, SRE, founder",
       "how_technical_are_you": "How technical are you?",
+      "mode_dark": "Dark",
+      "mode_light": "Light",
+      "mode_switch_label": "Mode",
+      "mode_system": "System",
       "pick_your_look": "Pick your look",
       "skip": "Skip",
       "tell_kiro_about_you": "Tell Kiro about you",
@@ -9159,7 +9163,11 @@
         "test_query_e_g_what_database_should_i_use": "Test query (e.g. 'what database should I use?')",
         "value": "Value",
         "vector_memory": "Vector Memory",
-        "vector_memory_is_initializing_the_embedding_mode": "Vector memory is initializing. The embedding model (~610MB) downloads automatically in the background, and legacy memory migrates on its own — no action needed."
+        "vector_memory_is_initializing_the_embedding_mode": "Vector memory is initializing. The embedding model (~610MB) downloads automatically in the background, and legacy memory migrates on its own — no action needed.",
+        "view_audit": "Audit",
+        "view_episodic": "Episodic",
+        "view_semantic": "Semantic",
+        "view_switch_label": "Memory view"
       },
       "wakatimeTab": {
         "active_projects": "Projects you worked on",

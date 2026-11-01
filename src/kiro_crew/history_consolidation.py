@@ -62,6 +62,7 @@ from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.history_consolidation_skills import _session_touched_sensitive
 from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_EMPTY,
+    _CONSOLIDATION_STALE,
     AttemptedSpan,
     _LeaseLostMidRun,
     _no_pass_ran,
@@ -114,6 +115,9 @@ _CONSOLIDATION_THRESHOLD = 30
 _CONSOLIDATION_MAX_ATTEMPTS = 5
 _CONSOLIDATION_BACKOFF_BASE_SECS = 900.0
 _CONSOLIDATION_BACKOFF_MAX_SECS = 86400.0
+# How long a preference-only window waits after a pass whose result the live
+# conversation outran (``_CONSOLIDATION_STALE``) before the next turn may start one.
+_CONSOLIDATION_STALE_RETRY_SECS = 300.0
 # Seeded sessions (restored from disk after a restart) examined per idle sweep:
 # a large backlog drains a few per heartbeat instead of all at once.
 _SEEDED_PER_SWEEP = 3
@@ -772,6 +776,15 @@ class HistoryConsolidator:
                 failures,
                 delay,
             )
+            return
+        if result is _CONSOLIDATION_STALE:
+            # The user spoke while the model read the window, so its answer was
+            # discarded. In a live chat that is every pass: without a wait, each
+            # later turn would start (and bill) another pass that ends the same way.
+            # Keep the window pending and the failure count as it is, and try again
+            # once the wait is over.
+            failures = self._prefs_retry.get(key, (0, 0.0))[0]
+            self._prefs_retry[key] = (failures, _time.time() + _CONSOLIDATION_STALE_RETRY_SECS)
             return
         if not _no_pass_ran(result):
             self._prefs_offset[key] = total

@@ -18,7 +18,7 @@
  * disagree.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -314,7 +314,7 @@ describe('chat sidebar: pause and resume all status filters from the menu', () =
       // Unread OR pinned: the plain row is the hidden target.
       await waitFor(() => expect(utils.queryByText('plain session')).toBeNull())
 
-      utils.store.dispatch(requestSlotReveal('x'))
+      act(() => { utils.store.dispatch(requestSlotReveal('x')) })
       await waitFor(() => expect(utils.queryByTestId('filter-chip-pinned')).toBeNull())
       expect(utils.queryByTestId('filter-chip-unread')).toBeNull()
       expect(localStorage.getItem(UNREAD_KEY)).toBe('0')

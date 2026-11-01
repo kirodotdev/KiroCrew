@@ -75,7 +75,8 @@ async def test_midcycle_append_preserved_alongside_kept(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_append_serialized_with_final_replace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A writer using the shared lock appends only after replace completes."""
     hb_path = tmp_path / "HEARTBEAT.md"
@@ -85,10 +86,10 @@ async def test_append_serialized_with_final_replace(
     allow_replace = threading.Event()
     real_atomic_write = hb_mod.atomic_write
 
-    def paused_atomic_write(path, content, *, fsync=False) -> None:
+    def paused_atomic_write(path, content, **kwargs) -> None:
         rewrite_started.set()
         assert allow_replace.wait(timeout=5)
-        real_atomic_write(path, content, fsync=fsync)
+        real_atomic_write(path, content, **kwargs)
 
     monkeypatch.setattr(hb_mod, "atomic_write", paused_atomic_write)
 

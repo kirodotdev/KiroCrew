@@ -61,6 +61,7 @@ def _record_via_symlinked_python(tmp_path: Path) -> str:
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -126,6 +127,7 @@ def test_a_venv_built_from_the_recorded_path_can_import_the_stdlib(tmp_path):
         [str(venv / "bin" / "python"), "-c", "import encodings; print('ok')"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr

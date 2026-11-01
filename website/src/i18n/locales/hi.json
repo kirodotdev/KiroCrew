@@ -8082,6 +8082,10 @@
       "e_g_solutions_architect_sre_founder": "जैसे सॉल्यूशंस आर्किटेक्ट, SRE, फ़ाउंडर",
       "how_technical_are_you": "आप कितने तकनीकी हैं?",
       "make_it_yours": "इसे अपने मन का बनाएँ।",
+      "mode_dark": "डार्क",
+      "mode_light": "लाइट",
+      "mode_switch_label": "मोड",
+      "mode_system": "सिस्टम",
       "next": "आगे",
       "pick_your_look": "अपना लुक चुनें",
       "pop_apps_body": "ख़ास मक़सद से बने टूल इंस्टॉल करें जो नई क्षमताएँ और वर्कफ़्लो खोलते हैं।",
@@ -15994,7 +15998,11 @@
         "showing_semantic_one": "{{total}} में से {{shown}} दिखा रहे हैं",
         "showing_semantic_other": "{{total}} में से {{shown}} दिखा रहे हैं",
         "showing_semantic_filtered_one": "{{matched}} में से {{shown}} दिखा रहे हैं ({{total}} में से फ़िल्टर किए गए)",
-        "showing_semantic_filtered_other": "{{matched}} में से {{shown}} दिखा रहे हैं ({{total}} में से फ़िल्टर किए गए)"
+        "showing_semantic_filtered_other": "{{matched}} में से {{shown}} दिखा रहे हैं ({{total}} में से फ़िल्टर किए गए)",
+        "view_audit": "ऑडिट",
+        "view_episodic": "एपिसोडिक",
+        "view_semantic": "सिमैंटिक",
+        "view_switch_label": "मेमोरी दृश्य"
       },
       "wakatimeTab": {
         "active_projects": "जिन परियोजनाओं पर तुमने काम किया",

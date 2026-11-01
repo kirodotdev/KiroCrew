@@ -115,6 +115,10 @@ _CONSOLIDATION_BUSY = _ConsolidationRefusedSentinel()
 #: back with no reply or an unparseable one, or it could not be dispatched. Nothing was
 #: extracted, so the window stays pending and the caller arms its own backoff.
 _CONSOLIDATION_EMPTY = _ConsolidationRefusedSentinel()
+#: The turn was billed, but the conversation moved on (a newer user row, or the
+#: transcript changed) before the result could be written, so it was discarded.
+#: The window stays pending; the threshold caller waits before it tries again.
+_CONSOLIDATION_STALE = _ConsolidationRefusedSentinel()
 
 
 def _no_pass_ran(outcome: object) -> bool:

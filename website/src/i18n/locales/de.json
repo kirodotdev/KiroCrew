@@ -8082,6 +8082,10 @@
       "e_g_solutions_architect_sre_founder": "z. B. Solutions Architect, SRE, Gründer",
       "how_technical_are_you": "Wie technisch sind Sie?",
       "make_it_yours": "Mach es zu deinem.",
+      "mode_dark": "Dunkel",
+      "mode_light": "Hell",
+      "mode_switch_label": "Modus",
+      "mode_system": "System",
       "next": "Weiter",
       "pick_your_look": "Wählen Sie Ihr Erscheinungsbild",
       "pop_apps_body": "Installiere gezielt gebaute Werkzeuge, die neue Fähigkeiten und Workflows freischalten.",
@@ -15994,7 +15998,11 @@
         "showing_semantic_one": "{{shown}} von {{total}} angezeigt",
         "showing_semantic_other": "{{shown}} von {{total}} angezeigt",
         "showing_semantic_filtered_one": "{{shown}} von {{matched}} angezeigt (gefiltert aus {{total}})",
-        "showing_semantic_filtered_other": "{{shown}} von {{matched}} angezeigt (gefiltert aus {{total}})"
+        "showing_semantic_filtered_other": "{{shown}} von {{matched}} angezeigt (gefiltert aus {{total}})",
+        "view_audit": "Audit",
+        "view_episodic": "Episodisch",
+        "view_semantic": "Semantisch",
+        "view_switch_label": "Erinnerungsansicht"
       },
       "wakatimeTab": {
         "active_projects": "Bearbeitete Projekte",

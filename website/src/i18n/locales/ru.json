@@ -8344,6 +8344,10 @@
       "e_g_solutions_architect_sre_founder": "например: архитектор решений, SRE, основатель",
       "how_technical_are_you": "Насколько вы технически подготовлены?",
       "make_it_yours": "Настрой под себя.",
+      "mode_dark": "Тёмная",
+      "mode_light": "Светлая",
+      "mode_switch_label": "Режим",
+      "mode_system": "Системная",
       "next": "Далее",
       "pick_your_look": "Выберите оформление",
       "pop_apps_body": "Устанавливай специализированные инструменты, которые открывают новые возможности и рабочие процессы.",
@@ -16574,7 +16578,11 @@
         "showing_semantic_filtered_one": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})",
         "showing_semantic_filtered_few": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})",
         "showing_semantic_filtered_many": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})",
-        "showing_semantic_filtered_other": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})"
+        "showing_semantic_filtered_other": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})",
+        "view_audit": "Аудит",
+        "view_episodic": "Эпизодическая",
+        "view_semantic": "Семантическая",
+        "view_switch_label": "Вид памяти"
       },
       "wakatimeTab": {
         "active_projects": "Проекты, над которыми вы работали",
