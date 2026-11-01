@@ -2343,7 +2343,8 @@ stdout while no request waits. Design record:
   `ensure_ready`, `_initialize_session`, `_wait_for_response`,
   `_drain_notifications`, `wait_for_compaction`,
   `_drain_post_compaction_metadata`, `_read_steer_answers` and `_prompt_loop`
-  in a stdout claim, and
+  in a stdout claim, binds a `_read_message` that holds a pending turn's frames
+  for it (below), and
   makes `_kill_process` and `_reset_state` drop the reader first. The first
   call runs inside the first `ensure_ready`, so only the `_initialize_session`
   claim covers that handshake; the `ensure_ready` claim stops the reader when a
@@ -2400,11 +2401,22 @@ stdout while no request waits. Design record:
   or `plan`, ends the reader: it records that frame as the turn's start and
   calls `on_agent_turn(client)`. A frame that only reports state
   (`usage_update`, `session_info_update`) starts nothing. The hand-off stays
-  pending while the start frame is still in `_buffer`, so whichever reader
-  takes it ends the hand-off. A request wait files a start `session/update` in
-  `_mcp_notifications`, as it files every agent frame it reads, and the
-  restarted reader hands off the next activity frame; a start request (a
-  permission request) goes back to `_buffer`, and the hand-off stands.
+  pending while the start frame is still in `_buffer`, and a turn that takes it
+  ends the hand-off by reading it as its own.
+- **Other readers keep the turn's frames.** A wrapped reader other than a turn
+  (a request wait, `wait_for_compaction`, `_drain_post_compaction_metadata`,
+  or any other method named above) that claims stdout while a hand-off is
+  pending holds each frame of the kind that starts a turn, the start frame
+  included, instead of handling it. When that reader returns, the held frames
+  go back to the front of `_buffer` in arrival order, so the turn still starts
+  on its first frame and the hand-off stands. A request from the agent is held
+  in the same list, so a permission request keeps its place among the chunks
+  around it. Every other frame gets that reader's own handling: a request wait
+  still files a `usage_update` or `session_info_update` in
+  `_mcp_notifications`. A frame that would not fit in `_buffer` beside the held
+  ones gets that handling too, so putting them back pushes none out. A kill or
+  reset drops what is held. `_agent_turn_pending()` reads False while the
+  frames are held, so `stream_unsolicited()` does not read beside that reader.
 - **Reading the turn.** `stream_unsolicited()` reads the pending turn through
   `_dispatch_events` under request id `-1` and sends nothing. After the turn's
   first activity frame, the bound `_prompt_loop` ends it on the `usage_update`

@@ -47,6 +47,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_advertised_model_ids": ("function", False, "6806e867af4e", "client_model_selection"),
     "_agent_env_for_spawn": ("function", False, "8cab7a4db01b", "client_spawn_env"),
     "_agent_turn_gate": ("data", False, "", ""),
+    "_agent_turn_held": ("data", False, "", ""),
     "_agent_turn_pending": ("function", False, "a6632a57e602", "client_transport"),
     "_agent_turn_start": ("data", False, "", ""),
     "_append_member_dispatch_server": ("function", False, "94c1c94e7642", "client_mcp_array"),
