@@ -416,7 +416,13 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   (``browser_harness.recording``), read only through the owner-only replay
     #:   routes. Masked whole beside ``browser-profile`` at the data-home root, so
     #:   leaf-only is the only hold, like ``work-ledger``.
-    EXPECTED: dict[str, int] = {"standard": 306, "cc": 313, "strict": 314}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``kas-mcp-launch`` -- the KAS MCP launch snapshots, which hold MCP
+    #:   servers' env values (``sandbox_leaves``). Masked whole at the data-home
+    #:   root beside writable siblings, so leaf-only is the only hold.
+    EXPECTED: dict[str, int] = {"standard": 309, "cc": 316, "strict": 317}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
