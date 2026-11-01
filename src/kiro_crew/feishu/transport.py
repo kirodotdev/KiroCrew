@@ -47,8 +47,12 @@ _SEEN_KEEP = 200
 DispatchFn = Callable[["LarkInbound"], Awaitable[None]]
 
 # Feishu capabilities: no edit-in-place streaming (replies are one-shot REST
-# calls), no interactive buttons in this v1 integration, no proactive send
-# (a reply is always anchored to an inbound message_id).
+# calls), no interactive buttons in this v1 integration.
+# ``supports_proactive_send`` is True because the client carries a free-standing
+# ``im.v1.message.create`` path (``send_proactive``) for unattended output -- a
+# background ``spawn_run`` completion or a cron result that has no inbound message
+# to reply to. The send gate is the allow-list alone (no "peer wrote first"
+# precondition), so a persisted mirror binding survives a gateway restart.
 # max_message_chars reflects the safe 4 000-char cap defined in client.py.
 FEISHU_CAPABILITIES = TransportCapabilities(
     streaming=False,
@@ -60,9 +64,9 @@ FEISHU_CAPABILITIES = TransportCapabilities(
     threads=False,
     max_message_chars=4000,
     max_buttons=0,
-    supports_proactive_send=False,
-    # A Feishu reply carries no message id back, so an empty return is SUCCESS and a
-    # failure raises (see ``send_message``). Same contract as WeCom's.
+    supports_proactive_send=True,
+    # A Feishu reply/create carries no message id back, so an empty return is
+    # SUCCESS and a failure raises (see ``send_message``). Same contract as WeCom's.
     returns_message_id=False,
 )
 
@@ -206,47 +210,89 @@ class FeishuTransport(MessagingTransport):
     async def send_message(
         self, conversation_id: str, content: str, thread_id: str | None = None
     ) -> str:
-        # ``conversation_id`` carries the inbound ``message_id`` (set by
-        # ``receive`` via ``FeishuInboundMessage.conversation_id``), so this
-        # is a contextual reply rather than a free-standing send.
-        #
-        # RAISE on a refused reply rather than returning. A Feishu reply carries no
-        # message id, so the return value cannot express failure -- which is what
-        # ``returns_message_id=False`` tells a caller, and it makes "nothing raised"
-        # the ONLY delivery signal there is. Discarding ``send_reply``'s answer left
-        # a dropped message looking exactly like a delivered one, which is how a
-        # mirror leg persists a link and reports success for a reply the user never
-        # saw. The renderer's own send already raises for this reason.
+        """Deliver *content* to *conversation_id*.
+
+        Two shapes share this one entry point, told apart by *thread_id*:
+
+        * **Proactive push** (``thread_id`` is None): ``conversation_id`` is a
+          peer ``open_id`` resolved by :meth:`resolve_configured_target`. This is
+          the unattended path -- a background ``spawn_run`` completion or a cron
+          result that has no inbound message to reply to -- delivered
+          via ``im.v1.message.create``. Re-authorised against the allow-list at
+          the send boundary: a persisted mirror binding outlives the roster that
+          justified it, so a peer dropped from the allow-list must stop
+          receiving. Warmth is NOT part of this gate -- a binding saved before a
+          restart stays deliverable even though this process has not yet seen the
+          peer write.
+        * **Inbound-spool reply** (``thread_id`` carries a spool route marker):
+          ``conversation_id`` is the spooled inbound ``message_id`` and the reply
+          is anchored to it via ``send_reply``, as before.
+
+        RAISE on a refused or failed send rather than returning. A Feishu send
+        carries no message id, so the return value cannot express failure --
+        which is what ``returns_message_id=False`` tells a caller, and it makes
+        "nothing raised" the ONLY delivery signal there is. Discarding the send's
+        answer left a dropped message looking exactly like a delivered one, which
+        is how a mirror leg persists a link and reports success for a message the
+        user never saw.
+        """
         if not conversation_id:
-            raise RuntimeError("no Feishu message to reply to")
-        if not await self._client.send_reply(conversation_id, content):
-            raise RuntimeError(f"Feishu reply was not delivered (message_id={conversation_id})")
+            raise RuntimeError("no Feishu conversation to send to")
+        _is_spool_reply = thread_id is not None and thread_id.startswith(
+            (SPOOL_DM_ROUTE_PREFIX, SPOOL_GROUP_ROUTE_PREFIX)
+        )
+        if _is_spool_reply:
+            if not await self._client.send_reply(conversation_id, content):
+                raise RuntimeError(f"Feishu reply was not delivered (message_id={conversation_id})")
+            return ""
+        # Proactive push. ``conversation_id`` is a peer open_id.
+        if not self.may_send_to(conversation_id):
+            raise RuntimeError("Feishu conversation is not currently authorized to receive")
+        if not await self._client.send_proactive(conversation_id, content):
+            raise RuntimeError(f"Feishu proactive send failed (open_id={conversation_id})")
         return ""
 
     def may_send_to(
         self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
     ) -> bool:
-        """Re-authorize a contextual reply anchor from the inbound spool.
+        """Authorize an outbound send to *conversation_id*.
 
-        ``conversation_id`` remains the original message id used by
-        :meth:`send_message`. The protected spool pairs it with a marker naming
-        the authorized DM sender or group chat. Normal proactive calls carry no
-        marker and remain denied; replay rechecks the embedded identity against
-        the current live roster.
+        Two shapes, told apart by *thread_id*:
+
+        * **Proactive push** (no ``thread_id``): ``conversation_id`` is a peer
+          ``open_id``, permitted when it is on the allow-list. The allow-list is
+          the whole gate -- there is no "peer wrote first" precondition. The
+          transport mirrors WeCom's ``_may_push``, which checks the allow-list
+          only: a mirror binding is persisted while any in-memory "warm" state is
+          not, so gating a send on warmth would refuse every saved binding after
+          a restart -- the dropped-completion symptom this change fixes.
+        * **Inbound-spool reply** (``thread_id`` carries a spool marker):
+          ``conversation_id`` is the original inbound ``message_id``; the marker
+          names the authorised DM sender or group chat, rechecked against the
+          current live roster.
+
+        Everything else is denied.
         """
-        if not conversation_id or not thread_id:
+        if not conversation_id:
             return False
-        if thread_id.startswith(SPOOL_DM_ROUTE_PREFIX):
+        if thread_id and thread_id.startswith(SPOOL_DM_ROUTE_PREFIX):
             open_id = thread_id[len(SPOOL_DM_ROUTE_PREFIX) :]
             return bool(open_id) and open_id in self._allowed
-        if thread_id.startswith(SPOOL_GROUP_ROUTE_PREFIX):
+        if thread_id and thread_id.startswith(SPOOL_GROUP_ROUTE_PREFIX):
             chat_id = thread_id[len(SPOOL_GROUP_ROUTE_PREFIX) :]
             return bool(chat_id) and self._allow_group and chat_id in self._allowed_group_ids
-        return False
+        if thread_id:
+            # A non-spool thread id is not a shape this transport produces.
+            return False
+        # Proactive push to an open_id: allow-listed. Warmth is an availability
+        # hint, not a precondition (see docstring); a persisted binding must not
+        # be refused merely because this process has not seen the peer write.
+        return conversation_id in self._allowed
 
     async def resolve_conversation(self, user_id: str) -> str:
-        # Feishu replies are anchored to an inbound message; without one there
-        # is no proactive DM path in this v1 integration.
+        # The proactive push target IS the peer open_id (im.v1.message.create
+        # receive_id_type=open_id). ``may_send_to`` enforces the allow-list at
+        # the send boundary.
         return user_id
 
     async def fetch_history(
@@ -257,17 +303,38 @@ class FeishuTransport(MessagingTransport):
         return []
 
     def configured_targets(self) -> list[ConfiguredChannelTarget]:
+        """Advertise each CONFIGURED (allow-listed) peer as a mirror target.
+
+        Both the identity list AND availability are drawn from the allow-list
+        alone, so ``_owner_dm_target`` -- which infers the operator from the sole
+        AVAILABLE direct target -- can only ever resolve a peer the user
+        configured, never one learned from inbound traffic. Every allow-listed
+        peer is available because the send gate is the allow-list: there is no
+        warmth precondition to reflect, and letting inbound traffic decide which
+        allow-listed peer is "available" would make whichever colleague wrote
+        first after a restart look like the owner.
+        """
         return [
-            ConfiguredChannelTarget(
-                f"user:{oid}",
-                f"Feishu DM · {oid}",
-                available=False,
-                unavailable_reason=(
-                    "Feishu only allows replies to an inbound message " "(no proactive DM in v1)"
-                ),
-            )
+            ConfiguredChannelTarget(f"user:{oid}", f"Feishu DM · {oid}")
             for oid in sorted(self._allowed)
         ]
+
+    async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
+        """Resolve a ``user:<open_id>`` target to a postable ``(open_id, None)``.
+
+        Returns None (fail-closed) for an unknown shape or a peer not on the
+        allow-list. The allow-list is the whole gate -- the same one
+        :meth:`may_send_to` applies -- so a persisted binding resolves after a
+        restart instead of being silently dropped. A peer the API still refuses
+        surfaces as a reported send failure, not a resolve-time None.
+        """
+        prefix = "user:"
+        if not target_id.startswith(prefix):
+            return None
+        open_id = target_id[len(prefix) :]
+        if not open_id or open_id not in self._allowed:
+            return None
+        return open_id, None
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -407,10 +474,15 @@ class FeishuTransport(MessagingTransport):
                 if not await inbound_permitted("feishu"):
                     return
                 try:
-                    await self.send_message(
+                    # A contextual reply to THIS inbound, anchored to its
+                    # message_id -- not a proactive push, so it goes straight to
+                    # the client's reply path rather than through send_message
+                    # (whose threadless shape is now the proactive route).
+                    if not await self._client.send_reply(
                         inbound.message_id,
                         channel_reads_no_attachments(inbound.unsupported_type),
-                    )
+                    ):
+                        raise RuntimeError("send_reply returned False")
                 except Exception:
                     # LOG the failure -- do not re-raise. ``_deliver`` dispatches
                     # us through ``run_coroutine_threadsafe`` without awaiting the

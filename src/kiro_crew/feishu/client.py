@@ -416,6 +416,58 @@ class LarkClient:
                 logger.info("Feishu bot open_id resolved")
             return
 
+    async def send_proactive(self, open_id: str, text: str) -> bool:
+        """Send a free-standing message to *open_id* (no inbound anchor).
+
+        Unlike :meth:`send_reply`, this is NOT anchored to an inbound
+        ``message_id``: it posts via ``im.v1.message.create`` to a ``receive_id``.
+        It is the delivery path for unattended output -- a background
+        ``spawn_run`` subagent completion, or a cron result -- which arrives with
+        no inbound message to reply to. Returns True on success.
+
+        Split and byte-bounded exactly like :meth:`send_reply`: Feishu's
+        per-message ceiling is a transport limit, and the first failed chunk
+        stops the rest so a partial send is never reported as a whole one.
+        """
+        if not open_id:
+            return False
+        chunks = await asyncio.to_thread(_graded_chunks, text)
+        if not chunks:
+            return True
+        loop = asyncio.get_running_loop()
+        for chunk in chunks:
+            try:
+                await loop.run_in_executor(self._executor, self._sync_proactive, open_id, chunk)
+            except Exception as exc:
+                logger.error("Feishu proactive send failed (open_id=%s): %s", open_id, exc)
+                return False
+        return True
+
+    def _sync_proactive(self, open_id: str, text: str) -> None:
+        """Blocking REST create to an open_id; call only from a worker thread."""
+        from lark_oapi.api.im.v1 import (  # noqa: PLC0415
+            CreateMessageRequest,
+            CreateMessageRequestBody,
+        )
+
+        # ensure_ascii=False for the same payload-size reason as _sync_reply.
+        content = json.dumps({"text": text}, ensure_ascii=False)
+        req = (
+            CreateMessageRequest.builder()
+            .receive_id_type("open_id")
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(open_id)
+                .content(content)
+                .msg_type("text")
+                .build()
+            )
+            .build()
+        )
+        resp = self._lark.im.v1.message.create(req)
+        if not resp.success():
+            raise RuntimeError(f"Feishu create error: code={resp.code} msg={resp.msg}")
+
     # -- Inbound WS handler (called from daemon thread) --------------------
 
     def _handle_receive_v1(self, data: Any) -> None:

@@ -189,8 +189,11 @@ Known gaps, all follow-up work rather than defects:
   photo does not look like a dead bot — but only to a sender who is already on
   the allow-list, and in a group only one that is allow-listed too and that
   @-mentions the bot.
-- **Replies only.** The bot answers an inbound message and cannot start a
-  conversation, so it is not a proactive-notification target.
+- **Replies, plus allow-listed proactive sends.** The bot answers an inbound
+  message, and it also starts a message on its own to an allow-listed open_id over
+  `im.v1.message.create`, so a background `spawn_run` or cron completion with no
+  inbound message to reply to is a proactive-notification target. The proactive
+  send reaches only an open_id the operator configured.
 - **The panel configures the channel; it does not install it.** `lark-oapi` is an
   optional extra, and running `pip` from a dashboard action would be a new way to
   execute code in the gateway's own environment. When the SDK is missing, Settings reports whether installation is supported for this gateway interpreter and shows its exact install command only when it is; you run that command yourself.
