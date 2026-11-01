@@ -210,7 +210,6 @@
   "src/test/ChatSidebar.renameFailureRecovery.test.tsx",
   "src/test/ChatSidebar.resizeTouch.test.tsx",
   "src/test/ChatSidebar.revealFilterDimensions.test.tsx",
-  "src/test/ChatSidebar.revealStaleExpand.test.tsx",
   "src/test/ChatSidebar.revealTimeline.test.tsx",
   "src/test/ChatSidebar.rowMemo.test.tsx",
   "src/test/ChatSidebar.rowWindow.test.tsx",
