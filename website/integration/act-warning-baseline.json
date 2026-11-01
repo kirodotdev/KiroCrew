@@ -76,7 +76,6 @@
   "src/test/ArtifactFolderDeleteDialog.test.tsx",
   "src/test/ArtifactPanelCoverage.test.tsx",
   "src/test/ArtifactsPageCoverage.test.tsx",
-  "src/test/AssistantMessage.quote.test.tsx",
   "src/test/AssistantMessage.test.tsx",
   "src/test/BottomTerminalPanel.cwd.test.tsx",
   "src/test/BottomTerminalPanel.hydrateGate.test.tsx",
