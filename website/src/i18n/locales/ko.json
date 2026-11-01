@@ -17526,6 +17526,7 @@
         "custom_sound_error_file_gone": "이 소리의 파일이 이 브라우저에 더 이상 저장되어 있지 않아 되돌릴 수 없습니다.",
         "channel_member": "크루메이트 메시지",
         "channel_apps": "앱 업데이트",
+        "channel_turn": "채팅 오류",
         "push_section": "푸시 알림",
         "push_toggle_label": "{{productName}}이(가) 닫혀 있어도 알림 받기",
         "push_toggle_description": "{{productName}}을(를) 닫은 뒤에도 이 기기로 알림을 보냅니다. 시스템 알림은 닫으면 멈춥니다.",

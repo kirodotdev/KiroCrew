@@ -273,7 +273,7 @@ from kiro_crew.dashboard.chat_turn.turn_marker import (  # noqa: F401
     _clear_local_turn_marker,
     _gateway_shutdown_requested,
 )
-from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_thinking_stream
+from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_thinking_stream, _notify_turn_died
 from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _turn_stop_hook
 from kiro_crew.dashboard.chat_turn.turn_stats import (  # noqa: F401
     _MAX_MODEL_ID_LEN,
@@ -1261,6 +1261,15 @@ async def _run_chat(
         slot._git_repo_touch_overflow = False
         await _turn_record_outcome(turn)
         await _turn_close_crew_log(turn)
+        # Dead-turn bell, fired at this ONE choke point so every terminal arm --
+        # stop-reason and exception alike -- rings through the same site, and a
+        # future terminal arm is covered by setting `turn.died_notice` rather
+        # than by remembering a scattered call. The producer is best-effort (it
+        # swallows its own errors), and skips app-owned chats and muted
+        # sessions; a retry arm leaves `died_notice` None, so an auto-recovering
+        # turn is silent.
+        if turn.died_notice:
+            _notify_turn_died(turn, turn.died_notice)
         await _turn_release_handles(turn)
         _held_flush_cancel = await _turn_flush_file_changes(turn)
         await _turn_settle_debts(turn)

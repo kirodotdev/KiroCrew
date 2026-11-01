@@ -17510,6 +17510,7 @@
         "custom_sound_error_file_gone": "此提示音的文件已不在此浏览器中，因此无法恢复。",
         "channel_member": "队友消息",
         "channel_apps": "应用更新",
+        "channel_turn": "聊天错误",
         "push_section": "推送通知",
         "push_toggle_label": "即使 {{productName}} 已关闭也通知我",
         "push_toggle_description": "即使你关闭了 {{productName}}，也会向此设备发送提醒。关闭它后，系统通知就会停止。",

@@ -9989,6 +9989,7 @@
         "app": "app",
         "channel_member": "Mate messages",
         "channel_apps": "App updates",
+        "channel_turn": "Chat errors",
         "mute_notification_sources_or_override_their_prio": "Mute notification sources or override their priority. Muted notifications stay in history but never badge, sound, or banner.",
         "no_channels": "No notification sources yet.",
         "per_category_sounds": "Per-category sounds",
