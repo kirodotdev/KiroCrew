@@ -6,7 +6,7 @@ import reducer, {
   sseSideResult, sseSideQueue, sideReleaseConsumed, sideOptimisticAppend, sideOptimisticRollback,
   sideClose as sideCloseAction, sideResync,
 } from '../store/chatSlice'
-import { renderWithProviders, createTestStore } from './helpers'
+import { renderWithProviders as renderPanel, createTestStore } from './helpers'
 import dashboardReducer from '../store/dashboardSlice'
 
 vi.mock('../api/client', () => ({
@@ -39,10 +39,29 @@ beforeEach(() => {
   vi.mocked(api.sideQueueEdit).mockReset().mockResolvedValue({ ok: true, depth: 1 })
 })
 
+type TestStore = ReturnType<typeof createTestStore>
+
+// A frame the test dispatches reaches the mounted panel from outside React, so the store a test
+// holds sends it inside act(). The panel renders against the store underneath, so its own
+// dispatches stay plain.
+const underneath = new WeakMap<TestStore, TestStore>()
+function holdInAct(raw: TestStore): TestStore {
+  const dispatch = ((action: never) => { act(() => { raw.dispatch(action) }); return action }) as TestStore['dispatch']
+  const held = { ...raw, dispatch }
+  underneath.set(held, raw)
+  return held
+}
+const renderWithProviders: typeof renderPanel = (ui, options = {}) =>
+  renderPanel(ui, { ...options, store: options.store && (underneath.get(options.store) ?? options.store) })
+
+// The panel's last mount-time update: this file's api mock has no `sideTools`, so the footer read
+// fails into this notice. A test with nothing else to await waits for it before it ends.
+const footerSettled = () => screen.findByTestId('side-chat-tools-unknown')
+
 /** A side that is mid-turn: the answer is streaming, so a submit can only
  *  steer or queue. */
 function busyState(extra: Record<string, unknown> = {}) {
-  return createTestStore({
+  return holdInAct(createTestStore({
     dashboard: dashInitial,
     chat: {
       ...initial,
@@ -62,7 +81,7 @@ function busyState(extra: Record<string, unknown> = {}) {
         },
       },
     },
-  })
+  }))
 }
 
 describe('SideChat busy-send: steer vs queue', () => {
@@ -105,8 +124,9 @@ describe('SideChat busy-send: steer vs queue', () => {
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalledWith(SLOT, 'fresh question', undefined))
   })
 
-  it('the composer stays usable while a turn runs', () => {
+  it('the composer stays usable while a turn runs', async () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store: busyState() })
+    await footerSettled()
     expect(screen.getByLabelText('Ask a side question')).not.toBeDisabled()
   })
 
@@ -1051,6 +1071,9 @@ describe('chatSlice steer frame placement', () => {
     await waitFor(() => expect(api.sideQueueCancel).toHaveBeenCalledWith(SLOT, 'q-first'))
 
     releaseSecond?.({ ok: true, queued: true, queue_id: 'q-second', still_queued: true, depth: 1 })
+    await waitFor(() => {
+      expect(store.getState().chat.slotSide[SLOT]?.queue?.map(e => e.id)).toContain('q-second')
+    })
   })
 
   it('the tab holding the raw copy releases it even when ANOTHER tab cancels', () => {
@@ -1175,6 +1198,7 @@ describe('chatSlice steer frame placement', () => {
     // context reset, which is the whole purpose of this control.
     const store = busyState({ streaming: false, pending: false })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await footerSettled()
 
     expect(screen.getByRole('button', { name: /refresh/i })).toBeEnabled()
   })
@@ -1212,6 +1236,7 @@ describe('chatSlice steer frame placement', () => {
       pending: false,
     })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await footerSettled()
 
     expect(screen.queryByText(/\[OPTIONS:/)).toBeNull()
     expect(screen.getByRole('button', { name: 'Rebase first' })).toBeInTheDocument()
@@ -1543,6 +1568,7 @@ describe('chatSlice steer frame placement', () => {
       pending: false,
     })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await footerSettled()
 
     expect(screen.queryByText(/\[STEERING/)).toBeNull()
     expect(screen.getByText('Steered')).toBeInTheDocument()
@@ -1569,6 +1595,7 @@ describe('chatSlice steer frame placement', () => {
       pending: false,
     })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await footerSettled()
 
     // The danger treatment is the point: the same text in an assistant row proves nothing.
     expect(screen.getByText('the backend refused')).toHaveClass('text-danger-text')
