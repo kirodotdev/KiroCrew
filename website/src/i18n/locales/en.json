@@ -3466,6 +3466,7 @@
         "engine_requirements": "Downloads a verified copy of the engine — nothing to install. Pinned to {{tag}}.",
         "install_engine": "Install engine",
         "loading": "Loading…",
+        "mode_context_failed": "The selected mode could not be sent to the chat. Choose a mode again to retry.",
         "mode_spec": "Spec mode",
         "mode_spec_hint": "An interview first, then a brief, an outline, and an art direction before any slide.",
         "mode_style": "Style creator",
