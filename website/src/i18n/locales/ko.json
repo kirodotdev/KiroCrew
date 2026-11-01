@@ -10529,6 +10529,7 @@
     "useWebSocket": {
       "response_ready": "응답 준비 완료",
       "waiting_for_input": "입력을 기다리고 있습니다",
+      "turn_failed": "이 턴이 실패했습니다. 이유를 보려면 세션을 여세요.",
       "tool_approval": "도구 승인: {{name}}",
       "approval_waiting": "승인을 기다리고 있습니다: {{name}}",
       "approval_wait_expired": "승인 대기 시간이 만료되어 요청이 거부되었습니다.",

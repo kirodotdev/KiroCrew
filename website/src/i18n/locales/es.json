@@ -10857,6 +10857,7 @@
     "useWebSocket": {
       "response_ready": "Respuesta lista",
       "waiting_for_input": "Esperando tu respuesta",
+      "turn_failed": "Este turno ha fallado. Abre la sesión para ver por qué.",
       "tool_approval": "Aprobación de herramienta: {{name}}",
       "approval_waiting": "Esperando tu aprobación: {{name}}",
       "approval_wait_expired": "La espera de aprobación venció, así que la solicitud se denegó.",
