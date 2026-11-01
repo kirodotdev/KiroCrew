@@ -403,6 +403,40 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(slot.className).toContain('top-full')
   })
 
+  it('the panel opener names itself in an instant tip on hover, not a delayed native title (issue #27335)', async () => {
+    localStorage.setItem('mc-members-panel-open', '0')
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const toggle = await screen.findByTestId('member-panel-toggle')
+    // The chat page's side-panel toggle carries no title: a native title would
+    // pop a second, late copy of the same name beside the instant one.
+    expect(toggle).not.toHaveAttribute('title')
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.mouseEnter(toggle)
+    const tip = await screen.findByRole('tooltip')
+    expect(tip).toHaveTextContent(toggle.getAttribute('aria-label')!)
+    fireEvent.mouseLeave(toggle)
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
+  })
+
+  it('the opener\'s tip does not come back stale after a click docks the panel and the panel closes again', async () => {
+    localStorage.setItem('mc-members-panel-open', '0')
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const toggle = await screen.findByTestId('member-panel-toggle')
+    fireEvent.mouseEnter(toggle)
+    await screen.findByRole('tooltip')
+    // The click docks the panel, and the docked panel hides the opener under
+    // the pointer: no mouseleave ever reaches it.
+    fireEvent.click(toggle)
+    await screen.findByTestId('member-dashboard', undefined, PANE_READY)
+    await waitFor(() => expect(screen.queryByTestId('member-panel-toggle')).toBeNull())
+    // The side-panel chord closes it; the opener returns with no tip up.
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    await screen.findByTestId('member-panel-toggle')
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
   it('the Assistant lands with its docked panel hidden, remembered apart from every other mate', async () => {
     localStorage.removeItem('mc-members-assistant-panel-open')
     const rows = [defaultRow(), assistantRow(), row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })]

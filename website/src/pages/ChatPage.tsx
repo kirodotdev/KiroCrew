@@ -185,6 +185,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     messages, slotRunning, slotLoading, sendingRef, knowledgeFetch, pendingQuestion, history,
   })
   const pendingInput = useAppSelector(s => s.chat.pendingInput)
+  const pendingInputSend = useAppSelector(s => s.chat.pendingInputSend)
   const mainComposerAppend = useAppSelector(s => s.chat.mainComposerAppend)
 
   const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
@@ -302,6 +303,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Text that reaches the composer from outside a keystroke (see launchIntake).
   usePendingInputIntake({
     pendingInput,
+    pendingInputSend,
+    connected,
     activeSlot,
     embedded,
     searchParams,

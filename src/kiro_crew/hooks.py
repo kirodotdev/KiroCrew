@@ -1740,6 +1740,8 @@ class ScriptHook:
 # the retained prefix is always enough to decode and truncate for display, yet
 # small enough that a runaway hook cannot exhaust memory.
 _HOOK_STREAM_CAP_BYTES = 64 * 1024
+# How long a timed-out hook's killed tree may take to close its pipes and exit.
+_HOOK_REAP_SECS = 5.0
 # Marker appended to a decoded stream when its raw bytes exceeded the cap, so
 # truncation is visible rather than silent.
 _HOOK_TRUNCATION_MARKER = "\n…[output truncated]"

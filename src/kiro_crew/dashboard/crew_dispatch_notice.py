@@ -1,10 +1,10 @@
 """The one-per-turn notice a Crew Mode conductor's chat gets when it dispatches.
 
 In Crew Mode the conductor starts a crew member with ``session_create``. A
-member is not a row of the person's session list -- it is listed in the **Crew**
-(Workers) tab of the right-side panel -- so after a folded tool line the person
+member is not a row of the person's session list -- it is listed on the **Board**
+(view ``workers``) of the right-side panel -- so after a folded tool line the person
 has no way to know a member exists or where to look. This writes ONE notice row
-into the conductor's own chat, naming that tab and carrying an "Open Crew tab"
+into the conductor's own chat, naming the Board and carrying an "Open Board"
 button, so the dispatch is visible where it happened.
 
 It is a PRODUCT notice, written by the gateway, not model text: it always
@@ -56,7 +56,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.dashboard.crew_dispatch_notice")
 
 #: The ``meta["kind"]`` wire token the frontend matches to render this row as a
-#: localized card with an "Open Crew tab" button
+#: localized card with an "Open Board" button
 #: (``website/src/pages/chat/CrewDispatchNoticeCard.tsx``). A WIRE VALUE, not
 #: copy -- never translate it, and keep it byte-identical to the frontend twin
 #: (pinned by ``test/test_crew_dispatch_notice_parity.py``). Deliberately NOT a
@@ -70,7 +70,7 @@ CREW_DISPATCH_NOTICE_KIND = "crew_dispatch_notice"
 #: kind, so this wording and the catalog wording may differ without either side
 #: falling back to raw English. Kept free of internal vocabulary.
 CREW_DISPATCH_NOTICE_TEXT = (
-    "Crew members were started — they're listed in the Crew tab of the side "
+    "Crew members were started — they're listed on the Board in the side "
     "panel, not the session list."
 )
 

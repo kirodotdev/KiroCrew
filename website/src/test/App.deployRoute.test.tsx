@@ -10,6 +10,7 @@ import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
 import App from '../App'
 import { ThemeProvider } from '../hooks/useTheme'
+import { namedCeiling } from './namedCeiling'
 
 // Mock pages to isolate routing
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -105,11 +106,13 @@ describe('F5: /deploy route (artifact slug "deploy" no longer shadowed)', () => 
     })
   })
 
-  it('an artifact with slug "deploy" resolves to ArtifactDetailPage', async () => {
+  it('an artifact with slug "deploy" is redirected to the deploy page', async () => {
     renderAt('/artifacts/deploy')
-    // The redirect takes us to /deploy which renders deploy page.
-    // But /artifacts/:slug where slug != "deploy" should render detail page.
-    // Let's test /artifacts/my-widget goes to detail:
+    // Chain: /artifacts/deploy -> <Navigate> to /deploy -> lazyPage() imports ArtifactDeployPage -> it mounts.
+    await waitFor(() => {
+      expect(screen.getByTestId('artifact-deploy-page')).toBeInTheDocument()
+    }, namedCeiling('DEPLOY_PAGE_AFTER_SLUG_REDIRECT', 5000))
+    // /artifacts/:slug for any other slug renders the detail page (next test).
   })
 
   it('/artifacts/:slug renders ArtifactDetailPage for non-deploy slugs', async () => {

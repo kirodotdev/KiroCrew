@@ -183,6 +183,14 @@ class TestKiroIgnoreLoad:
         assert m.is_ignored("cdk.out", is_dir=True) is True
         assert m.is_ignored("a.snap.md", is_dir=False) is True
 
+    def test_a_utf8_bom_does_not_spoil_the_first_rule(self, tmp_path):
+        # Notepad saves with a BOM; the first pattern must still match.
+        (tmp_path / kiroignore.KIROIGNORE_FILENAME).write_bytes(b"\xef\xbb\xbfsecrets/\n*.log\n")
+        m = kiroignore.load(tmp_path)
+        assert m is not None
+        assert m.is_ignored("secrets", is_dir=True) is True
+        assert m.is_ignored("a.log", is_dir=False) is True
+
     def test_unreadable_file_degrades_to_no_exclusions(self, tmp_path, monkeypatch):
         (tmp_path / kiroignore.KIROIGNORE_FILENAME).write_text("cdk.out/\n")
 

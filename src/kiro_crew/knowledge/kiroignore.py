@@ -235,8 +235,9 @@ def load(root: str | os.PathLike[str]) -> KiroIgnore | None:
         raw = _read_rule_file(path, root)
         if raw is None:
             return None
-        # errors="replace" so a stray non-UTF-8 byte costs one pattern, not the file.
-        text = raw.decode("utf-8", errors="replace")
+        # errors="replace" so a stray non-UTF-8 byte costs one pattern, not the
+        # file; utf-8-sig so a BOM (Notepad) does not spoil the first pattern.
+        text = raw.decode("utf-8-sig", errors="replace")
     except Exception:
         logger.debug("Could not read %s in %s", KIROIGNORE_FILENAME, root, exc_info=True)
         return None

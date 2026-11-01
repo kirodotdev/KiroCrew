@@ -1221,7 +1221,7 @@ async def build_frontend_async(
         if push_progress:
             push_progress("warning", msg)
 
-    if not website_dir.is_dir():
+    if not await asyncio.to_thread(website_dir.is_dir):
         _warn("No website/ directory -- skipping frontend build")
         return
     # Resolve to a full path: on Windows npm is ``npm.CMD``, which PATHEXT-aware
@@ -1236,7 +1236,7 @@ async def build_frontend_async(
 
     install_args = (
         ["ci", "--no-audit", "--no-fund"]
-        if (website_dir / "package-lock.json").is_file()
+        if await asyncio.to_thread((website_dir / "package-lock.json").is_file)
         else ["install", "--no-audit", "--no-fund"]
     )
     # `npm ci` deletes node_modules BEFORE it installs. This is the UNATTENDED

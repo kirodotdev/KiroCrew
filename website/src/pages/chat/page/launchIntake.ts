@@ -30,6 +30,9 @@ import { uniqueNotificationTs } from './notificationTs'
 
 interface PendingInputIntakeOptions {
   pendingInput: string | null
+  pendingInputSend: boolean
+  /** The page's socket state, for `pendingInputSend` (see below). */
+  connected: boolean
   activeSlot: string | null
   embedded: boolean | undefined
   searchParams: URLSearchParams
@@ -47,6 +50,8 @@ interface PendingInputIntakeOptions {
 /** The Redux `pendingInput` hand-off and the `?prefill=` fallback URL. */
 export function usePendingInputIntake({
   pendingInput,
+  pendingInputSend,
+  connected,
   activeSlot,
   embedded,
   searchParams,
@@ -64,7 +69,11 @@ export function usePendingInputIntake({
   useEffect(() => {
     if (pendingInput) {
       dispatch(setPendingInput(null))
-      const shouldAutoSend = embedded ? false : searchParams.get('autoSend') === '1'
+      // A staged send is honoured only while connected, when it goes out at
+      // once. Disconnected, it is seeded instead: a send left waiting for the
+      // socket could fire after the person has moved on, and a second one would
+      // replace it.
+      const shouldAutoSend = embedded ? false : (pendingInputSend && connected) || searchParams.get('autoSend') === '1'
       const wantNew = embedded ? false : searchParams.get('newSession') === '1'
       if (!embedded && (searchParams.get('prefill') || shouldAutoSend)) setSearchParams({}, { replace: true })
       if (shouldAutoSend) {
@@ -91,7 +100,7 @@ export function usePendingInputIntake({
         raisePrefillHint()
       }
     }
-  }, [pendingInput, activeSlot, dispatch, searchParams, setSearchParams, saveDraftsDebounced, embedded, raisePrefillHint, setInput,
+  }, [pendingInput, pendingInputSend, connected, activeSlot, dispatch, searchParams, setSearchParams, saveDraftsDebounced, embedded, raisePrefillHint, setInput,
     autoSendRef, newSessionRef, setAutoSendTick, drafts])
 
   // Consume ?prefill= — the no-main-window fallback path for navigation

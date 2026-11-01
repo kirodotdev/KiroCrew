@@ -294,9 +294,25 @@ class HeadingAwareChunker:
         return results[:MAX_CHUNKS_PER_FILE]
 
     def chunk_markdown(self, text: str) -> list[dict]:
-        """Split markdown by headings (##, ###) as natural chunk boundaries."""
+        """Split markdown by headings (##, ###) as natural chunk boundaries.
+
+        A ``#`` line inside a fenced code block is code (a shell comment, a
+        Python comment), not a heading, so it never starts a section. Which
+        offsets are fenced comes from the shared CommonMark fence machine.
+        """
+        # Imported here, as image_refs does: the messaging package __init__
+        # pulls in the whole channel stack.
+        from kiro_crew.messaging.split import iter_fence_spans
+
         heading_re = re.compile(r"^(#{1,6})\s+(.+)", re.MULTILINE)
-        splits = list(heading_re.finditer(text))
+        spans = list(iter_fence_spans(text))
+        splits = []
+        k = 0
+        for m in heading_re.finditer(text):
+            while k < len(spans) and spans[k][1] <= m.start():
+                k += 1
+            if k == len(spans) or m.start() < spans[k][0]:
+                splits.append(m)
 
         if not splits:
             # No headings — fall back to generic chunking

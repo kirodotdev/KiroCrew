@@ -971,7 +971,7 @@
     "pages.settings.notificationsPanel.priority_critical": "Notification priority level in a per-channel select: the alert always interrupts. Adjective describing a priority, not a severity of a bug.",
     "pages.settings.notificationsPanel.priority_default": "Notification priority level in a per-channel select: the normal level. Adjective describing a priority.",
     "pages.settings.notificationsPanel.priority_passive": "Notification priority level in a per-channel select: the alert is only recorded in history, never interrupts and is not counted on the bell. Adjective describing a priority; a word like \"quiet\" is fine.",
-    "components.crewMode.ultra_ms_now": "Right-hand label on a running milestone row in the Ultra Mode Crew tab (Status view): the work is happening at this moment. Not a request to act now.",
+    "components.crewMode.ultra_ms_now": "Right-hand label on a running milestone row on the Ultra Mode Board side-panel tab (Status view): the work is happening at this moment. Not a request to act now.",
     "sharedCrew.invite_restart_needed": "Notice after the first accepted invite when tailnet identity checks need one restart.",
     "sharedCrew.send_race_send_now": "Button in the lost-send notice that sends the kept draft as a new message queued after the one that was accepted first; it does not interrupt or merge with that message. {{name}} is the display name of who sent first.",
     "sharedCrew.invite_key_expires_soon": "Badge: the API key expires within a week.",

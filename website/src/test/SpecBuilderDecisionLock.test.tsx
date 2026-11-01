@@ -5,7 +5,7 @@
 // reads on screen as a brand-new question rather than a re-render of an old one.
 import { describe, it, expect, beforeEach } from 'vitest'
 import React from 'react'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import SpecStatePanel from '../apps/spec-builder/components/SpecStatePanel'
 import { type SpecDetail } from '../apps/spec-builder/api'
@@ -59,7 +59,7 @@ describe('decision cards are one-way', () => {
     // is the LOCK (no options), which holds either way.
     expect(screen.getByText(/sending/)).toBeInTheDocument()
     expect(screen.getByText(/HTTPS/)).toBeInTheDocument()
-    resolveSend?.()
+    await act(async () => { resolveSend?.() })
     expect(sent).toHaveLength(1)
   })
 
@@ -150,7 +150,7 @@ describe('decision cards are one-way', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: STREAMING })).not.toBeInTheDocument())
     // No code: a dropped connection. The write may well have landed, so re-opening the
     // card would invite a second answer for a decision the agent already has.
-    rejectSend?.(new Error('network error'))
+    await act(async () => { rejectSend?.(new Error('network error')) })
 
     await new Promise((r) => setTimeout(r, 0))
     expect(screen.queryByRole('button', { name: STREAMING })).not.toBeInTheDocument()
@@ -169,7 +169,7 @@ describe('decision cards are one-way', () => {
     const view = renderPanel()
 
     fireEvent.click(screen.getByRole('button', { name: HTTPS }))
-    rejectSend?.(new Error('network error'))
+    await act(async () => { rejectSend?.(new Error('network error')) })
     await new Promise((r) => setTimeout(r, 0))
 
     // The write DID commit; the refetch says so. The card stays settled.

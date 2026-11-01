@@ -406,6 +406,13 @@ export interface ChatState {
    *  for ErrorNotice's agent hand-off. Cleared on dismiss or on the next attempt. */
   undeletableHistory: HistoryDeleteRefusal | null
   pendingInput: string | null
+  /** True when `pendingInput` was staged to be SENT (`stagePendingSend`), not
+   *  just seeded. An in-window caller stages the text and then navigates to
+   *  `/chat?autoSend=1`, but the router commits that navigation in a transition,
+   *  so a mounted ChatPage sees the text a render before the query and would
+   *  seed it instead. The flag carries the send with the text. Only app code can
+   *  set it, so a URL alone still only seeds. */
+  pendingInputSend: boolean
   /** Text staged from the Side Chat into the main composer, keyed by the slot
    *  it belongs to. Kept apart from `pendingInput` because it APPENDS to the
    *  live composer rather than replacing it, and keyed by `slot` because a Side
@@ -772,6 +779,7 @@ export const initialState: ChatState = {
   pendingResumes: {},
   undeletableHistory: null,
   pendingInput: null,
+  pendingInputSend: false,
   mainComposerAppend: null,
   agentSwitchNotice: null,
   creatingSlot: false,

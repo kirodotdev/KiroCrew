@@ -35,7 +35,7 @@ export function useCommandBarOverlayEngines({
   /** Accepted-but-unstarted sub-agents per slot key (`chat.subagentQueued`). */
   subagentQueued?: Record<string, number>
   dispatch: AppDispatch
-  navigate: (route: string) => void
+  navigate: (route: string) => boolean | void
 }) {
   // Constructing the sessions engine is just memoized closures — it issues no
   // request until `search()` is called, and only the sessions VIEW calls it. That

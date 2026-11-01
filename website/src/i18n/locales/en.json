@@ -6867,8 +6867,8 @@
         "warning": "Warning"
       },
       "crewDispatchNotice": {
-        "openCrewTab": "Open Crew tab",
-        "text": "Crew members were started — they're listed in the Crew tab of the side panel, not the session list."
+        "openBoard": "Open Board",
+        "text": "Crew members were started — they're listed on the Board in the side panel, not the session list."
       },
       "compactionCard": {
         "after_turn": "Context at {{pct}}, past the {{limit}} auto-compact threshold — the chat will be summarized when this turn ends",

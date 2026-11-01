@@ -166,16 +166,18 @@ describe('ProjectsPage — spec and YAML uploads', () => {
     expect(picker.value).toBe('')
   })
 
-  it('refuses a non-YAML file on the YAML tab', () => {
+  it('refuses a non-YAML file on the YAML tab', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(api.taskRunnerStatus).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: 'From YAML' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['hi'], 'notes.md', { type: 'text/markdown' })] } })
     expect(alertSpy).toHaveBeenCalledWith('Only .yaml/.yml files are accepted here. Use the "From Spec" tab for other formats.')
   })
 
-  it('ignores a picker change that carries no file', () => {
+  it('ignores a picker change that carries no file', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(api.taskRunnerStatus).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
     fireEvent.change(screen.getByLabelText('Upload a file'), { target: { files: [] } })
     expect(alertSpy).not.toHaveBeenCalled()
@@ -183,8 +185,9 @@ describe('ProjectsPage — spec and YAML uploads', () => {
 })
 
 describe('ProjectsPage — refine round trip', () => {
-  it('does not start a refine with an empty prompt', () => {
+  it('does not start a refine with an empty prompt', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(api.taskRunnerStatus).toHaveBeenCalled())
     expect(screen.getByRole('button', { name: 'Refine into Spec' })).toBeDisabled()
     expect(api.refineTaskInput).not.toHaveBeenCalled()
   })

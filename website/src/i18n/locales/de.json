@@ -11904,8 +11904,8 @@
         "warning": "Warnung"
       },
       "crewDispatchNotice": {
-        "openCrewTab": "Crew-Tab öffnen",
-        "text": "Crew-Mitglieder wurden gestartet – sie stehen im Crew-Tab der Seitenleiste, nicht in der Sitzungsliste."
+        "openBoard": "Board öffnen",
+        "text": "Crew-Mitglieder wurden gestartet – sie stehen auf dem Board in der Seitenleiste, nicht in der Sitzungsliste."
       },
       "compactionCard": {
         "after_turn": "Kontext bei {{pct}}, über dem Schwellenwert für automatische Verdichtung von {{limit}} – der Chat wird nach diesem Zug zusammengefasst",

@@ -717,7 +717,7 @@ async def api_session_archive_list(request: web.Request) -> web.Response:
 
     key = request.query.get("key", "").strip()
     adir = _archive_dir()
-    if not adir.exists():
+    if not await asyncio.to_thread(adir.exists):
         return web.json_response({"archives": []})
     prefix = f"{_safe_key(key)}__" if key else ""
 
@@ -754,9 +754,9 @@ async def api_session_archive_read(request: web.Request) -> web.Response:
     name = request.match_info.get("name", "")
     if not name.endswith(".jsonl"):
         return web.json_response({"error": "invalid archive name"}, status=400)
-    adir = _archive_dir().resolve()
+    adir = await asyncio.to_thread(_archive_dir().resolve)
     try:
-        resolved = (adir / name).resolve()
+        resolved = await asyncio.to_thread((adir / name).resolve)
     except (OSError, RuntimeError, ValueError):
         return web.json_response({"error": "invalid archive name"}, status=400)
     # Canonical path check: file must be a direct child of the archive dir.

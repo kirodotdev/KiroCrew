@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { useLocation } from 'react-router-dom'
 import ArtifactDeployPage from '../pages/ArtifactDeployPage'
 import { renderWithProviders } from './helpers'
@@ -200,7 +200,7 @@ describe('ArtifactDeployPage — navigation, disclosure, and copy affordances', 
     // Three now: the two authentication commands plus step 4's optional
     // auto-cleanup install command.
     expect(copyButtons).toHaveLength(3)
-    fireEvent.click(copyButtons[0])
+    await act(async () => { fireEvent.click(copyButtons[0]) })
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining('aws configure sso'))
   })
 
@@ -461,7 +461,7 @@ describe('ArtifactDeployPage — IAM policy loader', () => {
     expect(calls.some((c) => c.url.includes('/iam-policy?tier=fullstack'))).toBe(true)
     expect(screen.getByText(/Fullstack tier: includes Lambda/)).toBeInTheDocument()
     expect(screen.getByText('Create this boundary before the first deploy (name: deploy-app-boundary)')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Copy boundary policy/ }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Copy boundary policy/ })) })
     expect(writeText).toHaveBeenCalledWith('BOUNDARY-POLICY-JSON')
   })
 

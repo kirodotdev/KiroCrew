@@ -18,7 +18,7 @@
  * record must decline until a second explicit click passes `force`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 
 const { dispatch, apiMock, sendTurn, saveInvestigation, getInvestigation } = vi.hoisted(() => ({
   dispatch: vi.fn(),
@@ -75,13 +75,16 @@ const SLOT_KEY = 'slot-closed'
 
 const open = async (status: string, force = false) => {
   const { result } = renderHook(() => useAgentSession())
-  const opened = await result.current.openSession({
-    repoRef: REPO,
-    number: 6014,
-    title: '#6014 · concluded',
-    prompt: 'seed',
-    existing: { slot_key: SLOT_KEY, status } as never,
-    force,
+  let opened: Awaited<ReturnType<typeof result.current.openSession>> | undefined
+  await act(async () => {
+    opened = await result.current.openSession({
+      repoRef: REPO,
+      number: 6014,
+      title: '#6014 · concluded',
+      prompt: 'seed',
+      existing: { slot_key: SLOT_KEY, status } as never,
+      force,
+    })
   })
   return { opened, result }
 }

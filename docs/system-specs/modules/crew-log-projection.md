@@ -463,10 +463,14 @@ its remembered position -- after checking each unit's `_UnitMark` fingerprint an
 proving the newest unit's already-folded prefix intact, which it needs because the store
 can rewrite a committed prefix on its recovery paths. The proof is the unit's CUT COUNT
 (`CrewLog.cuts`, section 7.2), read in a few bytes; hashing that prefix is the fallback
-for a log that states no count. A changed unit list, a unit whose seq went backwards,
-growth in any unit but the newest, a cut count that moved, a prefix that hashes
-differently, or a cold memo each force a full refold, because each would otherwise be a
-wrong answer rather than a slow one.
+for a log that states no count. A unit list that only GAINED units at its end -- a
+session rollover -- is continued too: the held newest unit is read from above what the
+cell folded and each new unit from its first record, in the order a cold fold reads
+them, with the same ordinal bases, so a long-lived slot does not refold its whole
+history on every rollover. Any other change to the unit list, a unit whose seq went
+backwards, growth in any unit but the held newest, a cut count that moved, a prefix that
+hashes differently, or a cold memo each force a full refold, because each would
+otherwise be a wrong answer rather than a slow one.
 
 The radar fold's own rules, applied to the bytes as the writer applies them to a
 request: an entry naming a crew other than the fold's first is left out (every unit
@@ -2052,8 +2056,8 @@ neither fold a savepoint it ever gets to use.
 **At the NEWEST unit**, which is the only unit a continuation lets grow and the one whose
 bytes the witness stands for. The file therefore inherits the `crew-log` fence and is
 removed with the unit, and a slot that gains a unit -- a session reset -- finds no
-savepoint at its new newest unit and folds cold once, which is what the warm cell already
-does for a changed unit list.
+savepoint at its new newest unit. A warm cell in the same process carries over that
+rollover; a new process with no warm cell folds cold once.
 
 **The identity block carries the whole unit vector**, because the state was folded over
 all of it: the slot key, the units in fold order, and every EARLIER unit's whole mark
