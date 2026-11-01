@@ -54,7 +54,6 @@
   "src/test/CfgTabCoverage.test.tsx",
   "src/test/ChannelFolderBackfill.test.tsx",
   "src/test/ChatFooter.test.tsx",
-  "src/test/ChatInput.agentChipDefaultMarker.test.tsx",
   "src/test/ChatInput.approval.test.tsx",
   "src/test/ChatInput.approvalNudge.test.tsx",
   "src/test/ChatInput.busyAndUndo.test.tsx",
