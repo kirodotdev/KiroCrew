@@ -251,7 +251,6 @@
   "src/test/SpecBuilderPage.test.tsx",
   "src/test/SpecBuilderSpecDetailCoverage.test.tsx",
   "src/test/SttSettings.surface.test.tsx",
-  "src/test/SttSettings.transcribe.test.tsx",
   "src/test/SubagentProgressBar.stalledRow.i18n.test.tsx",
   "src/test/SystemPage.test.tsx",
   "src/test/TerminalKeyBar.test.tsx",
