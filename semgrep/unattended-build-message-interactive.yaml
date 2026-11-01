@@ -1,0 +1,44 @@
+rules:
+  # ─── An unattended turn must build its prompt with interactive=False ──
+  # ContextBuilder.build_message defaults `interactive` to True, which adds
+  # the per-turn reminder to end the reply with an [OPTIONS: ...] line and,
+  # on a dashboard key, the ask_question / suggest_followup nudges. Those
+  # render as buttons and cards for a person reading the turn live. A task
+  # step, a decomposition, a workflow worker, a heartbeat task, a cron run, a
+  # webhook agent turn and an auto-improvement crew turn have no such reader,
+  # so a model that follows the reminder spends its last line on choices
+  # nobody can click, and the line lands in the delivered result.
+  #
+  # The rule is scoped by path to the modules that run only unattended turns.
+  # Whether an arbitrary caller is attended is not decidable from the call
+  # site, so the list is the contract: a new unattended caller adds its
+  # module here. Both call shapes are covered, because every caller hands
+  # the bound method to an off-loop runner (run_in_embed_pool, _io) rather
+  # than calling it directly.
+
+  - id: kirocrew.unattended-build-message-interactive
+    patterns:
+      - pattern-either:
+          - pattern: $RUN(..., $CTX.build_message, ...)
+          - pattern: $CTX.build_message(...)
+      - pattern-not: $RUN(..., $CTX.build_message, ..., interactive=False, ...)
+      - pattern-not: $CTX.build_message(..., interactive=False, ...)
+    paths:
+      include:
+        - src/kiro_crew/task_executor.py
+        - src/kiro_crew/task_planner.py
+        - src/kiro_crew/workflow_memory.py
+        - src/kiro_crew/slack/gateway_runtime/heartbeat_turns.py
+        - src/kiro_crew/slack/gateway_runtime/cron_turn.py
+        - src/kiro_crew/dashboard/handlers/hooks.py
+        - src/kiro_crew/apps/builtins/auto_improvement/spine/crew_runner.py
+    message: >
+      This module runs turns that no person reads live, but this build_message
+      call leaves `interactive` at its True default, so the prompt tells the
+      model to end with an [OPTIONS: ...] line nobody can click. Pass
+      interactive=False.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: prompt-contract
