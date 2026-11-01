@@ -406,6 +406,7 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "depth_exceeded": 409,
         "crew_log_incomplete": 409,
         "cache_dirty": 409,
+        "retired_history_full": 409,
         "field_too_long": 400,
         "invalid_action": 400,
         "invalid_status": 400,

@@ -39,7 +39,7 @@ from urllib.parse import quote
 
 from aiohttp import web
 
-from kiro_crew import work_ledger
+from kiro_crew import platform_compat, work_ledger
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard.handlers.work_ledger import (
     _WIDEST_EVENT_TEXT,
@@ -225,6 +225,16 @@ async def open_unbound_item(board: str, item_id: str) -> work_ledger.WorkItem:
         raise err(409, work_ledger.CODE_ITEM_CLOSED, f"item {item.item_id} is {item.state}")
     if item.worker_session_key:
         raise err(409, "already_bound", f"item {item.item_id} is already bound")
+    if item.retired_bindings:
+        record = await asyncio.to_thread(work_ledger.read_remote_state, board, item.item_id)
+        if record is not None and record.binding is not None:
+            # The retire's fresh record has not stored yet (wave 8): fenced.
+            raise err(
+                409,
+                CODE_RETIRE_PENDING,
+                f"item {item.item_id} was retired and its old record is not yet cleared; "
+                "retry after the next work_ledger_read",
+            )
     return item
 
 
@@ -344,6 +354,36 @@ async def _mark_down(
     return record
 
 
+async def _mark_connecting(board: str, item_id: str) -> None:
+    """The crew's tunnel is reconnecting: not down, so no outage is counted."""
+    async with _board_lock(board):
+        record = await asyncio.to_thread(_stored, board, item_id)
+        record.crew_state = "connecting"
+        record.crew_down_since = None
+        record.error = "crew_connecting"
+        record.attempted_at = _now()
+        await asyncio.to_thread(_store, board, item_id, record)
+
+
+async def _reset_if_stale(board: str, item: work_ledger.WorkItem) -> bool:
+    """Replace a record that names another binding than *item*'s. Whether it was stale.
+
+    A stale record is one a retire could not replace (wave 8): until a fresh one
+    stores, nothing is ingested on it and no replacement may bind. Never raises.
+    """
+    async with _board_lock(board):
+        record = await asyncio.to_thread(_stored, board, item.item_id)
+        if record.binding is None or record.binding == work_ledger.binding_id(item):
+            return False
+        await asyncio.to_thread(_store, board, item.item_id, _fresh_record())
+    return True
+
+
+def _fresh_record() -> work_ledger.RemoteState:
+    """The record a new binding starts from: no floor, no outage, no owner."""
+    return work_ledger.RemoteState(report_floor_known=True)
+
+
 async def _mark_error(board: str, item_id: str, error: str) -> None:
     """The crew answered but nothing was ingested: keep the answers, record why."""
     async with _board_lock(board):
@@ -369,6 +409,11 @@ async def ingest_board(state: "DashboardState", board: str) -> None:
         except (work_ledger.WorkLedgerError, OSError):
             return
     open_remote = [item for item in items if _is_remote_open(item)]
+    # Wave 8: a retire whose fresh record did not store leaves the item fenced;
+    # each read tries again (local only, no peer call).
+    for item in items:
+        if item.retired_bindings and not item.worker_session_key and not item.is_terminal:
+            await _reset_if_stale(board, item)
     # Tried longest ago first, never tried first of all: a read cut off by its
     # deadline then leaves a different tail each time, so a slow crew cannot keep
     # a healthy crew's items from ever being reached.
@@ -389,6 +434,9 @@ async def ingest_board(state: "DashboardState", board: str) -> None:
     _PULLING.add(board)
     try:
         await _pull_all(state, board, remote)
+        # Wave 8: retire what has been unreachable too long (RFC §5b). Closing
+        # the retired peer slot is the peer half's (wave 8b), not this read's.
+        await _retire_overdue(state, board, remote, open_remote)
     finally:
         _PULLING.discard(board)
 
@@ -455,7 +503,15 @@ async def _ingest_item(
     routes = _routes()
     crew = str(item.worker_instance_id)
     slot = str(item.worker_session_key)
+    if await _reset_if_stale(board, item):
+        # The record still described a retired binding: nothing is ingested on
+        # it, and this read only replaced it. The next read pulls.
+        return
     crew_state = _crew_state(mgr, crew)
+    if mgr is not None and crew_state == "connecting":
+        # Reconnecting counts as up for the retire clock (wave 8).
+        await _mark_connecting(board, item.item_id)
+        return
     if mgr is None or crew_state != "connected":
         await _mark_down(board, item.item_id, crew_state, "proxy_peer_not_connected")
         return
@@ -496,6 +552,10 @@ async def _ingest_item(
     async with _board_lock(board):
         # Read under the lock, so two pulls never write over each other's record.
         record = await asyncio.to_thread(_stored, board, item.item_id)
+        if record.binding not in (None, work_ledger.binding_id(item)):
+            # Went stale since the guard above: file nothing on it.
+            return
+        record.binding = work_ledger.binding_id(item)
         record.crew_state = "connected"
         record.crew_down_since = None
         for name, value in observed.items():
@@ -509,9 +569,14 @@ async def _ingest_item(
         elif refusal is not None or unit is None:
             record.error = _response_code(refusal) if refusal is not None else "crew_log_off"
         else:
+            floor = _report_floor(record, item)
             record.error = await _ingest_report_locked(
-                state, board, unit, item.item_id, crew, slot, payload
+                state, board, unit, item.item_id, crew, slot, payload, floor
             )
+            peer = payload.get("work_item")
+            peer_stamp = peer.get("last_report_at") if isinstance(peer, dict) else None
+            if record.error is None and isinstance(peer_stamp, str) and _later(peer_stamp, floor):
+                record.report_floor, record.report_floor_known = peer_stamp, True
         record.ingested_at = record.attempted_at = _now()
         await asyncio.to_thread(_store, board, item.item_id, record)
 
@@ -536,7 +601,24 @@ def _later(a: str | None, b: str | None) -> bool:
     return floor is None or moment > floor
 
 
-def _snapshot_report(item: work_ledger.WorkItem, payload: dict[str, Any]) -> dict[str, Any] | None:
+def _report_floor(record: work_ledger.RemoteState, item: work_ledger.WorkItem) -> str | None:
+    """The current binding's report floor: a peer snapshot no newer is not news.
+
+    The floor belongs to the binding (crew + slot), never to the item. A record
+    that holds it answers it. Without one, an item that was never retired falls
+    back to its ``last_report_at`` (a record from before the per-binding floor);
+    a retired item has no floor, since its ``last_report_at`` is a retired
+    worker's stamp from another crew's clock. Only the current pair is ever
+    pulled, so no floor lets a retired worker's report through.
+    """
+    if record.report_floor_known:
+        return record.report_floor
+    return None if item.retired_bindings else item.last_report_at
+
+
+def _snapshot_report(
+    item: work_ledger.WorkItem, payload: dict[str, Any], floor: str | None = None
+) -> dict[str, Any] | None:
     """The peer worker's LATEST report as report fields plus its stamp, or ``None``.
 
     Worker fields are latest-value (RFC §2): the hub files the peer item's current
@@ -549,7 +631,7 @@ def _snapshot_report(item: work_ledger.WorkItem, payload: dict[str, Any]) -> dic
     if not isinstance(peer, dict) or peer.get("status") is None:
         return None
     stamp = peer.get("last_report_at")
-    if not isinstance(stamp, str) or not stamp or _later(item.last_report_at, stamp):
+    if not isinstance(stamp, str) or not stamp or _later(floor, stamp):
         return None
     row: dict[str, Any] = {
         "status": peer.get("status"),
@@ -589,8 +671,11 @@ async def _ingest_report_locked(
     crew: str,
     slot: str,
     payload: dict[str, Any],
+    floor: str | None,
 ) -> str | None:
     """File the peer worker's latest report on *item_id*. HOLD THE BOARD LOCK.
+
+    *floor* is the current binding's newest filed peer stamp (``RemoteState``).
 
     ``None`` or an error code. The report is filed unless the hub item already
     holds exactly those worker fields and that stamp, so a repeat read files
@@ -608,7 +693,7 @@ async def _ingest_report_locked(
     ):
         # The item is not bound to the crew and slot this pull read.
         return None
-    row = _snapshot_report(current, payload)
+    row = _snapshot_report(current, payload, floor)
     if row is None:
         return None
     cleaned = _clean_report(row)
@@ -719,6 +804,176 @@ async def _file_one(
     return None
 
 
+# ── retire and redispatch (wave 8, RFC §5b) ──────────────────────────────
+
+
+#: The retire reason this module writes.
+RETIRE_CREW_UNREACHABLE = "crew_unreachable"
+
+#: The refusal for a bind while a retire's fresh record has not stored yet.
+CODE_RETIRE_PENDING = "crew_retire_pending"
+
+#: The refusal for any verb but close on a retired binding's slot.
+CODE_TARGET_RETIRED = "crew_target_retired"
+
+
+def _retire_minutes() -> float:
+    from kiro_crew.dashboard.remote_dispatch_headroom import remote_dispatch_settings
+
+    return remote_dispatch_settings().retire_minutes
+
+
+#: The clock the retire timer reads: it stands still while the host is suspended
+#: (Windows included), and a hub restart starts it afresh, so neither counts as
+#: outage.
+_monotonic = platform_compat.awake_now
+
+#: ``(board, item id, binding) -> monotonic time`` this process first saw that
+#: binding's crew down, through the last read that still saw it down. In memory
+#: only: a stored ``crew_down_since`` from before this process started is never
+#: trusted, so the clock restarts from the first down seen after start.
+_DOWN_SEEN: dict[tuple[str, str, str], float] = {}
+
+
+def _record_down(record: work_ledger.RemoteState) -> bool:
+    return record.crew_state not in ("connected", "connecting") and bool(record.crew_down_since)
+
+
+async def _retire_overdue(
+    state: "DashboardState",
+    board: str,
+    remote: list[work_ledger.WorkItem],
+    open_remote: list[work_ledger.WorkItem],
+) -> None:
+    """Retire each binding whose crew this process has seen down past the timeout.
+
+    Never raises. The clock (:data:`_DOWN_SEEN`) starts at the first read in this
+    process that sees the crew down, both live and in the record, and stops at any
+    read that sees it ``connected`` or ``connecting``. The item is left open and
+    unbound, its pair moved to ``retired_bindings``, so ingest reads nothing more
+    from that slot: a late report from it is never applied. The redispatch itself
+    is the conductor's ``session_create(work_item=)`` on a turn the owner sent;
+    the read row says ``redispatch_due``.
+    """
+    minutes = await asyncio.to_thread(_retire_minutes)
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        return
+    # A clock is kept while its binding is open anywhere on the board, not only
+    # in this read's slice of *remote*.
+    live_keys = {
+        (board, item.item_id, pair)
+        for item in open_remote
+        if (pair := work_ledger.binding_id(item)) is not None
+    }
+    # A crew that reads up clears every clock it holds, whether or not this read's
+    # slice of *remote* reached the item (in-memory tunnel state, no peer call).
+    up = {
+        str(item.worker_instance_id)
+        for item in open_remote
+        if item.worker_instance_id
+        and _crew_state(mgr, str(item.worker_instance_id)) in ("connected", "connecting")
+    }
+    for key in [k for k in _DOWN_SEEN if k[2].split("/", 1)[0] in up]:
+        _DOWN_SEEN.pop(key, None)
+    for item in remote:
+        pair = work_ledger.binding_id(item)
+        if pair is None:
+            continue
+        key = (board, item.item_id, pair)
+        try:
+            if _crew_state(mgr, str(item.worker_instance_id)) in ("connected", "connecting"):
+                _DOWN_SEEN.pop(key, None)
+                continue
+            record = await asyncio.to_thread(_stored, board, item.item_id)
+            if record.binding not in (None, pair) or not _record_down(record):
+                _DOWN_SEEN.pop(key, None)
+                continue
+            first = _DOWN_SEEN.setdefault(key, _monotonic())
+            if _monotonic() - first >= minutes * 60 and await _record_retire(state, board, item):
+                _DOWN_SEEN.pop(key, None)
+        except Exception:  # noqa: BLE001 - a retire must never fail the read
+            logger.warning("remote retire failed for %s", item.item_id, exc_info=True)
+    for key in [k for k in _DOWN_SEEN if k[0] == board and k not in live_keys]:
+        _DOWN_SEEN.pop(key, None)
+
+
+async def _record_retire(state: "DashboardState", board: str, item: work_ledger.WorkItem) -> bool:
+    """Record one ``retire`` write for *item*'s current binding. Whether it landed."""
+    from kiro_crew.dashboard.handlers.work_ledger import _record_conductor_write
+
+    slot, crew = str(item.worker_session_key), str(item.worker_instance_id)
+    unit, refusal = _acting_unit(state, board, "work_ledger_read.retire", item.item_id)
+    if refusal is not None or unit is None:
+        return False
+    # The record must name this binding BEFORE the retire commits, so a fresh
+    # record that then fails to store leaves it recognisably stale (fenced)
+    # rather than silently carried into the replacement. No stamp, no retire.
+    async with _board_lock(board):
+        record = await asyncio.to_thread(_stored, board, item.item_id)
+        if record.binding is None:
+            record.binding = work_ledger.binding_id(item)
+            if not await asyncio.to_thread(_store, board, item.item_id, record):
+                return False
+    resp = await _record_conductor_write(
+        state,
+        board,
+        unit,
+        "retire",
+        {
+            "action": "retire",
+            "item_id": item.item_id,
+            "worker_session_key": slot,
+            "worker_instance_id": crew,
+            "reason": RETIRE_CREW_UNREACHABLE,
+        },
+        operation="work_ledger_read.retire",
+    )
+    if resp.status != 200:
+        logger.info("remote retire of %s not recorded (%s)", item.item_id, _response_code(resp))
+        return False
+    # The slot leaves the in-memory dispatch record the moment it is retired, so
+    # send / read / stop reach only the current binding, and it stops counting
+    # against its caller's crew-session cap. No peer call: the slot itself stays
+    # open on its crew until wave 8b or the owner closes it.
+    _routes().forget_dispatched_slot(state, crew, slot)
+    # The record described the retired crew; a new binding starts its own, with
+    # no report floor: the replacement's stamps come from another clock. A store
+    # that fails leaves the old record naming the retired pair, which fences the
+    # item (no ingest, no bind) until a later read stores it (_reset_if_stale).
+    async with _board_lock(board):
+        await asyncio.to_thread(_store, board, item.item_id, _fresh_record())
+    return True
+
+
+async def holds_retired_slot(board: str, instance_id: str, slot: str) -> bool | None:
+    """Whether an item on *board* holds *slot* on *instance_id* as a retired binding.
+
+    Such a slot keeps only the ``session_close(crew=)`` right (RFC §5b). ``None``
+    when the board cannot be read (flagged dirty, unreadable); only an explicit
+    ``True`` admits a close, so an unreadable history admits nothing.
+    """
+    async with _board_lock(board):
+        if await _refuse_if_dirty(board, board, "remote_dispatch.fence"):
+            return None
+        try:
+            items = await asyncio.to_thread(work_ledger.list_work_items, board)
+        except (work_ledger.WorkLedgerError, OSError):
+            return None
+    return any(
+        b["state"] == "retired"
+        and b["worker_instance_id"] == instance_id
+        and b["worker_session_key"] == slot
+        for item in items
+        for b in item.retired_bindings
+    )
+
+
+def retired_crews(item: work_ledger.WorkItem) -> set[str]:
+    """The crews *item* was retired from, which placement skips."""
+    return {b["worker_instance_id"] for b in item.retired_bindings}
+
+
 # ── decide forwards ───────────────────────────────────────────────────────
 
 
@@ -819,13 +1074,29 @@ REMOTE_ROW_FIELDS: tuple[str, ...] = (
 )
 
 
+#: The fields a row adds for an item that holds retired bindings (wave 8).
+RETIRED_ROW_FIELDS: tuple[str, ...] = ("redispatch_due", "retired_crews")
+
+
 def remote_row_fields(board: str, item: work_ledger.WorkItem) -> dict[str, Any]:
-    """The extra row fields for a remote *item*; ``{}`` for a local one. BLOCKING."""
+    """The extra row fields for a remote *item*; ``{}`` for a local one. BLOCKING.
+
+    An item that holds retired bindings adds ``redispatch_due`` (open and unbound:
+    the conductor places it again with ``session_create(work_item=)``, which skips
+    ``retired_crews``) whether or not it is bound again.
+    """
+    retired: dict[str, Any] = {}
+    if item.retired_bindings:
+        retired = {
+            "redispatch_due": not item.is_terminal and not item.worker_session_key,
+            "retired_crews": sorted(retired_crews(item)),
+        }
     if not item.worker_instance_id:
-        return {}
+        return retired
     record = work_ledger.read_remote_state(board, item.item_id)
     record = record or work_ledger.RemoteState()
     return {
+        **retired,
         "worker_instance_id": item.worker_instance_id,
         "crew_state": record.crew_state,
         "crew_down_since": record.crew_down_since,
@@ -836,10 +1107,15 @@ def remote_row_fields(board: str, item: work_ledger.WorkItem) -> dict[str, Any]:
 
 __all__ = [
     "CODE_PEER_LACKS_WORK_ITEMS",
+    "CODE_RETIRE_PENDING",
+    "CODE_TARGET_RETIRED",
     "REMOTE_ROW_FIELDS",
+    "RETIRED_ROW_FIELDS",
     "create_bound",
     "forward_decide",
     "holds_peer_slot",
+    "holds_retired_slot",
     "ingest_board",
     "remote_row_fields",
+    "retired_crews",
 ]

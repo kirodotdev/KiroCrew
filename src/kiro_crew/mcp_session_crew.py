@@ -100,6 +100,14 @@ def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
             f" The hub picked this crew by headroom; pass crew=`{resp.get('crew')}` "
             "(its id) on every follow-up call."
         )
+    if "previous_branch" in resp:
+        # Wave 8: a redispatch of a retired item. Two workers never share a branch.
+        last = resp.get("previous_branch")
+        start = f"start from `{last}` and " if last else ""
+        note += (
+            f" This item was retired from another crew: seed the worker to {start}"
+            "push a NEW branch name."
+        )
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}`{title} {_on(resp)}{agent}. It is empty "
         f"and waiting in that crew's sidebar group.{note} Pass crew and this key as "

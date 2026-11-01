@@ -39,6 +39,7 @@ from kiro_crew.work_ledger_records import (
     WORKER_STATUSES,
     WorkItem,
     WorkLedgerError,
+    _now_iso,
     logger,
 )
 from kiro_crew.work_ledger_rules import (
@@ -60,16 +61,22 @@ from kiro_crew.work_ledger_store import (
     item_lock,
     read_work_item,
 )
-from kiro_crew.work_vocab import WORK_REASON_STATUSES
+from kiro_crew.work_vocab import (
+    MAX_RETIRED_BINDINGS,
+    WORK_MAX_INSTANCE_ID_CHARS,
+    WORK_MAX_PEER_SLOT_CHARS,
+    WORK_REASON_STATUSES,
+    coerce_retired_bindings,
+)
 
 #: The root directory of the remote state records; one of the store's reserved dirs.
 REMOTE_DIR = _REMOTE_DIR
 
 #: Longest crew id kept, the cap the instance registry puts on an id.
-MAX_INSTANCE_ID_CHARS = 128
+MAX_INSTANCE_ID_CHARS = WORK_MAX_INSTANCE_ID_CHARS
 
 #: Longest peer slot key kept, the cap ``bind`` puts on a worker key.
-MAX_PEER_SLOT_CHARS = 512
+MAX_PEER_SLOT_CHARS = WORK_MAX_PEER_SLOT_CHARS
 
 #: The crew connection states a record may hold (``TunnelState`` values) plus
 #: ``unknown`` for a crew the registry does not name.
@@ -108,6 +115,17 @@ class RemoteState:
     attempted_at: str | None = None
     #: Why the last pull did not ingest, a stable code, or ``None``.
     error: str | None = None
+    #: The CURRENT binding's newest filed peer stamp (wave 8): a peer snapshot no
+    #: newer is not news. Each crew stamps with its own clock, so a retired
+    #: worker's stamp must not gate its replacement. ``report_floor_known`` False
+    #: (a record from before wave 8) falls back to the item's ``last_report_at``.
+    report_floor: str | None = None
+    report_floor_known: bool = False
+    #: Which binding this record describes, ``"<crew>/<slot>"`` (wave 8), or
+    #: ``None`` for a fresh record or one from before wave 8. A record naming
+    #: another pair than the item's is stale: nothing is ingested on it and no
+    #: replacement may bind until a fresh one is stored.
+    binding: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +137,9 @@ class RemoteState:
             "ingested_at": self.ingested_at,
             "attempted_at": self.attempted_at,
             "error": self.error,
+            "report_floor": self.report_floor,
+            "report_floor_known": self.report_floor_known,
+            "binding": self.binding,
         }
 
     @classmethod
@@ -144,7 +165,23 @@ class RemoteState:
             ingested_at=_text("ingested_at"),
             attempted_at=_text("attempted_at"),
             error=_text("error"),
+            report_floor=_text("report_floor"),
+            report_floor_known=_flag("report_floor_known"),
+            binding=_binding(raw.get("binding")),
         )
+
+
+def _binding(value: Any) -> str | None:
+    """A stored binding identity, at the pair's own caps, or ``None``."""
+    cap = MAX_INSTANCE_ID_CHARS + 1 + MAX_PEER_SLOT_CHARS
+    return value if isinstance(value, str) and 0 < len(value) <= cap else None
+
+
+def binding_id(item: WorkItem) -> str | None:
+    """*item*'s current remote pair as a :attr:`RemoteState.binding`, or ``None``."""
+    if not item.worker_instance_id or not item.worker_session_key:
+        return None
+    return f"{item.worker_instance_id}/{item.worker_session_key}"
 
 
 def read_remote_state(board: str, item_id: str) -> RemoteState | None:
@@ -287,6 +324,86 @@ def apply_remote_bind(
         item.worker_instance_id = crew
         event = _commit_item_locked(slot_key, item, "bind", f"{slot} on crew {crew}")
     return {"conductor": None, "item": item, "event": event}
+
+
+#: The refusal for a retire while every kept binding still waits to be closed.
+CODE_RETIRED_HISTORY_FULL = "retired_history_full"
+
+#: Why a binding was retired (rfc §5b).
+RETIRE_REASONS: frozenset[str] = frozenset({"crew_unreachable"})
+
+
+def apply_remote_retire(
+    slot_key: str,
+    item_id: str,
+    *,
+    worker_session_key: Any,
+    worker_instance_id: Any,
+    reason: Any,
+) -> dict[str, Any]:
+    """Retire an item's current remote binding. Conductor-owned, event kind ``retire``.
+
+    Reached only from the hub's own ingest. Needs the item open and still bound to
+    exactly this pair; moves the pair into ``retired_bindings`` and leaves the item
+    unbound, so the next ingest reads nothing from that slot and a placement may
+    bind it again. Marking an entry ``destroyed`` once its slot is closed belongs to
+    the peer half (wave 8b).
+    """
+    checked_id = _require_item_id(item_id)
+    slot = _require_peer_text(worker_session_key, MAX_PEER_SLOT_CHARS, "worker_session_key")
+    crew = _require_peer_text(worker_instance_id, MAX_INSTANCE_ID_CHARS, "worker_instance_id")
+    checked_reason = _require_choice(reason, RETIRE_REASONS, "reason", CODE_INVALID_VALUE)
+    with item_lock(slot_key, checked_id, create=False):
+        item = read_work_item(slot_key, checked_id)
+        if item is None:
+            raise WorkLedgerError(
+                f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
+            )
+        if item.is_terminal:
+            raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
+        if item.worker_session_key != slot or item.worker_instance_id != crew:
+            raise WorkLedgerError(
+                f"item {checked_id!r} is not bound to that crew session",
+                code=CODE_INVALID_VALUE,
+            )
+        history = [dict(b) for b in item.retired_bindings]
+        history.append(
+            {
+                "worker_session_key": slot,
+                "worker_instance_id": crew,
+                "branch": item.artifacts.get("branch") or None,
+                "state": "retired",
+                "reason": checked_reason,
+                "retired_at": _now_iso(),
+                "destroyed_at": None,
+            }
+        )
+        item.retired_bindings = _trim_history(history)
+        item.worker_session_key = None
+        item.worker_instance_id = None
+        event = _commit_item_locked(
+            slot_key, item, "retire", f"retired the binding on crew {crew}: {checked_reason}"
+        )
+    return {"conductor": None, "item": item, "event": event}
+
+
+def _trim_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*history* within :data:`MAX_RETIRED_BINDINGS`, oldest destroyed entry first out.
+
+    A ``retired`` entry is never dropped: it is the only record that admits a
+    ``close`` of its slot. A history of live entries only is refused
+    ``retired_history_full``, so the binding stays current; an entry becomes
+    ``destroyed`` (droppable) only once wave 8b closes its slot.
+    """
+    while len(history) > MAX_RETIRED_BINDINGS:
+        gone = next((b for b in history if b["state"] == "destroyed"), None)
+        if gone is None:
+            raise WorkLedgerError(
+                f"{MAX_RETIRED_BINDINGS} retired sessions still wait to be closed",
+                code=CODE_RETIRED_HISTORY_FULL,
+            )
+        history.remove(gone)
+    return coerce_retired_bindings(history)
 
 
 def apply_remote_report(

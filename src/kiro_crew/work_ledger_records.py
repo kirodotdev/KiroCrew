@@ -19,10 +19,12 @@ from typing import Any
 from kiro_crew.work_vocab import (
     WORK_BLOCKED_REASONS,
     WORK_ITEM_STATES,
+    WORK_MAX_ARTIFACT_VALUE_CHARS,
     WORK_MAX_DEPTH_DEFAULT,
     WORK_STORED_ITEM_LIMIT,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
+    coerce_retired_bindings,
 )
 
 # Named for the module callers import, so every record the store's owners log carries
@@ -113,7 +115,7 @@ ACCEPTANCE_KINDS: frozenset[str] = frozenset(ACCEPTANCE_READ_FIELDS)
 #: is the only kind a worker can produce; ``steer`` is the only kind a person's
 #: steer from a Crew Mode side panel produces, and it moves no field.
 EVENT_KINDS: frozenset[str] = frozenset(
-    {"create", "bind", "report", "decision", "verdict", "close", "steer"}
+    {"create", "bind", "report", "decision", "verdict", "close", "steer", "retire"}
 )
 
 #: The conductor's disjoint operations. One action per call, because the field sets
@@ -194,7 +196,7 @@ MAX_EVENT_TEXT_CHARS = 500
 
 MAX_ARTIFACT_KEYS = 16
 MAX_ARTIFACT_KEY_CHARS = 64
-MAX_ARTIFACT_VALUE_CHARS = 512
+MAX_ARTIFACT_VALUE_CHARS = WORK_MAX_ARTIFACT_VALUE_CHARS
 
 MIN_PR = 1
 MAX_PR = 1_000_000_000
@@ -446,6 +448,12 @@ class WorkItem:
     #: ``None``. Serialized only when set, so a board with no remote item is stored
     #: and read exactly as before the field existed.
     worker_instance_id: str | None = None
+    #: Remote bindings the hub retired (rfc-conductor-remote-dispatch §5b), oldest
+    #: first: each ``{worker_session_key, worker_instance_id, branch, state, reason,
+    #: retired_at, destroyed_at}``, ``state`` ``retired`` or ``destroyed``. The
+    #: current binding is the pair above, never listed here. Serialized only when
+    #: non-empty, so an item that was never retired is stored exactly as before.
+    retired_bindings: list[dict[str, Any]] = field(default_factory=list)
     round: int = 0
     fails: int = 0
     status: str | None = None
@@ -480,6 +488,8 @@ class WorkItem:
         out = self._base_dict()
         if self.worker_instance_id:
             out["worker_instance_id"] = self.worker_instance_id
+        if self.retired_bindings:
+            out["retired_bindings"] = [dict(b) for b in self.retired_bindings]
         return out
 
     def _base_dict(self) -> dict[str, Any]:
@@ -531,6 +541,7 @@ class WorkItem:
             decision=_as_str(raw.get("decision")),
             worker_session_key=_as_opt_str(raw.get("worker_session_key")),
             worker_instance_id=_as_opt_str(raw.get("worker_instance_id")) or None,
+            retired_bindings=coerce_retired_bindings(raw.get("retired_bindings")),
             round=_as_int(raw.get("round"), 0),
             fails=_as_int(raw.get("fails"), 0),
             status=status if status in WORKER_STATUSES else None,

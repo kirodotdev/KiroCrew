@@ -505,6 +505,12 @@ def _forget_dispatch(state: "DashboardState", caller: str, instance_id: str, slo
             _record(state).pop(caller, None)
 
 
+def forget_dispatched_slot(state: "DashboardState", instance_id: str, slot: str) -> None:
+    """Drop *slot* on *instance_id* from every caller's record: it is closed (wave 8)."""
+    for caller in list(_record(state)):
+        _forget_dispatch(state, caller, instance_id, slot)
+
+
 def dispatched_by(state: "DashboardState", caller: str, instance_id: str, slot: str) -> bool:
     """Whether *caller* created peer *slot* on *instance_id* through ``crew=``."""
     return (instance_id, slot) in _record(state).get(caller, set())
@@ -527,13 +533,24 @@ def _fenced_target(state: "DashboardState", caller: str, instance_id: str, targe
 
 
 async def _fenced_target_or_item(
-    state: "DashboardState", caller: str, board: str, instance_id: str, target: object
+    state: "DashboardState",
+    caller: str,
+    board: str,
+    instance_id: str,
+    target: object,
+    verb: str = "",
 ) -> str:
     """:func:`_fenced_target`, or a slot an open item on *board* is bound to on that crew.
 
     The item pair (``worker_session_key`` + ``worker_instance_id``) survives a hub
-    restart, which the in-memory record does not (wave 4).
+    restart, which the in-memory record does not (wave 4). A retired binding's slot
+    (wave 8) is dropped from the in-memory record when it is retired, so ``send``,
+    ``read`` and ``stop`` reach only the current binding and need no read of the
+    history; only ``close`` may name a retired slot, and only when the history can
+    be read and holds it.
     """
+    from kiro_crew.dashboard.handlers import remote_ingest
+
     try:
         return _fenced_target(state, caller, instance_id, target)
     except CrewCallError as exc:
@@ -542,10 +559,20 @@ async def _fenced_target_or_item(
         slot = target.strip()
         if slot.startswith("dashboard:"):
             slot = slot[len("dashboard:") :]
-        from kiro_crew.dashboard.handlers import remote_ingest
-
-        if _slot_ok(slot) and await remote_ingest.holds_peer_slot(board, instance_id, slot):
+        if not _slot_ok(slot):
+            raise
+        if await remote_ingest.holds_peer_slot(board, instance_id, slot):
             return slot
+        retired = await remote_ingest.holds_retired_slot(board, instance_id, slot)
+        if retired is True and verb == "close":
+            return slot
+        if retired is True:
+            # Refused either way; the code only says why.
+            raise CrewCallError(
+                403,
+                remote_ingest.CODE_TARGET_RETIRED,
+                "that crew session's binding was retired; it can only be closed",
+            ) from None
         raise
 
 
@@ -818,7 +845,7 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
         board = session_ledger.ledger_key(declared)
         if verb != "create":
             slot = await _fenced_target_or_item(
-                state, caller, board, instance_id, body.get("target")
+                state, caller, board, instance_id, body.get("target"), verb
             )
         await check_version(mgr, instance_id)
         if verb == "create" and body.get("work_item") is not None:

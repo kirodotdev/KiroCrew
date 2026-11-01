@@ -608,6 +608,17 @@ TYPES: tuple[EntryType, ...] = (
                     "beside worker_session_key (then the peer's slot key)."
                 ),
             ),
+            Field(
+                "retired_bindings",
+                JSON_ARRAY,
+                item_type=JSON_OBJECT,
+                note=(
+                    "The remote bindings the hub retired, oldest first, set by retire. "
+                    "Each holds the pair, its branch, state (retired or destroyed), "
+                    "reason and stamps; retire logs the pair as empty when it left the "
+                    "item unbound."
+                ),
+            ),
             Field("fails", JSON_INT, note="The item's failed-verdict count, when it moved."),
             Field(
                 "status",

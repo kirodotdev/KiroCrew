@@ -1502,6 +1502,7 @@ the routes still read that cache.
 | `decision` | string | optional | The conductor's decision text, set by `decide`. | |
 | `worker_session_key` | string | optional | The worker slot bound to the item, set by `bind`. | |
 | `worker_instance_id` | string | optional | The remote crew the bound worker runs on, set by a remote `bind` beside `worker_session_key` (then the peer's slot key). | |
+| `retired_bindings` | array of object | optional | The remote bindings the hub retired, oldest first, set by `retire`. Each holds the pair, its branch, state (retired or destroyed), reason and stamps; `retire` logs the pair as empty when it left the item unbound. | |
 | `fails` | int | optional | The item's failed-verdict count, when it moved. | |
 | `status` | string | optional | The worker's status, set by `report`. | `progress`, `done`, `blocked`, `question`, `reply` (closed) |
 | `summary` | string | optional | The worker's summary, set by `report`. | |

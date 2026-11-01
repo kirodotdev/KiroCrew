@@ -127,14 +127,23 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             board=key,
             remote_live=remote_live.get(item.item_id),
         )
-        if item.worker_instance_id:
+        if item.worker_instance_id or item.retired_bindings:
             row.update(await asyncio.to_thread(_remote_row_fields, key, item))
         if compact:
             compact_row = {name: row[name] for name in _COMPACT_ROW_FIELDS}
-            if item.worker_instance_id:
-                from kiro_crew.dashboard.handlers.remote_ingest import REMOTE_ROW_FIELDS
+            if item.worker_instance_id or item.retired_bindings:
+                from kiro_crew.dashboard.handlers.remote_ingest import (
+                    REMOTE_ROW_FIELDS,
+                    RETIRED_ROW_FIELDS,
+                )
 
-                compact_row.update({name: row[name] for name in REMOTE_ROW_FIELDS})
+                compact_row.update(
+                    {
+                        name: row[name]
+                        for name in REMOTE_ROW_FIELDS + RETIRED_ROW_FIELDS
+                        if name in row
+                    }
+                )
             rows.append(compact_row)
             continue
         events = event_tails[item.item_id]

@@ -5613,7 +5613,8 @@
         "max_depth": 2,
         "remote_dispatch": false,
         "remote_dispatch_memory_gb": 5.0,
-        "remote_dispatch_disk_gb": 5.0
+        "remote_dispatch_disk_gb": 5.0,
+        "remote_dispatch_retire_minutes": 30.0
       }
     },
     {
@@ -5671,6 +5672,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 5.0
+    },
+    {
+      "path": "work_ledger.remote_dispatch_retire_minutes",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote dispatch retire timeout (minutes)",
+      "help": "How long a crew a work item is bound to may stay unreachable before the conductor's next ledger read retires that binding and leaves the item unbound for redispatch on another crew. Used only with remote_dispatch on; a value that is not a positive number uses the default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 30.0
     },
     {
       "path": "power",

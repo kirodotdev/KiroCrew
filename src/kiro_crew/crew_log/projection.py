@@ -840,4 +840,5 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         WorkBoardForgotten,
         WorkBoardItem,
         WorkBoardView,
+        coerce_retired_bindings,
     )
