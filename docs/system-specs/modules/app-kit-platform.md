@@ -1573,6 +1573,46 @@ advance the generation through the public `start_app_backend` or
 `stop_app_backend` entry points, which take `_health_reconcile_lock` and `_lock`
 and call `_advance_lifecycle_locked`, never by mutating `_processes` directly.
 
+A gateway-spawned backend is also bound to the proxy-secret generation injected
+at spawn. `AppProcess.proxy_secret_digest` stores only the SHA-256 digest. The
+proxy reads the current secret from disk off-loop and acquires a target only when
+the live tracked child carries the matching digest. An adopted external backend
+uses its separate tracked-adoption contract: its current listener PIDs and start
+times must still match the identities captured at adoption. An absent or stale
+record is unavailable and never authorizes routing to a fixed manifest port.
+
+Target selection returns a forwarding lease. Acquisition and retirement share
+the process-table lock; teardown marks the record retiring, refuses new leases,
+and keeps the port reserved until requests already transmitting a signed body
+release their leases. The lease ends once aiohttp establishes the upstream
+response, because the signed body has reached that connected process and a later
+port reuse cannot retarget the connection. The hook reconciler compares each
+tracked spawned child with the current on-disk secret and performs the existing
+shutdown/startup hook sequence around a permitted replacement. It leaves adopted
+records under their external supervisor and re-runs activation admission before
+spawning replacement code.
+
+The reconciler converges every managed (`backend.entryPoint`) app toward one
+state, so it both starts and stops backends:
+
+- An app that is disabled, gone, or no longer declares an `entryPoint` has its
+  tracked backend stopped on the next tick. This includes a backend a fresh
+  dashboard install started while leaving the app disabled.
+- An enabled managed app with no tracked process is spawned, because no record
+  never matches the current secret. A spawn that fails is retried on the
+  reconciler's private backoff (`BACKEND_RETRY_SECS`, 30 s).
+- After the stale child is stopped, only a definite `False` from
+  `app_enabled_state` ends the replacement. An unknown read (`None`, such as a
+  CLI write in flight) records the backoff, so the next tick still spawns the new
+  generation instead of leaving an enabled app with no process.
+
+Writers: `apps/backend.py::_start_app_backend_body`,
+`apps/backend_runtime/tracking.py::AppProcess`,
+`apps/backend_runtime/ports.py` (target acquisition and release),
+`apps/backend_runtime/termination.py::stop_app_backend`,
+`apps/routes_proxy.py::handle_app_api_proxy`, and
+`apps/hook_reconcile.py::_reconcile_managed_backend`.
+
 ## 8. An app's EventBus only exists with a real broadcast function
 
 `build_app_context` returns `events=None` when `broadcast_fn` is None, and
@@ -1794,7 +1834,7 @@ schedules a debounced flush — without it the handler answers 200 while the dro
 still only in memory, and a restart inside that window brings the stale sid back with
 the app already gone. Both flushes are REPORTED on failure, never raised: the files
 are gone by then, so an ENOSPC there must not skip the teardown that follows it —
-`invalidate_app_secret_cache`, `_unregister_notification_channels`, `forget_app_hooks`
+`_unregister_notification_channels`, `forget_app_hooks`
 — and a stale slot-close hook makes the removed app's leftover tabs undismissable. The
 CLI path says so as `SessionPointerCleanup(failed=True)`, the route as a `uninstall_log`
 line naming the pointer that did not persist; neither reports the sweep as clean.
@@ -4874,7 +4914,7 @@ records which module owns which part, so a change lands in its owner.
 |---|---|
 | `routes.py` | The facade: the only import path and patch surface, installing `kiro_crew._facade_mirror` over the owners below, and the route table (`register_app_routes`) |
 | `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs` and `_unregister_notification_channels` |
-| `routes_proxy.py` | The reverse proxy from an app's dashboard UI to its own backend (`handle_app_api_proxy`): `_resolve_app_backend_url`, the per-app secret cache it signs with (`_get_app_secret`, `invalidate_app_secret_cache`), the principal claim (`_proxy_principal`), the headers it strips and the event-stream relay |
+| `routes_proxy.py` | The reverse proxy from an app's dashboard UI to its own backend (`handle_app_api_proxy`): `_resolve_app_backend_url`, the per-request secret read it signs with (`_get_app_secret`), the tracked-target lease for gateway-managed apps, the principal claim (`_proxy_principal`), the headers it strips and the event-stream relay |
 | `routes_static.py` | An installed app's UI bundle (`handle_app_ui_file`, `_open_ui_file` and the stream bounds), the content types the UI and art routes answer with, and `handle_app_dev_mode` |
 | `routes_art.py` | The installed-art route (`handle_app_art_file`) over an app's manifest-declared art (`_declared_art_paths`, `_read_declared_art`), and the git blob proxy (`handle_blob_proxy`, `_fetch_git_blob`) with the repository and ref validators (`_is_safe_repo_identifier`, `_SAFE_REF_RE`), the fetch timeout and concurrency bound, and the blob-cache touch. Both art paths screen on one extension set |
 | `routes_listing.py` | `handle_list_apps`, `handle_get_app` and `handle_get_manifest` with the trust repository each app is stamped with, `handle_app_config`, and `handle_publish_providers` over `collect_publish_providers` |
@@ -4894,7 +4934,7 @@ Every patch seam stays on the facade. It installs `kiro_crew._facade_mirror`, so
 to `routes.<name>` reaches every owner that binds the name, and a read is served by the
 defining owner. Each shared
 table stays one object in one owner: `_BUILTIN_SERVICE_APPS` in `routes_enable.py`,
-`_app_secret_cache` in `routes_proxy.py`, the UI stream semaphore in `routes_static.py`
+the UI stream semaphore in `routes_static.py`
 and the blob fetch semaphore in `routes_art.py`. Every owner logs as
 `kiro_crew.apps.routes`, the logger name `caplog` assertions key on.
 `test/test_routes_facade.py` pins the owner set, every name the one-module file bound

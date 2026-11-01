@@ -52,14 +52,12 @@ class TestSignedPrincipalProxy:
         )
         import kiro_crew.apps.backend as bmod
         import kiro_crew.apps.bridges as bridges_mod
-        from kiro_crew.apps.routes import _app_secret_cache
 
         kiro_agents = tmp_path / "kiro-agents"
         kiro_agents.mkdir()
         _floor_monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
         bmod._processes.clear()
         bmod._allocated_ports.clear()
-        _app_secret_cache.clear()
         self._app_dir = app_dir
 
     def _write_manifest(self, *, opted_in: bool) -> None:
@@ -73,6 +71,25 @@ class TestSignedPrincipalProxy:
         if opted_in:
             manifest["backend"] = {"entryPoint": "server.py", "signedPrincipal": True}
         (self._app_dir / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest))
+
+    def _track_backend(self, monkeypatch: pytest.MonkeyPatch, port: int) -> None:
+        import hashlib
+        from unittest.mock import MagicMock
+
+        import kiro_crew.apps.backend as bmod
+
+        proc = MagicMock()
+        proc.poll.return_value = None
+        record = bmod.AppProcess(
+            app_name="proxy-app",
+            port=port,
+            pid=777,
+            proc=proc,
+            healthy=True,
+            proxy_secret_digest=hashlib.sha256(self._SECRET.encode("utf-8")).digest(),
+        )
+        with bmod._lock:
+            monkeypatch.setitem(bmod._processes, "proxy-app", record)
 
     async def _proxy(
         self,
@@ -117,8 +134,12 @@ class TestSignedPrincipalProxy:
         await site.start()
         port = runner.addresses[0][1]
         monkeypatch.setattr(
-            routes, "_resolve_app_backend_url", lambda _name: f"http://127.0.0.1:{port}"
+            routes, "_resolve_app_backend_url", lambda _name, m=None: f"http://127.0.0.1:{port}"
         )
+        if opted_in:
+            # An ``entryPoint`` app is gateway-managed: the proxy reaches it only
+            # through a live tracked child spawned with the current secret.
+            self._track_backend(monkeypatch, port)
 
         if context is not None:
 

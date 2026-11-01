@@ -579,9 +579,6 @@ class TestReverseProxy:
         import kiro_crew.apps.backend as bmod
         bmod._processes.clear()
         bmod._allocated_ports.clear()
-        # Clear secret cache
-        from kiro_crew.apps.routes import _app_secret_cache
-        _app_secret_cache.clear()
         self._home = home
 
     @asynccontextmanager
@@ -677,6 +674,7 @@ class TestReverseProxy:
         request = MagicMock()
         request.match_info = {"name": "proxy-app", "path": "health"}
         request.get = lambda key, default="": default
+        request.can_read_body = False
 
         resp = await handle_app_api_proxy(request)
         assert resp.status != 403, "an enabled app must not be refused by the gate"
@@ -710,10 +708,11 @@ class TestReverseProxy:
         import kiro_crew.apps.routes as rmod
         from kiro_crew.apps.routes import handle_app_api_proxy
 
-        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: "")
+        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name, m=None: "")
         request = MagicMock()
         request.match_info = {"name": "proxy-app", "path": "health"}
         request.get = lambda key, default="": "proxy-app" if key == "app" else default
+        request.can_read_body = False
         resp = await handle_app_api_proxy(request)
         # 502 (no backend), NOT 403 — the cross-app guard let a same-app token through.
         assert resp.status == 502
@@ -737,9 +736,7 @@ class TestReverseProxy:
         }
         (app_dir / "installed.json").write_text(json.dumps(installed))
         import kiro_crew.apps.routes as rmod
-        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: "http://127.0.0.1:19999")
-        # Clear cache so the missing secret is detected
-        rmod._app_secret_cache.clear()
+        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name, m=None: "http://127.0.0.1:19999")
 
         async with self._make_client() as client:
             resp = await client.get("/apps/no-secret-app/api/health")
@@ -753,7 +750,7 @@ class TestReverseProxy:
         import kiro_crew.apps.routes as rmod
 
         # Point to a port that's definitely not listening
-        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: "http://127.0.0.1:19999")
+        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name, m=None: "http://127.0.0.1:19999")
 
         async with self._make_client() as client:
             resp = await client.get("/apps/proxy-app/api/health")
@@ -784,7 +781,7 @@ class TestReverseProxy:
         port = runner.addresses[0][1]
 
         import kiro_crew.apps.routes as rmod
-        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: f"http://127.0.0.1:{port}")
+        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name, m=None: f"http://127.0.0.1:{port}")
 
         try:
             async with self._make_client() as client:
@@ -832,7 +829,7 @@ class TestReverseProxy:
         port = runner.addresses[0][1]
 
         import kiro_crew.apps.routes as rmod
-        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: f"http://127.0.0.1:{port}")
+        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name, m=None: f"http://127.0.0.1:{port}")
 
         try:
             async with self._make_client() as client:
@@ -893,7 +890,7 @@ class TestReverseProxy:
         port = runner.addresses[0][1]
 
         import kiro_crew.apps.routes as rmod
-        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: f"http://127.0.0.1:{port}")
+        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name, m=None: f"http://127.0.0.1:{port}")
 
         try:
             async with self._make_client() as client:
@@ -929,7 +926,7 @@ class TestReverseProxy:
         port = runner.addresses[0][1]
 
         import kiro_crew.apps.routes as rmod
-        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: f"http://127.0.0.1:{port}")
+        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name, m=None: f"http://127.0.0.1:{port}")
 
         body_bytes = b'{"hello": "world", "n": 42}'
         try:

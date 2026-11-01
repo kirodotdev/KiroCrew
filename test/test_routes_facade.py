@@ -56,7 +56,7 @@ _BASE_MODULE_NAMES = frozenset("""
     _PROXY_STRIP_HEADERS _PROXY_TIMEOUT _REGISTRY_TRUST_TIERS _SAFE_HTTPS_URL_RE
     _SAFE_PATH_RE _SAFE_REF_RE _SAFE_REPO_RE _SAFE_SCP_URL_RE _SAFE_SSH_URL_RE _TRUST_INDEX
     _TRUST_OWNER _UI_MAX_BYTES _UI_STREAM_CHUNK _UI_STREAM_SEMAPHORE
-    _UI_STREAM_TIMEOUT_DEFAULT _app_may_run_after_install _app_secret_cache _blob_cache_dir
+    _UI_STREAM_TIMEOUT_DEFAULT _app_may_run_after_install _blob_cache_dir
     _blob_cache_key _check_min_version _check_min_version_str _client_install_manifest
     _context_clone_sandbox_mode _credential_free_source_metadata _declared_art_paths
     _deregister_app_off_loop _deregister_crons_with_retry _derive_registry_name
@@ -88,7 +88,7 @@ _BASE_MODULE_NAMES = frozenset("""
     handle_registries_refresh handle_registry handle_registry_install
     handle_registry_install_stream handle_registry_refresh handle_uninstall_app
     handle_uninstall_preview handle_update_app hashlib importlib install_app
-    install_from_registry invalidate_app_secret_cache is_app_enabled is_dev_mode_cached
+    install_from_registry is_app_enabled is_dev_mode_cached
     is_not_modified is_registry_source is_reparse_point json known_registry_repos
     list_app_processes list_apps list_catalog_apps list_registry load_category_order
     load_sections logger logging mimetypes minimal_env official_catalog on_app_enable

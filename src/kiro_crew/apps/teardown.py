@@ -576,7 +576,7 @@ def forget_app_hooks(app: str) -> None:
     dropped an entry: ``unregister_app_disable_hook``,
     ``unregister_slot_close_hook`` and ``unregister_slot_close_undo_hook`` existed
     with no caller. Uninstall already drops the app's other per-app process state
-    (notification channels, the app-secret cache) and deletes its workspace, so a
+    (notification channels) and deletes its workspace, so a
     surviving hook is a closure over a store whose files are gone.
 
     That is not merely untidy, because :func:`notify_slot_closed` reports failure

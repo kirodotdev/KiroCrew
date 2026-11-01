@@ -21,7 +21,7 @@ from aiohttp import web
 
 import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
-from kiro_crew.apps.routes import invalidate_app_secret_cache, register_app_routes
+from kiro_crew.apps.routes import register_app_routes
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -65,7 +65,6 @@ def _setup_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     monkeypatch.setattr(routes_mod, "sel", lambda: MagicMock())
-    invalidate_app_secret_cache(APP)
     return home
 
 

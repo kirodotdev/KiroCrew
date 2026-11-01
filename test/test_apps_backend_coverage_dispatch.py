@@ -11,6 +11,7 @@ the family shares come from ``apps_backend_coverage_helpers.py``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import subprocess
@@ -755,6 +756,7 @@ class TestSpawnOutcome:
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / ".app_secret").write_text("spawn-secret\n")
         monkeypatch.setattr(bmod, "_survived_spawn", lambda _proc, _port=None: True)
         recorded: list[tuple[str, int, int, str | None]] = []
         monkeypatch.setattr(
@@ -766,6 +768,10 @@ class TestSpawnOutcome:
         ap = bmod._start_app_backend_body("okapp", _manifest("server.py"))
         assert ap is not None
         assert ap.pid == 777
+        # The record binds the exact secret generation injected into this child,
+        # by digest only: the plaintext never lands on the tracked record.
+        assert ap.proxy_secret_digest == hashlib.sha256(b"spawn-secret").digest()
+        assert b"spawn-secret" not in repr(ap).encode("utf-8")
         # Surviving the bind is NOT health: the health loop owns that transition.
         assert ap.healthy is False
         assert bmod._processes["okapp"] is ap

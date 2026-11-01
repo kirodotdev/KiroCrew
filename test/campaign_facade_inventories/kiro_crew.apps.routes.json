@@ -79,7 +79,6 @@
   "handle_update_app",
   "install_app",
   "install_from_registry",
-  "invalidate_app_secret_cache",
   "is_app_enabled",
   "is_dev_mode_cached",
   "is_not_modified",

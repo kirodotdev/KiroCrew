@@ -44,7 +44,6 @@ from kiro_crew.apps.routes_lifecycle import (
     _start_backend_after_install,
     _suspend_app_for_session_approval_reconsent,
 )
-from kiro_crew.apps.routes_proxy import invalidate_app_secret_cache
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
 
@@ -462,7 +461,6 @@ async def handle_install_app(request: web.Request) -> web.Response:
                 error=result.error,
             )
             return web.json_response(result.to_dict(), status=400)
-        invalidate_app_secret_cache(result.name)
 
         # Same gate as the registry paths: a fresh install whose manifest declares
         # ``permissions.sessionApproval`` is consent-pending, so its resources
