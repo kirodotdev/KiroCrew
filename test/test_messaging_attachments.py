@@ -650,7 +650,51 @@ class TestAppendAttachmentContext:
     def test_image_paths_appended(self):
         result = IngestResult(image_paths=["/tmp/a.png", "/tmp/b.jpg"])
         out = append_attachment_context("hello", result)
-        assert out == "hello\n/tmp/a.png\n/tmp/b.jpg"
+        assert out == "\n\n".join(
+            [
+                "hello\n/tmp/a.png\n/tmp/b.jpg",
+                attachments.image_location_note("/tmp/a.png"),
+                attachments.image_location_note("/tmp/b.jpg"),
+            ]
+        )
+
+    def test_each_image_gets_a_note_naming_its_folder(self, tmp_path):
+        # The ACP encoder hides an inlined image's path behind ``[image: <name>]``,
+        # so the note is the only place the agent learns where the file is.
+        image = tmp_path / "shot.png"
+        out = append_attachment_context("look", IngestResult(image_paths=[str(image)]))
+        assert (
+            f"[Image shot.png is saved in the folder {tmp_path}{os.sep} until this turn ends; "
+            "join the two to open the original file]"
+        ) in out
+
+    def test_the_note_survives_the_prompt_encoder(self, tmp_path):
+        # The note names the folder and the file apart, so the encoder that turns
+        # the bare path line into an image block leaves the note readable.
+        import io
+
+        from kiro_crew.acp.prompt_blocks import build_prompt_blocks
+
+        pil = pytest.importorskip("PIL.Image")
+        buf = io.BytesIO()
+        pil.new("RGB", (2, 2), (127, 127, 127)).save(buf, format="PNG")
+        image = tmp_path / "shot.png"
+        image.write_bytes(buf.getvalue())
+        out = append_attachment_context("look", IngestResult(image_paths=[str(image)]))
+        blocks = build_prompt_blocks(out)
+        assert [b["type"] for b in blocks].count("image") == 1
+        texts = "".join(b.get("text", "") for b in blocks)
+        assert f"saved in the folder {tmp_path}{os.sep} " in texts
+        assert str(image) not in texts
+
+    def test_files_get_no_image_note(self):
+        out = append_attachment_context("msg", IngestResult(file_paths=["/tmp/a.zip"]))
+        assert "is saved in the folder" not in out
+
+    def test_slack_uses_the_same_note(self):
+        from kiro_crew.slack import files as slack_files
+
+        assert slack_files.image_location_note is attachments.image_location_note
 
     def test_file_paths_appended(self):
         result = IngestResult(file_paths=["/tmp/archive.zip", "/tmp/clip.mp4"])
@@ -681,7 +725,7 @@ class TestAppendAttachmentContext:
     def test_empty_text_with_images(self):
         result = IngestResult(image_paths=["/tmp/x.png"])
         out = append_attachment_context("", result)
-        assert out == "/tmp/x.png"
+        assert out == f"/tmp/x.png\n\n{attachments.image_location_note('/tmp/x.png')}"
 
     def test_empty_result_returns_text_unchanged(self):
         result = IngestResult()
