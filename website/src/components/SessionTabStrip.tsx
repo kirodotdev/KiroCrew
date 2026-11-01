@@ -506,7 +506,8 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
           looks for a scrollable ANCESTOR of the Reorder.Group, so a group
           that scrolls itself never scrolls while a tab is held at its edge,
           and a tab could not be dragged past the visible ones. */}
-      <div ref={attachScroller} data-testid="session-tab-scroller" className="overflow-x-auto min-w-0" style={{ scrollbarWidth: 'none' }}>
+      {/* scroll-px-6: a tab revealed with scrollIntoView stops clear of the w-6 edge fades. */}
+      <div ref={attachScroller} data-testid="session-tab-scroller" className="overflow-x-auto scroll-px-6 min-w-0" style={{ scrollbarWidth: 'none' }}>
         <Reorder.Group as="div" axis="x" values={[...tabs]} onReorder={onReorder} {...stripProps}>
           {content}
         </Reorder.Group>
