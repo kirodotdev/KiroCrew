@@ -79,7 +79,7 @@ customize":
   `/settings?tab=overview` (the `/overview` route in `website/src/App.tsx`). Overview is a settings
   tab reached through `website/src/pages/settings/OverviewPanel.tsx:1-4`.
 - **It is one fixed layout for everyone.** The six stat tiles are a hardcoded
-  literal with no conditional (`website/src/pages/OverviewPage.tsx:193-198`).
+  literal with no conditional (`website/src/pages/OverviewPage.tsx::OverviewPage`).
   There is no per-user, per-role, or per-workspace variation on it or on any
   sibling summary surface. The four variation mechanisms that exist are all
   install-global: an edition registry, a per-provider capability flag, a
@@ -108,12 +108,12 @@ definitions — returns eleven, at `e6b06685e`:
 
 | Field | Declared | Status |
 |---|---|---|
-| `jobFamilies` | `src/kiro_crew/apps/manifest.py:1010` | Parsed, serialized, echoed to the client. No consumer. |
+| `jobFamilies` | `src/kiro_crew/apps/manifest.py::AppManifest` | Parsed, serialized, echoed to the client. No consumer. |
 | `sops` | `manifest.py:976` | `bridges.register_app` (`apps/bridges_register.py`) registers MCP servers, agents, skills, crons. There is no `_register_sops`. Declaring `sops` copies nothing. |
 | `backend.routes` | `manifest.py:386` | No reader. `_resolve_app_backend_url` (`apps/routes_proxy.py`) still carries a comment describing it. The prefix is hardcoded at `apps/route_registry.py:122`. |
-| `permissions.mcpTools` | `manifest.py:442` | Declarative only. `check_tool_permission` (`apps/permissions.py:71`) has no non-test caller. |
+| `permissions.mcpTools` | `manifest.py:442` | Declarative only. `check_tool_permission` (`apps/permissions.py::check_tool_permission`) has no non-test caller. |
 | `permissions.network` | `manifest.py:444` | Not enforced. An app makes outbound calls regardless. |
-| `permissions.memory` | `manifest.py:445` | Not enforced. There is no `ctx.memory` on `AppContext` (`apps/context.py:51-67`). |
+| `permissions.memory` | `manifest.py:445` | Not enforced. There is no `ctx.memory` on `AppContext` (`apps/context.py::AppContext`). |
 | `setup.configSchema` | `manifest.py:515` | Parsed, serialized, no reader. |
 | `platform.arch` | `manifest.py:712` | No reader. Only `os` is gated (`manifest.py:718-763`). |
 | `platform.clientInstall.postInstall` | `manifest.py:664` | Parsed, serialized, no reader. |
@@ -150,7 +150,7 @@ built **against a prompt-injected agent operating through the tool surface**. Th
 are not built against app code, because app code is not on the other side of
 them:
 
-> `src/kiro_crew/apps/module_loader.py:34-39` — "The app permission system only
+> `src/kiro_crew/apps/module_loader.py::_warn_third_party_execution` — "The app permission system only
 > gates the SDK tool surface passed to the app context — it does NOT restrict
 > `import`, filesystem, network, or access to in-memory credentials. Installing an
 > app is therefore equivalent to granting it full gateway-process privileges."
@@ -164,9 +164,9 @@ Consequences, each grep-verified rather than demonstrated:
   directory (`src/kiro_crew/sel_trust_root.py`, `_TRUST_SUBDIR`). That defeats an actor with
   log-directory write access, which is narrower access than an app has.
 - Audit failure never changes a decision, by explicit policy
-  (`apps/execution.py:459-460`, `admission.py:154-156`), so suppressing the record
+  (`apps/execution.py::app_execution_denied`, `admission.py:154-156`), so suppressing the record
   is free.
-- App admission (`apps/admission.py:200`) is the one control that acts while an
+- App admission (`apps/admission.py::app_admission_denied`) is the one control that acts while an
   app is still inert, and an **absent** policy file admits, documented as accepted
   risk at `apps/admission.py:25-30`.
 
@@ -271,7 +271,7 @@ A surface is app-shaped when all four hold. Each is checkable:
 2. It reads no private core wiring. Of the four endpoints the overview page calls
    today, three are private core wiring: `/api/status` returns `yolo`,
    `owner_id_hash`, `update_progress` and host facts, and **mutates on read** by
-   firing a background update check (`dashboard/handlers_system.py:168-172`);
+   firing a background update check (`dashboard/handlers_system.py::api_status`);
    `/api/tunnel/status` and `/api/memory/settings` are gateway internals. A
    surface that needs these needs a narrower public endpoint first, and that is
    the defect to file.
@@ -418,7 +418,7 @@ One gap is worth naming because this RFC makes it load-bearing: the compatibilit
 contract is one-directional. `minKiroCrewVersion` is a floor an app declares about
 the gateway, checked only at install and update (`_check_min_version` in `apps/manager_tree.py`,
 `handle_install_app` (`apps/routes.py`), `install_from_registry` (`apps/registry_pipeline/install.py`)) and never at enable or boot, and it
-fails **open** on a malformed value (`apps/version.py:32-33`). The platform
+fails **open** on a malformed value (`apps/version.py::check_min_version`). The platform
 declares no version for its own app-facing surface, so withdrawing a seam carries
 no signal in the other direction. Phase 1 removes seams. If that ordering feels
 uncomfortable, that discomfort is the argument for a platform-side version, and it
