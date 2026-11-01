@@ -56,6 +56,17 @@ _CANONICAL_ROUTING_EXPR = (
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
     + _GROUP_THEN_HOSTED_TAIL
 )
+# The same policy at LARGE fleet compute, for a lane the fleet's default would
+# not hold. Derived from the expression above by substituting the label alone,
+# so the ONLY difference either form can ever carry is the size suffix: a change
+# to the shared policy reaches both, and a second hand-written copy cannot drift
+# from it. `instance-size:large` is the suffix `ci.yml` and `build.yml` already
+# emit from their resolvers, and it selects 8 vCPU / 15 GB against the default
+# `BUILD_GENERAL1_MEDIUM`'s 4 vCPU / 7 GB.
+_CANONICAL_ROUTING_EXPR_LARGE = _CANONICAL_ROUTING_EXPR.replace(
+    "format('codebuild-kirocrew-gha-linux-{0}-{1}'",
+    "format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large'",
+)
 # The workflows the merge queue runs. A merge_group run's actor is the person
 # who queued the pull request, so the same actor predicate admits it; the event
 # is named so a merge group's jobs reach the fleet instead of falling to hosted.
@@ -336,6 +347,7 @@ _EXPECTED_ROUTED_JOBS = {
     # The reusable OIDC content scan. Its caller carries no `runs-on` of its
     # own, so this route is the whole lane's destination.
     ("internal-content-scan.yml", "scan"),
+    ("codeql.yml", "analyze"),
 }
 _PUSH_ONLY_WORKFLOWS = {
     "release.yml",
@@ -343,6 +355,7 @@ _PUSH_ONLY_WORKFLOWS = {
     "build-wheel.yml",
     "dependency-vulnerability.yml",
 }
+_LARGE_INSTANCE_WORKFLOWS = {"codeql.yml"}
 _DISPATCH_WORKFLOWS = {"pages.yml"}
 _BASE_ONLY_PR_WORKFLOWS = {"sensitive-change-review.yml"}
 _READINESS_WORKFLOWS = {"pr-readiness.yml"}
@@ -435,6 +448,8 @@ def _expected_inline_expression(workflow_name: str) -> str:
         return _CANONICAL_DISPATCH_MERGE_GROUP_EXPR
     if workflow_name in _MERGE_GROUP_WORKFLOWS | _MERGE_GROUP_CALLEE_WORKFLOWS:
         return _CANONICAL_MERGE_GROUP_ROUTING_EXPR
+    if workflow_name in _LARGE_INSTANCE_WORKFLOWS:
+        return _CANONICAL_ROUTING_EXPR_LARGE
     return _CANONICAL_ROUTING_EXPR
 
 
