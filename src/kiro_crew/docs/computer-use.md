@@ -31,9 +31,15 @@ because your pointer will jump out from under your hand.
 
 ## Linux
 
-Linux has no computer-use driver yet. Every computer-use tool returns a "not
-supported on this platform" refusal, and **Settings → Computer Use** shows the
-reason instead of a switch, so it cannot be turned on there.
+Linux is supported on **X11** through the AT-SPI accessibility bus (reading) and
+XTest / `XSendEvent` (input), the same tool set as macOS and Windows. It needs the
+application's toolkit accessibility bridge to be on — `GTK_MODULES=gail:atk-bridge`
+for GTK, `QT_ACCESSIBILITY=1` for Qt, with `NO_AT_BRIDGE` unset — otherwise a
+window shows but exposes no controls, and the state the agent reads says so and
+names the fix. **Wayland is not supported**: it has no unprivileged window capture
+or global input, so on a Wayland-only session **Settings → Computer Use** shows the
+reason instead of a switch. Launching an application is not implemented on Linux
+yet; use one that is already running.
 
 ## What is off limits
 

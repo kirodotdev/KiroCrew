@@ -902,18 +902,19 @@ class TestSpecEmissionGate:
             return agent.build_agent_config()
 
     def test_an_unsupported_platform_gets_no_entry(self, tmp_path: Path):
-        """**The no-driver case (Linux today).**
+        """**The no-driver case** (a Wayland-only Linux session, or an unknown OS).
 
-        Asserted with the keystone ENABLED, so the support half of the gate is
-        proven on its own rather than passing because the feature happened to be
-        off too. The backend reports unsupported here, so a spawned process could
-        never have done anything.
+        Driven by injecting ``platform_could_be_supported() == False`` rather than by
+        naming a platform: all three real platforms now ship a driver (Linux gained
+        the AT-SPI/X11 one), so "no driver" is a host condition — a Wayland-only
+        session, or an OS with no backend at all — not a platform. Asserted with the
+        keystone ENABLED, so the support half of the gate is proven on its own rather
+        than passing because the feature happened to be off too. The backend reports
+        unsupported here, so a spawned process could never have done anything.
 
-        Note this is DRIVER SUPPORT, not "is it macOS": Windows now has a
-        read-path driver and must therefore get the entry (see the test below).
-        Gating on the OS name kept the server out of the spec on Windows while
-        ``tools`` still advertised its @ref, so the model was told the tools
-        existed and no server was ever spawned.
+        Note this is DRIVER SUPPORT, not "is it macOS": gating on the OS name kept the
+        server out of the spec on Windows while ``tools`` still advertised its @ref,
+        so the model was told the tools existed and no server was ever spawned.
         """
         config = self._build(tmp_path, macos=False, keystone={"enabled": True})
         assert CU_SERVER not in config["mcpServers"]

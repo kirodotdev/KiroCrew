@@ -40,7 +40,7 @@ from kiro_crew.computer_use.types import (
     ALL_TOOLS,
     ERROR_PREFIX,
     PERMISSION_UNSUPPORTED,
-    PLATFORM_LINUX,
+    PLATFORM_UNSUPPORTED,
     STATE_KEY_ENABLED,
     ComputerUseUnsupported,
 )
@@ -214,14 +214,19 @@ class TestImportSafety:
 def unsupported_backend(monkeypatch):
     """Pin the process to a driverless platform and install its backend.
 
-    LINUX is the driverless platform: Windows has a read-path driver, so pointing
-    this fixture there would assert a refusal the driver does not give. The
-    Windows read path and its per-verb input refusals are covered in
-    ``test_computer_use_windows_driver.py`` instead.
+    The UNKNOWN OS (all three ``IS_*`` flags False) is the driverless platform now:
+    Linux gained an AT-SPI/X11 read+input driver, so pointing this fixture there
+    would assert a refusal the driver does not give — on a host where it loads it is
+    SUPPORTED, and on a no-DISPLAY CI runner it refuses with a LIVE reason rather than
+    the shared ``UnsupportedBackend`` prose. The Linux driver's own behaviour (and
+    its no-DISPLAY refusal) is covered in ``test_computer_use_linux_driver.py``; this
+    file keeps asserting the shared ``UnsupportedBackend`` refusal on the one
+    platform that still has no driver at all. (This is the same migration the fixture
+    already made once, from Windows to Linux, when Windows got its driver.)
     """
     monkeypatch.setattr(platform_compat, "IS_MACOS", False)
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
-    monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(platform_compat, "IS_LINUX", False)
     register_computer_use_backend(None)
     reset_shared_backend()
     service_mod.reset_shared_service()
@@ -251,22 +256,28 @@ def enabled_keystone(tmp_path, monkeypatch):
 class TestRefusalsOnUnsupportedPlatform:
     def test_a_driverless_platform_selects_the_shared_unsupported_base(self, unsupported_backend):
         assert isinstance(unsupported_backend, UnsupportedBackend)
-        assert unsupported_backend.platform_id == PLATFORM_LINUX
+        assert unsupported_backend.platform_id == PLATFORM_UNSUPPORTED
 
     def test_status_is_unsupported_with_an_actionable_reason(self, unsupported_backend):
         status = unsupported_backend.status()
         assert status.supported is False
-        # Concrete rather than "not supported": a user should learn what is missing
-        # and a maintainer should find the next implementation step named.
-        assert "AT-SPI" in status.reason
+        # Concrete rather than "not supported": a user should learn their OS has no
+        # computer-use driver at all.
+        assert "no computer-use driver" in status.reason
 
-    def test_linux_reason_names_the_wayland_capture_problem(self, monkeypatch):
+    def test_an_unknown_os_names_no_implementation_plan(self, monkeypatch):
+        """The unknown OS has no driver and no plan — just a plain statement.
+
+        The driverless platform is the unknown OS: Linux has an AT-SPI/X11 driver
+        that reports a LIVE reason, so the "names the Wayland capture problem" claim
+        belongs to the Linux driver's own docstring/plan, not to a refusal string.
+        """
         monkeypatch.setattr(platform_compat, "IS_MACOS", False)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
-        monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(platform_compat, "IS_LINUX", False)
         driver = select_default_backend()
-        assert driver.platform_id == PLATFORM_LINUX
-        assert "Wayland" in driver.status().reason
+        assert driver.platform_id == PLATFORM_UNSUPPORTED
+        assert "no computer-use driver" in driver.status().reason
 
     def test_permission_probe_reports_unsupported_not_missing(self, unsupported_backend):
         # "missing" would send the user to a System Settings pane that cannot help.
@@ -299,7 +310,7 @@ class TestRefusalsOnUnsupportedPlatform:
     @pytest.mark.asyncio
     async def test_refusal_names_the_platform(self, unsupported_backend, enabled_keystone):
         result = await tools_mod.dispatch("computer_list_apps", {}, session_key="dashboard:slot1")
-        assert PLATFORM_LINUX in result
+        assert PLATFORM_UNSUPPORTED in result
 
     @pytest.mark.asyncio
     async def test_disabled_keystone_beats_the_platform_refusal(
@@ -317,7 +328,7 @@ class TestRefusalsOnUnsupportedPlatform:
         result = await tools_mod.dispatch("computer_list_apps", {}, session_key="dashboard:slot1")
         assert result.startswith(ERROR_PREFIX)
         assert "disabled" in result
-        assert PLATFORM_LINUX not in result
+        assert PLATFORM_UNSUPPORTED not in result
 
     @pytest.mark.asyncio
     async def test_unknown_tool_is_refused_before_validation(

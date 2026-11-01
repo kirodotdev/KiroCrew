@@ -566,6 +566,18 @@ TRUNCATED_WINDOW_NOTE = (
     "max_tree_nodes / max_tree_depth to capture it."
 )
 NO_APPS_NOTE = "No applications with on-screen windows were found."
+#: Snapshot ``text`` note for a Linux window whose frame is SHOWING but exposes no
+#: descendants — the signature of a running app whose toolkit accessibility bridge
+#: is not enabled. Without it the window reads as "an app with no controls", which
+#: is the Linux failure mode that looks like a working app the model cannot drive.
+#: It names the three bridge env vars so an operator can fix it. Linux-only: the
+#: Linux driver attaches it, nothing else references it.
+LINUX_NO_A11Y_BRIDGE_NOTE = (
+    "This window exposes no accessibility tree. On Linux that usually means the "
+    "application's toolkit accessibility bridge is not enabled: set "
+    "GTK_MODULES=gail:atk-bridge (GTK) or QT_ACCESSIBILITY=1 (Qt), and make sure "
+    "NO_AT_BRIDGE is unset, then relaunch the application."
+)
 
 # ── Permission probe states (ADVISORY ONLY — never a hard gate) ──
 # macOS attributes a TCC grant to the RESPONSIBLE PARENT process, so a probe
