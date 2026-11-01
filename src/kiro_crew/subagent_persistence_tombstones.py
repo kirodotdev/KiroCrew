@@ -290,6 +290,26 @@ def write_tombstone(
     _write_tombstone_file(agent_id, cause, recovery_action, extra, owed_retry=False)
 
 
+def write_tombstone_if_absent(
+    agent_id: str,
+    *,
+    cause: str,
+    recovery_action: str,
+    **extra: object,
+) -> bool:
+    """Write ``tombstone.json`` only when the run has none; False when one exists.
+
+    The create is exclusive, so a tombstone the run itself writes at the same moment
+    is never replaced: the first one to land is the record.
+    """
+    ensure_directory(_agent_dir(agent_id))
+    try:
+        _write_tombstone_file(agent_id, cause, recovery_action, extra, owed_retry=True)
+    except FileExistsError:
+        return False
+    return True
+
+
 def _write_tombstone_file(
     agent_id: str,
     cause: str,
