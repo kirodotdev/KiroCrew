@@ -1011,19 +1011,39 @@ def _alias_hit(path: Path, candidates: list[tuple[Path, list[str]]]) -> bool:
     return False
 
 
-def _alias_matches(path: Path, globs: list[str], loader_roots: list[Path]) -> bool:
+def _alias_roots(loader_roots: list[Path]) -> tuple[str, ...]:
+    """*loader_roots* spelled and resolved, the fence :func:`_alias_matches` checks.
+
+    Resolving a root goes through the sensitive-path gate (a pooled IPC call), so
+    a caller matching many paths against the same roots computes this once and
+    passes it as ``roots=``.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    return (
+        *(os.path.abspath(root) for root in loader_roots),
+        *(real for root in loader_roots if (real := sk.validate_file_path(str(root)))),
+    )
+
+
+def _alias_matches(
+    path: Path,
+    globs: list[str],
+    loader_roots: list[Path],
+    *,
+    roots: tuple[str, ...] | None = None,
+) -> bool:
     """The :func:`_alias_selected` rule for one operator-owned path outside the catalog.
 
     Readers that match a listed path against already-expanded globs call this so a
     skill listed under its flat link still matches ``<app>/*/SKILL.md``. Both
     *path* and the prefix must sit inside *loader_roots*, spelled or resolved.
+    *roots* is :func:`_alias_roots` of *loader_roots*, when the caller already has it.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
-    roots = (
-        *(os.path.abspath(root) for root in loader_roots),
-        *(real for root in loader_roots if (real := sk.validate_file_path(str(root)))),
-    )
+    if roots is None:
+        roots = _alias_roots(loader_roots)
     if not sk._within_any(os.path.abspath(path), roots):
         # A path outside the roots (a project row) is never resolved.
         return False

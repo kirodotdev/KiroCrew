@@ -108,3 +108,48 @@ def test_dashboard_alias_never_resolves_a_row_outside_the_skills_root(tmp_path, 
     monkeypatch.setattr(catalog_mod.os.path, "realpath", spy)
     assert catalog_mod._alias_matches(project_row, [pattern], [skills_root]) is False
     assert os.path.abspath(project_row) not in resolved
+
+
+def test_used_by_annotation_resolves_the_skills_root_once_per_listing(tmp_path, monkeypatch):
+    """``GET /api/skills`` annotates every row against every agent.
+
+    Resolving the skills root is a pooled sensitive-path IPC call. Done per
+    (row, agent) pair it cost ~2.3 s per listing on a 65-skill home. The listing
+    resolves it once, so the count must not grow with the number of rows.
+    """
+    from kiro_crew import skills as sk
+    from kiro_crew.dashboard.handlers._shared import annotate_skills_with_agents
+
+    skills_root, _target, _pattern = _app_case(tmp_path, skills_dir())
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    for name in ("one", "two", "three"):
+        (agents_dir / f"{name}.json").write_text(
+            '{"name": "%s", "resources": ["skill://%s/other-app/*/SKILL.md"]}'
+            % (name, skills_root),
+            encoding="utf-8",
+        )
+    from kiro_crew.dashboard.handlers import _shared_skill_listing as listing
+
+    monkeypatch.setattr(listing, "_agent_dirs", lambda: [agents_dir])
+    real = sk.validate_file_path
+    root = str(skills_root)
+    calls: list[str] = []
+
+    def counting(path, *a, **kw):
+        if str(path) == root:
+            calls.append(path)
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(sk, "validate_file_path", counting)
+    row = {"path": str(skills_root / "a-first" / "SKILL.md")}
+
+    annotate_skills_with_agents([dict(row)])
+    one = len(calls)
+    calls.clear()
+    many = [dict(row) for _ in range(5)]
+    annotate_skills_with_agents(many)
+
+    assert one <= 1
+    assert len(calls) == one
+    assert all(r["loaded_by_agents"] == [] for r in many)
