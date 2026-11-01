@@ -258,7 +258,6 @@
   "src/test/issueRadarPolling.test.tsx",
   "src/test/notificationConstructorGuard.test.ts",
   "src/test/paletteOpenSessionFocusesComposer.test.tsx",
-  "src/test/pierre.warmSwap.test.tsx",
   "src/test/shortcutsPanelSkipShell.test.tsx",
   "src/test/sidePanelLeadingTab.test.tsx",
   "src/test/toolDisclosureKey.renderSite.test.tsx",
