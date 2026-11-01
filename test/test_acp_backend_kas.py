@@ -636,9 +636,10 @@ class TestNoImportCycle:
 
     def test_config_loader_imports_alone(self):
         proc = subprocess.run(
-            [sys.executable, "-c", "import kiro_crew.config.loader"],
+            [sys.executable, "-X", "utf8", "-c", "import kiro_crew.config.loader"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=120,
         )
         assert proc.returncode == 0, f"standalone import failed:\n{proc.stderr}"
@@ -648,12 +649,15 @@ class TestNoImportCycle:
         proc = subprocess.run(
             [
                 sys.executable,
+                "-X",
+                "utf8",
                 "-c",
                 "import kiro_crew.config.loader as m;"
                 "print(m._normalize_acp_backend(''), m._normalize_acp_backend('nope'), sep='|')",
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=120,
         )
         assert proc.returncode == 0, proc.stderr
