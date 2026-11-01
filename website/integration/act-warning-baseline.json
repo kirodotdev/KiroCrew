@@ -146,7 +146,6 @@
   "src/test/WorkflowRunTree.cancelledAgents.test.tsx",
   "src/test/WorkflowRunTree.storageError.test.tsx",
   "src/test/WorkspacePickerCoverage.test.tsx",
-  "src/test/approvalFocusShortcut.test.tsx",
   "src/test/chatPins.test.tsx",
   "src/test/notificationConstructorGuard.test.ts",
   "src/test/shortcutsPanelSkipShell.test.tsx",
