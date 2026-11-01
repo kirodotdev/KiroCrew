@@ -147,7 +147,8 @@ function RemoteCrewNamesError() {
 export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode; shelf: React.ReactNode } {
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
-    closeRefused, columnsError, columnsFailed, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError, dispatch,
+    closeRefused, columnsError, columnsFailed, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
+    dismissUnfiledAboveFoldersError, dispatch,
     filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, flatLaneActive, folderActionError, groupByKind, toggleGroupByKind,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
     folderSortMut, folderSortRead, folders, foldersError, foldersFailed, foldersShelved,
@@ -159,7 +160,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
     setPinnedOrderError, setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
     setToggleSaveFailed, showAllFolders, slotFilter, sortError, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleSaveFailed,
-    toggleTagFilter } = shell
+    toggleTagFilter, toggleUnfiledAboveFolders, unfiledAboveFolders, unfiledAboveFoldersError } = shell
   const field = (
         // Search with inline sort/filter control — the shared list-panel
         // search row (components/SearchFilterBar), also mounted by the Crew
@@ -622,6 +623,41 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   <div className="px-2 pt-0.5 pb-1.5 text-[11px] text-muted italic whitespace-normal max-w-[300px]" data-testid="folder-order-unstamped-note">
                     {i18nT('pages.chatSidebar.folder_order_unstamped_note')}
                   </div>
+                )}
+                {/* Where the sessions filed in no folder sit relative to the folder
+                    list (dashboard.unfiled_sessions_above_folders). Under Folder order
+                    because it is one more fact about how the folder list reads.
+                    The separator above the row sets this layout toggle apart from
+                    the order choices. It renders only with the row. A lane that
+                    hides the row then shows no doubled separator.
+                    Offered in the lanes that draw a folder row (`folderRowsDrawn`,
+                    a lane-mode gate). A tree with no folders yet, or a board whose
+                    filter conceals every folder, still offers it. The setting takes
+                    effect the moment a folder appears. The flat and conductor lanes
+                    draw no folders, so there it would do nothing.
+                    A checkbox row: it reports `aria-checked` and keeps the menu open
+                    on a pick, as the tag and model rows do. The checked state and the
+                    toggle both read the SHOWN value. A second click during an
+                    in-flight save then sends the opposite of the first, not the same
+                    value twice. */}
+                {folderRowsDrawn && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onSelect={e => { e.preventDefault(); toggleUnfiledAboveFolders() }}
+                      data-testid="folder-order-unfiled-above"
+                      role="menuitemcheckbox"
+                      aria-checked={unfiledAboveFolders}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center ${unfiledAboveFolders ? 'border-accent bg-accent text-accent-fg' : 'border-border bg-transparent'}`}
+                      >
+                        {unfiledAboveFolders && <Check size={10} strokeWidth={3} />}
+                      </span>
+                      <span className="flex-1">{i18nT('pages.chatSidebar.unfiled_sessions_above_folders')}</span>
+                    </DropdownMenuItem>
+                  </>
                 )}
                 <DropdownMenuSeparator />
                 {/* Stale-session collapse threshold. Lives beside Sort rather than
@@ -1188,6 +1224,19 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
         onDismiss={dismissSortError}
         className="mx-2 mt-2 shrink-0"
         testId="session-sort-error"
+      />
+      {/* An unfiled-sessions toggle the gateway refused. The lane already shows
+          the stored layout again. The title tells the person that nothing
+          changed. The server's text sits under the title as the detail. */}
+      <ErrorNotice
+        title={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
+        message={unfiledAboveFoldersError}
+        messagePlacement="below"
+        askAgent={connected}
+        actionPlacement="below"
+        onDismiss={dismissUnfiledAboveFoldersError}
+        className="mx-2 mt-2 shrink-0"
+        testId="unfiled-above-folders-error"
       />
       {/* The folder order (dashboard.folder_sort) could not be read AND there is
        *  no body to fall back on: the tree is drawn in the stored order meanwhile

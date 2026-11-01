@@ -289,6 +289,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # The sidebar's session sort key, written by the sort menu; the enum is the
     # loader's own list, spelled once.
     "dashboard.session_sort": {"type": "enum", "values": list(SESSION_SORT_MODES)},
+    # Whether the sidebar draws unfiled sessions above the folder list. A view
+    # preference the sort-and-filter menu writes. Nothing outside the dashboard
+    # reads it.
+    "dashboard.unfiled_sessions_above_folders": {"type": "bool"},
     # Per-version snooze/skip verdict for the proactive update popup, written
     # as ONE atomic record: the three fields only mean anything together, so
     # per-field writes would open both a crash window (old verdict paired

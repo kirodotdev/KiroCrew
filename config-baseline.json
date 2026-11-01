@@ -8341,6 +8341,7 @@
         "show_unread_dot": true,
         "folder_sort": "custom",
         "session_sort": "date-desc",
+        "unfiled_sessions_above_folders": false,
         "update_nudge": {},
         "translucent_panels": "",
         "onboarded": false,
@@ -9672,6 +9673,20 @@
         "manual"
       ],
       "defaultValue": "date-desc"
+    },
+    {
+      "path": "dashboard.unfiled_sessions_above_folders",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Unfiled sessions above folders",
+      "help": "Where the chat sidebar draws sessions that are not filed in any folder: above the folder list when on, below it when off. Applies to the list view's folder tree and to each board column; flat view draws no folders and is unaffected. In the list view, dropping a session on the unfiled area removes it from its folder either way. New sessions start unfiled, so with many folders turning this on keeps the ones still to sort on screen instead of below the last folder.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.update_nudge",

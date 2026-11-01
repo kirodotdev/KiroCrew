@@ -1215,6 +1215,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         show_unread_dot=section.read("show_unread_dot", _safe_bool),
         folder_sort=section.read("folder_sort", _folder_sort_from),
         session_sort=section.read("session_sort", _session_sort_from),
+        unfiled_sessions_above_folders=section.read("unfiled_sessions_above_folders", _safe_bool),
         update_nudge=(
             nudge
             if isinstance(nudge := section.get("update_nudge"), dict)
