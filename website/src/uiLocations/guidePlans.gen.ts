@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:69676fa761dfeffc29cdeb0343091ee8fb923dd6093e1f2c353bf74525ae360d"
+export const GUIDE_BUILD_DIGEST = "sha256:fa1255c6a4b6df380952c43f4d144816d226ee8e1ffd30b0baef063378d81b20"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -69,6 +69,8 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "composer.stop",
   "composer.voice",
   "connections.mcp-servers-tab",
+  "knowledge.add-source",
+  "knowledge.sources-tab",
   "mcp.add-custom",
   "mcp.add-server",
   "mcp.probe",
@@ -265,6 +267,10 @@ export const GUIDE_REVEAL_SCOPES = {
   "open:connections.mcp-servers-tab": {
     "kind": "open",
     "revealer": "connections.mcp-servers-tab"
+  },
+  "open:knowledge.sources-tab": {
+    "kind": "open",
+    "revealer": "knowledge.sources-tab"
   },
   "shell.nav-rail": {
     "kind": "state",
@@ -1695,6 +1701,46 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "any:connections.mcp-servers-tab",
             "location": "connections.mcp-servers-tab",
             "label_key": "pages.connectionsPage.mcp_servers"
+          }
+        ]
+      }
+    ]
+  },
+  "knowledge.add-source": {
+    "version": 2,
+    "label_key": "pages.knowledge.sourcesList.add_source",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=knowledge",
+        "steps": [
+          {
+            "id": "any:knowledge.sources-tab",
+            "location": "knowledge.sources-tab",
+            "label_key": "pages.knowledge.index.sources_tab",
+            "scope": "open:knowledge.sources-tab"
+          },
+          {
+            "id": "any:knowledge.add-source",
+            "location": "knowledge.add-source",
+            "label_key": "pages.knowledge.sourcesList.add_source"
+          }
+        ]
+      }
+    ]
+  },
+  "knowledge.sources-tab": {
+    "version": 2,
+    "label_key": "pages.knowledge.index.sources_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=knowledge",
+        "steps": [
+          {
+            "id": "any:knowledge.sources-tab",
+            "location": "knowledge.sources-tab",
+            "label_key": "pages.knowledge.index.sources_tab"
           }
         ]
       }

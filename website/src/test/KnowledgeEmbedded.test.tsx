@@ -6,9 +6,10 @@
  * strip. Standalone mode keeps the original chrome byte-for-byte.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
+import { scopeOpen } from '../guide/liveRegistry'
 
 const mockKnowledgeApi = vi.fn()
 vi.mock('../pages/knowledge/api', () => ({
@@ -54,5 +55,19 @@ describe('KnowledgePage — embedded mode', () => {
     mount(<KnowledgePage />)
     expect(screen.getByText('Knowledge Library')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /help/i })).toBeInTheDocument()
+  })
+})
+
+describe('KnowledgePage — find_ui reveal scope for the Sources view', () => {
+  // The find_ui guide to Add Source has a step whose scope is
+  // `open:knowledge.sources-tab`. The page owns that scope, so the step can
+  // tell "Sources is open" from "Add Source has not loaded yet".
+  it('reports closed on the list view, open on Sources, and drops the report on unmount', () => {
+    const { unmount } = mount(<KnowledgePage embedded />)
+    expect(scopeOpen('open:knowledge.sources-tab')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: /^sources$/i }))
+    expect(scopeOpen('open:knowledge.sources-tab')).toBe(true)
+    unmount()
+    expect(scopeOpen('open:knowledge.sources-tab')).toBeNull()
   })
 })
