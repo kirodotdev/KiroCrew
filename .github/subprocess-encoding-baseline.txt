@@ -13,7 +13,6 @@
 1 conftest.py
 1 src/kiro_crew/apps/builtins/auto_improvement/profiles/github_repo/profile.py
 1 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
-1 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/deps.py
 3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/verify_align.py
 1 src/kiro_crew/apps/builtins/md_notebook/server.py
