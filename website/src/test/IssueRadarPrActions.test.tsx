@@ -418,6 +418,8 @@ describe('PrActionsBar — verdicts that need prose', () => {
     await userEvent.keyboard('{Control>}{Enter}{/Control}')
     expect(api.addPrComment).toHaveBeenCalledTimes(1)
     resolve({ ...REF, number: 7, id: 1, url: 'u', created_at: 't' })
+    // Settling the held request releases the busy guard and closes the composer.
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull())
   })
 
   it('keeps the typed text when the submit fails', async () => {
@@ -1142,6 +1144,9 @@ describe('PrBulkBar', () => {
       // #7 has merged and #8 is in flight: Cancel must still be on screen.
       expect(screen.getByRole('button', { name: /^cancel$/i })).toBeTruthy()
       release(null)
+      // The run ends by closing the confirmation composer, Cancel with it, once the
+      // last row has landed.
+      await waitFor(() => expect(screen.queryByRole('button', { name: /^cancel$/i })).toBeNull())
     })
 
     it('names the frozen SET and the merge method in the confirmation', async () => {
