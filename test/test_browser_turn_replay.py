@@ -742,7 +742,9 @@ def test_a_long_turns_events_stay_inside_the_cap_and_the_turn_survives_its_end(
     store.start_turn(KEY, TURN, 1)
     store.add_frame(KEY, TURN, jpeg(), 64, 40, [], True, 1)
     kept = [
-        store.add_event(KEY, TURN, {"ts": 2 + i, "op": "other", "actor": "agent", "label": "x" * 200})
+        store.add_event(
+            KEY, TURN, {"ts": 2 + i, "op": "other", "actor": "agent", "label": "x" * 200}
+        )
         for i in range(400)
     ]
     assert kept[0] and not kept[-1]
