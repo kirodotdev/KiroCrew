@@ -125,6 +125,15 @@ function renderDetail(
   )
 }
 
+/** `renderDetail`, then wait for the spec record the first fetch brings. SpecDetail shows the chat column and mounts the
+ *  header's overflow menu only once it lands, so a test whose first wait is on something the first render already has
+ *  (the doc column, the title) would go on, or end, before that commit. */
+async function renderLoadedDetail(...args: Parameters<typeof renderDetail>) {
+  const view = renderDetail(...args)
+  await screen.findByTestId('chat-column')
+  return view
+}
+
 /** Pick a document tab regardless of whether SegmentedControl collapsed to its
  *  dropdown (it does under a zero-width test layout). The tabs are radios in
  *  both forms; only the collapsed dropdown's trigger is a plain button. */
@@ -228,7 +237,7 @@ describe('SpecDetail header', () => {
   it('moves the title editor below the fixed header at every pane width', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await user.click(await screen.findByRole('button', { name: 'checkout' }))
 
@@ -243,7 +252,7 @@ describe('SpecDetail header', () => {
     mobile = true
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByText('checkout')
     expect(screen.queryByRole('button', { name: 'checkout' })).not.toBeInTheDocument()
@@ -289,7 +298,7 @@ describe('SpecDetail docs split', () => {
   it('restores a persisted split width', async () => {
     localStorage.setItem(LS.docPct, '60')
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     expect(screen.getByTestId('chat-column').closest('section')).toHaveClass('min-h-0')
@@ -299,7 +308,7 @@ describe('SpecDetail docs split', () => {
   it('falls back to the default when the persisted width is corrupt', async () => {
     localStorage.setItem(LS.docPct, 'not-a-number')
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '44')
@@ -307,7 +316,7 @@ describe('SpecDetail docs split', () => {
 
   it('resizes with the arrow keys and persists the result', async () => {
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     const divider = screen.getByRole('separator')
@@ -326,7 +335,7 @@ describe('SpecDetail docs split', () => {
 
   it('drags within its clamp and releases the cursor lock on pointer up', async () => {
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     const divider = screen.getByRole('separator')
@@ -347,7 +356,7 @@ describe('SpecDetail docs split', () => {
 
   it('switches the rendered document when another tab is picked', async () => {
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     expect(await screen.findByTestId('doc-view')).toHaveAttribute('data-tab', 'requirements')
     await selectTab('Tasks')
@@ -358,7 +367,7 @@ describe('SpecDetail docs split', () => {
 describe('SpecDetail review overlay', () => {
   it('opens the fullscreen review and closes it with Escape', async () => {
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     fireEvent.click(screen.getByRole('button', { name: 'Expand document for review' }))
@@ -375,7 +384,7 @@ describe('SpecDetail review overlay', () => {
 
   it('does not steal focus from the comment composer when the spec poll ticks', async () => {
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     fireEvent.click(screen.getByRole('button', { name: 'Expand document for review' }))
@@ -395,7 +404,7 @@ describe('SpecDetail review overlay', () => {
 
   it('closes the fullscreen review from its own close button', async () => {
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     fireEvent.click(screen.getByRole('button', { name: 'Expand document for review' }))
@@ -410,7 +419,7 @@ describe('SpecDetail review overlay', () => {
 
   it('keeps phase actions reachable in the overlay so a review can approve', async () => {
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     fireEvent.click(screen.getByRole('button', { name: 'Expand document for review' }))
@@ -478,7 +487,7 @@ describe('SpecDetail phase actions', () => {
       }
       return Promise.resolve(okRes(JSON.stringify(detail)))
     }))
-    renderDetail()
+    await renderLoadedDetail()
 
     expect((await screen.findByTestId('doc-view')).dataset.tab).toBe('requirements')
     fireEvent.click(await screen.findByRole('button', { name: /Approve → Design/ }))
@@ -573,7 +582,7 @@ describe('SpecDetail phase actions', () => {
 
   it('offers no approval for a phase the table does not know', async () => {
     installFetch({ ...BASE, phase: 'archived' })
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     expect(screen.queryByRole('button', { name: /Approve/ })).not.toBeInTheDocument()
@@ -604,7 +613,7 @@ describe('SpecDetail phase actions', () => {
 
   it('sends a state-panel answer with its decision id so the backend can lock it', async () => {
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     fireEvent.click(await screen.findByTestId('state-send'))
     await waitFor(() => expect(calls.filter((c) => c.url.includes('/message'))).toHaveLength(1))
@@ -669,7 +678,7 @@ describe('SpecDetail phase actions', () => {
 describe('SpecDetail review comment tray', () => {
   it('stacks comments, removes one, and clears the rest', async () => {
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     expect(screen.queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument()
@@ -692,7 +701,7 @@ describe('SpecDetail review comment tray', () => {
 
   it('sends every stacked comment as one grouped message and empties the tray', async () => {
     installFetch(BASE)
-    renderDetail()
+    await renderLoadedDetail()
 
     await screen.findByTestId('doc-view')
     fireEvent.click(screen.getByTestId('add-requirements-comment'))
@@ -718,7 +727,7 @@ describe('SpecDetail review comment tray', () => {
     installFetch(BASE, (url) => (url.includes('/message')
       ? Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: 'agent busy' }) })
       : undefined))
-    renderDetail('checkout', setErr)
+    await renderLoadedDetail('checkout', setErr)
 
     await screen.findByTestId('doc-view')
     fireEvent.click(screen.getByTestId('add-requirements-comment'))
@@ -740,6 +749,15 @@ describe('SpecDetail delete', () => {
     await user.click(await screen.findByRole('menuitem', { name: 'Remove spec checkout' }))
   }
 
+  // A removal also drops the cached detail, and this view stays mounted, so it reads the spec again. The removal has
+  // settled once the dialog is gone (the render that drops the detail) and the chat column is back with the refetched
+  // record; ending sooner leaves that refetch to land after the test.
+  const removalSettled = (onDeleted: () => void) => waitFor(() => {
+    expect(onDeleted).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByTestId('chat-column')).toBeInTheDocument()
+  })
+
   it('asks first, then removes the spec and notifies the workspace', async () => {
     const onDeleted = vi.fn()
     installFetch(BASE)
@@ -750,7 +768,7 @@ describe('SpecDetail delete', () => {
     expect(screen.getByText(/markdown files stay in the project/i)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove this spec' }))
-    await waitFor(() => expect(onDeleted).toHaveBeenCalledTimes(1))
+    await removalSettled(onDeleted)
     const deleted = calls.filter((c) => c.method === 'DELETE')
     expect(deleted).toHaveLength(1)
     expect(deleted[0].url).toContain('/specs/checkout')
@@ -775,7 +793,7 @@ describe('SpecDetail delete', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove this spec' }))
-    await waitFor(() => expect(onDeleted).toHaveBeenCalledTimes(1))
+    await removalSettled(onDeleted)
     const deleted = calls.filter((c) => c.method === 'DELETE')
     expect(deleted).toHaveLength(1)
     expect(deleted[0].url).toContain(encodeURIComponent(BASE.spec_dir))
@@ -878,7 +896,8 @@ describe('SpecDetail tasks-panel poll (#5361)', () => {
     await waitFor(() => expect(gets).toBeGreaterThan(afterMount))
     const afterOpen = gets
 
-    await vi.advanceTimersByTimeAsync(SPEC_DETAIL_FAST_POLL_MS)
+    // The poll's refetch lands inside this advance and re-renders the Tasks panel: run it in act() so that is flushed here.
+    await act(async () => { await vi.advanceTimersByTimeAsync(SPEC_DETAIL_FAST_POLL_MS) })
     expect(gets).toBeGreaterThan(afterOpen)
   })
 
