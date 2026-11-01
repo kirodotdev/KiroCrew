@@ -91,7 +91,6 @@
   "src/test/FollowUpCard.test.tsx",
   "src/test/InstanceTabBar.test.tsx",
   "src/test/InstancesViewport.test.tsx",
-  "src/test/IssueRadarConnectHosts.test.tsx",
   "src/test/KiroAccountModal.test.tsx",
   "src/test/KiroCrewAgentsPage.schedDraftGuard.test.tsx",
   "src/test/KnowledgeGraphCoverage.test.tsx",
