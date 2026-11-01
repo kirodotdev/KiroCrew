@@ -485,7 +485,9 @@ export function createMessagingEndpoints({ get, post, put, j }: ClientTransport)
     getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
     getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string; features?: string[] }>,
     getSlackManifestStatus: (refresh = false) => get(`/api/slack/manifest/status${refresh ? '?refresh=1' : ''}`).then(j) as Promise<SlackManifestStatus>,
-    saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+    saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; reconnect_required?: boolean; verify_warning: string }>,
+    /** Re-run the Slack handshake from the saved credentials, without a gateway restart. */
+    reconnectSlack: () => post('/api/slack/reconnect', {}).then(j) as Promise<{ connected: boolean; connect_error: string }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,
     saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,

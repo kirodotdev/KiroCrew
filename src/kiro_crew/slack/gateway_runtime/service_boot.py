@@ -899,6 +899,8 @@ async def run(self: GatewayOrchestrator) -> None:
     await cautious_boot.initialize()
 
     seen = SeenCache()
+    # Kept for a Slack reconnect, so a rebuilt socket still drops redeliveries.
+    self._slack_seen = seen
     await self._init_services()
 
     # Wire in-process embeddings (always-on) and kick background model download
@@ -1478,6 +1480,26 @@ async def run(self: GatewayOrchestrator) -> None:
     if self.dashboard_state:
         self.dashboard_state.slack_socket_connected = connected
         self.dashboard_state.slack_connect_error = getattr(self, "_slack_connect_error", "")
+    # Pin the workspace of the Web API client boot published (none published,
+    # nothing pinned), so a later reconnect refuses to switch workspaces in
+    # place; the probe names the workspace, or releases the pin when Slack
+    # proves the token belongs to none. Fire-and-forget like the probe below:
+    # boot latency is unaffected.
+    from kiro_crew.slack.reconnect import pin_boot_workspace
+
+    _workspace_task = pin_boot_workspace(self)
+    if _workspace_task is not None:
+        self._background_tasks.add(_workspace_task)
+        _workspace_task.add_done_callback(self._background_tasks.discard)
+    if self.dashboard_state and not self._no_dashboard:
+        # POST /api/slack/reconnect calls this. Published only once boot's own
+        # Slack bring-up has returned, so a reconnect never builds a socket
+        # that boot's init_socket_mode then replaces without closing; until
+        # then the route answers 503 slack_reconnect_unavailable. The
+        # API-only server leaves it None.
+        from kiro_crew.slack.reconnect import reconnect_slack
+
+        self.dashboard_state.slack_reconnect = lambda: reconnect_slack(self)
 
     # Deferred tracked-channel capability probe (fire-and-forget, never
     # awaited — boot latency is unaffected). A Slack install created before

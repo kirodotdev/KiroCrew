@@ -185,7 +185,7 @@ const API_KEY_ORDER = [
   'setBrowserToken', 'installBrowserCli', 'installBrowserEngine', 'getBrowserView',
   'startBrowserView', 'openInBrowser', 'getComputerUseConfig', 'saveComputerUseConfig',
   'getDecisionsConsent', 'getDecisionsProvider', 'getDecisionsLocalRuntime', 'saveDecisionsConsent', 'saveDecisionsScope',
-  'saveDecisionsHistoryBudget', 'sendDecisionsFeedback', 'saveDecisionsProvider', 'removeDecisionsLocalModel', 'getSlackConfig', 'getSlackManifest', 'getSlackManifestStatus', 'saveSlackConfig',
+  'saveDecisionsHistoryBudget', 'sendDecisionsFeedback', 'saveDecisionsProvider', 'removeDecisionsLocalModel', 'getSlackConfig', 'getSlackManifest', 'getSlackManifestStatus', 'saveSlackConfig', 'reconnectSlack',
   'getDiscordConfig', 'saveDiscordConfig', 'getTelegramConfig', 'saveTelegramConfig',
   'getWeComConfig', 'getFeishuConfig', 'saveFeishuConfig', 'saveWeComConfig',
   'getWebexConfig', 'saveWebexConfig', 'getIMessageConfig', 'saveIMessageConfig',

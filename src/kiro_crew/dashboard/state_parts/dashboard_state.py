@@ -51,6 +51,8 @@ from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.safety_override import safety_override
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from kiro_crew.dashboard._types import (
         ContextBuilder,
         ConversationLog,
@@ -374,6 +376,10 @@ class DashboardState:
         # Short reason from the failed connect attempt (e.g. "invalid_auth"),
         # empty when connected or never attempted. Read by the settings badge.
         self.slack_connect_error: str = ""
+        # Re-runs the Slack handshake from the saved credentials (POST
+        # /api/slack/reconnect). Set by the gateway that owns the Slack socket;
+        # None on a server with no socket owner.
+        self.slack_reconnect: Callable[[], Awaitable[dict[str, Any]]] | None = None
         # True once the Discord channel's Gateway WebSocket transport started
         # this session (set by maybe_start_discord). Read by the Discord
         # settings status badge.
