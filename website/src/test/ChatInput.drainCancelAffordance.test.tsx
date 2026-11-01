@@ -20,7 +20,7 @@
  * useStreamingStt.drainCancel.test.tsx.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, cleanup } from '@testing-library/react'
+import { act, screen, fireEvent, cleanup } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
@@ -197,7 +197,7 @@ describe('the streaming drain, in full', () => {
    * body and the composer stops hearing the keyboard. For a control added FOR the
    * keyboard and touch paths, that is the exit closing the door behind itself.
    */
-  it('hands focus back to the composer, which the press would otherwise destroy', () => {
+  it('hands focus back to the composer, which the press would otherwise destroy', async () => {
     renderWithProviders(
       <ComposerVoiceSliceOverride inputProps={{ ...STREAM, onVoiceCancel: vi.fn() }}>
         <ChatInput {...base} />
@@ -206,10 +206,10 @@ describe('the streaming drain, in full', () => {
     const button = screen.getByTestId('voice-drain-cancel')
     // Focus where a keyboard user pressing it actually is, so the assertion is
     // about focus MOVING rather than about where it happened to start.
-    button.focus()
+    act(() => button.focus())
     expect(document.activeElement).toBe(button)
 
-    fireEvent.click(button)
+    await act(async () => { fireEvent.click(button) })
 
     expect(document.activeElement).toBe(screen.getByRole('textbox'))
   })
