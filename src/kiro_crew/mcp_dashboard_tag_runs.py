@@ -277,10 +277,23 @@ def _run_chat_tag_assign(args: dict[str, Any], ctx: ToolContext) -> str:
                 "written — call chat_tag_assign again; it re-reads the current list."
             )
         return redact(f"Error: {refused.error}")
-    final = [str(t) for t in (d.get("tags") or new_tags) if isinstance(t, str)]
+    # Report what the server persisted, not what we asked for: it filters the
+    # PUT to the live vocabulary under the write lock (e.g. a tag deleted
+    # between our GET and PUT), so an authoritative empty list means no tags.
+    # ``d["tags"]`` is absent only in a legacy ``{"ok": True}`` ack.
+    raw_final = d.get("tags")
+    final = (
+        [str(t) for t in raw_final if isinstance(t, str)]
+        if isinstance(raw_final, list)
+        else new_tags
+    )
     shown = ", ".join(f"`{names_by_id.get(t, t)}`" for t in final) or "none"
-    added = ", ".join(f"`{names_by_id.get(t, t)}`" for t in add_ids if t not in current)
-    removed = ", ".join(f"`{names_by_id.get(t, t)}`" for t in remove_ids if t in current)
+    added = ", ".join(
+        f"`{names_by_id.get(t, t)}`" for t in add_ids if t not in current and t in final
+    )
+    removed = ", ".join(
+        f"`{names_by_id.get(t, t)}`" for t in remove_ids if t in current and t not in final
+    )
     parts = []
     if added:
         parts.append(f"added {added}")
