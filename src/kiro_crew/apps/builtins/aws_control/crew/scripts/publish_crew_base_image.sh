@@ -32,7 +32,7 @@
 # quietly publish to the wrong one. Absent is refused, not guessed.
 #
 # Usage:
-#   scripts/publish_crew_base_image.sh --repository REPO [--dry-run]
+#   src/kiro_crew/apps/builtins/aws_control/crew/scripts/publish_crew_base_image.sh --repository REPO [--dry-run]
 #
 #   --repository  registry repository to publish to, with no tag and no digest,
 #                 for example public.ecr.aws/<namespace>/kirocrew-crew-base
@@ -144,7 +144,7 @@ esac
 # The lock sits beside the directory it protects, so it is scoped to exactly what
 # is shared: one checkout. A run killed outright leaves it behind, which is why the
 # refusal names the directory and the one command that clears it.
-readonly PUBLISH_STAGING_DIR="${SCRIPT_DIR}/../src/kiro_crew/apps/builtins/aws_control/crew/runtime"
+readonly PUBLISH_STAGING_DIR="$(dirname "${SCRIPT_DIR}")/runtime"
 readonly PUBLISH_LOCK="${PUBLISH_STAGING_DIR}/.publish-crew-base-image.lock"
 mkdir -p "${PUBLISH_STAGING_DIR}"
 if ! mkdir "${PUBLISH_LOCK}" 2>/dev/null; then

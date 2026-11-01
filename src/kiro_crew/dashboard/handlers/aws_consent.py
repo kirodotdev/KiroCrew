@@ -138,11 +138,17 @@ async def _effective_target(service: str) -> tuple[str, str]:
         # the snapshot is five-minute cached and the only surface rendering these
         # two cards loads it first anyway -- and paying it is the point, since
         # health is exactly what a registry-only read cannot see.
-        from kiro_crew.apps.builtins.aws_control.backend import accounts as aws_accounts
+        #
+        # That policy is the aws-control app's, asked through the
+        # ``aws_account_policy`` seam so core never imports the app. With no app
+        # providing it the answer is the empty profile below, the same one a
+        # failed resolution degrades to.
+        from kiro_crew.apps import seams
         from kiro_crew.deploy import profiles as deploy_profiles
 
+        policy = seams.aws_account_policy()
         try:
-            resolved = await aws_accounts.resolve_consent_target()
+            resolved = await policy.resolve_consent_target() if policy is not None else None
         except Exception:
             # That resolution probes the whole registry through the AWS CLI. A
             # failure there must not take the consent surface down with it, so

@@ -189,7 +189,7 @@ evals/*/iteration-*/
 # kiro_crew/__init__.py); never committed -- a dev checkout runs the bare core.
 src/kiro_crew/BUILD_VERSION
 
-# The crew image's wheel, staged by scripts/build_crew_base_image.sh for the
+# The crew image's wheel, staged by crew/scripts/build_crew_base_image.sh for the
 # context bind mount. `vendor/` is a TRACKED directory (its .gitkeep ships in the
 # sdist so the image can be built from an installed copy), so without this rule a
 # ~27MB build artifact sits in a tracked path waiting for a `git add -A`.

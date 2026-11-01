@@ -65,10 +65,10 @@ def build_wheel(vendor: Path) -> Path:
     wheel that varies run to run makes every restage of unchanged code a cache
     miss and a full image build.
 
-    The same staging ``scripts/build_crew_base_image.sh`` does, and emptied first
-    for the same reason: the base's install step refuses a context holding more
-    than one wheel, which is what keeps its glob version-agnostic, so a stale
-    wheel would fail the build with a confusing message instead of being
+    The same staging the crew tree's ``scripts/build_crew_base_image.sh`` does, and
+    emptied first for the same reason: the base's install step refuses a context
+    holding more than one wheel, which is what keeps its glob version-agnostic, so
+    a stale wheel would fail the build with a confusing message instead of being
     replaced.
 
     setuptools' own ``build/lib`` copy of the staging directory is emptied too.
@@ -135,7 +135,7 @@ def main() -> None:
     parser.add_argument("--skip-wheel", action="store_true", help="reuse the wheel already staged")
     args = parser.parse_args()
 
-    vendor = recipe_mod.RUNTIME_DIR / "vendor"
+    vendor = recipe_mod.runtime_path("RUNTIME_DIR") / "vendor"
     staged = sorted(vendor.glob("*.whl"))
     if args.skip_wheel:
         if not staged:
