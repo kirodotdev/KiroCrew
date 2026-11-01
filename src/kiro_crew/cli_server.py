@@ -683,7 +683,9 @@ def _logs_cmd(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    if plat == Platform.UNSUPPORTED:
+    # Windows has no `tail`, with or without a Task Scheduler service: the
+    # scheduled gateway writes the same gateway.log a foreground one does.
+    if plat in (Platform.UNSUPPORTED, Platform.SCHTASKS):
         try:
             _tail_log_file(fallback, lines, follow)
         except OSError as exc:

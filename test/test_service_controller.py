@@ -22,7 +22,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
 )
 
 from kiro_crew.service import controller
-from kiro_crew.service.common import RESTART_REFUSED, SERVICE_NAME, Platform
+from kiro_crew.service.common import RESTART_NOT_UP, RESTART_REFUSED, SERVICE_NAME, Platform
 
 
 class TestControllerDispatch:
@@ -946,3 +946,201 @@ class TestInstalledUnitPath:
     def test_unsupported_platform_is_not_installed(self, monkeypatch):
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.UNSUPPORTED)
         assert controller.installed_unit_path() is None
+
+
+class TestSchtasksControllerDegradesInsteadOfCrashing:
+    """windows.* raises where linux.* and macos.* cannot.
+
+    linux.stop() and macos.stop() never raise, so the CLI verbs that call
+    these have no handler of their own. A refusal or a timeout escaping here
+    reaches the operator as a traceback and skips the foreground fallback,
+    which is the one path that still works when the service manager is the
+    broken thing.
+    """
+
+    def test_stop_service_degrades_when_the_scheduler_refuses(self):
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(
+                svc_windows, "stop", side_effect=svc_windows.ServiceInstallError("denied")
+            ),
+        ):
+            assert controller.stop_service() is False
+
+    def test_restart_service_degrades_when_the_scheduler_refuses(self):
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(
+                svc_windows, "is_installed", side_effect=svc_windows.ServiceInstallError("timeout")
+            ),
+        ):
+            report = controller.restart_service()
+        assert not report
+        assert not report.attempted
+
+    def test_a_refused_restart_reports_the_refusal(self):
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(svc_windows, "restart", return_value=False),
+            patch.object(svc_windows, "schtasks_bin", return_value=None),
+        ):
+            report = controller.restart_service()
+        assert report.attempted
+        assert not report.ok
+        assert report.failures[0].kind == RESTART_REFUSED
+
+    def test_service_status_reports_instead_of_crashing(self, capsys):
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(
+                svc_windows, "status", side_effect=svc_windows.ServiceInstallError("did not answer")
+            ),
+        ):
+            assert controller.service_status() == 1
+        assert "did not answer" in capsys.readouterr().err
+
+    def test_a_stop_that_did_not_reach_the_gateway_is_not_claimed(self):
+        """Registration is not ownership: an installed task and a foreground
+        gateway coexist, and /End refuses silently in that case."""
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(svc_windows, "stop"),
+            patch.object(svc_windows, "is_active", return_value=True),
+        ):
+            assert controller.stop_service() is False
+
+    def test_a_stop_that_did_reach_it_is_claimed(self):
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(svc_windows, "stop"),
+            patch.object(svc_windows, "is_active", return_value=False),
+        ):
+            assert controller.stop_service() is True
+
+
+class TestSchtasksOwnershipAndStatus:
+    def test_restart_of_a_gateway_the_task_does_not_own_goes_to_the_foreground(self):
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(svc_windows, "restart", return_value=None),
+        ):
+            report = controller.restart_service()
+        assert not report.attempted
+        assert report.unmanaged_gateway
+
+    def test_status_without_a_task_exits_1_even_if_a_gateway_answers(self, capsys):
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=False),
+            patch.object(svc_windows, "is_active", return_value=True),
+            patch.object(svc_windows, "is_serving", return_value=True),
+        ):
+            assert controller.service_status() == 1
+
+    def test_status_with_a_task_and_a_gateway_exits_0(self, capsys):
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(svc_windows, "is_serving", return_value=True),
+        ):
+            assert controller.service_status() == 0
+
+    def test_status_does_not_exit_0_for_another_program_on_the_port(self, capsys):
+        """A TCP answer from something else is not a running gateway."""
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(svc_windows, "is_active", return_value=True),
+            patch.object(svc_windows, "is_serving", return_value=False),
+        ):
+            assert controller.service_status() == 1
+
+    def test_a_restart_whose_gateway_never_reports_ready_is_not_a_success(self):
+        """/Run accepted only means the action launched; a refused start must not read as done."""
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(svc_windows, "restart", return_value=True),
+            patch.object(svc_windows, "wait_until_serving", return_value=False),
+        ):
+            report = controller.restart_service()
+        assert report.attempted
+        assert not report.ok
+        assert report.failures[0].kind == RESTART_NOT_UP
+        assert report.failures[0].hint == "kirocrew logs"
+
+    def test_a_restart_whose_gateway_reports_ready_succeeds(self):
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(svc_windows, "restart", return_value=True),
+            patch.object(svc_windows, "wait_until_serving", return_value=True),
+        ):
+            report = controller.restart_service()
+        assert report
+        assert report.attempted
