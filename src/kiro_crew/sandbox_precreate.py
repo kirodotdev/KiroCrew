@@ -64,7 +64,7 @@ from kiro_crew.sandbox_leaves import (
 #:    its leave-it-alone branch: the seed is not refreshed, and nothing is overwritten
 #:    or unlinked. A writer that rewrites in place (``atomic_write.rewrite_in_place``:
 #:    ``decisions_consent.json``, ``shared_crew_preview.json``,
-#:    ``credential_redaction.json``) keeps the inode, so its reader then sees the
+#:    ``credential_redaction.json``, ``ssh_auth_sock_consent.json``) keeps the inode, so its reader then sees the
 #:    owner's record under the seal; one that publishes by rename detaches the seal
 #:    in a running sandbox until it respawns (the ``config.json`` residual in
 #:    ``security.md``). The empty ``profiles`` dir is exempt from the concern
@@ -404,9 +404,10 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # Consent to forward SSH_AUTH_SOCK: ``ssh_auth_sock_consent.is_granted``
     # reports no consent for an absent, empty, AND unreadable store alike, so a
     # pre-created ``{}`` means exactly "not forwarded" (criterion 1); the writer
-    # publishes through ``atomic_write`` (new inode), so a sandboxed reader frozen
-    # at ``{}`` under-reports consent, which is narrower than the truth
-    # (criterion 2). Without this entry the Linux mount seal skips the absent leaf
+    # rewrites an existing record in place (``atomic_write.rewrite_in_place``), so
+    # the read-only mount stays on the same inode and a sandboxed reader sees the
+    # owner's choice, never a writable copy (criterion 2). Without this entry the
+    # Linux mount seal skips the absent leaf
     # -- the DEFAULT before any grant -- leaving it creatable from inside the
     # namespace sandbox.
     "ssh_auth_sock_consent.json",

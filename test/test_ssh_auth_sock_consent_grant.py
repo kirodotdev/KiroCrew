@@ -99,6 +99,17 @@ class TestGrantStore:
         assert ssh_auth_sock_consent.is_granted() is False
         assert ssh_auth_sock_consent.read_grant() is None
 
+    def test_grant_and_revoke_rewrite_the_record_in_place(self, _isolated_store):
+        # A running Linux sandbox seals this leaf with a read-only bind; a rename
+        # over it would detach the bind there, so every write must keep the inode.
+        _isolated_store.write_text("{}", encoding="utf-8")
+        inode = os.stat(_isolated_store).st_ino
+        ssh_auth_sock_consent.record_grant(granted_at="2026-10-09T00:00:00+00:00")
+        assert os.stat(_isolated_store).st_ino == inode
+        ssh_auth_sock_consent.revoke()
+        assert os.stat(_isolated_store).st_ino == inode
+        assert json.loads(_isolated_store.read_text(encoding="utf-8")) == {"enabled": False}
+
     def test_revoke_writes_an_explicit_false(self, _isolated_store):
         ssh_auth_sock_consent.record_grant(granted_at="2026-10-09T00:00:00+00:00")
         assert ssh_auth_sock_consent.revoke() is True
