@@ -421,9 +421,11 @@ def _dispatch_turn(
             # designed behaviour rather than a containment change.
             from kiro_crew.dashboard.session_control import containment_meta
 
+            queued_meta = dict(message_meta or {})
+            queued_meta.update(containment_meta(state, slot))
             slot.queue_append(
                 message,
-                meta=containment_meta(state, slot),
+                meta=queued_meta,
                 directive_user_origin=directive_user_origin,
             )
         except Exception:
