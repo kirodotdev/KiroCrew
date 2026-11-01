@@ -5,6 +5,8 @@ import { Btn, SearchInput, Badge, EmptyState, ContentSkeleton } from '../../comp
 import Clickable from '../../components/Clickable'
 import Modal from '../../components/Modal'
 import SimpleSelect from '../../components/SimpleSelect'
+import ErrorNotice from '../../components/ErrorNotice'
+import { errMessage } from '../../utils/thunkError'
 import { knowledgeApi } from './api'
 import { useCopy, ITEM_TYPES, STATUSES, DEFAULT_STATUS_FILTER, ONBOARDING, FALLBACK_SUPPORTED_FORMATS, formatSupportedFormats } from './helpers'
 import DetailView from './DetailView'
@@ -97,6 +99,11 @@ function EntityAutocomplete({ query, onSelect }: { query: string; onSelect: (nam
   )
 }
 
+/** The server's reason for a failed request, or a plain line when it gave none. */
+function failureText(error: unknown): string {
+  return errMessage(error) || i18nT('pages.knowledge.index.error_no_reason')
+}
+
 function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>; items: KnowledgeItem[]; onDone: () => void }) {
   const queryClient = useQueryClient()
 
@@ -107,6 +114,8 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
       ))
     },
     onMutate: async () => {
+      // Each action clears the other's failure, so the notice names the latest one.
+      bulkDeleteMutation.reset()
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
       // The 'knowledge-items' prefix also covers the source-counts cache,
@@ -135,6 +144,8 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
       ))
     },
     onMutate: async () => {
+      // Each action clears the other's failure, so the notice names the latest one.
+      bulkArchiveMutation.reset()
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
       // The 'knowledge-items' prefix also covers the source-counts cache,
@@ -164,8 +175,15 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
   }
 
   const pending = bulkArchiveMutation.isPending || bulkDeleteMutation.isPending
+  // The rollback puts the rows back; this says why they came back.
+  const failed = bulkArchiveMutation.isError ? bulkArchiveMutation : bulkDeleteMutation.isError ? bulkDeleteMutation : null
 
   return (
+    <>
+    {/* Only the toolbar follows the selection. The optimistic update hides the
+        selected rows, which empties the selection, so the notice and the
+        mutations that own it must stay mounted without one. */}
+    {selectedIds.size > 0 && (
     <div className="flex items-center gap-2 px-3 py-2 bg-accent/5 border border-accent/20 rounded-lg mb-3">
       <span className="text-[13px] text-text-strong font-medium">{selectedIds.size} {i18nT('pages.knowledge.index.selected')}</span>
       <Btn disabled={pending} onClick={() => bulkArchiveMutation.mutate('archived')}>{i18nT('pages.knowledge.index.archive')}</Btn>
@@ -173,6 +191,18 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
       <Btn onClick={copySelected}><Copy size={12} /> {copied ? i18nT('pages.knowledge.index.copied') : i18nT('pages.knowledge.index.copy_content')}</Btn>
       <button onClick={onDone} className="ml-auto text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.index.clear')}</button>
     </div>
+    )}
+    <ErrorNotice
+      askAgent
+      className="mb-3"
+      testId="knowledge-bulk-error"
+      title={failed === bulkDeleteMutation
+        ? i18nT('pages.knowledge.index.bulk_delete_failed')
+        : i18nT('pages.knowledge.index.bulk_archive_failed')}
+      message={failed ? failureText(failed.error) : ''}
+      onDismiss={() => { bulkArchiveMutation.reset(); bulkDeleteMutation.reset() }}
+    />
+    </>
   )
 }
 
@@ -211,7 +241,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   // is only used for flat search results.
   const sourceFirst = !query
 
-  const { data: itemsData, isLoading: itemsLoading } = useQuery({
+  const { data: itemsData, isLoading: itemsLoading, error: itemsError } = useQuery({
     queryKey: ['knowledge-items', { page, query, typeFilter, statusFilter, namespaceFilter, limit }],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), limit: String(limit) })
@@ -227,7 +257,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   // Per-source counts under the active filters. This is what makes every source
   // visible at once: the rows come from these counts, not from whichever items
   // happened to land on a shared page.
-  const { data: countsData, isLoading: countsLoading } = useQuery({
+  const { data: countsData, isLoading: countsLoading, error: countsError } = useQuery({
     // Shared 'knowledge-items' prefix: see SourceGroup for the rationale.
     queryKey: ['knowledge-items', 'source-counts', { typeFilter, statusFilter, namespaceFilter }],
     queryFn: () => {
@@ -247,6 +277,12 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   const items = useMemo(() => itemsData?.items ?? [], [itemsData])
   const total = sourceFirst ? (countsData?.total ?? 0) : (itemsData?.total ?? 0)
   const loading = sourceFirst ? countsLoading : itemsLoading
+  // The read behind the list that is on screen. A failure with no rows to show,
+  // cached or not, is not an empty library: it must not read as onboarding or
+  // "no matches". Cached rows stay on screen under the notice.
+  const listError = sourceFirst ? countsError : itemsError
+  const listRows = sourceFirst ? (countsData?.total ?? 0) : (itemsData?.items.length ?? 0)
+  const listUnread = !!listError && listRows === 0
 
   const { data: stats } = useQuery({
     queryKey: ['knowledge-stats'],
@@ -293,7 +329,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
     wasSyncingRef.current = isSyncing
   }, [sources, queryClient])
 
-  const { data: entityItems = [] } = useQuery({
+  const { data: entityItems = [], error: entityItemsError } = useQuery({
     queryKey: ['knowledge-entity-items', selectedEntity],
     queryFn: () => knowledgeApi<KnowledgeItem[]>(`/entities/by-name/${encodeURIComponent(selectedEntity!)}/items`),
     enabled: !!selectedEntity,
@@ -471,7 +507,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   // indistinguishable from an empty library and shows onboarding. The Sources
   // and Graph tabs stay mounted above this branch, so it is not a dead end.
   const filtersPristine = !query && !typeFilter && !namespaceFilter && statusFilter === DEFAULT_STATUS_FILTER
-  const isEmpty = !loading && total === 0 && filtersPristine
+  const isEmpty = !loading && !listUnread && total === 0 && filtersPristine
   const totalPages = Math.ceil(total / limit)
 
   // Extracted so the onboarding branch can render it too. Onboarding fires when
@@ -601,11 +637,18 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
             <>
               {listFilterBar}
 
-              {selectedItems.size > 0 && (
-                <BulkActions selectedIds={selectedItems} items={visibleItems} onDone={() => setSelectedItems(new Set())} />
-              )}
+              {/* Mounted with no selection too: it owns the bulk failure notice. */}
+              <BulkActions selectedIds={selectedItems} items={visibleItems} onDone={() => setSelectedItems(new Set())} />
 
-              {loading ? <ContentSkeleton /> : sourceRows ? (
+              <ErrorNotice
+                askAgent
+                className="mb-3"
+                testId="knowledge-list-load-error"
+                title={i18nT('pages.knowledge.index.list_load_failed')}
+                message={listError ? failureText(listError) : ''}
+              />
+
+              {loading ? <ContentSkeleton /> : listUnread ? null : sourceRows ? (
                 !sourceRows.length ? (
                   <EmptyState icon={<Search size={40} />} title={i18nT('pages.knowledge.index.no_items_match_your_filters')} subtitle={i18nT('pages.knowledge.index.try_a_different_type_status_or_namespace')} />
                 ) : (
@@ -679,7 +722,15 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
                   <span className="text-sm font-medium text-text-strong">{i18nT('pages.knowledge.index.items_mentioning')} <Badge variant="aim">{selectedEntity}</Badge></span>
                   <Btn aria-label={i18nT('pages.knowledge.index.clear_entity_selection')} onClick={() => { setSelectedEntity(null) }}><X size={12} /></Btn>
                 </div>
-                {entityItems.length === 0 ? <span className="text-[13px] text-muted">{i18nT('pages.knowledge.index.no_items_found')}</span> : (
+                {/* Above any list from an earlier read, so a failed refresh is not passed off as current. */}
+                <ErrorNotice
+                  askAgent
+                  className="mb-2"
+                  testId="knowledge-entity-items-error"
+                  title={i18nT('pages.knowledge.index.entity_items_load_failed')}
+                  message={entityItemsError ? failureText(entityItemsError) : ''}
+                />
+                {entityItemsError && entityItems.length === 0 ? null : entityItems.length === 0 ? <span className="text-[13px] text-muted">{i18nT('pages.knowledge.index.no_items_found')}</span> : (
                   <div className="flex flex-col gap-1">
                     {entityItems.map(it => (
                       <Clickable key={it.id} onClick={() => { setSelectedId(it.id); setTab('list') }}

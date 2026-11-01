@@ -20,8 +20,8 @@ import {
   __resetBottomTerminal, addTab, reuseCurrentTab, setActiveTab, useBottomTerminal,
 } from '../hooks/useBottomTerminal'
 
-beforeEach(() => { __resetBottomTerminal() })
-afterEach(() => { __resetBottomTerminal() })
+beforeEach(() => { act(() => { __resetBottomTerminal() }) })
+afterEach(() => { act(() => { __resetBottomTerminal() }) })
 
 describe('reuseCurrentTab', () => {
   it('returns null and mints nothing when no terminal is open', () => {

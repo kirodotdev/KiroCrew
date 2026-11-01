@@ -14380,17 +14380,21 @@
         "edit": "편집",
         "entities_count": "엔터티({{count}})",
         "entities_in_this_chunk": "이 청크의 엔터티:",
+        "error_no_reason": "이유 없이 요청이 실패했습니다.",
         "export": "내보내기",
         "item_not_found": "항목을 찾을 수 없습니다",
+        "load_failed": "이 항목을 불러올 수 없습니다",
         "match_score": "일치: {{type}}(점수: {{score}})",
         "no_tags": "태그 없음",
         "permanently_delete_this_item": "이 항목을 완전히 삭제하시겠습니까?",
         "related_items_count": "관련 항목({{count}})",
+        "related_load_failed": "관련 항목을 불러올 수 없습니다",
         "relations_count": "관계({{count}})",
         "save": "저장",
         "shared": "공유",
         "summary": "요약",
         "tag1_tag2_tag3": "tag1, tag2, tag3",
+        "tags_save_failed": "태그를 저장할 수 없습니다",
         "unarchive": "보관 해제"
       },
       "embeddingStatus": {
@@ -14469,7 +14473,12 @@
         "stats_entities_other": "엔터티 {{count}}개",
         "stats_relations_other": "관계 {{count}}개",
         "stats_sources_other": "소스 {{count}}개",
-        "page_of": "{{pages}}페이지 중 {{page}}페이지"
+        "page_of": "{{pages}}페이지 중 {{page}}페이지",
+        "list_load_failed": "지식 항목을 불러올 수 없습니다",
+        "bulk_archive_failed": "선택한 항목을 보관할 수 없습니다",
+        "bulk_delete_failed": "선택한 항목을 삭제할 수 없습니다",
+        "entity_items_load_failed": "이 엔터티의 항목을 불러올 수 없습니다",
+        "error_no_reason": "이유 없이 요청이 실패했습니다."
       },
       "itemCard": {
         "copied": "복사했습니다!",
@@ -14501,7 +14510,9 @@
         "no_source": "소스 없음",
         "page_of": "{{pages}}페이지 중 {{page}}페이지",
         "prev": "← 이전",
-        "unknown_source": "알 수 없는 소스"
+        "unknown_source": "알 수 없는 소스",
+        "error_no_reason": "이유 없이 요청이 실패했습니다.",
+        "load_failed": "이 소스의 항목을 불러올 수 없습니다"
       },
       "sourcesList": {
         "add_folder": "폴더 추가",
@@ -16900,6 +16911,10 @@
         "auto_add_documents": "문서 자동 추가",
         "auto_add_saved_artifacts": "저장된 아티팩트 자동 추가",
         "auto_compact_threshold": "자동 압축 임계값",
+        "auto_compact_custom": "사용자 지정…",
+        "auto_compact_exact": "정확한 임계값(%)",
+        "auto_compact_exact_hint": "{{min}}~{{max}} 사이의 값을 입력하세요. Enter를 누르거나 필드에서 포커스가 벗어나면 저장됩니다.",
+        "auto_compact_threshold_clamped": "{{stored}}(으)로 저장했습니다. {{requested}}은(는) 허용 범위({{min}}~{{max}})를 벗어납니다.",
         "auto_ingest_limit_per_scan": "스캔당 자동 수집 한도",
         "auto_open_git_panel": "사이드 패널에서 Git 자동 열기",
         "auto_register_project_documents": "프로젝트 문서 자동 등록",

@@ -14886,17 +14886,21 @@
         "edit": "modifier",
         "entities_count": "Entités ({{count}})",
         "entities_in_this_chunk": "Entités dans ce fragment :",
+        "error_no_reason": "La requête a échoué sans raison indiquée.",
         "export": "Exporter",
         "item_not_found": "Élément introuvable",
+        "load_failed": "Impossible de charger cet élément",
         "match_score": "Correspondance : {{type}} (score : {{score}})",
         "no_tags": "Aucune étiquette",
         "permanently_delete_this_item": "Supprimer définitivement cet élément ?",
         "related_items_count": "Éléments liés ({{count}})",
+        "related_load_failed": "Impossible de charger les éléments liés",
         "relations_count": "Relations ({{count}})",
         "save": "enregistrer",
         "shared": "partagé",
         "summary": "Résumé",
         "tag1_tag2_tag3": "étiquette1, étiquette2, étiquette3",
+        "tags_save_failed": "Impossible d'enregistrer les étiquettes",
         "unarchive": "Désarchiver"
       },
       "embeddingStatus": {
@@ -14983,7 +14987,12 @@
         "stats_sources_one": "{{count}} source",
         "stats_sources_other": "{{count}} sources",
         "stats_sources_many": "{{count}} sources",
-        "page_of": "Page {{page}} sur {{pages}}"
+        "page_of": "Page {{page}} sur {{pages}}",
+        "list_load_failed": "Impossible de charger les éléments de connaissance",
+        "bulk_archive_failed": "Impossible d'archiver les éléments sélectionnés",
+        "bulk_delete_failed": "Impossible de supprimer les éléments sélectionnés",
+        "entity_items_load_failed": "Impossible de charger les éléments de cette entité",
+        "error_no_reason": "La requête a échoué sans raison indiquée."
       },
       "itemCard": {
         "copied": "Copié !",
@@ -15015,7 +15024,9 @@
         "no_source": "Aucune source",
         "page_of": "Page {{page}} sur {{pages}}",
         "prev": "← Préc.",
-        "unknown_source": "Source inconnue"
+        "unknown_source": "Source inconnue",
+        "error_no_reason": "La requête a échoué sans raison indiquée.",
+        "load_failed": "Impossible de charger les éléments de cette source"
       },
       "sourcesList": {
         "add_folder": "Ajouter un dossier",
@@ -17536,6 +17547,10 @@
         "auto_add_documents": "Ajouter automatiquement les documents",
         "auto_add_saved_artifacts": "Ajouter automatiquement les artéfacts enregistrés",
         "auto_compact_threshold": "Seuil de compactage automatique",
+        "auto_compact_custom": "Personnalisé…",
+        "auto_compact_exact": "Seuil exact (%)",
+        "auto_compact_exact_hint": "Saisis une valeur de {{min}} à {{max}}. Elle est enregistrée avec Entrée ou quand le champ perd le focus.",
+        "auto_compact_threshold_clamped": "{{stored}} enregistré. {{requested}} est hors de la plage autorisée ({{min}} à {{max}}).",
         "auto_ingest_limit_per_scan": "Limite d’ingestion automatique par analyse",
         "auto_open_git_panel": "Ouvrir automatiquement Git dans le panneau latéral",
         "auto_register_project_documents": "Enregistrer automatiquement les documents de projet",

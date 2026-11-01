@@ -343,6 +343,7 @@ def _gh_token_sync() -> Optional[str]:
                 [gh, "auth", "token"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=GH_TIMEOUT_SEC,
                 check=False,
                 env=_trusted_env(),

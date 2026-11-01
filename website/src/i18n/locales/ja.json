@@ -14380,17 +14380,21 @@
         "edit": "編集",
         "entities_count": "エンティティ（{{count}}）",
         "entities_in_this_chunk": "このチャンク内のエンティティ:",
+        "error_no_reason": "理由が示されないままリクエストが失敗しました。",
         "export": "エクスポート",
         "item_not_found": "アイテムが見つかりません",
+        "load_failed": "このアイテムを読み込めませんでした",
         "match_score": "一致: {{type}}（スコア: {{score}}）",
         "no_tags": "タグなし",
         "permanently_delete_this_item": "このアイテムを完全に削除しますか？",
         "related_items_count": "関連アイテム（{{count}}）",
+        "related_load_failed": "関連アイテムを読み込めませんでした",
         "relations_count": "関連性（{{count}}）",
         "save": "保存",
         "shared": "共有",
         "summary": "サマリー",
         "tag1_tag2_tag3": "tag1、tag2、tag3",
+        "tags_save_failed": "タグを保存できませんでした",
         "unarchive": "アーカイブ解除"
       },
       "embeddingStatus": {
@@ -14469,7 +14473,12 @@
         "stats_entities_other": "{{count}} 件のエンティティ",
         "stats_relations_other": "{{count}} 件の関連",
         "stats_sources_other": "{{count}} 件のソース",
-        "page_of": "{{pages}} ページ中 {{page}} ページ"
+        "page_of": "{{pages}} ページ中 {{page}} ページ",
+        "list_load_failed": "ナレッジアイテムを読み込めませんでした",
+        "bulk_archive_failed": "選択したアイテムをアーカイブできませんでした",
+        "bulk_delete_failed": "選択したアイテムを削除できませんでした",
+        "entity_items_load_failed": "このエンティティのアイテムを読み込めませんでした",
+        "error_no_reason": "理由が示されないままリクエストが失敗しました。"
       },
       "itemCard": {
         "copied": "コピーしました！",
@@ -14501,7 +14510,9 @@
         "no_source": "ソースなし",
         "page_of": "{{pages}} ページ中 {{page}} ページ",
         "prev": "← 前へ",
-        "unknown_source": "不明なソース"
+        "unknown_source": "不明なソース",
+        "error_no_reason": "理由が示されないままリクエストが失敗しました。",
+        "load_failed": "このソースのアイテムを読み込めませんでした"
       },
       "sourcesList": {
         "add_folder": "フォルダーを追加",
@@ -16900,6 +16911,10 @@
         "auto_add_documents": "ドキュメントの自動追加",
         "auto_add_saved_artifacts": "保存されたアーティファクトの自動追加",
         "auto_compact_threshold": "自動圧縮のしきい値",
+        "auto_compact_custom": "カスタム…",
+        "auto_compact_exact": "正確なしきい値（%）",
+        "auto_compact_exact_hint": "{{min}}〜{{max}} の任意の値を入力してください。Enter を押すか、フィールドからフォーカスが外れると保存されます。",
+        "auto_compact_threshold_clamped": "{{stored}} を保存しました。{{requested}} は許可された範囲（{{min}}〜{{max}}）外です。",
         "auto_ingest_limit_per_scan": "スキャンごとの自動取り込み上限",
         "auto_open_git_panel": "サイドパネルで Git を自動的に開く",
         "auto_register_project_documents": "プロジェクトドキュメントの自動登録",

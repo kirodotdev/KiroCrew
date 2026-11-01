@@ -27,6 +27,7 @@
  * (snip) path, which produces base64 without ever touching disk.
  */
 
+import { COMPOSER_UPLOAD_PATH, uploadComposerFiles } from '../../../utils/composerUpload'
 import { mdImageDest } from '../../../utils/fileTokens'
 import { pathBasename } from '../../../utils/pathBasename'
 
@@ -51,9 +52,6 @@ export function cropToFile(base64: string): File {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
   return new File([bytes], `snip-${Date.now()}.png`, { type: 'image/png' })
 }
-
-/** Core's upload route rejects anything outside its own extension allow-list. */
-const UPLOAD_URL = '/api/upload/file'
 
 /** Mirrors the extensions core's ACP client will inline (client.py). */
 const IMAGE_PATH_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg)$/i
@@ -96,23 +94,28 @@ function isImagePath(path: string): boolean {
 export async function ingestFiles(files: File[]): Promise<IngestResult> {
   if (files.length === 0) return { images: [], files: [] }
 
-  const form = new FormData()
-  for (const file of files) form.append('file', file, file.name)
-
   try {
-    const res = await fetch(UPLOAD_URL, {
-      method: 'POST',
-      credentials: 'same-origin',
-      body: form,
+    // The main composer's upload body: a HEIC photo becomes a JPEG and an
+    // oversized image is downscaled before it is posted, exactly as a drop on
+    // the dashboard chat box.
+    const result = await uploadComposerFiles(files, async (form) => {
+      const res = await fetch(COMPOSER_UPLOAD_PATH, {
+        method: 'POST',
+        credentials: 'same-origin',
+        body: form,
+      })
+      if (!res.ok) {
+        // The route refuses extensions outside its allow-list. Report it — the
+        // fork discarded such files silently, which reads as the app being broken
+        // rather than the file being unsupported.
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(body.error ?? `Upload failed (${res.status})`)
+      }
+      return res
     })
-    const body = (await res.json().catch(() => ({}))) as { paths?: string[]; error?: string }
-    if (!res.ok) {
-      // The route refuses extensions outside its allow-list. Report it — the
-      // fork discarded such files silently, which reads as the app being broken
-      // rather than the file being unsupported.
-      return { images: [], files: [], error: body.error ?? `Upload failed (${res.status})` }
-    }
-    const paths = Array.isArray(body.paths) ? body.paths : []
+    // A photo that could not be converted refuses the batch before the POST.
+    if (result.error !== undefined) return { images: [], files: [], error: result.error }
+    const paths = result.paths
     return {
       images: paths.filter(isImagePath),
       files: paths.filter((p) => !isImagePath(p)),

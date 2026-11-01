@@ -1068,9 +1068,17 @@ jobs:
     # A non-admitted run executing here takes the `kirocrew-runners` group; a
     # fork's own CI, and an absent resolver output, stay on the hosted pool.
     runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
-    # Keep the existing wall-clock budget; individual tests still time out at
-    # 120 seconds. File sharding reduces repeated collection, not test coverage.
-    timeout-minutes: 60
+    # Individual tests still time out at 120 seconds; this is the per-shard
+    # wall-clock budget. File sharding reduces repeated collection, not test
+    # coverage. On CodeBuild (admitted runs) eight shards finish in ~20 min, so
+    # 60 is ample. A run not admitted to the fleet resolves linux_runner_large
+    # to 'kirocrew-linux-4-core' and runs four shards in parallel instead of
+    # eight; a single shard there takes about three times as long and needs 70
+    # to clear its pytest run plus setup while still bounding a hung job. The
+    # predicate mirrors max-parallel below: startsWith(..., 'codebuild-') is
+    # true only on CodeBuild-routed runs, so every non-fleet value keeps the
+    # longer budget.
+    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 60 || 70 }}
     strategy:
       # 4 protects the shared hosted pool and the larger-runner group's own
       # `maximum_runners` cap; the CodeBuild label has its own account quota.

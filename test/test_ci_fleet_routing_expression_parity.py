@@ -664,12 +664,23 @@ def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
         legs -= len(matrix.get("exclude") or [])
         return max(1, -(-legs // cap))
 
+    def cap_minutes(spec: dict) -> int:
+        # Like max-parallel, timeout-minutes may be a CodeBuild-routed
+        # conditional; on the hosted/off-CodeBuild fallback it evaluates to the
+        # `|| N` value, which is the worst case the budget must cover.
+        value = spec["timeout-minutes"]
+        if isinstance(value, str):
+            m = re.search(r"\|\|\s*(\d+)\s*\}\}", value)
+            assert m, f"unparseable timeout-minutes expression: {value!r}"
+            return int(m.group(1))
+        return int(value)
+
     def longest_path(job_id: str) -> int:
         spec = jobs[job_id]
         needs = spec.get("needs", [])
         needs = [needs] if isinstance(needs, str) else list(needs)
         upstream = max((longest_path(n) for n in needs), default=0)
-        return upstream + rounds(spec) * int(spec["timeout-minutes"])
+        return upstream + rounds(spec) * cap_minutes(spec)
 
     critical_path = max(longest_path(job_id) for job_id in jobs)
     assert budget_minutes >= critical_path, (
@@ -698,8 +709,8 @@ def test_merge_queue_readiness_rollout_values() -> None:
     job = _readiness_job()
     (step,) = job["steps"]
     values = dict(re.findall(r"^\s*(TOTAL_BUDGET|MAX_RERUNS)=(\d+)\s*$", step["run"], re.MULTILINE))
-    assert values == {"TOTAL_BUDGET": "12000"}
-    assert job["timeout-minutes"] == 205
+    assert values == {"TOTAL_BUDGET": "13200"}
+    assert job["timeout-minutes"] == 225
 
 
 def test_merge_queue_readiness_reads_runs_and_never_reruns_them() -> None:

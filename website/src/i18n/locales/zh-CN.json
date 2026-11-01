@@ -14380,17 +14380,21 @@
         "edit": "编辑",
         "entities_count": "实体（{{count}}）",
         "entities_in_this_chunk": "此分块中的实体：",
+        "error_no_reason": "请求失败，未给出原因。",
         "export": "导出",
         "item_not_found": "未找到条目",
+        "load_failed": "无法加载此条目",
         "match_score": "匹配：{{type}} (得分：{{score}})",
         "no_tags": "无标签",
         "permanently_delete_this_item": "永久删除此条目？",
         "related_items_count": "相关条目（{{count}}）",
+        "related_load_failed": "无法加载相关条目",
         "relations_count": "关系（{{count}}）",
         "save": "保存",
         "shared": "共享",
         "summary": "摘要",
         "tag1_tag2_tag3": "标签 1, 标签 2, 标签 3",
+        "tags_save_failed": "无法保存标签",
         "unarchive": "取消归档"
       },
       "embeddingStatus": {
@@ -14469,7 +14473,12 @@
         "stats_entities_other": "{{count}} 个实体",
         "stats_relations_other": "{{count}} 条关系",
         "stats_sources_other": "{{count}} 个来源",
-        "page_of": "第 {{page}} 页，共 {{pages}} 页"
+        "page_of": "第 {{page}} 页，共 {{pages}} 页",
+        "list_load_failed": "无法加载知识条目",
+        "bulk_archive_failed": "无法归档所选条目",
+        "bulk_delete_failed": "无法删除所选条目",
+        "entity_items_load_failed": "无法加载此实体的条目",
+        "error_no_reason": "请求失败，未给出原因。"
       },
       "itemCard": {
         "copied": "已复制！",
@@ -14501,7 +14510,9 @@
         "no_source": "无来源",
         "page_of": "第 {{page}} 页，共 {{pages}} 页",
         "prev": "← 上一页",
-        "unknown_source": "未知来源"
+        "unknown_source": "未知来源",
+        "error_no_reason": "请求失败，未给出原因。",
+        "load_failed": "无法加载此来源的条目"
       },
       "sourcesList": {
         "add_folder": "添加文件夹",
@@ -16900,6 +16911,10 @@
         "auto_add_documents": "自动添加文档",
         "auto_add_saved_artifacts": "自动添加已保存的产物",
         "auto_compact_threshold": "自动压缩阈值",
+        "auto_compact_custom": "自定义…",
+        "auto_compact_exact": "精确阈值（%）",
+        "auto_compact_exact_hint": "输入 {{min}} 到 {{max}} 之间的任意值。按 Enter 或字段失去焦点时保存。",
+        "auto_compact_threshold_clamped": "已保存 {{stored}}。{{requested}} 超出允许范围（{{min}} 到 {{max}}）。",
         "auto_ingest_limit_per_scan": "每次扫描的自动摄取上限",
         "auto_open_git_panel": "在侧边栏中自动打开 Git",
         "auto_register_project_documents": "自动注册项目文档",

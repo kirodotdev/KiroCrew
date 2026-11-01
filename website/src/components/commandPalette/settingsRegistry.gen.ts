@@ -1106,6 +1106,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.exact-threshold",
+    "label": "Exact Threshold (%)",
+    "labelKey": "pages.settings.chatPanel.auto_compact_exact",
+    "tab": "chat",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "advanced"
+    }
+  },
+  {
     "id": "chat.fallback-model",
     "label": "Fallback model",
     "labelKey": "pages.settings.chatPanel.fallback_model",

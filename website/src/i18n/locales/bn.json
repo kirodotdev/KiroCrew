@@ -14633,17 +14633,21 @@
         "edit": "সম্পাদনা",
         "entities_count": "সত্তা ({{count}})",
         "entities_in_this_chunk": "এই চাঙ্কে থাকা সত্তা:",
+        "error_no_reason": "কোনো কারণ ছাড়াই অনুরোধ ব্যর্থ হয়েছে।",
         "export": "এক্সপোর্ট",
         "item_not_found": "আইটেম পাওয়া যায়নি",
+        "load_failed": "এই আইটেম লোড করা যায়নি",
         "match_score": "মিল: {{type}} (স্কোর: {{score}})",
         "no_tags": "কোনো ট্যাগ নেই",
         "permanently_delete_this_item": "এই আইটেমটি স্থায়ীভাবে মুছে ফেলবেন?",
         "related_items_count": "সম্পর্কিত আইটেম ({{count}})",
+        "related_load_failed": "সম্পর্কিত আইটেম লোড করা যায়নি",
         "relations_count": "সম্পর্ক ({{count}})",
         "save": "সংরক্ষণ করুন",
         "shared": "শেয়ার করা",
         "summary": "সারসংক্ষেপ",
         "tag1_tag2_tag3": "ট্যাগ1, ট্যাগ2, ট্যাগ3",
+        "tags_save_failed": "ট্যাগ সংরক্ষণ করা যায়নি",
         "unarchive": "আর্কাইভ থেকে সরান"
       },
       "embeddingStatus": {
@@ -14726,7 +14730,12 @@
         "stats_relations_other": "{{count}}টি সম্পর্ক",
         "stats_sources_one": "{{count}}টি সোর্স",
         "stats_sources_other": "{{count}}টি সোর্স",
-        "page_of": "{{pages}}-এর মধ্যে পৃষ্ঠা {{page}}"
+        "page_of": "{{pages}}-এর মধ্যে পৃষ্ঠা {{page}}",
+        "list_load_failed": "নলেজ আইটেম লোড করা যায়নি",
+        "bulk_archive_failed": "নির্বাচিত আইটেম আর্কাইভ করা যায়নি",
+        "bulk_delete_failed": "নির্বাচিত আইটেম মুছে ফেলা যায়নি",
+        "entity_items_load_failed": "এই এন্টিটির আইটেম লোড করা যায়নি",
+        "error_no_reason": "কোনো কারণ ছাড়াই অনুরোধ ব্যর্থ হয়েছে।"
       },
       "itemCard": {
         "copied": "কপি হয়েছে!",
@@ -14758,7 +14767,9 @@
         "no_source": "কোনো সোর্স নেই",
         "page_of": "{{pages}}-এর মধ্যে পৃষ্ঠা {{page}}",
         "prev": "← পূর্ববর্তী",
-        "unknown_source": "অজানা সোর্স"
+        "unknown_source": "অজানা সোর্স",
+        "error_no_reason": "কোনো কারণ ছাড়াই অনুরোধ ব্যর্থ হয়েছে।",
+        "load_failed": "এই উৎসের আইটেম লোড করা যায়নি"
       },
       "sourcesList": {
         "add_folder": "ফোল্ডার যোগ করো",
@@ -17218,6 +17229,10 @@
         "auto_add_documents": "স্বয়ংক্রিয়ভাবে নথি যোগ করুন",
         "auto_add_saved_artifacts": "সংরক্ষিত আর্টিফ্যাক্ট স্বয়ংক্রিয়ভাবে যোগ করুন",
         "auto_compact_threshold": "অটো-কম্প্যাক্ট থ্রেশহোল্ড",
+        "auto_compact_custom": "কাস্টম…",
+        "auto_compact_exact": "সঠিক থ্রেশহোল্ড (%)",
+        "auto_compact_exact_hint": "{{min}} থেকে {{max}} পর্যন্ত যেকোনো মান লেখো। Enter চাপলে বা ফিল্ড থেকে ফোকাস সরলে এটি সেভ হয়।",
+        "auto_compact_threshold_clamped": "{{stored}} সেভ হয়েছে। {{requested}} অনুমোদিত সীমার ({{min}} থেকে {{max}}) বাইরে।",
         "auto_ingest_limit_per_scan": "প্রতি স্ক্যানে স্বয়ংক্রিয় গ্রহণের সীমা",
         "auto_open_git_panel": "সাইড প্যানেলে Git স্বয়ংক্রিয়ভাবে খুলুন",
         "auto_register_project_documents": "প্রকল্পের নথি স্বয়ংক্রিয়ভাবে নিবন্ধন করুন",

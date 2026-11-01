@@ -110,7 +110,12 @@ def test_all_linux_shards_and_memory_heavy_jobs_use_large(jobs):
         "matrix": {"python-version": ["3.12"], "group": list(range(1, 9))},
     }
     assert backend["env"]["SHARD_COUNT"] == 8
-    assert backend["timeout-minutes"] == 60
+    # 60 on CodeBuild (admitted eight-shard runs finish in ~20 min); 70 on any
+    # non-fleet runner, where a run shards four-wide and a single shard needs
+    # the longer budget to clear 120 seconds per test plus setup.
+    assert backend["timeout-minutes"] == (
+        "${{ startsWith(needs.changes.outputs.linux_runner_large, " "'codebuild-') && 60 || 70 }}"
+    )
     lint = next(
         s
         for s in jobs["backend-lint"]["steps"]
