@@ -59,6 +59,7 @@ import PasteHighlightLayer from '../components/PasteHighlightLayer'
 import PasteHoverLayer from '../components/PasteHoverLayer'
 import { isRawPasteChord } from '../components/composerPastePolicy'
 import { mergeCarriedDraft, type PasteBlock } from '../utils/pasteTokens'
+import type { ResizeInfo } from '../utils/resizeImage'
 import { useEmbedAttachments } from './useEmbedAttachments'
 import { ComposerAttach } from '../chat-core/composer/Attach'
 import { JumpToBottomButton } from './ChatScrollChrome'
@@ -271,6 +272,8 @@ interface EmbedSendVars {
   msg: string
   meta?: ChatEmbedSendMeta
   files: string[]
+  /** The resize info of `files`, kept for a restore after `clear` drops it. */
+  resized: Record<string, ResizeInfo>
   sentPastes: PasteBlock[]
   draftText: string
   /** A chip send: it never consumed the draft, so nothing is handed back. */
@@ -913,7 +916,7 @@ function ChatEmbed({
   const applyRecovery = useCallback((rec: PendingEmbedRecovery) => {
     const restore = rec.restoreText == null ? undefined : restoreIntoComposer(rec.restoreText, rec.restorePastes)
     // Staged files ride back with the text, so a retry needs no new upload.
-    if (rec.restoreFiles?.length) restoreFiles(rec.restoreFiles)
+    if (rec.restoreFiles?.length) restoreFiles(rec.restoreFiles, rec.restoreResized)
     setSendTails(prev => [...prev.filter(t => t.sendId !== rec.tail.sendId), { ...rec.tail, restore, restoreFiles: rec.restoreFiles }])
   }, [restoreIntoComposer, restoreFiles])
 
@@ -998,7 +1001,7 @@ function ChatEmbed({
    *  hand back -- a chip send never consumed the draft. Shared by the receipt
    *  branches and `onError`, so a send that throws recovers like a refused one. */
   const deliverOutcome = useCallback((
-    { files, sentPastes, draftText, override, sendId, slot }: EmbedSendVars,
+    { files, resized, sentPastes, draftText, override, sendId, slot }: EmbedSendVars,
     tail: PendingEmbedRecovery['tail'],
   ) => {
     // The text is going back to the composer: drop this send's optimistic
@@ -1006,7 +1009,7 @@ function ChatEmbed({
     setPending(list => list.filter(p => p.sendId !== sendId))
     const rec: PendingEmbedRecovery = override
       ? { tail }
-      : { tail, restoreText: draftText, ...(files.length ? { restoreFiles: files } : {}), ...(sentPastes.length ? { restorePastes: sentPastes } : {}) }
+      : { tail, restoreText: draftText, ...(files.length ? { restoreFiles: files } : {}), ...(Object.keys(resized).length ? { restoreResized: resized } : {}), ...(sentPastes.length ? { restorePastes: sentPastes } : {}) }
     if (mountedRef.current && slotKeyRef.current === slot) applyRecovery(rec)
     else stashEmbedRecovery({ app: appName, slot }, rec)
   }, [applyRecovery, appName])
@@ -1115,6 +1118,7 @@ function ChatEmbed({
     const meta: ChatEmbedSendMeta | undefined = turn?.meta.files || sentPastes.length
       ? { ...(turn?.meta.files ? { files: turn.meta.files } : {}), ...(sentPastes.length ? { pastes: sentPastes } : {}) }
       : undefined
+    const resized = Object.fromEntries(files.filter(p => attachments.resizedInfo[p]).map(p => [p, attachments.resizedInfo[p]]))
     if (files.length) attachments.clear()
     storeSentPastes(turn?.storedPaste)
     // No `sendId` on the optimistic row's meta: it would read as this send's
@@ -1133,7 +1137,7 @@ function ChatEmbed({
       text: msg,
       before,
     }])
-    sendMutation.mutate({ msg, meta, files, sentPastes, draftText, override: override != null, sendId, slot: slotKey, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
+    sendMutation.mutate({ msg, meta, files, resized, sentPastes, draftText, override: override != null, sendId, slot: slotKey, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
   }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers, pastes])
 
   const pickerLabel = attachments.uploading
