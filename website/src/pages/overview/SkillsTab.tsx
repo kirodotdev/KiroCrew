@@ -24,7 +24,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 
 import { Trans } from 'react-i18next'
 
-import { fmtBytes, fmtCompact, fmtDateTime, fmtNumber, fmtRelative } from '../../i18n/format'
+import { fmtBytes, fmtCompact, fmtDateTime, fmtList, fmtNumber, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
@@ -1245,6 +1245,21 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
     message: string
     journal?: ReturnType<typeof findReport>
     about?: { slug: string; name?: string; createdAt?: string }
+    /** The OTHER candidate names in the queue the instant this not-found
+     *  branch fired — every row except `about`'s subject. The same branch
+     *  refetches the queue, which silently drops any of these that were
+     *  resolved out-of-band in the same window. Resolved ONCE into `departed`
+     *  below, at the first settled refetch; kept only for that one
+     *  computation. Empty/undefined when the subject was the only row. */
+    siblings?: string[]
+    /** The siblings that were gone the FIRST time the queue settled after the
+     *  not-found branch — frozen there, never recomputed. Freezing matters:
+     *  re-diffing `siblings` against the live queue on every later render would
+     *  fold in a sibling the user resolves HERE afterwards (its own
+     *  approve/dismiss empties it from the queue), and announce that local
+     *  action as "resolved elsewhere", which is false. Only departures already
+     *  present at the recovery refetch belong on the line. */
+    departed?: string[]
     /** Set for a not-found notice: the candidate left the queue by approval
      *  OR dismissal, and the live Skills list (refetched by the same error
      *  branch) can resolve WHICH. `message` hedges ("approved or dismissed")
@@ -1255,6 +1270,22 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
      *  the two states in which the app genuinely does not know. */
     resolved?: { approved: string; dismissed: string }
   } | null>(null)
+  // Names of candidates the user is resolving HERE (own approve / dismiss /
+  // Dismiss All), tracked independently of `panelError` so the sibling-removed
+  // line can never attribute a local action to another window. A ref, not
+  // state: it is read synchronously when the not-found branch captures
+  // `siblings` and when the prune effect freezes `departed`, and must carry the
+  // latest value across those closures without waiting for a re-render.
+  // INVARIANT: a name enters this set in the mutation's onMutate — BEFORE the
+  // request leaves — and leaves only on failure (onError). Entering on mutate,
+  // not success, is what closes the whole CLASS of timing windows: the recovery
+  // refetch of a racing not-found approve can land, and freeze `departed`,
+  // before this candidate's own success returns, so a success-time record would
+  // miss it. Removing on error keeps a FAILED local action correctly
+  // announceable if it genuinely left the queue out-of-band. Every local
+  // resolution path MUST follow this (the three mutations below do); a new one
+  // that skips it re-opens the false-attribution bug.
+  const locallyResolvedNames = useRef<Set<string>>(new Set())
   // A refusal dies with its candidate however the candidate leaves — this
   // session's actions clear it directly, and this prune covers out-of-band
   // resolution (another tab, TTL prune). Identity is slug + created_at: a
@@ -1283,13 +1314,59 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
     setPanelError(prev => {
       if (!prev?.about) return prev
       const current = pending.find(p => p.slug === prev.about!.slug)
-      if (!current) return prev
-      if (prev.about.createdAt && current.created_at && prev.about.createdAt === current.created_at) {
-        return prev
+      if (current) {
+        if (prev.about.createdAt && current.created_at && prev.about.createdAt === current.created_at) {
+          return prev
+        }
+        return null
       }
-      return null
+      // Subject still gone: the notice stands. Resolve the departed siblings
+      // ONCE here — the first settled queue after the not-found branch — and
+      // freeze them by consuming `siblings`. Freezing is the fix for the
+      // false-attribution bug: without it, a sibling the user later resolves
+      // in THIS tab leaves the live queue and would be announced as "resolved
+      // elsewhere", which is a lie about the user's own action.
+      if (prev.siblings && prev.departed === undefined) {
+        const departed = prev.siblings.filter(
+          n => !pending.some(p => p.name === n) && !locallyResolvedNames.current.has(n),
+        )
+        return { ...prev, departed, siblings: undefined }
+      }
+      return prev
     })
   }, [pending, isSuccess])
+  // Record a candidate the user resolved HERE and scrub it from the sibling
+  // line. Takes the NAME captured in onMutate, not a slug looked up now: by the
+  // time a success fires the recovery refetch may already have removed the row,
+  // so a live-queue lookup returns nothing and the scrub silently no-ops (the
+  // race GPT and Opus flagged). Recording in the ref also covers the opposite
+  // ordering — the local success landing BEFORE the not-found branch creates
+  // the notice — because the capture and freeze both consult the ref.
+  // Enter: the user has started resolving this candidate HERE. Add it to the
+  // set BEFORE the request leaves (called from onMutate) and scrub it from any
+  // sibling line already shown, so it can never be announced as resolved in
+  // another window. Takes the name captured while the row is still in `pending`.
+  const markResolvingLocally = (name: string | undefined) => {
+    if (!name) return
+    locallyResolvedNames.current.add(name)
+    setPanelError(prev => {
+      if (!prev) return prev
+      const inSiblings = prev.siblings?.includes(name)
+      const inDeparted = prev.departed?.includes(name)
+      if (!inSiblings && !inDeparted) return prev
+      return {
+        ...prev,
+        siblings: inSiblings ? prev.siblings!.filter(n => n !== name) : prev.siblings,
+        departed: inDeparted ? prev.departed!.filter(n => n !== name) : prev.departed,
+      }
+    })
+  }
+  // Leave: the local action FAILED (onError), so this candidate was not
+  // resolved here after all. Drop it from the set — if it genuinely left the
+  // queue out-of-band, it should be announceable again.
+  const unmarkResolvingLocally = (name: string | undefined) => {
+    if (name) locallyResolvedNames.current.delete(name)
+  }
   const approve = useMutation({
     mutationFn: ({ slug, contentSha256 }: { slug: string; contentSha256: string }) =>
       api.approvePendingSkill(slug, contentSha256),
@@ -1306,8 +1383,19 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
         delete next[slug]
         return next
       })
+      // Capture the name NOW, while the row is still in `pending`, and mark it
+      // resolving-locally BEFORE the request leaves — so a racing not-found
+      // approve's recovery refetch cannot freeze it onto the sibling line in
+      // the window before this mutation's own response returns. Returned as
+      // context so onError can unmark if the action fails.
+      const name = pending.find(p => p.slug === slug)?.name
+      markResolvingLocally(name)
+      return { name }
     },
-    onError: (err, { slug }) => {
+    onError: (err, { slug }, context) => {
+      // The local action failed, so this candidate was not resolved here —
+      // drop the resolving-locally mark set in onMutate.
+      unmarkResolvingLocally(context?.name)
       let code: string | undefined
       let reason: string | undefined
       const report: Record<string, string[]> = {}
@@ -1372,6 +1460,16 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       if (code === 'pending_skill_not_found') {
         const row = pending.find(p => p.slug === slug)
         const name = row?.name
+        // Every OTHER row's name, captured BEFORE the refetch below prunes the
+        // queue: any of these resolved out-of-band in the same window will be
+        // gone once the list settles, and the render diffs this against the
+        // settled list to name them (siblings-removed narration). Candidates
+        // the user resolved HERE are excluded up front — if one was resolved
+        // locally just before this not-found landed, the queue is already
+        // stale and would otherwise carry it into the frozen departed set.
+        const siblings = pending
+          .filter(p => p.slug !== slug && !locallyResolvedNames.current.has(p.name))
+          .map(p => p.name)
         // An UPDATE candidate's outcome is NOT observable from live-list
         // membership: its target exists whether the update was applied or
         // dismissed. Resolving by the candidate name calls every approved
@@ -1387,6 +1485,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
             : message,
           journal: findReport(err instanceof Error ? err.message : undefined),
           about: { slug, name, createdAt: row?.created_at },
+          siblings,
           // Only a NAMED, NEW-kind candidate can be looked up in the live
           // list; updates and the unnamed fallback keep their open wording
           // for good.
@@ -1405,7 +1504,10 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
         qc.invalidateQueries({ queryKey: ['skills'] })
       }
     },
-    onSuccess: (_data, { slug }) => {
+    onSuccess: (_data, { slug }, context) => {
+      // Already marked in onMutate; re-assert (idempotent) to scrub a notice
+      // that may have appeared between mutate and this success.
+      markResolvingLocally(context?.name)
       setApproveRefusals(prev => {
         if (!(slug in prev)) return prev
         const next = { ...prev }
@@ -1438,8 +1540,15 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       // click that supersedes it — but only THIS candidate's notice: a
       // dismiss on row A is not a retry of row B's failure.
       setPanelError(prev => (prev?.about?.slug === slug ? null : prev))
+      // Capture the name and mark it resolving-locally BEFORE the request
+      // leaves, same invariant as the approve path.
+      const name = pending.find(p => p.slug === slug)?.name
+      markResolvingLocally(name)
+      return { name }
     },
-    onError: (err, slug) => {
+    onError: (err, slug, context) => {
+      // The dismiss failed — drop the resolving-locally mark from onMutate.
+      unmarkResolvingLocally(context?.name)
       // Same duck-typed body handling as the approve path: a coded reason maps
       // to catalog text. An UNCODED reason is system vocabulary ("gateway
       // restarting") that means nothing to a dashboard user — the catalog
@@ -1461,6 +1570,12 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       // Same rule as the approve path: an update's outcome is not observable
       // from live-list membership, so updates keep the honest hedge.
       const resolvable = row?.kind !== 'update'
+      // Only a not-found dismiss refetches the queue; a plain failure leaves
+      // the list untouched, so there is no sibling drop to narrate then.
+      // Candidates resolved HERE are excluded, same as the approve path.
+      const siblings = notFound
+        ? pending.filter(p => p.slug !== slug && !locallyResolvedNames.current.has(p.name)).map(p => p.name)
+        : undefined
       setPanelError({
         // Named, because the panel notice floats above ALL rows: without the
         // candidate's name a reader cannot tell which item the failure was
@@ -1470,6 +1585,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
         message: i18nT('pages.overview.skillsTab.dismiss_failed_named', { name, reason }),
         journal: findReport(err instanceof Error ? err.message : undefined),
         about: { slug, name, createdAt: row?.created_at },
+        siblings,
         // Same framing ("Dismiss of X failed (reason)"), with the reason
         // resolved once the live list settles — see the approve path.
         resolved:
@@ -1495,10 +1611,13 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
         qc.invalidateQueries({ queryKey: ['skills'] })
       }
     },
-    onSuccess: (_data, slug) => {
+    onSuccess: (_data, slug, context) => {
       // Same reason as approve: a dismissal the user just performed must not
       // come back as "someone resolved this already".
       if (slug === reviewSlug) setReviewSlug(null)
+      // Already marked in onMutate; re-assert (idempotent) to scrub a notice
+      // that appeared between mutate and this success.
+      markResolvingLocally(context?.name)
       // A refusal shown for this slug dies with the candidate — a later
       // re-stage that reuses the freed slug must not inherit the previous
       // candidate's refusal notice.
@@ -1522,8 +1641,17 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       // pending candidate, so any per-candidate failure notice is about a
       // subject this very click retries — its outcome supersedes them all.
       setPanelError(null)
+      // Capture every targeted name and mark them resolving-locally NOW, before
+      // the request leaves — Dismiss All is a bulk local resolution, so a
+      // not-found approve racing it must not announce any of them as removed in
+      // another window. Returned as context so onError can unmark on failure.
+      const names = pending.map(p => p.name)
+      for (const name of names) markResolvingLocally(name)
+      return { names }
     },
-    onError: (err) => {
+    onError: (err, _vars, context) => {
+      // The bulk dismiss failed — none of these was resolved here; unmark them.
+      for (const name of context?.names ?? []) unmarkResolvingLocally(name)
       setPanelError({
         message: i18nT('pages.overview.skillsTab.dismiss_failed_generic', {
           // Catalog fallback, not raw server prose — the raw message stays in
@@ -1533,7 +1661,10 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
         journal: findReport(err instanceof Error ? err.message : undefined),
       })
     },
-    onSuccess: () => {
+    onSuccess: (_data, _vars, context) => {
+      // Already marked in onMutate; re-assert (idempotent) to scrub any notice
+      // that appeared in between.
+      for (const name of context?.names ?? []) markResolvingLocally(name)
       setReviewSlug(null)
       setApproveRefusals({})
       qc.removeQueries({ queryKey: ['skills-pending-detail'] })
@@ -1565,6 +1696,12 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
         ? 'approved'
         : 'dismissed'
       : null
+  // Siblings the recovery refetch dropped — resolved ONCE in the prune effect
+  // above, at the first settled refetch, and frozen on `panelError.departed`.
+  // Read straight through here: deriving it in render would re-diff against the
+  // live queue every frame and fold in a sibling the user later resolves HERE,
+  // falsely announcing that local action as "resolved elsewhere".
+  const departedSiblings = panelError?.departed ?? []
   // No top margin on the root, for the same reason as the tab's heading below:
   // this panel is the Skills tab's FIRST in-flow element whenever it renders,
   // and the pane already owns the gap under the tab strip. It is also WHY that
@@ -1617,6 +1754,27 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
                usefulness for the whole session. */
             onDismiss={() => setPanelError(null)}
           />
+        </div>
+      )}
+      {/* Siblings the recovery refetch silently dropped. The aria-live region
+          is PERSISTENT whenever the panel notice is up — a region mounted
+          already-filled is not reliably announced, so instead the empty
+          container is present first and the text ARRIVING inside it is what a
+          screen reader reads. polite, never assertive: the user did not act on
+          these rows, so the reader finishes its current utterance rather than
+          being interrupted, and focus never moves to them. The visual bordered
+          box appears only when at least one sibling has actually left. Count
+          drives the plural form; the names are a locale-joined list. */}
+      {panelError && (
+        <div aria-live="polite" className="contents">
+          {departedSiblings.length > 0 && (
+            <div className="mb-2 text-[11px] p-2 rounded bg-bg-elevated border border-border text-muted">
+              {i18nT('pages.overview.skillsTab.siblings_removed_by_refetch', {
+                count: departedSiblings.length,
+                names: fmtList(departedSiblings),
+              })}
+            </div>
+          )}
         </div>
       )}
       {reviewMissing && (
