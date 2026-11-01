@@ -207,7 +207,6 @@
   "src/test/ToolCallLine.wait.test.tsx",
   "src/test/TranscriptRowGeometry.test.tsx",
   "src/test/TurnNavigationMinimap.test.tsx",
-  "src/test/UserMessage.quote.test.tsx",
   "src/test/WebPreviewPanel.test.tsx",
   "src/test/WidgetFrame.test.tsx",
   "src/test/WorkflowRunGraph.test.tsx",
