@@ -1477,16 +1477,32 @@ async def handle_message_transport(
                     exc_info=True,
                 )
         # Post error to Slack so user knows something went wrong. The error
-        # MESSAGE is suppressed for trusted-bot messages: in a mutual-mesh
-        # setup (A trusts B, B trusts A) an error reply is itself a
-        # bot-authored event the peer admits, so replying would open an
-        # unbounded error-reply ping-pong. Mirrors the native path's guard in
-        # handler_runtime/delivery.py (from_trusted_bot and _had_error). The thread STATUS is
-        # cleared unconditionally — skipping it would leave a stale "working"
-        # status pinned to the thread forever.
-        if from_trusted_bot:
+        # MESSAGE is suppressed in two cases; the thread STATUS below is cleared
+        # unconditionally — skipping it would leave a stale "working" status
+        # pinned to the thread forever.
+        #
+        # 1. Trusted-bot messages: in a mutual-mesh setup (A trusts B, B trusts A)
+        #    an error reply is itself a bot-authored event the peer admits, so
+        #    replying would open an unbounded error-reply ping-pong. Mirrors the
+        #    native path's guard in handler_runtime/delivery.py (from_trusted_bot
+        #    and _had_error).
+        # 2. A turn that already FINALIZED: on_done sets renderer._finalized only
+        #    AFTER the answer-carrying delivery, so an exception reaching here past
+        #    that point was raised by a decorative step (the 30s progress-card
+        #    refresh, a footer or seal) on a turn whose complete answer the reader
+        #    already has. Posting the terminal error over a delivered reply stacks
+        #    a spurious failure line above a correct answer; this guard closes it,
+        #    mirroring the partial-reply rescue above, which skips a finalized turn
+        #    for the same reason.
+        _turn_finalized = renderer is not None and renderer.turn_finalized
+        if from_trusted_bot or _turn_finalized:
             logger.info(
-                "Suppressing transport error reply to trusted bot message (echo-loop guard)"
+                "Suppressing transport error reply (%s)",
+                (
+                    "trusted-bot echo-loop guard"
+                    if from_trusted_bot
+                    else "turn already finalized; answer delivered"
+                ),
             )
         else:
             try:
