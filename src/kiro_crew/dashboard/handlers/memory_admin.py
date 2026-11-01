@@ -624,7 +624,7 @@ async def api_memory_restore(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    if not backup.is_file():
+    if not await asyncio.to_thread(backup.is_file):
         return web.json_response(
             {"error": "no such backup for this memory store", "code": "backup_not_found"},
             status=404,
