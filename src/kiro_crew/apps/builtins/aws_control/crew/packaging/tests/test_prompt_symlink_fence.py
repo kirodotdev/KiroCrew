@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from .test_producer import load_build, make_crew
+from .test_producer import load_build, make_crew, requires_symlinks
 
 
 def _kubeconfig(home):
@@ -36,6 +36,7 @@ def _kubeconfig(home):
     return p
 
 
+@requires_symlinks
 def test_a_symlink_to_a_kubeconfig_is_refused(tmp_path):
     """The reproduction, as a permanent test."""
     mod = load_build()
@@ -53,6 +54,7 @@ def test_a_symlink_to_a_kubeconfig_is_refused(tmp_path):
     assert "credential" in str(exc.value)
 
 
+@requires_symlinks
 def test_a_symlink_into_ssh_is_refused_too(tmp_path):
     """Not special-cased to one directory."""
     mod = load_build()
@@ -88,6 +90,7 @@ def test_a_legitimate_persona_outside_the_agents_dir_still_works(tmp_path):
     assert mod._resolve_prompt_path(f"file://{persona}", agents_dir) == persona
 
 
+@requires_symlinks
 def test_a_symlink_into_a_pseudo_filesystem_is_refused(tmp_path):
     """The hole a reviewer found in the FIRST version of this fix.
 
@@ -110,6 +113,7 @@ def test_a_symlink_into_a_pseudo_filesystem_is_refused(tmp_path):
     assert "pseudo-filesystem" in str(exc.value)
 
 
+@requires_symlinks
 def test_MUTATION_the_pseudo_fs_check_on_the_unresolved_path(tmp_path):
     """Put the original bug back and the symlink is accepted again."""
     agents_dir = tmp_path / "agents"
@@ -122,6 +126,7 @@ def test_MUTATION_the_pseudo_fs_check_on_the_unresolved_path(tmp_path):
     assert accepted == link, "mutation did not take effect; this test proves nothing"
 
 
+@requires_symlinks
 def test_a_symlink_to_a_legitimate_persona_still_works(tmp_path):
     """Resolving must not turn every symlink into a refusal."""
     mod = load_build()
@@ -136,6 +141,7 @@ def test_a_symlink_to_a_legitimate_persona_still_works(tmp_path):
     assert mod._resolve_prompt_path(f"file://{link}", agents_dir) == link
 
 
+@requires_symlinks
 def test_MUTATION_resolving_before_the_fence(tmp_path):
     """With the target check removed, the symlink is accepted again."""
     agents_dir = tmp_path / "agents"
