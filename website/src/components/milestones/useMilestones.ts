@@ -9,7 +9,7 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../../api/client'
 import type { MilestoneEventAction, MilestoneFeatureItem, MilestoneSurface, MilestoneUsageItem, Milestones } from '../../api/client/featureDiscovery'
 import { useAppDispatch, useAppSelector, store } from '../../store'
-import { setPendingInput } from '../../store/chatSlice'
+import { stagePendingSend } from '../../store/chatSlice'
 import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
 import { useAskingNavigate, useIsCurrentUrl, useMayLeaveForNavigation, useNavigationStakeNow } from '../NavigationLeaveGuard'
 import { crewModeAgent, crewModeEnabled, gatewayRunsCrewMode } from '../../lib/crewMode'
@@ -342,6 +342,6 @@ export function useRunStarter() {
     // A direct send goes through the composer's `?autoSend=1` intake, which
     // sends the staged input at once, so nothing the user types can be lost.
     if (!go(chatUrl)) return
-    dispatch(setPendingInput(prompt))
+    dispatch(stagePendingSend(prompt))
   }, [dispatch, navigate, mayLeave, stakeNow, isCurrentUrl, askingNavigate])
 }
