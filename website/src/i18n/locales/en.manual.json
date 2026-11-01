@@ -791,6 +791,8 @@
           }
         },
         "taggingView": {
+          "analyse_next_issues_one": "Analyse the next {{count}} issue",
+          "analyse_next_issues_other": "Analyse the next {{count}} issues",
           "analyzing": "Analyzing…",
           "apply_suggestion_one": "Apply {{count}} suggestion",
           "apply_suggestion_other": "Apply {{count}} suggestions",
@@ -803,6 +805,8 @@
           "labelled_issue_with_failures_one": "Labelled {{count}} issue; {{failed}} could not be updated (see the rows below).",
           "labelled_issue_with_failures_other": "Labelled {{count}} issues; {{failed}} could not be updated (see the rows below).",
           "read_only_repo_needs_triage_or_push_access": "Read-only repo — needs triage or push access",
+          "reanalyse_issues_one": "Re-analyse {{count}} issue that already has a proposal",
+          "reanalyse_issues_other": "Re-analyse {{count}} issues that already have a proposal",
           "select_all": "Select all",
           "suggest_again": "Suggest again ({{n}})",
           "suggest_labels_next": "Suggest labels (next {{n}})",

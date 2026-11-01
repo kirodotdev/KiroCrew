@@ -2943,6 +2943,7 @@
           }
         },
         "taggingView": {
+          "analyse_next_issues_other": "다음 이슈 {{count}}개 분석",
           "analyzing": "분석 중…",
           "apply_suggestion_other": "제안 {{count}}개 적용",
           "applying": "적용 중…",
@@ -2961,6 +2962,7 @@
           "loading_the_untagged_queue": "태그 없는 대기열을 불러오는 중…",
           "newest_first": "최신순",
           "read_only_repo_needs_triage_or_push_access": "읽기 전용 저장소 — 트리아지 또는 푸시 권한이 필요합니다",
+          "reanalyse_issues_other": "이미 제안이 있는 이슈 {{count}}개 다시 분석",
           "reload_the_untagged_queue": "태그 없는 대기열 다시 불러오기",
           "repo_labels": "저장소 레이블",
           "s_labels": "의 레이블:",
