@@ -134,7 +134,6 @@
   "src/test/ChatPage.drawerBackClose.test.tsx",
   "src/test/ChatPage.drawerFrameBudget.test.tsx",
   "src/test/ChatPage.embedded.test.tsx",
-  "src/test/ChatPage.lazyHistoryFetch.test.tsx",
   "src/test/ChatPage.navFarJump.test.tsx",
   "src/test/ChatPage.panelTabFocus.test.tsx",
   "src/test/ChatPage.previewExpandSessions.test.tsx",
