@@ -132,7 +132,7 @@ Deny-by-default, in both directions:
   instruction and is ignored, so a bare `@bot` does not start an empty turn.
 - **Slash commands work in a group too.** A group message has to mention the
   bot, so it arrives as `@FeishuBot /new`. That single leading mention is
-  removed before matching, so `/new`, `/reset` and `/compact` still intercept
+  removed before matching, so `/new`, `/reset`, `/compact`, `/stop` and `/help` still intercept
   there instead of being sent to the agent as a prompt.
   Only a bare command intercepts, and **a message naming anyone else is never a
   command**: `@FeishuBot please run /new later` and `@FeishuBot /new @Alice` are
@@ -226,7 +226,8 @@ channel uses.
 | `feishu/client.py` | `lark-oapi` WebSocket receive + REST reply |
 | `feishu/transport.py` | Authorisation (deny-by-default) and normalisation |
 | `feishu/renderer.py` | Buffers the turn, sends one reply, plus a best-effort notice reply when the answer was redacted |
-| `feishu/transport_dispatch.py` | Drives `TurnDriver`, handles `/new` `/compact` |
+| `feishu/commands.py` | The command table `/help` and the matcher both read |
+| `feishu/transport_dispatch.py` | Drives `TurnDriver`, handles `/new` `/compact` `/agent` `/stop` `/help` |
 | `feishu/gateway.py` | `maybe_start_feishu()` boot entry point |
 
 ## Related docs
