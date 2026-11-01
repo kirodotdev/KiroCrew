@@ -745,9 +745,13 @@ class AcpSessionProvider(LLMProvider):
             raise
         except AcpError as exc:
             if not emitted and await self._connection_failure_is_signed_out(exc):
-                raise AcpAuthRequired(
+                auth_exc = AcpAuthRequired(
                     host_auth.signed_out_message(self.backend), backend=self.backend
-                ) from exc
+                )
+                # Whoami-confirmed sign-out is self-healing; mark it so the
+                # cron auto-pause exemption can identify it without isinstance.
+                auth_exc.credential_expired = True
+                raise auth_exc from exc
             # A masked codex can open its session and only fail the AWS
             # credential load at the turn; name the mask the way the start
             # paths do. One table read, so the kiro path compares and stops (H13).
@@ -909,10 +913,13 @@ class AcpSessionProvider(LLMProvider):
             # Same per-harness remedy as stream(): this translation is shared by
             # every runtime-touching call, so a literal here would misinform an
             # operator on any harness that does not sign in through kiro-cli.
-            return AcpAuthRequired(
+            auth_exc = AcpAuthRequired(
                 host_auth.signed_out_message(self._runtime.acp_backend),
                 backend=self._runtime.acp_backend,
             )
+            if self._runtime.saw_session_sign_out():
+                auth_exc.credential_expired = True
+            return auth_exc
         # A stdin-stall death is the host's own verdict, never a throttle: the
         # transient subclass would license a verbatim replay of a prompt the
         # live child may still read. Ambiguity is the stalling write's own flag

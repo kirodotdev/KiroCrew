@@ -9,8 +9,8 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_death_reason``, ``_death_summary``, ``_death_tail``, ``_process_tree_confirmed_dead``,
-``_saw_auth_failure``, ``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``, ``_scratch_dir``,
-``_stall_turn_sessions``, ``_stderr_lines``, ``_stdin_stall_death``.
+``_saw_auth_failure``, ``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``,
+``_saw_session_sign_out``, ``_scratch_dir``, ``_stall_turn_sessions``, ``_stderr_lines``, ``_stdin_stall_death``.
 
 Instance fields read: ``_acp_backend``, ``_answer_tasks``, ``_initialized``, ``_process``,
 ``_session_queues``.
@@ -166,8 +166,8 @@ async def _revive_after_failed_start(self: AcpRuntime) -> bool:
     again.
 
     Clears what the dead child left behind that a later reading would attribute
-    to the next one: the death state and record, its stderr ring, the auth and
-    sandbox latches armed from it, and its scratch directory, which the next
+    to the next one: the death state and record, its stderr ring, the auth,
+    sign-out and sandbox latches armed from it, and its scratch directory, which the next
     launch would otherwise adopt as the session's tree. Fields the next spawn
     assigns before it reads them (pid, start identity, capabilities) are left
     for it to assign.
@@ -212,6 +212,7 @@ async def _revive_after_failed_start(self: AcpRuntime) -> bool:
     self._stall_turn_sessions = frozenset()
     self._stderr_lines.clear()
     self._saw_auth_failure = False
+    self._saw_session_sign_out = False
     self._saw_sandbox_init_failure = False
     self._saw_delegate_launch_failure = False
     runtime_death.retract(self)
