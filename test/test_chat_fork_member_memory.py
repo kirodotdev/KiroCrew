@@ -311,6 +311,9 @@ async def test_legacy_fork_keeps_the_identity_the_parent_ran_as(tmp_path):
         child = state._slots[body["key"]]
         child_key = effective_session_key(child)
         carrier = execution.read_session_execution(child_key)
+        child_record, readable = ConversationLog().get_metadata_status(child_key)
+        assert readable
+        assert child_record.get("agent_kind", "") == agent_kind
         assert (carrier.selection_kind, carrier.template_id) == (kind, template)
         if kind == "member":
             assert carrier.selection_name == alias

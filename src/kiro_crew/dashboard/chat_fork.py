@@ -567,6 +567,11 @@ def _shape_fork_child(
     ``slots`` frame already shows the folder, tags and fork title set here.
     """
     new_slot.forked_from = effective_session_key(slot)
+    # Keep the namespace that made the parent's alias-or-template decision. The
+    # execution carrier alone cannot preserve it: a template-stamped alias and
+    # an alias mistakenly stored as a template id share one carrier shape on
+    # disk. Saving the stamp on the child lets a later read tell them apart.
+    new_slot.agent_kind = str(getattr(slot, "agent_kind", "") or "")
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
