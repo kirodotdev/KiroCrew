@@ -380,7 +380,6 @@
   "src/test/SidePanelGlyph.test.tsx",
   "src/test/SlotTagPopover.test.tsx",
   "src/test/SpecBuilderDecisionLock.test.tsx",
-  "src/test/SpecBuilderPage.test.tsx",
   "src/test/SpecBuilderSpecDetailCoverage.test.tsx",
   "src/test/SttSettings.surface.test.tsx",
   "src/test/SttSettings.transcribe.test.tsx",
