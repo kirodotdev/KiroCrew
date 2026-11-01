@@ -362,7 +362,6 @@
   "src/test/SelectionToolbar.composer.test.tsx",
   "src/test/SessionActionsMenu.errorHandoff.test.tsx",
   "src/test/SessionActionsMenu.folderOrder.test.tsx",
-  "src/test/SessionColorSwatches.test.tsx",
   "src/test/SessionGridViewCoverage.test.tsx",
   "src/test/SessionPulseSurveyCard.test.tsx",
   "src/test/SessionTitleControl.test.tsx",
