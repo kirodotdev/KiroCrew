@@ -348,7 +348,6 @@
   "src/test/ProjectDetailPage.test.tsx",
   "src/test/ProjectDetailPageCoverage.test.tsx",
   "src/test/ProjectPicker.test.tsx",
-  "src/test/ProjectPicker.windowsDrives.test.tsx",
   "src/test/ProjectsPage.test.tsx",
   "src/test/ProjectsPageCoverage.test.tsx",
   "src/test/ProjectsPageWorkspaceShell.test.tsx",
