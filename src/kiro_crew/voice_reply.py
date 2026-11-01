@@ -376,20 +376,33 @@ def strip_markdown(text: str) -> str:
     t = re.sub(r"</?[a-zA-Z][^>]*>", "", t)
     # Markdown links: [label](url) → label
     t = _MARKDOWN_LINK_RE.sub(r"\1", t)
-    # Bold / italic / strikethrough markers
-    t = re.sub(r"[*_~]+", "", t)
-    # Emoji shortcodes
-    t = re.sub(r":[a-z0-9_+-]+:", "", t)
+    # OPTIONS buttons line, before the bare-URL pass, whose \S+ would take
+    # the closing "]" of a URL inside the line.
+    t = re.sub(r"\[OPTIONS:.*?\]", "", t)
+    # Bare URLs, before the marker strips below so a URL's own "_" or "~"
+    # cannot split it into a link placeholder plus spoken path fragments.
+    t = re.sub(r"https?://\S+", " (link) ", t)
+    # Emoji shortcodes, before the "_" pass so :white_check_mark: keeps
+    # the underscores its pattern matches on. A digit on either side marks
+    # a clock time or ratio (10:30:45, 16:9:1), spoken as written.
+    t = re.sub(r"(?<!\d):[a-z0-9_+-]+:(?!\d)", "", t)
+    # Bold / italic markers
+    t = re.sub(r"\*+", "", t)
+    # An underscore run between two letters or digits is a word break in an
+    # identifier (max_retry_count) and stays until after the credential
+    # re-scan below; any other run is an emphasis marker (_italic_,
+    # __bold__) and is dropped.
+    t = re.sub(r"_+", _emphasis_underscore, t)
+    # Strikethrough markers: a "~~" pair, then a lone "~" unless it starts
+    # a home path (~/x).
+    t = re.sub(r"~{2,}", "", t)
+    t = re.sub(r"~(?!/)", "", t)
     # Unicode emoji
     t = re.sub(
         r"[\U0001f300-\U0001faff\U00002702-\U000027b0\U0000fe00-\U0000fe0f\U0000200d]+",
         "",
         t,
     )
-    # Bare URLs
-    t = re.sub(r"https?://\S+", " (link) ", t)
-    # OPTIONS buttons line
-    t = re.sub(r"\[OPTIONS:.*?\]", "", t)
     # Diff blocks: lines starting with +/- only inside fenced blocks are
     # already removed above; catch stray unified-diff hunks.
     t = re.sub(r"^@@[^@]+@@.*$", "", t, flags=re.MULTILINE)
@@ -403,7 +416,17 @@ def strip_markdown(text: str) -> str:
     # Idempotent on clean text; placeholders survive re-scanning.
     t, _ = redact_exfiltration_urls(t)
     t, _ = redact_credentials(t)
+    # Identifier underscores are spoken as word breaks. This runs after the
+    # re-scan so a token whose pattern includes "_" is matched whole.
+    t = re.sub(r"_+", " ", t)
     return t.strip()
+
+
+def _emphasis_underscore(m: re.Match[str]) -> str:
+    """Keep an underscore run inside a word; drop an emphasis marker run."""
+    s, start, end = m.string, m.start(), m.end()
+    inside = start > 0 and end < len(s) and s[start - 1].isalnum() and s[end].isalnum()
+    return m.group(0) if inside else ""
 
 
 def text_to_ssml(
