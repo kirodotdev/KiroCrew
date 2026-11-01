@@ -2498,6 +2498,14 @@ pins the contract.
     the next login. `stop()` returns whether launchd accepted the bootout
     and `stop_service()` passes that on, so `kirocrew stop` never reports a
     refused bootout as a stop.
+  - Uninstall removes the plist and the launcher whatever launchd answers.
+    When no bootout was accepted (refused, never loaded, or the plist was
+    already gone), `uninstall()` asks `launchctl print <domain>/<label>` over
+    `gui/<uid>` then `user/<uid>` and returns the domain that still holds the
+    job (exit 0 only). `uninstall_service()` then prints `❌ launchd did not
+    unload …` and the `launchctl bootout <domain>/<label>` to run by hand on
+    stderr and exits 1, as Linux does for a unit left running. An accepted
+    bootout is not probed, since it is asynchronous.
   - `restart_service()` gates on `is_loaded()` (`launchctl print
     <domain>/<label>` over `gui/<uid>` then `user/<uid>`), not on the
     caller-domain `is_active()`, so `kirocrew restart` over SSH kickstarts the
