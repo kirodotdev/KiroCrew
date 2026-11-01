@@ -8213,6 +8213,10 @@
       "e_g_solutions_architect_sre_founder": "p. ej. arquitecto de soluciones, SRE, fundador",
       "how_technical_are_you": "¿Cuál es tu nivel técnico?",
       "make_it_yours": "Hazlo tuyo.",
+      "mode_dark": "Oscuro",
+      "mode_light": "Claro",
+      "mode_switch_label": "Modo",
+      "mode_system": "Sistema",
       "next": "Siguiente",
       "pick_your_look": "Elige tu aspecto",
       "pop_apps_body": "Instala herramientas específicas que desbloquean nuevas capacidades y flujos de trabajo.",
@@ -16094,7 +16098,11 @@
         "showing_semantic_other": "Mostrando {{shown}} de {{total}}",
         "showing_semantic_filtered_one": "Mostrando {{shown}} de {{matched}} (filtrados de {{total}})",
         "showing_semantic_filtered_many": "Mostrando {{shown}} de {{matched}} (filtrados de {{total}})",
-        "showing_semantic_filtered_other": "Mostrando {{shown}} de {{matched}} (filtrados de {{total}})"
+        "showing_semantic_filtered_other": "Mostrando {{shown}} de {{matched}} (filtrados de {{total}})",
+        "view_audit": "Auditoría",
+        "view_episodic": "Episódica",
+        "view_semantic": "Semántica",
+        "view_switch_label": "Vista de memoria"
       },
       "wakatimeTab": {
         "active_projects": "Proyectos en los que trabajaste",

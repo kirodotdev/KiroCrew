@@ -7951,6 +7951,10 @@
       "e_g_solutions_architect_sre_founder": "例：ソリューションアーキテクト、SRE、起業家",
       "how_technical_are_you": "技術的にどの程度ですか？",
       "make_it_yours": "自分好みにカスタマイズ",
+      "mode_dark": "ダーク",
+      "mode_light": "ライト",
+      "mode_switch_label": "モード",
+      "mode_system": "システム",
       "next": "次へ",
       "pick_your_look": "外観を選択",
       "pop_apps_body": "目的別のツールをインストールして、新しい機能とワークフローを解き放ちます。",
@@ -15526,7 +15530,11 @@
         "showing_events_other": "{{n}} 件のイベントを表示中",
         "showing_events_filtered_other": "{{n}} 件のイベントを表示中（全 {{total}} 件）",
         "showing_semantic_other": "{{total}} 件中 {{shown}} 件を表示中",
-        "showing_semantic_filtered_other": "{{matched}} 件中 {{shown}} 件を表示中（{{total}} 件から絞り込み）"
+        "showing_semantic_filtered_other": "{{matched}} 件中 {{shown}} 件を表示中（{{total}} 件から絞り込み）",
+        "view_audit": "監査",
+        "view_episodic": "エピソード的",
+        "view_semantic": "意味的",
+        "view_switch_label": "メモリ表示"
       },
       "wakatimeTab": {
         "active_projects": "取り組んだプロジェクト",

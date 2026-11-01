@@ -7951,6 +7951,10 @@
       "e_g_solutions_architect_sre_founder": "例如：解决方案架构师、SRE、创始人",
       "how_technical_are_you": "你的技术水平如何？",
       "make_it_yours": "打造你的专属体验。",
+      "mode_dark": "深色",
+      "mode_light": "浅色",
+      "mode_switch_label": "模式",
+      "mode_system": "系统",
       "next": "下一步",
       "pick_your_look": "选择外观",
       "pop_apps_body": "安装专门打造的工具，解锁新的能力和工作流。",
@@ -15526,7 +15530,11 @@
         "showing_events_other": "正在显示 {{n}} 个事件",
         "showing_events_filtered_other": "正在显示 {{n}} 个事件（共 {{total}} 个）",
         "showing_semantic_other": "正在显示 {{total}} 条中的 {{shown}} 条",
-        "showing_semantic_filtered_other": "正在显示 {{matched}} 条中的 {{shown}} 条（从 {{total}} 条中筛选）"
+        "showing_semantic_filtered_other": "正在显示 {{matched}} 条中的 {{shown}} 条（从 {{total}} 条中筛选）",
+        "view_audit": "审计",
+        "view_episodic": "情景",
+        "view_semantic": "语义",
+        "view_switch_label": "记忆视图"
       },
       "wakatimeTab": {
         "active_projects": "你参与的项目",
