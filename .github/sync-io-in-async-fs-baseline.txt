@@ -16,7 +16,6 @@
 #
 # List any on-loop blocking calls, worst files first:
 #   python3 scripts/check_sync_io_in_async.py --report
-3 src/kiro_crew/apps/builtins/dev_fleet/worktree_ops_sync.py
 1 src/kiro_crew/apps/lifecycle_scripts.py
 7 src/kiro_crew/apps/registry.py
 9 src/kiro_crew/apps/registry_pipeline/checkout.py
