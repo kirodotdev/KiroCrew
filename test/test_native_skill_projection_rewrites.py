@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import shutil
 import threading
 import time
@@ -930,6 +931,12 @@ def test_a_dropped_projection_prunes_too_and_spares_what_another_projection_hold
 
     del ended
     gc.collect()
+    # The drop's end is handed to the reaper thread (never run inline on the
+    # dropping thread, which may hold a non-reentrant lock -- see
+    # ``_end_projection``). Wait for the reaper to reach it before asserting.
+    _reached = threading.Event()
+    projection._COLLECTED_ENDS.put(_reached.set)
+    assert _reached.wait(10), "the reaper never reached the dropped projection's end"
 
     assert not ended_alias.exists(), "a dropped projection's view waited for the next spawn"
     assert live_alias.exists(), "a view a live projection holds was pruned"
@@ -988,6 +995,113 @@ def test_a_projection_the_cyclic_collector_frees_ends_on_the_reaper_not_the_coll
     assert ran == [(False, True)], "the end ran on the collecting thread, under its lock"
     assert not list(lease_dir.iterdir()), "the lease was not released"
     assert not alias.exists(), "the collected projection's view was not pruned"
+
+
+def test_a_projection_dropped_off_the_loop_ends_on_the_reaper_not_the_dropping_thread(
+    native_tree, monkeypatch
+):
+    """A refcount-zero drop runs the finalizer on the dropping thread. In the
+    Windows hang that thread was inside a ``ThreadPoolExecutor.submit`` holding
+    ``_global_shutdown_lock`` (constructing the ``Future`` whose allocation
+    dropped this projection's last reference), and running the end there
+    re-enters that same executor through the path-resolution pool, waiting on a
+    lock its own thread holds until the test timeout kills the xdist worker. A
+    lock this test holds across the drop stands in for that one: the end must NOT
+    run on the dropping thread -- off the loop a finalizer is queued for the
+    reaper, which holds none of those locks. This is the refcount companion to
+    the cyclic-collector case above; one rule covers both."""
+    monkeypatch.setattr(projection, "_eager_prune", _REAL_EAGER_PRUNE)
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    lease_dir = projection._projection_lease_dir()
+    held_by_dropper = threading.Lock()
+    ran: list[tuple[bool, bool]] = []
+    done = threading.Event()
+    real_end = projection._end_projection_off_loop
+
+    def end(*args):
+        on_dropper = threading.get_ident() == dropper["id"]
+        # Bounded so a regression (the end running inline on the dropping thread,
+        # which holds the lock) fails here instead of hanging the worker.
+        got = held_by_dropper.acquire(timeout=5)
+        try:
+            ran.append((on_dropper, got))
+            real_end(*args)
+        finally:
+            if got:
+                held_by_dropper.release()
+            done.set()
+
+    monkeypatch.setattr(projection, "_end_projection_off_loop", end)
+    dropper: dict[str, int] = {}
+    alias_box: dict[str, Path] = {}
+
+    def drop_under_lock() -> None:
+        dropper["id"] = threading.get_ident()
+        prepared = projection.prepare_native_skill_projection(project)
+        assert prepared is not None
+        alias_box["path"] = _alias_file(agents, prepared)
+        was_enabled = gc.isenabled()
+        gc.disable()  # force a pure refcount drop, never a cyclic collection
+        try:
+            # Hold a lock the end would deadlock on if it ran inline here, then
+            # drop the last reference: the finalizer fires on THIS thread.
+            with held_by_dropper:
+                del prepared
+        finally:
+            if was_enabled:
+                gc.enable()
+
+    t = threading.Thread(target=drop_under_lock, name="dropper", daemon=True)
+    t.start()
+    t.join(10)
+    assert not t.is_alive(), "the dropping thread hung -- the end ran inline under its lock"
+
+    assert done.wait(10), "the dropped projection was never ended"
+    # (False, True): the end ran on the reaper (not the dropper) and took the
+    # lock freely, because the dropping thread had already released it.
+    assert ran == [(False, True)], "the end ran inline on the dropping thread, under its lock"
+    assert not list(lease_dir.iterdir()), "the lease was not released"
+    assert not alias_box["path"].exists(), "the dropped projection's view was not pruned"
+
+
+def test_an_off_loop_drop_releases_the_lease_inline_when_the_reaper_is_gone(
+    native_tree, monkeypatch
+):
+    """The ``atexit`` weakref sweep can fire a finalizer for a projection the
+    shared runtime never explicitly released, after the daemon reaper is already
+    gone. A queued end would never run then, leaving the lock file behind to
+    block the next process's view of this home. So off the loop with the reaper
+    not alive the finalizer path releases the lease INLINE instead of queueing it
+    -- the prune (which re-enters the path-resolution executor) is dropped, the
+    next boot drain covers it, but the lease must not be lost. Forcing
+    ``_reaper_alive`` False stands in for interpreter shutdown; the lease
+    directory must be empty after the drop without anything landing on the
+    reaper queue."""
+    monkeypatch.setattr(projection, "_eager_prune", _REAL_EAGER_PRUNE)
+    monkeypatch.setattr(projection, "_reaper_alive", lambda: False)
+    # A fresh queue no reaper drains: anything queued here stays queued, so an
+    # empty queue after the drop proves the end did NOT take the reaper path.
+    sink: "queue.SimpleQueue" = queue.SimpleQueue()
+    monkeypatch.setattr(projection, "_COLLECTED_ENDS", sink)
+
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    prepared = projection.prepare_native_skill_projection(project)
+    assert prepared is not None
+    lease_dir = projection._projection_lease_dir()
+    assert len(list(lease_dir.glob("*.json"))) == 1
+
+    was_enabled = gc.isenabled()
+    gc.disable()  # a pure refcount drop off the loop, never a cyclic collection
+    try:
+        del prepared
+    finally:
+        if was_enabled:
+            gc.enable()
+
+    assert sink.empty(), "the end was queued for a reaper that is gone instead of run inline"
+    assert list(lease_dir.glob("*.json")) == [], "the lease was not released inline at exit"
 
 
 def test_two_gateways_still_cannot_both_own_a_view(native_tree, monkeypatch):

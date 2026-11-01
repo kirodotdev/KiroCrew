@@ -272,8 +272,17 @@ class NativeSkillProjection:
         with _ACTIVE_PROJECTIONS_LOCK:
             _ACTIVE_PROJECTIONS.pop(id(self), None)
         if finalizer is not None and finalizer.alive:
-            # Runs ``_end_projection`` once, now, and detaches it from GC.
-            finalizer()
+            # Cancel the GC finalizer and run its end ONCE, now, directly. detach()
+            # returns the (obj, func, args, kwargs) it was armed with, so we call
+            # the SAME ``_end_projection`` the finalizer held -- no import of it
+            # here (that would be a back-edge to ``alias_reclaim``). ``from_release``
+            # tells it this is the explicit, known-safe call site, so off the loop
+            # it may run the end inline; a finalizer fired by GC/refcount omits the
+            # flag and is never run inline. See :func:`_end_projection`.
+            detached = finalizer.detach()
+            if detached is not None:
+                _obj, func, args, _kwargs = detached
+                func(*args, from_release=True)
 
 
 _ACTIVE_PROJECTIONS: weakref.WeakValueDictionary[int, NativeSkillProjection] = (
