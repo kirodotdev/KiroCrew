@@ -154,13 +154,17 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     // project root under a token that names something else.
     enabled: open && !!load && (pathMode ? scope.dir !== '' : debounced.length >= 2),
     // Keep the previous payload on screen only while the PROJECT is unchanged:
-    // `project` is part of the key (index 2 for search, 1 for path-complete),
-    // so bridging across a root change would render the previous root's rows
-    // AND root until the re-rooted answer lands, and a click in that window
-    // inserts a path relative to the OLD root. Same-root key moves (a new
-    // query, a deeper path token) still bridge, flicker-free.
+    // `project` is part of the key (after the query text for search, after the
+    // endpoint tag for path-complete), so bridging across a root change would
+    // render the previous root's rows AND root until the re-rooted answer
+    // lands, and a click in that window inserts a path relative to the OLD
+    // root. Same-root key moves (a new query, a deeper path token) still
+    // bridge, flicker-free. The slot is read through the scope offset because
+    // `pickerQueryKey` prefixes `source.scope` when it is set, shifting every
+    // fixed position by one — reading an unshifted slot under an embed source
+    // would compare the query text instead of the project and never bridge.
     placeholderData: (prev, prevQuery) =>
-      (pathMode ? prevQuery?.queryKey?.[1] : prevQuery?.queryKey?.[2]) === project ? prev : undefined,
+      prevQuery?.queryKey?.[(pathMode ? 1 : 2) + (source.scope ? 1 : 0)] === project ? prev : undefined,
     staleTime: 10_000,
   })
   rootRef.current = data?.root || ''
