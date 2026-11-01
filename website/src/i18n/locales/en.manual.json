@@ -4835,7 +4835,21 @@
       "grants_reconsent_link_hosts": "Link hosts: lets the app's hover cards see links to these sites in chat messages.",
       "grants_reconsent_link_patterns": "Text patterns: lets the app's hover cards see chat text these patterns match.",
       "grants_reconsent_link_full_url": "Whole link addresses: the app's hover cards also see the part of a link after ? or #, which can hold a sign-in code.",
-      "grants_approved": "Approved: {{entries}}. The app can use them now."
+      "grants_approved": "Approved: {{entries}}. The app can use them now.",
+      "adoption": {
+        "network": "{{name}} could not download its App Store version yet. {{productName}} tries again automatically; check this computer's network connection.",
+        "local": "{{name}} could not prepare its App Store version on this computer: the disk is full or a settings file could not be read. {{productName}} tries again automatically.",
+        "policy": "Switching {{name}} to its App Store version is on hold: your app admission policy does not admit that version. Allow it in the admission policy to finish switching.",
+        "trust": "Switching {{name}} to its App Store version is on hold: its trust setting names a different source, or is set in config.local.json, so {{productName}} left it unchanged. Review the trust setting to finish switching.",
+        "permissions": "Switching {{name}} to its App Store version is on hold: that version asks for more access than the one you have now. Nothing was changed.",
+        "platform": "{{name}} cannot switch to its App Store version: that version does not support this platform.",
+        "host": "Switching {{name}} to its App Store version is on hold: that version needs a newer {{productName}}. Update {{productName}} to finish switching.",
+        "verification": "{{name}} is not switching to its App Store version: that version did not pass verification, and this release of {{productName}} does not try again. Nothing was changed.",
+        "staged": "{{name}}'s App Store version is downloaded and verified. {{name}} switches to it the next time {{productName}} restarts.",
+        "keeps_builtin_until": "Until then it stays a built-in app.",
+        "keeps_builtin": "It stays a built-in app.",
+        "installed_needs_newer_host": "The installed version of {{name}} needs a newer {{productName}}. Update {{productName}}; your data is unchanged."
+      }
     },
     "appsPage": {
       "action_failed": "Failed to {{action}} {{name}}",

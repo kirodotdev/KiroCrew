@@ -354,6 +354,7 @@
     "builtinAppRoute": {
       "refused_page_detail_label": "Details für diejenigen, die diese Kopie zusammengestellt haben",
       "refused_page_handoff_note": "Den Agenten zu fragen öffnet einen Chat, an den diese Details bereits angehängt sind.",
+      "apps_list_failed": "Deine installierten Apps konnten nicht geladen werden.",
       "refused_page_lead": "{{productName}} hat diese Seite beim Start abgelehnt, weil sie in dieser Kopie falsch eingerichtet ist. Ein erneuter Versuch bringt sie nicht zurück — wer diese Kopie zusammengestellt hat, muss das beheben.",
       "refused_page_title": "{{route}} konnte nicht geladen werden"
     },
@@ -10917,7 +10918,21 @@
       "grants_reconsent_link_hosts": "Link-Hosts: erlaubt den Hover-Karten der App, Links zu diesen Seiten in Chat-Nachrichten zu sehen.",
       "grants_reconsent_link_patterns": "Textmuster: erlaubt den Hover-Karten der App, Chat-Text zu sehen, auf den diese Muster passen.",
       "grants_reconsent_link_full_url": "Vollständige Linkadressen: Die Hover-Karten der App sehen auch den Teil eines Links nach ? oder #, der einen Anmeldecode enthalten kann.",
-      "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen."
+      "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen.",
+      "adoption": {
+        "network": "{{name}} konnte seine App-Store-Version noch nicht herunterladen. {{productName}} versucht es automatisch erneut; prüfe die Netzwerkverbindung dieses Computers.",
+        "local": "{{name}} konnte seine App-Store-Version auf diesem Computer nicht vorbereiten: Der Datenträger ist voll oder eine Einstellungsdatei war nicht lesbar. {{productName}} versucht es automatisch erneut.",
+        "policy": "Der Wechsel von {{name}} zu seiner App-Store-Version ist angehalten: Deine App-Zulassungsrichtlinie lässt diese Version nicht zu. Erlaube sie in der Zulassungsrichtlinie, um den Wechsel abzuschließen.",
+        "trust": "Der Wechsel von {{name}} zu seiner App-Store-Version ist angehalten: Seine Vertrauenseinstellung nennt eine andere Quelle oder ist in config.local.json festgelegt, daher hat {{productName}} sie nicht geändert. Prüfe die Vertrauenseinstellung, um den Wechsel abzuschließen.",
+        "permissions": "Der Wechsel von {{name}} zu seiner App-Store-Version ist angehalten: Diese Version verlangt mehr Zugriff als die, die du jetzt hast. Es wurde nichts geändert.",
+        "platform": "{{name}} kann nicht zu seiner App-Store-Version wechseln: Diese Version unterstützt diese Plattform nicht.",
+        "host": "Der Wechsel von {{name}} zu seiner App-Store-Version ist angehalten: Diese Version braucht ein neueres {{productName}}. Aktualisiere {{productName}}, um den Wechsel abzuschließen.",
+        "verification": "{{name}} wechselt nicht zu seiner App-Store-Version: Diese Version hat die Prüfung nicht bestanden, und dieses Release von {{productName}} versucht es nicht erneut. Es wurde nichts geändert.",
+        "staged": "Die App-Store-Version von {{name}} ist heruntergeladen und geprüft. {{name}} wechselt beim nächsten Neustart von {{productName}} zu ihr.",
+        "keeps_builtin_until": "Bis dahin bleibt sie eine integrierte App.",
+        "keeps_builtin": "Sie bleibt eine integrierte App.",
+        "installed_needs_newer_host": "Die installierte Version von {{name}} braucht ein neueres {{productName}}. Aktualisiere {{productName}}; deine Daten bleiben unverändert."
+      }
     },
     "appPage": {
       "loading_app": "App wird geladen…",

@@ -4926,6 +4926,100 @@ Writers: `apps/routes.py`, `apps/routes_lifecycle.py`, `apps/routes_proxy.py`,
 `apps/routes_install.py`, `apps/routes_uninstall.py`, `apps/routes_enable.py`,
 `apps/routes_registry.py`.
 
+## 30. App Kit seam level 1: what a former built-in needs, offered to every app
+
+An installed app reaches the host only through its context and the dashboard SDK,
+never through a `kiro_crew` import or a dashboard source path: such an import pins the
+app to one wheel's private layout and breaks silently on the next upgrade. Level 1 is
+the set of seams a built-in's code needed from core, published generically. Nothing in
+any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
+(`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
+`test/test_app_sdk_level_mirror.py`. An app reads `ctx.sdk_level` or the SDK export to
+detect an older host and degrade, instead of failing on a missing attribute.
+
+**Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
+`_route_fields`: an `AppRoute`, or any object whose `method` is a str naming GET, POST,
+PUT, DELETE or PATCH (any case), whose `path` is a str of at most 512 characters, and
+whose `handler` is callable. Anything else is skipped with the existing warning and is
+never registered. Dispatch, prefixing and teardown are unchanged.
+
+**Owner gate.** `AppContext.require_owner(request, operation)` is
+`require_owner_dashboard_request` with the audit operation `<ctx.name>.<operation>`.
+It returns `None` for the owner and the host's own refusal (403 `owner_only`, or the
+stale-session 401) for everyone else, app tokens included. The app chooses where to
+call it. A non-identifier `operation` is audited as `<app>.unnamed`, and the request is
+still denied, so an app cannot write free text into the audit log or attribute a row
+to another app. It needs no permission because it only removes access. The import is
+lazy, so `apps/context.py` keeps its aiohttp-free import.
+
+**Shared embedder.** `AppContext.embed` is an `EmbedSDK` (`apps/embed_sdk.py`),
+always populated like `scrub`. It adds no reach, since the app's in-gateway Python
+could import the embedder anyway, and it keeps one model resident instead of one per
+app. `embed_sync` asks `embeddings_shared.get_shared_embedder()` for a vector, so an
+app's vectors match the host memory's model id and width. It returns `None` when the
+backend is neither ready nor loadable on demand, when the embed raises (logged once per
+process and message), and when called on a running event loop. `run(func, *args,
+**kwargs)` binds the call with `functools.partial` before handing it to
+`executors.run_in_embed_pool`, so no keyword an app passes reaches the pool's own
+parameters. No method raises into the app.
+
+**Manifest `l10n`.** An optional block of listing copy per locale (`L10nConfig` in
+`apps/manifest_sections.py`), preserved by `AppManifest.to_dict` and by the built-in
+discovery conversion. A locale key outside `^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$`, a
+locale past the 32nd, an unknown entry key or an over-cap value drops that locale. The
+drops are kept in `L10nConfig.warnings`, logged by the install validation
+(`manager_tree._validate_source_path`) and never refuse an install. The block is not in
+`signing_payload`: it is content, not authority. The dashboard
+(`components/appstore/appManifest.ts`) reads it only when no catalog key covers the
+app, so a catalog-keyed built-in keeps its own copy. It looks up the exact locale,
+then the base language, then the English field, with own-property lookups and the
+parser's length caps.
+
+**Dashboard SDK.** `openChat` gains `memoryMode` (`'persistent'`, `'incognito'`,
+`'temporary'`; anything else is dropped) and `sessionFolder: false`. Both apply only
+without `slotKey`, and either one makes the launch a new draft (`chatLaunchOpensDraft`
+in `app-sdk/chatLaunch.ts`). The routed chat's `?new=1` intake claims that intent and
+passes `memory_mode` and `sessionFolder` into `createSlot`. The send intake leaves it
+alone, so the message is staged and never auto-sent. `fmtCurrency` and `APP_SDK_LEVEL`
+join `@kirocrew/app-sdk`. `Select` (a narrowed wrapper over the host's own select) and
+`guideCaution` join `@kirocrew/app-sdk/ui`. Each vendor stub names exactly its
+barrel's runtime exports, pinned by `src/test/appSharedModuleBoundary.test.ts`, because
+a name a stub omits fails the importing bundle at link time.
+
+**An adopted former built-in renders its own bundle at its legacy route.** When the
+gateway's `/api/apps` row carries `adoption.state === 'adopted'` with a `legacyNav`
+for a NON-builtin record that has a `ui.entry`, `adoptedLegacyNav` (`appNav.ts`)
+returns that route and glyph. The glyph is dropped unless `hasBuiltinIcon` knows it.
+The route must be one kebab-case segment. Both values come from the gateway's row (the
+wheel pin), never from the app's manifest, so no app can claim a bare route or a
+built-in glyph for itself. `appNavTarget` then keeps the bare nav id, so the rail's
+hidden, order and pinned preferences survive. It also sets `glyphAllowed`, which the
+rail and the palette check instead of `builtin`, and leaves `builtin` false.
+`BuiltinAppRoute` renders the matching record through `InstalledAppSurface` (AppHost
+with the record's own origin) and publishes no `builtin` identity around it, so
+`useTrustedAppId()` refuses it. The compiled page waits for the first installed-apps
+answer behind a skeleton, so an adopted app never flashes a page whose wheel routes
+are gone. A failed first load, a builtin-owned record or no record keeps the compiled
+page; a failed first load also shows the load error above it in an `ErrorNotice`. The
+app detail page shows the adoption state (`AppDetailAdoptionNotice`): a blocked or
+retrying move with its remedy, a staged move, or an installed copy that needs a newer
+host. Reason codes share copy by remedy, and the notice says the app keeps running as
+a built-in while the record is still the built-in's. A remedy the page offers no
+control for (wider access, another platform, a failed verification) says the move is
+on hold, never "until then".
+
+Writers: `apps/app_sdk_level.py`, `apps/route_registry.py`, `apps/context.py`,
+`apps/embed_sdk.py`, `apps/manifest_sections.py`, `apps/manifest.py`,
+`apps/discovery.py`, `apps/manager_tree.py`, `website/src/app-sdk/index.ts`,
+`website/src/app-sdk/chatLaunch.ts`, `website/src/app-sdk/sdkLevel.ts`,
+`website/src/kirocrew-ui/index.ts`, `website/src/kirocrew-ui/Select.tsx`,
+`website/public/vendor/kirocrew-app-sdk.mjs`, `website/public/vendor/kirocrew-ui.mjs`,
+`website/src/pages/chat/useChatPageSessionController.ts`,
+`website/src/pages/chat/page/launchIntake.ts`, `website/src/appNav.ts`,
+`website/src/apps/BuiltinAppRoute.tsx`, `website/src/components/InstalledAppSurface.tsx`,
+`website/src/components/appstore/appManifest.ts`,
+`website/src/pages/AppDetailAdoptionNotice.tsx`.
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.

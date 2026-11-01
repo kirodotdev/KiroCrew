@@ -283,6 +283,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                 "setup": {"onEnable": "echo hi"},
                 "publishProvider": {"id": "p", "label": "P"},
                 "notifications": {"channels": [{"id": "n", "name": "N"}]},
+                "l10n": {"de": {"displayName": "Sonde"}},
                 "contributes": {
                     "commands": [
                         {

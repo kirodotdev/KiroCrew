@@ -46,6 +46,7 @@ import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/merg
 import { classifyManifestArt, installedArt, installedArtList, installedArtListAligned, installedIcon } from '../components/appstore/useHeroArt'
 import { fmtDateNumeric, fmtCompact, fmtNumber } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
+import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 // The page's parts live in sibling owners that never import this module:
 // `AppDetailPageArt.tsx` (the hero banner and the screenshot gallery, each with
@@ -264,6 +265,7 @@ export default function AppDetailPage() {
             installedVersion: installed.version,
             enabled: installed.enabled,
             sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
+            adoption: installed.adoption,
             approvedGrants: installed.approvedGrants,
             linkPreviewGrant: installed.linkPreviewGrant,
             managed: installed.managed,
@@ -390,6 +392,7 @@ export default function AppDetailPage() {
             installedVersion: installed.version,
             enabled: installed.enabled,
             sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
+            adoption: installed.adoption,
             approvedGrants: installed.approvedGrants,
             linkPreviewGrant: installed.linkPreviewGrant,
             managed: installed.managed,
@@ -923,6 +926,16 @@ export default function AppDetailPage() {
             <ShieldAlert size={14} className="mt-[3px] shrink-0 text-warn" />
             <span className="text-text text-sm">{reconsentMsg}</span>
           </div>
+        )}
+
+        {/* A former built-in's move to its published registry copy: blocked, retrying,
+            staged for the next restart, or installed on a host too old for it. */}
+        {app.installed && (
+          <AppDetailAdoptionNotice
+            adoption={app.adoption}
+            name={appDisplayName(app)}
+            builtinOwned={app.origin === 'builtin'}
+          />
         )}
 
         {app.installed && hasStagedGrants && (

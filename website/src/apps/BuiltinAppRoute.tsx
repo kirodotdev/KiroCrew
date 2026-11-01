@@ -18,10 +18,15 @@ import { AlertTriangle } from 'lucide-react'
 import { getBuiltinApp, builtinRefusalReason } from './builtinRegistry'
 import { AppIdentityProvider } from '../app-sdk/identity'
 import { AppCacheRetention } from '../app-sdk/appQuery'
+import { adoptedLegacyNav } from '../appNav'
 import AskAgentButton from '../components/AskAgentButton'
 import ErrorBoundary from '../components/ErrorBoundary'
+import ErrorNotice from '../components/ErrorNotice'
+import InstalledAppSurface from '../components/InstalledAppSurface'
 import { ContentSkeleton } from '../components/ui'
+import { useInstalledApps } from '../hooks/panelTabRegistry'
 import { i18nT } from '../i18n/t'
+import { errMessage } from '../utils/thunkError'
 
 /**
  * The refusal as a DIAGNOSTIC, built once and used twice.
@@ -127,6 +132,45 @@ export default function BuiltinAppRoute() {
   const { builtinApp } = useParams<{ builtinApp: string }>()
   const path = `/${builtinApp || ''}`
   const entry = getBuiltinApp(path)
+  const installed = useInstalledApps()
+
+  // A former built-in whose record the gateway moved to its registry copy keeps
+  // its old route, and renders that copy's own bundle here instead of the page
+  // compiled into this dashboard. The record decides, not the route: the match
+  // is the gateway's `adoption` row, and `adoptedLegacyNav` admits only an
+  // adopted NON-builtin record that ships a bundle. The copy mounts under its own
+  // origin (AppHost reads it from the record), never under the `builtin` origin
+  // the compiled page below publishes.
+  const adopted = entry
+    ? installed.apps.find(app => adoptedLegacyNav(app)?.route === path)
+    : undefined
+  if (adopted) {
+    return (
+      <ErrorBoundary key={path}>
+        <InstalledAppSurface app={adopted} requestedName={adopted.name} />
+      </ErrorBoundary>
+    )
+  }
+  // The compiled page waits for the first answer, so an adopted app never
+  // flashes its compiled page (whose wheel routes the gateway does not serve for it)
+  // before the list arrives. A failed first load falls through to the compiled
+  // page: with no list there is no adoption to honour. The failure is still
+  // shown above it, because an app the gateway did move would render that
+  // compiled page against routes it no longer serves, and this notice is the
+  // one place that names why.
+  if (entry && installed.isPending) return <ContentSkeleton />
+  const listFailure = entry && installed.isLoadingError
+    ? (
+      <div className="p-4 pb-0">
+        <ErrorNotice
+          title={i18nT('apps.builtinAppRoute.apps_list_failed')}
+          message={errMessage(installed.error)}
+          messagePlacement="below"
+          askAgent
+        />
+      </div>
+    )
+    : null
 
   // Both boundaries below are keyed by `path`, and that key is load-bearing.
   // `App.tsx` serves all 23 builtin pages from ONE unkeyed
@@ -169,6 +213,7 @@ export default function BuiltinAppRoute() {
 
   return (
     <ErrorBoundary key={path}>
+      {listFailure}
       {/*
         Identity is published from this render body, NOT from an effect. React
         renders a parent before its children, so a provider here is guaranteed to

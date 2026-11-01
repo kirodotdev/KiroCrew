@@ -29,6 +29,7 @@ import { AppQueryClientProvider } from './appQueryClient'
 // barrel -- see the header of ./scopedApi for why.
 import { useCtx, AppScopedApiProvider, type AppApi, type AppInfo, type AppUpdate } from './scopedApi'
 import type { SlotPush } from './slotPush'
+import { chatLaunchMemoryMode, chatLaunchOpensDraft, type ChatLaunchMemoryMode } from './chatLaunch'
 // Re-exported as TYPES: the barrel<->vendor-stub parity gate counts value
 // exports, and a type vanishes at runtime, so an app author keeps these names
 // without the stub needing an entry it could not provide.
@@ -343,7 +344,22 @@ export interface ChatLaunchOptions {
   slotKey?: string
   /** False seeds a draft only; the user must press Send. Defaults to true. */
   autoSend?: boolean
+  /**
+   * Memory mode of the NEW session, overriding the owner's default. Honoured
+   * only without `slotKey` (an existing session keeps its mode). Setting it
+   * opens a new draft session: `message` is staged in the composer and never
+   * sent automatically. An unknown value is ignored.
+   */
+  memoryMode?: ChatLaunchMemoryMode
+  /**
+   * `false` keeps the new session out of a per-chat session folder even when the
+   * owner turned that on, for a purpose-built chat. Honoured only without
+   * `slotKey`; like `memoryMode`, it opens a new draft session.
+   */
+  sessionFolder?: false
 }
+
+export type { ChatLaunchMemoryMode }
 
 /** Launch intent written to a global slot for the routed chat to claim. */
 interface ChatLaunchIntent extends ChatLaunchOptions {
@@ -363,16 +379,22 @@ export function useChatLauncher(): {
   const { navigate } = useCtx()
 
   const openChat = useCallback((opts: ChatLaunchOptions = {}) => {
+    // Session-shaping options describe a NEW session, so they are dropped for a
+    // targeted launch rather than applied to a session the user already has.
+    const memoryMode = opts.slotKey ? undefined : chatLaunchMemoryMode(opts.memoryMode)
+    const sessionFolder = !opts.slotKey && opts.sessionFolder === false ? false : undefined
     ;(window as Window & { __mc_chat_launch?: ChatLaunchIntent }).__mc_chat_launch = {
       agent: opts.agent,
       message: opts.message,
       slotKey: opts.slotKey,
       autoSend: opts.autoSend,
+      ...(memoryMode ? { memoryMode } : {}),
+      ...(sessionFolder === false ? { sessionFolder } : {}),
       ts: Date.now(),
     }
     navigate(opts.slotKey
       ? `/chat?sid=${encodeURIComponent(opts.slotKey)}`
-      : opts.autoSend === false ? '/chat?new=1' : '/chat')
+      : chatLaunchOpensDraft({ autoSend: opts.autoSend, memoryMode, sessionFolder }) ? '/chat?new=1' : '/chat')
   }, [navigate])
 
   return { openChat }
@@ -514,5 +536,7 @@ export type { MessageRenderer, MessageRenderContext } from './messageRenderers'
 // Shared interaction and locale contracts; apps reuse the host implementations.
 export { useImeGuard } from '../hooks/useImeGuard'
 export { useLanguageGeneration } from '../i18n/useLanguageGeneration'
-export { activeLocale, fmtNumber, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
+export { activeLocale, fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
 export type { NumberOptions, DateStyleOptions, RelativeStyle } from '../i18n/format'
+// The App Kit seam level; an app feature-detects the seams above by it.
+export { APP_SDK_LEVEL } from './sdkLevel'

@@ -339,6 +339,7 @@
     "builtinAppRoute": {
       "refused_page_detail_label": "이 사본을 구성한 담당자를 위한 세부 정보",
       "refused_page_handoff_note": "에이전트에게 질문하면 이 세부 정보가 첨부된 채로 채팅이 열립니다.",
+      "apps_list_failed": "설치된 앱을 불러오지 못했습니다.",
       "refused_page_lead": "{{productName}} 이(가) 시작할 때 이 페이지를 거부했습니다. 이 사본에서 설정이 잘못되어 있기 때문입니다. 다시 시도해도 복구되지 않으며, 이 사본을 구성한 담당자가 수정해야 합니다.",
       "refused_page_title": "{{route}} 을(를) 불러올 수 없습니다"
     },
@@ -10752,7 +10753,21 @@
       "grants_reconsent_link_hosts": "링크 호스트: 앱의 호버 카드가 채팅 메시지에서 이 사이트로 가는 링크를 볼 수 있게 합니다.",
       "grants_reconsent_link_patterns": "텍스트 패턴: 앱의 호버 카드가 이 패턴과 일치하는 채팅 텍스트를 볼 수 있게 합니다.",
       "grants_reconsent_link_full_url": "전체 링크 주소: 앱의 호버 카드가 링크에서 ? 또는 # 뒤의 부분도 봅니다. 이 부분에는 로그인 코드가 들어 있을 수 있습니다.",
-      "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다."
+      "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다.",
+      "adoption": {
+        "network": "{{name}}이(가) 아직 App Store 버전을 다운로드하지 못했습니다. {{productName}}이(가) 자동으로 다시 시도합니다. 이 컴퓨터의 네트워크 연결을 확인하세요.",
+        "local": "{{name}}이(가) 이 컴퓨터에서 App Store 버전을 준비하지 못했습니다. 디스크가 가득 찼거나 설정 파일을 읽을 수 없습니다. {{productName}}이(가) 자동으로 다시 시도합니다.",
+        "policy": "{{name}}의 App Store 버전 전환이 보류되었습니다. 앱 허용 정책이 이 버전을 허용하지 않습니다. 전환을 마치려면 허용 정책에서 허용하세요.",
+        "trust": "{{name}}의 App Store 버전 전환이 보류되었습니다. 신뢰 설정이 다른 소스를 가리키거나 config.local.json에 설정되어 있어 {{productName}}이(가) 변경하지 않았습니다. 전환을 마치려면 신뢰 설정을 확인하세요.",
+        "permissions": "{{name}}의 App Store 버전 전환이 보류되었습니다. 이 버전은 현재 버전보다 더 많은 접근 권한을 요청합니다. 변경된 내용은 없습니다.",
+        "platform": "{{name}}은(는) App Store 버전으로 전환할 수 없습니다. 이 버전은 이 플랫폼을 지원하지 않습니다.",
+        "host": "{{name}}의 App Store 버전 전환이 보류되었습니다. 이 버전에는 더 새로운 {{productName}}이(가) 필요합니다. 전환을 마치려면 {{productName}}을(를) 업데이트하세요.",
+        "verification": "{{name}}은(는) App Store 버전으로 전환되지 않습니다. 이 버전이 검증을 통과하지 못했고, 이 릴리스의 {{productName}}은(는) 다시 시도하지 않습니다. 변경된 내용은 없습니다.",
+        "staged": "{{name}}의 App Store 버전이 다운로드되고 검증되었습니다. 다음에 {{productName}}을(를) 다시 시작하면 {{name}}이(가) 이 버전으로 전환됩니다.",
+        "keeps_builtin_until": "그때까지는 기본 제공 앱으로 유지됩니다.",
+        "keeps_builtin": "기본 제공 앱으로 유지됩니다.",
+        "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
+      }
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",

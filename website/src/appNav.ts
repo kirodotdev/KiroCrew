@@ -1,4 +1,6 @@
+import { hasBuiltinIcon } from './apps/builtinIcons'
 import { appPageLabel } from './components/appstore/appManifest'
+import type { AppAdoptionRow } from './components/appstore/types'
 import { classifyManifestArt, installedIcon } from './components/appstore/useHeroArt'
 
 /**
@@ -37,6 +39,8 @@ export interface AppNavRecord {
   orphaned?: boolean
   /** Git URL the install recorded — the repo an external app's art resolves against. */
   sourceUrl?: string
+  /** Present for a former built-in the gateway moves to its registry copy. */
+  adoption?: AppAdoptionRow
   manifest?: {
     iconUrl?: string
     iconUrlDark?: string
@@ -51,6 +55,8 @@ export interface AppNavRecord {
     iconPathDark?: string
     /** The repo a manifest declares for its own art paths, when it declares one. */
     repo?: string
+    /** The app's own listing copy per locale; read by the label helper. */
+    l10n?: unknown
     ui?: {
       entry?: string
       pages?: AppNavPage[]
@@ -78,6 +84,12 @@ export interface AppNavTarget {
    * builtin glyph for any app whose `page.icon` happens to collide with one.
    */
   builtin: boolean
+  /**
+   * Whether the rail and palette may render the Lucide glyph named by `iconName`:
+   * a builtin's, or an adopted former built-in's legacy glyph, which comes from
+   * the gateway's own adoption row rather than from the app's manifest.
+   */
+  glyphAllowed: boolean
   /** Custom top-level icon (an absolute `/app-assets/...` path), when the manifest has one. */
   iconUrl: string
   /** Dark-appearance variant of `iconUrl`, when the manifest ships one. */
@@ -139,6 +151,27 @@ function firstUiPage(app: AppNavRecord): AppNavPage | null {
   return pages && pages.length > 0 ? pages[0] : null
 }
 
+/** The route grammar a legacy nav entry must match (one kebab-case segment). */
+const LEGACY_NAV_ROUTE_RE = /^\/[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/**
+ * The route and glyph a former built-in keeps after the gateway adopted its
+ * registry copy, or `null` for every other app.
+ *
+ * Both values come from the gateway's `adoption` row, which copies them from the
+ * pin compiled into the wheel -- never from the app's own manifest, so an app
+ * cannot claim a bare route or a built-in glyph for itself. Only an adopted,
+ * non-builtin record with a bundle to render qualifies: a record still owned by
+ * the built-in keeps its compiled page. A glyph name the rail has no glyph for
+ * reads as `''`, so the rail falls back the way it does for any app.
+ */
+export function adoptedLegacyNav(app: AppNavRecord): { route: string; icon: string } | null {
+  if (app.origin === 'builtin' || app.adoption?.state !== 'adopted' || !app.manifest?.ui?.entry) return null
+  const nav = app.adoption.legacyNav
+  if (!nav || typeof nav.route !== 'string' || !LEGACY_NAV_ROUTE_RE.test(nav.route)) return null
+  return { route: nav.route, icon: typeof nav.icon === 'string' && hasBuiltinIcon(nav.icon) ? nav.icon : '' }
+}
+
 /**
  * Whether *app* contributes a dashboard destination at all.
  *
@@ -167,18 +200,24 @@ export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
   const isBuiltin = app.origin === 'builtin'
   const orphaned = !!app.orphaned
   const appHostRouted = !isBuiltin || !!app.manifest?.ui?.entry
+  const legacy = adoptedLegacyNav(app)
   const route = orphaned
     ? `/apps/migrate/${app.name}`
-    : appHostRouted
-      ? `/apps/${app.name}`
-      : page.route
+    : legacy
+      ? legacy.route
+      : appHostRouted
+        ? `/apps/${app.name}`
+        : page.route
   return {
     name: app.name,
     route,
-    id: appHostRouted ? `app-${app.name}` : app.name,
-    label: appPageLabel(app.name, page.label, app.displayName, app.origin),
+    // The bare name for an adopted former built-in, as it had while it was one:
+    // the rail's hidden, order and pinned preferences are keyed by this id.
+    id: legacy ? app.name : appHostRouted ? `app-${app.name}` : app.name,
+    label: appPageLabel(app.name, page.label, app.displayName, app.origin, app.manifest?.l10n),
     orphaned,
     builtin: isBuiltin,
+    glyphAllowed: isBuiltin || !!legacy,
     // Routed through the shared resolver rather than taken raw: an installed
     // `app.json` is untrusted content, and both consumers of this target (the
     // left rail and the command palette) render for EVERY enabled app on every
@@ -199,7 +238,7 @@ export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
     iconUrlDark: installedIcon(
       app.manifest?.iconPathDark, app.manifest?.iconUrlDark, app.name,
     ),
-    iconName: page.icon || '',
+    iconName: legacy ? legacy.icon : page.icon || '',
     pageIconUrl: page.iconUrl || '',
     inactiveIconUrl: installedUiArt(page.iconInactiveUrl, app.name),
   }

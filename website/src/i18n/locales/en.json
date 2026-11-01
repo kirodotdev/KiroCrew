@@ -84,6 +84,7 @@
     "builtinAppRoute": {
       "refused_page_detail_label": "Details for whoever assembled this copy",
       "refused_page_handoff_note": "Asking the agent opens a chat with these details already attached.",
+      "apps_list_failed": "Couldn't load your installed apps.",
       "refused_page_lead": "{{productName}} rejected this page when it started, because it is set up wrongly in this copy. Retrying will not bring it back — whoever assembled this copy has to fix it.",
       "refused_page_title": "{{route}} could not load"
     },
