@@ -29,6 +29,7 @@ import AppSource from '../components/appstore/AppSource'
 import { consentTierFor } from '../components/appstore/registryTier'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
+import { useActionsInFlight } from '../hooks/useActionsInFlight'
 import ErrorNotice from '../components/ErrorNotice'
 import { useConfirm } from '../components/ConfirmDialog'
 import { findReport, recordError } from '../utils/errorReport'
@@ -99,7 +100,9 @@ export default function AppDetailPage() {
   const clearError = useCallback(() => {
     setError('')
   }, [])
-  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  // Each button's spinner reads its own action; `actionBusy` locks every action
+  // button while ANY action runs, since they all change the same app.
+  const { startAction, finishAction, isActionRunning, actionBusy } = useActionsInFlight()
   const [installLog, setInstallLog] = useState('')
   const [showInstallLog, setShowInstallLog] = useState(false)
   const [installDone, setInstallDone] = useState(false)
@@ -470,7 +473,7 @@ export default function AppDetailPage() {
    */
   const runInstall = async (): Promise<'done' | 'trust-required' | 'failed' | 'aborted'> => {
     if (!app) return 'done'
-    setActionLoading('install')
+    startAction('install')
     setInstallLog('')
     setInstallDone(false)
     setShowInstallLog(true)
@@ -510,7 +513,7 @@ export default function AppDetailPage() {
       if (result.needsClientInstall) {
         setClientInstall(result.clientInstall || app.platform?.clientInstall || {})
         setShowInstallLog(false)
-        setActionLoading(null)
+        finishAction('install')
         return 'done'
       }
       // A refused install is a consent prompt, not an error. The gate runs
@@ -555,7 +558,7 @@ export default function AppDetailPage() {
       // compare by identity to avoid the race where a second invocation
       // replaces the ref before this finally runs.
       if (installAbortRef.current === controller) {
-        setActionLoading(null)
+        finishAction('install')
       }
     }
     return 'done'
@@ -646,7 +649,7 @@ export default function AppDetailPage() {
       setKeepData(true)
       return
     }
-    setActionLoading(action)
+    startAction(action)
     let updateResult: { notice?: string } | undefined
     clearError()
     setSuccessMsg('')
@@ -710,13 +713,13 @@ export default function AppDetailPage() {
         setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
       }
     } finally {
-      setActionLoading(null)
+      finishAction(action)
     }
   }
 
   const confirmUninstall = async () => {
     if (!app) return
-    setActionLoading('uninstall')
+    startAction('uninstall')
     clearError()
     try {
       const res = await api.uninstallApp(app.name, keepData)
@@ -727,7 +730,7 @@ export default function AppDetailPage() {
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_uninstall'))
     } finally {
-      setActionLoading(null)
+      finishAction('uninstall')
       setShowUninstallConfirm(false)
     }
   }
@@ -991,7 +994,7 @@ export default function AppDetailPage() {
             <Btn
               primary
               onClick={async () => {
-                setActionLoading('approve_grants')
+                startAction('approve_grants')
                 const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : [])].join(', ')
                 try {
                   await api.enableApp(app.name, false, {
@@ -1007,10 +1010,10 @@ export default function AppDetailPage() {
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e))
                 } finally {
-                  setActionLoading(null)
+                  finishAction('approve_grants')
                 }
               }}
-              disabled={actionLoading === 'approve_grants'}
+              disabled={actionBusy}
             >
               {i18nT('pages.appDetailPage.approve_new_permissions')}
             </Btn>
@@ -1113,8 +1116,8 @@ export default function AppDetailPage() {
 
               <div className="flex items-center gap-2 justify-end">
                 <Btn onClick={() => setShowUninstallConfirm(false)}>{i18nT('pages.appDetailPage.cancel')}</Btn>
-                <Btn danger onClick={confirmUninstall} disabled={actionLoading === 'uninstall'}>
-                  {actionLoading === 'uninstall' ? i18nT('pages.appDetailPage.removing') : i18nT('pages.appDetailPage.uninstall')}
+                <Btn danger onClick={confirmUninstall} disabled={actionBusy}>
+                  {isActionRunning('uninstall') ? i18nT('pages.appDetailPage.removing') : i18nT('pages.appDetailPage.uninstall')}
                 </Btn>
               </div>
             </div>
@@ -1162,8 +1165,8 @@ export default function AppDetailPage() {
             {/* Actions */}
             <div className="flex items-center gap-2 flex-wrap">
               {!app.installed && !clientInstall && (
-                <Btn {...uiLocation('apps.detail.install')} primary onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle}>
-                  {actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.installing')}</> : <><Download size={14} /> {i18nT('pages.appDetailPage.install')}</>}
+                <Btn {...uiLocation('apps.detail.install')} primary onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle}>
+                  {isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.installing')}</> : <><Download size={14} /> {i18nT('pages.appDetailPage.install')}</>}
                 </Btn>
               )}
               {!app.installed && clientInstall && (
@@ -1172,7 +1175,7 @@ export default function AppDetailPage() {
               {app.installed && isBuiltin && (
                 <>
                   {app.enabled ? (
-                    <Btn onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
+                    <Btn onClick={() => handleAction('disable')} disabled={actionBusy}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
                   ) : (
                     /* Enable stays available in a browser: enabling is a
                        server-side state change (backend, agents and crons run
@@ -1185,7 +1188,7 @@ export default function AppDetailPage() {
                        store row / feature card keep the badge alone (the decision
                        does not happen there). */
                     <>
-                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {enableLabel}</Btn>
+                    <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
                     {desktopOnly && (
                     <span className="text-[13px] text-muted flex items-center gap-1.5">
                       <Monitor size={14} /> {i18nT('pages.appDetailPage.desktop_app_hint')}
@@ -1198,14 +1201,14 @@ export default function AppDetailPage() {
               {app.installed && isSelfManaged && !isBuiltin && (
                 <>
                   <div className="text-[13px] text-ok flex items-center gap-1.5"><Check size={14} /> {i18nT('pages.appDetailPage.installed_version', { version: app.installedVersion })}</div>
-                  {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
-                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
+                  {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionBusy} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
               )}
               {app.installed && !isSelfManaged && !isBuiltin && (
                 <>
                   {app.enabled ? (
-                    <Btn {...uiLocation('apps.detail.disable')} onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
+                    <Btn {...uiLocation('apps.detail.disable')} onClick={() => handleAction('disable')} disabled={actionBusy}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
                   ) : (
                     /* Enable stays available in a browser: enabling is a
                        server-side state change (backend, agents and crons run
@@ -1215,7 +1218,7 @@ export default function AppDetailPage() {
                        where store rows land, so it was the common path. Same
                        pattern as AppListRow / FeaturedSpotlight rows. */
                     <>
-                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {enableLabel}</Btn>
+                    <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
                     {desktopOnly && (
                     /* The consequence is VISIBLE here, not only in `title`. A
                        hover tooltip does not exist on touch and is not reachable
@@ -1232,9 +1235,9 @@ export default function AppDetailPage() {
                   )}
                     </>
                   )}
-                  {canUpdate && app.updateAvailable && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
-                  {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => handleAction('update')} disabled={actionLoading === 'update'} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
-                  {canUninstall && <Btn {...uiLocation('apps.detail.uninstall')} danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
+                  {canUpdate && app.updateAvailable && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                  {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => handleAction('update')} disabled={actionBusy} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
+                  {canUninstall && <Btn {...uiLocation('apps.detail.uninstall')} danger onClick={() => handleAction('uninstall')} disabled={actionBusy}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
               )}
             </div>
