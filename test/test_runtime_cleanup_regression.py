@@ -95,6 +95,9 @@ def lifecycle(monkeypatch, tmp_path):
             else False
         ),
         kill_pid=kernel.kill_pid,
+        # A POSIX backend never retains a Windows tree cleanup, so the teardown's
+        # branch-switch release reads "nothing pending".
+        windows_tree_cleanup_pending=lambda pid, start: False,
         file_lock=platform_compat.file_lock,
         open_lock_file=platform_compat.open_lock_file,
     )

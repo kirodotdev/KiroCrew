@@ -33,6 +33,7 @@ from kiro_crew import (  # noqa: F401
     mcp_apps_render,
     model_registry,
     prompt_segments,
+    repo_checkout_guard,
     resource_status,
     runtime_death,
     session_directive,

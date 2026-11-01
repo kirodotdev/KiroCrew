@@ -24,6 +24,7 @@ from kiro_crew.platform import redact_log_via_context
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 
 if TYPE_CHECKING:
+    from kiro_crew import repo_checkout_guard
     from kiro_crew.dashboard.chat_runner import (
         ACP_BACKEND_KIRO,
         MAX_PROMPT_BYTES,
@@ -314,6 +315,17 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # after the resolve block). Captured inside the try so the raise below
     # lives OUTSIDE it and is not swallowed by the resolve except.
     _app_agent_unresolved = False
+
+    # The branch switch's second ordering point. Between here and the claim
+    # below, where this turn's session will run is the allocator's choice:
+    # the project may be repicked before the binding is captured, and a
+    # resumed conversation's stored folder or a prepared member project can
+    # stand in for it. So the turn is marked unplaced first -- a switch's
+    # busy check then refuses in every repository -- and waits out any
+    # checkout already in flight, wherever it is. The claim records the
+    # folder the session reports and clears the mark.
+    slot._checkout_turn_unplaced = True
+    await repo_checkout_guard.wait_for_any_checkout(waiter=f"session {slot.key}")
 
     # Serialize this turn's binding capture and session registration
     # against the slot-switch transaction of every alias on this session
@@ -1075,6 +1087,21 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     from kiro_crew.skill_scope_pin import pin_session_skill_spec
 
     pin_session_skill_spec(session_key, _pinned_spec)
+    # The folder this session actually runs in, for the branch switch's busy
+    # check (see the unplaced mark above). Recorded and the mark cleared with
+    # no await between them; a provider that reports no folder leaves the
+    # turn unplaced, so switches stay refused while it runs. The wait sits
+    # after ``_acquired`` so a turn stopped during it still releases the
+    # session it holds.
+    _session_folder = str(getattr(client, "cwd", "") or "")
+    slot._checkout_turn_projects = (
+        *slot._checkout_turn_projects,
+        str(selected_binding[1] or ""),
+        _session_folder,
+    )
+    if _session_folder:
+        slot._checkout_turn_unplaced = False
+        await repo_checkout_guard.wait_for_checkout(_session_folder, waiter=f"session {slot.key}")
     # The acquired provider is the final authority for harness-specific slash
     # gates. A dead live row can be replaced during the get_or_create call
     # above. The positive capability fails closed for unknown adapters and
