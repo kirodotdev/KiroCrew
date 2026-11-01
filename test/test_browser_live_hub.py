@@ -90,7 +90,10 @@ async def test_steps_build_the_strip_and_each_change_publishes_one_event(hub) ->
     h.step("chat-1", "Click Sign in")
     await _settled(h)
     assert [n for n, _ in wire.events] == [lh.LIVE_EVENT] * 3
-    last = wire.events[-1][1]
+    last = dict(wire.events[-1][1])
+    # The turn's own wall-clock start, so a reloaded tab keeps it; not ended yet.
+    assert last.pop("started_at_ms") > 0
+    assert last.pop("ended_at_ms") == 0
     assert last == {
         "session_key": "chat-1",
         "turn_id": "turn-9",

@@ -121,6 +121,10 @@ class LiveSession:
     fps: float = 0.0
     started_at: float = 0.0
     ended_at: float = 0.0
+    #: The same two moments on the wall clock (epoch ms; 0 = not yet), sent so a
+    #: reloaded tab restores the turn's own times, not the time it reconnected.
+    started_ms: int = 0
+    ended_ms: int = 0
     #: The turn ended while the person held the browser: ``release`` folds the card.
     fold_on_release: bool = False
     #: The turn the person's claim was taken in, and when the card last showed it
@@ -277,6 +281,8 @@ def live_event(sess: LiveSession) -> dict[str, Any]:
         "loop": dict(sess.loop) if sess.loop is not None else None,
         "handback_options": list(sess.handback_options),
         "ask": sess.ask.wire() if sess.ask is not None and not sess.ask.outcome else None,
+        "started_at_ms": int(sess.started_ms),
+        "ended_at_ms": int(sess.ended_ms),
     }
 
 
@@ -510,6 +516,8 @@ class LiveHub:
         sess.handback_options = []
         sess.started_at = self._clock()
         sess.ended_at = 0.0
+        sess.started_ms = int(time.time() * 1000)
+        sess.ended_ms = 0
         sess.ended = False
         # A reopened view (or a takeover held past the last turn) joins this turn:
         # the stream keeps running and this turn's end is what folds it.
@@ -572,6 +580,7 @@ class LiveHub:
         sess.lock.release()
         sess.released.set()
         sess.ended_at = self._clock()
+        sess.ended_ms = int(time.time() * 1000)
         sess.state = STATE_DONE
         stream, sess.stream = sess.stream, None
         if stream is not None:

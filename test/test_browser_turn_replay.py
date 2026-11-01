@@ -1023,6 +1023,16 @@ async def test_a_writer_that_falls_behind_drops_frames_and_marks_the_turn_trunca
         clock.now += 1000
         rec.frame(KEY, jpeg((i * 40, 0, 0)), 64, 40, [], True)
     assert rec._recs[KEY].queued_frames <= 2
+    # Only the queued writes hold a frame: a dropped frame's truncation mark holds
+    # its turn id alone, and the drops queue one mark between them.
+    jobs = list(rec._recs[KEY].jobs)
+    held = [
+        job
+        for job in jobs
+        if any(isinstance(c.cell_contents, rc._PendingFrame) for c in (job.__closure__ or ()))
+    ]
+    assert len(held) <= 2
+    assert len(jobs) - len(held) <= 2
     gate.set()
     await rec.flush()
     assert rec._recs[KEY].queued_frames == 0 and rec._recs[KEY].queued_bytes == 0

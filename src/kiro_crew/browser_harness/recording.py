@@ -801,6 +801,8 @@ class _SessionRec:
     #: Frames queued and not yet written, and their JPEG bytes (``_keep``).
     queued_frames: int = 0
     queued_bytes: int = 0
+    #: The turn a truncation mark is already queued or written for.
+    truncated_turn: str = ""
 
 
 class LiveRecorder:
@@ -985,8 +987,12 @@ class LiveRecorder:
             rec.queued_frames >= QUEUED_FRAMES_MAX
             or rec.queued_bytes + size > QUEUED_FRAME_BYTES_MAX
         ):
-            # The writer is behind: drop this frame, and say so on the replay.
-            self._submit(session_key, lambda: self.store.mark_truncated(session_key, frame.turn_id))
+            # The writer is behind: drop this frame, and say so on the replay. One
+            # mark per turn, holding only the turn id, so the drops queue nothing.
+            turn_id = frame.turn_id
+            if rec.truncated_turn != turn_id:
+                rec.truncated_turn = turn_id
+                self._submit(session_key, lambda: self.store.mark_truncated(session_key, turn_id))
             return
         rec.queued_frames += 1
         rec.queued_bytes += size

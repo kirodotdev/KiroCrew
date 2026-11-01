@@ -403,10 +403,14 @@ tested on a fake clock.
 
 **Wire.** Owner websockets only. State changes are the JSON event
 `browser_live` (`session_key`, `turn_id`, `state`, `url`, `title`, `browser`,
-`headless`, `step`, `steps`, `rung`, `fps`). A newly connected owner socket is
-sent each chat's last published event (`LiveHub.snapshot_events`, from
-`dashboard/ws.py`), so a reloaded tab shows the card, a waiting quick ask
-included, without waiting for a change. Frames are BINARY messages: a
+`headless`, `step`, `steps`, `rung`, `fps`, and `started_at_ms`/`ended_at_ms`,
+the turn's wall-clock start and end in epoch ms, 0 while not yet). A newly
+connected owner socket is sent each chat's last published event
+(`LiveHub.snapshot_events`, from `dashboard/ws.py`), so a reloaded tab shows the
+card, a waiting quick ask included, without waiting for a change. The card takes
+its turn times from those two fields on first sight, so a restored card still
+binds to its own turn's tool rows (the bind window compares the row's timestamp
+with them), however long ago the turn ran. Frames are BINARY messages: a
 4-byte big-endian header length, a UTF-8 JSON header
 (`{"type":"browser_frame","session_key","stream","seq","w","h","mask":[[x,y,w,h],...]}`),
 then the JPEG bytes. `stream` names the screencast the frame came from and `seq`

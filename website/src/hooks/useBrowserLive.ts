@@ -99,6 +99,9 @@ export interface BrowserLiveEvent {
   handback_options?: string[]
   /** The quick ask the agent's browser is waiting on, or null once there is none. */
   ask?: QuickAsk | null
+  /** When the turn began and ended on the gateway's clock (epoch ms; 0: not yet). */
+  started_at_ms?: number
+  ended_at_ms?: number
 }
 
 export type BrowserLiveTab = '' | 'open' | 'closed'
@@ -278,7 +281,14 @@ export function readBrowserLiveEvent(raw: unknown): BrowserLiveEvent | null {
     loop: d.loop === undefined ? undefined : readLoop(d.loop),
     handback_options: d.handback_options === undefined ? undefined : readOptions(d.handback_options),
     ask: d.ask === undefined ? undefined : readQuickAsk(d.ask),
+    started_at_ms: epochMs(d.started_at_ms),
+    ended_at_ms: epochMs(d.ended_at_ms),
   }
+}
+
+/** A positive epoch-ms stamp, or undefined (absent, 0 for "not yet", or junk). */
+function epochMs(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined
 }
 
 const EMPTY_TURNS: readonly BrowserLiveTurn[] = []
@@ -414,10 +424,12 @@ class BrowserLiveStore {
       rung: ev.rung ?? prev?.rung ?? 0,
       fps: ev.fps ?? prev?.fps ?? 0,
       detail: ev.detail ?? (ev.state === 'error' ? prev?.detail ?? '' : ''),
-      startedAt: prev?.startedAt ?? now,
+      // The gateway's own times win on a first sight, so a card a reload restored
+      // keeps its turn's times and still binds to that turn's tool rows.
+      startedAt: prev?.startedAt ?? ev.started_at_ms ?? now,
       // A reopened view keeps the turn's own end, so the done line's duration is the
       // agent's browsing, not the time the person spent looking afterwards.
-      endedAt: isEnded(ev.state) || turnOver ? (prev?.endedAt ?? now) : null,
+      endedAt: isEnded(ev.state) || turnOver ? (prev?.endedAt ?? ev.ended_at_ms ?? now) : null,
       hasFrame: prev?.hasFrame ?? false,
       ring: prev?.ring ?? new FrameRing(),
       // A control write's failure text is kept while the server keeps saying the

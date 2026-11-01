@@ -203,6 +203,17 @@ describe('resolveTurn: binding a card to a record', () => {
     expect(browserLiveStore.resolveTurn(S, 'call:other', false, started + 2_000)).toBeNull()
   })
 
+  it('a card a reload restored keeps its turn\'s own times and still binds to that turn\'s rows', () => {
+    const started = Date.now() - 3_600_000
+    const ended = started + 60_000
+    browserLiveStore.applyEvent(ev({ state: 'done', turn_over: true, started_at_ms: started, ended_at_ms: ended }))
+    const cur = browserLiveStore.current(S)!
+    expect(cur.startedAt).toBe(started)
+    expect(cur.endedAt).toBe(ended)
+    // The turn's tool row is an hour old; without the gateway's times the card vanished.
+    expect(browserLiveStore.resolveTurn(S, 'call:restored', false, started + 1_000)!.turnId).toBe('t1')
+  })
+
   it('returns null for a session the relay never spoke about', () => {
     expect(browserLiveStore.resolveTurn('slot:none', 'call:x', true, null)).toBeNull()
   })
