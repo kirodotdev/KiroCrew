@@ -1,5 +1,4 @@
 [
-  "src/apps/aws-control/shared.test.tsx",
   "src/components/LinkedSurfacesSection.menuKeyboard.test.tsx",
   "src/pages/members/DeployMyCrew.test.tsx",
   "src/pages/members/MembersPage.newCrewmate.test.tsx",
