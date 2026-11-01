@@ -3,6 +3,7 @@
  * operator's ssh-agent socket into new sessions. One of the sections
  * `SecurityPanel.tsx` composes.
  */
+import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, ChevronRight, Layers } from 'lucide-react'
@@ -14,6 +15,7 @@ import { AGENT_SANDBOX_PATH } from '../overview/agentSandboxLink'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTime } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
+import { isOwnerGateRefusal } from './SecurityPanelRedaction'
 
 /* ── SSH agent forwarding consent ───────────────────────────────────────────
  *
@@ -33,20 +35,82 @@ import ErrorNotice from '../../components/ErrorNotice'
  * forward; when it would not, the card says so instead of offering a grant that
  * would forward nothing.
  */
+
+// A cached owner-gate refusal is about the viewer's identity, and a sign-in can
+// change that identity while this card is unmounted. The refusal lives in the
+// query cache for the tab (`gcTime: Infinity`), so the sign-in count it was read
+// under lives at module scope for the tab too: a refusal read before the latest
+// `mc-auth-recovered` is no longer held, and reopening the section re-reads it.
+let authGeneration = 0
+let refusalGeneration = -1
+if (typeof window !== 'undefined') {
+  window.addEventListener('mc-auth-recovered', () => {
+    authGeneration += 1
+  })
+}
+
+async function readConsent(): Promise<SshAgentConsentStatus> {
+  const generation = authGeneration
+  try {
+    return await api.sshAgentConsent()
+  } catch (err) {
+    refusalGeneration = generation
+    throw err
+  }
+}
+
+function holdsRefusal(err: unknown): boolean {
+  return isOwnerGateRefusal(err) && refusalGeneration === authGeneration
+}
+
 export function SshAgentConsentCard() {
   const qc = useQueryClient()
-  const { data, isLoading, isError } = useQuery<SshAgentConsentStatus>({
+  // Every other failure keeps the client's own retry rule.
+  const defaultRetry = qc.getDefaultOptions().queries?.retry
+  const clientRetry = (count: number, err: Error): boolean =>
+    typeof defaultRetry === 'function'
+      ? defaultRetry(count, err)
+      : typeof defaultRetry === 'number'
+        ? count < defaultRetry
+        : defaultRetry ?? count < 3
+  const { data, isLoading, isError, error } = useQuery<SshAgentConsentStatus>({
     queryKey: ['ssh-agent-consent'],
-    queryFn: api.sshAgentConsent,
+    queryFn: readConsent,
     // Not the app-wide `staleTime: Infinity`: another owner tab, or a hand edit
     // of the settings file, can change the grant, and a stale "Not allowed" over
     // a live grant is the dangerous direction. Re-read on focus and remount.
     staleTime: 0,
-    refetchOnWindowFocus: true,
+    // The owner gate refusing the viewer is a fact about the viewer, not a
+    // transient, and every read it refuses writes an audited refusal. So a
+    // refused read is not retried, and it is not repeated on focus or remount:
+    // the refusal stays cached for this tab, one audited row instead of one per
+    // open or refocus. An owner keeps the re-read on focus and remount.
+    // `retryOnMount` takes only a boolean, so it is read from the cache at
+    // mount: only a cached owner-gate refusal holds; any other cached initial
+    // failure (a transient 502 that used up its retries) re-reads on remount,
+    // and so does a refusal read before the latest sign-in (`holdsRefusal`).
+    retry: (count, err) => !isOwnerGateRefusal(err) && clientRetry(count, err),
+    retryOnMount: !holdsRefusal(qc.getQueryState(['ssh-agent-consent'])?.error),
+    gcTime: Infinity,
+    refetchOnMount: query => !holdsRefusal(query.state.error),
+    refetchOnWindowFocus: query => !holdsRefusal(query.state.error),
   })
+  const ownerGateRefused = isError && isOwnerGateRefusal(error)
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ['ssh-agent-consent'] })
   }
+  // The cached refusal is about the viewer's identity, and that identity can
+  // change: a stale pre-owner session signs in again as the owner. The client's
+  // recovery refetch skips an error that kept earlier data, so this card re-reads
+  // its own grant on `mc-auth-recovered`, which fires only on a 2xx or an
+  // accepted token. The card holds no draft, so a re-read overwrites nothing.
+  useEffect(() => {
+    const onAuthRecovered = () => {
+      void qc.invalidateQueries({ queryKey: ['ssh-agent-consent'] })
+    }
+    window.addEventListener('mc-auth-recovered', onAuthRecovered)
+    return () => window.removeEventListener('mc-auth-recovered', onAuthRecovered)
+  }, [qc])
   const grant = useMutation({
     mutationFn: () => api.grantSshAgentConsent(),
     onSettled: invalidate,
@@ -234,7 +298,16 @@ export function SshAgentConsentCard() {
         </div>
       )}
 
-      {isError && (
+      {ownerGateRefused ? (
+        // A non-owner: not a failure to recover from, so not "could not read".
+        <ErrorNotice
+          variant="inline"
+          className="mt-1.5"
+          message={i18nT('pages.settings.securityPanel.ssh_agent_owner_only')}
+          askAgent
+          testId="ssh-agent-owner-only"
+        />
+      ) : isError && (
         <ErrorNotice variant="inline" className="mt-1.5" message={i18nT('pages.settings.securityPanel.ssh_agent_load_failed')} askAgent />
       )}
       {(grant.isError || revoke.isError) && (
