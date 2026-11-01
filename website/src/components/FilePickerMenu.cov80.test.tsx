@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import FilePickerMenu, { makeRelative, resultKind, selectionFor } from './FilePickerMenu'
 import { api } from '../api/client'
@@ -34,6 +34,22 @@ function mount(props: Partial<React.ComponentProps<typeof FilePickerMenu>> = {})
     <Host query="zz" open onSelect={onSelect} onClose={onClose} {...props} />,
   )
   return { onSelect, onClose, ...view }
+}
+
+/** mount() plus a wait for the first search's rows. The call is made on mount, but
+ *  the result reaches the list on a later zero-delay timer, so a test that only
+ *  waits for the call ends with that render (and the selection reset it runs)
+ *  still to come. */
+async function mountSettled(props: Partial<React.ComponentProps<typeof FilePickerMenu>> = {}) {
+  const view = mount(props)
+  await screen.findByText('a.ts')
+  return view
+}
+
+/** Move the fake clock inside act(): the debounce it fires is a state update the
+ *  test causes, and it starts the next search. */
+async function advance(ms: number) {
+  await act(async () => { await vi.advanceTimersByTimeAsync(ms) })
 }
 
 describe('FilePickerMenu helpers', () => {
@@ -92,20 +108,20 @@ describe('FilePickerMenu', () => {
   })
 
   it('passes the query and project through to the search, with an abort signal', async () => {
-    mount({ query: 'zz', project: 'zzq-proj' })
+    await mountSettled({ query: 'zz', project: 'zzq-proj' })
     await waitFor(() =>
       expect(fileSearch).toHaveBeenCalledWith('zz', 'zzq-proj', expect.anything()))
   })
 
   it('debounces a CHANGED query by 200ms before re-searching', async () => {
-    const { rerender } = mount({ query: 'zz' })
+    const { rerender } = await mountSettled({ query: 'zz' })
     await waitFor(() => expect(fileSearch).toHaveBeenCalledTimes(1))
 
     rerender(
       <Host query="zzq" open onSelect={vi.fn()} onClose={vi.fn()} />,
     )
     expect(fileSearch).toHaveBeenCalledTimes(1)
-    await vi.advanceTimersByTimeAsync(200)
+    await advance(200)
     await waitFor(() => expect(fileSearch).toHaveBeenCalledTimes(2))
     expect(fileSearch.mock.calls[1][0]).toBe('zzq')
   })
@@ -296,7 +312,7 @@ describe('FilePickerMenu', () => {
     expect(onClose).not.toHaveBeenCalled()
 
     // Once the debounce settles (and the fetch resolves empty), Enter releases.
-    await vi.advanceTimersByTimeAsync(250)
+    await advance(250)
     await screen.findByText(/No matching files/)
     await waitFor(() => expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(true))
     expect(onClose).toHaveBeenCalled()
