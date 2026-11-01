@@ -173,7 +173,7 @@ function installLayout(recorded: Recorded[]) {
   }
 }
 
-const renderChatPage = (messages: unknown[], msgTs: string) => {
+const renderChatPage = async (messages: unknown[], msgTs: string) => {
   const slot = { key: 'chat-1', title: 'chat-1', messages: N, running: false, mode: '', created: '', last_ts: '' }
   apiMocks.chatSlots = vi.fn().mockResolvedValue([slot])
   apiMocks.chatSlotDetail = vi.fn().mockResolvedValue({ messages, has_more: false, total: messages.length })
@@ -195,7 +195,11 @@ const renderChatPage = (messages: unknown[], msgTs: string) => {
     } as never,
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const { container } = render(
+  let container: HTMLElement | undefined
+  // Async act: the ChatPage and ThemeProvider boot queries resolve on microtasks
+  // after the first render, so they must land inside this barrier.
+  await act(async () => {
+    container = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
@@ -207,9 +211,10 @@ const renderChatPage = (messages: unknown[], msgTs: string) => {
         </ThemeProvider>
       </Provider>
     </QueryClientProvider>,
-  )
-  act(() => { store.dispatch({ type: 'chat/replaceMessages', payload: messages }) })
-  return { store, container }
+    ).container
+  })
+  await act(async () => { store.dispatch({ type: 'chat/replaceMessages', payload: messages }) })
+  return { store, container: container as HTMLElement }
 }
 
 describe('ChatPage — a far jump whose row mounts late still lands on the first navigation', () => {
@@ -252,9 +257,9 @@ describe('ChatPage — a far jump whose row mounts late still lands on the first
     }
   }
 
-  it('keeps polling past 30 frames and scrolls once the row commits', () => {
+  it('keeps polling past 30 frames and scrolls once the row commits', async () => {
     const messages = mkMessages()
-    const { store, container } = renderChatPage(messages, ts(TARGET_DISPLAY_INDEX))
+    const { store, container } = await renderChatPage(messages, ts(TARGET_DISPLAY_INDEX))
 
     // The deep-link effect defers the navigation by 500ms.
     act(() => { vi.advanceTimersByTime(600) })
@@ -303,12 +308,12 @@ describe('ChatPage — a far jump whose row mounts late still lands on the first
     expect(hook).not.toContain('scrollToIndexSmooth')
   })
 
-  it('opts the transcript into eagerFirstMeasure (first row measurements land in the offset tree immediately)', () => {
+  it('opts the transcript into eagerFirstMeasure (first row measurements land in the offset tree immediately)', async () => {
     // Without this, a FAR jump or fast scroll mounts rows whose real heights
     // wait out the height-sync debounce before entering the spacer math; the
     // late reconciliation shifts content under the viewport. Chrome's scroll
     // anchoring hides the shift, iOS Safari has none (13-25px measured drift).
-    renderChatPage([{ role: 'user', content: 'q', ts: '2026-01-01T00:00:00Z', meta: { mid: 'm-1' } }], '2026-01-01T00:00:00Z')
+    await renderChatPage([{ role: 'user', content: 'q', ts: '2026-01-01T00:00:00Z', meta: { mid: 'm-1' } }], '2026-01-01T00:00:00Z')
     expect(capturedVirtOpts?.eagerFirstMeasure).toBe(true)
   })
 })

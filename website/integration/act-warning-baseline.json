@@ -43,7 +43,6 @@
   "src/test/ChatPage.chipUndo.test.tsx",
   "src/test/ChatPage.dirStaging.test.tsx",
   "src/test/ChatPage.embedded.test.tsx",
-  "src/test/ChatPage.navFarJump.test.tsx",
   "src/test/ChatPage.sessionControls.test.tsx",
   "src/test/ChatPage.sessionTabs.test.tsx",
   "src/test/ChatPage.sid.test.tsx",
