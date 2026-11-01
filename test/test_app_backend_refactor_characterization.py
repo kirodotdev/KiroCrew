@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 import kiro_crew.apps.backend as bmod
+from conftest import requires_symlinks
 from kiro_crew.apps.backend import AppProcess, HealthProbeOutcome
 
 
@@ -277,7 +278,7 @@ class TestPidfileIdentity:
 
 
 class TestProvisioningFailureAudit:
-    @pytest.mark.skipif(sys.platform == "win32", reason="the fixture needs a symlink")
+    @requires_symlinks
     def test_a_dangling_requirements_link_fails_with_one_log_and_one_sel_row(
         self, tmp_path: Path, sel: _Sel, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -297,7 +298,7 @@ class TestProvisioningFailureAudit:
             }
         ]
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="the fixture needs a symlink")
+    @requires_symlinks
     def test_a_linked_data_directory_is_refused_before_anything_is_created(
         self, tmp_path: Path, sel: _Sel
     ) -> None:
@@ -451,7 +452,7 @@ class TestDepsActivationGate:
         self._mark(root, bmod._DEPS_ABI_NAME, bmod._deps_abi_tag())
         assert bmod._deps_tree_stamp_current(root, root / "requirements.txt") is False
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="the fixture needs a symlink")
+    @requires_symlinks
     def test_links_never_activate(self, tmp_path: Path) -> None:
         root = self._app(tmp_path)
         outside = tmp_path / "outside.txt"

@@ -12,7 +12,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +21,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from git_maintenance_helpers import git_maintenance_off_entries
 
 import kiro_crew.dashboard.handlers.files as files_mod
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers import api_project_git
 from kiro_crew.dashboard.handlers.files import (
@@ -402,7 +402,7 @@ class TestNoGitSubprocess:
         assert info["repo"] is True
         assert "branch" not in info and "head" not in info
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_symlinked_head_to_a_blocked_path_is_refused(self, repo, tmp_path):
         """`.git/HEAD` is an ordinary path and can be a symlink to anything.
 

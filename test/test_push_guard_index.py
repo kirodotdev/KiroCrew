@@ -43,6 +43,7 @@ from push_guard_helpers import (
     _spy_popen,
 )
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 
 # pytest resolves a fixture in the requesting test's module, so each shared
@@ -834,7 +835,7 @@ class TestPushGuardPrivateIndex:
             _PG._parse_args([mode, "-F", "-", "--", "a.py"])
         assert exc.value.code == _PG.EXIT_USAGE
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="needs a symlink")
+    @requires_symlinks
     def test_a_path_through_a_symlinked_directory_is_the_same_path(self, repo_pair, tmp_path):
         clone_dir, _ = repo_pair
         _git(clone_dir, "checkout", "-q", "-b", "feature/x")
