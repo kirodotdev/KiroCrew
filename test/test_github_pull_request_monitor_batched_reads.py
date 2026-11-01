@@ -23,6 +23,7 @@ import pytest
 from github_pull_request_monitor_helpers import (
     _HEAD,
     _check_run,
+    _comment_node,
     _comments,
     _completed,
     _CompletedRunner,
@@ -38,6 +39,7 @@ from github_pull_request_monitor_helpers import (
 )
 
 from kiro_crew.monitoring import github_pull_request
+from kiro_crew.monitoring.github_pull_request_pages import _pr_comment_activity_page
 from kiro_crew.monitoring.github_pull_request import (
     _MAX_SUBJECTS_PER_QUERY,
     GitHubPullRequestProbeResult,
@@ -1207,6 +1209,26 @@ def _comment_condition_key(result: object) -> str | None:
     return keys[0] if keys else None
 
 
+def test_comment_and_review_activity_pages_use_independent_bound_cursors() -> None:
+    member = github_pull_request._BatchSubject(
+        "https://github.com/owner/repo/pull/123",
+        parse_github_pull_request_target("https://github.com/owner/repo/pull/123"),
+    )
+
+    document, argv = github_pull_request._batch_document(
+        [member],
+        github_pull_request._PR_COMMENTS_SELECTION,
+        cursors={member.raw: "comments-next"},
+        review_cursors={member.raw: "reviews-next"},
+    )
+
+    assert "comments(first:100,after:$c0)" in document
+    assert "reviews(first:100,after:$v0)" in document
+    assert "author{login __typename}" in document
+    assert "c0=comments-next" in argv
+    assert "v0=reviews-next" in argv
+
+
 class TestPullRequestCommentDigest:
     """The probe digests PR-level (issue) comment bodies, the surface the review
     bot verdicts actually live on.
@@ -1222,6 +1244,38 @@ class TestPullRequestCommentDigest:
     @staticmethod
     def _failing() -> dict[str, object]:
         return _primary(statusCheckRollup=[_check_run(conclusion="FAILURE")])
+
+    def test_a_refused_reviews_continuation_keeps_the_finished_comment_digests(self) -> None:
+        """A rate limit on the reviews-only continuation invalidates only IT.
+
+        The comments connection completed in round one. Blanking its digests
+        because the REVIEWS continuation was refused would suppress the bot-edit
+        and human-activity wakes a completed read is carrying, contrary to the
+        preservation goal -- so only the connection the refused round never
+        finished is invalidated.
+        """
+        page = _comment_node(
+            [{"body": "please update", "author": {"login": "reviewer", "__typename": "User"}}]
+        )
+        page["reviews"] = {
+            "pageInfo": {"hasNextPage": True, "endCursor": "reviews-cursor-1"},
+            "nodes": [],
+        }
+        provider, _runner = _provider(
+            _primary(),
+            _threads(),
+            pr_comments=[
+                _envelope(page),
+                _envelope(errors=[{"message": "HTTP 403: API rate limit exceeded"}]),
+            ],
+        )
+        result = _probe_one(provider)
+
+        assert result.canonical["pr_comment_body_digest"]
+        assert result.canonical["pr_human_comment_digest"]
+        # Empty digests stay absent from the canonical, so the reviews half is
+        # unnamed rather than blanked.
+        assert "pr_human_review_digest" not in result.canonical
 
     def test_an_in_place_comment_edit_changes_the_condition_key(self) -> None:
         """The body flipped in place: only a digest over the bodies sees it."""
@@ -1241,7 +1295,7 @@ class TestPullRequestCommentDigest:
 
     def test_every_comment_is_digested_not_bot_authored_only(self) -> None:
         """A human editing a comment in place is as invisible to a count and as
-        load-bearing as a bot; the digest filters by no author."""
+        load-bearing as a bot; the legacy digest filters by no author."""
         before, _ = _provider(self._failing(), _threads(), pr_comments=_comments(["please rebase"]))
         after, _ = _provider(
             self._failing(), _threads(), pr_comments=_comments(["please rebase and squash"])
@@ -1249,6 +1303,35 @@ class TestPullRequestCommentDigest:
         result_before = _probe_one(before)
         result_after = _probe_one(after)
         assert _comment_condition_key(result_before) != _comment_condition_key(result_after)
+
+    def test_a_bot_edit_still_changes_the_legacy_comment_digest(self) -> None:
+        def result_for(body: str) -> object:
+            page = _envelope(
+                {
+                    "comments": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "body": body,
+                                "author": {"login": "review-bot[bot]", "__typename": "Bot"},
+                            }
+                        ],
+                    },
+                    "reviews": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [],
+                    },
+                }
+            )
+            provider, _ = _provider(self._failing(), _threads(), pr_comments=page)
+            return _probe_one(provider)
+
+        before = result_for("no blocking findings")
+        after = result_for("blocking: found an issue")
+
+        assert _comment_condition_key(before) != _comment_condition_key(after)
+        assert "pr_human_comment_digest" not in before.canonical
+        assert "pr_human_comment_digest" not in after.canonical
 
     def test_the_digest_is_independent_of_comment_page_order(self) -> None:
         """Sorting the bodies before hashing makes the page order irrelevant."""
@@ -1272,6 +1355,81 @@ class TestPullRequestCommentDigest:
         result_second = _probe_one(second)
         assert _comment_condition_key(result_first) is not None
         assert _comment_condition_key(result_first) == _comment_condition_key(result_second)
+
+    def test_human_comment_and_review_activity_is_kept_separately(self) -> None:
+        waiting = _primary(
+            reviewDecision="REVIEW_REQUIRED",
+            statusCheckRollup=[_check_run(status="IN_PROGRESS", conclusion="")],
+        )
+        activity = _envelope(
+            {
+                "comments": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "body": "please update the description",
+                            "author": {"login": "reviewer", "__typename": "User"},
+                        }
+                    ],
+                },
+                "reviews": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "body": "looks good",
+                            "state": "COMMENTED",
+                            "author": {"login": "reviewer", "__typename": "User"},
+                        }
+                    ],
+                },
+            }
+        )
+        provider, _ = _provider(waiting, _threads(), pr_comments=activity)
+
+        result = _probe_one(provider)
+
+        assert result.observation.status is MonitorObservationStatus.PENDING
+        assert result.canonical["pr_comment_body_digest"]
+        assert result.canonical["pr_human_comment_digest"]
+        assert result.canonical["pr_human_review_digest"]
+        keys = {condition.key for condition in result.observation.conditions}
+        assert any(key.startswith("human_comment_activity:") for key in keys)
+        assert any(key.startswith("human_review_activity:") for key in keys)
+
+    @pytest.mark.parametrize(
+        "author",
+        [
+            {"login": "pull-author", "__typename": "User"},
+            {"login": "review-bot[bot]", "__typename": "Bot"},
+        ],
+    )
+    def test_author_and_bot_comments_do_not_become_human_activity(
+        self, author: dict[str, str]
+    ) -> None:
+        waiting = _primary(
+            reviewDecision="REVIEW_REQUIRED",
+            statusCheckRollup=[_check_run(status="IN_PROGRESS", conclusion="")],
+        )
+        activity = _envelope(
+            {
+                "comments": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [{"body": "still waiting", "author": author}],
+                },
+                "reviews": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []},
+            }
+        )
+        provider, _ = _provider(waiting, _threads(), pr_comments=activity)
+
+        result = _probe_one(provider)
+
+        assert result.observation.status is MonitorObservationStatus.PENDING
+        assert result.canonical["pr_comment_body_digest"]
+        assert "pr_human_comment_digest" not in result.canonical
+        assert not any(
+            condition.key.startswith("human_comment_activity:")
+            for condition in result.observation.conditions
+        )
 
     def test_no_comments_emits_no_comment_condition(self) -> None:
         provider, _ = _provider(self._failing(), _threads(), pr_comments=_comments())
@@ -1314,10 +1472,12 @@ class TestRetentionIsBounded:
         node = {
             "comments": {
                 "pageInfo": {"hasNextPage": False, "endCursor": None},
-                "nodes": [{"body": "a"}, {"body": self.HUGE}],
+                "nodes": [{"body": "a", "author": {"login": "r", "__typename": "Bot"}}, {"body": self.HUGE}],
             }
         }
-        kept, complete, has_next, _cursor = github_pull_request._pr_comment_page(node)
+        kept, _humans, complete, _authors, has_next, _cursor, _end = _pr_comment_activity_page(
+            node, "pull-author"
+        )
         assert complete is True
         assert has_next is False
         assert len(kept) == 2
@@ -1332,10 +1492,12 @@ class TestRetentionIsBounded:
         node = {
             "comments": {
                 "pageInfo": {"hasNextPage": False, "endCursor": None},
-                "nodes": [{"body": body}],
+                "nodes": [{"body": body, "author": {"login": "r", "__typename": "Bot"}}],
             }
         }
-        kept, _complete, _has_next, _cursor = github_pull_request._pr_comment_page(node)
+        kept, _humans, _complete, _authors, _has_next, _cursor, _end = _pr_comment_activity_page(
+            node, "pull-author"
+        )
         assert all(self.MARKER not in entry for entry in kept)
         digest = github_pull_request._pr_comment_body_digest(kept)
         assert self.MARKER not in digest
@@ -1354,10 +1516,10 @@ class TestRetentionIsBounded:
             node = {
                 "comments": {
                     "pageInfo": {"hasNextPage": False, "endCursor": None},
-                    "nodes": [{"body": body}],
+                    "nodes": [{"body": body, "author": {"login": "r", "__typename": "Bot"}}],
                 }
             }
-            kept, _c, _h, _cur = github_pull_request._pr_comment_page(node)
+            kept, _humans, _c, _a, _h, _cur, _end = _pr_comment_activity_page(node, "pull-author")
             return kept
 
         one = page("no blocking findings")

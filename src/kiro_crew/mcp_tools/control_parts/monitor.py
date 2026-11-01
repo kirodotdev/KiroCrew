@@ -568,6 +568,13 @@ def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
             passed = checks.get("passed")
             if isinstance(passed, list):
                 check_summary["passed_count"] = len(passed)
+            # The passing bucket is truncated only at the cap, and the canonical
+            # says so beside the list rather than inside it, because extra passing
+            # rows change no verdict. A bare count here would read as an exact
+            # total at exactly the bound, so the cut is named out loud like the
+            # superseded bucket's is.
+            if observation.get("checks_passed_overflow") is True:
+                check_summary["passed_incomplete"] = True
             # Displaced rows are counted, not listed: the count is what tells a reader
             # that rows were declassified, and the identities are in the full
             # observation for whoever needs them. A cut bucket spends its last slot on
