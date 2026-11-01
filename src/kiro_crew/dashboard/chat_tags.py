@@ -36,6 +36,7 @@ from kiro_crew.dashboard.chat_tags_store import (
 )
 from kiro_crew.dashboard.chat_tags_vocabulary import _refuse_vocabulary_write
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.dashboard.create_rate_limit import TAG_COLUMN_CREATE, allow_create
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.slot_ownership import (
@@ -50,6 +51,7 @@ from kiro_crew.dashboard.token_auth import (
     refuse_unattributable_caller,
     request_origin,
 )
+from kiro_crew.hooks import dispatch_session_lane_changed_bulk
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_tags")
@@ -69,6 +71,55 @@ _VALID_STATE_KEYS = {"needs_approval", "waiting", "working", "idle"}
 
 
 # ── Slot tag assignment ────────────────────────────────────────────────────
+
+
+def _tag_vocabulary(state: DashboardState) -> dict[str, dict]:
+    """``{id: tag}`` over the live vocabulary, for resolving a slot's tag ids.
+
+    ``slot.tags`` holds ids; the ``status`` field that makes an id a LANE lives on
+    the tag object here. Built per dispatch rather than cached: ``state._tags`` is
+    mutated under ``_tags_write_lock`` by the tag CRUD, and a stale view would
+    classify a freshly promoted label as not-a-lane.
+    """
+    return {
+        tag_id: tag
+        for tag in state._tags
+        if isinstance(tag, dict) and isinstance(tag_id := tag.get("id"), str)
+    }
+
+
+async def _persisted_tag_write(
+    state: DashboardState, slot, *, expected_history_key: str | None
+) -> tuple[bool, bool]:
+    """Persist a tag mutation; return ``(written, confirmed)``.
+
+    ``best_effort=True`` swallows a lock timeout or I/O error, marks the slot dirty
+    for the periodic flush and returns ``True`` -- a return its own docstring says
+    "does NOT prove a committed write", so a lane hook fired on it takes close-out
+    action for a transition that is not on disk. This takes the CONFIRMING mode and
+    re-arms that flush itself: the acknowledged edit is still retried and the
+    response unchanged, while the caller learns the write failed. ``written`` stays
+    the save's refused-without-writing signal.
+    """
+    try:
+        return (
+            await save_slot_off_loop(
+                state,
+                slot,
+                force=True,
+                best_effort=False,
+                expected_history_key=expected_history_key,
+            ),
+            True,
+        )
+    except Exception:  # noqa: BLE001 - mirrors the best_effort re-arm it replaces
+        slot._dirty = True
+        logger.warning(
+            "chat_tags: tag save failed slot=%s, holding lane hooks back",
+            slot.key,
+            exc_info=True,
+        )
+        return True, False
 
 
 async def api_chat_slot_tags(request: web.Request) -> web.Response:
@@ -255,9 +306,10 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
         prior_tags_revision = slot.tags_revision
         slot.tags = new_tags
         written_tags_revision = _bump_slot_tags_revision(slot)
-        if not await save_slot_off_loop(
-            state, slot, force=True, expected_history_key=authorized_history_key
-        ):
+        written, persist_confirmed = await _persisted_tag_write(
+            state, slot, expected_history_key=authorized_history_key
+        )
+        if not written:
             # Refused without writing: the session was permanently deleted or
             # rebound mid-persist. Roll back the live field — but only while
             # it still holds THIS request's value: the write span awaits, so
@@ -309,6 +361,17 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
             )
 
     state.push_slots_update()
+    # The write is persisted and answered by here, so a hook cannot veto it and a
+    # hook that breaks cannot wedge the board. The rollback branch above returns
+    # before this point, which is what keeps a refused write silent, and
+    # ``persist_confirmed`` keeps a SWALLOWED save failure silent too.
+    if persist_confirmed:
+        await dispatch_session_lane_changed_bulk(
+            [(slot.key, prior_tags, new_tags)],
+            tags_by_id=_tag_vocabulary(state),
+            session_keys={slot.key: effective_session_key(slot)},
+            request=request,
+        )
     sel().log_api_access(
         caller="dashboard",
         operation="chat.slot_tags",
@@ -940,9 +1003,10 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
                 )
         slot.tags = written_tags
         written_tags_revision = _bump_slot_tags_revision(slot)
-        if not await save_slot_off_loop(
-            state, slot, force=True, expected_history_key=authorized_history_key
-        ):
+        written, persist_confirmed = await _persisted_tag_write(
+            state, slot, expected_history_key=authorized_history_key
+        )
+        if not written:
             # Refused without writing: the session was permanently deleted or
             # rebound mid-persist. Roll back the live field — but only while
             # it still holds THIS request's value, so a non-endpoint writer's
@@ -963,6 +1027,15 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             state.push_slots_update()
             return _rejected("session was deleted or rebound", "session_gone")
     state.push_slots_update()
+    # Same placement and the same reason as ``api_chat_slot_tags``: past the
+    # rollback branch, after a CONFIRMED persist, before the response is built.
+    if persist_confirmed:
+        await dispatch_session_lane_changed_bulk(
+            [(slot.key, prior_tags, written_tags)],
+            tags_by_id=_tag_vocabulary(state),
+            session_keys={slot.key: effective_session_key(slot)},
+            request=request,
+        )
     sel().log_api_access(
         caller=audit_caller,
         operation="chat.slot_drop",

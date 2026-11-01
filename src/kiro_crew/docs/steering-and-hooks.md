@@ -127,7 +127,7 @@ the harness's decision, not something this product reimplements.
 A hook is a shell command bound to an event. It can inject context, inspect a
 tool call before it runs, or block it outright.
 
-### The five events
+### The six events
 
 | Event | Fires | Exit 0 does |
 |---|---|---|
@@ -136,6 +136,7 @@ tool call before it runs, or block it outright.
 | `PreToolUse` | before a tool runs | allows the tool |
 | `PostToolUse` | after a tool ran | nothing |
 | `Stop` | the turn ends | usually nothing — but see the continuation contract below |
+| `SessionLaneChanged` | a dashboard user moves a session between board lanes — an agent's move fires nothing | nothing |
 
 A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
 (with the task its parent wrote) before its prompt is sent, and their exit-0
@@ -307,7 +308,7 @@ A hook's fields:
 
 | Field | Means |
 |---|---|
-| `event` | one of the eleven above |
+| `event` | one of the twelve above |
 | `matcher` | what the hook filters on; empty means every call, or every message |
 | `matcher_mode` | `glob` (default), `regex`, or `contains` — read only for the message events, never for a tool matcher |
 | `command` | the shell line |
@@ -321,8 +322,16 @@ a fixed glob-style vocabulary — an exact name, `prefix*`, `*suffix`,
 `*contains*`, or `*` for everything — and `matcher_mode` is not consulted at all.
 The form knows this and hides the mode control for those two events. On
 `UserPromptSubmit`, `AgentSpawn` and `Stop` the matcher runs against the message
-or the final assistant text, and there `matcher_mode` decides: `glob`, a
-case-insensitive `regex`, or `contains` as pipe-delimited substrings.
+or the final assistant text, and on `SessionLaneChanged` against the lane tokens
+the transition produced (`added:<id>;` and `removed:<id>;`); in all four
+`matcher_mode` decides: `glob`, a case-insensitive `regex`, or `contains` as
+pipe-delimited substrings.
+
+For a lane matcher that means a bare lane id matches NOTHING, because `glob`
+compares the whole string: write `*added:<id>;*` to catch a session entering that
+lane, `*removed:<id>;*` to catch it leaving, and `*:<id>;*` for either. Keep both
+the leading `:` and the trailing `;` — without them a selector also matches a lane
+whose id merely contains yours, and runs your hook on somebody else's session.
 
 ### Creating, testing, enabling and deleting one
 

@@ -543,6 +543,7 @@ from kiro_crew.history import (  # noqa: F401
     is_incognito_transcript,
 )
 from kiro_crew.history_projection import TranscriptRevisionChanged  # noqa: F401
+from kiro_crew.hooks import dispatch_session_lane_changed_bulk  # noqa: F401
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord  # noqa: F401
 from kiro_crew.llm_helpers import (  # noqa: F401
     pick_epoch_host,
