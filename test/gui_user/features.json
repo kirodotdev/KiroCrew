@@ -438,7 +438,7 @@
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "incognito-mix seeds three byte-identical transcripts differing only in memory_mode; memory_mode lives on the slot; startup video and artifact registration are skipped for restricted sessions."
+        "notes": "incognito-mix seeds three byte-identical transcripts differing only in memory_mode; memory_mode lives on the slot; startup video and artifact registration are skipped for restricted sessions. Which sessions start open as tabs is not part of what it controls for: the seed opens the persistent and incognito sessions on its first start, and the Older Sessions pane lists only sessions that are not open."
       },
       "runnable": "nightly",
       "estimated_steps": 5,
@@ -1305,7 +1305,7 @@
         "seed": "incognito-mix",
         "members": [],
         "feature_flags": [],
-        "notes": "Cover one persistent and one incognito parent to check mode inheritance."
+        "notes": "Cover one persistent and one incognito parent to check mode inheritance. The incognito parent is open on the first start only and must be forked before any restart."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
@@ -6087,7 +6087,7 @@
         "seed": "incognito-mix",
         "members": [],
         "feature_flags": [],
-        "notes": "Verify a new slot picks up the mode via POST /api/chat/slots. | configKey dashboard.default_memory_mode; verify by creating a new chat and checking its mode badge."
+        "notes": "Verify a new slot picks up the mode via POST /api/chat/slots. | configKey dashboard.default_memory_mode; verify by creating a new chat and checking its mode badge. The seed opens two tabs on its first start, so /chat lands on an open session instead of a Welcome view; reach the Welcome view with a new session."
       },
       "runnable": "nightly",
       "estimated_steps": 4,
