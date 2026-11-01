@@ -218,7 +218,6 @@
   "src/test/ChatSidebar.slotDerivation.test.tsx",
   "src/test/ChatSidebar.sourceLinkUnlink.test.tsx",
   "src/test/ChatSidebar.staleCollapse.test.tsx",
-  "src/test/ChatSidebar.staticRows.test.tsx",
   "src/test/ChatSidebar.statusMarker.test.tsx",
   "src/test/ChatSidebar.subagentApproval.test.tsx",
   "src/test/ChatSidebar.subagentRunning.test.tsx",
