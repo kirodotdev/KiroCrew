@@ -107,7 +107,6 @@
   "src/test/MarkdownPanel.test.tsx",
   "src/test/MarkdownPanelCoverage.test.tsx",
   "src/test/MarkdownPanelMoreCoverage.test.tsx",
-  "src/test/MarkdownRenderer.inlineCodeCopy.test.tsx",
   "src/test/MarkdownRenderer.mermaid.test.tsx",
   "src/test/MarkdownRenderer.mermaidConfig.test.tsx",
   "src/test/MarkdownRenderer.mermaidSource.test.tsx",
