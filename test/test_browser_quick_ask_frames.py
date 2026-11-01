@@ -843,3 +843,11 @@ async def test_a_child_frame_with_no_isolated_world_counts_as_one() -> None:
     )
     fo = fr.FrameOps(relay, SESSION, reg, "WALKER")
     assert await fo.count("askedValues") == 1 and relay.evaluated == []
+
+
+def test_frame_tags_stop_at_the_ref_grammar_and_are_never_reused(monkeypatch) -> None:
+    monkeypatch.setattr(fr, "FRAME_TAG_MAX", 3)
+    reg = fr.FrameRegistry()
+    assert [reg.tag_of(f"F{i}") for i in range(5)] == [1, 2, 3, 0, 0]
+    assert reg.tag_of("F1") == 2 and reg.frame_of(3) == "F2"
+    assert fr.FRAME_REF_RE.match(f"f{9999}e1") and not fr.FRAME_REF_RE.match("f10000e1")

@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 FRAME_REF_RE = re.compile(r"^f([1-9][0-9]{0,3})(e[1-9][0-9]{0,6})$")
 #: Most cross-origin frames one snapshot reads (the walker hands out as many slots).
 FRAME_READ_CAP = 8
+#: The most frame tags one stream hands out: the largest ``<tag>`` FRAME_REF_RE
+#: accepts. A frame attached after that is still tracked for the secret-field
+#: guards, but gets no tag, so it is never read into an outline.
+FRAME_TAG_MAX = 9999
 #: The isolated world a same-process cross-origin frame's walker runs in.
 WALKER_WORLD = "kirocrew_frame_walker"
 #: How far the owner's box may differ from the frame's own viewport, in CSS
@@ -94,8 +98,14 @@ class FrameRegistry:
         return self._session.get(frame_id, "")
 
     def tag_of(self, frame_id: str) -> int:
+        """The frame's tag, or 0 once :data:`FRAME_TAG_MAX` tags are handed out.
+
+        Tags are never reused, so a stale ref cannot reach a later frame.
+        """
         tag = self._tags.get(frame_id)
         if tag is None:
+            if len(self._tags) >= FRAME_TAG_MAX:
+                return 0
             tag = len(self._tags) + 1
             self._tags[frame_id] = tag
             self._by_tag[tag] = frame_id
@@ -301,6 +311,8 @@ class FrameOps:
         if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
             return None
         tag = self.registry.tag_of(frame_id)
+        if not tag:
+            return None  # past the ref grammar's range: read as not readable
         nodes = []
         for n in data["nodes"]:
             if not isinstance(n, dict):
