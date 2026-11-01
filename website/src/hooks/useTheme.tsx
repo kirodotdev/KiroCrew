@@ -1125,83 +1125,118 @@ function useThemeState(): ThemeContextValue {
   // commits) instead of from the effect below, a second commit that changed nothing.
   if (themeBootFetched && !bootData && !themeBootReady) setThemeBootReady(true)
 
+  // A read that returned data is applied the same way: the state it sets (mode,
+  // colour, the first-run flags) and `themeBootReady` are all updated while
+  // rendering, the first time this data is seen, so the commit that carries the
+  // data already carries its effect. From an effect that was a second commit. The
+  // flags and `themeBootReady` still change together, which the first-run effects
+  // that key on `themeBootReady` rely on. What stays in the effect below reaches
+  // outside React: localStorage, the workspace, the glass switch.
+  //
+  // `bootApplied` records the data that was applied and what rendering decided
+  // about it. By the time the effect runs the state already holds the data's
+  // values, so the effect could not tell that the mode or colour changed, or
+  // which first-run branch applies; it carries out the record instead of
+  // deciding again.
+  const [bootApplied, setBootApplied] = useState<{
+    data: NonNullable<typeof bootData>
+    modeChanged: boolean
+    colorChanged: boolean
+    // 'migrate': a browser that finished first run before the server tracked it
+    // publishes that. 'adopt': the server's flags win. 'keep': an earlier read
+    // already started the migration, so a later read leaves the flags alone.
+    onboarding: 'migrate' | 'adopt' | 'keep'
+  } | null>(null)
+  if (themeBootFetched && bootData && bootData !== bootApplied?.data) {
+    const modeChanged = !!bootData.mode && bootData.mode !== mode
+    const colorChanged = !!bootData.color && bootData.color !== colorTheme
+    const hasOnboardingState =
+      typeof bootData.onboarded === 'boolean'
+      && typeof bootData.import_onboarded === 'boolean'
+    const needsLegacyMigration =
+      hasOnboardingState
+      && legacyOnboardedRef.current
+      && (!bootData.onboarded || !bootData.import_onboarded)
+    // Both refs are written only after a commit (by the effect below and its
+    // mutation's callback), so reading them while rendering sees what an earlier
+    // read left.
+    const onboarding = legacyMigrationStartedRef.current
+      ? 'keep'
+      : needsLegacyMigration ? 'migrate' : 'adopt'
+    if (modeChanged) {
+      setMode(bootData.mode as ModePreference)
+      setResolved(resolveMode(bootData.mode as ModePreference))
+    }
+    if (colorChanged) setColorThemeState(bootData.color)
+    if (onboarding === 'migrate') {
+      setOnboarded(true)
+      setImportOnboarded(true)
+      setPrivacyAcked(true)
+    } else if (onboarding === 'adopt') {
+      if (typeof bootData.onboarded === 'boolean') {
+        setOnboarded(bootData.onboarded)
+        // A completed first run also covers the Privacy chapter (see the effect).
+        if (bootData.onboarded) setPrivacyAcked(true)
+      }
+      if (bootData.privacy_acked === true) setPrivacyAcked(true)
+      if (typeof bootData.import_onboarded === 'boolean') setImportOnboarded(bootData.import_onboarded)
+    }
+    if (!themeBootReady) setThemeBootReady(true)
+    setBootApplied({ data: bootData, modeChanged, colorChanged, onboarding })
+  }
+
   useEffect(() => {
-    if (!themeBootFetched) return
-    if (bootData) {
-      if (bootData.mode && bootData.mode !== mode) {
-        safeSetItem('mc-theme', bootData.mode)
-        setMode(bootData.mode as ModePreference)
-        setResolved(resolveMode(bootData.mode as ModePreference))
-      }
-      if (bootData.color && bootData.color !== colorTheme) {
-        safeSetItem('mc-color-theme', bootData.color)
-        setColorThemeState(bootData.color)
-      }
-      // The Translucent panels switch, workspace-backed the same way. '' is a
-      // workspace that predates the key: the browser copy is then the only
-      // record of the choice, so an ON copy is published once, after which the
-      // workspace value is the one every browser adopts. The absent (off)
-      // copy is not published: it is also what a fresh browser holds.
-      if (bootData.translucent_panels === '' && readLiquidGlass()) {
-        persistTheme({ translucent_panels: 'on' })
-      } else {
-        adoptServerLiquidGlass(bootData.translucent_panels)
-      }
-      const hasOnboardingState =
-        typeof bootData.onboarded === 'boolean'
-        && typeof bootData.import_onboarded === 'boolean'
-      const needsLegacyMigration =
-        hasOnboardingState
-        && legacyOnboardedRef.current
-        && (!bootData.onboarded || !bootData.import_onboarded)
-      if (needsLegacyMigration && !legacyMigrationStartedRef.current) {
-        legacyMigrationStartedRef.current = true
-        setOnboarded(true)
-        setImportOnboarded(true)
-        setPrivacyAcked(true)
-        safeSetItem('mc-privacy-acked', '1')
-        persistTheme(
-          { onboarded: true, import_onboarded: true, privacy_acked: true },
-          {
-            onSuccess: () => {
-              safeSetItem('mc-import-onboarded', '1')
-              legacyOnboardedRef.current = false
-            },
-          },
-        )
-      } else if (!legacyMigrationStartedRef.current) {
-        if (typeof bootData.onboarded === 'boolean') {
-          setOnboarded(bootData.onboarded)
-          if (bootData.onboarded) {
-            safeSetItem('mc-onboarded', '1')
-            // A completed first run passed through the Privacy chapter (or
-            // predates it) — the server flag is the durable record of both.
-            safeSetItem('mc-privacy-acked', '1')
-            setPrivacyAcked(true)
-          } else {
-            localStorage.removeItem('mc-onboarded')
-          }
-        }
-        // Server value wins so a second machine does not re-show a chapter this
-        // user already passed. Only ever set forward from the server: clearing it
-        // locally would re-open the chapter mid-session on a stale read.
-        if (bootData.privacy_acked === true) {
-          setPrivacyAcked(true)
-          safeSetItem('mc-privacy-acked', '1')
-        }
-        if (typeof bootData.import_onboarded === 'boolean') {
-          setImportOnboarded(bootData.import_onboarded)
-          if (bootData.import_onboarded) {
+    if (!bootApplied) return
+    const { data, modeChanged, colorChanged, onboarding } = bootApplied
+    if (modeChanged) safeSetItem('mc-theme', data.mode)
+    if (colorChanged) safeSetItem('mc-color-theme', data.color)
+    // The Translucent panels switch, workspace-backed the same way. '' is a
+    // workspace that predates the key: the browser copy is then the only
+    // record of the choice, so an ON copy is published once, after which the
+    // workspace value is the one every browser adopts. The absent (off)
+    // copy is not published: it is also what a fresh browser holds.
+    if (data.translucent_panels === '' && readLiquidGlass()) {
+      persistTheme({ translucent_panels: 'on' })
+    } else {
+      adoptServerLiquidGlass(data.translucent_panels)
+    }
+    if (onboarding === 'migrate') {
+      legacyMigrationStartedRef.current = true
+      safeSetItem('mc-privacy-acked', '1')
+      persistTheme(
+        { onboarded: true, import_onboarded: true, privacy_acked: true },
+        {
+          onSuccess: () => {
             safeSetItem('mc-import-onboarded', '1')
-          } else {
-            localStorage.removeItem('mc-import-onboarded')
-          }
+            legacyOnboardedRef.current = false
+          },
+        },
+      )
+    } else if (onboarding === 'adopt') {
+      if (typeof data.onboarded === 'boolean') {
+        if (data.onboarded) {
+          safeSetItem('mc-onboarded', '1')
+          // A completed first run passed through the Privacy chapter (or
+          // predates it) — the server flag is the durable record of both.
+          safeSetItem('mc-privacy-acked', '1')
+        } else {
+          localStorage.removeItem('mc-onboarded')
         }
       }
-      setThemeBootReady(true)
+      // Server value wins so a second machine does not re-show a chapter this
+      // user already passed. Only ever set forward from the server: clearing it
+      // locally would re-open the chapter mid-session on a stale read.
+      if (data.privacy_acked === true) safeSetItem('mc-privacy-acked', '1')
+      if (typeof data.import_onboarded === 'boolean') {
+        if (data.import_onboarded) {
+          safeSetItem('mc-import-onboarded', '1')
+        } else {
+          localStorage.removeItem('mc-import-onboarded')
+        }
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bootData, themeBootFetched])
+  }, [bootApplied])
 
   // Derived, not stored: a flag set inside `loadCustomThemes` and reset on a
   // selection change went stale the moment the picker moved to a LISTED pack
