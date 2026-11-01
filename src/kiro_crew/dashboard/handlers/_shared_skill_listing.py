@@ -200,14 +200,28 @@ def _expand_agent_globs(
     return expanded
 
 
+def _skills_alias_roots() -> tuple[str, ...]:
+    """The skills root, spelled and resolved, for :func:`_agents_loading_skill`."""
+    from kiro_crew.skill_runtime.catalog import _alias_roots
+    from kiro_crew.skills import skills_dir
+
+    return _alias_roots([skills_dir()])
+
+
 def _agents_loading_skill(
-    skill_md: Path, expanded_agents: list[tuple[str, list[str]]]
+    skill_md: Path,
+    expanded_agents: list[tuple[str, list[str]]],
+    *,
+    alias_roots: tuple[str, ...] | None = None,
 ) -> list[str]:
     """Return names of agents whose pre-expanded globs match *skill_md*.
 
     Uses the runtime scope match, so a row listed under a symlinked ``$HOME``
     also matches a glob written against the resolved home path, and an app
     skill listed under its flat link matches its app's ``<app>/*/SKILL.md``.
+    A caller matching many rows passes *alias_roots* from
+    :func:`_skills_alias_roots` so the skills root is resolved once, not once
+    per row and agent.
     """
     # Imported here: every module-level name of this family is served by the
     # ``_shared`` facade, and these two are not part of that surface.
@@ -215,11 +229,16 @@ def _agents_loading_skill(
     from kiro_crew.skills import skills_dir
 
     target = str(skill_md)
-    return [
-        name
-        for name, globs in expanded_agents
-        if _matches_any(target, globs) or _alias_matches(skill_md, globs, [skills_dir()])
-    ]
+    out: list[str] = []
+    for name, globs in expanded_agents:
+        if _matches_any(target, globs):
+            out.append(name)
+            continue
+        if alias_roots is None:
+            alias_roots = _skills_alias_roots()
+        if _alias_matches(skill_md, globs, [skills_dir()], roots=alias_roots):
+            out.append(name)
+    return out
 
 
 def skill_rows_for_globs(
@@ -248,11 +267,12 @@ def skill_rows_for_globs(
     crew skill symlinked into ``~/.kiro/skills``) still finds the skill.
     """
     agent = [("", _with_canonical_globs(globs, project_dir))]
+    roots = _skills_alias_roots()
     return [
         row
         for row in rows
         if any(
-            _agents_loading_skill(Path(p), agent)
+            _agents_loading_skill(Path(p), agent, alias_roots=roots)
             for p in (row.get("path"), *(row.get("alias_paths") or ()))
             if p
         )
@@ -329,13 +349,14 @@ def annotate_skills_with_agents(
     would drop every project skill for that agent.
     """
     expanded = _expand_agent_globs(_load_parsed_agents(), project_dir=project_dir)
+    roots = _skills_alias_roots()
     for s in skills:
         path = s.get("path") or ""
         if not path:
             s["loaded_by_agents"] = []
             continue
         try:
-            s["loaded_by_agents"] = _agents_loading_skill(Path(path), expanded)
+            s["loaded_by_agents"] = _agents_loading_skill(Path(path), expanded, alias_roots=roots)
         except Exception:
             s["loaded_by_agents"] = []
 

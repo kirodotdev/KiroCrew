@@ -204,6 +204,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _row_is_editable,
         _row_rank,
         _skill_file_identity,
+        _skills_alias_roots,
         _warn_skills_outside_roots,
         annotate_skills_with_agents,
         collect_skills_blocking,
