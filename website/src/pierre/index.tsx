@@ -12,7 +12,7 @@
  * user has turned off highlighted diffs (see `usePlainDiff`), which is why the
  * fallback component is a real surface here rather than a loading state.
  */
-import { Suspense, createContext, forwardRef, lazy, memo, type CSSProperties, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, createContext, forwardRef, lazy, memo, type CSSProperties, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { BaseCodeOptions, FileContents, LineAnnotation, SelectedLineRange } from '@pierre/diffs'
 import type { FileOptions } from '@pierre/diffs/react'
 import type { PierreDiffOptions } from './config'
@@ -69,6 +69,9 @@ export const PierreEditor = memo(forwardRef<PierreEditorHandle, {
   diffSplit?: boolean
   /** Show unchanged regions in the live-diff surface instead of folding them. */
   diffExpandUnchanged?: boolean
+  /** Live-diff editing only: whether the live diff was dropped for being
+   *  over the inline budget (see `PierreEditorImpl`). */
+  onLiveDiffDegraded?: (degraded: boolean) => void
   className?: string
 }>(function PierreEditor(props, ref) {
   // The caller's `className` is the editor's sizing contract (a chat block
@@ -382,7 +385,7 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
   )
 })
 
-export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, fallbackText, fallbackClassName, fallbackContentStyle, onVisible, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix, titleClickable }: {
+export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, fallbackText, fallbackClassName, fallbackContentStyle, onVisible, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix, titleClickable, autoLineByLine }: {
   oldFile: FileContents | null
   newFile: FileContents | null
   options?: PierreDiffOptions
@@ -407,6 +410,13 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
    *  header rows this component draws for the oversized pair (its fallback and
    *  its opted-in state) cannot, so they take it from here. */
   titleClickable?: boolean
+  /** Start the off-thread line-by-line diff on its own when the pair is over
+   *  the inline budget, instead of waiting for the "Show line-by-line diff"
+   *  click. For a surface where showing the diff IS the reader's request (the
+   *  file tab's visible diff view). Default false: transcript surfaces render
+   *  many pairs and must not compute one nobody opened (#13430). Cancel sticks
+   *  for the pair; an error waits for the retry button. */
+  autoLineByLine?: boolean
 }) {
   const withinBudget = isPierreFilePairWithinBudget(oldFile, newFile)
   const [plain] = usePlainDiff()
@@ -426,30 +436,70 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   // re-initialises its view when its options change identity.
   const patchOptions = useMemo<PierreDiffOptions>(() => ({ ...options, disableFileHeader: true }), [options])
   const abortRef = useRef<AbortController | null>(null)
+  /** The pair whose compute `abortRef` holds. */
+  const abortPairRef = useRef<PairIdentity | null>(null)
+  /** The pair the reader cancelled; auto mode leaves it on the button. */
+  const [declined, setDeclined] = useState<PairIdentity | null>(null)
+  /** The pair whose compute finished (ready or error); auto mode never
+   *  restarts it, so a returning tab keeps its diff and an error keeps its
+   *  retry button. */
+  const [settled, setSettled] = useState<PairIdentity | null>(null)
   const pairMatches = request != null && request.pair.oldFile === oldFile && request.pair.newFile === newFile
   const active = pairMatches ? request : null
   // Exact ± counts for the header row, which Pierre's header used to carry.
   const readyPatch = active?.status === 'ready' ? active.patch : null
   const readyStats = useMemo(() => (readyPatch == null ? undefined : countDiffStats(readyPatch)), [readyPatch])
   useEffect(() => () => abortRef.current?.abort(), [])
-  const startLineByLineDiff = () => {
+  const startLineByLineDiff = useCallback(() => {
     abortRef.current?.abort()
     const controller = new AbortController()
-    abortRef.current = controller
     const pair: PairIdentity = { oldFile, newFile }
+    abortRef.current = controller
+    abortPairRef.current = pair
     setRequest({ pair, status: 'computing' })
     computePairPatch(oldFile, newFile, controller.signal).then(
-      patch => setRequest(prev => (prev?.pair === pair ? { pair, status: 'ready', patch } : prev)),
+      patch => {
+        setSettled(pair)
+        setRequest(prev => (prev?.pair === pair ? { pair, status: 'ready', patch } : prev))
+      },
       (err: unknown) => {
         if (err instanceof DOMException && err.name === 'AbortError') return
+        setSettled(pair)
         setRequest(prev => (prev?.pair === pair ? { pair, status: 'error' } : prev))
       },
     )
-  }
+  }, [oldFile, newFile])
   const cancelLineByLineDiff = () => {
     abortRef.current?.abort()
+    setDeclined({ oldFile, newFile })
     setRequest(null)
   }
+  const declinedMatch = declined?.oldFile === oldFile && declined?.newFile === newFile
+  const settledMatch = settled?.oldFile === oldFile && settled?.newFile === newFile
+  const autoEligible = autoLineByLine === true && !withinBudget && options?.collapsed !== true && !declinedMatch && !settledMatch
+  // Abort the compute this pair owns when the pair goes away, the auto one or
+  // a retry click, so no worker diff outlives its pair.
+  useEffect(() => () => {
+    const owner = abortPairRef.current
+    if (owner?.oldFile === oldFile && owner.newFile === newFile) abortRef.current?.abort()
+  }, [oldFile, newFile])
+  useEffect(() => {
+    if (!autoEligible) return
+    startLineByLineDiff()
+    return () => {
+      // Settling also lands here; aborting a finished compute is a no-op.
+      const owner = abortPairRef.current
+      if (owner?.oldFile === oldFile && owner.newFile === newFile) abortRef.current?.abort()
+      // A cleanup with no setup after it (prop off, collapse) must not leave
+      // a computing strip whose work was aborted.
+      setRequest(prev => (prev?.status === 'computing' && prev.pair.oldFile === oldFile && prev.pair.newFile === newFile ? null : prev))
+    }
+  }, [autoEligible, startLineByLineDiff, oldFile, newFile])
+  // Before the effect has run, an auto pair already reads as computing, so
+  // the first paint never shows the idle button.
+  const lineByLineState = active?.status === 'computing' || (autoEligible && active == null)
+    ? 'computing'
+    : active?.status === 'error' ? 'error' : 'idle'
   const plainFilePairFallback = (
     <PlainFilePairFallback
       oldFile={oldFile}
@@ -462,7 +512,7 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
       renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
       titleClickable={titleClickable}
       onShowLineByLineDiff={startLineByLineDiff}
-      lineByLineState={active?.status === 'computing' ? 'computing' : active?.status === 'error' ? 'error' : 'idle'}
+      lineByLineState={lineByLineState}
       onCancelLineByLineDiff={cancelLineByLineDiff}
     />
   )
