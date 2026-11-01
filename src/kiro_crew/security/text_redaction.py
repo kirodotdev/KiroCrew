@@ -28,6 +28,7 @@ import re
 import string
 from typing import TYPE_CHECKING
 
+from kiro_crew.jwt_header import is_json_object_segment
 from kiro_crew.security import _submodule
 
 from . import pass_compose, redaction, stream_aws_anchor
@@ -145,7 +146,7 @@ def _partial_jwt_tail(buf: str) -> re.Match[str] | None:
     m = _PARTIAL_JWT_TAIL_RE.search(buf)
     while m is not None and "." in m.group():
         header = m.group().split(".", 1)[0]
-        if header.find("eyJ", 1) != -1 or redaction._is_json_object_segment(header):
+        if header.find("eyJ", 1) != -1 or is_json_object_segment(header):
             break
         m = _PARTIAL_JWT_TAIL_RE.search(buf, m.start() + 1)
     return m

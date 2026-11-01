@@ -1565,3 +1565,6 @@ if TYPE_CHECKING:  # project names it serves from outside its owners, from their
     from kiro_crew.credential_patterns import (  # noqa: F401
         JWT_MULTI_SEGMENT,
     )
+    from kiro_crew.jwt_header import (  # noqa: F401
+        is_jwt_lookalike,
+    )
