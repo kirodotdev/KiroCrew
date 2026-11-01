@@ -38,5 +38,4 @@
 2 test/test_prepare_pr_prove.py
 2 test/test_source_launcher.py
 3 test/test_spawn_exec_shim.py
-1 test/test_tailnet_e2e.py
 1 test/test_xdist_host_budget.py
