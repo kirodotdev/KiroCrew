@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fireEvent, render } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 
 /**
@@ -12,11 +12,9 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
  *
  * The waits matter. `useBlockAssembler` throttles re-parsing while streaming, so
  * a synchronous rerender changes nothing at all and every assertion below would
- * pass against a DOM that never saw the second tick.
+ * pass against a DOM that never saw the second tick. Each wait therefore waits
+ * for the DOM change that the tick under test produces.
  */
-const THROTTLE_GRACE_MS = 160
-
-const settle = () => new Promise((resolve) => setTimeout(resolve, THROTTLE_GRACE_MS))
 
 const blocks = (container: HTMLElement) =>
   Array.from(container.querySelectorAll('p,h1,h2,h3,li'))
@@ -33,15 +31,14 @@ describe('streaming markdown keeps settled blocks', () => {
     const { container, rerender } = render(
       <MarkdownRenderer content={`${INTRO}\n\n${BODY}`} streaming />,
     )
-    await settle()
+    await waitFor(() => expect(find(container, SETTLED)).toBeTruthy())
     const bodyBefore = find(container, SETTLED)
     expect(bodyBefore, 'the body paragraph renders on the first tick').toBeTruthy()
 
     rerender(<MarkdownRenderer content={`${INTRO}\n===\n\n${BODY}`} streaming />)
-    await settle()
+    await waitFor(() => expect(container.querySelector('h1')?.textContent).toContain(INTRO))
 
     // The reclassified line becoming a heading is correct and expected.
-    expect(container.querySelector('h1')?.textContent).toContain(INTRO)
     expect(find(container, SETTLED)).toBe(bodyBefore)
   })
 
@@ -49,14 +46,13 @@ describe('streaming markdown keeps settled blocks', () => {
     const { container, rerender } = render(
       <MarkdownRenderer content={`${INTRO}\n\n${BODY}`} streaming />,
     )
-    await settle()
+    await waitFor(() => expect(find(container, SETTLED)).toBeTruthy())
     const bodyBefore = find(container, SETTLED)
     expect(bodyBefore).toBeTruthy()
 
     rerender(<MarkdownRenderer content={`${INTRO}\n---\n\n${BODY}`} streaming />)
-    await settle()
+    await waitFor(() => expect(container.querySelector('h2')?.textContent).toContain(INTRO))
 
-    expect(container.querySelector('h2')?.textContent).toContain(INTRO)
     expect(find(container, SETTLED)).toBe(bodyBefore)
   })
 
@@ -66,14 +62,14 @@ describe('streaming markdown keeps settled blocks', () => {
     const { container, rerender } = render(
       <MarkdownRenderer content={`${INTRO}\n\n${first}\n\n${second}`} streaming />,
     )
-    await settle()
+    await waitFor(() => expect(find(container, second)).toBeTruthy())
     const firstBefore = find(container, first)
     const secondBefore = find(container, second)
     expect(firstBefore).toBeTruthy()
     expect(secondBefore).toBeTruthy()
 
     rerender(<MarkdownRenderer content={`${INTRO}\n===\n\n${first}\n\n${second}`} streaming />)
-    await settle()
+    await waitFor(() => expect(container.querySelector('h1')?.textContent).toContain(INTRO))
 
     expect(find(container, first)).toBe(firstBefore)
     expect(find(container, second)).toBe(secondBefore)
@@ -83,12 +79,12 @@ describe('streaming markdown keeps settled blocks', () => {
     const { container, rerender } = render(
       <MarkdownRenderer content={`${INTRO}\n\n${BODY}`} streaming />,
     )
-    await settle()
+    await waitFor(() => expect(find(container, SETTLED)).toBeTruthy())
     const introBefore = find(container, INTRO)
     const bodyBefore = find(container, SETTLED)
 
     rerender(<MarkdownRenderer content={`${INTRO}\n\n${BODY}\n\n- item`} streaming />)
-    await settle()
+    await waitFor(() => expect(find(container, 'item')).toBeTruthy())
 
     expect(find(container, INTRO)).toBe(introBefore)
     expect(find(container, SETTLED)).toBe(bodyBefore)
@@ -98,8 +94,7 @@ describe('streaming markdown keeps settled blocks', () => {
     const { container } = render(
       <MarkdownRenderer content={`${INTRO}\n===\n\n${BODY}`} streaming />,
     )
-    await settle()
-    expect(container.querySelector('h1')?.textContent).toContain(INTRO)
+    await waitFor(() => expect(container.querySelector('h1')?.textContent).toContain(INTRO))
     expect(container.textContent).toContain(BODY)
     // The wrapper that stabilises keys wraps the block itself and adds no layout box.
     const wrapper = container.querySelector('h1')?.parentElement
@@ -121,7 +116,7 @@ describe('streaming markdown keeps settled blocks', () => {
     const { container, rerender } = render(
       <MarkdownRenderer content={`${ALPHA}\n\n${BETA}`} streaming />,
     )
-    await settle()
+    await waitFor(() => expect(container.querySelector('img[alt="beta"]')).toBeTruthy())
 
     // Fail the SECOND image, so the second slot is the one carrying a failure.
     const beta = container.querySelector('img[alt="beta"]')
@@ -134,7 +129,7 @@ describe('streaming markdown keeps settled blocks', () => {
 
     // A paragraph arriving above shifts alpha down into the slot beta occupied.
     rerender(<MarkdownRenderer content={`${INTRO}\n\n${ALPHA}\n\n${BETA}`} streaming />)
-    await settle()
+    await waitFor(() => expect(container.textContent).toContain(INTRO))
 
     expect(
       container.querySelector('img[alt="alpha"]'),
