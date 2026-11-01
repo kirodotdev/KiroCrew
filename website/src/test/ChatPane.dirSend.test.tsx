@@ -239,6 +239,24 @@ describe('ChatPane agent switch — failures reach the shared notice', () => {
     )
   })
 
+  it('reports in the pane without a second live region, so the failure is announced once', async () => {
+    const { ApiError } = await import('../api/client') as unknown as {
+      ApiError: new (s: number, m: string, b?: string) => Error
+    }
+    ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(400, 'invalid agent name', JSON.stringify({ error: 'invalid agent name' })),
+    )
+    const store = await openAgentPicker()
+    fireEvent.click(await screen.findByText('reviewer'))
+
+    const inPane = await screen.findByTestId('chat-pane-switch-error')
+    expect(inPane).toHaveTextContent('invalid agent name')
+    expect(inPane.getAttribute('role')).toBeNull()
+    await waitFor(() =>
+      expect(store.getState().chat.agentSwitchNotice?.message).toBe('invalid agent name'),
+    )
+  })
+
   it('leaves no notice behind when the switch succeeds', async () => {
     ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined)
     const store = await openAgentPicker()

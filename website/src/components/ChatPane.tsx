@@ -1017,6 +1017,7 @@ export default function ChatPane({
           className="mx-4 mt-2"
           testId="chat-pane-switch-error"
           message={switchError}
+          announce={false}
           onDismiss={() => setSwitchError('')}
         />
         {/* No hand-off: this pane holds an unsent draft. A failed ACP capability

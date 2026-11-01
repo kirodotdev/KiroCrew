@@ -522,6 +522,11 @@ export default function App() {
     {/* Same rule for a file-menu action's result: the dashboard shows it in the
         notification sheet's banner region, which these frames do not render. */}
     {(isPopout || isEmbed) && <FileMenuResultToastFrame />}
+    {/* The keyboard cycle, the session pickers and the auto-compact write all
+        dispatch this notice in a popout and an embed window too, and for several
+        of them it is the only surface: the picker closes on failure, and the
+        auto-compact flush fires from an unmount. */}
+    {(isPopout || isEmbed) && agentSwitchNotice && <AgentSwitchNoticeBanner notice={agentSwitchNotice} />}
     {isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
