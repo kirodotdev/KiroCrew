@@ -457,7 +457,6 @@
   "src/test/useBottomTerminal.reuseCurrent.test.ts",
   "src/test/useBottomTerminal.viewportClamp.test.ts",
   "src/test/useBrowserView.test.tsx",
-  "src/test/useDashboardHealthProbe.test.tsx",
   "src/test/useDrawerSwipe.test.ts",
   "src/test/useInstanceShortcuts.test.tsx",
   "src/test/useKeyboardShortcuts.test.tsx",
