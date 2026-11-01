@@ -903,9 +903,9 @@ The proxy strips the prefix before forwarding, relays cookies, and rewrites
 
 ### Share one Crew with teammates
 
-Sharing is a preview: it requires `KIROCREW_SHARED_CREW_PREVIEW=1` in the
-gateway's environment. Without it, Settings > People and the direct link do not
-appear.
+Sharing is a preview: turn on Shared Crew in Feature Previews and restart the
+gateway, or set `KIROCREW_SHARED_CREW_PREVIEW=1` in the gateway's environment.
+Without it, Settings > People and the direct link do not appear.
 
 Several people can use one Crew over Tailscale. With the direct link turned on
 (it is off by default) and Tailscale running on the Crew's machine, the gateway
@@ -1042,7 +1042,7 @@ typing…". Anything you had already written stays in the box. It unlocks the
 moment they send, clear their draft, or pause for 10 seconds, and you can carry
 on where you were. Stop and Steer still work on a turn that is running. Your own
 tabs never lock each other, and a personal Crew never locks. The pause length is
-a setting (3 to 60 seconds):
+a setting (3 to 60 seconds). A new value applies after a restart:
 
 ```bash
 kirocrew config set dashboard.shared_crew.typing_idle_seconds 15

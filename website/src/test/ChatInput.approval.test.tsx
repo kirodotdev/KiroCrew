@@ -102,6 +102,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(api.sharedCrewCapabilities).mockResolvedValue(null as never)
   vi.mocked(api.sharedCrewMode).mockResolvedValue(null as never)
+  vi.mocked(api.sharedCrewPeople).mockResolvedValue(null as never)
 })
 
 describe('ChatInput approval flow', () => {
@@ -490,8 +491,10 @@ describe('ChatInput orphaned approval (404)', () => {
   })
 
   it('a lost race adopts the winner and names who answered in a shared Crew', async () => {
-    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ attribution: 'available' } as never)
+    // The Shared Crew preview on and a teammate joined: names show only then.
+    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ attribution: 'available', shared_crew_preview: true } as never)
     vi.mocked(api.sharedCrewMode).mockResolvedValue({ schema_version: 1, mode: 'network', crew_id: 'c1' } as never)
+    vi.mocked(api.sharedCrewPeople).mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [{ principal: { id: 'p_b', kind: 'human', display: { name: 'Bob', login: '', captured_at: null } }, sources: ['observed'], is_viewer: false }] } as never)
     const winner = {
       decision_id: 'approval-state:ap-123', kind: 'approval', session_key: 's1', state: 'resolved', revision: 2,
       initiator: { id: 'p_a', kind: 'human', display: { name: 'Alice', login: '', captured_at: null } },
@@ -509,7 +512,7 @@ describe('ChatInput orphaned approval (404)', () => {
     await act(async () => {})
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
-      expect(screen.getByRole('status')).toHaveTextContent('Rejected by Bob')
+      expect(screen.getByRole('status')).toHaveTextContent('Bob rejected')
     })
     expect(store.getState().chat.messages[1].meta!.resolved).toBe('rejected')
   })

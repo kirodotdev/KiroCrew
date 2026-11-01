@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.history import ConversationLog
 from kiro_crew.shared_crew import (
@@ -45,6 +46,8 @@ from kiro_crew.shared_crew.contracts import (
 )
 from kiro_crew.shared_crew.identity import local_operator_principal, tailnet_principal
 from kiro_crew.shared_crew.session_query import query_sessions
+
+pytestmark = pytest.mark.usefixtures("host_isolation")
 
 ALICE = tailnet_principal("alice@example.com", "a", Provenance.TAILSCALE_SERVE)
 OPERATOR = local_operator_principal("local-app")
@@ -214,10 +217,22 @@ class TestTriggers:
 
 
 def _write(
-    base, key: str, *, creator: Principal | None, mtime: float, extra: dict | None = None
+    base,
+    key: str,
+    *,
+    creator: Principal | None,
+    mtime: float,
+    extra: dict | None = None,
+    unattributed: bool = False,
 ) -> None:
     meta: dict[str, Any] = {"_type": "metadata", "title": key}
-    if creator is not None:
+    if unattributed:
+        meta["attribution"] = SessionAttribution(
+            creator=Principal.unknown(),
+            availability=AttributionAvailability.UNATTRIBUTED,
+            created_at=mtime,
+        ).to_dict()
+    elif creator is not None:
         meta["attribution"] = SessionAttribution(
             creator=creator, availability=AttributionAvailability.RECORDED, created_at=mtime
         ).to_dict()
@@ -237,7 +252,7 @@ def catalog(tmp_path):
     for i in range(3):
         _write(base, f"dashboard_a{i}", creator=ALICE, mtime=1000.0 + i)
     for i in range(4):
-        _write(base, f"dashboard_l{i}", creator=None, mtime=2000.0 + i)
+        _write(base, f"dashboard_l{i}", creator=None, mtime=2000.0 + i, unattributed=True)
     _write(base, "dashboard_c0", creator=None, mtime=3000.0, extra={"created_by": "cron:abc12345"})
     _write(base, "cron_def67890", creator=None, mtime=3001.0)
     return ConversationLog(base)

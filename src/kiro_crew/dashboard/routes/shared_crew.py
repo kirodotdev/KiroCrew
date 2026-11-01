@@ -20,6 +20,7 @@ from kiro_crew.shared_crew import (
     routes_capabilities,
     routes_collab,
     routes_identity,
+    routes_preview,
 )
 from kiro_crew.shared_crew.preview import preview_enabled
 
@@ -63,6 +64,9 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/shared-crew/capabilities", routes_capabilities.api_shared_crew_capabilities
     )
+    # Registered with the preview off too: the owner turns the preview on here.
+    app.router.add_get("/api/shared-crew/preview", routes_preview.api_get_preview)
+    app.router.add_put("/api/shared-crew/preview", routes_preview.api_put_preview)
     app.router.add_get(
         "/api/shared-crew/tailscale/invites", _preview_only("routes_invites", "api_status")
     )

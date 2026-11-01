@@ -1204,6 +1204,29 @@ const jCrewBoard = (r: Response) => parseJson(r, CREW_BOARD_NO_LEDGER)
 const REMOTE_SCOPE_UNSUPPORTED: BenignDenial = { status: 400, code: 'scope_unsupported' }
 const jRemoteBrowse = (r: Response) => parseJson(r, REMOTE_SCOPE_UNSUPPORTED)
 
+/**
+ * The fourth: `GET /api/chat/slots/{slot}/environment` answering `owner_only` to a caller
+ * that is not the dashboard owner (a Shared Crew guest, a presigned messaging link). Both
+ * readers of that query (the composer chip and the placement hook) treat it as "this chat
+ * runs here, nothing to pick" and run it on every chat open, so journaling it would file one
+ * error report per chat for a guest whose dashboard works. A stale owner session answers
+ * with a different code and the auth-recovery denials are excluded in `apiFailure`, so only
+ * the plain non-owner refusal is opted out. The other environment routes (browse, health,
+ * file, PUT) keep `j`: a refusal there is a real failure.
+ */
+const SLOT_ENVIRONMENT_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jSlotEnvironment = (r: Response) => parseJson(r, SLOT_ENVIRONMENT_NOT_OWNER)
+
+/**
+ * The fifth: `GET /api/shared-crew/preview` answering `owner_only` to a caller that is not
+ * the dashboard owner. Settings > Developer > Feature Previews reads it on every visit and
+ * hides the card on that refusal, so journaling it would file one error report per visit
+ * for a guest whose Settings page works. Any other failure, a 403 without that code
+ * included, journals normally.
+ */
+const SHARED_CREW_PREVIEW_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jSharedCrewPreview = (r: Response) => parseJson(r, SHARED_CREW_PREVIEW_NOT_OWNER)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1465,6 +1488,8 @@ const transport: ClientTransport = {
   jInstancesDisabled,
   jfetch,
   jCrewBoard,
+  jSlotEnvironment,
+  jSharedCrewPreview,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,

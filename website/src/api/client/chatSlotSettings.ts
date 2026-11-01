@@ -39,7 +39,7 @@ export interface FollowDefaultCount {
   titles: string[]
 }
 
-export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fetch }: ClientTransport) {
+export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fetch, jSlotEnvironment }: ClientTransport) {
   const selection = {
     /** The configured backend's model list, or `backend`'s own (config spelling: `kiro`, `claude`, ...). */
     models: (backend?: string) =>
@@ -119,7 +119,7 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** Which Session Environment this slot's session runs on (`profile: null` =
      *  this machine) plus the configured profiles to choose from. Owner-only. */
     chatSlotEnvironment: (slot: string) =>
-      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment').then(j) as Promise<SlotEnvironment>,
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment').then(jSlotEnvironment) as Promise<SlotEnvironment>,
     /** Read-only view of a REMOTE session's workspace: list a directory or read a
      *  file, relative to the profile's working directory. Owner-only. */
     chatSlotEnvironmentList: (slot: string, path: string) =>

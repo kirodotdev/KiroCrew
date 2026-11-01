@@ -30,7 +30,7 @@ from kiro_crew.shared_crew.codec import (
     require_mapping,
     split_extra,
 )
-from kiro_crew.shared_crew.contracts import Principal, principal_or_unknown
+from kiro_crew.shared_crew.contracts import Principal, PrincipalKind, principal_or_unknown
 
 #: WebSocket frame ``type`` values the server pushes.
 FRAME_PRESENCE = "shared_crew.presence"
@@ -115,6 +115,24 @@ class DecisionState(str, enum.Enum):
     WITHDRAWN = "withdrawn"
 
 
+#: Who settled a resolved decision: a verified person, or the host.
+SETTLED_BY_PERSON = "person"
+SETTLED_BY_HOST = "host"
+SETTLED_BY = (SETTLED_BY_PERSON, SETTLED_BY_HOST)
+
+
+def settled_by_of(responder: Principal | None) -> str:
+    """``person`` for a verified human responder; ``host`` for none.
+
+    An Unknown or system responder (an app token, a channel resolver, the
+    gateway's own approval mode) is the host settling it, not a person
+    deciding.
+    """
+    if responder is not None and responder.kind is PrincipalKind.HUMAN:
+        return SETTLED_BY_PERSON
+    return SETTLED_BY_HOST
+
+
 @dataclass(frozen=True)
 class SharedDecision:
     """An approval or question every collaborator sees and any one may answer."""
@@ -130,6 +148,8 @@ class SharedDecision:
     response_id: str = ""
     outcome: str = ""
     resolved_at: float | None = None
+    #: ``person`` or ``host`` (:data:`SETTLED_BY`); meaningful once resolved.
+    settled_by: str = SETTLED_BY_PERSON
     extra: Mapping[str, Any] = field(default_factory=dict, compare=False)
 
     _KNOWN = frozenset(
@@ -146,6 +166,7 @@ class SharedDecision:
             "response_id",
             "outcome",
             "resolved_at",
+            "settled_by",
         }
     )
 
@@ -169,6 +190,7 @@ class SharedDecision:
             "response_id": self.response_id,
             "outcome": self.outcome,
             "resolved_at": self.resolved_at,
+            "settled_by": self.settled_by,
         }
         return merge_extra(body, self.extra)
 
@@ -183,6 +205,7 @@ class SharedDecision:
             "responder": None if self.responder is None else self.responder.to_public_dict(),
             "outcome": self.outcome,
             "resolved_at": self.resolved_at,
+            "settled_by": self.settled_by,
         }
 
     @classmethod
@@ -202,6 +225,11 @@ class SharedDecision:
             response_id=opt_str(data, "response_id") or "",
             outcome=opt_str(data, "outcome") or "",
             resolved_at=opt_float(data, "resolved_at"),
+            settled_by=(
+                raw_by
+                if (raw_by := opt_str(data, "settled_by")) in SETTLED_BY
+                else SETTLED_BY_PERSON
+            ),
             extra=split_extra(data, cls._KNOWN),
         )
 

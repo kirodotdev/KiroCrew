@@ -362,6 +362,7 @@ from kiro_crew.config.sections_shared_crew import (  # noqa: F401
     SHARED_CREW_BOUNDS,
     SHARED_CREW_EXPOSURE_FLAGS,
     SHARED_CREW_FLAGS,
+    SHARED_CREW_NEEDS_PREVIEW_HELP,
     EffectiveLimits,
     SharedCrewConfig,
     effective_limits,
@@ -414,6 +415,7 @@ from kiro_crew.config.sections_stt import (  # noqa: F401
     warn_deferred_stt_providers,
 )
 from kiro_crew.config.sections_tailnet import (  # noqa: F401
+    TAILNET_OPENING_PATHS,
     TailscaleConfig,
     _tailscale_config_from,
     effective_pin_scope,

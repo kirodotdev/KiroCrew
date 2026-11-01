@@ -22,7 +22,10 @@ authorized viewer sees.
 ``unattributed`` (``unknown`` is accepted as its older spelling) lists sessions
 with no human creator and no named trigger. A session a schedule or a webhook
 started names that trigger, so it is listed under All and its trigger, never
-under Unattributed.
+under Unattributed. A persisted legacy session (no stored attribution) carries
+the owner as its public creator, so it is listed under the owner's ``mine``; a
+channel-origin legacy session carries no creator and is listed under
+Unattributed (:func:`~kiro_crew.shared_crew.attribution.public_attribution_from_meta`).
 """
 
 from __future__ import annotations
@@ -98,8 +101,14 @@ def query_sessions(
     viewer: Principal,
     *,
     exclude: Callable[[str], bool] | None = None,
+    viewer_ids: frozenset[str] = frozenset(),
+    local_owner_ids: frozenset[str] = frozenset(),
 ) -> SessionPage:
     """Filter, count and page *rows* for *viewer*.
+
+    *viewer_ids* are the other principal ids that name the viewer themself
+    (:func:`~kiro_crew.shared_crew.owner.viewer_ids`). *local_owner_ids* are
+    the local owner principals represented by one folded People row.
 
     *exclude* drops rows that are not conversations (machine transcripts)
     before anything is counted, so the counts describe the list the user sees.
@@ -117,7 +126,13 @@ def query_sessions(
             continue
         attribution = row.get("attribution")
         triggered = trigger_of_public(attribution) is not None
-        if query.matches(creator_of_public(attribution), viewer, triggered=triggered):
+        if query.matches(
+            creator_of_public(attribution),
+            viewer,
+            triggered=triggered,
+            viewer_ids=viewer_ids,
+            local_owner_ids=local_owner_ids,
+        ):
             matching.append((_sort_key(row), row))
         else:
             hidden += 1

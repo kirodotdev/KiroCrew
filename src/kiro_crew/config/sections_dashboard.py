@@ -188,8 +188,9 @@ class DashboardConfig:
         default_factory=SharedCrewConfig,
         metadata=_meta(
             "Shared Crew",
-            "Fair admission and per-person limits for a shared Crew. Not active in "
-            "this build yet: nothing reads these settings, so changing one does nothing.",
+            "Fair admission, per-person limits and the direct tailnet link for a "
+            "shared Crew. Read only while Shared Crew is turned on in Feature "
+            "Previews; otherwise every value reads as its default.",
             restart=True,
         ),
     )

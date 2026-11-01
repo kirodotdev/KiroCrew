@@ -29,6 +29,13 @@ SHARED_CREW_BOUNDS: dict[str, tuple[int, int]] = {
 }
 
 
+#: Appended to every field's help: the whole section reads as its defaults until
+#: the owner turns Shared Crew on in Feature Previews (``shared_crew.preview``).
+SHARED_CREW_NEEDS_PREVIEW_HELP = (
+    " Needs Shared Crew turned on in Feature Previews; without it this reads as its default."
+)
+
+
 @dataclass
 class SharedCrewConfig:
     """Fair admission and per-principal containment for a Crew several people use."""
@@ -41,8 +48,7 @@ class SharedCrewConfig:
             "who started it, and admit work through per-person and Crew-wide limits "
             "with a fair queue. Off by default: a single-operator Crew keeps its "
             "current behaviour and reports queueing as unavailable."
-            " Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment;"
-            " without it this reads as its default.",
+            + SHARED_CREW_NEEDS_PREVIEW_HELP,
         ),
     )
     principal_concurrency: int = field(
@@ -50,9 +56,7 @@ class SharedCrewConfig:
         metadata=_meta(
             "Active Work Per Person",
             "Root executions (turns, tasks, workflows, cron runs) one person may run "
-            "at once, across all tabs, devices and sessions."
-            " Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment;"
-            " without it this reads as its default.",
+            "at once, across all tabs, devices and sessions." + SHARED_CREW_NEEDS_PREVIEW_HELP,
         ),
     )
     crew_concurrency: int = field(
@@ -60,9 +64,7 @@ class SharedCrewConfig:
         metadata=_meta(
             "Active Work Crew-Wide",
             "Root executions the whole Crew runs at once. 0 uses the session start "
-            "gate's automatic width for this host."
-            " Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment;"
-            " without it this reads as its default.",
+            "gate's automatic width for this host." + SHARED_CREW_NEEDS_PREVIEW_HELP,
         ),
     )
     containment_enabled: bool = field(
@@ -72,8 +74,7 @@ class SharedCrewConfig:
             "While fair admission is on, start each person's agent runtimes in that "
             "person's own systemd slice so their CPU, memory and process counts are "
             "bounded together. Linux with cgroup v2 delegation only."
-            " Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment;"
-            " without it this reads as its default.",
+            + SHARED_CREW_NEEDS_PREVIEW_HELP,
         ),
     )
     hard_limits: bool = field(
@@ -83,9 +84,7 @@ class SharedCrewConfig:
             "Refuse to admit work when cgroup v2, a trusted systemd-run, a reachable "
             "user bus, or memory and pids delegation is missing, instead of running "
             "without per-person limits. Needs fair admission on: with fair admission "
-            "off, no agent runtime starts. Off by default."
-            " Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment;"
-            " without it this reads as its default.",
+            "off, no agent runtime starts. Off by default." + SHARED_CREW_NEEDS_PREVIEW_HELP,
         ),
     )
     tailnet_direct: bool = field(
@@ -98,9 +97,7 @@ class SharedCrewConfig:
             "dashboard token. Tailscale (the tailnet ACL and device sharing) "
             "decides who can reach it. Never binds any other address. Off keeps the "
             "loopback-only listener. A value that is not true or false reads as "
-            "off."
-            " Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment;"
-            " without it this reads as its default.",
+            "off." + SHARED_CREW_NEEDS_PREVIEW_HELP,
             restart=True,
         ),
     )
@@ -111,9 +108,11 @@ class SharedCrewConfig:
             "Seconds a collaborator may pause typing before the other collaborators' "
             "composers unlock. While someone types in a shared session, everyone "
             "else's composer is read-only until that person sends, clears the "
-            "draft, or stays idle this long. 3 to 60."
-            " Requires KIROCREW_SHARED_CREW_PREVIEW=1 in the gateway environment;"
-            " without it this reads as its default.",
+            "draft, or stays idle this long. 3 to 60." + SHARED_CREW_NEEDS_PREVIEW_HELP,
+            # The lease registry reads the window once, on first use
+            # (``shared_crew.typing_lease.typing_lease_for``), so a saved change
+            # applies after the next start.
+            restart=True,
         ),
     )
 
@@ -275,6 +274,7 @@ __all__ = [
     "SHARED_CREW_BOUNDS",
     "SHARED_CREW_EXPOSURE_FLAGS",
     "SHARED_CREW_FLAGS",
+    "SHARED_CREW_NEEDS_PREVIEW_HELP",
     "SharedCrewConfig",
     "effective_limits",
     "load_shared_crew_config",

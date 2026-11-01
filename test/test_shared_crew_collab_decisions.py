@@ -72,6 +72,56 @@ def _registry() -> DecisionRegistry:
     return DecisionRegistry(clock=lambda: float(next(ticks)))
 
 
+def test_a_verified_person_settles_as_a_person_and_the_host_as_the_host():
+    reg = _registry()
+    reg.open("d1", DecisionKind.APPROVAL, "s1", ALICE)
+    person = reg.resolve(
+        "d1", response_id="r", responder=BOB, outcome="approved", apply=lambda: True
+    )
+    assert person.decision.settled_by == "person"
+    assert person.decision.to_public_dict()["settled_by"] == "person"
+    assert person.decision.to_dict()["settled_by"] == "person"
+
+    for index, responder in enumerate((Principal.unknown(), Principal.system("app:notes"))):
+        reg.open(f"h{index}", DecisionKind.APPROVAL, "s1", ALICE)
+        host = reg.resolve(
+            f"h{index}", response_id="", responder=responder, outcome="approved", apply=lambda: True
+        )
+        assert host.decision.settled_by == "host"
+
+
+def test_settle_after_wait_with_an_outcome_is_the_host_settling_it():
+    from types import SimpleNamespace
+
+    from kiro_crew.shared_crew.decisions import settle_after_wait
+
+    state = SimpleNamespace(
+        broadcast_ws=lambda *a, **k: None, _log=MagicMock(), _shared_crew_decisions=_registry()
+    )
+    reg = state._shared_crew_decisions
+    reg.open("d1", DecisionKind.APPROVAL, "s1", ALICE)
+    settle_after_wait(state, "d1", "approved", DecisionState.EXPIRED)
+    settled = reg.get("d1")
+    assert settled.state is DecisionState.RESOLVED
+    assert settled.settled_by == "host" and settled.responder == Principal.unknown()
+
+
+def test_settled_by_survives_a_round_trip_and_an_older_record_reads_as_person():
+    from kiro_crew.shared_crew.collab import SharedDecision
+
+    reg = _registry()
+    reg.open("d1", DecisionKind.APPROVAL, "s1", ALICE)
+    host = reg.resolve(
+        "d1", response_id="", responder=Principal.unknown(), outcome="approved", apply=lambda: True
+    ).decision
+    assert SharedDecision.from_dict(host.to_dict()).settled_by == "host"
+    legacy = host.to_dict()
+    del legacy["settled_by"]
+    assert SharedDecision.from_dict(legacy).settled_by == "person"
+    legacy["settled_by"] = "robot"
+    assert SharedDecision.from_dict(legacy).settled_by == "person"
+
+
 def test_first_response_wins_once_and_names_both_people():
     reg = _registry()
     reg.open("d1", DecisionKind.APPROVAL, "s1", ALICE)

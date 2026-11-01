@@ -19,6 +19,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.shared_crew import owner as owner_label
 from kiro_crew.shared_crew.attribution import creator_of_public
 from kiro_crew.shared_crew.codec import ContractError
 from kiro_crew.shared_crew.contracts import Principal, SessionPage, SessionQuery
@@ -100,7 +101,14 @@ async def api_shared_crew_sessions(request: web.Request) -> web.Response:
     viewer = viewer_principal(request)
     rows = await _catalog_rows(request)
     try:
-        page: SessionPage = query_sessions(rows, query, viewer, exclude=_machine_only)
+        page: SessionPage = query_sessions(
+            rows,
+            query,
+            viewer,
+            exclude=_machine_only,
+            viewer_ids=owner_label.viewer_ids(viewer, _owner_id(request)),
+            local_owner_ids=owner_label.local_owner_principal_ids(_owner_id(request)),
+        )
     except ContractError as exc:
         return _error(400, exc.code, str(exc))
     body = page.to_dict()
@@ -117,7 +125,18 @@ async def api_shared_crew_people(request: web.Request) -> web.Response:
     from kiro_crew.shared_crew.routes_invites import decorate_people
 
     rows = [r for r in await _catalog_rows(request) if not _machine_only(str(r.get("key") or ""))]
-    body = people_view(viewer_principal(request), rows)
+    from kiro_crew.shared_crew.owner import is_owner_principal
+    from kiro_crew.shared_crew.tailscale_sharees import read_sharees
+
+    viewer = viewer_principal(request)
+    owner_id = _owner_id(request)
+    body = people_view(
+        viewer,
+        rows,
+        owner_id=owner_id,
+        # Only the owner's view lists sharees, so only it reads the daemon.
+        sharees=await read_sharees() if is_owner_principal(viewer, owner_id) else (),
+    )
     body = await asyncio.to_thread(decorate_people, body)
     _attach_live(request, body, rows)
     return web.json_response(body)
@@ -130,7 +149,7 @@ def _attach_live(request: web.Request, body: dict[str, Any], rows: list[dict[str
     open tab, and absent otherwise. A title is given only for a session in this
     catalog, which the reader may already list.
     """
-    from kiro_crew.shared_crew.presence import presence_for
+    from kiro_crew.shared_crew.presence import _ACTIVITY_RANK, presence_for
 
     state = request.app.get("state")
     if state is None:
@@ -139,8 +158,15 @@ def _attach_live(request: web.Request, body: dict[str, Any], rows: list[dict[str
 
     live = presence_for(state).live_by_principal()
     titles = {canon(str(r.get("key") or "")): str(r.get("title") or "") for r in rows}
+    local_ids = owner_label.local_owner_principal_ids(_owner_id(request))
     for row in body.get("people") or []:
-        hit = live.get(str((row.get("principal") or {}).get("id") or ""))
+        pid = str((row.get("principal") or {}).get("id") or "")
+        ids = local_ids if row.get("is_owner") and pid in local_ids else {pid}
+        hit = max(
+            (live[i] for i in ids if i in live),
+            key=lambda candidate: _ACTIVITY_RANK[candidate[0]],
+            default=None,
+        )
         if hit is None:
             continue
         activity, session_key = hit

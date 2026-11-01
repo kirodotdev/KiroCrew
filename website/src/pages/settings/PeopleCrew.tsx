@@ -1,9 +1,8 @@
-/** Settings > People on a Crew shared over Tailscale (layout C).
+/** Settings > People on a Crew shared over Tailscale.
  *
- *  Top to bottom: a share card (the live listener state, who is here now, the
- *  share link with Copy link and Invite..., and the Tailscale users page), then
- *  the People list, then Remote Control. Explanations sit in the ⓘ beside each
- *  heading.
+ *  Top to bottom: a connect card in two steps (share this machine on Tailscale,
+ *  then send the Crew link), then the People list. Labels and states only; the
+ *  one ⓘ left explains how to remove someone.
  *
  *  Any admitted person can edit any person's display name and picture (the ✎ on
  *  each row with a known Tailscale user id). It is display only: the verified
@@ -25,7 +24,7 @@ import { fmtDateTime, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { copyToClipboard } from '../../utils/clipboard'
 import { TAILSCALE_USERS_URL, headingTip, statusBadge } from './PeopleModes'
-import { InviteDialog, InviteReadError, InviteRow, inviteErrorText, useInvites } from './TailscaleInvites'
+import { CopyInviteMessage, InviteDialog, InviteReadError, InviteRow, inviteErrorText, useInvites } from './TailscaleInvites'
 
 /** At most this many faces in the "here now" stack; the count says the rest. */
 const STACK_MAX = 4
@@ -54,7 +53,21 @@ function HereDot({ label }: { label: string }) {
   return <span className="inline-block w-2 h-2 rounded-full bg-ok shrink-0" role="img" aria-label={label} />
 }
 
-/** The share card. `canInvite` is true only for the owner (the invite read answered). */
+/** One numbered step of the connect card. */
+function Step({ n, title, children, testId }: { n: number; title: string; children: ReactNode; testId: string }) {
+  return (
+    <li className="flex gap-3 min-w-0" data-testid={testId}>
+      <span className="inline-flex items-center justify-center w-5 h-5 mt-0.5 rounded-full bg-bg-hover text-text text-[11px] font-semibold shrink-0" aria-hidden>{n}</span>
+      <div className="flex flex-col gap-2 min-w-0 flex-1">
+        <span className="text-sm font-medium text-text-strong">{title}</span>
+        {children}
+      </div>
+    </li>
+  )
+}
+
+/** The connect card. `canInvite` is true only for the owner (the invite read
+ *  answered): the owner gets both steps, a teammate only the Crew link. */
 export function ShareHero({ direct, tailscale, people, canInvite }: {
   direct: TailnetDirect | undefined
   tailscale: SetupPathCapability | undefined
@@ -89,7 +102,6 @@ export function ShareHero({ direct, tailscale, people, canInvite }: {
               {i18nT('sharedCrew.setup_tailscale')} {statusBadge(tailscale)}
             </span>
           )}
-          {headingTip(i18nT('sharedCrew.hero_tip'), 'share-hero-tip')}
           {here.length > 0 && (
             <span className="ml-auto inline-flex items-center gap-2 min-w-0" data-testid="share-hero-here">
               <span className="inline-flex gap-1">
@@ -101,10 +113,23 @@ export function ShareHero({ direct, tailscale, people, canInvite }: {
             </span>
           )}
         </div>
-        {(active || canInvite) && (
-          <div className="flex items-center gap-2 min-w-0 flex-wrap">
-            {active && (
-              <>
+        <ol className="flex flex-col gap-4 m-0 p-0 list-none">
+          {canInvite && (
+            <Step n={1} title={i18nT('sharedCrew.step_share')} testId="share-hero-step-share">
+              <div className="flex items-center gap-3 min-w-0 flex-wrap">
+                <Btn onClick={() => setInviting(true)} data-testid="share-hero-invite">
+                  <UserPlus size={14} className="lucide-inline" aria-hidden /> {i18nT('sharedCrew.hero_invite')}
+                </Btn>
+                <a className="inline-flex items-center gap-1 text-[13px] text-accent" href={TAILSCALE_USERS_URL} target="_blank" rel="noopener noreferrer" data-testid="share-hero-manage">
+                  {i18nT('sharedCrew.adapter_tailscale_manage')}
+                  <ExternalLink size={12} className="lucide-inline" aria-hidden />
+                </a>
+              </div>
+            </Step>
+          )}
+          {active && (
+            <Step n={canInvite ? 2 : 1} title={i18nT('sharedCrew.step_send')} testId="share-hero-step-send">
+              <div className="flex items-center gap-2 min-w-0 flex-wrap">
                 <Input
                   readOnly
                   value={primary}
@@ -113,33 +138,28 @@ export function ShareHero({ direct, tailscale, people, canInvite }: {
                   className="flex-1 min-w-[12rem] font-mono text-[12px]"
                   data-testid="share-hero-link"
                 />
-                <Btn primary onClick={() => { void copy() }} data-testid="share-hero-copy">
-                  {copied ? <Check size={14} className="lucide-inline" aria-hidden /> : <Copy size={14} className="lucide-inline" aria-hidden />}
-                  {' '}{copied ? i18nT('sharedCrew.invite_copied') : i18nT('sharedCrew.hero_copy_link')}
-                </Btn>
-              </>
-            )}
-            {canInvite && (
-              <Btn onClick={() => setInviting(true)} data-testid="share-hero-invite">
-                <UserPlus size={14} className="lucide-inline" aria-hidden /> {i18nT('sharedCrew.hero_invite')}
-              </Btn>
-            )}
-          </div>
-        )}
-        {/* No hand-off: an invite draft may be open in the dialog. */}
-        {copied === false && <ErrorNotice variant="inline" message={i18nT('sharedCrew.direct_link_copy_failed')} testId="share-hero-copy-error" />}
-        {fallbacks.length > 0 && (
-          <details className="text-[12px] text-muted">
-            <summary className="cursor-pointer">{i18nT('sharedCrew.direct_link_fallbacks')}</summary>
-            <ul className="flex flex-col gap-1 pt-1 font-mono break-all">
-              {fallbacks.map(url => <li key={url}>{url}</li>)}
-            </ul>
-          </details>
-        )}
-        <a className="inline-flex items-center gap-1 text-[13px] text-accent self-start" href={TAILSCALE_USERS_URL} target="_blank" rel="noopener noreferrer" data-testid="share-hero-manage">
-          {i18nT('sharedCrew.adapter_tailscale_manage')}
-          <ExternalLink size={12} className="lucide-inline" aria-hidden />
-        </a>
+                {canInvite ? (
+                  <CopyInviteMessage primary testId="share-hero-copy-message" />
+                ) : (
+                  <Btn primary onClick={() => { void copy() }} data-testid="share-hero-copy">
+                    {copied ? <Check size={14} className="lucide-inline" aria-hidden /> : <Copy size={14} className="lucide-inline" aria-hidden />}
+                    {' '}{copied ? i18nT('sharedCrew.invite_copied') : i18nT('sharedCrew.hero_copy_link')}
+                  </Btn>
+                )}
+              </div>
+              {/* No hand-off: an invite draft may be open in the dialog. */}
+              {copied === false && <ErrorNotice variant="inline" message={i18nT('sharedCrew.direct_link_copy_failed')} testId="share-hero-copy-error" />}
+              {fallbacks.length > 0 && (
+                <details className="text-[12px] text-muted">
+                  <summary className="cursor-pointer">{i18nT('sharedCrew.direct_link_fallbacks')}</summary>
+                  <ul className="flex flex-col gap-1 pt-1 font-mono break-all">
+                    {fallbacks.map(url => <li key={url}>{url}</li>)}
+                  </ul>
+                </details>
+              )}
+            </Step>
+          )}
+        </ol>
       </div>
       {!inviting && <InviteReadError query={invites} testId="people-invites-error" />}
       {canInvite && <InviteDialog open={inviting} onClose={() => setInviting(false)} />}
@@ -147,6 +167,9 @@ export function ShareHero({ direct, tailscale, people, canInvite }: {
   )
 }
 
+/** The row's state: what they are doing now, when they were last here, or
+ *  "Not joined" for a person Tailscale shares this machine with who has not
+ *  connected. Empty for anyone else never seen. */
 function activityText(row: PeopleRow, usageAvailable: boolean): string {
   if (row.live?.activity === 'typing') {
     return row.live.session_title
@@ -157,25 +180,35 @@ function activityText(row: PeopleRow, usageAvailable: boolean): string {
     return i18nT('sharedCrew.activity_running', { n: fmtNumber(row.usage?.active ?? 0) })
   }
   if (isHere(row)) return i18nT('sharedCrew.here_now_label')
-  return row.last_seen_at ? i18nT('sharedCrew.last_seen', { when: fmtDateTime(row.last_seen_at * 1000) }) : i18nT('sharedCrew.not_seen_live')
+  if (row.last_seen_at) return i18nT('sharedCrew.last_seen', { when: fmtDateTime(row.last_seen_at * 1000) })
+  return row.sources.includes('tailscale_share') ? i18nT('sharedCrew.not_joined') : ''
 }
 
 function PersonLine({ row, usageAvailable, onEdit }: { row: PeopleRow; usageAvailable: boolean; onEdit: (row: PeopleRow) => void }) {
   const name = displayName(row)
   const login = row.principal.display.login
+  const activity = activityText(row, usageAvailable)
+  const showLogin = !!login && login !== name
   return (
     <li className="flex items-center gap-3 py-2 min-w-0" data-testid={`person-${row.principal.id}`}>
       <Avatar row={row} />
       <div className="flex flex-col gap-0.5 min-w-0 flex-1">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className="text-sm font-medium text-text-strong truncate max-w-full" title={name}>{name}</span>
-          {row.is_viewer && <Badge variant="muted">{i18nT('sharedCrew.you')}</Badge>}
+          {row.is_viewer && row.is_owner
+            ? <Badge variant="muted">{i18nT('sharedCrew.you_owner')}</Badge>
+            : row.is_viewer
+              ? <Badge variant="muted">{i18nT('sharedCrew.you')}</Badge>
+              : row.is_owner && <Badge variant="muted">{i18nT('sharedCrew.crew_owner')}</Badge>}
           {row.principal.kind === 'machine' && <Badge variant="muted">{i18nT('sharedCrew.kind_machine')}</Badge>}
         </div>
-        <span className="text-[12px] text-muted truncate" data-testid="person-activity">
-          {login && login !== name ? <>{login}<span aria-hidden>{'\u00A0·\u00A0'}</span></> : null}
-          {activityText(row, usageAvailable)}
-        </span>
+        {(showLogin || activity) && (
+          <span className="text-[12px] text-muted truncate" data-testid="person-activity">
+            {showLogin ? login : null}
+            {showLogin && activity ? <span aria-hidden>{'\u00A0·\u00A0'}</span> : null}
+            {activity}
+          </span>
+        )}
       </div>
       {isHere(row) && <HereDot label={i18nT('sharedCrew.here_now_label')} />}
       {row.tailscale_user_id && (
