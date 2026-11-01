@@ -435,7 +435,7 @@ async def test_a_body_caller_session_is_ignored_without_internal_auth() -> None:
     """
     seen: list[str] = []
 
-    async def _capture(state, channel_type, target_id, text, *, caller_session=""):
+    async def _capture(state, channel_type, target_id, text, *, caller_session="", request_app=""):
         seen.append(caller_session)
         return web.json_response({"ok": True, "delivered_to": channel_type, "parts": 1})
 

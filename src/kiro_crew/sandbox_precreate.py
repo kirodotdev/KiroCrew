@@ -476,6 +476,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # operator's, hiding runs from the panel. Materialising it empty gives the
     # bind a target from first boot.
     "panel-dismissals",
+    # Released-session entries, for the same reason: created on the first release,
+    # and an entry has the gateway delete the record it names.
+    "released-sessions",
     # Append-only per-unit crew logs, and the hazard is the sharpest here: the
     # record is the AUTHORITY a reader trusts instead of re-deriving, and the
     # store creates this root on its first write. A sandbox spawned before that

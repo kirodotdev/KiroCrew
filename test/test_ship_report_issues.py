@@ -159,7 +159,7 @@ class Runner:
             ["bash", "-c", script if script is not None else self.steps[name]["run"]],
             cwd=self.work,
             env={**self.env, **extra},
-            text=True,
+            text=True, encoding="utf-8",
             capture_output=True,
         )
 

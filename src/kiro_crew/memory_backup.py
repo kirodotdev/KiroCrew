@@ -252,35 +252,43 @@ def _prune_orphaned_stages(db_path: Path, out_dir: Path, *, now: float | None = 
                 logger.debug("removing an orphaned backup sidecar failed", exc_info=True)
 
 
-def list_backups(db_path: Path) -> list[Path]:
+def list_backups(db_path: Path, *, stamped_only: bool = False) -> list[Path]:
     """*db_path*'s backups, NEWEST FIRST.
 
     Sorted by the timestamp in the NAME rather than mtime, because a copied or restored
     file carries whatever mtime the copy gave it while its name still says when its
     contents were taken.
+
+    ``stamped_only`` keeps only names whose timestamp parses. Retention, the interval
+    guard and restore's "latest" choice pass it: a file such as
+    ``memory.pre-upgrade.db`` that an operator dropped in the directory has no taken-at
+    time, so it is neither the newest backup nor one the rotation may delete.
     """
     out_dir = backup_dir_for(db_path)
     if not out_dir.is_dir():
         return []
     if member_memory_backup.is_member_store(db_path):
+        parse: Callable[[Path], datetime] = member_memory_backup.snapshot_time
+        candidates = out_dir.glob(f"{db_path.stem}.*.zip")
+        # An unfamiliar member name sorts last.
+        unparsed = 0.0
+    else:
+        parse = snapshot_time
+        candidates = out_dir.glob(f"{db_path.stem}.*.db")
+        # An unfamiliar name sorts first, so a listing shows it at the top.
+        unparsed = float("inf")
 
-        def stamp_key(path: Path) -> tuple[float, str]:
-            try:
-                return member_memory_backup.snapshot_time(path).timestamp(), path.name
-            except ValueError:
-                return 0.0, path.name
-
-        return sorted(out_dir.glob(f"{db_path.stem}.*.zip"), key=stamp_key, reverse=True)
-
-    def v1_stamp_key(path: Path) -> tuple[float, str]:
+    keyed: list[tuple[float, str, Path]] = []
+    for path in candidates:
         try:
-            return snapshot_time(path).timestamp(), path.name
+            stamp = parse(path).timestamp()
         except ValueError:
-            # An unfamiliar name sorts first, so the freshness guard takes a new
-            # backup instead of trusting it.
-            return float("inf"), path.name
-
-    return sorted(out_dir.glob(f"{db_path.stem}.*.db"), key=v1_stamp_key, reverse=True)
+            if stamped_only:
+                continue
+            stamp = unparsed
+        keyed.append((stamp, path.name, path))
+    keyed.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    return [path for _, _, path in keyed]
 
 
 def prune_backups(db_path: Path, keep: int = DEFAULT_KEEP) -> int:
@@ -295,7 +303,7 @@ def prune_backups(db_path: Path, keep: int = DEFAULT_KEEP) -> int:
     # Member V2 stages ZIP snapshots under their own lifecycle; only V1 stages here.
     if not member_memory_backup.is_member_store(db_path) and out_dir.is_dir():
         _prune_orphaned_stages(db_path, out_dir)
-    victims = list_backups(db_path)[keep:]
+    victims = list_backups(db_path, stamped_only=True)[keep:]
     removed = 0
     for old in victims:
         try:
@@ -373,7 +381,7 @@ def back_up_all_stores(
             break
         try:
             require_memory_ready(named_store_of_db(path))
-            existing = list_backups(path)
+            existing = list_backups(path, stamped_only=True)
             if (
                 not force
                 and existing
@@ -421,7 +429,7 @@ def newest_backup(store: str = DEFAULT_MEMORY_STORE) -> Path | None:
         db_path = resolve_store_path(store)
     except Exception:
         return None
-    backups = list_backups(db_path)
+    backups = list_backups(db_path, stamped_only=True)
     return backups[0] if backups else None
 
 

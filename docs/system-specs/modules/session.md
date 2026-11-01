@@ -1023,6 +1023,87 @@ fail with `Invalid model ID`). A reactive retry in `run_bg_oneliner`
 thin backstop for the fail-open case where the advertised set was unknown at
 send time.
 
+## Released KAS session records
+
+On the `kas` backend the teardown verb, `_kiro/session/delete`, frees a session and removes
+its record in one step. `session.kas_delete_delay_secs` (default `0`, at most `86400`) keeps
+the record that many seconds instead, for the sessions that end as soon as their work is
+done: a task run's planner, step and review sessions (`open_task_session` sets
+`AcpSessionHandle.delete_delay_secs`) and a reused workflow worker's previous conversation
+(`_WorkflowSessionWorker` sets it through `LLMProvider.set_delete_delay` when it starts and
+again before each reuse, and `AcpSessionProvider.new_conversation` carries it to the next
+conversation). The handle an MCP re-injection loads in place of either
+(`apply_pending_mcp_reinjection`) keeps the delay. A tool that reads the engine's session
+store can then still read a finished step. `open_task_session` reads the value off `SessionManager._cfg`, which the manager's
+`session` applier keeps current, as each task session opens; the workflow worker reads it
+with `KiroCrewConfig.load()` off the event loop before each reuse, as `agent_exec` reads
+`agent.subagent_cwd_allowed_roots`. A change applies to task sessions opened after it, and
+to the conversation the next workflow reuse ends.
+
+- **Release.** `AcpSessionHandle.destroy` asks `AcpRuntime.release_session`, which sends the
+  harness's release verb (`KasHarness.release`): `session/close`, only when this process's
+  `initialize` answer advertises `sessionCapabilities.close`. The close frees the session in
+  memory as the delete does and keeps the record. A delay of `0`, an incognito or temporary
+  session, a process the sandbox launched, an engine that does not advertise the verb, an
+  entry that cannot be stored, or a failed close each end the session with the delete, as
+  before. After a failed close the
+  entry stays: the delete is best-effort too, so a record it could not remove is still
+  removed by the sweep, and one it did remove is an id the engine answers success for. Every
+  other harness has no release (`HarnessAdapter.release` answers `None`): its teardown
+  already keeps the record.
+- **One ending per handle.** The release runs as a task that `destroy` awaits through
+  `asyncio.shield`, so a cancelled `destroy` cannot stop it between writing the entry and
+  sending the close. The task is kept on the handle, and a second `destroy` waits for it
+  rather than writing the entry again with a later due time.
+- **Entry first.** Before the close is sent, `released_sessions.schedule` writes
+  `released-sessions/<session id>.json` under the data home: the session, its backend and
+  when its record is due. A gateway that exits between the two leaves an entry the next
+  gateway's sweep finds, never a record nothing deletes.
+- **Sweep.** The `released_sessions` cleanup hook (`released_sessions.sweep_on_tick`, which
+  runs `released_sessions.sweep`) deletes the due records through the shared `_bg`
+  runtime with `AcpRuntime.delete_session_record`,
+  which sends the teardown verb by id. The process that released a session has usually
+  exited by then, and the engine finds a record by its id from any process. At most 50
+  records are sent per tick, and no further delete starts once the sweep has spent 15
+  seconds on deletes (`_SWEEP_BUDGET_SECS`). The hooks after this one wait for the sweep,
+  so an engine that stops answering costs a tick about the budget, not one teardown
+  timeout per record; the check runs before each delete, once the background session is
+  acquired, so the delete in flight and that session's own setup and teardown come on top.
+  A delete the engine refuses does not stop the rest of the batch. An entry is dropped
+  only once the engine answered, and only if, checked just before the unlink, it still
+  records the due time the sweep read. Entries released on another backend wait until it
+  is selected again; the first sweep that finds one due for over 7 days
+  (`_STRANDED_GRACE_SECS`) logs one warning per backend, once per process, with the count
+  and the switch that deletes them, kept until the sweep has drained them. When the hook
+  starts while admission is closed for a shutdown or an update, nothing is sent
+  (`SessionManager.admission_closed`). The delay is therefore the earliest time a record
+  is deleted, not a bound: a backlog, a failed delete or a backend switch moves it to a
+  later tick. Only a process running the session cleanup loop sweeps, so a standalone
+  `kirocrew run` that ends before its entries are due leaves them for the next process that
+  runs the loop, such as the gateway.
+- **Starting the loop.** The cleanup loop otherwise starts only with the first ordinary
+  allocation (`get_or_create`). `open_task_session` starts it when it sets a delay, and
+  `SessionManager.start_pool` starts it when entries wait from an earlier process. A workflow
+  worker's session comes from `get_or_create`, which starts it already.
+- **Protection.** An entry has the host delete the record it names, so
+  `released-sessions` is a data-home leaf written by Crew's own processes outside the
+  sandbox (the gateway, or a standalone `kirocrew run`), registered where
+  `panel-dismissals` is: `security/paths_lists._CREW_SECRET_LEAVES`, and in `sandbox`
+  `_CREW_HIDDEN_LEAVES`, `_CREW_PRECREATE_HIDDEN_DIR_LEAVES` and `_CREW_NO_ALIAS_LEAVES`.
+- **A run inside a sandbox.** A `kirocrew run` an agent starts inside its own sandbox sees
+  the masked `released-sessions/`. On Linux the mask is an empty writable mount (tmpfs, or a
+  temporary directory as a fallback), so an entry written there would go with the sandbox
+  and leave a record no later process deletes. Such a process therefore ends its sessions
+  with the delete whatever the delay says: `_release_ending` asks
+  `sandbox_launch_mark.launched_in_sandbox()`, which `cli.main()` records before it drops
+  the sandbox marker.
+
+Measured against KAS 0.66.22 and 0.66.26, through kiro-cli 2.27.1 and 2.29.0: the close
+answers `{}` and leaves `session.json` and `messages.jsonl`; a later prompt makes the engine
+hydrate the session from disk; a restarted process loads it and replays the turn; and a
+delete sent later by a process started in another directory removes the record. The
+committed KAS capture (engine 0.63.3) advertises no `close`.
+
 ## Account-identity retirement (identity sweep)
 
 A kiro-backed child authenticates from the CLI credential store as its process
@@ -2006,7 +2087,9 @@ against sweep completeness, and are torn down at `close_all`.
   promoting the severity of errors the lifted inline blocks swallowed). The
   hooks are assembled through the `SessionManager` facade so existing
   monkeypatch seams remain observable: `idle_expiry`, `orphan_mcp`,
-  `reap_agent_scopes`, `rss_threshold`, `stuck_turn`, and `bg_drain_reap`.
+  `reap_agent_scopes`, `rss_threshold`, `stuck_turn`, `bg_drain_reap`, and
+  `released_sessions`, whose body is `released_sessions.sweep_on_tick` rather than a
+  `SessionCleanup` method.
   `SessionCleanup._cleanup_loop` then directly coordinates the session-root,
   sandbox-artifact, session-pid-mapping, member-pid-binding, shell-audit-log,
   bytecode-cache, periodic tracked-PID, and untracked-MCP sweeps.

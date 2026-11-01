@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from unittest.mock import patch
@@ -29,6 +30,8 @@ class _MockDashboardHandler(BaseHTTPRequestHandler):
 
     secret = "test-secret-123"
     last_request_headers: dict = {}
+    # (status, body) sent to an authenticated caller instead of the usual answer.
+    forced_response: tuple[int, bytes] | None = None
 
     def do_POST(self):  # noqa: N802
         _MockDashboardHandler.last_request_headers = dict(self.headers)
@@ -38,6 +41,12 @@ class _MockDashboardHandler(BaseHTTPRequestHandler):
                 self.send_response(403)
                 self.end_headers()
                 self.wfile.write(b'{"error":"forbidden"}')
+                return
+            if _MockDashboardHandler.forced_response is not None:
+                status, body = _MockDashboardHandler.forced_response
+                self.send_response(status)
+                self.end_headers()
+                self.wfile.write(body)
                 return
             if job_id == "aabbccddee":
                 self.send_response(404)
@@ -64,7 +73,9 @@ def mock_dashboard(tmp_path):
     thread.start()
     secret_path = tmp_path / ".local_secret"
     secret_path.write_text(_MockDashboardHandler.secret)
+    _MockDashboardHandler.forced_response = None
     yield port, tmp_path
+    _MockDashboardHandler.forced_response = None
     server.shutdown()
 
 
@@ -150,6 +161,82 @@ class TestTriggerCronJob:
 
         assert ok is False
         assert "HTTP 403" in msg
+
+    def test_already_running_409_names_the_reason(self, mock_dashboard):
+        """The gateway's 409 reason reaches the user next to the status code."""
+        port, cfg_dir = mock_dashboard
+        _MockDashboardHandler.forced_response = (409, b'{"error":"job is already running"}')
+        ok, msg = trigger_cron_job("abc12345", port, cfg_dir / ".local_secret")
+        assert ok is False
+        assert msg == "Error: HTTP 409: job is already running"
+
+    def test_403_with_only_a_code_uses_the_code(self, mock_dashboard):
+        port, cfg_dir = mock_dashboard
+        _MockDashboardHandler.forced_response = (403, b'{"code":"app_scope_denied"}')
+        ok, msg = trigger_cron_job("abc12345", port, cfg_dir / ".local_secret")
+        assert ok is False
+        assert msg == "Error: HTTP 403: app_scope_denied"
+
+    def test_wrong_secret_403_names_the_reason(self, mock_dashboard, tmp_path):
+        port, _ = mock_dashboard
+        wrong_secret = tmp_path / ".local_secret"
+        wrong_secret.write_text("wrong-secret")
+        ok, msg = trigger_cron_job("abc12345", port, wrong_secret)
+        assert ok is False
+        assert msg == "Error: HTTP 403: forbidden"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"<html><body><h1>409 Conflict</h1></body></html>",
+            b"",
+            b'["job is already running"]',
+            b'{"error": 7}',
+            b'{"error": "   "}',
+            b'{"error": "' + b"x" * 5000 + b'"}',
+        ],
+    )
+    def test_unusable_body_keeps_the_bare_status(self, mock_dashboard, body):
+        """HTML, empty, or non-string bodies are never echoed: the status stands alone."""
+        port, cfg_dir = mock_dashboard
+        _MockDashboardHandler.forced_response = (409, body)
+        ok, msg = trigger_cron_job("abc12345", port, cfg_dir / ".local_secret")
+        assert ok is False
+        assert msg == "Error: HTTP 409"
+
+    def test_body_cut_off_mid_read_keeps_the_bare_status(self, tmp_path):
+        """A body that breaks while being read cannot turn the refusal into a crash."""
+        import http.client
+        import io
+        import urllib.error
+
+        class _BrokenBody(io.BytesIO):
+            def read(self, *_args):
+                raise http.client.IncompleteRead(b'{"error": "job is')
+
+        secret_path = tmp_path / ".local_secret"
+        secret_path.write_text("fake")
+        refusal = urllib.error.HTTPError(
+            "http://127.0.0.1:1/api/crons/abc12345/run", 409, "Conflict", None, _BrokenBody()
+        )
+        with patch("kiro_crew.cron_trigger.loopback_urlopen", side_effect=refusal):
+            ok, msg = trigger_cron_job("abc12345", 19999, secret_path)
+        assert ok is False
+        assert msg == "Error: HTTP 409"
+
+    def test_long_reason_is_capped_and_control_chars_dropped(self, mock_dashboard):
+        port, cfg_dir = mock_dashboard
+        reason = "busy\x1b[31m\nline " + "x" * 500
+        _MockDashboardHandler.forced_response = (
+            409,
+            json.dumps({"error": reason}).encode(),
+        )
+        ok, msg = trigger_cron_job("abc12345", port, cfg_dir / ".local_secret")
+        assert ok is False
+        assert msg.startswith("Error: HTTP 409: busy [31m line xxx")
+        assert "\x1b" not in msg and "\n" not in msg
+        assert msg.endswith("...")
+        assert len(msg) == len("Error: HTTP 409: ") + 200
 
     def test_invalid_job_id_rejected(self, mock_dashboard):
         """Malformed job IDs are rejected before making HTTP request."""
@@ -281,6 +368,27 @@ class TestCronTriggerMCP:
         assert job.id in result
         assert "executing now" in result
 
+    def test_trigger_already_running_names_the_reason(self, mock_dashboard, monkeypatch):
+        port, cfg_dir = mock_dashboard
+        monkeypatch.setenv("KIROCREW_HOME", str(cfg_dir))
+        from kiro_crew import mcp_cron
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=cfg_dir)
+        job = svc.add_job(
+            name="test-job-name",
+            message="go",
+            every_secs=120,
+            session_key="dashboard:conftest-slot",
+        )
+        _MockDashboardHandler.forced_response = (409, b'{"error":"job is already running"}')
+        with (
+            patch.object(mcp_cron, "config_dir", return_value=cfg_dir),
+            patch.object(mcp_cron, "resolve_serving_port", lambda: port),
+        ):
+            result = _call_tool_inner("cron_trigger", {"job_id": job.id})
+        assert result == "Error: HTTP 409: job is already running"
+
     def test_trigger_invalid_id(self, monkeypatch, tmp_path):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew import mcp_cron
@@ -363,6 +471,27 @@ class TestCronTriggerCLI:
                 _cron(args)
         assert exc.value.code == 1
         assert "Job not found" in capsys.readouterr().out
+
+    def test_cli_trigger_already_running_names_reason_and_exits_1(self, mock_dashboard, capsys):
+        import argparse
+
+        from kiro_crew.cli_commands import _cron
+
+        port, cfg_dir = mock_dashboard
+        _MockDashboardHandler.forced_response = (409, b'{"error":"job is already running"}')
+        args = argparse.Namespace(cron_action="trigger", job_id="abc12345")
+
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=cfg_dir),
+            patch(
+                "kiro_crew.cli_commands.resolve_client_port_ex",
+                lambda _cli: (port, True),
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _cron(args)
+        assert exc.value.code == 1
+        assert "Error: HTTP 409: job is already running" in capsys.readouterr().out
 
     def test_cli_trigger_invalid_id(self, capsys, tmp_path):
         """CLI rejects malformed job IDs."""

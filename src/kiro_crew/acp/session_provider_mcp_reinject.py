@@ -168,6 +168,9 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
     # wire travel with the swap.
     new_handle.keep_transcript = old.keep_transcript
     new_handle.memory_mode = old.memory_mode
+    # A task-runner or workflow session's delete delay (``released_sessions``): a new
+    # handle defaults to 0, which would delete the record at once when it ends.
+    new_handle.delete_delay_secs = getattr(old, "delete_delay_secs", 0.0)
     # Set by this turn's admission on the OLD handle before the apply ran; a new
     # handle defaults to the fail-closed False, which would auto-reject a routed
     # child permission request the dashboard can present.

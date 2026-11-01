@@ -1053,6 +1053,9 @@ def _channel_transport(send_result: str = "tg-1"):
 def _channel_state(*, link=_TG_LINK, transport=None, slack_client=None, jobs=None):
     """A state whose session owns *link*, with *transport* registered for it."""
     state = _mock_state(slack_client=slack_client, owner_id="U_OWNER")
+    # No slot names an owning app, so the caller is the person: a MagicMock slot
+    # would read as an app and put its messaging grant in front of every vet.
+    state._slots = {}
     state.sessions.get_origin_link.return_value = link
     state.sessions.get_mirror_link.return_value = None
     state.get_channel_transport.return_value = transport

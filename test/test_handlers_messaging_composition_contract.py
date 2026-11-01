@@ -244,7 +244,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the facade before the split that moved it: each
 #: moved name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "8bf31129aa09fff8f7feaa38edb58a1e855eed427e80074a8b15371c8f3a3bc6"
+_BASE_SHAPE_DIGEST = "5f9f90e8f0b3a71e8d11ad7ad64866a681de7fbdf2e1f64daf875f7248cfbff0"
 
 
 #: Helpers the split of ``api_send_message`` added to the send owner: the body it

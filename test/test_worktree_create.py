@@ -147,6 +147,7 @@ def _git(*args: str, cwd) -> None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=_fixture_git_env(),
     )
 

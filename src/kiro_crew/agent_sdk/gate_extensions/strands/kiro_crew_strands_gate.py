@@ -8,9 +8,11 @@ operator's own project, by a sub-agent tool -- carries a ``BeforeToolCallEvent``
 that raises one interrupt per tool call. The CLI forwards each interrupt to Kiro Crew
 and answers it with the approval; anything but an approval cancels the call.
 
-The interrupt carries Kiro Crew's gate envelope (``kiro-crew-gate``): the tool's name
-and arguments as this module read them off the Strands event, keyed by the nonce Kiro
-Crew put in this process's environment. The nonce, the marker path and the other
+The interrupt carries Kiro Crew's gate envelope (``kiro-crew-gate``): the tool's name,
+its owner (``builtin``, ``custom`` or ``mcp:<server>``, read off the tool OBJECT
+Strands resolved), its ``toolUseId`` and its arguments, keyed by the nonce Kiro Crew
+put in this process's environment. Kiro Crew classifies the call from the owner and
+name only. The nonce, the marker path and the other
 ``KIROCREW_STRANDS_*`` values are removed from ``os.environ`` on import, so no tool
 or shell this agent runs inherits them.
 
@@ -28,14 +30,19 @@ read-only copy; it is never imported by Kiro Crew itself.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import importlib.abc
+import importlib.machinery
 import importlib.util
 import inspect
 import json
 import os
+import runpy
 import stat
 import sys
 import threading
 import uuid
+import zipimport
 from pathlib import Path
 from typing import Any
 
@@ -199,6 +206,7 @@ _DUMPABLE = _make_non_dumpable() if _PROVIDER_KEYS else "no-keys"
 NONCE = os.environ.pop("KIROCREW_STRANDS_GATE_SESSION", "")
 MARKER_PATH = os.environ.pop("KIROCREW_STRANDS_GATE_MARKER", "")
 PROJECT = os.environ.pop("KIROCREW_STRANDS_PROJECT", "")
+PROJECT_SHA256 = os.environ.pop("KIROCREW_STRANDS_PROJECT_SHA256", "")
 STATE_DIR = os.environ.pop("KIROCREW_STRANDS_STATE_DIR", "") or str(Path(".agent", "sessions"))
 WITHHELD = tuple(
     sorted({name for name in os.environ.pop("KIROCREW_STRANDS_WITHHELD", "").split(":") if name})
@@ -210,28 +218,57 @@ _WITHHELD_UPPER = frozenset(name.upper() for name in WITHHELD)
 #: calls cannot ask, so under this gate it would only fail.
 DEFAULT_BUILTIN_TOOLS = ["shell", "read", "write", "edit", "web_fetch"]
 
-#: Kind for the harness's own built-ins, matching what the CLI's ACP projection
-#: puts on their ``tool_call`` frames, keyed by name AND by the module that defines
-#: the tool's function in strands-harness 0.3.3 / strands-agents 1.63.0. A name alone
-#: is no evidence: an operator's project may define its own ``read`` that writes, and
-#: a ``read`` kind is one Kiro Crew's read-only tier approves without asking. So a
-#: tool gets a built-in kind only when its function comes from the built-in's own
-#: module; every other tool is ``other``.
-_BUILTIN_KINDS = {
-    "shell": ("execute", "strands.vended_tools.shell.shell"),
-    "read": ("read", "strands_harness.tools.file_tools"),
-    "write": ("edit", "strands_harness.tools.file_tools"),
-    "edit": ("edit", "strands_harness.tools.file_tools"),
-    "web_fetch": ("fetch", "strands_harness.tools.web_fetch"),
-}
+#: ``owner`` values of the envelope. Kiro Crew classifies a call from the owner and
+#: the name together and never from the name alone, so a project's own tool called
+#: ``read`` is not judged as the harness's file reader.
+OWNER_BUILTIN = "builtin"
+OWNER_CUSTOM = "custom"
+OWNER_MCP_PREFIX = "mcp:"
+#: The SDK's shell under another name. No Kiro Crew owner, so the call is refused.
+OWNER_RENAMED_SDK_SHELL = "renamed-sdk-shell"
+
+#: The harness's own built-in tool OBJECTS, by ``id``: each one ``strands_harness``
+#: built in its ``_builtin_tools`` factory under its own slot name. A tool is
+#: ``builtin`` only when it is one of these objects; a tool merely NAMED like one
+#: is ``custom``. Strong references, so an ``id`` is never reused while recorded:
+#: a process serves one session and builds a handful of these per agent.
+_BUILTIN_TOOL_OBJECTS: dict[int, object] = {}
+
+_harness_agent_module = importlib.import_module("strands_harness.agent")
+_original_builtin_tools = getattr(_harness_agent_module, "_builtin_tools")
+
+
+def _recording_builtin_tools(*args: Any, **kwargs: Any) -> Any:
+    """``strands_harness``'s built-in factory, recording the objects it builds.
+
+    The factory returns ``{tool_name: tool}`` in the order of
+    ``BUILTIN_TOOL_NAMES``, one per slot. A tool is recorded only when the mapping
+    has exactly one entry per slot and the tool still carries its slot's name: a
+    project that renamed a built-in (``{"shell": {"name": "read"}}``) gets that
+    tool judged as ``custom``, never as the built-in its new name spells.
+    """
+    tools = _original_builtin_tools(*args, **kwargs)
+    slots = tuple(strands_harness.BUILTIN_TOOL_NAMES)
+    if isinstance(tools, dict) and len(tools) == len(slots):
+        for slot, tool in zip(slots, tools.values()):
+            if getattr(tool, "tool_name", None) == slot:
+                _BUILTIN_TOOL_OBJECTS[id(tool)] = tool
+    return tools
+
+
+setattr(_harness_agent_module, "_builtin_tools", _recording_builtin_tools)
 
 
 def _tool_identity(event: BeforeToolCallEvent) -> tuple[str, str]:
-    """The title and kind Kiro Crew judges this call by.
+    """The title and owner Kiro Crew judges this call by.
 
     An MCP tool is named ``mcp__<server>__<tool>``, the spelling Kiro Crew's rules
     bind to on every harness, from the tool object Strands resolved rather than
-    from the prefixed name the model sees.
+    from the prefixed name the model sees, and its owner is ``mcp:<server>``. An
+    MCP tool whose server or tool name cannot be read is owned by ``mcp:`` with no
+    server, which Kiro Crew refuses. A built-in is the object the harness built
+    (:data:`_BUILTIN_TOOL_OBJECTS`), titled by its own name. Every other tool is
+    ``custom``: its name is not evidence of what it does.
     """
     name = str(event.tool_use.get("name", ""))
     tool = event.selected_tool
@@ -239,18 +276,31 @@ def _tool_identity(event: BeforeToolCallEvent) -> tuple[str, str]:
         server = getattr(tool.mcp_client, "client_name", None)
         original = getattr(tool.mcp_tool, "name", None)
         if isinstance(server, str) and server and isinstance(original, str) and original:
-            return f"mcp__{server}__{original}", "other"
-    builtin = _BUILTIN_KINDS.get(name)
-    if builtin is not None and _defining_module(tool) == builtin[1]:
-        return name, builtin[0]
-    return name, "other"
+            return f"mcp__{server}__{original}", f"{OWNER_MCP_PREFIX}{server}"
+        return name, OWNER_MCP_PREFIX
+    if tool is not None and _BUILTIN_TOOL_OBJECTS.get(id(tool)) is tool:
+        return str(getattr(tool, "tool_name", name)), OWNER_BUILTIN
+    if _is_sdk_shell(tool):
+        # The Strands SDK's own shell, built by ``make_shell`` outside the
+        # harness factory (``Agent(tools=[shell])``, a sandbox's vended shell, a
+        # renamed ``make_shell(name="bash")``). Claiming it is a command can only
+        # tighten what Crew checks, so the module is proof enough. Titled by its
+        # own name. Renamed (``make_shell(name="read")``), it would wear another
+        # built-in's name and kind, so it gets an owner Crew does not know, and
+        # Crew refuses the call rather than judge a command as a read.
+        title = str(getattr(tool, "tool_name", name) or name)
+        return title, (OWNER_BUILTIN if title == "shell" else OWNER_RENAMED_SDK_SHELL)
+    return name, OWNER_CUSTOM
 
 
-def _defining_module(tool: object) -> str:
-    """The module the tool's function was defined in, or ``""`` when it has none."""
+#: The module the Strands SDK's ``make_shell`` defines its tool function in.
+_SDK_SHELL_MODULE = "strands.vended_tools.shell.shell"
+
+
+def _is_sdk_shell(tool: object) -> bool:
+    """Whether *tool* runs the Strands SDK's own shell function."""
     func = getattr(tool, "_tool_func", None)
-    module = getattr(func, "__module__", None)
-    return module if isinstance(module, str) else ""
+    return getattr(func, "__module__", None) == _SDK_SHELL_MODULE
 
 
 class AskKiroCrew(HookProvider):
@@ -261,12 +311,15 @@ class AskKiroCrew(HookProvider):
 
     def ask(self, event: BeforeToolCallEvent) -> None:
         tool_use = event.tool_use
-        title, kind = _tool_identity(event)
+        title, owner = _tool_identity(event)
+        # No ``kind``: Kiro Crew derives it from ``owner`` and ``tool`` itself.
+        # ``toolCallId`` is Strands' ``toolUseId``, the id the CLI puts on this
+        # call's ``tool_call`` card, so the request joins its card.
         envelope = {
             ENVELOPE_MARKER: 1,
             "nonce": NONCE,
             "tool": title,
-            "kind": kind,
+            "owner": owner,
             "toolCallId": str(tool_use.get("toolUseId", "")),
             "input": tool_use.get("input", {}),
         }
@@ -377,6 +430,297 @@ def _require_gated(agent: object) -> Agent:
     return agent
 
 
+#: The project fingerprint. MUST equal ``kiro_crew.acp.harness.strands_project_pin``'s
+#: algorithm byte for byte (a test compares the two); this file imports nothing of
+#: Kiro Crew, so it carries its own copy.
+_PIN_DOMAIN = b"kirocrew-strands-project-v1\0"
+_PIN_MAX_FILES = 5000
+_PIN_MAX_BYTES = 64 * 1024 * 1024
+_READ_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+    | getattr(os, "O_BINARY", 0)
+)
+
+
+def _read_regular(path: str, rel: str, limit: int) -> bytes:
+    """The bytes of the regular file at *path*, never through a link, or a refusal."""
+    with os.fdopen(os.open(path, _READ_FLAGS), "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise PermissionError(f"{rel} is not a regular file")
+        if info.st_size > limit:
+            raise PermissionError("too many bytes")
+        data = handle.read(info.st_size + 1)
+    if len(data) != info.st_size:
+        raise PermissionError(f"{rel} changed while it was read")
+    return data
+
+
+def _project_fingerprint(
+    entry: Path,
+) -> tuple[str, dict[str, str], dict[tuple[int, int], str]]:
+    """``(sha256, {file: its sha256}, {(device, inode): its sha256})`` over every regular
+    file under *entry*'s folder, or :exc:`OSError`. Files are keyed by
+    :func:`_lexical_key` and by :func:`_identity`, so a spelling the walk never saw (a
+    case alias on a case-insensitive volume, a short name) still finds its file."""
+    found: list[tuple[str, str, tuple[int, int]]] = []
+    pending: list[tuple[str, str]] = [(str(entry.parent), "")]
+    while pending:
+        folder, prefix = pending.pop()
+        with os.scandir(folder) as entries:
+            listed = list(entries)
+        for item in listed:
+            rel = f"{prefix}{item.name}"
+            junction = getattr(item, "is_junction", None)
+            if item.is_symlink() or (junction is not None and junction()):
+                raise PermissionError(f"{rel} is a link")
+            info = os.lstat(item.path)
+            mode = info.st_mode
+            if stat.S_ISDIR(mode):
+                if item.name != "__pycache__":
+                    pending.append((item.path, f"{rel}/"))
+            elif stat.S_ISREG(mode):
+                found.append((rel, item.path, (info.st_dev, info.st_ino)))
+                if len(found) > _PIN_MAX_FILES:
+                    raise PermissionError("too many files")
+            else:
+                raise PermissionError(f"{rel} is not a regular file")
+    digest = hashlib.sha256(_PIN_DOMAIN)
+    files: dict[str, str] = {}
+    ids: dict[tuple[int, int], str] = {}
+    total = 0
+    for rel, path, identity in sorted(found):
+        data = _read_regular(path, rel, _PIN_MAX_BYTES - total)
+        total += len(data)
+        name = rel.encode("utf-8", "surrogateescape")
+        digest.update(len(name).to_bytes(8, "big") + name)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+        files[_lexical_key(path)] = hashlib.sha256(data).hexdigest()
+        if identity[1]:
+            ids[identity] = files[_lexical_key(path)]
+    return digest.hexdigest(), files, ids
+
+
+def _identity(path: str, *, follow: bool) -> tuple[int, int] | None:
+    """``(device, inode)`` of *path*, or ``None`` when it cannot be read or the volume
+    reports no inode (0): such a volume is judged by path alone."""
+    try:
+        info = os.stat(path) if follow else os.lstat(path)
+    except (OSError, ValueError):
+        return None
+    return (info.st_dev, info.st_ino) if info.st_ino else None
+
+
+def _lexical_key(path: str) -> str:
+    """The path as written, made absolute: what the folder walk recorded."""
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _folder_key(path: str) -> str:
+    """The path with its FOLDER resolved and its last name kept: a link alias of the
+    project folder on ``sys.path`` maps to the recorded file, a link at the file does not."""
+    absolute = os.path.abspath(path)
+    folder, name = os.path.split(absolute)
+    return os.path.normcase(os.path.join(os.path.realpath(folder), name))
+
+
+class _ConfirmedSource(importlib.machinery.SourceFileLoader):
+    """A project ``.py`` file's loader that compiles only bytes matching its confirmed
+    digest and never reads bytecode: a cached ``.pyc`` is outside the fingerprint, and
+    Python trusts an unchecked-hash ``.pyc`` without looking at its source. Everything
+    else (package resources, ``get_data``, ``is_package``) is the ordinary source
+    loader's."""
+
+    def __init__(self, fullname: str, path: str, expected: str | None) -> None:
+        super().__init__(fullname, path)
+        self._expected = expected
+
+    def get_code(self, fullname: str) -> Any:
+        return _confirmed_code(self.get_filename(fullname), self._expected)
+
+
+def _confirmed_code(origin: str, expected: str | None) -> Any:
+    """*origin* compiled from bytes matching *expected*, or :exc:`ImportError`."""
+    refusal = (
+        f"{origin} is not part of the Strands project version confirmed in "
+        "agent.strands_project_sha256, so Kiro Crew does not import it. Review "
+        "the project, confirm it again, and start a new chat."
+    )
+    if expected is None or os.path.islink(origin):
+        raise ImportError(refusal)
+    try:
+        data = _read_regular(origin, origin, _PIN_MAX_BYTES)
+    except OSError as exc:
+        raise ImportError(f"Kiro Crew cannot read {origin} ({exc})") from None
+    if hashlib.sha256(data).hexdigest() != expected:
+        raise ImportError(refusal)
+    return compile(data, origin, "exec", dont_inherit=True)
+
+
+class _ConfirmedProjectFinder(importlib.abc.MetaPathFinder):
+    """Every import that resolves into the project folder, for the whole session, runs
+    only a confirmed ``.py`` file through :class:`_ConfirmedSource`.
+
+    "Into the folder" is judged on the path as written, with its folder resolved, and
+    fully resolved: a file linked out of the folder, or the folder reached through a
+    link, is still the folder's, so it is checked and never handed to Python's own
+    loader."""
+
+    def __init__(self, root: str, files: dict[str, str], ids: dict[tuple[int, int], str]) -> None:
+        self._roots = {_lexical_key(root), os.path.normcase(os.path.realpath(root))}
+        self._root_id = _identity(root, follow=True)
+        self._files = files
+        self._ids = ids
+
+    def _under(self, key: str) -> bool:
+        return any(key == root or key.startswith(root + os.sep) for root in self._roots)
+
+    def _below_root_folder(self, path: str) -> bool:
+        """Whether a folder above *path* IS the project folder, by device and inode, so
+        any spelling of it counts (letter case, a short name, a link)."""
+        if self._root_id is None:
+            return False
+        folder = os.path.dirname(path)
+        while True:
+            if _identity(folder, follow=True) == self._root_id:
+                return True
+            parent = os.path.dirname(folder)
+            if parent == folder:
+                return False
+            folder = parent
+
+    def inside(self, path: str) -> bool:
+        path = os.fsdecode(path)
+        keys = (_lexical_key(path), _folder_key(path), os.path.normcase(os.path.realpath(path)))
+        if any(self._under(key) for key in keys):
+            return True
+        return any(
+            self._below_root_folder(spelling)
+            for spelling in (os.path.abspath(path), os.path.realpath(path))
+        )
+
+    def expected(self, path: str) -> str | None:
+        """The confirmed digest of the project file at *path*, or ``None``."""
+        path = os.fsdecode(path)
+        found = self._files.get(_lexical_key(path)) or self._files.get(_folder_key(path))
+        if found is None:
+            identity = _identity(path, follow=False)
+            found = self._ids.get(identity) if identity is not None else None
+        return found
+
+    def find_spec(self, name: str, path: Any = None, target: Any = None) -> Any:
+        spec = importlib.machinery.PathFinder.find_spec(name, path)
+        if spec is None or not spec.origin or not spec.has_location:
+            return None
+        if not self.inside(spec.origin):
+            return None
+        if not spec.origin.endswith(".py"):
+            raise ImportError(
+                f"{spec.origin} is not Python source; Kiro Crew imports only confirmed "
+                ".py files from the Strands project folder."
+            )
+        loader = _ConfirmedSource(name, spec.origin, self.expected(spec.origin))
+        return importlib.util.spec_from_file_location(
+            name,
+            spec.origin,
+            loader=loader,
+            submodule_search_locations=spec.submodule_search_locations,
+        )
+
+
+def _guard_file_loaders(finder: _ConfirmedProjectFinder) -> None:
+    """Hold Python's own file loaders to the same rule inside the project folder.
+
+    A project may load a file by path (``spec_from_file_location``, ``runpy``), which
+    never asks the meta path. So inside the folder the stock source loader compiles
+    only confirmed bytes and never reads bytecode, and the bytecode and extension
+    loaders refuse; outside the folder each behaves exactly as before.
+    """
+    machinery = importlib.machinery
+    source_get_code = machinery.SourceFileLoader.get_code
+    sourceless_get_code = machinery.SourcelessFileLoader.get_code
+    extension_create = machinery.ExtensionFileLoader.create_module
+
+    def refusal(path: str) -> ImportError:
+        return ImportError(
+            f"{path} is not Python source; Kiro Crew runs only confirmed .py files "
+            "from the Strands project folder."
+        )
+
+    def get_source_code(self: Any, fullname: str) -> Any:
+        path = self.get_filename(fullname)
+        if finder.inside(path):
+            return _confirmed_code(path, finder.expected(path))
+        return source_get_code(self, fullname)
+
+    def get_sourceless_code(self: Any, fullname: str) -> Any:
+        path = self.get_filename(fullname)
+        if finder.inside(path):
+            raise refusal(path)
+        return sourceless_get_code(self, fullname)
+
+    def create_extension(self: Any, spec: Any) -> Any:
+        if finder.inside(self.path):
+            raise refusal(self.path)
+        return extension_create(self, spec)
+
+    machinery.SourceFileLoader.get_code = get_source_code  # type: ignore[method-assign]
+    machinery.SourcelessFileLoader.get_code = get_sourceless_code  # type: ignore[method-assign]
+    machinery.ExtensionFileLoader.create_module = create_extension  # type: ignore[method-assign]
+
+    # ``runpy.run_path`` on a file reads it without a loader. Its helper takes
+    # ``(run_name, fname)`` and answers ``(code, fname)`` on older releases, and
+    # takes ``(fname)`` and answers ``code`` on newer ones; the shape is kept per call.
+    run_file = runpy._get_code_from_file  # type: ignore[attr-defined]
+
+    def get_run_file_code(*args: Any) -> Any:
+        fname = args[-1]
+        path = os.fsdecode(fname)
+        if not finder.inside(path):
+            return run_file(*args)
+        if not path.endswith(".py"):
+            raise refusal(path)
+        code = _confirmed_code(path, finder.expected(path))
+        return (code, fname) if len(args) == 2 else code
+
+    runpy._get_code_from_file = get_run_file_code  # type: ignore[attr-defined]
+
+    # A zip archive in the folder is never imported from: its members are not files
+    # the fingerprint can check one by one at import time.
+    zip_init = zipimport.zipimporter.__init__
+
+    def zip_importer(self: Any, path: Any, *args: Any) -> None:
+        if finder.inside(os.fspath(path)):
+            raise zipimport.ZipImportError(f"{path} is a zip archive in the Strands project")
+        zip_init(self, path, *args)
+
+    zipimport.zipimporter.__init__ = zip_importer  # type: ignore[method-assign]
+
+
+def _require_confirmed_project(
+    entry: Path,
+) -> tuple[dict[str, str], dict[tuple[int, int], str]]:
+    """The per-file digests of the confirmed project, or a refusal.
+
+    Kiro Crew checked the same fingerprint before it started this process; this is the
+    same check right before the import, so a file swapped in between is not run.
+    """
+    try:
+        current, files, ids = _project_fingerprint(entry)
+    except OSError as exc:
+        current, files, ids = f"unreadable ({exc})", {}, {}
+    if not PROJECT_SHA256 or current != PROJECT_SHA256:
+        raise PermissionError(
+            "The Strands project's files are not the version confirmed in "
+            "agent.strands_project_sha256, so Kiro Crew does not run them. Review the "
+            "project, confirm it again, and start a new chat."
+        )
+    return files, ids
+
+
 def _load_user_project(path: str) -> tuple[Any, list[tuple[Agent, tuple, dict]]]:
     """Import the operator's project module with every Agent it builds gated."""
     target = Path(path).expanduser()
@@ -387,6 +731,19 @@ def _load_user_project(path: str) -> tuple[Any, list[tuple[Agent, tuple, dict]]]
             "Python project: point it at the project's agent.py or its folder."
         )
     entry = entry.resolve()
+    files, ids = _require_confirmed_project(entry)
+    # Just ahead of the path finder, before the folder joins sys.path: from here on,
+    # any import that lands in the folder (now or later in the session) is checked.
+    # Built-in and frozen modules still resolve first, as they always do.
+    path_finder = importlib.machinery.PathFinder
+    at = next((i for i, f in enumerate(sys.meta_path) if f is path_finder), 0)
+    finder = _ConfirmedProjectFinder(str(entry.parent), files, ids)
+    sys.meta_path.insert(at, finder)
+    _guard_file_loaders(finder)
+    # An importer cached for a path in the folder before the guard existed (a zip on
+    # PYTHONPATH) would keep serving it unchecked; the next lookup builds a new one.
+    for cached in [key for key in sys.path_importer_cache if finder.inside(str(key))]:
+        del sys.path_importer_cache[cached]
     sys.path.insert(0, str(entry.parent))
     captured: list[tuple[Agent, tuple, dict]] = []
     original_create_harness = strands_harness.create_harness
@@ -398,12 +755,14 @@ def _load_user_project(path: str) -> tuple[Any, list[tuple[Agent, tuple, dict]]]
 
     strands_harness.create_harness = capture_create_harness
     try:
-        spec = importlib.util.spec_from_file_location("kirocrew_strands_user_project", entry)
-        if spec is None or spec.loader is None:
+        name = "kirocrew_strands_user_project"
+        loader = _ConfirmedSource(name, str(entry), files.get(_lexical_key(str(entry))))
+        spec = importlib.util.spec_from_file_location(name, entry, loader=loader)
+        if spec is None:
             raise ImportError(f"cannot load the Strands project at {entry}")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        loader.exec_module(module)
     finally:
         strands_harness.create_harness = original_create_harness
     return module, captured

@@ -195,6 +195,12 @@ SDK surface, publishing, and migrating across a breaking platform version. It li
 in the repository, not in this package —
 [docs/app-kit/](https://github.com/kirodotdev/KiroCrew/blob/main/docs/app-kit/README.md).
 
+A new app, first-party included, ships from a dedicated GitHub repository listed in
+the App Store's official registry
+([kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)); Kiro Crew
+does not take new apps into the package itself. The apps that
+ship inside the package today keep working as described above.
+
 ## See also
 
 - [MCP Apps](mcp-apps.md) — a different feature with a similar name: rendering an

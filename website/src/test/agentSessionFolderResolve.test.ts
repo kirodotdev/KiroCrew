@@ -7,7 +7,7 @@
  * than a slot filed under `undefined`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 
 const { dispatch, apiMock, sendTurn, saveInvestigation, getInvestigation } = vi.hoisted(() => ({
   dispatch: vi.fn(),
@@ -60,19 +60,25 @@ function happyPath() {
 
 const openIssueRadar = async () => {
   const { result } = renderHook(() => useIssueRadarSession())
-  const record = await result.current.openSession({
-    repoRef: { host: 'github.com', owner: 'acme', repo: 'demo-repo' } as never,
-    number: 1,
-    title: '#1 · thing',
-    prompt: 'seed',
-    existing: null,
+  let record: Awaited<ReturnType<typeof result.current.openSession>> | undefined
+  await act(async () => {
+    record = await result.current.openSession({
+      repoRef: { host: 'github.com', owner: 'acme', repo: 'demo-repo' } as never,
+      number: 1,
+      title: '#1 · thing',
+      prompt: 'seed',
+      existing: null,
+    })
   })
   return { record, result }
 }
 
 const openAutoImprove = async () => {
   const { result } = renderHook(() => useAutoImproveSession())
-  const record = await result.current.openSession({ kind: 'pr', id: 1, repo: 'acme/demo-repo', title: 'PR #1', prompt: 'seed' })
+  let record: Awaited<ReturnType<typeof result.current.openSession>> | undefined
+  await act(async () => {
+    record = await result.current.openSession({ kind: 'pr', id: 1, repo: 'acme/demo-repo', title: 'PR #1', prompt: 'seed' })
+  })
   return { record, result }
 }
 

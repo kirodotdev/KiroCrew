@@ -35,7 +35,7 @@ const listing = (...entries: [string, boolean][]) => ({
 
 afterEach(() => {
   vi.useRealTimers()
-  current?.__resetPanelTabs()
+  act(() => { current?.__resetPanelTabs() })
   current = null
   localStorage.clear()
 })
@@ -49,7 +49,7 @@ describe('usePanelTabs: restored terminal tabs at hydrate', () => {
 
   it('boots past a malformed persisted tab entry', async () => {
     const store = await bootWith({ s1: { tabs: [null, term('a')], activeId: 'terminal:a' } })
-    expect(store.reconcileRestoredPanelTerminals(listing())).toEqual(['a'])
+    act(() => { expect(store.reconcileRestoredPanelTerminals(listing())).toEqual(['a']) })
   })
 
   it('keeps live terminals and settles on the first look', async () => {
@@ -81,8 +81,8 @@ describe('usePanelTabs: restored terminal tabs at hydrate', () => {
 
   it('keeps an unknown terminal that the second look confirms live', async () => {
     const store = await bootWith({ s1: { tabs: [term('opening')], activeId: 'terminal:opening' } })
-    expect(store.reconcileRestoredPanelTerminals(listing())).toEqual(['opening'])
-    expect(store.confirmRestoredPanelTerminals(listing(['opening', true]))).toEqual([])
+    act(() => { expect(store.reconcileRestoredPanelTerminals(listing())).toEqual(['opening']) })
+    act(() => { expect(store.confirmRestoredPanelTerminals(listing(['opening', true]))).toEqual([]) })
     const { result } = renderHook(() => store.usePanelTabs('s1'))
     expect(result.current.tabs.map(t => t.id)).toEqual(['terminal:opening'])
     const { result: pending } = renderHook(() => store.usePanelTerminalsPending())

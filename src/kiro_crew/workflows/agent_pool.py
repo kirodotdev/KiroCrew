@@ -36,6 +36,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from kiro_crew.acp.worker_pool import WorkerPool
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.security import redact
@@ -142,6 +143,9 @@ class _WorkflowSessionWorker:
         """Cold-start THIS worker's session once (the only cold start it pays)."""
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
+        # Read before the session is acquired: a start cancelled in an await after
+        # the acquisition would leave the session held with no worker to release it.
+        delete_delay = await self._configured_delete_delay()
         provider, self._is_new, self._resumed = await self._sessions.get_or_create(
             self._key,
             agent=self._agent,
@@ -151,6 +155,26 @@ class _WorkflowSessionWorker:
             **self._effort_kwargs,
         )
         self._provider = provider
+        provider.set_delete_delay(delete_delay)
+
+    async def _configured_delete_delay(self) -> int:
+        """``session.kas_delete_delay_secs``, for the conversation the next reset ends.
+
+        Each reuse ends the previous step's conversation (``reset`` below). Where the
+        host can keep the record, it waits this long before Crew deletes it, so a
+        finished step can still be read. Read again before each reuse rather than
+        once at start, so a changed setting applies to the next conversation a
+        reuse ends.
+        """
+
+        def _configured() -> int:
+            try:
+                return KiroCrewConfig.load().session.kas_delete_delay_secs
+            except Exception:
+                # An unreadable config ends the conversation as before.
+                return 0
+
+        return await asyncio.to_thread(_configured)
 
     async def send_message(self, prompt: str, timeout: float = 1800.0) -> str:
         if self._provider is None:
@@ -194,10 +218,13 @@ class _WorkflowSessionWorker:
         (correctness over speed on the fallback path)."""
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
+        delete_delay = await self._configured_delete_delay()
         # Lifecycle only; EssentialDelivery owns successful delivery evidence.
         self._is_new = True
         self._resumed = False
         prov = self._provider
+        if prov is not None:
+            prov.set_delete_delay(delete_delay)
         new_conv = getattr(prov, "new_conversation", None) if prov is not None else None
         if new_conv is not None:
             # BEFORE ``new_conv()``, not after. The cheap path replaces the CONVERSATION and

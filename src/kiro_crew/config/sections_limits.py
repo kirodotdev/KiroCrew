@@ -250,6 +250,10 @@ EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
 # Also load-only, and a floor only: 0 keeps every turn's copies, so a negative
 # value reads as 0, and any larger count is a real choice.
 FILE_CHANGES_KEEP_TURNS_MIN = 0
+# ``session.kas_delete_delay_secs``: 0 deletes at once, and a hand-edited delay is
+# capped at one day. The cap bounds the delay asked for, not when the delete runs.
+KAS_DELETE_DELAY_SECS_MIN = 0
+KAS_DELETE_DELAY_SECS_MAX = 86400
 # A hand-edited ``session.idle_exempt_keys`` can be any size, and every idle sweep copies it.
 # Each listed key can also keep a whole kiro-cli process and its MCP servers running, the
 # per-entry cost ``POOL_SIZE_MAX`` bounds for the warm pool, so the count shares that ceiling.

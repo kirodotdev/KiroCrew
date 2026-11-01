@@ -89,6 +89,7 @@ def probe_streams(mp4: str) -> dict:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     )
     return json.loads(out.stdout)
@@ -99,6 +100,7 @@ def loudness(mp4: str) -> tuple[float | None, float | None]:
         [tool("ffmpeg"), "-hide_banner", "-i", mp4, "-af", "volumedetect", "-f", "null", "-"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     txt = out.stderr + out.stdout
     mean = re.search(r"mean_volume:\s*(-?[\d.]+) dB", txt)
@@ -127,6 +129,7 @@ def luma(mp4: str, at: float) -> float | None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     m = re.search(r"YAVG=([\d.]+)", out.stderr + out.stdout)
     return float(m.group(1)) if m else None

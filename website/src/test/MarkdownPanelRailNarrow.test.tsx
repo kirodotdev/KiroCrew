@@ -8,7 +8,7 @@
  * whether an out-of-flow wrapper is present.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -72,7 +72,9 @@ describe('MarkdownPanel browser rail placement', () => {
 
   it('floats the rail over the content when the panel is too narrow to split', async () => {
     mount()
-    emit!(320)
+    act(() => {
+      emit!(320)
+    })
     await waitFor(() => {
       const cls = railWrapper().className
       expect(cls).toMatch(/absolute/)

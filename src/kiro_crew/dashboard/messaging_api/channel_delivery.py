@@ -406,10 +406,13 @@ async def _send_to_channel_target(
     text: str,
     *,
     caller_session: str = "",
+    request_app: str = "",
 ) -> web.Response:  # noqa: C901
     """Deliver *text* to an opaque configured target on a registered transport.
 
-    Four gates, all fail-closed, in the order their evidence is cheapest:
+    Four gates, all fail-closed, in the order their evidence is cheapest. The
+    governance gate also asks the calling app's own ``capabilities.messaging``
+    grant (``_vet_app_messaging``) before the ``channels`` scope:
 
     1. **A registered transport.** Expressed as membership in the registry, never
        as ``channel_type != "slack"``: a negation hands every channel added later
@@ -450,6 +453,11 @@ async def _send_to_channel_target(
     # is a non-cron caller (a browser operator, or a direct call): the host
     # sentinel is what operators bind host-side governance to.
     session_key = caller_session or HOST_SESSION_KEY
+    app_refusal = await asyncio.to_thread(_vet_app_messaging, request_app, session_key)
+    if app_refusal:
+        return web.json_response(
+            {"error": app_refusal, "code": "channel_not_permitted"}, status=403
+        )
     # Offloaded: the governance evaluation stats and reads the profile files (and
     # writes a SEL record either way), which is filesystem latency on the shared
     # gateway loop. The sibling ``_deliver_channel_dm`` already runs its own vet
@@ -562,5 +570,41 @@ def _vet_channel_send(channel_type: str, caller_session: str) -> str:
             return f"channel {channel_type} is denied by the active governance profile"
     except Exception:
         logger.warning("channel send governance check failed", exc_info=True)
+        return "governance evaluation unavailable"
+    return ""
+
+
+def _vet_app_messaging(request_app: str, session_key: str) -> str:
+    """The calling app's own ``capabilities.messaging`` grant; ``""`` when permitted.
+
+    The MCP ``send_message`` tool vets ``capabilities.messaging`` before it posts,
+    but in the ``kirocrew-core`` process, where no app identity is known, so a
+    per-app profile that revokes messaging never reaches that check. The gateway
+    knows the app: ``effective_request_app`` reads it off the attested token or
+    the calling session's owner. Every proactive egress leg asks this before it
+    sends, so an app whose messaging is revoked reaches no channel on any leg.
+
+    An empty *request_app* is the person, whose surface profile the MCP tool
+    already vets, so it is not re-asked here. Fail-closed like the ``channels``
+    vet beside it: this is an egress chokepoint, and an evaluation that errored
+    must deny.
+    """
+    if not request_app:
+        return ""
+    try:
+        from kiro_crew.platform.governance_profiles import vet_and_audit
+
+        decision = vet_and_audit(
+            "capabilities.messaging",
+            "",
+            session_key=session_key or HOST_SESSION_KEY,
+            tool_name="send_message",
+            app=request_app,
+            fail_closed=True,
+        )
+        if not getattr(decision, "permitted", False):
+            return "outbound messaging is denied for this app by the active governance profile"
+    except Exception:
+        logger.warning("app messaging governance check failed", exc_info=True)
         return "governance evaluation unavailable"
     return ""

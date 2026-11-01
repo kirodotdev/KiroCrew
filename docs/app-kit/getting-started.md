@@ -400,6 +400,9 @@ method table are in [API Reference](api-reference.md#python-client).
 ## Publishing Your App
 
 Once your app works locally, publish it to the App Store registry so other
-Kiro Crew users can install it with one click.
+Kiro Crew users can install it with one click. Your app's code stays in a
+dedicated GitHub repository listed in the official registry
+(`kirodotdev/KiroCrewApps`); Kiro Crew accepts no new built-in app, so an app is
+never added to the Kiro Crew package itself.
 
 See [Publishing Guide](publishing-guide.md) for the full workflow.

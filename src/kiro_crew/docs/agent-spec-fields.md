@@ -154,7 +154,7 @@ underneath.
 | `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
 | `pi` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
 | `deepseek` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
-| `strands` | `strands.py` | `mcpServers`, by the `--mcp-config` launch file, never the wire [10]; `model`, as the `--model` launch argument [10] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `availableModels` — no vocabulary advertised; `autoApprove` and `permissions.defaultMode` — gate-preserving (Crew's gate module asks for every call); `prompt` — context-instead [10]; `resources` — no-reader [6]; `hooks` — no channel |
+| `strands` | `strands.py` | `mcpServers`, by the `--mcp-config` launch file, never the wire [10]; `model`, as the `--model` launch argument [10] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | `availableModels` — no vocabulary advertised; `autoApprove` and `permissions.defaultMode` — gate-preserving (Crew's gate module asks for every call); `prompt` — context-instead [10]; `resources` — no-reader [6] |
 
 **An empty `tools` list is a second, stronger case of the "allowlist" row.** `tools:
 []` reads as "mount nothing" for the MCP array on every mirror, same as any other
@@ -314,8 +314,8 @@ Four classes cover the rest, and `no-channel` is not one of them:
 `no-channel` is the fourth `Disposition` and a different statement, which is why
 `hooks` sits in that column on `claude` and `codex` without being a withhold:
 the backend HAS the capability and this transport cannot carry it. Both run
-hooks natively; what is missing is the delivery path. On `goose` and `opencode`
-the ruling is `translated` instead: their session carries no hooks field either,
+hooks natively; what is missing is the delivery path. On `goose`, `opencode` and
+`strands` the ruling is `translated` instead: their session carries no hooks field either,
 so Crew's own turn loop fires the field (`ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`). `Ruling.__post_init__` refuses a
 `no-channel` ruling that does not name the channel it would have to travel on,
 which is what keeps a gap from reading as a decision.
@@ -363,8 +363,8 @@ is the part worth knowing before you switch:
 - **`autoApprove` and a spec-written `permissions` block travel nowhere.**
   Deliberately, and this is the one degradation you want: every call reaches
   Crew's gate instead of being pre-approved inside the harness.
-- **`hooks` reaches only two mirrors, and `resources` only half-reaches.**
-  `hooks` is `translated` on `goose` and `opencode`, where Crew's turn loop fires
+- **`hooks` reaches only three mirrors, and `resources` only half-reaches.**
+  `hooks` is `translated` on `goose`, `opencode` and `strands`, where Crew's turn loop fires
   it, and `no-channel` on `claude` and `codex`. Neither URI scheme is loaded natively, but a mapped
   `skill://` still arrives as Crew's injected skill directory, per the note above,
   so an agent whose skills come from its spec keeps them on a mirrored harness. A

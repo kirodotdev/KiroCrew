@@ -614,6 +614,17 @@ async def _resolve_permission(
         await provider.reject_tool(event.request_id)
         return False
 
+    if event.side_read_only_refusal:
+        # A Strands Side Chat call that is not the harness's own proven file read.
+        # Refused under any policy, before the gate: its shell classifier would
+        # otherwise approve a read-only command, and a side chat runs no command.
+        _log("rejected", metadata={"reason": "side_read_only_unproven_tool"})
+        await _steer_host_deny(
+            provider, event, event.side_read_only_refusal, cause=DENY_CAUSE_SURFACE_POLICY
+        )
+        await provider.reject_tool(event.request_id)
+        return False
+
     if policy == ToolApprovalPolicy.READ_ONLY and hooks is None:
         # Fail closed: READ_ONLY's classifier IS the hook gate. Without one
         # there is no way to prove a call read-only, so the policy degrades to

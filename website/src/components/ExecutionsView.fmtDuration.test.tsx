@@ -13,7 +13,7 @@ vi.mock('../api/client', () => ({
 }))
 
 /** Renders one history row with `durationMs` and returns its Duration cell text. */
-async function durationCell(durationMs: number): Promise<string> {
+async function durationCell(durationMs: number, status = 'success'): Promise<string> {
   cronHistoryAll.mockResolvedValue({
     runs: [
       {
@@ -22,7 +22,7 @@ async function durationCell(durationMs: number): Promise<string> {
         run_id: `r-${durationMs}`,
         started_at: 1_700_000_000_000,
         duration_ms: durationMs,
-        status: 'success',
+        status,
         trigger: 'schedule',
       },
     ],
@@ -49,5 +49,10 @@ describe('ExecutionsView Duration column', () => {
 
   it('keeps minutes and whole seconds past a minute', async () => {
     expect(await durationCell(125_400)).toBe('2m 5s')
+  })
+
+  it('shows how long a timed-out run ran, not a still-running ellipsis', async () => {
+    // The reaper records the run's real elapsed time when it times out.
+    expect(await durationCell(300_000, 'timeout')).toBe('5m 0s')
   })
 })

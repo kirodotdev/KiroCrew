@@ -1127,9 +1127,10 @@ def test_added_line_gate_self_test_passes() -> None:
     test makes a local ``pytest`` run catch a broken rule too.
     """
     result = subprocess.run(
-        [sys.executable, _GATE_PATH, "--test"],
+        [sys.executable, "-X", "utf8", _GATE_PATH, "--test"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=_REPO_ROOT,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1144,9 +1145,10 @@ def test_added_line_gate_reports_without_enforcing() -> None:
     """
     env = {k: v for k, v in os.environ.items() if k != "HARNESS_BASE_REF"}
     result = subprocess.run(
-        [sys.executable, _GATE_PATH],
+        [sys.executable, "-X", "utf8", _GATE_PATH],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=_REPO_ROOT,
         env=env,
     )

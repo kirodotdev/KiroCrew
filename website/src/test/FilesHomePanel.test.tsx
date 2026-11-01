@@ -8,7 +8,7 @@
  * the open handed up from a tree row is checked through the real wiring.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const H = vi.hoisted(() => ({
@@ -131,13 +131,13 @@ describe('FilesHomePanel header', () => {
     expect(screen.getAllByLabelText('Refresh')).toHaveLength(1)
   })
 
-  it('reveals the project directory in the file manager', () => {
+  it('reveals the project directory in the file manager', async () => {
     // The button routes through the shared revealOrOpen helper (so a failed
     // reveal surfaces the shared message instead of dead-clicking), which calls
     // api.revealPath with the explicit 'reveal' action. The label is the shared
     // platform-aware wording — generic here, with no gateway platform seeded.
     mount()
-    fireEvent.click(within(header()).getByLabelText('Show in file manager'))
+    await act(async () => { fireEvent.click(within(header()).getByLabelText('Show in file manager')) })
     expect(H.api.revealPath).toHaveBeenCalledWith(DIR, 'reveal')
   })
 

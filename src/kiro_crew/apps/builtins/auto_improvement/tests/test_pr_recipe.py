@@ -688,6 +688,7 @@ class TestEveryPushPathScansContent:
                 ["git", "-C", str(tmp_path), *args],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env=env,
                 cwd=str(tmp_path),
             )
@@ -974,6 +975,7 @@ class TestAFailedDiffIsNeverVacuouslyClean:
             ["git", "-C", str(tmp_path), "diff", "no-such-branch..HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=str(tmp_path),
         )
         assert proc.returncode != 0
@@ -1015,6 +1017,7 @@ class TestCloneCannotReachTheRemoteAtAll:
             ["git", "-C", str(work), "remote", "get-url", "origin"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         ).stdout.strip()
         assert "DISABLED" in fetch.upper(), "the FETCH url is a live push target"
@@ -1023,19 +1026,25 @@ class TestCloneCannotReachTheRemoteAtAll:
             ["git", "-C", str(work), "push", "origin", "HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         )
         by_url = subprocess.run(
             ["git", "-C", str(work), "push", fetch, "HEAD:refs/heads/probe"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         )
         assert by_name.returncode != 0
         assert by_url.returncode != 0
         # The decisive assertion: nothing reached the remote.
         branches = subprocess.run(
-            ["git", "-C", str(up), "branch"], capture_output=True, text=True, cwd=cwd
+            ["git", "-C", str(up), "branch"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd,
         ).stdout.strip()
         assert branches == "", f"a push escaped the sandbox: {branches!r}"
 
@@ -1099,7 +1108,11 @@ class TestTrustedPublisherStillWorksAfterNeutralizing:
         ok, note = recipe._push_fix_branch(branch="auto-improvement/bug-abc123")
         assert ok is True, note
         branches = subprocess.run(
-            ["git", "-C", str(up), "branch"], capture_output=True, text=True, cwd=cwd
+            ["git", "-C", str(up), "branch"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd,
         ).stdout
         assert "auto-improvement/bug-abc123" in branches
 
@@ -1266,6 +1279,7 @@ class TestPushedBranchActuallyContainsTheFix:
             ["git", "-C", str(up), "show", "auto-improvement/bug-abc:a.txt"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         ).stdout
         assert got.strip() == "FIXED", f"the drafted branch does not carry the fix: {got!r}"
@@ -1289,6 +1303,7 @@ class TestPushedBranchActuallyContainsTheFix:
             ["git", "-C", str(up), "show", "staged-probe:a.txt"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         ).stdout
         assert got.strip() == "original", "staging alone must not be mistaken for a commit"

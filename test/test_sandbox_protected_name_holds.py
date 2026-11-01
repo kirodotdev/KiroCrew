@@ -324,7 +324,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
     #:
-    #: One more root-level leaf, three more entries per tier:
+    #: One more root-level directory, three entries per tier:
     #:
     #: * ``gateway_id`` -- the id the Remote Crew cycle guard compares, sealed
     #:   read-only so an agent cannot choose whether a chaining loop is detected.
@@ -434,7 +434,15 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   beside writable siblings, so no enclosing directory mask can hold it and
     #:   leaf-only is the only hold available. The pointer is published by a rename
     #:   INSIDE it, so the directory's own inode stays the same on a republish.
-    EXPECTED: dict[str, int] = {"standard": 310, "cc": 317, "strict": 318}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``released-sessions`` -- the gateway's pending deletes of released
+    #:   engine records. An entry has the gateway delete the record it names, so
+    #:   a forged one would delete a conversation. It sits at the root, masked,
+    #:   rather than under the sandbox read-write ``trust/``, and is leaf-only for
+    #:   the reason ``panel-dismissals`` is.
+    EXPECTED: dict[str, int] = {"standard": 313, "cc": 320, "strict": 321}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

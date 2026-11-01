@@ -654,10 +654,11 @@ def test_scoped_runner_self_test_passes():
     script = REPO_ROOT / "scripts" / "run_scoped_tests.py"
     assert script.is_file(), "scripts/run_scoped_tests.py is missing"
     proc = subprocess.run(
-        [sys.executable, str(script), "--test"],
+        [sys.executable, "-X", "utf8", str(script), "--test"],
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert proc.returncode == 0, (

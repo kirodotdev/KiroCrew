@@ -366,7 +366,7 @@ describe('PackAvatar failure reporting', () => {
     render(<PackAvatar id="aurora" state="idle" size={40} onError={onError} />)
 
     const img = (await screen.findByTestId('pack-avatar-svg')).querySelector('img')!
-    img.dispatchEvent(new Event('error'))
+    act(() => { img.dispatchEvent(new Event('error')) })
     await waitFor(() => expect(onError).toHaveBeenCalled())
   })
 })
@@ -395,12 +395,12 @@ describe('PackAvatar animation is bounded by visibility', () => {
     await screen.findByTestId('pack-avatar-sprite')
 
     const observer = ManualObserver.instances.at(-1)!
-    observer.fire(true)
+    act(() => observer.fire(true))
     await waitFor(() =>
       expect(screen.getByTestId('sprite-stub').getAttribute('data-playing')).toBe('true'),
     )
 
-    observer.fire(false)
+    act(() => observer.fire(false))
     await waitFor(() =>
       expect(screen.getByTestId('sprite-stub').getAttribute('data-playing')).toBe('false'),
     )
@@ -471,7 +471,7 @@ describe('PackAvatar animation is bounded by visibility', () => {
     render(<PackAvatar id="aurora" state="working" size={40} fallback={<i data-testid="fallback" />} />)
     await screen.findByTestId('lottie-stub', undefined, metaThenWholeRead())
     const first = ManualObserver.instances.at(-1)!
-    first.fire(true)
+    act(() => first.fire(true))
     await waitFor(() =>
       expect(screen.getByTestId('pack-avatar-lottie').getAttribute('data-pack-playing')).toBe('true'),
     )
@@ -485,9 +485,9 @@ describe('PackAvatar animation is bounded by visibility', () => {
     const box = await screen.findByTestId('pack-avatar-lottie', undefined, metaThenWholeRead())
     const second = ManualObserver.instances.at(-1)!
     expect(second).not.toBe(first)
-    second.fire(false)
+    act(() => second.fire(false))
     await waitFor(() => expect(box.getAttribute('data-pack-playing')).toBe('false'))
-    second.fire(true)
+    act(() => second.fire(true))
     await waitFor(() => expect(box.getAttribute('data-pack-playing')).toBe('true'))
   })
 

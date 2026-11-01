@@ -593,7 +593,13 @@ def test_the_handlers_package_does_not_import_the_mint_engine():
         "import sys; import kiro_crew.dashboard.handlers;"
         " print('MINT' if 'kiro_crew.connections.mint' in sys.modules else 'CLEAN')"
     )
-    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=180)
+    out = subprocess.run(
+        [sys.executable, "-X", "utf8", "-c", probe],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=180,
+    )
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().endswith("CLEAN"), out.stdout
 
@@ -867,10 +873,18 @@ def test_row_tokens_do_not_repeat_across_a_gateway_restart():
         "from kiro_crew.connections.mint import _new_mint_token as t; print(t())"
     )
     first = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+        [sys.executable, "-X", "utf8", "-c", probe],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     ).stdout.strip()
     second = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+        [sys.executable, "-X", "utf8", "-c", probe],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     ).stdout.strip()
 
     assert first and second and first != second

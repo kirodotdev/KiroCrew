@@ -1118,6 +1118,40 @@ class TestNewConversation:
         assert runtime.create_session.await_args.kwargs["session_key"] == "slot:owner"
 
     @pytest.mark.asyncio
+    async def test_the_fresh_conversation_keeps_the_delete_delay(self):
+        """A pooled worker sets the delay once; every later conversation inherits it."""
+        old = _make_handle(session_id="old-session-1")
+        old.delete_delay_secs = 1800.0
+        runtime, new_handle = self._runtime_with_new_session()
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        assert new_handle.delete_delay_secs == 1800.0
+
+    def test_the_workflow_provider_passes_the_delete_delay_to_its_session(self):
+        """A workflow worker holds an ``AcpProvider``; only its shared-runtime client
+        can release a session, and the per-session client ends its sessions as before."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        handle = _make_handle()
+        provider = AcpProvider.__new__(AcpProvider)
+        provider._client = AcpSessionProvider(handle, _make_runtime())
+        provider.set_delete_delay(1800)
+        assert handle.delete_delay_secs == 1800.0
+
+        provider._client = MagicMock(spec=[])
+        provider.set_delete_delay(1800)
+
+    def test_set_delete_delay_reaches_the_handle(self):
+        handle = _make_handle()
+        provider = AcpSessionProvider(handle, _make_runtime())
+        provider.set_delete_delay(-5)
+        assert handle.delete_delay_secs == 0.0
+        provider.set_delete_delay(1800)
+        assert handle.delete_delay_secs == 1800.0
+
+    @pytest.mark.asyncio
     async def test_destroys_old_session_to_free_context(self):
         old = _make_handle(session_id="old-session-1")
         runtime, _ = self._runtime_with_new_session()

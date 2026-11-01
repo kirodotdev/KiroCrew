@@ -120,7 +120,7 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
                     {isDeleted && <span className="ml-1.5 text-muted text-[11px]">{i18nT('components.executionsView.deleted')}</span>}
                   </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtTime(e.started_at)}</td>
-                  <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{e.status === 'timeout' ? '…' : fmtDuration(e.duration_ms)}</td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtDuration(e.duration_ms)}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm"><span className="px-1.5 py-[1px] rounded text-[11px] bg-bg-elevated border border-border">{e.trigger}</span></td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted truncate max-w-[300px]">
                     <span className="flex items-center gap-1">

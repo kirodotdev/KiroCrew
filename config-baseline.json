@@ -37,6 +37,7 @@
         "deepseek_env": {},
         "strands_env": {},
         "strands_project": "",
+        "strands_project_sha256": "",
         "strands_provider": "bedrock",
         "strands_model": "auto",
         "sweep_agents_backups": false,
@@ -524,7 +525,21 @@
       "sensitive": false,
       "tags": [],
       "label": "Strands project",
-      "help": "The Strands Python project the 'strands' backend runs: the path of its agent.py, or of a folder holding one. Empty runs Kiro Crew's bundled minimal project. Either way Kiro Crew loads it through its own gate module, which makes every Strands Agent the project builds ask Kiro Crew before each tool call, so a project needs no change of its own. Its imports must be installed in the Python environment Kiro Crew runs Strands with. Takes effect for new Strands sessions. Ignored by every other backend.",
+      "help": "The Strands Python project the 'strands' backend runs: the path of its agent.py, or of a folder holding one. Empty runs Kiro Crew's bundled minimal project. Either way Kiro Crew loads it through its own gate module, which makes every Strands Agent the project builds ask Kiro Crew before each tool call, so a project needs no change of its own. Its imports must be installed in the Python environment Kiro Crew runs Strands with. A project of yours runs only as the version recorded in agent.strands_project_sha256. Takes effect for new Strands sessions. Ignored by every other backend.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "agent.strands_project_sha256",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Strands project fingerprint",
+      "help": "The fingerprint of the agent.strands_project version you confirmed: a sha256 over every file in the project's folder. The project's code runs with your provider keys and outside the tool gate, so a Strands session on your project starts only when the folder still matches it; a refused session prints the current value and the command that records it. Set it yourself after reviewing the files (kirocrew config set agent.strands_project_sha256 <value>); Kiro Crew never records it on its own. Packages the project imports from outside its folder are not covered. Ignored for the bundled project and by every other backend.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -1803,6 +1818,7 @@
         "eager_spawn": true,
         "archive_retention_days": 30,
         "file_changes_keep_turns": 0,
+        "kas_delete_delay_secs": 0,
         "watchdog_rss_max_mb": 4096,
         "reconcile_max_kills": 5
       }
@@ -2000,6 +2016,20 @@
       "tags": [],
       "label": "File-Change Copies Kept (turns)",
       "help": "How many of a dashboard chat's most recent file-changing turns keep the before and after copies their file-change card diffs. An older turn keeps its file list, and the rows that held its copies are written to the session archive first. 0, the default, keeps every turn's copies.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "session.kas_delete_delay_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS Session Record Delete Delay (seconds)",
+      "help": "On the kas backend, seconds a task-runner session's record, and a reused workflow worker's previous conversation, stay on disk after the session ends before Kiro Crew deletes them. The session leaves the engine's memory when it ends either way. 0 (the default) deletes the record when the session ends. Incognito and temporary sessions are deleted when they end whatever this says. A record that comes due while another backend is selected waits until kas is selected again. Other backends ignore it.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0

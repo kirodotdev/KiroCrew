@@ -54,7 +54,7 @@ def _register_connections_warm_lifecycle(app: web.Application, state: DashboardS
 
 
 def _kick_connections_warm_scavenge(state: DashboardState) -> None:
-    """Start the crash-residue scavenge as a tracked background task, post-bind.
+    """Start the retired-endpoint migration and the crash-residue scavenge, post-bind.
 
     Called by both gateway entrypoints only after ``_start_site`` has returned, so the
     listener is already accepting requests. The deferred ``connections.warm`` import
@@ -63,8 +63,13 @@ def _kick_connections_warm_scavenge(state: DashboardState) -> None:
     """
 
     def _scavenge_in_thread() -> None:
+        # First, move any card entry off an endpoint the registry retired, so the
+        # warm pool and the card read the current URL. Its own failure is logged
+        # inside and never skips the scavenge.
+        from kiro_crew.connections.endpoint_migration import migrate_retired_endpoints
         from kiro_crew.connections.warm import scavenge_warm_mint_artifacts
 
+        migrate_retired_endpoints()
         scavenge_warm_mint_artifacts()
 
     async def _connections_warm_scavenge() -> None:

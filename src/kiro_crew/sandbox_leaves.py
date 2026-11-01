@@ -372,6 +372,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # it and the mask would be vacuous for the life of that sandbox, which is
     # precisely the disposition this entry exists to deny.
     "panel-dismissals",
+    # Released sessions whose records wait for deletion (``released_sessions``):
+    # each entry has the gateway delete the record it names, so a sandboxed writer
+    # could forge deletes or drop them. Created on the first release, so it is in
+    # ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too, and in ``_CREW_NO_ALIAS_LEAVES``.
+    "released-sessions",
     # Crewmate teams (``crew_teams.py``): which crewmates are on which team. The
     # same shape as ``crew-panels`` and for the same reason it is not under
     # ``trust/``: a team is the OWNER's grouping, so the crewmates it groups must

@@ -134,10 +134,16 @@ def pre_tool_match_names(
     when the harness stated no id, so a spec hook keeps matching the title.
     """
     # circular import: spec_hooks imports kiro_crew.hooks at load time.
-    from kiro_crew.agent_sdk.spec_hooks import spec_hook_tool_names
+    from kiro_crew.agent_sdk.spec_hooks import envelope_named_tool_id, spec_hook_tool_names
 
     harness_names = spec_hook_tool_names(harness_tool_id) or ()
     trusted = [*harness_names, tool_identity]
+    if mcp_server and tool_identity and envelope_named_tool_id(harness_tool_id):
+        # On a harness whose ids come only from Crew's gate envelope, an MCP
+        # server's tool is named by its MCP forms alone: its bare name
+        # (``web_fetch`` on ``@docs/web_fetch``) is not the built-in a spec hook
+        # written for ``web_fetch`` means.
+        trusted = [*harness_names]
     if mcp_server and tool_identity:
         trusted += [f"@{mcp_server}/{tool_identity}", f"mcp__{mcp_server}__{tool_identity}"]
     every = tuple(dict.fromkeys(n for n in [title, *trusted] if n))

@@ -590,7 +590,7 @@ class TestConnectionsWarmLifecycle:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from kiro_crew.connections import warm
+        from kiro_crew.connections import endpoint_migration, warm
 
         calls: list[str] = []
         scavenge_started = asyncio.Event()
@@ -614,6 +614,11 @@ class TestConnectionsWarmLifecycle:
         # the gateway boot path, so this module's globals never hold them.
         monkeypatch.setattr(warm, "scavenge_warm_mint_artifacts", _scavenge)
         monkeypatch.setattr(warm, "shutdown_warm_mint", _shutdown)
+        monkeypatch.setattr(
+            endpoint_migration,
+            "migrate_retired_endpoints",
+            lambda: calls.append("migrate") or [],
+        )
         monkeypatch.setattr(asyncio, "to_thread", _to_thread)
         app = web.Application()
         state = _state()
@@ -635,7 +640,9 @@ class TestConnectionsWarmLifecycle:
         await asyncio.gather(*state._background_tasks)
         await cleanup(app)
 
-        assert calls == ["scavenge", "shutdown"]
+        # The migration runs first, in the same worker thread, so the warm pool
+        # and the card read the current endpoint.
+        assert calls == ["migrate", "scavenge", "shutdown"]
 
     def test_both_gateway_modes_register_the_same_lifecycle(self) -> None:
         registration = "_register_connections_warm_lifecycle(app, state)"
