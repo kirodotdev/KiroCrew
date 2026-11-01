@@ -35,11 +35,16 @@ import {
   readDismissedUndoKey, persistDismissedUndoKey, POLL_MS, sleep, filterStepMarkers, syncFailureTail,
   _activeSyncPolls, awaitGatewayBackGlobal, type Worktree, type UndoTarget, type FleetData, type SyncRun,
   type ProvRun, type RebaseResult, type PruneDialog, type PruneProgress,
+  channelWorktreeName, channelForRow, channelNameTakenFor, channelErrorFor, channelPlaceholderFor,
 } from './devFleetPageModel'
 import {
   ProvLogPre, iconLabel, PodReadout, DetailPanel, DevFleetRowActions, DevFleetSyncStepper,
   DevFleetProvStepper,
 } from './DevFleetPageRow'
+import {
+  ReleaseChannelBadge, ReleaseChannelPrCell, ReleaseChannelBehindCell, ReleaseChannelReservedName,
+  ReleaseChannelRowError, ReleaseChannelPlaceholder, ReleaseChannelCreateError,
+} from './DevFleetPageReleaseChannel'
 import { DevFleetPruneReview, DevFleetPruneProgress } from './DevFleetPagePrune'
 import { DevFleetPageNotices } from './DevFleetPageNotices'
 export { gatewayRecovered, pruneVerdictLabel, PRUNE_STATUS_META } from './devFleetPageModel'
@@ -213,6 +218,21 @@ export default function DevFleetPage() {
   }, [refetchFleetFresh, queryClient])
 
   const [busy, setBusy] = useState<Record<string, boolean>>({})
+  // The release-channel Create gets its OWN flag rather than a prefixed key in
+  // `busy`. The create path has no worktree yet, so there is no name to key on —
+  // and a synthetic prefixed name would collide with the row namespace `busy`
+  // uses for every other action. One flag, not a map: the backend publishes
+  // exactly one `release_channel`, so there is one placeholder row and one
+  // Create to be in flight.
+  const [rcBusy, setRcBusy] = useState(false)
+  // A failed Create. It is an outcome the operator must act on — the backend
+  // refused (name held by a branch, unresolvable tip, provenance mismatch) or
+  // the request never landed — and the fleet refetch that follows carries no
+  // trace of it: the placeholder row comes back exactly as before, worktree
+  // still uncreated. A toast would take the diagnosis and the agent hand-off
+  // with it, so the text stays on the row (through ErrorNotice, like
+  // `rebaseResult`) until the operator retries or dismisses it.
+  const [releaseChannelCreateError, setReleaseChannelCreateError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [detail, setDetail] = useState<Record<string, any>>({})
@@ -731,12 +751,13 @@ export default function DevFleetPage() {
     finally { setFlag(name + ':remove', false) }
   }
 
-  // Normalize a failed POST /sync into the shape the caller below already
-  // handles. The single-flight refusal is an HTTP 409 whose body names the run
-  // already in flight, so it arrives as a thrown error and never as a returned
-  // body — which is what left the `!ok && run_id` branch below unreachable.
-  // Every other status is a real failure carrying its message.
-  function syncPostFailure(e: unknown): { ok: false; run_id?: string; error: string } {
+  // Normalize a failed POST that starts a run (/sync, /release-channel/create)
+  // into the shape the caller already handles. The single-flight refusal is an
+  // HTTP 409 whose body names the run already in flight, so it arrives as a
+  // thrown error and never as a returned body — which is what left the
+  // `!ok && run_id` branch below unreachable. Every other status is a real
+  // failure carrying its message.
+  function singleFlightPostFailure(e: unknown): { ok: false; run_id?: string; error: string } {
     let rid: unknown
     if (e instanceof ApiError && e.status === 409) {
       try { rid = (JSON.parse(e.body) as { run_id?: unknown })?.run_id } catch { /* not JSON */ }
@@ -751,7 +772,7 @@ export default function DevFleetPage() {
   async function syncMain() {
     setFlag('__syncmain', true)
     try {
-      const r = await api.post<{ ok?: boolean; run_id?: string; error?: string }>('/sync', {}).catch(syncPostFailure)
+      const r = await api.post<{ ok?: boolean; run_id?: string; error?: string }>('/sync', {}).catch(singleFlightPostFailure)
       if (!r?.ok && r?.run_id) {
         // Sync already running — reattach to the in-flight run instead of erroring.
         // A second press is a user who cannot see the run, so an error toast would
@@ -779,6 +800,106 @@ export default function DevFleetPage() {
       invalidateFleet()
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setFlag(name + ':rebase', false) }
+  }
+
+  // Create the release-channel worktree. No confirm step: Create is reversible by
+  // Remove, and the dialog's body was the Create button's own tooltip repeated
+  // back — so it asked the operator to read the same sentence twice and click
+  // again to do what they just clicked. Nothing here MOVES an existing tree, so
+  // there is no destructive step for a confirm to guard.
+  //
+  // The POST only STARTS the create and answers with a run id: the fetch, the
+  // worktree add and the populate behind it take minutes, and the app proxy drops
+  // a request at 30 s, so the outcome is read from `/run?id=` like a provision's.
+  // A 409 whose body names a run is the single-flight refusal — a create already
+  // running, typically this page's own after a reload — and is attached to, not
+  // reported; every other refusal (`exists`, `ambiguous_name`) is decided before
+  // any run and arrives as a 409 with its message.
+  type CreateResult = { ok?: boolean; lane?: string; version?: string | null; ref?: string | null; error?: string }
+  async function createReleaseChannel() {
+    setRcBusy(true)
+    // A retry starts clean: the previous failure's notice describes an attempt
+    // this click supersedes.
+    setReleaseChannelCreateError(null)
+    try {
+      const started = await api.post<{ ok?: boolean; run_id?: string; error?: string }>('/release-channel/create', {}).catch(singleFlightPostFailure)
+      if (!started?.run_id) {
+        // A refusal is a 409 (and an unexpected git failure a 500) carrying
+        // `{ok: false, error}`, which the client raises as an ApiError whose message
+        // is that error text; a transport failure lands in the catch below with its
+        // own. Both get the same framing.
+        setReleaseChannelCreateError(frameCreateFailure(started?.error))
+        return
+      }
+      const r = await pollReleaseChannelCreate(started.run_id)
+      if (r === null) return  // the page is gone; the fleet row is the record now
+      // The next step is named by the CONTROL's own label, not as prose, so the
+      // words in the message are the words on the button and cannot drift from
+      // it. A fresh worktree always needs provisioning, so this half is
+      // unconditional. One key carries the whole sentence, with the label as a
+      // placeholder, so each locale orders and punctuates it its own way.
+      if (r?.ok) notify(i18nT('pages.devFleetPage.release_channel_created', { lane: r.lane || '', ref: r.version || r.ref || '?', action: i18nT('pages.devFleetPage.provision') }), { type: 'success' })
+      else setReleaseChannelCreateError(frameCreateFailure(r?.error))
+    } catch (e: unknown) {
+      setReleaseChannelCreateError(frameCreateFailure((e as Error)?.message || String(e)))
+    } finally {
+      // Refetch whatever happened: a refusal such as `exists` means the fleet has
+      // a row this page has not seen yet, and a finished run means a new row.
+      invalidateFleet()
+      setRcBusy(false)
+    }
+  }
+
+  // Poll one create run to its terminal state and return its result. The run
+  // record carries `result` (the dict the create returned) once `status` leaves
+  // `running`; a record with no result ended by exception or shutdown, and its
+  // last output line is the only account of why. A 404 means the gateway
+  // restarted and dropped the run registry: the create may or may not have
+  // landed, so the receipt is lost and the FLEET decides (`lostCreateReceipt`).
+  // Stops at an unmount (`null`), like the provision loop: the create runs on
+  // server-side regardless, and the row it adds is what the next mount shows.
+  async function pollReleaseChannelCreate(rid: string): Promise<CreateResult | null> {
+    for (let i = 0; i < 900; i++) {
+      await sleep(2000)
+      if (!pollAliveRef.current) return null
+      let run: { status?: string; exit_code?: number | null; output?: string[]; result?: CreateResult } | null = null
+      try { run = await api.get('/run?id=' + rid) } catch (e) {
+        if ((e as { status?: number })?.status === 404) return lostCreateReceipt()
+        continue
+      }
+      if (!run || run.status === 'running') continue
+      if (run.result) return run.result
+      const out = run.output || []
+      return { ok: false, error: out.length ? out[out.length - 1] : (run.status || 'failed') }
+    }
+    return lostCreateReceipt()
+  }
+
+  // The run registry is process-local, so a restart between the create's
+  // `worktree move` and the next poll loses the receipt of a create that
+  // LANDED. Reporting that as a failure put the new row on the page under a
+  // notice saying it could not be created. The fleet is the record that
+  // survives the restart: a rebuilt payload whose channel row carries a
+  // `worktree` is the create's success, and only a payload with no adopted tree
+  // is a loss worth telling the operator about. A fleet read that fails here
+  // stays a loss: nothing has been proven either way.
+  async function lostCreateReceipt(): Promise<CreateResult> {
+    let fresh: FleetData | null = null
+    try { fresh = await api.get<FleetData>('/fleet?fresh=1') } catch { fresh = null }
+    const rc = fresh?.release_channel
+    if (rc?.worktree) return { ok: true, lane: rc.lane, version: rc.version ?? null, ref: rc.ref ?? null }
+    return { ok: false, error: i18nT('pages.devFleetPage.release_channel_create_run_lost') }
+  }
+
+  // The backend string is a CAUSE, not a message: git/resolver text alone tells
+  // the operator what failed internally but not what did not happen. Framed the
+  // same way `restart_failed` and `make_live_failed` are in this file, so the
+  // notice reads as an outcome with a reason. NOT a toast: the fleet refetch
+  // re-renders the placeholder unchanged, so a toast was the only record of why
+  // the worktree is still missing, and it self-dismissed.
+  function frameCreateFailure(cause: string | undefined): string {
+    const head = i18nT('pages.devFleetPage.release_channel_create_failed')
+    return cause ? `${head}: ${cause}` : head
   }
 
   async function pruneShipped() {
@@ -1094,9 +1215,18 @@ export default function DevFleetPage() {
     if (s === 'CLOSED') return 3
     return 2 // unknown state — rank with the PR-less rows
   }
+  // A channel that will not resolve says so ON ITS ROW, and that is the only
+  // place it says it. There is deliberately no page-level notice: this arrives on
+  // the 12s fleet poll rather than from a button, so an error-level toast fired
+  // on every checkout that has no `v*` tags at all — a shallow clone, a fork
+  // before its first release — for a feature that operator never opened.
+  const releaseChannel = fleet?.release_channel || null
+  const channelWorktree = channelWorktreeName(releaseChannel)
   const mainRows = wts.filter((w) => w.is_main)
   const legacyAll = wts.filter((w) => !w.is_main && w.legacy)
-  const others = wts.filter((w) => !w.is_main && matchesRow(w) && (showLegacy || !w.legacy))
+  const selectable = wts.filter((w) => !w.is_main && matchesRow(w) && (showLegacy || !w.legacy))
+  const channelRows = selectable.filter((w) => w.name === channelWorktree)
+  const others = selectable.filter((w) => w.name !== channelWorktree)
   others.sort((a, b) => sortBy === 'name'
     ? compareText(a.name, b.name)
     : sortBy === 'recent'
@@ -1104,7 +1234,13 @@ export default function DevFleetPage() {
       : sortBy === 'behind'
         ? ((b.behind || 0) - (a.behind || 0)) || compareText(a.name, b.name)
         : (statusRank(a) - statusRank(b)) || (prRank(a) - prRank(b)) || compareText(a.name, b.name))
-  const visible = [...mainRows, ...others]
+  // The channel row holds a FIXED position under `main` instead of joining the
+  // sort. Every sort key on offer describes feature-branch progress — recency,
+  // commits behind main, PR state — and a release worktree scores badly on all of
+  // them by design, so under `recent` it would sink below every active branch and
+  // under `behind` it would top the list for a distance that is not a backlog.
+  const pinnedRows = [...mainRows, ...channelRows]
+  const channelPlaceholder = channelPlaceholderFor(releaseChannel, wts)
 
   const reviewState = (w: Worktree) => {
     if (!w.pr) return null
@@ -1158,6 +1294,14 @@ export default function DevFleetPage() {
     const isMainWithStepper = w.is_main && syncRun
     const pr = prov[w.name]
     const provActive = !w.is_main && !!pr
+    // The three ways this row can relate to the release channel, each decided by
+    // the BACKEND's classification rather than by the row's name: it IS the pin,
+    // it merely occupies the reserved name with a branch checkout, or its git
+    // state could not be read (folded with the adopted resolver failure into one
+    // error surface).
+    const channel = channelForRow(releaseChannel, w)
+    const channelNameTaken = w.is_main ? undefined : channelNameTakenFor(releaseChannel, w.name)
+    const channelErr = channelErrorFor(releaseChannel, w)
     return (
       <div key={w.name}>
         <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--border)', minHeight: 30, minWidth: 640 } as CSSProperties}>
@@ -1179,6 +1323,11 @@ export default function DevFleetPage() {
             {w.is_main ? (fleet?.base_branch && w.branch && w.branch !== fleet.base_branch
               ? <Badge variant="warn" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.the_primary_checkout_is_on_branch_not_base', { branch: w.branch, base: fleet.base_branch })}>{i18nT('pages.devFleetPage.parked_on_branch', { branch: w.branch })}</Badge>
               : <span style={mut}>{i18nT('pages.devFleetPage.main')}</span>) : null}
+            {/* The release-channel pin's currency, and — on a row that merely
+                occupies the reserved name — the sentence saying so. Both are
+                keyed off the backend's classification, never the row's name. */}
+            {channel ? <ReleaseChannelBadge rc={channel} /> : null}
+            {channelNameTaken ? <ReleaseChannelReservedName rc={channelNameTaken} name={w.name} /> : null}
             {/* live_verified false: the pointer names this row but a packaged gateway
                 cannot confirm it runs this checkout, so the badge asks, not asserts,
                 and the reason is visible text rather than a hover-only tooltip. */}
@@ -1211,8 +1360,8 @@ export default function DevFleetPage() {
             toggleProvLog={toggleProvLog}
           /> : (
             <>
-              {rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>{"\u2014"}</span>}
-              <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? i18nT('pages.devFleetPage.commits_behind_main_2', { count: w.behind ?? 0 }) : i18nT('pages.devFleetPage.up_to_date_with_main')}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
+              {channel ? <ReleaseChannelPrCell /> : rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>{"\u2014"}</span>}
+              {channel ? <ReleaseChannelBehindCell /> : <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? i18nT('pages.devFleetPage.commits_behind_main_2', { count: w.behind ?? 0 }) : i18nT('pages.devFleetPage.up_to_date_with_main')}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>}
               <span style={{ ...mut, opacity: 0.85 }}>{relTime(w.last_updated_at).replace(' ago', '')}</span>
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', minWidth: 0, flexWrap: 'wrap' } as CSSProperties}><DevFleetRowActions
                 w={w} fleet={fleet} busy={busy} rebaseResult={rebaseResult} syncRun={syncRun}
@@ -1221,11 +1370,13 @@ export default function DevFleetPage() {
                 dismissRebaseResult={dismissRebaseResult} act={act} launchQa={launchQa}
                 provision={provision} syncMain={syncMain} rebaseWorktree={rebaseWorktree}
                 restartGateway={restartGateway} makeLive={makeLive} podsAvailable={podsAvailable}
+                isReleaseChannel={!!channel}
               /></div>
             </>
           )}
         </div>
         {renderRebaseFailure(w)}
+        {channelErr ? <ReleaseChannelRowError rc={channelErr} /> : null}
         {w.is_main && syncRun && syncLogOpen ? (
           <pre style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all', minWidth: 640 } as CSSProperties}>{filterStepMarkers(syncRun.lines || []).join('\n') || '(no output yet)'}</pre>
         ) : null}
@@ -1292,7 +1443,29 @@ export default function DevFleetPage() {
           testId="fleet-live-state-unknown"
         />
       )}
-      {columnHeader}{visible.map(renderRow)}{legacyToggle}
+      {/* Order: main, the adopted channel row, the un-created channel
+          placeholder, then the sorted feature worktrees. The placeholder sits
+          WITH the channel row rather than at the end so the channel reads as one
+          group. */}
+      {columnHeader}{pinnedRows.map(renderRow)}
+      {channelPlaceholder ? (
+        <ReleaseChannelPlaceholder
+          rc={channelPlaceholder}
+          busy={rcBusy}
+          onCreate={() => { void createReleaseChannel() }}
+        />
+      ) : null}
+      {/* Beside the channel group, OUTSIDE the placeholder: the refetch after a
+          refused Create may replace the placeholder with the adopted row (a stale
+          tab's `exists`), and the notice has to outlive that swap. */}
+      {releaseChannel ? (
+        <ReleaseChannelCreateError
+          lane={releaseChannel.lane}
+          error={releaseChannelCreateError}
+          onDismiss={() => setReleaseChannelCreateError(null)}
+        />
+      ) : null}
+      {others.map(renderRow)}{legacyToggle}
     </div>
   )
 
@@ -1355,7 +1528,22 @@ export default function DevFleetPage() {
                 <div className="flex-1 min-w-[140px]">
                   <SearchInput placeholder={i18nT('pages.devFleetPage.filter_worktrees')} value={q} onChange={(e) => setQ((e.target as HTMLInputElement).value)} aria-label={i18nT('pages.devFleetPage.filter_worktrees_2')} />
                 </div>
-                <span style={{ fontSize: 11.5, color: 'var(--muted)', flexShrink: 0 }}>{ql ? others.length + ' / ' : ''}{wts.length} {i18nT('pages.devFleetPage.rows')}</span>
+                {/* With a release-channel placeholder on the table, this label
+                    names BOTH populations instead of one total: "3 rows" beside a
+                    "Worktrees (2)" heading and a WORKTREES card of 2 read as a
+                    miscount, because the eye counts three lines and the page says
+                    two. So the label says what the third line is — "2 worktrees ·
+                    1 to create" — and the heading and stat card stay on
+                    wts.length: a placeholder is an offer to create a worktree,
+                    not a worktree. With no placeholder every line is a worktree
+                    and the plain "N rows" total stands. The filter NUMERATOR
+                    counts `selectable`, not `others`: the channel row is pinned
+                    under main rather than sorted with the feature rows, so a
+                    numerator read off `others` alone showed "0 / 3" for a filter
+                    that matched the one visible channel row. */}
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', flexShrink: 0 }}>{ql ? selectable.length + ' / ' : ''}{channelPlaceholder
+                  ? i18nT('pages.devFleetPage.rows_pending', { count: wts.length, pending: 1 })
+                  : <>{wts.length} {i18nT('pages.devFleetPage.rows')}</>}</span>
                 <SimpleSelect
                   options={['status', 'recent', 'name', 'behind']}
                   optionLabels={[

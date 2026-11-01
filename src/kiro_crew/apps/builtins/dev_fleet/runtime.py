@@ -41,6 +41,32 @@ def _redact(text: str) -> str:
     return text
 
 
+#: How much of a git child's stderr a row's ``error`` keeps. One figure for every
+#: owner; no caller wants another, so there is no knob for one.
+_ERROR_DETAIL_LIMIT = 200
+
+
+def _error_detail(text: str | None) -> str:
+    """A git child's stderr as the bounded, display-safe tail of a result string.
+
+    The release-channel owners that turn a failed git command into a row's ``error``
+    do the same three things -- strip, scrub, cut to a readable length -- and this is
+    that sequence spelled once for them (``worktree_ops_removal`` predates it and
+    keeps its own 300-character spelling). The scrub is :func:`_redact`, applied HERE: this
+    module is the one classified for Dev Fleet's git-stderr-into-a-result path
+    (``NON_EGRESS_REDACTION_MODULES``), so an owner that builds its error text
+    through this helper adds no redaction call site of its own and needs no entry
+    in that list. The output path is unchanged -- the fleet payload and the app's
+    JSON replies -- and so is its classification.
+
+    Git stderr is the one input that needs this treatment at the owner: it is
+    unbounded and may quote a remote URL with credentials. A result's other strings
+    -- a path, a ref, a version -- are scrubbed where they leave the process, by the
+    route that serves them (``http_api.api_dev_fleet_run``), not by the owner.
+    """
+    return _redact((text or "").strip())[:_ERROR_DETAIL_LIMIT]
+
+
 def _redact_pr(pr: dict | None) -> dict | None:
     """Redact string display fields of a PR status dict (url, state, etc.)."""
     if not pr:
@@ -816,6 +842,106 @@ def _parse_step_marker(text: str) -> tuple[int | None, str | None]:
     return idx, label
 
 
+def _admit_run_locked(rid: str, label: str) -> None:
+    """Register a new ``running`` entry in ``_RUNS``. Caller holds ``_RUNS_LOCK``.
+
+    The one place a run record is born, for both kinds of run (a subprocess under
+    :func:`_start_run`, a coroutine under :func:`_start_task_run`), so the two cannot
+    drift in shape: ``/api/run`` reads the same keys off either.
+    """
+    # Bound memory: evict the oldest COMPLETED runs beyond the cap
+    # (running entries are never evicted — reattach depends on them).
+    done = sorted(
+        (k for k, v in _RUNS.items() if v.get("status") != "running"),
+        key=lambda k: _RUNS[k].get("started", 0.0),
+    )
+    for k in done[: max(0, len(done) - _RUNS_MAX_COMPLETED + 1)]:
+        _RUNS.pop(k, None)
+    _RUNS[rid] = {
+        "status": "running",
+        "exit_code": None,
+        "label": label,
+        "output": [],
+        "started": time.time(),
+    }
+
+
+async def _start_task_run(
+    label: str,
+    work: Callable[[], Awaitable[dict]],
+    *,
+    on_finish: Callable[[dict | None], None] | None = None,
+) -> str:
+    """Track an in-process coroutine as a run, in the registry ``/api/run`` serves.
+
+    The subprocess runs (:func:`_start_run`) exist because a sync or a provision
+    outlives the app proxy's request deadline, and this is the same answer for a
+    mutation this process performs ITSELF: a route starts the work, replies with
+    the run id at once, and the page polls ``/api/run?id=`` for the outcome. ``work``
+    is a factory, called on the worker task, so a run refused at admission never
+    creates a coroutine it would then have to close.
+
+    The record is the one :func:`_admit_run_locked` writes, plus ``result`` at the
+    terminal state: the dict ``work`` returned, verbatim. ``exit_code`` follows that
+    dict's ``ok`` (0 when true, 1 otherwise) so a reader that only knows the
+    subprocess shape still reads the outcome right; a raised exception or a
+    shutdown cancellation is ``-1`` with the reason as the last output line.
+
+    No watchdog of its own: every await in the work this is used for is already
+    bounded (git children carry per-command timeouts), and killing a coroutine
+    mid-mutation is what the work's own cancellation handling is for. Shutdown
+    reaches it the same way it reaches a subprocess run: the task is registered in
+    ``_ACTIVE_RUNS`` (with no process handle) and ``dev_fleet_cleanup`` cancels it.
+
+    ``on_finish`` receives the result dict at the terminal state, or ``None`` when
+    there is none (exception, cancellation). Cheap and synchronous; exceptions are
+    logged and never propagate into the worker's own bookkeeping.
+    """
+    rid = uuid.uuid4().hex[:12]
+    async with _RUNS_LOCK:
+        _admit_run_locked(rid, label)
+
+    async def worker() -> None:
+        result: dict | None = None
+        try:
+            result = await work()
+            async with _RUNS_LOCK:
+                _RUNS[rid]["status"] = "done"
+                _RUNS[rid]["exit_code"] = 0 if result.get("ok") else 1
+                _RUNS[rid]["result"] = result
+        except asyncio.CancelledError:
+            async with _RUNS_LOCK:
+                _RUNS[rid]["status"] = "done"
+                _RUNS[rid]["exit_code"] = -1
+                _RUNS[rid]["output"].append("[shutdown] run aborted: gateway stopping")
+            raise
+        except Exception as exc:  # noqa: BLE001
+            async with _RUNS_LOCK:
+                _RUNS[rid]["status"] = "done"
+                _RUNS[rid]["exit_code"] = -1
+                _RUNS[rid]["output"].append("[error] " + str(exc))
+        finally:
+            if on_finish is not None:
+                try:
+                    on_finish(result)
+                except Exception:  # noqa: BLE001
+                    logger.exception("run %s on_finish callback failed", rid)
+
+    task = asyncio.create_task(worker())
+    async with _SHUTDOWN_ADMISSION_LOCK:
+        if _SHUTDOWN_IN_PROGRESS:
+            # Cleanup has already snapshotted _ACTIVE_RUNS. The task has not had
+            # its first step yet, so cancelling it here means ``work()`` is never
+            # called, and the record it would have finished is dropped with it.
+            task.cancel()
+            async with _RUNS_LOCK:
+                _RUNS.pop(rid, None)
+            raise RuntimeError("dev-fleet shutdown in progress: run refused")
+        _ACTIVE_RUNS[rid] = (task, None)
+    task.add_done_callback(lambda _t: _ACTIVE_RUNS.pop(rid, None))
+    return rid
+
+
 async def _start_run(
     label: str,
     cmd: list[str],
@@ -844,21 +970,7 @@ async def _start_run(
     # every real cause on the sync path and raise NameError on a provision.
     run_kind = label
     async with _RUNS_LOCK:
-        # Bound memory: evict the oldest COMPLETED runs beyond the cap
-        # (running entries are never evicted — reattach depends on them).
-        done = sorted(
-            (k for k, v in _RUNS.items() if v.get("status") != "running"),
-            key=lambda k: _RUNS[k].get("started", 0.0),
-        )
-        for k in done[: max(0, len(done) - _RUNS_MAX_COMPLETED + 1)]:
-            _RUNS.pop(k, None)
-        _RUNS[rid] = {
-            "status": "running",
-            "exit_code": None,
-            "label": label,
-            "output": [],
-            "started": time.time(),
-        }
+        _admit_run_locked(rid, label)
 
     async def worker() -> None:
         proc: Any = None
@@ -1299,6 +1411,7 @@ __all__ = (
     "_TRUSTED_PATH",
     "_UNRESOLVED_TOOL_PREFIX",
     "_WINDOWS_SAFE_ENV_KEYS",
+    "_admit_run_locked",
     "_bin_override_var",
     "_build_env",
     "_build_path",
@@ -1317,6 +1430,7 @@ __all__ = (
     "_sanitized_npm_registry_env",
     "_sel",
     "_start_run",
+    "_start_task_run",
     "_toolchain_bin",
     "_trusted_bin",
     "_unresolved_tool_message",

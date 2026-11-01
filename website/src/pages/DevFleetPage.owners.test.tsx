@@ -63,10 +63,10 @@ describe('DevFleetPage facade', () => {
 })
 
 describe('DevFleetPage owners', () => {
-  it('are the five files beside the facade', () => {
+  it('are the six files beside the facade', () => {
     expect(owners).toEqual([
-      'DevFleetPageMenus.tsx', 'DevFleetPageNotices.tsx', 'DevFleetPagePrune.tsx', 'DevFleetPageRow.tsx',
-      'devFleetPageModel.ts',
+      'DevFleetPageMenus.tsx', 'DevFleetPageNotices.tsx', 'DevFleetPagePrune.tsx',
+      'DevFleetPageReleaseChannel.tsx', 'DevFleetPageRow.tsx', 'devFleetPageModel.ts',
     ])
   })
 

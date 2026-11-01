@@ -301,7 +301,54 @@ export interface Worktree {
   pod_resources?: PodResources | null
 }
 export interface UndoTarget { name: string; path: string }
-export interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; live_state_known?: boolean; live_verified?: boolean; manual_restart?: string; fleet_totals?: FleetTotals }
+// One published release channel and where its detached worktree sits.
+// `worktree` is non-null ONLY for a tree the backend is willing to drive as a
+// channel pin (it exists AND is detached), so this field — not the row's name —
+// is what decides whether a row gets channel treatment. `name_taken_by_branch`
+// is the third state: the reserved name is occupied by somebody's branch
+// checkout, so Create cannot run and the UI has to say why.
+export interface ReleaseChannel {
+  // The channel's name, for the sentences that name it on screen. Display data:
+  // no request carries it back, because there is exactly one channel and the
+  // endpoint takes no argument.
+  lane: string
+  // The basename this channel's worktree has or would have, supplied by the
+  // backend so the naming rule lives on ONE side of the boundary. Re-deriving
+  // it here would let a change to WORKTREE_NAME desync this label from the real
+  // path.
+  name: string
+  worktree?: string | null
+  ref?: string | null
+  // The release THIS ROW is on: on an adopted row the one its tree actually
+  // holds, on a placeholder the one Create would check out. `tip_version` is
+  // always the channel's resolved tip, so a behind row names both without
+  // either being ambiguous — and a `null` version on an adopted row is a real
+  // state (the tree is detached at no release tag), not a missing value to fill
+  // in from the tip.
+  version?: string | null
+  tip_version?: string | null
+  // A benign, documented state kept apart from `error`: this checkout has
+  // fetched no release tag yet. It renders as ordinary information and leaves
+  // Create enabled, because Create fetches first and a fetch is what resolves
+  // it. `error` stays reserved for a genuine git failure, which reaches the
+  // shared ErrorNotice.
+  unpublished?: boolean
+  error?: string | null
+  // At-tip is a boolean, not a distance: the payload carries no channel-tip
+  // commit count, because every rendering of one (`↓3`, `↓3 tip`, a second
+  // denominator in the Behind column) left two cells in one column meaning two
+  // things. The row states currency by naming both versions instead.
+  at_tip?: boolean | null
+  // On an adopted row a `null` version means one of TWO things, and the badge must
+  // not say the stronger one when only the weaker is known. `false`: the tree is
+  // detached at no published release — the positive answer, "not on a release".
+  // `true`: the probe that reads the tree's release failed (a timed-out or
+  // unreadable `--points-at` listing); the row carries the error and the badge
+  // says the version is unknown, asserting nothing about a tree nobody read.
+  version_unknown?: boolean
+  name_taken_by_branch?: boolean
+}
+export interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; live_state_known?: boolean; live_verified?: boolean; manual_restart?: string; fleet_totals?: FleetTotals; release_channel?: ReleaseChannel | null }
 // `lastIsCause` distinguishes the two things `last` can hold. A gateway-composed
 // diagnosis is decision-critical prose ending in the action to take, so it must
 // not render in the muted 11.5px monospace the raw log tail uses.
@@ -314,3 +361,100 @@ export interface RebaseResult { kind: 'ok' | 'conflict' | 'error'; text: string 
 
 export type PruneDialog = { candidates: { name: string; code?: string; unmerged_commits?: boolean }[]; kept: { name: string; code?: string; dirty?: boolean; dirty_tracked?: boolean | null; dirty_untracked?: number; dirty_untracked_paths?: string[] }[]; scanned: number }
 export type PruneProgress = { names: string[]; items: Record<string, { status: string; error?: string | null }>; done: number; total: number; running: boolean }
+
+/* ─── Release channel row classification ─── */
+// Which row (if any) a `release_channel` payload describes is decided HERE, in
+// one React-free place, so the page, the row cells and the tests all read the
+// same rules. Every helper takes the payload explicitly and returns the channel
+// it applies to (or null/undefined), so a caller cannot accidentally treat a
+// row as a channel pin because its NAME looks like one.
+
+/** The adopted channel worktree's name, or null when no tree is adopted. */
+export function channelWorktreeName(rc: ReleaseChannel | null | undefined): string | null {
+  return rc?.worktree || null
+}
+
+/**
+ * The channel this row IS, or undefined.
+ *
+ * Adopted only. A row is a channel pin because the BACKEND says its tree is
+ * detached at a resolved ref, never because its name looks like one — so a
+ * user's own `release-channel-stable` branch checkout keeps ordinary controls.
+ */
+export function channelForRow(
+  rc: ReleaseChannel | null | undefined,
+  w: Worktree,
+): ReleaseChannel | undefined {
+  const adopted = channelWorktreeName(rc)
+  return !w.is_main && adopted && w.name === adopted ? (rc as ReleaseChannel) : undefined
+}
+
+/**
+ * The channel whose reserved basename THIS row is occupying with a branch
+ * checkout, or undefined.
+ *
+ * The explanation lands on the row that actually exists: one directory is one
+ * row, and rendering a second placeholder for it printed the same name twice.
+ */
+export function channelNameTakenFor(
+  rc: ReleaseChannel | null | undefined,
+  name: string,
+): ReleaseChannel | undefined {
+  return rc && !rc.worktree && rc.name_taken_by_branch && rc.name === name ? rc : undefined
+}
+
+/**
+ * The third state the backend can emit: the reserved directory EXISTS and is a
+ * registered worktree (so it renders as an ordinary selectable row), but its git
+ * state could not be read — `worktree` is null, `name_taken_by_branch` is false,
+ * and only `error` is set. Neither `channelForRow` nor `channelNameTakenFor`
+ * fires for it, and because the row IS in the fleet the placeholder path is
+ * suppressed too, so without this the error string has no surface at all.
+ */
+export function channelUnreadableFor(
+  rc: ReleaseChannel | null | undefined,
+  name: string,
+): ReleaseChannel | undefined {
+  return rc && !rc.worktree && !rc.name_taken_by_branch && rc.error && rc.name === name ? rc : undefined
+}
+
+/**
+ * ONE derivation for every channel resolver error, so a single ErrorNotice is
+ * the sole surface for both cases: an ADOPTED row whose resolve() failed, and
+ * the reserved directory whose HEAD could not be read. A tooltip is neither
+ * keyboard-reachable nor an agent hand-off, so no error may live in a Badge
+ * title.
+ */
+export function channelErrorFor(
+  rc: ReleaseChannel | null | undefined,
+  w: Worktree,
+): ReleaseChannel | undefined {
+  const adopted = channelForRow(rc, w)
+  if (adopted?.error) return adopted
+  return channelUnreadableFor(rc, w.name)
+}
+
+/**
+ * The channel that needs a Create placeholder row, or null.
+ *
+ * Suppressed whenever a real directory already carries the reserved basename,
+ * whatever the backend made of it. `worktree` and `name_taken_by_branch` are
+ * both CLASSIFICATIONS, and a third state exists: an unreadable HEAD resolves to
+ * neither — so a guard testing only those two rendered the placeholder beside
+ * the very directory it was describing, and one directory became two rows.
+ * Testing the fleet for the NAME is the check that holds for every
+ * classification, including ones added later, because the name is the thing that
+ * can only belong to one row.
+ *
+ * Against the UNFILTERED fleet: the search box and the legacy toggle decide what
+ * is on screen, and a query that hides the channel row must not conjure a Create
+ * placeholder for a directory that exists.
+ */
+export function channelPlaceholderFor(
+  rc: ReleaseChannel | null | undefined,
+  wts: Worktree[],
+): ReleaseChannel | null {
+  if (!rc || rc.worktree || rc.name_taken_by_branch) return null
+  const present = wts.some((w) => !w.is_main && w.name === rc.name)
+  return present ? null : rc
+}

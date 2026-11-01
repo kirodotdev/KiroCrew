@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import _facade_mirror, executors
-from kiro_crew.apps.builtins.dev_fleet import fleet_state, repository, runtime
+from kiro_crew.apps.builtins.dev_fleet import fleet_state, release_channel_pin, repository, runtime
 from kiro_crew.apps.builtins.dev_fleet.worktree_ops_pods import _wt_lock
 from kiro_crew.apps.builtins.dev_fleet.worktree_ops_removal import _worktree_remove
 from kiro_crew.git_tmp_packs import reap_stale_tmp_packs
@@ -236,7 +236,27 @@ async def _prunable(path: str, branch: str | None) -> dict:
             return {**base, "ok": False, "code": "closed_new_commits", "unmerged_commits": unmerged}
         return {**base, "ok": True, "code": "closed", "unmerged_commits": unmerged}
     if own == 0 and not dirty:
-        if age_h and age_h > 48:
+        # `empty` reads "no commits of its own, clean, older than 48h" as ABANDONMENT,
+        # and that inference only holds for a tree on a BRANCH. A detached tree has no
+        # branch and therefore no PR, and every commit it holds is reachable from the
+        # base branch, so `own` is 0 by construction rather than by neglect -- for a
+        # release-channel pin that is the steady state, and it is what the operator
+        # asked Dev Fleet to keep.
+        #
+        # Withheld for the PIN only: detached AND carrying the reserved basename. Both
+        # halves are needed. A BRANCH checkout that merely borrowed the name is an
+        # ordinary feature tree and falls through to the merged/closed/active logic,
+        # where it belongs; a tree the operator detached by hand under any other name
+        # keeps today's `empty` verdict, so this change reaches nothing that was not
+        # created by this feature. The name is read from the path, with no git probe,
+        # because prune runs over the fleet listing before `fleet_state` classifies
+        # the channel and must not depend on a classification that can fail.
+        #
+        # The cost that remains is the one the operator asked for: a pin nobody has
+        # made live for weeks is still never preselected for deletion. Removing it is
+        # Remove on the row, as for any worktree.
+        pinned = branch is None and Path(path).name == release_channel_pin.WORKTREE_NAME
+        if not pinned and age_h and age_h > 48:
             return {**base, "ok": True, "code": "empty"}
         return {**base, "ok": False, "code": "fresh"}
     return {**base, "ok": False, "code": "active"}
@@ -517,6 +537,33 @@ async def _status_refresher() -> None:
         return
     while True:
         try:
+            # Two fetches, two spawns, on purpose. The base branch is what every row's
+            # Behind is measured against and is fetched exactly as it was before the
+            # release channel existed; the channel's mirror refspec is fetched by
+            # `release_channel_pin.fetch_refs`, pruned, so a newly published release
+            # becomes visible BETWEEN mutations and a forged or retracted mirror ref
+            # does not survive a cycle. Keeping them apart is what keeps their failures
+            # apart: a mirror the remote cannot serve leaves Behind moving, and a base
+            # branch that will not fetch leaves the channel's badge honest.
+            #
+            # The mirror fetch is delegated rather than spelled here: this refresh and
+            # the one before a mutation must populate the same mirror under the same
+            # rules, and a second spelling that drifted would leave the channel
+            # resolving against a mirror nothing updates -- indistinguishable from a
+            # repo that has published nothing new.
+            #
+            # Unconditional. Gating the mirror fetch on a lane existing would mean a
+            # `git worktree list` every cycle plus a fail-open branch, to avoid a cost
+            # nothing measured: tags are small refs and only the first fetch transfers
+            # them, so an install with no lane pays approximately nothing.
+            #
+            # A failed fetch is logged, never raised, and the fleet is still rebuilt
+            # from what this checkout holds: every row's Behind is measured against the
+            # last `<remote>/<base>` a fetch brought in, and the channel against the
+            # last mirror. Nothing in the payload marks that staleness -- the channel's
+            # `error` is reserved for a git failure that blocks Create, which a
+            # transient network blip is not -- so the log line is the one place the
+            # operator can see why a badge stopped moving.
             remote = await repository._upstream_remote()
             fetched = await runtime._run_cmd(
                 ["git", "-C", repo, "fetch", remote, repository.BASE_BRANCH, "--quiet"],
@@ -544,6 +591,13 @@ async def _status_refresher() -> None:
             await asyncio.get_running_loop().run_in_executor(
                 executors.subprocess_executor(), reap_stale_tmp_packs, repo
             )
+            fetch_err = await release_channel_pin.fetch_refs(repo, timeout=90)
+            if fetch_err:
+                runtime.logger.warning(
+                    "dev-fleet: refresher release-tag mirror fetch failed; channel"
+                    " resolved from the last fetched mirror: %s",
+                    fetch_err,
+                )
             await fleet_state._fleet_refresh()
         except Exception:
             runtime.logger.exception("dev-fleet status refresher failed")
@@ -721,6 +775,7 @@ __all__ = (
     "_PRUNE_CONCURRENCY",
     "_PRUNE_LOCK",
     "_PRUNE_STATE",
+    "_RELEASE_CHANNEL_REFUSALS",
     "_SYNC_RID",
     "_WT_LOCKS",
     "_auto_prune_cfg",
@@ -749,6 +804,9 @@ __all__ = (
     "_rebase_locked",
     "_reclaim_pod_locked",
     "_refresher_task",
+    "_release_channel_create",
+    "_release_channel_create_start",
+    "_release_channel_preflight",
     "_status_refresher",
     "_sync",
     "_sync_base_ref",
@@ -770,12 +828,14 @@ __all__ = (
 #   ``worktree_ops_sync`` -- Pull + Build sync of the main checkout
 #   ``worktree_ops_pods`` -- pod actions, and the per-worktree lock ``_wt_lock``
 #   ``worktree_ops_removal`` -- removing one worktree, and ``_GIT_MUTATION_LOCK``
+#   ``worktree_ops_release`` -- materializing the release-channel worktree
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.apps.builtins.dev_fleet.worktree_ops_sync",
     "kiro_crew.apps.builtins.dev_fleet.worktree_ops_pods",
     "kiro_crew.apps.builtins.dev_fleet.worktree_ops_removal",
+    "kiro_crew.apps.builtins.dev_fleet.worktree_ops_release",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -808,6 +868,30 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _reclaim_pod_locked,
         _same_checkout,
         _token_windows,
+    )
+    from kiro_crew.apps.builtins.dev_fleet.worktree_ops_release import (  # noqa: F401
+        _CREATE_ADMISSION_LOCK,
+        _CREATE_RID,
+        _CREATE_RUN_LABEL,
+        _GIT_TRUE,
+        _HERMETIC_COMMON_CONFIG,
+        _HERMETIC_COMMON_HEAD,
+        _PARTIAL_CLONE_KEYS,
+        _RELEASE_CHANNEL_REFUSALS,
+        _discard_failed_lane_creation,
+        _discard_hermetic_common_dir,
+        _hermetic_common_config,
+        _hermetic_paths,
+        _is_partial_clone,
+        _lane_staging_path,
+        _make_hermetic_common_dir,
+        _populate_release_tree,
+        _promisor_in_force,
+        _release_channel_create,
+        _release_channel_create_locked,
+        _release_channel_create_start,
+        _release_channel_preflight,
+        _stage_and_adopt,
     )
     from kiro_crew.apps.builtins.dev_fleet.worktree_ops_removal import (  # noqa: F401
         _GIT_MUTATION_LOCK,

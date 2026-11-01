@@ -215,6 +215,7 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
       'apps.devFleet.manifest.highlight_5',
       'apps.devFleet.manifest.highlight_6',
       'apps.devFleet.manifest.highlight_7',
+      'apps.devFleet.manifest.highlight_8',
     ],
     useCases: ['apps.devFleet.manifest.use_case_1'],
     configuration: ['apps.devFleet.manifest.configuration_1'],

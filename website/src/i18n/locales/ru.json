@@ -1854,7 +1854,8 @@
         "highlight_5": "Поток логов pod и выпуск ключей доступа к pod прямо в интерфейсе",
         "highlight_6": "Сделано для тех, кто разрабатывает сам Kiro Crew — для повседневной работы не нужно",
         "highlight_7": "Pod работает на Linux (systemd --user) и macOS (launchd) — но у pod на macOS нет принудительного лимита памяти/CPU; Make Live готовит указатель на любой платформе, а для автоматического перезапуска нужен юнит systemd --user или LaunchAgent macOS; обзор флота, статус PR, синхронизация, перебазирование и очистка работают на любой платформе",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "highlight_8": "Worktree, закреплённый на самом новом стабильном релизе, чтобы можно было запустить pod с выпущенной сборкой рядом с твоей веткой; канал обновления твоей собственной установки это никогда не меняет"
       }
     },
     "designTweak": {
@@ -14394,7 +14395,37 @@
       "orphan_pods_label": "Осиротевшие домашние каталоги подов: {{value}}",
       "total_disk_used_by_running_pod_homes": "Всего диска, занятого домашними каталогами работающих подов",
       "pod_homes_left_on_disk_with_no_live_pod": "Домашние каталоги подов на диске без активного пода",
-      "disk_usage_unavailable": "Данные об использовании диска недоступны"
+      "disk_usage_unavailable": "Данные об использовании диска недоступны",
+      "creating": "Создание…",
+      "release_channel_unpublished": "Релиз {{lane}} ещё не получен — «Создать» получит самый новый",
+      "release_channel_create_fetches": "«Создать» получит теги релизов {{lane}} и переключится на самый новый в detached-состоянии",
+      "release_channel_no_release": "не на релизе",
+      "release_channel_version_unknown": "версия неизвестна",
+      "release_channel_unresolved_short": "Не удалось определить канал релизов {{lane}}",
+      "no_worktree_yet": "worktree ещё нет",
+      "not_applicable_short": "н/д",
+      "release_channel_has_no_pr": "Worktree релиза находится в detached-состоянии на теге, поэтому у него нет пул-реквеста",
+      "release_channel_create_failed": "Не удалось создать worktree канала релизов",
+      "release_channel_create_run_lost": "Запуск создания потерян (шлюз перезапустился) — обнови флот, прежде чем повторять",
+      "create_worktree": "Создать worktree",
+      "release_channel_created": "Worktree {{lane}} создан на {{ref}} — далее: {{action}}",
+      "release_channel_would_create_at": "«Создать» переключится на самый новый релиз {{lane}} ({{version}}) в detached-состоянии",
+      "release_channel_pinned_at": "Закреплён на канале релизов {{lane}} на {{ref}}",
+      "release_channel_unresolved": "Не удалось определить канал релизов {{lane}}: {{error}}",
+      "release_channel_on_older_release": "Сейчас {{version}}; вершина канала {{lane}} теперь {{tip}}",
+      "release_channel_version_behind_tip": "{{version}} · новейшая {{tip}}",
+      "release_channel_on_release_tip_unknown": "Сейчас {{version}}; вершину канала {{lane}} определить не удалось",
+      "release_channel_on_no_release": "Не на теге релиза {{lane}}; вершина канала — {{tip}}",
+      "release_channel_on_no_release_tip_unknown": "Не на теге релиза {{lane}}, и вершину канала определить не удалось",
+      "release_channel_version_unknown_title": "Не удалось прочитать, на каком релизе находится этот checkout {{lane}} — см. уведомление под строкой",
+      "release_channel_name_taken_by_branch": "{{name}} зарезервировано для worktree релиза {{lane}}, но этот checkout находится на ветке. Чтобы освободить имя, переименуй или удали checkout: «Очистить влитые» удалит его после влития его PR, либо запусти `git worktree move` / `git worktree remove` в оболочке",
+      "reserved_name_on_a_branch": "На ветке, поэтому релиз {{lane}} не может занять это имя — переименуй или удали его, чтобы освободить",
+      "release_rows_measured_by_version": "Строки релизов измеряются по версии — смотри бейдж",
+      "no_worktree_yet_create_checks_out": "Worktree ещё нет — «Создать» переключится на {{version}}",
+      "rows_pending_one": "worktree: {{count}} · к созданию: {{pending}}",
+      "rows_pending_few": "worktree: {{count}} · к созданию: {{pending}}",
+      "rows_pending_many": "worktree: {{count}} · к созданию: {{pending}}",
+      "rows_pending_other": "worktree: {{count}} · к созданию: {{pending}}"
     },
     "developer": {
       "agentBackendTab": {

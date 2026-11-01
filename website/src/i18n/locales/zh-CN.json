@@ -1710,7 +1710,8 @@
         "highlight_5": "在界面上流式查看 Pod 日志，并签发 Pod 访问令牌",
         "highlight_6": "给开发 Kiro Crew 本身的人用 — 日常使用并不需要它",
         "highlight_7": "Pod 可以跑在 Linux（systemd --user）和 macOS（launchd）上 — 但 macOS 上的 Pod 没有强制的内存/CPU 上限；Make Live 在所有平台都会暂存指针，自动重启需要 systemd --user 单元或 macOS LaunchAgent；机群视图、PR 状态、同步、变基和清理在任何平台都可用",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "highlight_8": "锁定到最新稳定版发布的工作树，可在你分支旁以 pod 运行已发布构建；不会改变本机安装所用的更新通道"
       }
     },
     "designTweak": {
@@ -13656,7 +13657,34 @@
       "orphan_pods_label": "孤立 Pod 主目录：{{value}}",
       "total_disk_used_by_running_pod_homes": "运行中 Pod 主目录占用的磁盘总量",
       "pod_homes_left_on_disk_with_no_live_pod": "磁盘上没有对应运行 Pod 的遗留主目录",
-      "disk_usage_unavailable": "磁盘用量不可用"
+      "disk_usage_unavailable": "磁盘用量不可用",
+      "creating": "正在创建…",
+      "release_channel_unpublished": "尚未获取 {{lane}} 发布版本 — 创建会获取最新版本",
+      "release_channel_create_fetches": "创建会获取 {{lane}} 发布标签，并以 detached 方式检出最新版本",
+      "release_channel_no_release": "不在发布版本上",
+      "release_channel_version_unknown": "版本未知",
+      "release_channel_unresolved_short": "无法解析 {{lane}} 发布通道",
+      "no_worktree_yet": "尚无工作树",
+      "not_applicable_short": "不适用",
+      "release_channel_has_no_pr": "发布工作树以 detached 方式指向标签，因此没有拉取请求",
+      "release_channel_create_failed": "无法创建发布通道工作树",
+      "release_channel_create_run_lost": "创建运行已丢失（网关已重启），请先刷新机群再重试",
+      "create_worktree": "创建工作树",
+      "release_channel_created": "已在 {{ref}} 创建 {{lane}} 工作树，下一步：{{action}}",
+      "release_channel_would_create_at": "创建会以 detached 方式检出最新的 {{lane}} 发布版本 {{version}}",
+      "release_channel_pinned_at": "已锁定到 {{lane}} 发布通道的 {{ref}}",
+      "release_channel_unresolved": "无法解析 {{lane}} 发布通道：{{error}}",
+      "release_channel_on_older_release": "当前为 {{version}}；{{lane}} 通道的最新版本现在是 {{tip}}",
+      "release_channel_version_behind_tip": "{{version}} · 最新 {{tip}}",
+      "release_channel_on_release_tip_unknown": "当前为 {{version}}；无法解析 {{lane}} 通道的最新版本",
+      "release_channel_on_no_release": "不在 {{lane}} 发布标签上；通道的最新版本是 {{tip}}",
+      "release_channel_on_no_release_tip_unknown": "不在 {{lane}} 发布标签上，且无法解析通道的最新版本",
+      "release_channel_version_unknown_title": "无法读取此 {{lane}} 检出所在的发布版本，请查看行下方的通知",
+      "release_channel_name_taken_by_branch": "{{name}} 是为 {{lane}} 发布工作树保留的名称，但此检出位于分支上。要释放该名称，请重命名或移除此检出：清理已合并会在其 PR 合并后移除它，也可以在终端中运行 `git worktree move` / `git worktree remove`",
+      "reserved_name_on_a_branch": "位于分支上，因此 {{lane}} 发布无法使用此名称 — 重命名或移除即可释放",
+      "release_rows_measured_by_version": "发布行按版本衡量 — 请查看标签",
+      "no_worktree_yet_create_checks_out": "尚无工作树 — 创建会检出 {{version}}",
+      "rows_pending_other": "{{count}} 个工作树 · 待创建 {{pending}} 个"
     },
     "developer": {
       "agentBackendTab": {

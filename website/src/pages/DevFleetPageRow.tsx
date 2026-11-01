@@ -198,7 +198,7 @@ export function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoadin
 export function DevFleetRowActions({
   w, fleet, busy, rebaseResult, syncRun, gatewayMutating, liveStateUnknown, stagedWorktree, liveWorktree,
   dismissRebaseResult, act, launchQa, provision, syncMain, rebaseWorktree, restartGateway, makeLive,
-  podsAvailable,
+  podsAvailable, isReleaseChannel,
 }: {
   w: Worktree
   fleet: FleetData | undefined
@@ -218,6 +218,9 @@ export function DevFleetRowActions({
   restartGateway: () => Promise<void>
   makeLive: (w: Worktree | UndoTarget, opts?: { undo?: boolean }) => Promise<void>
   podsAvailable: boolean
+  /** This row IS the release-channel pin (the backend's classification, never
+   *  the row's name). Suppresses Rebase onto main; see the menu below. */
+  isReleaseChannel?: boolean
 }): ReactNode[] {
   if (w.is_main) {
     const out: ReactNode[] = [
@@ -300,7 +303,14 @@ export function DevFleetRowActions({
   out.push(<MenuBtn key="menu" items={[
     podsAvailable && w.has_dist && !w.running ? { label: i18nT('pages.devFleetPage.spin_up_pod'), icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
     podsAvailable && w.running ? { label: i18nT('pages.devFleetPage.restart_pod'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
-    { label: i18nT('pages.devFleetPage.rebase_onto_main'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => rebaseWorktree(w.name), disabled: !!busy[w.name + ':rebase'] },
+    // Rebase is SUPPRESSED on a release worktree rather than replaced. Rebasing
+    // a detached release checkout onto main is not a coherent request — it would
+    // replay a shipped tag's history onto unreleased code, and the backend
+    // refuses it anyway (no branch to rebase). Moving the pin to a newer release
+    // is Remove followed by Create, which the page already offers.
+    isReleaseChannel
+      ? null
+      : { label: i18nT('pages.devFleetPage.rebase_onto_main'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => rebaseWorktree(w.name), disabled: !!busy[w.name + ':rebase'] },
     // Staging a cutover writes only the live-target pointer, so it needs no
     // pod support and no drivable service — gating it on podsAvailable would
     // hide it on exactly the hosts it exists to serve.
