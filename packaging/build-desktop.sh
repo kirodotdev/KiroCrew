@@ -988,13 +988,13 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
     let parsed;
     try { parsed = JSON.parse(buf.toString("utf8")); } catch (e) { console.error(`marker is not JSON: ${e.message}`); process.exit(1); }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { console.error("marker must be a JSON object"); process.exit(1); }
-    const allowed = ["managedBy", "updateCommand", "checkCommand"];
+    const allowed = ["managedBy", "updateCommand", "checkCommand", "relaunchPath"];
     // The reader TRIMS each field and slices it to a cap (auto-update.js:
     // MANAGED_BY_MAX_CHARS / UPDATE_COMMAND_MAX_CHARS / CHECK_COMMAND_MAX_CHARS).
     // Validate the value the reader will actually see: a whitespace-only
     // command would trim to nothing and turn the marker bare, and an over-cap
     // one would be truncated into a DIFFERENT command. Both are refused here.
-    const caps = { managedBy: 128, updateCommand: 512, checkCommand: 512 };
+    const caps = { managedBy: 128, updateCommand: 512, checkCommand: 512, relaunchPath: 1024 };
     for (const k of Object.keys(parsed)) {
       if (!allowed.includes(k)) { console.error(`marker has unknown field "${k}" (allowed: ${allowed.join(", ")})`); process.exit(1); }
       if (typeof parsed[k] !== "string") { console.error(`marker field "${k}" must be a string`); process.exit(1); }
@@ -1003,6 +1003,15 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
     }
     if (!parsed.updateCommand) { console.error("marker has no updateCommand: it would disable updates without offering any"); process.exit(1); }
     if (!parsed.checkCommand) { console.error("marker has updateCommand but no checkCommand: every managed-lane check will fail; no update will ever be offered"); process.exit(1); }
+    // resolveRelaunchPath (auto-update.js) drops anything that is not absolute
+    // or ~/-relative, and the lane would then quietly relaunch the old path.
+    // The app may run on either platform family, so an absolute path in the
+    // form of either is accepted: C:/..., C:\..., \\server\share, /...
+    if ("relaunchPath" in parsed) {
+      const p = parsed.relaunchPath;
+      const path = require("path");
+      if (!(p.startsWith("~/") || path.posix.isAbsolute(p) || path.win32.isAbsolute(p))) { console.error("marker field \"relaunchPath\" must be an absolute path or start with ~/"); process.exit(1); }
+    }
   ' "$MARKER_SRC" || { echo "❌ KIROCREW_MANAGED_INSTALL_MARKER rejected: $MARKER_SRC" >&2; exit 1; }
   # Staged for THIS build only: electron-builder packs it below, and the copy
   # must not outlive the run -- a later build of a different edition from the
