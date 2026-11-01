@@ -252,7 +252,6 @@
   "src/test/agentSessionConcludedNoRerun.test.ts",
   "src/test/agentSessionSeedReceipt.test.ts",
   "src/test/approvalFocusShortcut.test.tsx",
-  "src/test/backNavLeaveGuard.test.tsx",
   "src/test/chatPins.test.tsx",
   "src/test/composerTreeDrop.test.ts",
   "src/test/issueRadarPolling.test.tsx",
