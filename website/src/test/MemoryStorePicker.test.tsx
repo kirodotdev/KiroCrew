@@ -16,7 +16,7 @@
  * add rows a query has to be disambiguated against.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import type { MemoryBackup, MemoryStoreSummary } from '../types'
 import MemoryTab from '../pages/overview/MemoryTab'
@@ -244,8 +244,11 @@ describe('memory store picker — the listing', () => {
     await waitFor(() => expect(api.memoryRetired).toHaveBeenCalledWith(CREW_STORE, expect.any(Number)))
     expect(api.memoryBackups).toHaveBeenCalledWith(CREW_STORE)
     const advanced = screen.getByText('Advanced memory analysis').closest('details')!
-    advanced.open = true
-    fireEvent(advanced, new Event('toggle'))
+    // Setting `open` makes happy-dom dispatch its own `toggle`, so the assignment needs the act scope too.
+    act(() => {
+      advanced.open = true
+      fireEvent(advanced, new Event('toggle'))
+    })
     await waitFor(() => expect(api.memoryCarve).toHaveBeenCalledWith(expect.objectContaining({ store: CREW_STORE })))
     // Nothing was re-read under the store the user just left, which for the active
     // store means no storeless read either.
