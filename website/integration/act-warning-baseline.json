@@ -171,7 +171,6 @@
   "src/test/ChatSidebar.boardOverlayPortal.test.tsx",
   "src/test/ChatSidebar.boardStateLanes.test.tsx",
   "src/test/ChatSidebar.boardUnfileDrop.test.tsx",
-  "src/test/ChatSidebar.bulkModelRosterError.test.tsx",
   "src/test/ChatSidebar.conductorLane.test.tsx",
   "src/test/ChatSidebar.createMenu.test.tsx",
   "src/test/ChatSidebar.defaultAgentMarker.test.tsx",

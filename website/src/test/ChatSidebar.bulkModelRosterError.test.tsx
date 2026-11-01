@@ -13,7 +13,7 @@
  * opened by mouse in jsdom, so the header ⋮ is activated by keyboard.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -137,7 +137,10 @@ function renderSidebar(slots: Record<string, unknown>[] = SLOTS) {
 
 async function openSwitchAllPanel() {
   fireEvent.keyDown(screen.getAllByLabelText('More options')[0], { key: 'Enter' })
-  fireEvent.click(await screen.findByText('Switch all to model…'))
+  const item = await screen.findByText('Switch all to model…')
+  // Opening the panel starts the roster fetch. Its failure handling flips the module-level degraded
+  // and auth flags a few microtasks after the click, so the click runs in an async act.
+  await act(async () => { fireEvent.click(item) })
   expect(screen.getByText('Switch All Sessions')).toBeTruthy()
 }
 
