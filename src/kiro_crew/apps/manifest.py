@@ -11,6 +11,7 @@ app-specific fields.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import posixpath
@@ -1196,6 +1197,191 @@ def is_module_style_entry_point(entry_point: str, app_root: Path) -> bool:
         and "." in entry_point
         and not (app_root / entry_point).exists()
     )
+
+
+def references_env(value: str) -> bool:
+    """Whether *value* carries the ``${VAR}`` / ``${env:VAR}`` form kiro-cli EXPANDS
+    at session runtime in a remote MCP server's url and header values, against an
+    environment that carries the operator's provider credentials.
+
+    A manifest that writes one into a server's headers is asking the operator's
+    session to send a credential the manifest never held to whatever process
+    answers. The plugin converter refuses it on import through this one predicate,
+    and the pattern itself is the runtime expander's OWN
+    (``mcp_gateway.rewriter._ENV_VAR_PLACEHOLDER``), imported lazily the way
+    ``mcp_discovery`` does, so the refusal can never drift from what is expanded.
+    """
+    from kiro_crew.mcp_gateway.rewriter import _ENV_VAR_PLACEHOLDER  # circular at module load
+
+    return bool(_ENV_VAR_PLACEHOLDER.search(value))
+
+
+def mcp_url_violation(url: str) -> str:
+    """Why *url* is not an MCP endpoint the plugin converter may map, or ``""`` when
+    it is.
+
+    One parser, one rule set for the converter. The guard against a parser
+    differential is deliberate: a url that ``urlparse`` reads as ``localhost`` (a
+    backslash before ``@``, a control character) and kiro-cli's parser reads as an
+    external host would slip a plain-http external endpoint past the
+    https-unless-loopback ceiling. So the raw bytes are refused first, before any
+    parse: no backslash, no control or whitespace character. Then the format's own
+    rules (Agent Plugins 1.0 §7.2.1): absolute http(s), a host, no user
+    information, no fragment, a port that parses. The loopback/https rule is the
+    caller's, because it depends on the scheme AND the host together.
+    """
+    if not url.strip():
+        return "blank"
+    if "\\" in url or any(ord(ch) < 0x21 or ord(ch) == 0x7F for ch in url):
+        return "carries a backslash, control or whitespace character"
+    try:
+        parsed = urllib.parse.urlparse(url)
+        parsed.port  # parses lazily; ``host:bad`` and an out-of-range port raise here
+    except ValueError:
+        return "does not parse"
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return "is not an absolute http(s) url with a host"
+    if parsed.username is not None or parsed.password is not None or parsed.fragment:
+        return "carries user information or a fragment"
+    return ""
+
+
+def mcp_entry_references_env(config: dict[str, Any]) -> bool:
+    """Whether ANY string an MCP entry hands the runtime carries ``${VAR}``.
+
+    kiro-cli expands the reference from the operator's environment wherever it
+    appears -- a remote url or header (sent to the host the entry names) and a
+    stdio ``command``, ``args``, ``cwd`` or ``env`` value (handed to the process
+    the entry launches, which for a third-party app is code spawned under
+    ``minimal_env`` precisely so it never sees those credentials). One predicate
+    over every field, so no arm is left where a credential can ride through.
+    """
+    for key in ("url", "command", "cwd"):
+        value = config.get(key)
+        if isinstance(value, str) and references_env(value):
+            return True
+    args = config.get("args")
+    if isinstance(args, list) and any(isinstance(a, str) and references_env(a) for a in args):
+        return True
+    for key in ("headers", "env"):
+        mapping = config.get(key)
+        if isinstance(mapping, dict) and any(
+            isinstance(v, str) and references_env(v) for v in mapping.values()
+        ):
+            return True
+    return False
+
+
+def mistyped_mcp_server_fields(config: dict[str, Any]) -> list[str]:
+    """Fields of an ``mcpServers`` entry whose VALUE is not the shape a reader of the
+    agent config assumes: ``type``, ``command``, ``cwd``, ``url`` strings; ``args`` a
+    list of strings; ``env`` and ``headers`` string-to-string objects.
+
+    ``mcpServers`` is copied verbatim from ``app.json`` (:meth:`AppManifest.from_dict`),
+    so ``args: 7`` would reach the registration writer, which iterates ``args`` and
+    overlays ``env`` without re-checking them -- and raises mid-registration, under
+    the config lock, after the loop has already mutated the server map. The plugin
+    converter drops such an entry on import through this one check, so a mistyped
+    field never reaches the writer.
+    """
+    bad: list[str] = []
+    for key in ("type", "command", "cwd", "url"):
+        value = config.get(key)
+        if value is not None and not isinstance(value, str):
+            bad.append(key)
+    args = config.get("args")
+    if args is not None and not (isinstance(args, list) and all(isinstance(a, str) for a in args)):
+        bad.append("args")
+    for key in ("env", "headers"):
+        mapping = config.get(key)
+        if mapping is not None and not (
+            isinstance(mapping, dict)
+            and all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items())
+        ):
+            bad.append(key)
+    return bad
+
+
+def is_loopback_host(host: str) -> bool:
+    """Whether a url host names THIS machine: ``localhost``, a loopback address, or
+    the unspecified address (``0.0.0.0``, ``::``), which a local server binds to
+    and which connects to loopback.
+
+    The one predicate behind the url classification in ``mcp_url_kind``: whether a
+    url is the app's own gateway-launched backend, and whether a plugin package may
+    declare plain ``http`` to it on import.
+    """
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
+
+
+def mcp_url_kind(cfg: object, gateway_backend: bool) -> str:
+    """What an ``mcpServers.<name>.url`` IS, so registration treats it accordingly.
+
+    Returns ``""`` when the entry carries no ``url`` KEY (a stdio entry) and its
+    fields are well-typed; ``"invalid"`` for an entry that is not an object at all,
+    or has a mistyped field whatever the transport (``args: 7`` raises in the
+    writer's stdio arm, under the config lock); else one of:
+
+    Called by the plugin converter (``plugin_import``) to classify each
+    ``mcpServers`` entry on import. Public rather than private so a caller never
+    imports it by a private name inside a blanket ``try/except`` that would turn a
+    rename into zero servers.
+
+    - ``"backend"`` -- the app's OWN gateway-launched backend: a LOOPBACK host
+      (``localhost``, ``127.x``, ``::1``, ``0.0.0.0``) on an app that declares
+      ``backend.entryPoint``. ``backend.port:"auto"`` hands that process a port on
+      this host, so the manifest's illustrative port is a dead URL until the
+      backend is up -- the case the skip-and-rewrite below exists for.
+    - ``"remote"`` -- any other well-formed http(s) url. A remote host is the
+      server's own address (the shape an imported plugin package declares); a
+      loopback url on an app WITHOUT a gateway-launched backend is a self-managed
+      server on a fixed port.
+    - ``"invalid"`` -- not an absolute http(s) url with a host, plain ``http`` to
+      a host that is not this machine, or a url or header value that carries a
+      ``${VAR}`` reference kiro-cli would expand from the operator's environment --
+      the app's own backend included, which is spawned under ``minimal_env`` so that
+      third-party app code never sees those credentials (a header written that way
+      sends a credential the manifest never held to whatever process answers). A
+      cleartext remote endpoint would carry every tool call and any declared header
+      across the network for a network position to read or rewrite, so the converter
+      drops it on import rather than mapping it into the generated app.
+    """
+    if not isinstance(cfg, dict) or mistyped_mcp_server_fields(cfg):
+        return "invalid"
+    if mcp_entry_references_env(cfg):
+        # No exemption, the app's own backend and its stdio servers included: a
+        # backend is spawned under ``minimal_env`` precisely so third-party app
+        # code never sees the operator's credentials, and a value the runtime
+        # expands would hand it one anyway, silently. A server that needs a secret
+        # gets it through the app's own secret store, never the operator's env.
+        return "invalid"
+    if "url" not in cfg:
+        return ""
+    url = cfg.get("url")
+    if not isinstance(url, str) or mcp_url_violation(url):
+        # PRESENT but not a url the format admits. Keyed on the key, not on
+        # truthiness: a manifest is ``dict[str, Any]`` copied verbatim, so
+        # ``"url": 7`` reaches here, and reading it as "no url" sends a commandless
+        # entry down the stdio arm and into the file kiro-cli loads every session.
+        # The shape rules (parse, scheme, host, userinfo, fragment, raw bytes) all
+        # live in one place, so the converter cannot disagree with itself.
+        return "invalid"
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    loopback = is_loopback_host(host)
+    if parsed.scheme == "http" and not loopback:
+        return "invalid"
+    if gateway_backend and loopback:
+        return "backend"
+    return "remote"
 
 
 def has_stdio_mcp_server(manifest: AppManifest) -> bool:

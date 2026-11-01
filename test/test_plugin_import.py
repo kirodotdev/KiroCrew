@@ -1033,3 +1033,141 @@ class TestEmittedAppIsInstallable:
         assert installed is not None
         assert installed.skills == ["skills/search"]
         assert installed.extra["importedPlugin"]["sourceFormat"] == FORMAT_VENDOR_DIRECTORY
+
+
+class TestInvalidMcpUrlsAreDroppedOnImport:
+    """The converter runs each ``mcpServers`` entry through ``mcp_url_kind`` and
+    drops the ``invalid`` ones before they reach the emitted ``app.json``.
+
+    This is the Phase 0 wiring: the validator exists in ``manifest.py`` with its
+    own unit tests, but the behaviour an operator sees -- a cleartext-http,
+    userinfo-bearing, ``${VAR}``-expanding or mistyped server never landing in the
+    converted app -- is a property of the full ``convert_plugin_package`` path, so
+    it is pinned here through a real conversion rather than at the helper.
+
+    Each case asserts BOTH halves: the entry is absent from the emitted manifest,
+    AND the report names it as an unmapped bucket-d kind with a reason, so a
+    silently dropped server cannot pass for a converted one.
+    """
+
+    @staticmethod
+    def _emitted(out: Path) -> dict:
+        return json.loads((out / "app.json").read_text(encoding="utf-8"))
+
+    def _invalid(self, report, name: str):
+        hits = [u for u in report.unmapped if u.kind == f"mcpServers[{name}]"]
+        assert len(hits) == 1, f"{name} was not reported as unmapped: {report.unmapped}"
+        assert hits[0].bucket == "d"
+        return hits[0]
+
+    def test_a_cleartext_http_remote_url_is_dropped(self, tmp_path):
+        root = _package(
+            tmp_path,
+            mcpServers={
+                "evil": {"url": "http://api.example.com/mcp"},
+                "ok": {"url": "https://api.example.com/mcp"},
+            },
+        )
+        out = tmp_path / "out"
+        report = convert_plugin_package(root, out)
+
+        manifest = self._emitted(out)
+        assert list(manifest["mcpServers"]) == ["ok"], "a cleartext-http remote reached app.json"
+        assert "plain http" in self._invalid(report, "evil").reason
+
+    def test_a_url_carrying_user_information_is_dropped(self, tmp_path):
+        root = _package(
+            tmp_path, mcpServers={"creds": {"url": "https://user:pw@api.example.com/mcp"}}
+        )
+        out = tmp_path / "out"
+        report = convert_plugin_package(root, out)
+
+        assert "mcpServers" not in self._emitted(out)
+        assert "user information" in self._invalid(report, "creds").reason
+
+    def test_a_server_expanding_an_env_var_is_dropped(self, tmp_path):
+        """A ``${VAR}`` in a header would make the converted app's server send a
+        credential the manifest never held, so it is refused on import."""
+        root = _package(
+            tmp_path,
+            mcpServers={
+                "leaky": {
+                    "url": "https://api.example.com/mcp",
+                    "headers": {"Authorization": "Bearer ${API_TOKEN}"},
+                }
+            },
+        )
+        out = tmp_path / "out"
+        report = convert_plugin_package(root, out)
+
+        assert "mcpServers" not in self._emitted(out)
+        assert "${VAR}" in self._invalid(report, "leaky").reason
+
+    def test_a_mistyped_field_is_dropped(self, tmp_path):
+        """A url server whose ``args`` is not a list of strings would raise in the
+        registration writer under the config lock, so it never converts."""
+        root = _package(
+            tmp_path,
+            mcpServers={"wrong": {"url": "https://api.example.com/mcp", "args": 7}},
+        )
+        out = tmp_path / "out"
+        report = convert_plugin_package(root, out)
+
+        assert "mcpServers" not in self._emitted(out)
+        assert "mistyped field" in self._invalid(report, "wrong").reason
+
+    def test_a_remote_https_server_is_kept(self, tmp_path):
+        """CONTROL. The drop gate must not reject a well-formed remote url, which
+        is the ordinary shape an imported plugin declares."""
+        root = _package(tmp_path, mcpServers={"remote": {"url": "https://api.example.com/mcp"}})
+        out = tmp_path / "out"
+        report = convert_plugin_package(root, out)
+
+        assert self._emitted(out)["mcpServers"] == {
+            "remote": {"url": "https://api.example.com/mcp"}
+        }
+        assert not [u for u in report.unmapped if u.kind.startswith("mcpServers")]
+
+    def test_a_loopback_http_url_is_kept(self, tmp_path):
+        """CONTROL. Plain http is allowed to THIS machine, so a self-managed
+        loopback server survives while a cleartext remote does not."""
+        root = _package(tmp_path, mcpServers={"local": {"url": "http://127.0.0.1:9000/mcp"}})
+        out = tmp_path / "out"
+        report = convert_plugin_package(root, out)
+
+        assert self._emitted(out)["mcpServers"] == {"local": {"url": "http://127.0.0.1:9000/mcp"}}
+        assert not [u for u in report.unmapped if u.kind.startswith("mcpServers")]
+
+    def test_one_invalid_url_does_not_take_the_valid_ones_with_it(self, tmp_path):
+        """The drop is per entry: a cleartext-http server is refused while a remote
+        https server and a stdio command server in the same document both convert."""
+        root = _package(
+            tmp_path,
+            mcpServers={
+                "drop": {"url": "http://api.example.com/mcp"},
+                "keep-remote": {"url": "https://api.example.com/mcp"},
+                "keep-stdio": {"command": "npx", "args": ["-y", "some-mcp@latest"]},
+            },
+        )
+        out = tmp_path / "out"
+        report = convert_plugin_package(root, out)
+
+        manifest = self._emitted(out)
+        assert sorted(manifest["mcpServers"]) == ["keep-remote", "keep-stdio"]
+        assert [u.kind for u in report.unmapped if u.kind.startswith("mcpServers")] == [
+            "mcpServers[drop]"
+        ]
+
+    def test_the_invalid_server_is_dropped_through_the_path_form_too(self, tmp_path):
+        """The validator sits in the shared server loop, so the drop holds whether
+        ``mcpServers`` is an inline object or a declared ``./.mcp.json`` path."""
+        root = _package(tmp_path, mcpServers="./.mcp.json")
+        _write_json(
+            root / ".mcp.json",
+            {"mcpServers": {"evil": {"url": "http://api.example.com/mcp"}}},
+        )
+        out = tmp_path / "out"
+        report = convert_plugin_package(root, out)
+
+        assert "mcpServers" not in self._emitted(out)
+        assert "plain http" in self._invalid(report, "evil").reason
