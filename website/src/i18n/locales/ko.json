@@ -15969,6 +15969,32 @@
         "resting": "휴식 중",
         "wizard_tower_scene": "마법사 탑 장면",
         "wizard_tower_spell_text": "마법사 탑 주문 텍스트"
+      },
+      "hanoiScene": {
+        "hanoi_old_quarter": "하노이 구시가지",
+        "hoan_kiem_lakeside": "호안끼엠 호숫가",
+        "at_the_cafe": "카페에 {{n}}/{{total}}명",
+        "coding_at_the_cafe": "카페에서 코딩",
+        "egg_coffee_break": "에그커피 휴식",
+        "hanoi_old_quarter_animation": "하노이 구시가지 애니메이션",
+        "hanoi_old_quarter_text_overlay": "하노이 구시가지 텍스트 오버레이",
+        "sign_egg_coffee": "CÀ PHÊ TRỨNG",
+        "sign_pho": "PHỞ BÒ",
+        "sign_iced_tea": "TRÀ ĐÁ",
+        "chat_deploy_ask": "배포했어?",
+        "chat_deploy_reply": "빌드 중!",
+        "chat_coffee_ask": "에그 커피?",
+        "chat_coffee_reply": "한 잔 주세요!",
+        "chat_review_ask": "풀 리퀘스트 괜찮아?",
+        "chat_review_reply": "좋아 보여!",
+        "chat_bug_ask": "버그 고쳤어?",
+        "chat_bug_reply": "다 됐어!",
+        "chat_tea_ask": "아이스티?",
+        "chat_tea_reply": "두 잔!",
+        "chat_latency_ask": "지연 시간 높아?",
+        "chat_latency_reply": "확장 중!",
+        "scene_label": "하노이",
+        "scene_desc": "호안끼엠 호수 옆 구시가지"
       }
     },
     "schedulePage": {
@@ -19022,6 +19048,7 @@
       "playing_in_popout_window": "팝아웃 창에서 재생 중",
       "pop_out_to_separate_window": "별도 창으로 팝아웃",
       "present": "참석,",
+      "scene_aria_label": "{{label}} 장면: {{desc}}",
       "show_controls": "컨트롤 표시",
       "slot_other": "슬롯 {{count}}개"
     },

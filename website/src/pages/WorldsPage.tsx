@@ -59,7 +59,7 @@ export default function WorldsPage() {
               onClick={() => changeScene(s.key)}
               title={s.desc}
               aria-pressed={scene === s.key}
-              aria-label={`${s.label} scene: ${s.desc}`}
+              aria-label={i18nT('pages.worldsPage.scene_aria_label', { label: s.label, desc: s.desc })}
               style={{
                 padding: '5px 12px',
                 borderRadius: 6,

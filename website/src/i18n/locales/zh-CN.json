@@ -15969,6 +15969,32 @@
         "resting": "休息中",
         "wizard_tower_scene": "巫师塔场景",
         "wizard_tower_spell_text": "巫师塔法术文字"
+      },
+      "hanoiScene": {
+        "hanoi_old_quarter": "河内老城区",
+        "hoan_kiem_lakeside": "还剑湖畔",
+        "at_the_cafe": "{{n}}/{{total}} 在咖啡馆",
+        "coding_at_the_cafe": "在咖啡馆写代码",
+        "egg_coffee_break": "鸡蛋咖啡休息",
+        "hanoi_old_quarter_animation": "河内老城区动画",
+        "hanoi_old_quarter_text_overlay": "河内老城区文字层",
+        "sign_egg_coffee": "CÀ PHÊ TRỨNG",
+        "sign_pho": "PHỞ BÒ",
+        "sign_iced_tea": "TRÀ ĐÁ",
+        "chat_deploy_ask": "部署了吗？",
+        "chat_deploy_reply": "正在构建！",
+        "chat_coffee_ask": "蛋咖啡？",
+        "chat_coffee_reply": "来一杯！",
+        "chat_review_ask": "合并请求没问题吧？",
+        "chat_review_reply": "看起来不错！",
+        "chat_bug_ask": "问题修好了？",
+        "chat_bug_reply": "搞定了！",
+        "chat_tea_ask": "冰茶？",
+        "chat_tea_reply": "两杯！",
+        "chat_latency_ask": "延迟高吗？",
+        "chat_latency_reply": "正在扩容！",
+        "scene_label": "河内",
+        "scene_desc": "还剑湖畔的老城区"
       }
     },
     "schedulePage": {
@@ -19022,6 +19048,7 @@
       "playing_in_popout_window": "正在弹出窗口中播放",
       "pop_out_to_separate_window": "弹出到独立窗口",
       "present": "个在场，",
+      "scene_aria_label": "{{label}}场景：{{desc}}",
       "show_controls": "展开控制项",
       "slot_other": "{{count}} 个槽位"
     },
