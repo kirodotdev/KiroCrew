@@ -189,7 +189,6 @@
   "src/test/ChatSidebar.hapticTaps.test.tsx",
   "src/test/ChatSidebar.hiddenFolderBoardTrace.test.tsx",
   "src/test/ChatSidebar.hoverHoldOrder.test.tsx",
-  "src/test/ChatSidebar.instanceSessionsMerge.test.tsx",
   "src/test/ChatSidebar.laneCardParity.test.tsx",
   "src/test/ChatSidebar.laneFolderHideParity.test.tsx",
   "src/test/ChatSidebar.listFolderNest.test.tsx",
