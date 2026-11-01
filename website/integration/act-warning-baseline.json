@@ -312,7 +312,6 @@
   "src/test/MarkdownTable.columnResize.test.tsx",
   "src/test/McpAppFrame.test.tsx",
   "src/test/McpBrowserModal.test.tsx",
-  "src/test/McpManagement.resolveOnce.test.tsx",
   "src/test/McpManagement.test.tsx",
   "src/test/McpRowSignIn.test.tsx",
   "src/test/MdNotebookPage.coverage.test.tsx",
