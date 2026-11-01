@@ -418,7 +418,6 @@
   "src/test/toolDisclosureKey.renderSite.test.tsx",
   "src/test/useAgentSync.defaultLabel.test.tsx",
   "src/test/useAgentSync.recencyOrder.test.tsx",
-  "src/test/useBottomTerminal.viewportClamp.test.ts",
   "src/test/useBrowserView.test.tsx",
   "src/test/useDrawerSwipe.test.ts",
   "src/test/useInstanceShortcuts.test.tsx",
