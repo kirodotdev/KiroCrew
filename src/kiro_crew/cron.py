@@ -152,6 +152,7 @@ from kiro_crew.cron_service.schedule import (  # noqa: F401 -- re-exported
     is_due,
     is_valid_skip_date,
     is_valid_timezone,
+    never_fires_warning,
     next_wake_secs,
     parse_time_string,
     validate_cron_expr,
