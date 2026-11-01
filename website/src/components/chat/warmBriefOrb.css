@@ -24,18 +24,16 @@
   --wb-level: 0;
   position: relative; flex: none; width: 112px; height: 112px; border-radius: 9999px; overflow: hidden;
   border: 1px solid var(--border-strong);
-  background:
-    radial-gradient(circle at 34% 28%, color-mix(in srgb, var(--text-strong) 22%, transparent), transparent 42%),
-    var(--card);
+  background: var(--card);
   box-shadow:
     0 0 calc(6px + 42px * var(--wb-level)) color-mix(in srgb, var(--accent) calc(8% + 52% * var(--wb-level)), transparent),
-    inset 0 -10px 22px color-mix(in srgb, #000 32%, transparent);
+    inset 0 -10px 22px color-mix(in srgb, var(--bg) 60%, transparent);
 }
 .wb-orb-liquid {
   position: absolute; left: -25%; width: 150%; height: 150%;
   top: calc(100% - 100% * var(--wb-level));
   border-radius: 42%;
-  background: radial-gradient(circle at 50% 0%, var(--accent), color-mix(in srgb, var(--accent) 55%, transparent) 55%);
+  background: var(--accent);
   opacity: calc(0.5 + 0.5 * var(--wb-level));
 }
 .wb-orb-spark {
@@ -47,14 +45,12 @@
    darker and the rim carries the shape. */
 [data-mode="light"] .wb-orb {
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border-strong));
-  background:
-    radial-gradient(circle at 34% 28%, #fff, transparent 45%),
-    color-mix(in srgb, var(--accent) 6%, var(--card));
+  background: color-mix(in srgb, var(--accent) 6%, var(--card));
   box-shadow:
     0 0 calc(3px + 18px * var(--wb-level)) color-mix(in srgb, var(--accent) calc(18% + 50% * var(--wb-level)), transparent),
     inset 0 -8px 16px color-mix(in srgb, var(--accent) 14%, transparent);
 }
-[data-mode="light"] .wb-orb-spark { background: #fff; box-shadow: 0 0 6px var(--accent), 0 0 1px var(--accent-hover); }
+[data-mode="light"] .wb-orb-spark { background: var(--accent-fg); box-shadow: 0 0 6px var(--accent), 0 0 1px var(--accent-hover); }
 
 @media (forced-colors: active) {
   .wb-orb { border: 1px solid CanvasText; box-shadow: none; }

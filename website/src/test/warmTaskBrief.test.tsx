@@ -525,9 +525,10 @@ describe('the orb stylesheet', () => {
   })
 
   it('colours only with theme variables and wraps card text', () => {
-    // No literal colour but the light theme's white highlight and the shading black.
-    const literals = css.replace(/\/\*[\s\S]*?\*\//g, '').match(/#[0-9a-f]{3,8}\b/gi) ?? []
-    expect(new Set(literals)).toEqual(new Set(['#000', '#fff']))
+    const rules = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(rules.match(/#[0-9a-f]{3,8}\b/gi) ?? []).toEqual([])
+    // Fills are flat (theming-contract.md): no gradient paints the orb.
+    expect(rules).not.toMatch(/gradient\(/)
     expect(css).toMatch(/\.wb-orb-card \{[^}]*overflow-wrap: anywhere/)
     expect(css).toMatch(/\[data-mode="light"\] \.wb-orb \{/)
   })
