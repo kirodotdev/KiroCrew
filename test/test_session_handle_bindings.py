@@ -293,6 +293,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "report_native_children": ("function", False, "ccfc57bdf135", "session_handle_native_children"),
     "send_command": ("function", True, "068aab573b43", "session_handle_lifecycle"),
     "served_model": ("property", False, "bb418bb7ece8", "session_handle_class"),
+    "session_activity_at": ("property", False, "c2eec8a41739", "session_handle_class"),
     "session_id": ("property", False, "bb418bb7ece8", "session_handle_class"),
     "set_config_option": ("function", True, "d17f94a912fd", "session_handle_model_selection"),
     "set_mode": ("function", True, "50a35c0990a8", "session_handle_model_selection"),

@@ -150,6 +150,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "reports_effort_support": ("data", False, "", ""),
     "reports_turn_usage": ("property", False, "a6632a57e602", "acp"),
     "served_model": ("property", False, "bb418bb7ece8", "acp"),
+    "session_activity_at": ("property", False, "c2eec8a41739", "acp"),
     "session_id": ("property", False, "bb418bb7ece8", "acp"),
     "set_delete_delay": ("function", False, "ef2ab8d662c5", "acp"),
     "set_model": ("function", True, "9c3df1e3fc63", "acp_model_effort"),
