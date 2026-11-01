@@ -471,20 +471,22 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
     const id = setInterval(() => setRecentTick(t => t + 1), recentTickIntervalMs(recentWindowMs))
     return () => clearInterval(id)
   }, [recentFilterActive, recentWindowMs])
-  // Wider than the payload's `s.running`: a live workflow run or an active goal
-  // loop counts as in progress, so neither drops out of the filter or its count.
+  // Wider than the payload's `s.running`: a live workflow, an active loop, or a started
+  // sub-agent not blocked on approval counts, matching the row's "N agents running".
   const runningSet = useMemo<Set<string>>(() => {
     const out = new Set<string>()
     for (const s of localSlots) {
       // Set membership over selector-produced keys is own-property by
       // construction (Object.keys), so no safeKey guard is needed here.
       const automationRunning = automationRunningSet.has(s.key)
+      const subagentsWorking = (subagentStartedCounts[s.key] || 0) - (subagentApprovalCounts[s.key] || 0) > 0
       if (s.running
         || workflowActiveSet.has(normalizeRunSessionKey(s.key))
-        || automationRunning) out.add(s.key)
+        || automationRunning
+        || subagentsWorking) out.add(s.key)
     }
     return out
-  }, [localSlots, workflowActiveSet, automationRunningSet])
+  }, [localSlots, workflowActiveSet, automationRunningSet, subagentStartedCounts, subagentApprovalCounts])
   // A running turn is recent BY DEFINITION: the ordering key stops advancing
   // mid-turn, so a long turn would age out while it is the busiest row on screen.
   const recentSet = useMemo<Set<string>>(() => {
