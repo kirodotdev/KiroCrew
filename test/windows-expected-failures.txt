@@ -83,9 +83,6 @@ test/test_hooks_shell_command.py::TestSafeReadFile::test_blocks_symlinked_ancest
 test/test_installer_shim_and_cleanup.py::test_first_run_delivers_shim_and_purge
 test/test_installer_shim_and_cleanup.py::test_first_run_no_global_mcp
 test/test_installer_shim_and_cleanup.py::test_first_run_purge_is_one_time
-# Needs symlink-creation privilege: builds an in-vault FILE symlink
-# (Alias.md -> One.md); a junction is directory-only and cannot model it.
-test/test_pip_deps_consistency.py::test_all_unguarded_third_party_imports_are_declared
 test/test_pod.py::TestUnitRendering::test_env_block_pins_nondefaults
 test/test_pod_cli.py::TestCliVerbs::test_install_writes_unit
 test/test_pod_cli.py::TestUpVerb::test_up_happy_path_json
