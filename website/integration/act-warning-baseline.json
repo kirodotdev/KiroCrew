@@ -106,7 +106,6 @@
   "src/test/MarkdownPanelCoverage.test.tsx",
   "src/test/MarkdownPanelMoreCoverage.test.tsx",
   "src/test/MarkdownRenderer.mermaid.test.tsx",
-  "src/test/MarkdownRenderer.mermaidConfig.test.tsx",
   "src/test/McpAppFrame.test.tsx",
   "src/test/McpBrowserModal.test.tsx",
   "src/test/McpManagement.test.tsx",
