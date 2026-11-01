@@ -632,6 +632,8 @@ _SESSION_ANSWERS: dict[str, Any] = {
     "destroy": None,
     "effective_autocompact_pct": 80.0,
     "first_turn_history_owed_pending": False,
+    # A real turn already claimed the healthy session: no prewarm is waiting.
+    "fresh_start_unclaimed": False,
     "get_pid": None,
     "is_mirror_paused": False,
     "is_slack_paused": False,

@@ -227,6 +227,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "flag_identity_stamp_mismatches": ("function", True, "946212e80718", "teardown"),
     "forget_conversation": ("function", False, "4b576121a346", "claims"),
     "forget_conversation_if_sid": ("function", False, "70e3d61c5764", "claims"),
+    "fresh_start_unclaimed": ("function", False, "1eda252b53bd", "claims"),
     "get_agent": ("function", False, "f1d40e624ae4", "claims"),
     "get_agent_selection": ("function", False, "b3496bff0391", "claims"),
     "get_approval_policy": ("function", False, "f1d40e624ae4", "claims"),

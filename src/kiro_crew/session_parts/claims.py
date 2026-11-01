@@ -344,6 +344,19 @@ def allocation_requested_model(self: SessionManager, key: str) -> str:
     return session.requested_model if session is not None else ""
 
 
+def fresh_start_unclaimed(self: SessionManager, key: str) -> bool:
+    """Whether *key*'s live session started fresh and no real turn has claimed it yet.
+
+    The state an eager prewarm leaves: registered, first turn still armed ``FRESH``.
+    The next real claim takes that observation and builds a session-start context.
+    A read only; it consumes nothing. A resumed prewarm and a used session answer no.
+    """
+    from kiro_crew.session_parts.record import FirstTurnState
+
+    session = self._sessions.get(self._fold_key(key))
+    return session is not None and session.first_turn is FirstTurnState.FRESH
+
+
 def record_effort_override(self: SessionManager, key: str, level: str) -> None:
     """Record *level*, picked on *key*'s live session, as its effort override.
 
