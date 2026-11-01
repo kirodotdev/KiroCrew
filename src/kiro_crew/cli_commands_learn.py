@@ -108,15 +108,18 @@ def _learn(args: argparse.Namespace) -> None:
     # constructing and init-ing it creates or migrates memory.db, which a
     # refused write must not do; list and remove still need that store, so the
     # check is scoped to the add action. memory.writes_enabled is refused the
-    # same way.
+    # same way. Nothing was saved, so it goes to stderr with a non-zero exit,
+    # like the store's own refusal below: a script driving this command sees
+    # the failure instead of a success.
     writes_off = memory_writes_off_key(cfg.memory)
     if action == "add" and writes_off is not None:
         print(
             "Lesson NOT saved: persistent memory writes are disabled "
             f"({writes_off} is false). Re-enable with: "
-            f"kirocrew config set {writes_off} true"
+            f"kirocrew config set {writes_off} true",
+            file=sys.stderr,
         )
-        return
+        sys.exit(1)
     vs = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
     vs.init()
     try:
