@@ -635,7 +635,11 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#: Raised by 28, from 33,723, for ``scan_history`` reading ``sessions/*.jsonl``
+#: (``memory_audit``): the transcript row shapes, row-time merge across files and
+#: the unreadable-file finding, so ``security audit`` never reports an unread
+#: scan as clean. No check was relaxed.
+_PACKAGE_LINE_BUDGET = 33_751
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
