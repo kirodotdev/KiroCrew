@@ -166,6 +166,14 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   main and failed every backend test at COLLECTION, including
   `test_every_strict_leaf_of_either_shape_is_covered_by_the_delegated_guard`,
   the test written to catch exactly that gap.
+- **A tightened credential rule sweeps the clients outside this repo.** When a
+  change narrows what a credential accepts and that credential crosses a process
+  boundary (minted by one program through a public endpoint, presented by
+  another), the writer sweep under `## Backwards compatibility` names the clients
+  that are NOT in this repository, or the PR ships a rollback plan that names
+  them. A sweep proving every in-tree mint was updated proves nothing about an
+  installed app minting through the same endpoint. Reviewers hold the PR to this;
+  #14436 had to revert a tightening whose sweep missed such a client.
 - **Computer use is governed by one on/off row only**: the operator opt-in on the
   keystone `computer_use.json`, ANDed with `capabilities.computer_use`
   ([rfc-crew-enterprise-edition](docs/request-for-change/rfc-crew-enterprise-edition.md),
