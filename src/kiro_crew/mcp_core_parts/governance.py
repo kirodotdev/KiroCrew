@@ -356,10 +356,12 @@ def _governance_app() -> str:
     governance chokepoint in-process, this lets a per-app profile
     (``bind:{type:"app"}``) resolve.  NOTE: the managed ``kirocrew-core`` MCP
     server is spawned by kiro-cli, NOT by an app backend, so this env var is
-    absent there — a per-app profile is therefore only reachable for in-app tool
-    calls today, not for the agent's MCP-routed ``learn_add``/``send_message``
-    (those still resolve the per-SURFACE profile + policy ceiling, which is the
-    enforced path).  Returns "" when not in an app context.
+    absent there — a per-app profile is therefore only reachable here for in-app
+    tool calls, not for the agent's MCP-routed ``learn_add``/``send_message``
+    (those resolve the per-SURFACE profile + policy ceiling here).  The gateway,
+    which knows the app, re-asks it for both: ``channel_delivery._vet_app_messaging``
+    on every send leg and ``cron_lessons.api_lessons_create`` for a lesson write.
+    Returns "" when not in an app context.
     """
     return os.environ.get("KIROCREW_APP_NAME", "")
 

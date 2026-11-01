@@ -287,6 +287,45 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             },
             status=403,
         )
+    # The calling app's own durable-memory grant. learn_add vets
+    # capabilities.memory_writes in kirocrew-core, which knows no app, so a per-app
+    # profile that forbids memory writes never reaches that check. The gateway
+    # knows the app: the attested token's claim, or the owner of the calling
+    # session. A caller no app owns is the person, whose surface profile the tool
+    # already vets, so it is not re-asked. Same posture as the tool's vet: an
+    # evaluation error does not refuse, and the decision lands in the SEL trail.
+    from kiro_crew.dashboard.token_auth_callers import effective_request_app
+    from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, vet_and_audit
+
+    request_app = effective_request_app(state, request)
+    if request_app:
+        decision = await asyncio.to_thread(
+            functools.partial(
+                vet_and_audit,
+                "capabilities.memory_writes",
+                "",
+                session_key=sk or HOST_SESSION_KEY,
+                tool_name="learn_add",
+                app=request_app,
+            )
+        )
+        if not getattr(decision, "permitted", True):
+            _sel().log_api_access(
+                caller=sk,
+                operation="learn_add",
+                outcome="denied",
+                source="dashboard",
+                resources="app_memory_writes_denied",
+                error=f"Durable memory writes are denied for app {request_app}.",
+            )
+            return web.json_response(
+                {
+                    "error": "Lesson was NOT saved: durable memory writes are denied for "
+                    "this app by the active governance profile.",
+                    "code": "memory_writes_denied",
+                },
+                status=403,
+            )
     # Validate body fields against the SAME schema the learn_add MCP tool uses
     # (LEARN_ADD_SCHEMA), so REST and tool paths share one source of truth:
     # rule must be a string (bounded to MAX_SHORT_STRING), category/scope are
