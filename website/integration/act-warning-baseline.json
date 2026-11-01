@@ -35,7 +35,6 @@
   "src/test/ChatFooter.test.tsx",
   "src/test/ChatInput.agentChipDefaultMarker.test.tsx",
   "src/test/ChatInput.approval.test.tsx",
-  "src/test/ChatInput.approvalNudge.test.tsx",
   "src/test/ChatInput.busyAndUndo.test.tsx",
   "src/test/ChatInput.collapse.test.tsx",
   "src/test/ChatInput.composerProbe.test.tsx",

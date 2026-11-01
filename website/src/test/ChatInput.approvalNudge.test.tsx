@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-ui/react-popover"))
 
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { APPROVAL_MODE_ADJUSTED_LS_KEY } from '../components/ApprovalModePicker'
@@ -119,17 +119,17 @@ describe('approval nudge trigger (B2)', () => {
       fireEvent.click(screen.getByText('Allow once'))
       await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledTimes(i))
       if (i < n) {
-        store.dispatch(sseChatMessage({ slot: 'slot-1', ...permissionMsg(i + 1) } as never))
+        act(() => { store.dispatch(sseChatMessage({ slot: 'slot-1', ...permissionMsg(i + 1) } as never)) })
         await waitFor(() => expect(screen.getByText('Allow once')).toBeInTheDocument())
       }
     }
   }
 
   it('appears after the third manual approval in one slot', async () => {
-    const { store } = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    const { store } = await act(async () => renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) }))
     await approveN(store, 2)
     expect(screen.queryByRole('dialog', { name: 'Want fewer approval prompts?' })).not.toBeInTheDocument()
-    store.dispatch(sseChatMessage({ slot: 'slot-1', ...permissionMsg(3) } as never))
+    act(() => { store.dispatch(sseChatMessage({ slot: 'slot-1', ...permissionMsg(3) } as never)) })
     await waitFor(() => expect(screen.getByText('Allow once')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => expect(screen.getByRole('dialog', { name: 'Want fewer approval prompts?' })).toBeInTheDocument())
@@ -138,26 +138,26 @@ describe('approval nudge trigger (B2)', () => {
   it('is held back while a Crew Mode worker approval card shows above the composer', async () => {
     const base = stateWithApproval()
     const withWorker = { ...base, dashboard: { ...base.dashboard, slots: [...(base.dashboard as RootState['dashboard']).slots, { key: 'w-1', crew_root: 'slot-1', pending_approval: true, messages: 0, running: true, waiting_for_input: false }] } as unknown as RootState['dashboard'] }
-    const { store } = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(withWorker) })
+    const { store } = await act(async () => renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(withWorker) }))
     await approveN(store, 3)
     expect(screen.queryByRole('dialog', { name: 'Want fewer approval prompts?' })).not.toBeInTheDocument()
   })
 
   it('does not appear when the mode is no longer normal', async () => {
-    const { store } = renderWithProviders(<ChatInput {...defaultProps} approvalMode="trust_reads" />, { store: createTestStore(stateWithApproval()) })
+    const { store } = await act(async () => renderWithProviders(<ChatInput {...defaultProps} approvalMode="trust_reads" />, { store: createTestStore(stateWithApproval()) }))
     await approveN(store, 3)
     expect(screen.queryByRole('dialog', { name: 'Want fewer approval prompts?' })).not.toBeInTheDocument()
   })
 
   it('does not appear once the discovery flag is set', async () => {
     localStorage.setItem(APPROVAL_MODE_ADJUSTED_LS_KEY, '1')
-    const { store } = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    const { store } = await act(async () => renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) }))
     await approveN(store, 3)
     expect(screen.queryByRole('dialog', { name: 'Want fewer approval prompts?' })).not.toBeInTheDocument()
   })
 
   it('"Got it" dismisses and writes the permanent flag', async () => {
-    const { store } = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    const { store } = await act(async () => renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) }))
     await approveN(store, 3)
     await waitFor(() => expect(screen.getByRole('dialog', { name: 'Want fewer approval prompts?' })).toBeInTheDocument())
     fireEvent.click(screen.getByText('Got it'))
@@ -176,11 +176,11 @@ describe('review-round fixes (hint retirement + coexistence)', () => {
 
   it('the hint row is suppressed while the nudge callout is up', async () => {
     const store = createTestStore(stateWithApproval())
-    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    await act(async () => renderWithProviders(<ChatInput {...defaultProps} />, { store }))
     for (let i = 1; i <= 3; i++) {
       fireEvent.click(screen.getByText('Allow once'))
       await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledTimes(i))
-      store.dispatch(sseChatMessage({ slot: 'slot-1', ...permissionMsg(i + 1) } as never))
+      act(() => { store.dispatch(sseChatMessage({ slot: 'slot-1', ...permissionMsg(i + 1) } as never)) })
       await waitFor(() => expect(screen.getByText('Allow once')).toBeInTheDocument())
     }
     await waitFor(() => expect(screen.getByRole('dialog', { name: 'Want fewer approval prompts?' })).toBeInTheDocument())
