@@ -2,6 +2,144 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.12.0] - 2026-11-01
+
+Mates are now on for everyone, two more coding agents join the harness list,
+and a new Explore panel shows what to try next. Chat, the sidebar and
+notifications pick up many small controls, and Ultra Mode arrives as a
+preview you can switch on.
+
+### Mates for everyone
+
+- **Mates without a preview switch**: the Mates row in the left rail, the
+  `/members` page and the mate rows in the command bar are always shown, and a
+  first visit tours a mate's profile tabs and offers to let it keep track of its
+  own work.
+- **A desk of its own**: each mate keeps the chats and folders it opens in one
+  sidebar folder named after it, and works in its own git worktree per
+  repository, so two mates on one repo no longer commit each other's edits.
+- **Take a mate with you**: the mate profile card's "Export as file" writes a
+  `.crewjam` file with an editable lessons draft, and Mates > Import mate reads it
+  back (older `.crewmate` files still import).
+
+### More coding agents
+
+- **Strands**: Settings > Agent Harness lists Strands once the Strands CLI is
+  installed, and its setup card stores the model provider keys in Settings >
+  Secrets.
+- **GitHub Copilot CLI**: pick it under Settings > Agent Harness (needs
+  `copilot` 1.0.100 or later), and every harness's model picker now shows that
+  backend's own model names.
+- **Chat commands on KAS**: `/model`, `/tools` and `/mcp` work again on the
+  default KAS backend, and `/model <id>` switches the model like the picker.
+
+### Explore and settings
+
+- **Explore**: the "Explore" pill in the top bar opens a list of features you
+  have tried and not yet tried, and a new chat shows a "Try today" card; turn both
+  off at Settings > Display > Explore.
+- **Developer settings for everyone**: Developer Mode is gone, so Settings >
+  Developer always shows Feature Previews, Logs, System, Telemetry, Storage, MCP
+  Management, Memory, Config and Debug tools, and Feature Previews switches are
+  saved on the gateway, so they follow you to every browser and the desktop app.
+- **Two new themes**: "👁 Color-blind safe" and "💜 Amethyst OLED" are under
+  Settings > Display > Theme.
+
+### Chat you can handle more ways
+
+- **Take back a steer**: a steer the running turn has not read yet can be
+  unsent, edited in the message box or queued from its row's menu, on the Kiro CLI
+  harness.
+- **Copy what you need**: code blocks gain "Wrap lines", quotes gain "Copy
+  quote", right-clicking an image offers "Copy image", and Settings > Chat >
+  Transcript adds an opt-in "Copy on select".
+- **Attach and read more**: iPhone HEIC photos attach from the composer and are
+  converted to JPEG, a box you drag over an image in the file viewer can carry a
+  comment, and "Jump to the bottom when you send" in Settings > Chat can be turned
+  off.
+
+### A sidebar that sorts itself
+
+- **Session menu**: every session row's menu adds "Copy session ID" and
+  "Reference in chat", and "Move to folder" ends with "New folder" to create and
+  move in one step.
+- **Group and filter**: the sidebar Filter menu adds "Group by kind" and a "Not
+  in progress" row, and "Clean up sessions" adds 14 and 30 day windows.
+- **Color and tabs**: a session's color now tints its chat header, the
+  Categorical palette under Settings > Display > Sidebar gives twelve fixed hues,
+  and session tabs drag to reorder.
+
+### Notifications that reach you
+
+- **Push when closed**: Settings > Notifications > Push notifications > "Notify
+  me even when Kiro Crew is closed" delivers to an installed PWA, including iOS
+  after Add to Home Screen.
+- **Your own sounds**: Settings > Notifications > Custom sounds takes a short
+  MP3, WAV or OGG file for any category.
+- **Missed approvals**: an approval that expires unanswered leaves a bell note
+  naming the tool, and on phones the live banner swipes away.
+
+### Schedules and apps
+
+- **Quieter failures**: the job dialog's "Send the failure message after N
+  failures in a row" (and `kirocrew cron add --alert-after N`) rings only the
+  bell for earlier failures, and a run the security gate partly refused shows
+  "Partial".
+- **More ways to say when**: one-shot times accept days and weeks ("in 2
+  days", "in 1 week"), and the Start loop dialog offers "Run first cycle now".
+- **Apps in their own window**: an app page's "Pop out app to its own window"
+  control opens it separately, and right-clicking an app row in the sidebar opens
+  Details or Unpin with an update badge.
+
+### Desktop and command line
+
+- **Close means quit if you want**: Settings > Display > View > Desktop app
+  turns off "Keep running in the background after closing the window".
+- **Links that open the app**: `kirocrew://chat?sid=<key>` opens a session in
+  the desktop app, and `kirocrew open` does the same from the terminal.
+- **Phone sign-in**: the session-expired banner can scan the sign-in QR with
+  the phone camera in the page, and Connect your phone shows a QR for any
+  external address.
+
+### Lighter and faster
+
+The dashboard stays responsive while many sessions stream, the gateway no longer
+stalls on file reads, and boot is faster. Memory use drops by about 110 MiB from
+the entity graph and more from a capped transcript cache, and Linux arm64
+embeddings run about five times faster.
+
+### Previews you can turn on (Preview)
+
+These are not generally available yet. Each is a switch under Settings >
+Developer > Feature Previews and is off until you turn it on.
+
+- **Ultra Mode**: the "Ultra Mode" chip on a new chat runs it on a conductor
+  that hands each task to its own worker chat, and the side panel's Board tab
+  shows the crew by what needs you, with a catch-up message when you come back.
+- **Agent harness per mate**: a mate's profile gains an "Agent harness" row, so
+  one mate can run on Claude Code while the rest stay on KAS.
+- **Session Environments**: Settings > Session Environments connects Coder,
+  Fly.io Sprites or boxd workspaces, with an environment chip in the composer
+  and a remote Files panel and terminal; the gateway also needs
+  `KIROCREW_DEV_MODE` set.
+
+### Notable fixes
+
+**Chat and sessions.** A message sent while nothing is running is queued
+instead of leaving the chat stuck on thinking, and a reply keeps its footer
+however the turn ends. Regenerate that ends empty keeps the previous reply, and
+sessions with only sub-agents running stay under the In progress filter.
+
+**Mates and channels.** Mates you created are listed even with an empty chat,
+and a mate stays silent when it has nothing to say. Slack replies post only the
+final answer, Slack Socket Mode works behind a SOCKS proxy, and the Atlassian
+connection's Jira and Confluence tools work again.
+
+**Schedules, memory and desktop.** A cron's wall-clock time holds across a
+daylight saving change, and a memory backup folder with an extra file no longer
+deletes real backups. An update you put off is never installed behind your back,
+and fewer ordinary commands are wrongly denied.
+
 ## [0.11.1] - 2026-10-31
 
 A hot patch for 0.11.0: memory stays fast and intact under load, the KAS
