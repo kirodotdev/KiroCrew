@@ -32,7 +32,6 @@
   "src/test/App.offlinePill.test.tsx",
   "src/test/App.terminalEnabledFlag.test.tsx",
   "src/test/App.terminalHydrateReconcile.test.tsx",
-  "src/test/App.terminalNavActive.test.tsx",
   "src/test/App.test.tsx",
   "src/test/App.topbarAndShortcuts.test.tsx",
   "src/test/AppDetailPageCoverage.test.tsx",
