@@ -185,8 +185,8 @@ CHECKPOINT_DIR: Final[str] = "projections"
 #: Inside the NEWEST unit's directory, which is the only unit a continuation lets grow
 #: and the one whose bytes the witness is a digest of. Two consequences, both wanted: the
 #: file inherits the ``crew-log`` fence and is removed with the unit, and a slot that
-#: gains a unit (a session reset) finds no savepoint at its new newest unit and folds
-#: cold once -- exactly what the warm cell already does for a changed unit list.
+#: gains a unit (a session reset) finds no savepoint at its new newest unit. A warm cell
+#: in the same process carries over that rollover; a new process folds cold once.
 SLOT_CHECKPOINT_DIR: Final[str] = "slot-projections"
 
 #: Largest savepoint file this package reads or writes, and the number the kernel
