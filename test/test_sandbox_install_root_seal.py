@@ -254,21 +254,36 @@ def test_the_seatbelt_adapter_guards_every_ancestor_of_the_install_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sandbox, "_resolved_install_root_targets", lambda: [INSTALL])
+    monkeypatch.setattr(sandbox, "_resolved_kiro_agents_targets", lambda: [])
     host = sandbox._live_plan_host(SandboxRequest(tier="standard", backend=BACKEND_SEATBELT))
-    assert host.install_root_ancestor_guards == _INSTALL_ANCESTORS
+    # The guards now cover every read-only seal's ancestors, so the crew-home ceilings
+    # under this host's own ``$HOME`` are in there too; the install root's are a subset.
+    assert set(_INSTALL_ANCESTORS) <= set(host.readonly_ancestor_guards)
 
 
 @_POSIX_ONLY
-def test_the_namespace_adapter_needs_no_ancestor_guards(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The read-only bind is on the directory itself and moves with a renamed parent.
+def test_the_namespace_adapter_pins_only_the_ancestors_this_uid_could_rename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The read-only bind on the install tree moves with a renamed parent, so the namespace
+    # launcher pins the parents the agent could rename. A system install root has none:
+    # nothing above it is this uid's, so no system tree is ever re-bound.
     monkeypatch.setattr(sandbox, "_resolved_install_root_targets", lambda: [INSTALL])
+    monkeypatch.setattr(sandbox, "_resolved_kiro_agents_targets", lambda: [])
+    monkeypatch.setattr(sandbox, "_caller_can_rename", lambda path: False)
     host = sandbox._live_plan_host(SandboxRequest(tier="standard"))
-    assert host.install_root_ancestor_guards == ()
+    assert host.readonly_ancestor_guards == ()
+    # An install tree in a folder this uid owns gets every movable parent pinned.
+    monkeypatch.setattr(
+        sandbox, "_caller_can_rename", lambda path: os.path.dirname(path).startswith("/opt")
+    )
+    host = sandbox._live_plan_host(SandboxRequest(tier="standard"))
+    assert set(host.readonly_ancestor_guards) == set(_INSTALL_ANCESTORS) - {"/opt"}
 
 
 @_POSIX_ONLY
 def test_the_seatbelt_profile_denies_renaming_a_parent_of_the_install_root() -> None:
-    host = _host(install_root_ancestor_guards=_INSTALL_ANCESTORS)
+    host = _host(readonly_ancestor_guards=_INSTALL_ANCESTORS)
     plan = plan_confinement(SandboxRequest(tier="standard", backend=BACKEND_SEATBELT), host)
     profile = sandbox_seatbelt.render_seatbelt_profile(plan)
     for parent in _INSTALL_ANCESTORS:

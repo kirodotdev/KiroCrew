@@ -4,7 +4,7 @@ One of the launcher program's parts (see :mod:`kiro_crew.sandbox_launcher_parts`
 marker line this file is the program's text from ``check_crew_home_aliases`` to
 ``confirm_crew_home_aliases``: the crew-home alias checks on both sides of the masks, the
 pre-read of the files the masks re-expose, and every stage ``place_masks`` runs -- staging the
-private windows, sealing the read-only paths, masking the sensitive directories, re-opening the
+private windows, pinning the seals' parent directories, sealing the read-only paths, masking the sensitive directories, re-opening the
 write carve-outs, restoring the exposed files, checking the credential aliases, and masking the
 sensitive files and ``~/.ssh``. A new launcher stage goes here, and ``place_masks`` or
 ``run_child`` in :mod:`kiro_crew.sandbox_launcher_program` names its place in the order.
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         _MS_NOEXEC,
         _MS_NOSUID,
         _MS_RDONLY,
+        _MS_REC,
         _MS_REMOUNT,
         _PR_SET_DUMPABLE,
         _any_kind,
@@ -235,6 +236,64 @@ def stage_private_windows(launch):
             launch.private_stage[p] = _stage_dir
         finally:
             os.close(_win_fd)
+
+
+def pin_seal_parents(launch):
+    """Bind each renameable ancestor of a read-only seal over itself, recursively.
+
+    A seal is a bind of the sealed path over itself, and the kernel holds a directory in
+    place only when it IS a mountpoint, not when it merely CONTAINS one. So the parents
+    of a seal stay movable unless each of them is made a mountpoint of its own: with that,
+    ``rename(2)`` of any of them returns EBUSY, and seccomp denies the ``umount2`` that
+    would undo it. Every seal then stays on the path the gateway reads.
+
+    The bind is READ-WRITE (no remount follows), so the directory keeps every permission
+    it had; only renaming or removing the directory itself changes. It is RECURSIVE: a
+    non-recursive bind would drop whatever is already mounted beneath the directory from
+    the agent's view, and inside a user namespace the kernel refuses one outright when a
+    locked host mount sits below. Shallowest first, so each pin lands on top of the one
+    above it.
+
+    Runs after :func:`stage_private_windows` (a window is staged from the real tree, not
+    from a pin) and BEFORE :func:`seal_readonly` and every hide, so each seal and hide is
+    mounted on top of the pins and the visible tree is exactly the one the later stages
+    built.
+
+    A pin whose name is absent is skipped -- nothing is there to hold. A name that
+    reaches a different object after the bind than before it means the pin landed off
+    target, so the spawn is refused.
+    """
+    for d in sorted(launch.parent_pins, key=lambda p: (p.count("/"), p)):
+        target = d.encode()
+        _pin_fd, _pin_target = _pin_mount_path(launch, target, stat.S_ISDIR)
+        if _pin_target is None:
+            continue
+        try:
+            _pin_id = os.fstat(_pin_fd)
+            _mount_or_die(
+                launch,
+                _pin_target,
+                _pin_target,
+                _MS_BIND | _MS_REC,
+                "pinning seal parent %s in place" % d,
+            )
+        finally:
+            os.close(_pin_fd)
+        _post_fd, _post_target = _pin_mount_path(launch, target, stat.S_ISDIR)
+        _same = False
+        if _post_target is not None:
+            try:
+                _post_id = os.fstat(_post_fd)
+                _same = _post_id.st_dev == _pin_id.st_dev and _post_id.st_ino == _pin_id.st_ino
+            finally:
+                os.close(_post_fd)
+        if not _same:
+            sys.exit(
+                "sandbox: BLOCKED -- %s changed identity while being pinned, so a "
+                "parent of a read-only seal could not be held in place. Another "
+                "process is rewriting that name. Lower agent.sandbox to run without "
+                "this control deliberately." % d
+            )
 
 
 def seal_readonly(launch):
