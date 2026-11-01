@@ -1017,6 +1017,47 @@ answers, each open interrupt is resumed with a DENY (fail closed: the hook cance
 call, the tool never runs), at most three passes, then the state is cleared
 (`test/test_strands_gate_module.py`).
 
+**The operator's project runs only as the version the operator confirmed.** Its module
+code runs in the worker that holds the `agent.strands_env` keys, and the tool gate never
+sees it, so a project in a folder the agent can write could be turned into code nobody
+reviewed. The confirmed version is a fingerprint in `agent.strands_project_sha256`
+(`acp/harness/strands_project_pin.py`): sha256 over every regular file under the folder
+holding the project's `agent.py`, recursively, as sorted relative POSIX paths, sizes and
+bytes. `__pycache__` folders are left out because no project file is ever run from
+bytecode (below). A link or
+junction, any other non-regular entry, an unreadable file, more than 5000 files or more
+than 64 MB refuses. The pin sits in `config.json`, which the agent's file tools may not
+write and every sandbox tier mounts read-only (with `agent.sandbox: "off"`, the
+operator's own choice, no tier mounts anything, as for every config switch), and it has no `_EDITABLE_CONFIG` entry, so
+no dashboard write or change card records it; only the operator does
+(`kirocrew config set agent.strands_project_sha256 <value>`, or the file). Every launch
+recomputes it in the gateway before the read-back boot and before any key file is
+written, and a mismatch or an empty pin refuses the session with the current value and
+that command; nothing re-records it. The gate module recomputes it again (its own copy
+of the algorithm, held equal by `test_the_gate_fingerprint_equals_the_gateway_one`)
+right before the import, against the pin Crew passed in `KIROCREW_STRANDS_PROJECT_SHA256`,
+keeping each file's own digest. It then puts a finder just ahead of Python's path finder
+for the rest of the session: every import that resolves into the project folder (judged
+on the path as written, with its folder resolved, and fully resolved, so a file linked
+out of the folder still counts; and by the folder's device and inode, so a spelling no
+path rule maps back, such as other letter case on a case-insensitive macOS volume or a
+Windows short name, still counts and finds its file by inode), the entry included, runs only a `.py` file whose bytes
+match its confirmed digest, compiled from the bytes it checked by a `SourceFileLoader`
+subclass, so package resources (`importlib.resources`, `pkgutil.get_data`) still work.
+A file the project loads by path (`spec_from_file_location`, `runpy`) never asks the meta
+path, so the gate also holds Python's own file loaders to the same rule inside the folder:
+the stock source loader compiles only confirmed bytes there and never reads bytecode, and
+the bytecode and extension loaders refuse; `runpy.run_path` on a file there runs only
+confirmed source; a zip archive there is never imported from; outside the folder all of
+them are unchanged. A cached `.pyc` is never read (Python trusts an
+unchecked-hash `.pyc` without its source), a file edited or added mid-session is refused
+when imported, and any other file kind there (`.pyc`, an extension module) is refused.
+Not covered: code the project imports from installed packages outside its folder, and
+files the project opens itself at run time after the launch check (data, or text it
+passes to `exec` or `compile` on its own, a child process it starts on a folder file, a
+library it loads with `ctypes`). The bundled project
+needs no pin (`test/test_strands_project_pin.py`).
+
 **The third is a wire that refuses Crew's MCP array.** Project mode rejects a non-empty
 `session/new` `mcpServers` array, so the whole projected array rides an owner-only
 `--mcp-config` file (Copilot's staging directory and lifetime), and the CLI's own

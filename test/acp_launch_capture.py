@@ -461,7 +461,7 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(strands_mod, "strands_python_env_issue", return_value=""),
             patch.object(strands_mod, "_strands_version_issue", return_value=""),
             patch.object(pi_node_mod, "choose_pi_node", return_value=pi_node_mod.PiNodeChoice()),
-            patch.object(strands_mod, "_strands_user_project", return_value=""),
+            patch.object(strands_mod, "_strands_user_project", return_value=("", "")),
             patch.object(strands_mod, "_strands_vault_env_names", return_value=()),
             patch.object(strands_mod, "_strands_vault_env", return_value={}),
             patch.object(

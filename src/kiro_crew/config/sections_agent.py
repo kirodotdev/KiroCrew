@@ -380,8 +380,24 @@ class AgentConfig:
             "module, which makes every Strands Agent the project builds ask Kiro "
             "Crew before each tool call, so a project needs no change of its own. "
             "Its imports must be installed in the Python environment Kiro Crew runs "
-            "Strands with. Takes effect for new Strands sessions. Ignored by every "
-            "other backend.",
+            "Strands with. A project of yours runs only as the version recorded in "
+            "agent.strands_project_sha256. Takes effect for new Strands sessions. "
+            "Ignored by every other backend.",
+        ),
+    )
+    strands_project_sha256: str = field(
+        default="",
+        metadata=_meta(
+            "Strands project fingerprint",
+            "The fingerprint of the agent.strands_project version you confirmed: a "
+            "sha256 over every file in the project's folder. The project's code runs "
+            "with your provider keys and outside the tool gate, so a Strands session "
+            "on your project starts only when the folder still matches it; a refused "
+            "session prints the current value and the command that records it. Set it "
+            "yourself after reviewing the files (kirocrew config set "
+            "agent.strands_project_sha256 <value>); Kiro Crew never records it on its "
+            "own. Packages the project imports from outside its folder are not "
+            "covered. Ignored for the bundled project and by every other backend.",
         ),
     )
     strands_provider: str = field(

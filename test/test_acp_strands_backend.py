@@ -782,23 +782,31 @@ def test_no_project_runs_the_bundled_one(monkeypatch) -> None:
     monkeypatch.setattr(
         loader.KiroCrewConfig,
         "load",
-        classmethod(lambda cls: SimpleNamespace(agent=SimpleNamespace(strands_project=""))),
+        classmethod(
+            lambda cls: SimpleNamespace(
+                agent=SimpleNamespace(strands_project="", strands_project_sha256="")
+            )
+        ),
     )
-    assert strands_mod._strands_user_project() == ""
+    assert strands_mod._strands_user_project() == ("", "")
 
 
 def test_a_project_folder_resolves_to_its_agent_py(tmp_path, monkeypatch) -> None:
+    from kiro_crew.acp.harness.strands_project_pin import project_fingerprint
     from kiro_crew.config import loader
 
     (tmp_path / "agent.py").write_text("agent = None\n", encoding="utf-8")
+    pin = project_fingerprint(tmp_path / "agent.py")[0]
     monkeypatch.setattr(
         loader.KiroCrewConfig,
         "load",
         classmethod(
-            lambda cls: SimpleNamespace(agent=SimpleNamespace(strands_project=str(tmp_path)))
+            lambda cls: SimpleNamespace(
+                agent=SimpleNamespace(strands_project=str(tmp_path), strands_project_sha256=pin)
+            )
         ),
     )
-    assert strands_mod._strands_user_project() == str((tmp_path / "agent.py").resolve())
+    assert strands_mod._strands_user_project() == (str((tmp_path / "agent.py").resolve()), pin)
 
 
 def test_a_path_that_is_no_project_refuses(tmp_path, monkeypatch) -> None:
@@ -809,7 +817,9 @@ def test_a_path_that_is_no_project_refuses(tmp_path, monkeypatch) -> None:
         "load",
         classmethod(
             lambda cls: SimpleNamespace(
-                agent=SimpleNamespace(strands_project=str(tmp_path / "nope"))
+                agent=SimpleNamespace(
+                    strands_project=str(tmp_path / "nope"), strands_project_sha256=""
+                )
             )
         ),
     )
