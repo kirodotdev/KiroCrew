@@ -338,7 +338,6 @@
   "src/test/NotificationsPage.noFilter.test.tsx",
   "src/test/OverviewPage.suppressBuiltin.test.tsx",
   "src/test/OverviewPage.test.tsx",
-  "src/test/PackAvatar.test.tsx",
   "src/test/PapyrusPageCoverage.test.tsx",
   "src/test/PasteHoverLayer.test.tsx",
   "src/test/PendingQuestionCard.test.tsx",
