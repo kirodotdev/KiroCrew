@@ -25,7 +25,7 @@
  * depends on elapsed time or on test order.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import type { AppConfig } from '../apps/mochi/src/shared/config'
@@ -185,6 +185,11 @@ function clickRow(text: string): void {
 function saveButton(): HTMLButtonElement {
   // The unsaved-changes dialog adds a second "Save"; the footer one is first.
   return screen.getAllByRole('button', { name: 'Save' })[0] as HTMLButtonElement
+}
+
+/** Replay the shell's native close inside act: the panel's close handler sets state. */
+function nativeClose(): void {
+  act(() => { mocks.requestClose() })
 }
 
 beforeEach(() => {
@@ -481,6 +486,7 @@ describe('SettingsPanel model section', () => {
     await mount()
     openSection('LLM Model')
 
+    await waitFor(() => expect(api.getModels).toHaveBeenCalled())
     expect(screen.queryByRole('combobox')).toBeNull()
   })
 
@@ -780,7 +786,7 @@ describe('SettingsPanel MCP section', () => {
     fireEvent.click(await screen.findByRole('button', { expanded: false }))
     expect(await screen.findByText('Auto-approved')).toBeTruthy()
     const chat = screen.getByRole('tab', { name: 'Chat Tools' })
-    chat.focus()
+    act(() => { chat.focus() })
     fireEvent.keyDown(chat, { key: 'ArrowRight' })
     const bg = screen.getByRole('tab', { name: 'Background Tools' })
     // Radix moves roving focus on the next task, then selects on focus.
@@ -1250,7 +1256,7 @@ describe('SettingsPanel close', () => {
     await mount()
     fireEvent.change(screen.getByDisplayValue('Mochi'), { target: { value: 'Tofu' } })
 
-    mocks.requestClose()
+    nativeClose()
     expect(await screen.findByText('Unsaved Changes')).toBeTruthy()
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -1262,7 +1268,7 @@ describe('SettingsPanel close', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
   })
 
-  it('survives a native close that fires during subscribe', () => {
+  it('survives a native close that fires during subscribe', async () => {
     // Pins the TDZ: subscribe used to close over handleClose declared later in
     // the component body, so an early fire threw ReferenceError.
     api.onSettingsCloseRequested = (cb: () => void) => {
@@ -1271,6 +1277,8 @@ describe('SettingsPanel close', () => {
     }
 
     expect(() => render(<SettingsPanel onClose={onClose} />)).not.toThrow()
+    // The config read still lands after the render; wait for the loaded panel.
+    await screen.findByRole('button', { name: 'General' })
   })
 
   it('keeps the native-close handler current after re-renders', async () => {
@@ -1282,7 +1290,7 @@ describe('SettingsPanel close', () => {
     openSection('General')
     fireEvent.change(screen.getByDisplayValue('Mochi'), { target: { value: 'Tofu' } })
 
-    mocks.requestClose()
+    nativeClose()
     expect(await screen.findByText('Unsaved Changes')).toBeTruthy()
     expect(onClose).not.toHaveBeenCalled()
   })
