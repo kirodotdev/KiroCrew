@@ -104,3 +104,32 @@ def test_internal_content_scan_gate_only_cancels_superseded_pr_runs() -> None:
 def test_fork_pr_label_job_has_a_timeout() -> None:
     job = _load("fork-pr-label.yml")["jobs"]["label"]
     assert 0 < int(job["timeout-minutes"]) <= 10
+
+
+def test_desktop_matrix_job_has_a_timeout() -> None:
+    # A hang in this resolver holds its runner and stalls every desktop leg
+    # that `needs` it. The job is seconds of work (shallow checkout plus a
+    # depth-1 fetch of one base SHA), so no ci.yml `changes`-style budget for a
+    # full-history fetch is needed -- just a cap.
+    job = _load("build.yml")["jobs"]["desktop-matrix"]
+    assert 0 < int(job["timeout-minutes"]) <= 15
+
+
+def test_pages_deploy_is_never_cancelled_in_flight() -> None:
+    # pages.yml has no pull_request trigger, so every run it can have publishes
+    # to the github-pages environment. A queued duplicate is cheap to discard;
+    # an interrupted production deploy is not.
+    concurrency = _load("pages.yml")["concurrency"]
+    assert concurrency["cancel-in-progress"] is False
+
+
+def test_client_py_only_cancels_superseded_pr_runs() -> None:
+    # Pushes to main share the `github.ref` group key, so a bare
+    # cancel-in-progress would let a second push kill the first one's in-flight
+    # run -- and this suite is the only coverage the kirocrew-client
+    # distribution has. Merge-group entries are unaffected either way: their
+    # `github.ref` is a unique gh-readonly-queue ref.
+    concurrency = _load("client-py.yml")["concurrency"]
+    cancel = concurrency["cancel-in-progress"]
+    assert cancel is not True
+    assert cancel == "${{ github.event_name == 'pull_request' }}"
