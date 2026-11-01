@@ -225,7 +225,7 @@ def test_revoking_the_grant_stops_the_frame_and_its_renewal(
 
 
 def test_the_dashboard_mirrors_the_suffix_list() -> None:
-    ts = (ROOT / "website/src/linkPreview/linkPreviewRegistry.ts").read_text(encoding="utf-8")
+    ts = (ROOT / "website/src/appFrame/hosts.ts").read_text(encoding="utf-8")
     block = ts[ts.index("export const PUBLIC_SUFFIXES") : ts.index("export const CC_SECOND_LEVELS")]
     assert set(re.findall(r"'([a-z0-9.-]+)'", block)) == set(g.PUBLIC_SUFFIXES)
     cc = ts[ts.index("export const CC_SECOND_LEVELS") : ts.index("/** Lowercase, no trailing dot")]
