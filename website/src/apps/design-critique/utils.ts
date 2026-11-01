@@ -11,9 +11,20 @@ export function detectKind(raw: string): Detected | null {
   const s = String(raw || '').trim()
   if (!s) return null
   if (/^https?:\/\/(www\.)?figma\.com\//i.test(s)) return { kind: 'figma', value: s }
-  if (/^(https?:\/\/)?(github|gitlab|bitbucket)\.com\/[^/]+\/[^/]+/i.test(s)) return { kind: 'repo', value: s.replace(/^(?!https?:)/, 'https://') }
-  if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?/i.test(s)) return { kind: 'url', value: s, local: true }
-  if (/^localhost(:\d+)/i.test(s) || /^127\.0\.0\.1(:\d+)/.test(s)) return { kind: 'url', value: 'http://' + s, local: true }
+  // `www.` is optional: people paste `https://www.github.com/o/r` from the address
+  // bar, and without it the link fell through to a live-page capture, not a clone.
+  // The `www.` is dropped from the value so the clone goes to the canonical host.
+  // Bitbucket lives at bitbucket.org; bitbucket.com is kept for links that match today.
+  const repo = /^(https?:\/\/)?(www\.)?((github\.com|gitlab\.com|bitbucket\.(?:org|com))\/[^/]+\/[^/]+[\s\S]*)$/i.exec(s)
+  if (repo) return { kind: 'repo', value: (repo[1] || 'https://') + repo[3] }
+  // `0.0.0.0` is the address a dev server LISTENS on (`vite --host`), not one the
+  // backend will fetch: discovery refuses the unspecified address. The server is
+  // reachable on 127.0.0.1, so that is the host the value carries.
+  const loopback = (u: string) => u.replace(/^(https?:\/\/)?0\.0\.0\.0(?=[:/?#]|$)/i, '$1127.0.0.1')
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?/i.test(s)) return { kind: 'url', value: loopback(s), local: true }
+  // The same four loopback hosts without a scheme. The port is optional, but a
+  // portless host must end there or at a path, so `localhostfoo` stays unknown.
+  if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+|(?=[/?#]|$))/i.test(s)) return { kind: 'url', value: 'http://' + loopback(s), local: true }
   if (/^https?:\/\//i.test(s)) return { kind: 'url', value: s }
   // POSIX absolute / home / relative, plus Windows drive-letter (C:\ or C:/) and
   // UNC (\\host\share). Without the Windows forms a user on a supported platform
