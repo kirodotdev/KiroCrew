@@ -102,7 +102,6 @@
   "src/test/KiroCrewAgentsPage.schedDraftGuard.test.tsx",
   "src/test/KnowledgeGraphCoverage.test.tsx",
   "src/test/LexicalComposerInput.test.tsx",
-  "src/test/MarkdownPanel.test.tsx",
   "src/test/MarkdownPanelCoverage.test.tsx",
   "src/test/MarkdownPanelMoreCoverage.test.tsx",
   "src/test/MarkdownRenderer.mermaid.test.tsx",
