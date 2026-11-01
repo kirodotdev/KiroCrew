@@ -313,7 +313,6 @@
   "src/test/ProjectsPage.test.tsx",
   "src/test/ProjectsPageCoverage.test.tsx",
   "src/test/ProjectsPageWorkspaceShell.test.tsx",
-  "src/test/RemoteArtifactDetailPageCoverage.test.tsx",
   "src/test/RemoteCrewPanel.test.tsx",
   "src/test/RunInTerminalBtn.security.test.tsx",
   "src/test/RunInTerminalBtn.test.tsx",
