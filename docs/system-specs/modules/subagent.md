@@ -1898,6 +1898,28 @@ exists and one would drift. The one `parent-end teardown: verb=… key=… snaps
 audit line is logged at **WARNING when the snapshot names work to discard** (INFO for a
 childless parent end): the gateway log's default level is WARNING, and at INFO the only
 record of an action that discards live work was invisible in every field report of it. A queued run's store phase
+### Dashboard Stop and subagent UI
+
+When a user presses the dashboard **Stop** button, `api_chat_slot_stop` ends the
+parent turn via `stop_slot_turn` and then broadcasts a `parent_stopped`
+WebSocket event to the connected frontend.
+
+The frontend marks every active subagent card for that slot with
+`parentStopped = true` and renders a dimmed "parent stopped — still running"
+label.  Crucially, the **Stop all** button remains reachable so the user can
+kill the processes if desired.  This preserves the existing *Stop* vs
+*Stop all* distinction — Stop is a turn-level verb; Stop all is a
+process-level verb.
+
+| Caller | Cascades to subagent UI? | Kills processes? |
+|--------|--------------------------|------------------|
+| Dashboard Stop button | yes (dims cards) | no |
+| Dashboard Stop all | n/a | yes |
+| Messaging `stop` | no | no |
+| Messaging `stop-all` | n/a | yes |
+| Steer-containment stop | no | no |
+| Session-control stop | no | no |
+
 goes through `taskq_cancel_queued_async`, which is `taskq_cancel_queued` handed whole to
 `store.run` rather than a second copy of its transaction — one hop onto the writer
 thread, and the race-safety argument (the state test and the cancel sharing one
