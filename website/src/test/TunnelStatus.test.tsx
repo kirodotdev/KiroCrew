@@ -13,7 +13,7 @@
  * is no em-dash flash before the first poll resolves.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { tunnelDisplay, TunnelStatus as TunnelStatusTile } from '../components/TunnelStatus'
 import type { TunnelStatus } from '../api/client'
@@ -110,11 +110,11 @@ describe('<TunnelStatus /> tile', () => {
       })
       render(<TunnelStatusTile />, { wrapper: Wrapper })
       // Drain the initial fetch.
-      await vi.advanceTimersByTimeAsync(0)
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
       const initialCalls = (api.tunnelStatus as ReturnType<typeof vi.fn>).mock.calls.length
       expect(initialCalls).toBeGreaterThan(0)
       // Well past several 15s intervals — a disabled tunnel must not re-poll.
-      await vi.advanceTimersByTimeAsync(15_000 * 5)
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000 * 5) })
       expect((api.tunnelStatus as ReturnType<typeof vi.fn>).mock.calls.length).toBe(initialCalls)
     } finally {
       vi.useRealTimers()
