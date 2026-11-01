@@ -264,7 +264,7 @@ describe('KnowledgePage — keyboard shortcuts', () => {
   it('Escape inside the search box blurs it instead of reaching the page handler', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
     const input = await screen.findByPlaceholderText(/Search knowledge/i) as HTMLInputElement
-    input.focus()
+    act(() => { input.focus() })
     expect(document.activeElement).toBe(input)
     fireEvent.keyDown(input, { key: 'Escape' })
     expect(document.activeElement).not.toBe(input)

@@ -284,7 +284,6 @@
   "src/test/KiroSignInCard.test.tsx",
   "src/test/KnowledgeDetailViewCoverage.test.tsx",
   "src/test/KnowledgeGraphCoverage.test.tsx",
-  "src/test/KnowledgeIndexCoverage.test.tsx",
   "src/test/LexicalComposerInput.test.tsx",
   "src/test/LibraryPageLaunchpad.test.tsx",
   "src/test/LinkPreview.test.tsx",
