@@ -22,7 +22,6 @@
 1 test/test_connections_tool_aliases.py
 2 test/test_installer_node_floor.py
 6 test/test_ios_simulator_preview_skill.py
-2 test/test_kiro_prerequisite.py
 1 test/test_perf_boot_path.py
 3 test/test_pod_e2e_harness_paths.py
 1 test/test_pr_readiness_publish.py
