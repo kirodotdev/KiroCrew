@@ -550,6 +550,13 @@ class AcpProvider(LLMProvider):
         return value if isinstance(value, frozenset) else None
 
     @property
+    def kas_spec_shell_limits(self) -> tuple[tuple[str, ...] | None, tuple[str, ...]] | None:
+        """The live session's KAS shell limits (see ``AcpSessionProvider.kas_spec_shell_limits``),
+        or ``None`` while no session handle serves this provider yet."""
+        value = getattr(self._client, "kas_spec_shell_limits", None)
+        return value if isinstance(value, tuple) else None
+
+    @property
     def kas_projected_agent(self) -> str:
         """The agent this session's registered batch was built for, or ``""``."""
         value = getattr(self._client, "kas_projected_agent", "")

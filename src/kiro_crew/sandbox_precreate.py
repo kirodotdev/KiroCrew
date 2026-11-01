@@ -94,6 +94,7 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # gateway records without letting a sandbox create the missing root.
     "subagents",
     "member-memory-bindings",
+    "background",
     "memory_stores",
     "profiles",
     # The crew webview template directory. A fence only fences an EXISTING path:
@@ -175,6 +176,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "engines",
     "subagents",
     "member-memory-bindings",
+    "background",
     "decisions",
     "models",
     "redaction-allow",
@@ -232,6 +234,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed run records",
         "the agent could rewrite the app owner a retained V1 run restores its "
         "authorization from",
+    ),
+    "background": (
+        "sealed background command records",
+        "the agent could forge the pid the gateway signals or the exit status a run reports",
     ),
     # Sealing the seam that turns the feature on without sealing the record it writes
     # would be half a control: appending one feedback row is enough to put a verdict

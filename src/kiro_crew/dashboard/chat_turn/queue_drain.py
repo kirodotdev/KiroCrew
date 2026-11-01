@@ -19,6 +19,7 @@ from kiro_crew.dashboard.chat_delivery import (
 from kiro_crew.dashboard.chat_title import RESTORED_TURN_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
+    BACKGROUND_COMMAND_KIND,
     MCP_APP_MESSAGE_KIND,
     STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
@@ -822,9 +823,12 @@ async def _start_next_queued_turn(
     # A re-routed automation refusal (``session_directive_apply``): structural
     # kind, like the app message above, so it drains as an ``inject`` row the
     # crewmate's turn carries rather than a ``user`` row shown as the person's
-    # own bubble. Never merges (a system-injection kind), so ``consumed`` holds
-    # it alone.
-    is_automation_notice = any(item.get("kind") == AUTOMATION_NOTICE_KIND for item in consumed)
+    # own bubble. A background command's wake drains the same way: its card is
+    # what the person reads. Never merges (a system-injection kind), so
+    # ``consumed`` holds it alone.
+    is_automation_notice = any(
+        item.get("kind") in (AUTOMATION_NOTICE_KIND, BACKGROUND_COMMAND_KIND) for item in consumed
+    )
     # A requeued automation steer (a work-ledger wake the turn never took): its
     # entry names the `meta.nudge` its row carries, so it drains as the same
     # nudge row it was steered as, never as the person's `user` row. Never

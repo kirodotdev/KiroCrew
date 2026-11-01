@@ -463,6 +463,15 @@ class AcpSessionProvider(LLMProvider):
         return getattr(self._handle, "kas_auto_approved", None)
 
     @property
+    def kas_spec_shell_limits(self) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+        """This session's own agent's shell limits on KAS: its spec's allowlist
+        (``AcpSessionHandle.kas_spec_shell_allowlist``, ``None`` when it sets none)
+        and the commands it grants (``kas_crew_answered_commands``)."""
+        allowlist = getattr(self._handle, "kas_spec_shell_allowlist", None)
+        granted = getattr(self._handle, "kas_crew_answered_commands", ())
+        return allowlist, tuple(granted) if isinstance(granted, (tuple, list)) else ()
+
+    @property
     def kas_projected_agent(self) -> str:
         """See ``AcpSessionHandle.kas_projected_agent``."""
         value = getattr(self._handle, "kas_projected_agent", "")

@@ -429,7 +429,13 @@ class TestLeafOnlyPopulationIsRecorded:
     #: * ``shared_crew_preview.json`` -- the owner's Shared Crew switch, a file at
     #:   the data-home root beside writable siblings, so leaf-only is the only
     #:   hold available, as for ``decisions_consent.json``.
-    EXPECTED: dict[str, int] = {"standard": 306, "cc": 313, "strict": 314}
+    #:
+    #: ``background`` -- the gateway-owned background command records, exit
+    #: statuses and logs, sealed read-only so a forged record cannot aim the
+    #: gateway's kill -- is one more data-home root leaf, three entries per tier.
+    #: The gateway only ever creates names beneath it and never republishes the
+    #: leaf itself.
+    EXPECTED: dict[str, int] = {"standard": 309, "cc": 316, "strict": 317}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

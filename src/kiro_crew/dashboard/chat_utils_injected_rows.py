@@ -332,6 +332,13 @@ MCP_APP_MESSAGE_KIND = "mcp_app_message"
 #: runner-authored text into user-authored, persisted history).
 AUTOMATION_NOTICE_KIND = "automation_notice"
 
+#: A background command's wake (``background_run``): the gateway tells the chat
+#: that the command it was waiting on ended, beside the completion card it just
+#: posted. System injection like the kinds above: gateway-authored, never user
+#: speech, so it drains as an ``inject`` row that renders as an automation notice
+#: (the card is what the person reads) and must break a user-message merge.
+BACKGROUND_COMMAND_KIND = "background_command"
+
 #: Provenance banner wrapped around every app-originated message. Structural
 #: classification is by the queue entry's ``kind`` tag (unforgeable, set at
 #: enqueue time); the banner exists for the MODEL and the transcript reader,
@@ -349,6 +356,7 @@ _SYSTEM_INJECTION_KINDS = SUBAGENT_DELIVERY_KINDS | frozenset(
         CRON_NOTIFICATION_KIND,
         MCP_APP_MESSAGE_KIND,
         AUTOMATION_NOTICE_KIND,
+        BACKGROUND_COMMAND_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
     )
 )
