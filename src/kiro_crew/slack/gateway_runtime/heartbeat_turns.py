@@ -189,6 +189,9 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 memory_store=_memory_store,
                 needs_reinjection=_needs_reinjection,
                 skill_bodies_session=session_key,
+                # Triggers read the task as the operator wrote it, never the
+                # HEARTBEAT_KEEP reminder prepended above.
+                skill_trigger_text=task_text,
             )
 
             # A heartbeat turn runs unattended. Bound it with a hard deadline

@@ -291,7 +291,10 @@ The mechanism, when on:
   not the role text, the plan's other steps, the spec or the instructions), a
   task decomposition the spec, and a workflow authoring turn the intent (through
   `WorkflowScope.prompt`, not the authoring instructions or the reference
-  workflows). Other callers match the turn text.
+  workflows). A sub-agent turn passes its task as the parent wrote it, a heartbeat
+  task its text without the HEARTBEAT_KEEP reminder, and a Slack auto-nudge the
+  loop's message without the `[auto-nudge cycle N]` header or the ledger
+  snapshot. Other callers match the turn text.
   A Discord or Webex DM auto-nudge reads the loop's message instead of the
   `[auto-nudge cycle N]` text it delivers: `_fire_dm_nudge` hands it to the
   dispatcher's `handle_message` as `skill_trigger_text`, and the channel pipeline
