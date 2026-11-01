@@ -190,7 +190,6 @@
   "src/test/RemoteCrewPanel.test.tsx",
   "src/test/SchedulePage.test.tsx",
   "src/test/SelectToAsk.test.tsx",
-  "src/test/SessionActionsMenu.folderOrder.test.tsx",
   "src/test/SessionGridViewCoverage.test.tsx",
   "src/test/SessionTitleControl.test.tsx",
   "src/test/SessionsTab.renderLoop.test.tsx",
