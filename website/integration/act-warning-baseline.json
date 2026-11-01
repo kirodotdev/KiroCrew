@@ -152,7 +152,6 @@
   "src/test/WorkspacePickerCoverage.test.tsx",
   "src/test/approvalFocusShortcut.test.tsx",
   "src/test/chatPins.test.tsx",
-  "src/test/composerTreeDrop.test.ts",
   "src/test/notificationConstructorGuard.test.ts",
   "src/test/shortcutsPanelSkipShell.test.tsx",
   "src/test/toolDisclosureKey.renderSite.test.tsx",
