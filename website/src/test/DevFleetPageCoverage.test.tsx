@@ -103,8 +103,8 @@ describe('DevFleetPage row rendering helpers', () => {
   })
 
   it('renders each relative-time bucket for the UPDATED column', async () => {
-    // relTime() has four buckets past "just now"; the row strips the " ago"
-    // suffix, so the column reads 5m / 3d / 2mo.
+    // relTime() is fmtRelative's narrow style, so the column reads the
+    // locale's own words: 5m ago / 3d ago / 2mo ago in English.
     installFetch(fleetOf(
       MAIN_ROW,
       readyRow({ name: 'wt-mins', path: '/w/1', last_updated_at: nowSec() - 300 }),
@@ -113,9 +113,9 @@ describe('DevFleetPage row rendering helpers', () => {
     ))
     renderPage()
     await waitForRow('wt-mins')
-    expect(screen.getByText('5m')).toBeInTheDocument()
-    expect(screen.getByText('3d')).toBeInTheDocument()
-    expect(screen.getByText('2mo')).toBeInTheDocument()
+    expect(screen.getByText('5m ago')).toBeInTheDocument()
+    expect(screen.getByText('3d ago')).toBeInTheDocument()
+    expect(screen.getByText('2mo ago')).toBeInTheDocument()
   })
 
   it('renders an ellipsis PR pill for a state the UI does not model, and still sorts', async () => {

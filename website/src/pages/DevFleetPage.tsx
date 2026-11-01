@@ -30,7 +30,7 @@ import * as api from './devFleetApi'
 import { ApiError } from '../api/client'
 
 import { i18nT } from '../i18n/t'
-import { compareText } from '../i18n/format'
+import { compareText, fmtRelative } from '../i18n/format'
 import {
   readDismissedUndoKey, persistDismissedUndoKey, POLL_MS, sleep, filterStepMarkers, syncFailureTail,
   _activeSyncPolls, awaitGatewayBackGlobal, type Worktree, type UndoTarget, type FleetData, type SyncRun,
@@ -117,14 +117,11 @@ export function mergeLogWindow(buffer: string[], window: string[]): string[] {
   return buffer.concat(window.slice(overlap))
 }
 
+/** The UPDATED column's age, worded by the active locale. A timestamp ahead of
+ *  this clock reads "now", as it always has, rather than "in 5m". */
 function relTime(epoch: number | null | undefined): string {
   if (!epoch) return ''
-  const s = Math.max(0, Math.floor(Date.now() / 1000 - epoch))
-  if (s < 60) return i18nT('pages.devFleetPage.just_now')
-  const m = Math.floor(s / 60); if (m < 60) return m + 'm ago'
-  const h = Math.floor(m / 60); if (h < 24) return h + 'h ago'
-  const d = Math.floor(h / 24); if (d < 30) return d + 'd ago'
-  return Math.floor(d / 30) + 'mo ago'
+  return fmtRelative(Math.min(epoch * 1000, Date.now()))
 }
 
 /* ═══════════ Main component ═══════════ */
@@ -857,7 +854,11 @@ export default function DevFleetPage() {
         if (!running) {
           const removed = allNames.filter((n) => items[n]?.status === 'done').length
           const failed = allNames.filter((n) => items[n]?.status === 'failed').length
-          notify(removed > 0 ? `Pruned ${removed} worktree(s)` + (failed > 0 ? ` (${failed} failed)` : '') : `Prune: ${failed} failed`, { type: removed > 0 ? 'success' : 'error' })
+          notify(removed > 0
+            ? (failed > 0
+              ? i18nT('pages.devFleetPage.pruned_worktrees_some_failed', { count: removed, failed })
+              : i18nT('pages.devFleetPage.pruned_worktrees', { count: removed }))
+            : i18nT('pages.devFleetPage.prune_failed_count', { count: failed }), { type: removed > 0 ? 'success' : 'error' })
           invalidateAll()
           setTimeout(() => setPruneProgress(null), 5000)
           return
@@ -1146,7 +1147,7 @@ export default function DevFleetPage() {
   }
 
   const columnHeader = (
-    <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '2px 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)', minWidth: 640 } as CSSProperties}>
+    <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 104px 212px', gap: 8, alignItems: 'center', padding: '2px 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)', minWidth: 640 } as CSSProperties}>
       <span /><span>{i18nT('pages.devFleetPage.pod_2')}</span><span>{i18nT('pages.devFleetPage.worktree')}</span><span>{i18nT('pages.devFleetPage.pr_2')}</span><span title={i18nT('pages.devFleetPage.commits_behind_main')}>{i18nT('pages.devFleetPage.behind')}</span><span title={i18nT('pages.devFleetPage.last_commit_activity')}>{i18nT('pages.devFleetPage.updated')}</span><span style={{ textAlign: 'right' }}>{i18nT('pages.devFleetPage.actions')}</span>
     </div>
   )
@@ -1160,7 +1161,7 @@ export default function DevFleetPage() {
     const provActive = !w.is_main && !!pr
     return (
       <div key={w.name}>
-        <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--border)', minHeight: 30, minWidth: 640 } as CSSProperties}>
+        <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 104px 212px', gap: 8, alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--border)', minHeight: 30, minWidth: 640 } as CSSProperties}>
           {w.is_main
             ? <span style={{ width: 15 }} />
             : <Clickable aria-label={open ? i18nT('pages.devFleetPage.collapse') : i18nT('pages.devFleetPage.expand')} aria-expanded={open} onClick={() => toggleExpand(w.name)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 0, transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } as CSSProperties}><ChevronRight size={15} className="lucide-inline" /></Clickable>}
@@ -1213,7 +1214,7 @@ export default function DevFleetPage() {
             <>
               {rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>{"\u2014"}</span>}
               <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? i18nT('pages.devFleetPage.commits_behind_main_2', { count: w.behind ?? 0 }) : i18nT('pages.devFleetPage.up_to_date_with_main')}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
-              <span style={{ ...mut, opacity: 0.85 }}>{relTime(w.last_updated_at).replace(' ago', '')}</span>
+              <span title={relTime(w.last_updated_at)} style={{ ...mut, opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{relTime(w.last_updated_at)}</span>
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', minWidth: 0, flexWrap: 'wrap' } as CSSProperties}><DevFleetRowActions
                 w={w} fleet={fleet} busy={busy} rebaseResult={rebaseResult} syncRun={syncRun}
                 gatewayMutating={gatewayMutating} liveStateUnknown={liveStateUnknown}
