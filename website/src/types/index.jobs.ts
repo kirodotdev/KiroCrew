@@ -152,4 +152,6 @@ export interface WorkflowRunSummary {
   phase?: string;
   /** Most recent narrator `log` message. */
   last_log?: string;
+  /** `ts` of the terminal event; null while the run is active. */
+  ended_at?: string | null;
 }
