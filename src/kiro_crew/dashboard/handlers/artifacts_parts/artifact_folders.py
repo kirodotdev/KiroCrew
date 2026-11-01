@@ -667,6 +667,32 @@ async def api_artifact_set_folder(request: web.Request) -> web.Response:
         body = await _read_json_body(request)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    # Resolve the folder only once the artifact is known to exist. Otherwise a
+    # move for an unknown or malformed slug resolves the folder with
+    # create_missing=True first, persisting the whole mkdir -p segment chain,
+    # and only then 404s in _set_folder_and_reload -- leaving orphan folders
+    # behind. api_artifact_update resolves its folder after the content update
+    # proves the slug for the same reason.
+    try:
+        await _run_off_loop(lambda: get_default_store().get(slug))
+    except ArtifactNotFoundError as exc:
+        _audit(
+            tool="artifact_set_folder",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:
+        _audit(
+            tool="artifact_set_folder",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc))
     if "folder" in body:
         folder_id, ferr = await _resolve_folder_ref_off_loop(
             body.get("folder"), create_missing=True
