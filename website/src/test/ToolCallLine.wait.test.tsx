@@ -489,6 +489,9 @@ describe('ToolCallLine wait countdown — End wait button', () => {
     // Retryable: a second click reaches the api again.
     fireEvent.click(endBtn())
     expect(spy).toHaveBeenCalledTimes(2)
+    // Settle the second rejection inside act, so its state update does not land after the test.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(endBtn().disabled).toBe(false)
   })
 
   it('re-arms for a NEW sleep but stays latched for the one just ended', async () => {
