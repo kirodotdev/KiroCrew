@@ -361,6 +361,273 @@ class TestAugmentedPath:
         for d in dirs:
             assert os.path.isabs(d), f"relative PATH entry leaked: {d!r}"
 
+    # --- a dir the inherited PATH already has keeps the user's order ---
+
+    @pytest.fixture
+    def _posix_anchoring(self, monkeypatch):
+        """Anchoring is POSIX-only; pin it so these tests also run on Windows CI."""
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", False)
+
+    @pytest.mark.usefixtures("_posix_anchoring")
+    def test_does_not_reprepend_a_dir_the_inherited_path_already_has(self) -> None:
+        """A well-known dir already on the inherited PATH is not prepended again.
+
+        When the user puts ``/opt/homebrew/bin`` behind a devshell dir on PATH,
+        re-prepending it moves that copy ahead of the devshell's tools and
+        shadows them. ``augmented_path`` must leave the single copy exactly
+        where the user had it.
+        """
+        if not os.path.isabs("/opt/homebrew/bin"):
+            pytest.skip("os.path flavour does not treat the POSIX path as absolute")
+        base = os.pathsep.join(["/devshell/bin", "/opt/homebrew/bin", "/usr/bin"])
+        dirs = augmented_path(base).split(os.pathsep)
+        # Exactly one occurrence, and still behind the devshell dir.
+        homebrew = [i for i, d in enumerate(dirs) if d == "/opt/homebrew/bin"]
+        assert homebrew == [dirs.index("/devshell/bin") + 1]
+        assert dirs.index("/devshell/bin") < dirs.index("/opt/homebrew/bin")
+
+    def test_still_prepends_a_well_known_dir_the_inherited_path_lacks(self) -> None:
+        """A launchd/systemd gateway whose PATH omits the dirs behaves as before.
+
+        When the inherited PATH does not already contain a well-known dir, it is
+        still prepended ahead of base_path, so in-process ``shutil.which``
+        resolves the binaries a login shell would.
+        """
+        if not os.path.isabs("/opt/homebrew/bin"):
+            pytest.skip("os.path flavour does not treat the POSIX path as absolute")
+        dirs = augmented_path("/usr/bin").split(os.pathsep)
+        assert "/opt/homebrew/bin" in dirs
+        assert dirs.index("/opt/homebrew/bin") < dirs.index("/usr/bin")
+
+    def test_interpreter_fallback_is_appended_even_when_inherited(self, monkeypatch) -> None:
+        """The ``sys.executable`` fallback is appended last regardless.
+
+        Its purpose is to resolve console-script wrappers found nowhere else, so
+        the de-dup against base_path must not drop it even if base_path already
+        lists the interpreter dir.
+        """
+        fake_exe = str(Path("/opt/venv/bin/python"))
+        monkeypatch.setattr(sys, "executable", fake_exe)
+        interp_dir = str(Path(fake_exe).parent)
+        monkeypatch.setattr(env_mod, "_INTERPRETER_SCRIPTS_DIR", interp_dir)
+        dirs = augmented_path(os.pathsep.join(["/usr/bin", interp_dir])).split(os.pathsep)
+        assert dirs[-1] == interp_dir
+
+    @pytest.mark.usefixtures("_posix_anchoring")
+    def test_reprepend_dedup_uses_normcase_normpath(self, monkeypatch) -> None:
+        """A base_path entry naming the same dir in a different spelling matches.
+
+        The comparison folds case and separator flavour exactly as
+        :func:`_dedup_dirs` does (``normcase``+``normpath``), so a trailing
+        slash — or on Windows a case/separator variant — of a well-known dir on
+        the inherited PATH suppresses the prepend. Here ``/opt/homebrew/bin/``
+        (trailing separator) must match ``/opt/homebrew/bin``.
+        """
+        if not os.path.isabs("/opt/homebrew/bin"):
+            pytest.skip("os.path flavour does not treat the POSIX path as absolute")
+        base = os.pathsep.join(["/devshell/bin", "/opt/homebrew/bin/"])
+        dirs = augmented_path(base).split(os.pathsep)
+        # The normalized homebrew dir appears once (the user's trailing-slash
+        # spelling), not twice.
+        norm = os.path.normcase(os.path.normpath("/opt/homebrew/bin"))
+        occurrences = [d for d in dirs if os.path.normcase(os.path.normpath(d)) == norm]
+        assert len(occurrences) == 1
+        assert occurrences[0] == "/opt/homebrew/bin/"
+
+    @staticmethod
+    def _make_node_bin(d: Path) -> None:
+        d.mkdir(parents=True)
+        node = d / ("node.exe" if sys.platform == "win32" else "node")
+        node.write_text("#!/bin/sh\n")
+        node.chmod(node.stat().st_mode | stat.S_IXUSR)
+
+    @pytest.mark.usefixtures("_posix_anchoring")
+    def test_inherited_mise_shims_still_outrank_uninherited_install_bin(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Inherited mise shims keep resolving ahead of a raw install bin.
+
+        The shim honours the project's version pin; the raw per-version bin
+        does not. When the inherited PATH carries the shims dir but not the
+        install bin, the install bin must land AFTER the shims (after
+        base_path), never be prepended ahead of them.
+        """
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "mise"))
+        shims = tmp_path / "mise" / "shims"
+        install_bin = tmp_path / "mise" / "installs" / "node" / "22.0.0" / "bin"
+        self._make_node_bin(shims)
+        self._make_node_bin(install_bin)
+        base = os.pathsep.join(["/devshell/bin", str(shims), "/usr/bin"])
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = augmented_path(base).split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        assert dirs.count(str(shims)) == 1
+        assert str(install_bin) in dirs
+        assert dirs.index("/devshell/bin") < dirs.index(str(shims))
+        assert dirs.index(str(shims)) < dirs.index(str(install_bin))
+        # Still ahead of the system dirs, as on main.
+        assert dirs.index(str(install_bin)) < dirs.index("/usr/bin")
+        found = shutil.which(
+            "node", path=os.pathsep.join(d for d in dirs if d.startswith(str(tmp_path)))
+        )
+        assert found is not None
+        assert os.path.normcase(os.path.dirname(found)) == os.path.normcase(str(shims))
+
+    @pytest.mark.usefixtures("_posix_anchoring")
+    def test_extras_ranked_before_first_inherited_dir_are_still_prepended(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Extras ranked ahead of the first inherited one keep their prepend.
+
+        ``~/.local/bin`` ranks before the mise shims, so with only the shims
+        inherited it still goes in front of base_path, as on main.
+        """
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "mise"))
+        shims = tmp_path / "mise" / "shims"
+        shims.mkdir(parents=True)
+        local_bin = os.path.join(str(tmp_path), ".local", "bin")
+        base = os.pathsep.join(["/devshell/bin", str(shims)])
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = augmented_path(base).split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        assert dirs.index(os.path.normpath(local_bin)) < dirs.index("/devshell/bin")
+        # Extras ranked after the inherited shims (e.g. /opt/homebrew/bin) follow base_path.
+        if os.path.isabs("/opt/homebrew/bin"):
+            assert dirs.index(str(shims)) < dirs.index("/opt/homebrew/bin")
+
+    @pytest.mark.usefixtures("_posix_anchoring")
+    def test_reversed_inherited_anchors_keep_install_bin_behind_shims(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A user PATH listing ``/usr/local/bin`` BEFORE the mise shims.
+
+        The shims rank before ``/usr/local/bin`` among the extras, so the
+        insertion point must not move back left to ``/usr/local/bin``: the raw
+        install bin still lands behind the shims, which honour the version pin.
+        """
+        if not os.path.isabs("/usr/local/bin"):
+            pytest.skip("os.path flavour does not treat the POSIX path as absolute")
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "mise"))
+        shims = tmp_path / "mise" / "shims"
+        install_bin = tmp_path / "mise" / "installs" / "node" / "22.0.0" / "bin"
+        self._make_node_bin(shims)
+        self._make_node_bin(install_bin)
+        base = os.pathsep.join(["/usr/local/bin", str(shims), "/usr/bin"])
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = augmented_path(base).split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        assert dirs.index("/usr/local/bin") < dirs.index(str(shims))
+        assert dirs.index(str(shims)) < dirs.index(str(install_bin))
+        assert dirs.index(str(install_bin)) < dirs.index("/usr/bin")
+
+    @staticmethod
+    def _first_seen(path: str) -> list[str]:
+        return list(
+            dict.fromkeys(
+                os.path.normcase(os.path.normpath(d)) for d in path.split(os.pathsep) if d
+            )
+        )
+
+    @pytest.mark.usefixtures("_posix_anchoring")
+    def test_service_path_resolves_in_the_same_order_as_before(self, tmp_path, monkeypatch) -> None:
+        """A service-installed gateway resolves exactly as it did before.
+
+        ``service_path()`` writes ``~/.local/bin:/usr/local/bin:/usr/bin:/bin``
+        ahead of the installer's PATH. Its inherited ``~/.local/bin`` must not
+        push the node-manager bins behind ``/usr/bin``, and an nvm-style bin the
+        installer's PATH carried behind ``/usr/bin`` must still be prepended.
+        The first-occurrence order must equal the old ``extra + [base_path]``.
+        """
+        if not os.path.isabs("/usr/bin"):
+            pytest.skip("os.path flavour does not treat the POSIX path as absolute")
+        from kiro_crew.service.common import service_path
+
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "mise"))
+        install_bin = tmp_path / "mise" / "installs" / "node" / "22.0.0" / "bin"
+        self._make_node_bin(install_bin)
+        monkeypatch.setenv("PATH", f"/usr/bin:{install_bin}:/opt/tools/bin")
+        base = service_path(str(tmp_path))
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            got = augmented_path(base)
+            no_base = augmented_path("").split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        old = os.pathsep.join([*no_base[:-1], base, no_base[-1]])
+        assert self._first_seen(got) == self._first_seen(old)
+        dirs = got.split(os.pathsep)
+        assert dirs.index(str(install_bin)) < dirs.index("/usr/bin")
+
+    @pytest.mark.usefixtures("_posix_anchoring")
+    def test_inherited_dir_behind_system_dirs_is_still_prepended(self) -> None:
+        """Only a dir the user put ahead of ``/usr/bin`` keeps its place.
+
+        ``/opt/homebrew/bin`` behind ``/usr/bin`` is prepended as before, so
+        Homebrew's tools still beat the system copies.
+        """
+        if not os.path.isabs("/opt/homebrew/bin"):
+            pytest.skip("os.path flavour does not treat the POSIX path as absolute")
+        dirs = augmented_path(os.pathsep.join(["/usr/bin", "/opt/homebrew/bin"])).split(os.pathsep)
+        assert dirs.index("/opt/homebrew/bin") < dirs.index("/usr/bin")
+
+    def test_no_inherited_extra_keeps_full_prepend(self, tmp_path, monkeypatch) -> None:
+        """With no extra inherited, every extra is prepended exactly as on main."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "mise"))
+        install_bin = tmp_path / "mise" / "installs" / "node" / "22.0.0" / "bin"
+        self._make_node_bin(install_bin)
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = augmented_path("/usr/bin").split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        assert dirs.index(str(install_bin)) < dirs.index("/usr/bin")
+
+    def test_windows_path_keeps_every_extra_ahead_of_system32(self, tmp_path, monkeypatch) -> None:
+        """A Windows PATH lists System32 first and ``~/.local/bin`` last.
+
+        ``_SYSTEM_BIN_DIRS`` holds POSIX dirs only, so on Windows it never cuts
+        the anchor scan. Without the Windows guard ``~/.local/bin`` at the end
+        became an anchor and every later extra (``.toolbox/bin``, mise shims,
+        node bins) landed behind ``System32`` and ``Program Files\\nodejs``.
+        On Windows every extra is prepended exactly as on main.
+        """
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "mise"))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+        install_bin = tmp_path / "mise" / "installs" / "node" / "22.0.0" / "bin"
+        self._make_node_bin(install_bin)
+        system32 = str(tmp_path / "Windows" / "system32")
+        nodejs = str(tmp_path / "Program Files" / "nodejs")
+        local_bin = os.path.normpath(f"{tmp_path}/.local/bin")
+        toolbox_bin = os.path.normpath(f"{tmp_path}/.toolbox/bin")
+        entries = [system32, nodejs, local_bin]
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            extras_and_tail = augmented_path("").split(os.pathsep)
+            dirs = augmented_path(os.pathsep.join(entries)).split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        tail = env_mod._interpreter_script_dirs()
+        extras = extras_and_tail[: -len(tail)]
+        # Same string as main: every extra, then the inherited PATH, then the tail.
+        assert dirs == extras + entries + tail
+        norm = [os.path.normpath(d) for d in dirs]
+        for later in (toolbox_bin, str(install_bin)):
+            assert norm.index(later) < norm.index(system32)
+            assert norm.index(later) < norm.index(nodejs)
+
 
 class TestExtraMcpPathDirs:
     """The MCP binary search path must be extensible.
@@ -631,9 +898,7 @@ class TestNodeAllBinDirs:
 
     @pytest.fixture
     def fake_home(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p
-        )
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
         monkeypatch.delenv("MISE_DATA_DIR", raising=False)
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         # A macOS runner can carry real Homebrew node kegs; keep them out.
@@ -713,9 +978,7 @@ class TestNodeAllBinDirs:
         first.mkdir(parents=True)
         assert node_all_bin_dirs() == (str(first),)
         other = tmp_path_factory.mktemp("otherhome")
-        monkeypatch.setattr(
-            os.path, "expanduser", lambda p: str(other) if p == "~" else p
-        )
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(other) if p == "~" else p)
         assert node_all_bin_dirs() == ()
 
     def test_relative_mise_data_dir_is_excluded(self, fake_home, monkeypatch) -> None:
@@ -1014,9 +1277,7 @@ class TestActivateMise:
 
     def test_nonzero_exit_is_noop(self, monkeypatch) -> None:
         monkeypatch.setattr("kiro_crew.env._mise_bin", lambda: "/m")
-        monkeypatch.setattr(
-            "kiro_crew.env.subprocess.run", _fake_run(returncode=1, stderr="boom")
-        )
+        monkeypatch.setattr("kiro_crew.env.subprocess.run", _fake_run(returncode=1, stderr="boom"))
         env = {"PATH": "/usr/bin"}
         assert activate_mise(env) == []
         assert env == {"PATH": "/usr/bin"}
@@ -1538,9 +1799,7 @@ class TestDeniedSpecEnvKeys:
         """
         env = {"KIROCREW_CLI": "1", "PYTHONPATH": "/srv", "TOKEN": "t"}
         assert env_mod.denied_spec_env_keys(env) == ["PYTHONPATH"]
-        assert "KIROCREW_CLI" not in env_mod.sanitize_spec_env(
-            [(k, v) for k, v in env.items()]
-        )
+        assert "KIROCREW_CLI" not in env_mod.sanitize_spec_env([(k, v) for k, v in env.items()])
 
 
 class TestKnownKiroCliDirsIsPureInItsHome:
