@@ -401,7 +401,6 @@
   "src/test/ToolCallLine.wait.test.tsx",
   "src/test/ToolDetails.clampedPayloadFormatting.test.tsx",
   "src/test/TranscriptRowGeometry.test.tsx",
-  "src/test/TrustAppModal.test.tsx",
   "src/test/TunnelStatus.test.tsx",
   "src/test/TurnNavigationMinimap.test.tsx",
   "src/test/UpdatePill.test.tsx",
