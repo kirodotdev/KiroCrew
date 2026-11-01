@@ -69,18 +69,22 @@ function setup(blocks: PasteBlock[], value: string) {
   const result = render(<Wrapper blocks={blocks} value={value} />)
 
   const moveOver = (chipIndex = 0) => {
-    hoverRef.current!.handleMouseMove({
-      clientX: 15 + chipIndex * 220,
-      clientY: 105,
-    } as MouseEvent)
+    act(() => {
+      hoverRef.current!.handleMouseMove({
+        clientX: 15 + chipIndex * 220,
+        clientY: 105,
+      } as MouseEvent)
+    })
   }
 
   const moveOutside = () => {
-    hoverRef.current!.handleMouseMove({ clientX: -100, clientY: -100 } as MouseEvent)
+    act(() => {
+      hoverRef.current!.handleMouseMove({ clientX: -100, clientY: -100 } as MouseEvent)
+    })
   }
 
   const leave = () => {
-    hoverRef.current!.handleMouseLeave()
+    act(() => { hoverRef.current!.handleMouseLeave() })
   }
 
   const rerender = (newBlocks: PasteBlock[], newValue: string) => {
@@ -209,7 +213,7 @@ describe('PasteHoverLayer hover preview', () => {
     act(() => { vi.advanceTimersByTime(350) })
     expect(screen.getByTestId('composer-paste-preview-1')).toBeInTheDocument()
 
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
     vi.useRealTimers()
     await waitFor(() => expect(screen.queryByTestId('composer-paste-preview-1')).not.toBeInTheDocument())
   })
