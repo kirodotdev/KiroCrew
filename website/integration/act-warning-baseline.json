@@ -217,7 +217,6 @@
   "src/test/SpecBuilderDecisionLock.test.tsx",
   "src/test/SpecBuilderSpecDetailCoverage.test.tsx",
   "src/test/SttSettings.surface.test.tsx",
-  "src/test/SubagentProgressBar.stalledRow.i18n.test.tsx",
   "src/test/SystemPage.test.tsx",
   "src/test/TerminalRegistryCoverage.test.tsx",
   "src/test/ToolCallLine.test.tsx",
