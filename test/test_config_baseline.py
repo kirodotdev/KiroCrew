@@ -42,9 +42,10 @@ def _generate_bytes(tmp_path: str) -> bytes:
     out_path = os.path.join(str(tmp_path), "config-baseline.json")
     env["KIROCREW_BASELINE_OUTPUT"] = out_path
     result = subprocess.run(
-        [sys.executable, _SCRIPT_PATH],
+        [sys.executable, "-X", "utf8", _SCRIPT_PATH],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=_REPO_ROOT,
         env=env,
         timeout=30,
@@ -127,9 +128,10 @@ class TestBaselineGenerator:
         env = os.environ.copy()
         env["KIROCREW_BASELINE_OUTPUT"] = out_path
         result = subprocess.run(
-            [sys.executable, _SCRIPT_PATH],
+            [sys.executable, "-X", "utf8", _SCRIPT_PATH],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=_REPO_ROOT,
             env=env,
             timeout=30,
