@@ -3513,6 +3513,8 @@
         "anotherMeetingReviewing": "„{{title}}“ ist noch in der Prüfung. Öffne sie in Besprechungen und wähle zuerst „Besprechung abschließen“.",
         "sttStreamingDisabled": "Live-Transkription ist aus. Prüfe unter Einstellungen → Sprache, dass die Spracheingabe aktiviert ist, der Anbieter Streaming kann und Streaming an ist.",
         "openVoiceSettings": "Spracheinstellungen öffnen",
+        "openBlockingMeeting": "Besprechung öffnen",
+        "openBlockingReview": "Prüfung öffnen",
         "noteSaveFailed": "Deine Notiz konnte nicht gespeichert werden.",
         "noteImageFailed": "Dieses Bild konnte nicht hinzugefügt werden. Füge ein PNG, JPEG, GIF oder WebP ein.",
         "noteImageTooLarge": "Dieses Bild ist zu groß für eine Notiz."

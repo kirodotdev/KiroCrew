@@ -2132,6 +2132,8 @@
         "anotherMeetingReviewing": "“{{title}}” is still in review. Open it in Meetings and choose Close the meeting first.",
         "sttStreamingDisabled": "Live transcription is off. In Settings → Voice, check that speech input is enabled, the provider can stream, and Streaming is on.",
         "openVoiceSettings": "Open Voice settings",
+        "openBlockingMeeting": "Open that meeting",
+        "openBlockingReview": "Open its review",
         "noteSaveFailed": "Could not save your note.",
         "noteImageFailed": "Could not add that image. Paste a PNG, JPEG, GIF or WebP.",
         "noteImageTooLarge": "That image is too large to add to a note."

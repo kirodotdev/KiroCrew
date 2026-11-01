@@ -3496,6 +3496,8 @@
         "anotherMeetingActiveNamed": "“{{title}}” ainda está a decorrer. Abra-a em Reuniões e escolha primeiro “Terminar e revisar”.",
         "anotherMeetingReviewing": "“{{title}}” ainda está em revisão. Abra-a em Reuniões e escolha primeiro “Fechar a reunião”.",
         "sttStreamingDisabled": "A transcrição ao vivo está desativada. Em Configurações → Voz, verifique se a entrada de voz está ativada, se o provedor suporta streaming e se Streaming está ativado.",
+        "openBlockingMeeting": "Abrir a reunião",
+        "openBlockingReview": "Abrir a revisão",
         "openVoiceSettings": "Abrir configurações de voz",
         "noteSaveFailed": "Não foi possível guardar a sua nota.",
         "noteImageFailed": "Não foi possível adicionar essa imagem. Cole um PNG, JPEG, GIF ou WebP.",

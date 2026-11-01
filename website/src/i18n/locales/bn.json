@@ -3424,6 +3424,8 @@
         "anotherMeetingReviewing": "“{{title}}” এখনও পর্যালোচনায় আছে। মিটিং-এ সেটি খোলো এবং আগে মিটিংটি বন্ধ করো।",
         "sttStreamingDisabled": "লাইভ ট্রান্সক্রিপশন বন্ধ আছে। সেটিংস → ভয়েস-এ দেখো ভয়েস ইনপুট চালু আছে, প্রোভাইডার স্ট্রিমিং সমর্থন করে, এবং স্ট্রিমিং চালু আছে।",
         "openVoiceSettings": "ভয়েস সেটিংস খোলো",
+        "openBlockingMeeting": "মিটিংটি খোলো",
+        "openBlockingReview": "পর্যালোচনা খোলো",
         "noteSaveFailed": "তোমার নোট সংরক্ষণ করা গেল না।",
         "noteImageFailed": "সেই ছবিটি যোগ করা গেল না। PNG, JPEG, GIF বা WebP পেস্ট করো।",
         "noteImageTooLarge": "সেই ছবিটি নোটে যোগ করার জন্য অনেক বড়।"

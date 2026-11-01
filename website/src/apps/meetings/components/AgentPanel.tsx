@@ -41,7 +41,7 @@
 // that the agent has written more since. HTML and chat agents are not editable; see
 // `EDITABLE_WIDGET_TYPE` in the backend constants for why.
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   FileText,
   MessageSquare,
@@ -79,6 +79,12 @@ interface Props {
   /** Absent for an agent whose output is not editable (html widgets, chat agents). */
   onSaveOutput?: (content: string) => Promise<unknown>
   onRevertOutput?: () => Promise<unknown>
+  /**
+   * Told `true` while this panel holds a minutes draft that differs from its
+   * seed, and `false` once it no longer does or the panel unmounts. The draft is
+   * local state, so a parent that navigates away needs this to ask first.
+   */
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 export default function AgentPanel({
@@ -93,6 +99,7 @@ export default function AgentPanel({
   onSendMessage,
   onSaveOutput,
   onRevertOutput,
+  onDirtyChange,
 }: Props) {
   const ime = useImeGuard()
   const { confirm, confirmDialog } = useConfirm()
@@ -113,6 +120,13 @@ export default function AgentPanel({
   const showChat = chatView || isChatAgent
   const editable = onSaveOutput != null && !showChat
   const editing = draft !== null
+  // Same dirty rule as `cancelEdit`: against the seed, never the live output.
+  const dirty = draft !== null && draft.text !== draft.seed
+  useEffect(() => {
+    if (!dirty || onDirtyChange == null) return
+    onDirtyChange(true)
+    return () => onDirtyChange(false)
+  }, [dirty, onDirtyChange])
   // The session hook's toast fades; a save or revert that did not land is a state
   // this panel must keep showing until the next attempt.
   const [outputError, setOutputError] = useState<string | null>(null)

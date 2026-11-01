@@ -1104,6 +1104,20 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
         ? conflictMessage(err)
         : i18nT('apps.meetings.session.startFailed')
     })(),
+    /** The meeting a 409 start refusal names, so the notice can open it.
+     *  `null` when the start did not fail on another meeting or the server
+     *  supplied no id. */
+    startBlockingMeeting: (() => {
+      const err = startMutation.error
+      if (!(err instanceof MeetingsApiError) || err.status !== 409 || !err.blockingMeetingId) {
+        return null
+      }
+      return {
+        id: err.blockingMeetingId,
+        title: err.blockingMeetingTitle,
+        reviewing: err.blockingMeetingStatus === 'reviewing',
+      }
+    })(),
     /** The last transcription error while the meeting is active, for the
      *  inline ErrorNotice (shown instead of a toast). */
     transcriptionErrorMessage,

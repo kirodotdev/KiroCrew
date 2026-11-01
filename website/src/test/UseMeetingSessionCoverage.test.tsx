@@ -949,6 +949,40 @@ describe('useMeetingSession failure reporting', () => {
     expect(view.notify).not.toHaveBeenCalledWith(expect.anything(), { type: 'error' })
   })
 
+  it('exposes the blocking meeting so the notice can open it', async () => {
+    apiMocks.start.mockRejectedValue(
+      new MeetingsApiError('conflict', 409, 'meeting_already_active', {
+        blocking_meeting_id: 'standup-1',
+        blocking_meeting_title: 'Standup',
+        blocking_meeting_status: 'reviewing',
+      }),
+    )
+    const view = await mountLoaded()
+
+    await act(async () => { view.result.current.actions.start() })
+
+    await waitFor(() => expect(view.result.current.startBlockingMeeting).toEqual({
+      id: 'standup-1',
+      title: 'Standup',
+      reviewing: true,
+    }))
+  })
+
+  it('names no blocking meeting when the 409 carries no id', async () => {
+    apiMocks.start.mockRejectedValue(
+      new MeetingsApiError('conflict', 409, 'meeting_already_active', {
+        blocking_meeting_title: 'Standup',
+        blocking_meeting_status: 'active',
+      }),
+    )
+    const view = await mountLoaded()
+
+    await act(async () => { view.result.current.actions.start() })
+
+    await waitFor(() => expect(view.result.current.startErrorMessage).not.toBeNull())
+    expect(view.result.current.startBlockingMeeting).toBeNull()
+  })
+
   it('shows a failed start inline instead of as a toast', async () => {
     apiMocks.start.mockRejectedValue(new Error('boom'))
     const view = await mountLoaded()

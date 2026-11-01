@@ -3350,6 +3350,8 @@
         "anotherMeetingActiveNamed": "“{{title}}”仍在进行。请在会议中打开它，先选择“结束并复核”。",
         "anotherMeetingReviewing": "“{{title}}”仍在复核中。请在会议中打开它，先选择“关闭会议”。",
         "sttStreamingDisabled": "实时转写已关闭。请在 设置 → 语音 中确认已启用语音输入、所选提供方支持流式传输，并已开启流式传输。",
+        "openBlockingMeeting": "打开会议",
+        "openBlockingReview": "打开复核",
         "openVoiceSettings": "打开语音设置",
         "noteSaveFailed": "无法保存你的笔记。",
         "noteImageFailed": "无法添加该图片。请粘贴 PNG、JPEG、GIF 或 WebP。",
