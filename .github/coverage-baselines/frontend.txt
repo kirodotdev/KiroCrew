@@ -35,7 +35,6 @@ src/apps/meetings/MeetingView.tsx 0.0   # 0/32
 src/apps/meetings/TaskReviewView.tsx 0.0   # 0/20
 src/apps/meetings/api.ts 55.6   # 45/81
 src/apps/meetings/components/TaskSidebar.tsx 3.6   # 1/28
-src/apps/mochi/api.ts 30.0   # 15/50
 src/apps/mochi/mochiHelpers.ts 0.0   # 0/2
 src/apps/mochi/mochiLanguage.tsx 0.0   # 0/16
 src/apps/mochi/panel/MochiSnipHost.tsx 0.0   # 0/48
