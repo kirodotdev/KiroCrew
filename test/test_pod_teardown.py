@@ -494,9 +494,12 @@ class TestPodNameMutexCrossPlatform:
 
     def test_nested_acquire_in_one_thread_does_not_deadlock(self, cfg: PodConfig) -> None:
         """Same-thread re-entry takes the in-thread counter, never the OS lock."""
+        key = f"{cfg.unit_prefix}@demo"
         with rt.pod_name_mutex(cfg, "demo"):
             with rt.pod_name_mutex(cfg, "demo"):
-                pass
+                assert rt._MUTEX_STATE.held[key] == 2
+            assert rt._MUTEX_STATE.held[key] == 1
+        assert rt._MUTEX_STATE.held[key] == 0
 
 
 @requires_posix_pod_lifecycle
