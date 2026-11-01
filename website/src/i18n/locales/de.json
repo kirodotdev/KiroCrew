@@ -15399,7 +15399,13 @@
         "summarize_now": "Jetzt zusammenfassen",
         "tool": "Werkzeug",
         "when": "Wann",
-        "save_profile": "Profil speichern"
+        "save_profile": "Profil speichern",
+        "search_lessons": "Lektionen suchen…",
+        "edit": "Bearbeiten",
+        "cancel": "Abbrechen",
+        "edit_rule": "Regel bearbeiten",
+        "edit_failed": "Lektion konnte nicht aktualisiert werden",
+        "lessons_refresh_failed_edit": "Lektion aktualisiert, aber die Liste konnte nicht aktualisiert werden"
       },
       "portabilityTab": {
         "archive_contents": "Archivinhalt:",

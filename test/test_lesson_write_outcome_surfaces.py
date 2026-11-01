@@ -191,6 +191,7 @@ class TestLessonsRouteReportsTheOutcome:
         rule: str = "a real rule",
         negative: str | None = None,
         category: str = "knowledge",
+        replaces: str | None = None,
     ):
         request = MagicMock()
         state = MagicMock()
@@ -201,6 +202,8 @@ class TestLessonsRouteReportsTheOutcome:
         body = {"rule": rule, "category": category}
         if negative is not None:
             body["negative"] = negative
+        if replaces is not None:
+            body["replaces"] = replaces
         attach_body(request, body)
         return request, state
 
@@ -263,6 +266,90 @@ class TestLessonsRouteReportsTheOutcome:
             }
             assert store.get_lessons() == []
             state.push_refresh.assert_called_once_with("lessons")
+        finally:
+            store.close()
+
+    async def test_dashboard_post_with_replaces_shortens_rule(self, tmp_path) -> None:
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+
+        store = _store(tmp_path)
+        try:
+            store.write_lesson("Always use tabs, not spaces", "preference")
+            request, state = self._request(
+                "Always use tabs", category="preference", replaces="Always use tabs, not spaces"
+            )
+            with (
+                patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
+                patch.object(cron, "_is_restricted_session", return_value=False),
+                patch.object(cron, "_sel"),
+            ):
+                resp = await cron.api_lessons_create(request)
+            assert resp.status == 200
+            body = _json.loads(resp.text)
+            assert body["ok"] is True
+            assert body["outcome"] == "inserted"
+            assert body["superseded"] == ["Always use tabs, not spaces"]
+            assert _rule_of(store.get_lessons()) == ["Always use tabs"]
+        finally:
+            store.close()
+
+    async def test_dashboard_post_with_replaces_changes_case(self, tmp_path) -> None:
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+
+        store = _store(tmp_path)
+        try:
+            store.write_lesson("Always Use Tabs", "preference")
+            request, state = self._request(
+                "always use tabs", category="preference", replaces="Always Use Tabs"
+            )
+            with (
+                patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
+                patch.object(cron, "_is_restricted_session", return_value=False),
+                patch.object(cron, "_sel"),
+            ):
+                resp = await cron.api_lessons_create(request)
+            assert resp.status == 200
+            body = _json.loads(resp.text)
+            assert body["ok"] is True
+            assert body["outcome"] == "inserted"
+            assert body["superseded"] == ["Always Use Tabs"]
+            assert _rule_of(store.get_lessons()) == ["always use tabs"]
+        finally:
+            store.close()
+
+    async def test_dashboard_post_with_replaces_preserves_negative_when_omitted(
+        self, tmp_path
+    ) -> None:
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+
+        store = _store(tmp_path)
+        try:
+            store.write_lesson(
+                "Always use tabs, not spaces", "preference", negative="Never use spaces"
+            )
+            request, state = self._request(
+                "Always use tabs", category="preference", replaces="Always use tabs, not spaces"
+            )
+            with (
+                patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
+                patch.object(cron, "_is_restricted_session", return_value=False),
+                patch.object(cron, "_sel"),
+            ):
+                resp = await cron.api_lessons_create(request)
+            assert resp.status == 200
+            body = _json.loads(resp.text)
+            assert body["ok"] is True
+            assert body["outcome"] == "inserted"
+            lessons = store.get_lessons()
+            assert len(lessons) == 1
+            assert lessons[0]["rule"] == "Always use tabs"
+            assert lessons[0]["negative"] == "Never use spaces"
         finally:
             store.close()
 

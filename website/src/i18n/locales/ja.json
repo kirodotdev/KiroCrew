@@ -15110,7 +15110,13 @@
         "summarize_now": "今すぐ要約",
         "tool": "ツール",
         "when": "時間",
-        "save_profile": "プロフィールを保存"
+        "save_profile": "プロフィールを保存",
+        "search_lessons": "レッスンを検索…",
+        "edit": "編集",
+        "cancel": "キャンセル",
+        "edit_rule": "ルールを編集",
+        "edit_failed": "レッスンを更新できませんでした",
+        "lessons_refresh_failed_edit": "レッスンを更新しましたが、一覧を更新できませんでした"
       },
       "portabilityTab": {
         "archive_contents": "アーカイブの内容:",

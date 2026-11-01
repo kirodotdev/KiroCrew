@@ -15110,7 +15110,13 @@
         "summarize_now": "立即总结",
         "tool": "工具",
         "when": "时间",
-        "save_profile": "保存配置"
+        "save_profile": "保存配置",
+        "search_lessons": "搜索课程…",
+        "edit": "编辑",
+        "cancel": "取消",
+        "edit_rule": "编辑规则",
+        "edit_failed": "无法更新课程",
+        "lessons_refresh_failed_edit": "课程已更新，但无法刷新列表"
       },
       "portabilityTab": {
         "archive_contents": "压缩包内容：",

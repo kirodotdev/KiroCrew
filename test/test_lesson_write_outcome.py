@@ -971,3 +971,89 @@ class TestWriteLessonTruthValueIsTheOldBool:
         # matches on the rule alone so it never dedups one rule against another.
         assert LessonWriteOutcome.REFUSED.value == "refused"
         assert LessonWriteOutcome.DEDUPED.value == "deduped"
+
+
+class TestWriteLessonWithReplaces:
+    """write_lesson with replaces bypasses self-dedup and supersedes the old rule."""
+
+    def test_shortening_rule_with_replaces_supersedes_original(self, tmp_path):
+        store = _store(tmp_path)
+        try:
+            r1 = store.write_lesson("Always use tabs, not spaces", "preference")
+            assert r1.outcome is LessonWriteOutcome.INSERTED
+            assert store.get_lessons()
+
+            r2 = store.write_lesson(
+                "Always use tabs",
+                "preference",
+                replaces="Always use tabs, not spaces",
+            )
+            assert r2.outcome is LessonWriteOutcome.INSERTED
+            assert r2.superseded == ("Always use tabs, not spaces",)
+            assert _rule_of(store.get_lessons()) == ["Always use tabs"]
+        finally:
+            store.close()
+
+    def test_changing_case_with_replaces_replaces_original(self, tmp_path):
+        store = _store(tmp_path)
+        try:
+            r1 = store.write_lesson("Always Use Tabs", "preference")
+            assert r1.outcome is LessonWriteOutcome.INSERTED
+
+            r2 = store.write_lesson(
+                "always use tabs",
+                "preference",
+                replaces="Always Use Tabs",
+            )
+            assert r2.outcome is LessonWriteOutcome.INSERTED
+            assert r2.superseded == ("Always Use Tabs",)
+            assert _rule_of(store.get_lessons()) == ["always use tabs"]
+        finally:
+            store.close()
+
+    def test_replaces_preserves_stored_negative_when_omitted(self, tmp_path):
+        store = _store(tmp_path)
+        try:
+            r1 = store.write_lesson("Old rule", "preference", negative="Never do bad things")
+            assert r1.outcome is LessonWriteOutcome.INSERTED
+            assert store.get_lessons()[0]["negative"] == "Never do bad things"
+
+            r2 = store.write_lesson("New rule", "preference", replaces="Old rule")
+            assert r2.outcome is LessonWriteOutcome.INSERTED
+            lessons = store.get_lessons()
+            assert len(lessons) == 1
+            assert lessons[0]["rule"] == "New rule"
+            assert lessons[0]["negative"] == "Never do bad things"
+        finally:
+            store.close()
+
+    def test_replaces_does_not_supersede_unrelated_row_sharing_historical_key(self, tmp_path):
+        store = _store(tmp_path)
+        try:
+            r1 = store.write_lesson("run tests", "knowledge")
+            assert r1.outcome is LessonWriteOutcome.INSERTED
+            store.write_lesson("pin dependencies", "knowledge")
+            assert len(store.get_lessons()) == 2
+
+            r2 = store.write_lesson("write release notes", "knowledge", replaces="run tests")
+            assert r2.outcome is LessonWriteOutcome.INSERTED
+            assert r2.superseded == ("run tests",)
+            remaining_rules = [l["rule"] for l in store.get_lessons()]
+            assert "write release notes" in remaining_rules
+            assert "pin dependencies" in remaining_rules
+            assert "run tests" not in remaining_rules
+        finally:
+            store.close()
+
+    def test_replaces_nonexistent_target_refused(self, tmp_path):
+        store = _store(tmp_path)
+        try:
+            store.write_lesson("run tests", "knowledge")
+            r = store.write_lesson(
+                "write release notes", "knowledge", replaces="nonexistent target"
+            )
+            assert r.outcome is LessonWriteOutcome.REFUSED
+            assert r.reason == "replaces_target_not_found"
+            assert len(store.get_lessons()) == 1
+        finally:
+            store.close()

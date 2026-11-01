@@ -15688,7 +15688,13 @@
         "summarize_now": "Riepiloga ora",
         "tool": "strumento",
         "when": "Quando",
-        "save_profile": "Salva profilo"
+        "save_profile": "Salva profilo",
+        "search_lessons": "Cerca lezioni…",
+        "edit": "Modifica",
+        "cancel": "Annulla",
+        "edit_rule": "Modifica regola",
+        "edit_failed": "Impossibile aggiornare la lezione",
+        "lessons_refresh_failed_edit": "Lezione aggiornata, ma impossibile aggiornare l'elenco"
       },
       "portabilityTab": {
         "archive_contents": "Contenuto dell'archivio:",
