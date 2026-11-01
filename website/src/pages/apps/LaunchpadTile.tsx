@@ -226,7 +226,9 @@ export default function LaunchpadTile({
             </button>
           </DropdownMenuTrigger>
           {/* The menu is drawn outside the card: it names the app it is for,
-              so a guide about one app never points into another's menu. */}
+              so a guide about one app never points into another's menu.
+              Every management verb below is locked while ANY action on this
+              app runs (`actionInFlight`), since they all change the same app. */}
           <DropdownMenuContent align="center" onCloseAutoFocus={menuFocus.onCloseAutoFocus} {...guidePickOf(display)}>
             <DropdownMenuItem onSelect={onDetail} {...uiLocation('apps.library.tile-details')}>
               <Info size={12} aria-hidden /> {i18nT('pages.libraryPage.tile_details')}
@@ -240,7 +242,7 @@ export default function LaunchpadTile({
             )}
             {app.updateAvailable && !disabled && (
               <DropdownMenuItem
-                disabled={actionLoading === `${name}:update`}
+                disabled={actionInFlight}
                 onSelect={() => onAction(name, 'update')}
               >
                 <ArrowUp size={12} aria-hidden /> {i18nT('components.appstore.installedAppCard.update')}
@@ -248,7 +250,7 @@ export default function LaunchpadTile({
             )}
             {app.lifecycle === 'gateway' && !app.updateAvailable && !disabled && (
               <DropdownMenuItem
-                disabled={actionLoading === `${name}:update`}
+                disabled={actionInFlight}
                 title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}
                 onSelect={() => onAction(name, 'update')}
               >
@@ -258,14 +260,14 @@ export default function LaunchpadTile({
             <DropdownMenuSeparator />
             {disabled ? (
               <DropdownMenuItem
-                disabled={actionLoading === `${name}:enable`}
+                disabled={actionInFlight}
                 onSelect={() => onAction(name, 'enable')}
               >
                 <Power size={12} aria-hidden /> {i18nT('components.appstore.installedAppCard.enable')}
               </DropdownMenuItem>
             ) : (
               <DropdownMenuItem
-                disabled={actionLoading === `${name}:disable`}
+                disabled={actionInFlight}
                 onSelect={() => onAction(name, 'disable')}
                 {...uiLocation('apps.library.tile-disable')}
               >
@@ -275,7 +277,7 @@ export default function LaunchpadTile({
             {canUninstall && (
               <DropdownMenuItem
                 className="text-danger focus:text-danger"
-                disabled={actionLoading === `${name}:uninstall`}
+                disabled={actionInFlight}
                 onSelect={() => menuFocus.openLayer(() => onAction(name, 'uninstall', menuTriggerRef.current))}
                 {...uiLocation('apps.library.tile-uninstall')}
               >

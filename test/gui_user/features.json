@@ -428,8 +428,8 @@
     {
       "id": "chat-incognito-badge-and-history-exclusion",
       "feature": "chat",
-      "title": "Start an incognito/temporary session; it is badged and excluded from History and search",
-      "user_story": "As a privacy-conscious user, I want incognito/temporary sessions labelled and kept out of history and memory surfaces, so that private chats leave no trace.",
+      "title": "Start an incognito/temporary session; it is badged and still listed in History and search",
+      "user_story": "As a privacy-conscious user, I want incognito/temporary sessions labelled and kept out of memory, while History still lists them, so that a private chat teaches the product nothing and I can still reopen it.",
       "start_url": "/chat",
       "entry_path": "ChatSidebar create menu > incognito/temporary session > send > sidebar row badge > History page > search",
       "preconditions": {
@@ -442,7 +442,7 @@
       },
       "runnable": "nightly",
       "estimated_steps": 5,
-      "rationale": "Seed is built for exactly this assertion and all reads are local; the 'memory tools disabled' claim is not UI-observable on the fake backend, so the test asserts the badge and the History/search exclusion. Two incognito records merged.",
+      "rationale": "Seed is built for exactly this assertion and all reads are local; the 'memory tools disabled' claim is not UI-observable on the fake backend, so the test asserts the badge and that History and its search still list the session. Two incognito records merged.",
       "source": [
         "src/kiro_crew/tests_fixtures/incognito-mix/fixture.yaml",
         "docs/system-specs/modules/history.md",

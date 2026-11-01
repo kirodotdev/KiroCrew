@@ -19,6 +19,10 @@ const human = (id: string, name: string) => ({ id, kind: 'human' as const, displ
 const UNKNOWN = { id: 'p_unknown', kind: 'unknown' as const, display: { name: '', login: '', captured_at: null } }
 const attribution = (name: string, id = 'p_b') => ({ creator: human(id, name), availability: 'recorded' as const, created_at: 1 })
 
+// The list view reads capabilities first; only then are the mode and People
+// queries enabled. Waits that span that chain get this ceiling.
+const CHAIN_TIMEOUT_MS = 5000
+
 function modeBody(mode: CrewModeResponse['mode'], crewId = 'crew-a', viewerId = 'p_me'): CrewModeResponse {
   return {
     schema_version: 1, mode, crew_id: crewId, viewer: human(viewerId, 'Me'),
@@ -40,8 +44,10 @@ function mount(ui: React.ReactElement, viewerId = '') {
 beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
-  caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
-  people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [] })
+  // The Shared Crew preview on, and a teammate who joined: the state in which
+  // the filter and bylines show at all.
+  caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available', shared_crew_preview: true })
+  people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [{ principal: human('p_tm', 'Tam'), sources: ['observed' as const], is_viewer: false }] })
   modeApi.mockResolvedValue(modeBody('network'))
 })
 
@@ -100,7 +106,7 @@ describe('CreatorFilteredSessions', () => {
       ],
     })
     mount(<CreatorFilteredSessions creator="all" q="" connected onOpen={() => {}} onClear={() => {}} />, 'p_me')
-    expect(await screen.findByText('Mine')).toBeInTheDocument()
+    expect(await screen.findByText('Mine', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
     expect(screen.getByTestId('creator-filter-row-mine').textContent).toContain('You')
     expect(screen.getByTestId('creator-filter-row-cron').textContent).toContain('Scheduled: Nightly digest')
     expect(screen.getByTestId('creator-filter-row-cron').textContent).not.toContain('Unattributed')
@@ -121,7 +127,7 @@ describe('CreatorFilterBar', () => {
     ] })
     // The older `unknown` value shows as the Unattributed choice.
     mount(<CreatorFilterBar value="unknown" onChange={() => {}} />)
-    const root = await screen.findByTestId('creator-filter')
+    const root = await screen.findByTestId('creator-filter', {}, { timeout: CHAIN_TIMEOUT_MS })
     await waitFor(() => expect(root.textContent).toContain('Unattributed'))
     expect(root.textContent).not.toContain('Unknown')
   })
@@ -130,7 +136,7 @@ describe('CreatorFilterBar', () => {
     people.mockRejectedValue(new Error('people read failed'))
     modeApi.mockResolvedValue(modeBody('network'))
     mount(<CreatorFilterBar value="all" onChange={() => {}} />)
-    expect(await screen.findByTestId('creator-filter-people-error')).toHaveTextContent('people read failed')
+    expect(await screen.findByTestId('creator-filter-people-error', {}, { timeout: CHAIN_TIMEOUT_MS })).toHaveTextContent('people read failed')
   })
 })
 
@@ -144,11 +150,53 @@ describe('useSharedCrewListView', () => {
     expect(result.current.filter).toBe('all')
   })
 
+  it('hides the filter and bylines with the Shared Crew preview off, reading no mode or People', async () => {
+    caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
+    window.localStorage.setItem('kc.shared-crew.creator-filter.crew-a', 'mine')
+    const { result } = renderHook(() => useSharedCrewListView(), { wrapper: wrapper() })
+    await waitFor(() => expect(caps).toHaveBeenCalled())
+    await act(async () => {})
+    expect(result.current.bylines.hidden).toBe(true)
+    expect(result.current.filterAvailable).toBe(false)
+    expect(result.current.filter).toBe('all')
+    expect(modeApi).not.toHaveBeenCalled()
+    expect(people).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['no one besides the owner joined', []],
+    // A Slack sender is a session creator only: it never connected to this Crew.
+    ['the only other person is a Slack sender', [{ principal: human('p_slack', 'U0BP2QZ7NJ2'), sources: ['session_creator' as const], is_viewer: false }]],
+    ['the only invite is not used yet', [{ principal: human('p_inv', 'Ivy'), sources: ['tailscale_share' as const], is_viewer: false }]],
+  ])('hides the filter and bylines on a network Crew when %s', async (_why, rows) => {
+    people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [
+      { principal: human('p_me', 'Me'), sources: ['observed'], is_viewer: true, is_owner: true },
+      ...rows,
+    ] })
+    const { result } = renderHook(() => useSharedCrewListView(), { wrapper: wrapper() })
+    await waitFor(() => expect(people).toHaveBeenCalled(), { timeout: CHAIN_TIMEOUT_MS })
+    await waitFor(() => expect(modeApi).toHaveBeenCalled(), { timeout: CHAIN_TIMEOUT_MS })
+    await act(async () => {})
+    expect(result.current.bylines.hidden).toBe(true)
+    expect(result.current.filterAvailable).toBe(false)
+  })
+
+  it('shows the filter and bylines once a teammate joins', async () => {
+    people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [
+      { principal: human('p_me', 'Me'), sources: ['observed'], is_viewer: true, is_owner: true },
+      { principal: human('p_tm', 'Tam'), sources: ['observed'], is_viewer: false },
+    ] })
+    const { result } = renderHook(() => useSharedCrewListView(), { wrapper: wrapper() })
+    await waitFor(() => expect(result.current.bylines.hidden).toBe(false), { timeout: CHAIN_TIMEOUT_MS })
+    expect(result.current.filterAvailable).toBe(true)
+  })
+
   it('never guesses a mode it could not read: no bylines, no filter, the bar shows the error', async () => {
     // A team path is set up and another person is seen, so a guessed mode would be network.
     caps.mockResolvedValue({
       ...ALL_UNAVAILABLE,
       attribution: 'available',
+      shared_crew_preview: true,
       setup_paths: {
         tailscale: { state: 'available', reason: '' },
         kiro_login: { state: 'unavailable', reason: 'not_in_this_build' },
@@ -207,6 +255,25 @@ describe('SessionCreatorByline', () => {
     expect(screen.getByTitle('Created by Bob (bob@example.test)')).toBeInTheDocument()
     rerender(<SessionCreatorByline attribution={{ creator: UNKNOWN, availability: 'legacy_missing', created_at: null }} />)
     expect(screen.getByTitle('Created by Unattributed')).toBeInTheDocument()
+  })
+
+  it('names the owner on a legacy session, and keeps Unattributed for a creator nobody can name', () => {
+    const owner = { id: 'p_owner', kind: 'human' as const, display: { name: "Bolin's MacBook", login: '', captured_at: null } }
+    const legacy = { creator: owner, availability: 'legacy_missing' as const, created_at: null }
+    const { rerender } = render(<SessionCreatorByline attribution={legacy} />)
+    expect(screen.getByTitle("Created by Bolin's MacBook")).toBeInTheDocument()
+    expect(screen.queryByTitle(/Unattributed/)).toBeNull()
+    // A gateway that could not read this machine's name still sends the token subject.
+    rerender(<SessionCreatorByline attribution={{ ...legacy, creator: { ...owner, display: { name: 'local-app', login: '', captured_at: null } } }} />)
+    expect(screen.getByTitle('Created by Crew owner')).toBeInTheDocument()
+    rerender(<SessionCreatorByline attribution={{ ...legacy, creator: UNKNOWN }} />)
+    expect(screen.getByTitle('Created by Unattributed')).toBeInTheDocument()
+  })
+
+  it('reads the owner as You to the owner viewing a legacy session', () => {
+    const owner = { id: 'p_owner', kind: 'human' as const, display: { name: "Bolin's MacBook", login: '', captured_at: null } }
+    mount(<SessionCreatorByline attribution={{ creator: owner, availability: 'legacy_missing', created_at: null }} />, 'p_owner')
+    expect(screen.getByTitle('Created by You')).toBeInTheDocument()
   })
 
   it('names the trigger of a scheduled session, never a person', () => {

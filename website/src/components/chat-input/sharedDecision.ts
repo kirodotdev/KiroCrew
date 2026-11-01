@@ -7,7 +7,7 @@
  *  failure. A retry of the same click carries the same response id and replays
  *  its own success. */
 import type { PublicPrincipal, SharedDecision } from '../../api/sharedCrew'
-import { principalName } from '../../api/sharedCrewUi'
+import { displayName } from '../../api/sharedCrewMode'
 import { i18nT } from '../../i18n/t'
 
 /** One id per user click on a decision card; never derived from content. */
@@ -36,23 +36,16 @@ export function decisionVerdict(decision: SharedDecision): 'approved' | 'rejecte
   return decision.outcome === 'approved' || decision.outcome === 'approved_trust_reads' ? 'approved' : 'rejected'
 }
 
-/** The local dashboard token's subjects (`kiro_crew.shared_crew.crew_mode.
- *  LOCAL_BOOTSTRAP_SUBJECTS`): the Crew's own operator, never a person's name. */
-const LOCAL_OPERATOR_NAMES: ReadonlySet<string> = new Set(['local-app', 'local-startup'])
-
 type Who = { self: true } | { self: false; name: string }
 
-/** Whom a decision line names: the viewer reads as "you", the local operator
- *  as the Crew owner, anyone else by name or Unattributed. */
+/** Whom a decision line names: the viewer reads as "you", the Crew owner by
+ *  this machine's name, anyone else by name or Unattributed. */
 function who(p: PublicPrincipal | null | undefined, viewerId: string): Who {
   if (p && viewerId && p.id === viewerId) return { self: true }
-  const name = principalName(p)
-  // The local operator carries no login; a tailnet person always does.
-  if (LOCAL_OPERATOR_NAMES.has(name) && !p?.display.login) return { self: false, name: i18nT('sharedCrew.crew_owner') }
-  return { self: false, name: name || i18nT('sharedCrew.unattributed') }
+  return { self: false, name: displayName(p) || i18nT('sharedCrew.unattributed') }
 }
 
-/** "Approved by Alice" / "Approved by you": who settled the decision. */
+/** "Alice approved" / "You approved": who settled the decision. */
 export function resolvedByLine(decision: SharedDecision, viewerId = ''): string {
   const w = who(decision.responder, viewerId)
   if (w.self) {
@@ -66,10 +59,14 @@ export function resolvedByLine(decision: SharedDecision, viewerId = ''): string 
     : i18nT('sharedCrew.rejected_by_person', { name })
 }
 
-/** "asked during Alice's turn" / "asked during your turn". */
-export function requestedByLine(decision: SharedDecision, viewerId = ''): string {
+/** What a pending decision waits on, named by the person whose turn raised it:
+ *  "Alice's action awaits approval" / "Kiro is waiting for your answer". */
+export function waitingLine(decision: SharedDecision, viewerId = ''): string {
   const w = who(decision.initiator, viewerId)
-  return w.self ? i18nT('sharedCrew.requested_by_you') : i18nT('sharedCrew.requested_by_person', { name: w.name })
+  if (decision.kind === 'question') {
+    return w.self ? i18nT('sharedCrew.question_waiting_you') : i18nT('sharedCrew.question_waiting', { name: w.name })
+  }
+  return w.self ? i18nT('sharedCrew.approval_waiting_you') : i18nT('sharedCrew.approval_waiting', { name: w.name })
 }
 
 /** "Already approved elsewhere": a lost race told without naming anyone. */

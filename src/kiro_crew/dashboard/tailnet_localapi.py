@@ -1,7 +1,8 @@
 """Ask the local Tailscale daemon a read-only question, LocalAPI first, CLI second.
 
-Two questions are asked: ``status`` (this machine's own tailnet addresses and
-login) and ``whois`` of a peer ``ip:port``. The answers decide who may open the
+Three questions are asked: ``status`` (this machine's own tailnet addresses and
+login), ``status`` with peers (the people whose nodes this machine can see) and
+``whois`` of a peer ``ip:port``. The answers decide who may open the
 dashboard over the direct tailnet listener, so the transport is held to the
 same planted-binary rule :mod:`kiro_crew.dashboard.tailnet` applies to the CLI:
 nothing is reached through a location the gateway user can write.
@@ -45,8 +46,8 @@ logger = logging.getLogger(__name__)
 
 #: Hard ceiling on one daemon round trip.
 TIMEOUT_SECS = 3.0
-#: Largest LocalAPI or CLI answer read. A status of a large tailnet with peers
-#: omitted is a few kilobytes; whois is smaller still.
+#: Largest LocalAPI or CLI answer read. A status with peers omitted is a few
+#: kilobytes; whois is smaller still; a status with peers is the largest.
 MAX_ANSWER_BYTES = 2 * 1024 * 1024
 
 #: The ``Host`` the daemon's LocalAPI requires.
@@ -265,10 +266,20 @@ def status() -> Answer:
     return _ask("/localapi/v0/status?peers=false", ["status", "--json", "--peers=false"])
 
 
+def status_with_peers() -> Answer:
+    """This node's status including the peer list and the ``User`` map.
+
+    Larger than :func:`status`; an answer past :data:`MAX_ANSWER_BYTES` reads as
+    no answer, so a very large tailnet yields none rather than a partial list.
+    """
+    return _ask("/localapi/v0/status", ["status", "--json"])
+
+
 __all__ = [
     "Answer",
     "METHODS",
     "cli_candidates",
     "status",
+    "status_with_peers",
     "whois",
 ]

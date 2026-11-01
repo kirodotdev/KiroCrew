@@ -195,6 +195,10 @@ def install(state: Any = None) -> None:
                 capabilities.register_capability_source(name, fields, source)
         people.register_usage_source(admission_usage)
         if state is not None:
+            from kiro_crew.shared_crew import owner
+
+            owner.set_owner_subject(str(getattr(state, "owner_id", "") or ""))
+            owner.warm_machine_name()
             work_store.set_change_listener(work_broadcaster(state))
             trigger.set_scheduled_namer(cron_job_namer(state))
             from kiro_crew.shared_crew import host_hooks

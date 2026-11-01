@@ -490,7 +490,8 @@ class SessionCatalogProjection:
                     reusable = False
             # Ensure memory_mode is always present (old sessions lack it)
             meta.setdefault("memory_mode", "persistent")
-            # A session with no readable metadata line has no creator: Unattributed.
+            # A session with no readable metadata line predates attribution: it reads
+            # as the owner's, unless its key is a messaging channel's (Unattributed).
             if "attribution" not in meta:
                 meta["attribution"] = public_attribution_from_meta(None, key=key)
             # Extract first user message as title fallback

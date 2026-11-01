@@ -754,9 +754,9 @@ async def _handle_resume_choice(
             sess_dir = data_home() / "sessions"
             stem = session_key.split(":", 1)[-1] if ":" in session_key else session_key
             jsonl = sess_dir / f"{stem}.jsonl"
-            if not jsonl.exists() and not stem.startswith("dashboard_"):
+            if not await asyncio.to_thread(jsonl.exists) and not stem.startswith("dashboard_"):
                 jsonl = sess_dir / f"dashboard_{stem}.jsonl"
-            if jsonl.exists():
+            if await asyncio.to_thread(jsonl.exists):
                 # Whole-transcript read, bounded only by conversation length
                 # (multi-MB for long sessions) — off-loop so it cannot stall
                 # the event loop and its watchdog heartbeat.

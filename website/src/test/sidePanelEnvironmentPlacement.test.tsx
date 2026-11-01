@@ -160,10 +160,12 @@ describe('placement gates gateway file and terminal access', () => {
   // A caller who is not the owner cannot bind chats; the read refuses it on every
   // try, so its refusal means "runs here", never a permanent placement error.
   it('treats an owner_only refusal as local, keeping Files and the terminal', async () => {
-    envRead().mockRejectedValue(new ApiError(403, 'owner_only', '{"code":"owner_only"}'))
+    const get = envRead().mockRejectedValue(new ApiError(403, 'owner_only', '{"code":"owner_only"}'))
     mount()
     await filesReady('gateway-files')
     expect(screen.queryByRole('alert')).toBeNull()
+    // The refusal is final: it is read once, not retried.
+    expect(get).toHaveBeenCalledTimes(1)
     openMenu()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Terminal' }))
     expect(openTerminal).toHaveBeenCalledExactlyOnceWith({ cwd: '/gateway/project' })

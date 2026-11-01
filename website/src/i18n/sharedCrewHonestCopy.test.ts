@@ -38,7 +38,7 @@ describe('Shared Crew copy matches gateway behavior', () => {
 
   it('lets Tailscale access rules decide, with no in-Crew approval', () => {
     const en = LOCALES.find(([lang]) => lang === 'en')?.[1] as Record<string, unknown>
-    const keys = ['direct_link_note', 'invite_manual_body', 'invite_revoke_body']
+    const keys = ['direct_link_note', 'invite_revoke_body']
     for (const key of keys) {
       const copy = value(en, `sharedCrew.${key}`)
       expect(copy).toMatch(/Tailscale (access )?rules/)

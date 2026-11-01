@@ -33,9 +33,10 @@ const SLOT = { key: 's1', attribution: { creator: person('p_ann', 'Ann'), availa
 beforeEach(() => {
   vi.clearAllMocks()
   viewer.mockResolvedValue(person('p_bob', 'Bob'))
-  // A team (network) Crew: the mode in which bylines render at all.
-  vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
-  vi.mocked(api.sharedCrewPeople).mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [] })
+  // A team (network) Crew with the Shared Crew preview on and a teammate who
+  // joined: the state in which bylines render at all.
+  vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available', shared_crew_preview: true })
+  vi.mocked(api.sharedCrewPeople).mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [{ principal: person('p_tm', 'Tam'), sources: ['observed' as const], is_viewer: false }] })
   vi.mocked(api.sharedCrewMode).mockResolvedValue({
     schema_version: 1, mode: 'network', crew_id: 'crew-a', viewer: person('p_bob', 'Bob'),
     team_config: { state: 'not_configured', reason: '', capability: '', cause: '' },

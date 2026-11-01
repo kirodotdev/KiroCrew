@@ -41,11 +41,13 @@ export interface SharedCrewSessionPage extends SessionPage<SharedCrewSessionItem
 }
 
 /** Where a People row's evidence came from. Unknown values read as observed. */
-export type PeopleSource = 'observed' | 'session_creator' | 'directory'
+export type PeopleSource = 'observed' | 'session_creator' | 'directory' | 'tailscale_share'
 
 export interface PeopleRow {
   principal: PublicPrincipal
   sources: PeopleSource[]
+  /** This machine's owner. */
+  is_owner?: boolean
   provenance?: string
   first_seen_at?: number | null
   last_seen_at?: number | null
@@ -127,6 +129,16 @@ export const ALL_UNAVAILABLE: SharedCrewCapabilities = {
  *  failed read all keep the sharing surfaces hidden. */
 export function sharedCrewPreviewOn(capabilities: SharedCrewCapabilities): boolean {
   return capabilities.shared_crew_preview === true
+}
+
+/** Whether anyone besides the Crew owner has joined: a non-owner row this Crew
+ *  saw on an authorized request (`observed`) since it started. A row known only
+ *  as a session's creator (a Slack sender, say), an invite not yet used or a
+ *  directory entry has not joined. A teammate viewing counts, since they joined
+ *  to be here. The observed list is in memory, so after a restart the team
+ *  surfaces come back once a teammate connects again. */
+export function someoneJoined(rows: readonly PeopleRow[] | null | undefined): boolean {
+  return (rows ?? []).some(row => !row.is_owner && !isUnknownPrincipal(row.principal) && (row.sources ?? []).includes('observed'))
 }
 
 /** Whether an enterprise policy closes Tailscale invites on this gateway. */

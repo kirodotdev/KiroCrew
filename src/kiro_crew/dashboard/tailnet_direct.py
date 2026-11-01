@@ -126,6 +126,8 @@ class SelfNode:
     login: str
     user_id: str
     dns_name: str = ""
+    #: The host name the daemon reports for this node (``Self.HostName``).
+    host_name: str = ""
 
 
 def _user_id(raw: object) -> str:
@@ -234,7 +236,84 @@ def parse_status(data: object) -> SelfNode | None:
         login=login or "",
         user_id=user_id if login else "",
         dns_name=dns_name,
+        host_name=_display(self_node.get("HostName")),
     )
+
+
+@dataclass(frozen=True)
+class TailnetUser:
+    """A person who owns a node this machine can see, from ``status`` with peers."""
+
+    user_id: str
+    login: str
+    display_name: str
+    #: ``UserProfile.ProfilePicURL`` when it is a plain https URL; display only.
+    profile_pic_url: str = ""
+
+
+#: Most people one status answer yields; a tailnet past it is truncated, not refused.
+MAX_TAILNET_USERS = 200
+
+
+def parse_tailnet_users(data: object) -> list[TailnetUser]:
+    """The people other than this machine's owner whose nodes the daemon lists.
+
+    One entry per user, in first-seen peer order. A node is skipped when it is
+    ACL-tagged (a tagged node has no person), when its owner is this machine's
+    own user, or when the ``User`` map names no usable login for its owner. This
+    covers nodes shared in from another tailnet (``ShareeNode``) and other
+    members of this one. At most :data:`MAX_TAILNET_USERS` are retained; one
+    warning per snapshot counts every otherwise eligible user beyond the cap.
+    Never raises; anything unexpected yields fewer users.
+    """
+    if not isinstance(data, dict):
+        return []
+    peers = data.get("Peer")
+    users = data.get("User")
+    if not isinstance(peers, dict) or not isinstance(users, dict):
+        return []
+    self_node = data.get("Self")
+    own = _user_id(self_node.get("UserID")) if isinstance(self_node, dict) else ""
+    out: dict[str, TailnetUser] = {}
+    seen: set[str] = set()
+    omitted = 0
+    for peer in peers.values():
+        if not isinstance(peer, dict) or peer.get("Tags"):
+            continue
+        user_id = _user_id(peer.get("UserID"))
+        if not user_id or user_id == own or user_id in seen:
+            continue
+        profile = users.get(user_id)
+        if not isinstance(profile, dict):
+            continue
+        raw_login = profile.get("LoginName")
+        login = raw_login.strip() if isinstance(raw_login, str) else ""
+        if not login or login == TAGGED_DEVICES_LOGIN or not _tailnet_login_ok(login):
+            continue
+        seen.add(user_id)
+        user = TailnetUser(
+            user_id=user_id,
+            login=login,
+            display_name=_display(profile.get("DisplayName")) or login,
+            profile_pic_url=_picture(profile.get("ProfilePicURL")),
+        )
+        if len(out) < MAX_TAILNET_USERS:
+            out[user_id] = user
+        else:
+            omitted += 1
+    if omitted:
+        logger.warning(
+            "tailnet user snapshot truncated: omitted %d eligible users beyond cap %d",
+            omitted,
+            MAX_TAILNET_USERS,
+        )
+    return list(out.values())
+
+
+def _tailnet_login_ok(login: str) -> bool:
+    from kiro_crew.dashboard.tailnet import _valid_identity
+
+    return _valid_identity(login) is not None
 
 
 def _split_allowlist(allowed: tuple[str, ...]) -> tuple[frozenset[str], frozenset[str]]:
@@ -576,11 +655,16 @@ def direct_origins(gate: DirectGate, port: int) -> set[str]:
 
 
 def direct_urls(gate: DirectGate, port: int) -> list[str]:
-    """The plain share links, the MagicDNS name first and then each address."""
-    urls: list[str] = []
+    """The plain share links: IPv4 first, then the MagicDNS name, then IPv6.
+
+    The IPv4 tailnet address opens with no MagicDNS dependency, so it leads.
+    """
+    ipv4 = [a for a in gate.owner.addresses if ":" not in a]
+    ipv6 = [a for a in gate.owner.addresses if ":" in a]
+    urls = [f"http://{_host_for_whois(a)}:{port}/" for a in ipv4]
     if gate.owner.dns_name:
         urls.append(f"http://{gate.owner.dns_name}:{port}/")
-    urls.extend(f"http://{_host_for_whois(a)}:{port}/" for a in gate.owner.addresses)
+    urls.extend(f"http://{_host_for_whois(a)}:{port}/" for a in ipv6)
     return urls
 
 
@@ -622,7 +706,9 @@ __all__ = [
     "direct_origins",
     "is_owner",
     "direct_urls",
+    "TailnetUser",
     "parse_status",
+    "parse_tailnet_users",
     "parse_whois",
     "refusal_response",
     "resolve",

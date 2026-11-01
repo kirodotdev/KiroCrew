@@ -442,7 +442,13 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   a forged one would delete a conversation. It sits at the root, masked,
     #:   rather than under the sandbox read-write ``trust/``, and is leaf-only for
     #:   the reason ``panel-dismissals`` is.
-    EXPECTED: dict[str, int] = {"standard": 313, "cc": 320, "strict": 321}
+    #:
+    #: One more root-level leaf, three entries per tier:
+    #:
+    #: * ``shared_crew_preview.json`` -- the owner's Shared Crew switch, a file at
+    #:   the data-home root beside writable siblings, so leaf-only is the only
+    #:   hold available, as for ``decisions_consent.json``.
+    EXPECTED: dict[str, int] = {"standard": 316, "cc": 323, "strict": 324}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

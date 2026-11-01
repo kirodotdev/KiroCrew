@@ -224,11 +224,9 @@ class CancellationCoordinator(ManagerComponent):
                     # failure (with any partial result) even when the respawn
                     # itself could not happen.
                     info.done = True
-                    # Terminal flip that reports via ``_run_terminal_report``
-                    # below, after a claim/bookkeeping hop -- arm with the flip
-                    # so a sibling completion cannot read this member as
-                    # done-but-unarmed in that window. The report
-                    # machinery's own arm is an idempotent backstop.
+                    # Terminal flip reported via ``_run_terminal_report`` below:
+                    # arm with it so a sibling cannot read this member as
+                    # done-but-unarmed. The report's own arm is a backstop.
                     self._manager.arm_report_in_flight(info)
                     if reason == "context_overflow":
                         info.error = (
@@ -247,7 +245,10 @@ class CancellationCoordinator(ManagerComponent):
                         tombstone_cause = "cancelled"
                     info.elapsed = time.time() - info.started
                     Stats().inc_subagent_failed()
-                    self._manager._write_tombstone(info, tombstone_cause)
+                    # The shutdown's cancel under a tab is left to the next start; a give-up is not.
+                    cancelled = tombstone_cause == "cancelled"
+                    if not (cancelled and self._manager._leave_for_next_start(info)):
+                        self._manager._write_tombstone(info, tombstone_cause)
                     self._manager._record_cost(info)
                 if not info.elapsed:
                     # Report needs an elapsed even when the record above was
@@ -303,24 +304,22 @@ class CancellationCoordinator(ManagerComponent):
                 # tombstone the reaper could not correct.
                 if not info.done and not info._reap_started and not info.reaped:
                     info.done = True
-                    # This arm is deliberately report-free (limbo-avoidance
-                    # only -- no finalize claim is taken, so no terminal report
-                    # will ever reach the completion consumer for this record).
-                    # No done-but-unreported hold needs arming or releasing
-                    # here: holds are armed only by the report machinery in the
-                    # same synchronous block that flips ``done`` (or immediately
-                    # before a safe-announce of an already-done record), so a
-                    # record reaching this arm with ``done`` still False can
-                    # never carry one -- ``batch_reports_in_flight`` ignores it
-                    # and a sibling completion keeps its ability to close the
-                    # wave with this member's line missing.
+                    # Deliberately report-free: no finalize claim is taken, so no
+                    # terminal report reaches the completion consumer. No hold
+                    # needs arming or releasing: holds are armed only by the
+                    # report machinery in the block that flips ``done`` (or just
+                    # before a safe-announce of a done record), so a record
+                    # reaching here with ``done`` False carries none:
+                    # ``batch_reports_in_flight`` ignores it.
                     info.error = "cancelled"
                     info.elapsed = time.time() - info.started
                     if not info.user_stopped:
-                        # A user-initiated stop is a neutral outcome, not a
-                        # failure — matching the reap path's own record guard.
+                        # A user stop is neutral, as in the reap path's record guard.
                         Stats().inc_subagent_failed()
-                    self._manager._write_tombstone(info, "cancelled")
+                    # Under a tab, the next start's orphan sweep announces a run
+                    # the shutdown cancelled here; a tombstone would hide it.
+                    if not self._manager._leave_for_next_start(info):
+                        self._manager._write_tombstone(info, "cancelled")
                 raise
 
         _t = asyncio.create_task(_resume_guarded())

@@ -8,7 +8,7 @@
 //
 // happy-dom has no `DragEvent`, so the drag is a plain `Event` with a
 // `dataTransfer` attached the same way the browser exposes it.
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -52,7 +52,9 @@ describe('DropdownMenu closes when a file drag enters the window', () => {
     render(<Uncontrolled onOpenChange={onOpenChange} />)
     expect(screen.getByTestId('content')).toBeInTheDocument()
 
-    windowDragEnter(['Files'])
+    act(() => {
+      windowDragEnter(['Files'])
+    })
 
     await waitFor(() => expect(screen.queryByTestId('content')).not.toBeInTheDocument())
     expect(onOpenChange).toHaveBeenCalledWith(false)
@@ -63,7 +65,9 @@ describe('DropdownMenu closes when a file drag enters the window', () => {
     render(<Controlled onOpenChange={onOpenChange} />)
     expect(screen.getByTestId('content')).toBeInTheDocument()
 
-    windowDragEnter(['Files'])
+    act(() => {
+      windowDragEnter(['Files'])
+    })
 
     await waitFor(() => expect(screen.queryByTestId('content')).not.toBeInTheDocument())
     expect(onOpenChange).toHaveBeenCalledWith(false)
@@ -84,7 +88,9 @@ describe('DropdownMenu closes when a file drag enters the window', () => {
     const onOpenChange = vi.fn()
     render(<Uncontrolled onOpenChange={onOpenChange} modal={false} />)
 
-    windowDragEnter(['Files'])
+    act(() => {
+      windowDragEnter(['Files'])
+    })
 
     expect(screen.getByTestId('content')).toBeInTheDocument()
     expect(onOpenChange).not.toHaveBeenCalled()
@@ -98,7 +104,9 @@ describe('DropdownMenu closes when a file drag enters the window', () => {
     await waitFor(() => expect(screen.queryByTestId('content')).not.toBeInTheDocument())
     onOpenChange.mockClear()
 
-    windowDragEnter(['Files'])
+    act(() => {
+      windowDragEnter(['Files'])
+    })
     expect(onOpenChange).not.toHaveBeenCalled()
   })
 })
@@ -122,7 +130,9 @@ describe('ContextMenu closes when a file drag enters the window', () => {
     expect(screen.getByTestId('content')).toBeInTheDocument()
     expect(onOpenChange).toHaveBeenCalledWith(true)
 
-    windowDragEnter(['Files'])
+    act(() => {
+      windowDragEnter(['Files'])
+    })
 
     await waitFor(() => expect(screen.queryByTestId('content')).not.toBeInTheDocument())
     expect(onOpenChange).toHaveBeenLastCalledWith(false)

@@ -23,6 +23,7 @@ from kiro_crew import beacon
 from kiro_crew.config import session_environments as _session_environments
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import merge_strands_env_patch
+from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -544,10 +545,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # does nothing — `resolve_tailnet_host` already refuses to derive, so without
     # this the config file and the card would both claim "on" while no origin is
     # ever added.
-    if (
-        path_key in ("dashboard.tailscale.enabled", "dashboard.tailscale.trust_identity")
-        and value is True
-    ):
+    if path_key in TAILNET_OPENING_PATHS and value is True:
         pinned = await asyncio.to_thread(_tailnet_governance_pinned_off)
         if pinned:
             return _deny(

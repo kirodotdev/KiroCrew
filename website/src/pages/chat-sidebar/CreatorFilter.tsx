@@ -7,18 +7,20 @@
  *  hides a row it was sent. Filtering is discovery, not access: every session is
  *  still reachable with All.
  *
- *  The selection is remembered per Crew (keyed by the mode route's `crew_id`). A
- *  personal Crew shows neither the control nor creator bylines, and neither
- *  does a Crew that cannot attribute sessions. A Crew whose mode cannot be read
+ *  The selection is remembered per Crew (keyed by the mode route's `crew_id`).
+ *  The control and creator bylines are part of the Shared Crew preview: they
+ *  show only with the preview on and someone besides the owner joined
+ *  (`showsTeamAttribution`), never on a personal Crew or one that cannot
+ *  attribute sessions. A Crew whose mode cannot be read
  *  shows the error where the control would be, and no bylines. */
 import { useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { Users } from 'lucide-react'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Skeleton } from '../../components/ui'
-import { capabilityUsable, isUnknownPrincipal, principalName, sharedAccessConfigured } from '../../api/sharedCrewUi'
+import { capabilityUsable, isUnknownPrincipal, principalName, sharedAccessConfigured, sharedCrewPreviewOn, someoneJoined } from '../../api/sharedCrewUi'
 import type { CreatorFilter as CreatorFilterValue } from '../../api/sharedCrew'
-import { creatorDisplay, effectiveMode, hidesTeamAttribution, loadCreatorFilter, normalizeCreatorFilter, saveCreatorFilter } from '../../api/sharedCrewMode'
+import { creatorDisplay, effectiveMode, loadCreatorFilter, normalizeCreatorFilter, saveCreatorFilter, showsTeamAttribution, type CrewMode } from '../../api/sharedCrewMode'
 import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople, useSharedCrewSessionsPage } from '../../hooks/sharedCrew/useSharedCrew'
 import { i18nT } from '../../i18n/t'
 import { fmtNumber } from '../../i18n/format'
@@ -39,17 +41,16 @@ export interface SharedCrewListView {
 export function useSharedCrewListView(): SharedCrewListView {
   const caps = useSharedCrewCapabilities()
   const { capabilities } = caps
-  const attributes = capabilityUsable(capabilities.attribution)
+  // Everything here is the Shared Crew preview: with it off the Crew reads no
+  // mode or People and the sidebar shows neither the filter nor its errors.
+  const previewOn = sharedCrewPreviewOn(capabilities)
+  const attributes = previewOn && capabilityUsable(capabilities.attribution)
   const modeQuery = useSharedCrewMode(attributes)
   const people = useSharedCrewPeople(attributes)
   // An initial unreadable mode has no guessed replacement. A cached mode keeps
   // the filter and bylines in place while the bar reports the failed refresh.
   const modeFailed = attributes && queryReadFailed(modeQuery)
-  const mode = effectiveMode(modeQuery.data, {
-    teamPath: sharedAccessConfigured(capabilities),
-    othersSeen: (people.data?.people ?? []).some(row => !row.is_viewer),
-  })
-  const team = attributes && modeQuery.data !== undefined && !hidesTeamAttribution(mode)
+  const team = showsTeamAttribution({ previewOn, attributes, mode: listMode(modeQuery.data, capabilities, people.data), joined: someoneJoined(people.data?.people) })
   const crewId = modeQuery.data?.crew_id ?? ''
   const viewer = modeQuery.data?.viewer
   const viewerId = viewer && !isUnknownPrincipal(viewer) ? viewer.id : ''
@@ -64,6 +65,19 @@ export function useSharedCrewListView(): SharedCrewListView {
   return { filterAvailable: team || modeFailed || queryReadFailed(caps) || (attributes && queryReadFailed(people)), filter: team ? filter : 'all', setFilter, bylines }
 }
 
+/** The mode the list reads, or `null` while the mode route has not answered. */
+function listMode(
+  data: ReturnType<typeof useSharedCrewMode>['data'],
+  capabilities: ReturnType<typeof useSharedCrewCapabilities>['capabilities'],
+  people: ReturnType<typeof useSharedCrewPeople>['data'],
+): CrewMode | null {
+  if (data === undefined) return null
+  return effectiveMode(data, {
+    teamPath: sharedAccessConfigured(capabilities),
+    othersSeen: (people?.people ?? []).some(row => !row.is_viewer),
+  })
+}
+
 /** A read failed and has not succeeded since. A retry without cached data
  *  stays visibly failed while pending, rather than blinking out the notice. */
 function queryReadFailed(q: { isError: boolean; isPending: boolean; errorUpdateCount: number }): boolean {
@@ -74,18 +88,17 @@ export function CreatorFilterBar({ value, onChange }: { value: CreatorFilterValu
   // The list view owns fetching; mounting its failure surface must not retry it.
   // This bar owns capability, mode and People failures even with no open chat.
   const caps = useSharedCrewCapabilities({ fetchOnMount: false })
-  const attributes = capabilityUsable(caps.capabilities.attribution)
+  const previewOn = sharedCrewPreviewOn(caps.capabilities)
+  const attributes = previewOn && capabilityUsable(caps.capabilities.attribution)
   const modeQuery = useSharedCrewMode(attributes, { fetchOnMount: false })
   const people = useSharedCrewPeople(attributes, { fetchOnMount: false })
   const failures = [
+    // A failed capabilities read cannot say whether the preview is on, so it still shows.
     { query: caps, testId: 'creator-filter-capabilities-error', fallback: i18nT('sharedCrew.session_state_failed'), enabled: true },
     { query: modeQuery, testId: 'creator-filter-mode-error-notice', fallback: i18nT('sharedCrew.mode_failed'), enabled: attributes },
     { query: people, testId: 'creator-filter-people-error', fallback: i18nT('sharedCrew.people_failed'), enabled: attributes },
   ].filter(({ query, enabled }) => enabled && queryReadFailed(query))
-  const mode = effectiveMode(modeQuery.data, {
-    teamPath: sharedAccessConfigured(caps.capabilities),
-    othersSeen: (people.data?.people ?? []).some(row => !row.is_viewer),
-  })
+  const team = showsTeamAttribution({ previewOn, attributes, mode: listMode(modeQuery.data, caps.capabilities, people.data), joined: someoneJoined(people.data?.people) })
   return (
     <>
       {failures.map(({ query, testId, fallback }) => (
@@ -94,7 +107,7 @@ export function CreatorFilterBar({ value, onChange }: { value: CreatorFilterValu
           <Btn onClick={() => { void query.refetch() }}>{i18nT('components.mobileConnect.try_again')}</Btn>
         </div>
       ))}
-      {attributes && modeQuery.data !== undefined && !hidesTeamAttribution(mode) && <CreatorFilterSelect value={value} onChange={onChange} people={people.data} />}
+      {team && <CreatorFilterSelect value={value} onChange={onChange} people={people.data} />}
     </>
   )
 }

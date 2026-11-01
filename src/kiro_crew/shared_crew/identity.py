@@ -137,10 +137,19 @@ def direct_principal(peer: DirectPeer) -> Principal:
 
 
 def local_operator_principal(token_subject: str) -> Principal:
-    """The local operator, keyed by the subject of the token they hold."""
+    """The local operator, keyed by the subject of the token they hold.
+
+    The owner's subjects are labelled with this machine's name; the id is the
+    subject's alone, so the label never changes who the principal is.
+    """
+    from kiro_crew.shared_crew import owner
+
     subject = token_subject.strip()
     if not subject:
         return Principal.unknown()
+    label = (
+        owner.machine_name(token_subject=subject) if owner.is_owner_subject(subject) else subject
+    )
     return Principal(
         id=principal_id_for(PROVIDER_LOCAL, LOCAL_ISSUER, subject),
         kind=PrincipalKind.HUMAN,
@@ -148,7 +157,7 @@ def local_operator_principal(token_subject: str) -> Principal:
         issuer=LOCAL_ISSUER,
         subject=subject,
         provenance=Provenance.LOCAL_OPERATOR,
-        display=DisplaySnapshot(name=subject[:128], login=""),
+        display=DisplaySnapshot(name=label[:128], login=""),
     )
 
 

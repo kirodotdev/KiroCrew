@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import TaskDetailPanel from '../pages/aidlc/TaskDetailPanel'
 import type { TaskDetail } from '../types'
 
@@ -64,12 +64,13 @@ describe('TaskDetailPanel', () => {
     expect(screen.getByText(/Save/)).toBeInTheDocument()
   })
 
-  it('calls onSave with updated values', () => {
+  it('calls onSave with updated values', async () => {
     const onSave = vi.fn()
     render(<TaskDetailPanel task={task()} allTasks={allTasks} onClose={() => {}} editable onSave={onSave} />)
     fireEvent.change(screen.getByDisplayValue('Deploy'), { target: { value: 'Deploy v2' } })
     fireEvent.click(screen.getByText(/Save/))
     expect(onSave).toHaveBeenCalledWith(3, expect.objectContaining({ title: 'Deploy v2' }))
+    await waitFor(() => expect(screen.queryByText(/Save/)).not.toBeInTheDocument())
   })
 
   it('restores from pendingEdits on mount', () => {
@@ -92,8 +93,8 @@ describe('TaskDetailPanel', () => {
     const onSave = vi.fn().mockRejectedValue(new Error('fail'))
     render(<TaskDetailPanel task={task()} allTasks={allTasks} onClose={() => {}} editable onSave={onSave} />)
     fireEvent.change(screen.getByDisplayValue('Deploy'), { target: { value: 'Deploy v2' } })
-    fireEvent.click(screen.getByText(/Save/))
-    await vi.waitFor(() => expect(screen.getByText(/Save failed/)).toBeInTheDocument())
+    await act(async () => { fireEvent.click(screen.getByText(/Save/)) })
+    await waitFor(() => expect(screen.getByText(/Save failed/)).toBeInTheDocument())
     expect(screen.getByText(/Save/, { selector: 'button' })).toBeInTheDocument()
   })
 
@@ -104,7 +105,8 @@ describe('TaskDetailPanel', () => {
     fireEvent.change(screen.getByDisplayValue('Deploy'), { target: { value: 'Deploy v2' } })
     fireEvent.click(screen.getByText(/Save/))
     expect(screen.getByDisplayValue('Deploy v2')).toBeDisabled()
-    resolve!()
-    await vi.waitFor(() => expect(screen.getByDisplayValue('Deploy v2')).not.toBeDisabled())
+    await act(async () => { resolve!() })
+    await waitFor(() => expect(screen.queryByText(/Save/)).not.toBeInTheDocument())
+    expect(screen.getByDisplayValue('Deploy v2')).not.toBeDisabled()
   })
 })

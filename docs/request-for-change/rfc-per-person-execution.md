@@ -1,11 +1,11 @@
 ---
 title: Per-person execution and roles - a shared Crew runs each person's work as that person
-status: draft
+status: accepted
 author: bolichen
 created: 2026-11-01
 last-audited: 2026-11-01
-audited-at: cc669a83a5
-doc-pr:
+audited-at: 414641cc1a
+doc-pr: 27023
 implementation-prs: []
 tracking-issues: [27006]
 supersedes: []
@@ -14,9 +14,9 @@ superseded-by: []
 
 # RFC: Per-person execution and roles
 
-- Status: draft. Nothing built; it changes no code. Acceptance requested from a
-  maintainer; the status flips to `accepted` when one records it here. Verified
-  at `cc669a83a5`: every ACP runtime starts in the gateway's own uid
+- Status: accepted 2026-11-01 by the maintainer Bolin Chen (@bolichen97), with
+  the answers in §12. Nothing built yet; phase R0 is the first code PR. Verified
+  at `414641cc1a`: every ACP runtime starts in the gateway's own uid
   (`acp/launch.py`), Shared Crew states "There are no roles and no per-session ACLs" and reports
   containment as `best_effort` (`docs/system-specs/modules/shared-crew.md` §1,
   §4 Containment), and terminal routes require the dashboard owner.
@@ -306,9 +306,12 @@ Approving a tool call is not a right: it always belongs to the run-as person
 | `viewer` | `sessions.read_all` | `none` | every other admitted person |
 | `guest` | `chat` | `guest` | nobody until the operator lists them |
 
-An admitted person who matches no role is a `viewer`. That keeps today's
-admission behaviour safe by default: an invited friend can watch, not act,
-until the owner gives them a role.
+Roles are off until the operator creates `people_policy.json`. With no file,
+every admitted person keeps the rights Shared Crew gives them today and every
+turn runs as the gateway account, so an existing Crew, Tailscale invites
+included, behaves exactly as before. Once the file exists, an admitted person
+who matches no role is a `viewer`: an invited friend can watch, not act, until
+the owner gives them a role.
 
 ### Resolution
 
@@ -377,8 +380,10 @@ One keystone file, `people_policy.json` (READONLY disposition, like
 itself, names the account) or `explicit` (only `overrides`). `roles` adds to or
 replaces the built-in ones by name.
 
-Off by default. Turning run-as on is an operator action on the host, never a
-Settings card, because it widens what the gateway account can do. Roles can be
+Off by default. An absent file means roles and run-as are both off, and the
+gateway behaves as it does without this RFC. Turning run-as on is an operator
+action on the host, never a Settings card, because it widens what the gateway
+account can do. Roles can be
 edited from People only by a person with `people.manage`, and the edit is a
 change card that writes the keystone through the gateway, never through the
 agent.
@@ -423,24 +428,21 @@ cannot: it lives in the launch tail and the gate.
   reads as that person. R10.
 - **Re-implementing ACL checks in the gateway.** It drifts from the kernel. R6.
 
-## 12. Decisions needed
+## 12. Decisions
 
-1. The account map rule: tailnet login local part, an explicit table, or both.
-2. Whether a shared session may switch people at all, or locks to its first
-   person (simpler; R7 then becomes "refuse").
-3. Whether the model login is always the person's, or the Crew may lend its own
-   for people who have none.
-4. Whether run-as requires Shared Crew's preview gate, or ships with its own
-   switch in `people_policy.json` and reads the Principal either way.
-5. Roles reverse Shared Crew's "There are no roles and no per-session ACLs" boundary. That needs a
-   maintainer decision recorded under `docs/decisions/`.
-6. Whether an admitted person with no role is a `viewer` (proposed) or `none`.
-7. One role model with the Slack channel roles RFC
-   ([#23362](https://github.com/kirodotdev/KiroCrew/pull/23362)): its
-   out-of-role calls ask the owner in the thread; this RFC's R8 gives a
-   run-as runtime's in-role asks to the person. Proposed merge: in-role asks go
-   to the run-as person, out-of-role asks go to a person holding
-   `people.manage`, and a role's profile decides which is which.
+Decided 2026-11-01 by the maintainer Bolin Chen (@bolichen97) when accepting
+this RFC
+([comment](https://github.com/kirodotdev/KiroCrew/pull/27197#issuecomment-6561212426)).
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | The account map rule | `same_login` by default, with explicit `overrides` |
+| 2 | May a shared session switch people? | Yes. The runtime is replaced on a change of person and reseeded from the transcript (R7) |
+| 3 | Whose model login does a run-as turn use? | The person's own. Lending the Crew's login is out of scope |
+| 4 | Which switch turns run-as on? | Its own, in `people_policy.json`, independent of the Shared Crew preview gate; it reads the Principal either way |
+| 5 | Roles reverse Shared Crew's "There are no roles and no per-session ACLs" boundary | Accepted, and recorded in `docs/decisions/2026-11-01-shared-crews-give-each-person-one-role.md` |
+| 6 | An admitted person with no role | `viewer`, but only once `people_policy.json` exists; with no file, everyone keeps today's rights (§7 Built-in roles) |
+| 7 | One role model with the Slack channel roles RFC ([#23362](https://github.com/kirodotdev/KiroCrew/pull/23362)) | Yes. In-role asks go to the run-as person; out-of-role asks go to a person holding `people.manage`; the role's profile decides which is which |
 
 ## 13. Open questions
 

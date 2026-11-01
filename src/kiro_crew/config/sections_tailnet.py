@@ -14,6 +14,15 @@ from kiro_crew.config.sections_defaults import SectionReader
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
+#: Every config path whose ``true`` opens the dashboard to the tailnet, so a
+#: ceiling pinning ``capabilities.tailnet_origin`` off refuses that write. One
+#: tuple for every write chokepoint (the dashboard PATCH and ``config set``).
+TAILNET_OPENING_PATHS = (
+    "dashboard.tailscale.enabled",
+    "dashboard.tailscale.trust_identity",
+    "dashboard.shared_crew.tailnet_direct",
+)
+
 
 @dataclass
 class TailscaleConfig:

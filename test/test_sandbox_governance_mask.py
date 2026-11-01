@@ -179,6 +179,9 @@ class TestKeystonesAreSealedInEveryMode:
         "computer_use.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
+        # The owner's Shared Crew switch: a writable record would let an agent open
+        # the Crew to other people on its next start.
+        "shared_crew_preview.json",
         # Recorded consent to send conversation state to the external decision
         # provider. Same class: the seal is what makes "the owner consents to
         # the egress, never the agent" true.

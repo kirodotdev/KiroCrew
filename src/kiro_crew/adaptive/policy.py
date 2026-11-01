@@ -264,10 +264,9 @@ class AdaptivePolicy:
         self._last_gate_decrease_at = _NEVER
         self._last_exec_increase_at = _NEVER
         self._last_gate_increase_at = _NEVER
-        # Last sample with ANY signal (the gate's evidence) and last sample with
-        # a WORK signal (the exec track's: everything but loop lag and memory).
-        self._last_pressure_at = _NEVER
-        # Last sample carrying one of the GATE's signals (loop lag excluded).
+        # Last sample carrying one of the GATE's signals (loop lag excluded),
+        # and last sample with a WORK signal (the exec track's: everything but
+        # loop lag and memory).
         self._last_gate_pressure_at = _NEVER
         self._last_exec_pressure_at = _NEVER
         # Last sample with exec demand (running + queued > 0): idle recovery
@@ -383,8 +382,6 @@ class AdaptivePolicy:
             # is measured from the first sample, not from the dawn of time.
             self._last_exec_increase_at = now
             self._last_gate_increase_at = now
-        if report.any:
-            self._last_pressure_at = now
         if report.gate_signals:
             self._last_gate_pressure_at = now
         if report.exec_signals:

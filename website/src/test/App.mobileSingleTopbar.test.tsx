@@ -392,7 +392,7 @@ describe('phone chat page: one top bar', () => {
     // It hangs over the top of <main>: a readout must not swallow the taps
     // and scroll starts that land there.
     expect(strip).toHaveClass('pointer-events-none')
-    act(() => { store.dispatch(sseConnected()) })
+    await act(async () => { store.dispatch(sseConnected()) })
     expect(screen.queryByTestId('mobile-offline-strip')).toBeNull()
   })
 

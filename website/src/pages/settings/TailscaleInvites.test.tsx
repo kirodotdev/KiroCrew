@@ -19,6 +19,8 @@ vi.mock('../../api/client', () => ({
     tailscaleUploadAvatar: vi.fn(),
     sharedCrewAccess: vi.fn(),
     sharedCrewAckFirstShare: vi.fn(),
+    sharedCrewCapabilities: vi.fn(),
+    sharedCrewPeople: vi.fn(),
   },
 }))
 const copy = vi.hoisted(() => vi.fn<(text: string) => Promise<boolean>>())
@@ -30,6 +32,8 @@ const revoke = vi.mocked(api.tailscaleRevokeInvite)
 const disconnect = vi.mocked(api.tailscaleDisconnect)
 const accessRead = vi.mocked(api.sharedCrewAccess)
 const ack = vi.mocked(api.sharedCrewAckFirstShare)
+const capsRead = vi.mocked(api.sharedCrewCapabilities)
+const peopleRead = vi.mocked(api.sharedCrewPeople)
 
 const KEY = 'tskey-api-kAbC123CNTRL-Zz9yYxXwWvV'
 
@@ -57,10 +61,10 @@ describe('TailscaleInvites', () => {
     read.mockResolvedValue(status({ connected: false }))
     mount()
     expect(await screen.findByTestId('invite-connect')).toBeInTheDocument()
-    // The by-hand explanation and the key help sit in ⓘ tips; the links stay visible.
+    // The key help sits in an ⓘ tip; the links stay visible and nothing explains the manual path.
     const tip = (id: string) => screen.getByTestId(id).querySelector('button[aria-label="More information"]')?.getAttribute('title') ?? ''
-    expect(tip('invite-tip')).toContain('For the direct link, Tailscale access rules apply.')
-    expect(tip('invite-key-tip')).toMatch(/expires/)
+    expect(screen.queryByTestId('invite-tip')).toBeNull()
+    expect(tip('invite-key-tip')).toMatch(/never shown again/)
     expect(screen.getByTestId('invite-admin-share')).toHaveAttribute('href', 'https://login.tailscale.com/admin/machines')
     expect(screen.getByTestId('invite-admin-keys')).toHaveAttribute('href', 'https://login.tailscale.com/admin/settings/keys')
     const input = screen.getByTestId('invite-key-input')
@@ -193,7 +197,62 @@ describe('TailscaleInvites', () => {
     fireEvent.click(screen.getByTestId('invite-send'))
     await waitFor(() => expect(create).toHaveBeenCalledWith({ emails: [], multi_use: false, alias: '', avatar_id: '' }))
     expect(await screen.findByTestId('invite-link-result')).toHaveTextContent('https://login.tailscale.com/admin/invite/abc')
-    expect(screen.getByText(/Share it like a password/)).toBeInTheDocument()
+    expect(screen.getByText('Anyone with this link can accept it.')).toBeInTheDocument()
+  })
+
+  describe('Copy invite message after an invite is made', () => {
+    const DIRECT = { state: 'active', reason: '', method: 'localapi_unix', owner_login: 'o@example.test', urls: ['http://100.64.0.1:5476/', 'http://crew.tail1.ts.net:5476/'], addresses: [] }
+    const owner = {
+      schema_version: 1, directory: { state: 'unavailable' }, usage_available: false,
+      people: [{ principal: { id: 'p_o', kind: 'human', display: { name: 'Mac Studio', login: '', captured_at: null } }, sources: ['observed'], is_viewer: true, is_owner: true }],
+    }
+    beforeEach(() => {
+      capsRead.mockResolvedValue({ tailnet_direct: DIRECT } as never)
+      peopleRead.mockResolvedValue(owner as never)
+    })
+
+    it('a link invite puts its URL in the message, IPv4 first and MagicDNS as the fallback', async () => {
+      read.mockResolvedValue(status())
+      create.mockResolvedValue({ invites: [invite({ kind: 'link', email: '', invite_url: 'https://login.tailscale.com/admin/invite/abc' })] })
+      mount()
+      fireEvent.click(await screen.findByTestId('invite-mode-link'))
+      fireEvent.click(screen.getByTestId('invite-send'))
+      const button = await screen.findByTestId('invite-copy-link-message')
+      await waitFor(() => expect(peopleRead).toHaveBeenCalled())
+      fireEvent.click(button)
+      await waitFor(() => expect(copy).toHaveBeenCalledTimes(1))
+      expect(copy.mock.calls[0][0].split('\n')).toEqual([
+        'Mac Studio invited you to Kiro Crew.',
+        '1. Accept the Tailscale share: https://login.tailscale.com/admin/invite/abc',
+        '2. Open Crew: http://100.64.0.1:5476/',
+        '',
+        "Can't open it? Turn on MagicDNS at https://login.tailscale.com/admin/dns, then open http://crew.tail1.ts.net:5476/",
+      ])
+    })
+
+    it('an email invite uses the email line', async () => {
+      read.mockResolvedValue(status())
+      create.mockResolvedValue({ invites: [invite()] })
+      mount()
+      fireEvent.change(await screen.findByTestId('invite-emails'), { target: { value: 'ann@example.com' } })
+      fireEvent.click(screen.getByTestId('invite-send'))
+      const button = await screen.findByTestId('invite-copy-email-message')
+      await waitFor(() => expect(peopleRead).toHaveBeenCalled())
+      fireEvent.click(button)
+      await waitFor(() => expect(copy).toHaveBeenCalledTimes(1))
+      expect(copy.mock.calls[0][0].split('\n')[1]).toBe('1. Accept the invitation Tailscale emailed you')
+    })
+
+    it('offers no message button while the direct link is off', async () => {
+      capsRead.mockResolvedValue({ tailnet_direct: { ...DIRECT, state: 'off', urls: [] } } as never)
+      read.mockResolvedValue(status())
+      create.mockResolvedValue({ invites: [invite()] })
+      mount()
+      fireEvent.change(await screen.findByTestId('invite-emails'), { target: { value: 'ann@example.com' } })
+      fireEvent.click(screen.getByTestId('invite-send'))
+      await waitFor(() => expect(create).toHaveBeenCalled())
+      expect(screen.queryByTestId('invite-copy-email-message')).toBeNull()
+    })
   })
 
   it('lists pending and accepted invites, naming an accept from another account', async () => {
@@ -218,7 +277,7 @@ describe('TailscaleInvites', () => {
     mount()
     fireEvent.click(await screen.findByTestId('invite-revoke'))
     expect(revoke).not.toHaveBeenCalled()
-    expect(screen.getByText(/Access follows Tailscale rules and Crew does not stop their work/)).toBeInTheDocument()
+    expect(screen.getByText(/Access follows Tailscale rules, and their running work continues/)).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('invite-revoke-confirm'))
     await waitFor(() => expect(revoke).toHaveBeenCalledWith('9'))
   })

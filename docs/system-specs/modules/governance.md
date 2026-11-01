@@ -3269,14 +3269,15 @@ rewrite its own ceiling in any sandbox mode), the row is a control the running a
 cannot undo.
 
 Consulted at **four** chokepoints — the derivation, the publish action, and every
-write path to `dashboard.tailscale.enabled`; any one alone would be a
-half-control:
+write path to a tailnet-opening key (`sections_tailnet.TAILNET_OPENING_PATHS`:
+`dashboard.tailscale.enabled`, `dashboard.tailscale.trust_identity` and
+`dashboard.shared_crew.tailnet_direct`); any one alone would be a half-control:
 
 | Chokepoint | Pinned-off behavior |
 |---|---|
 | `tailnet.resolve_tailnet_host()` | Contributes no origin **and does not spawn the CLI**, so the pin closes both halves an administrator objects to. Checked ahead of the daemon call |
 | `tailnet_serve.publish()` | Refuses to run `tailscale serve`, so the dashboard is never put on the tailnet in the first place. Checked before the spawn — refusing after publishing would be theatre |
-| `PATCH /api/config/kirocrew` (`handlers/core_config_patch.py`) | **403** on `dashboard.tailscale.enabled=true` |
+| `PATCH /api/config/kirocrew` (`handlers/core_config_patch.py`) | **403** on any `TAILNET_OPENING_PATHS` key set to `true`, with a `governance_decision` SEL row (`config_patch_dashboard_tailnet`) |
 | `kirocrew config set [--local] …` (`cli_config.py`) | Exits **1** without writing. The generic setter reaches the same key, and `--local` writes the overlay that takes PRECEDENCE over the base file |
 
 `tailnet_serve.unpublish()` is deliberately **not** gated, and the asymmetry is

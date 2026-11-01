@@ -44,6 +44,8 @@ from kiro_crew.sandbox_leaves import (
 #:      both absent and empty, so every service stays unconfirmed;
 #:    * ``decisions_consent.json`` — ``decisions.consent.load_state`` reads ``{}``
 #:      as NOT CONSENTED, which is what an absent keystone means;
+#:    * ``shared_crew_preview.json`` — ``shared_crew.preview.read_stored`` reads
+#:      ``{}`` as OFF, which is what an absent keystone means;
 #:    * ``settings_seeds.json`` — ``acp.seed_provenance._load`` finds no ``seeds``
 #:      mapping in ``{}`` and returns having recorded nothing, so every settings
 #:      path reads as unowned. Identical to absent, and the leaf that most needs
@@ -321,6 +323,13 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "oauth_endpoints.json",
     "aws_service_consent.json",
     "decisions_consent.json",
+    # The Shared Crew preview switch: ``preview.read_stored`` reads an absent,
+    # empty and unreadable store alike as OFF, so a pre-created ``{}`` means
+    # exactly what an absent file means (criterion 1); the writer rewrites an
+    # existing record in place (``preview.write_stored``), so the read-only mount
+    # stays on the same inode and a sandboxed reader sees the owner's choice,
+    # never a writable copy (criterion 2).
+    "shared_crew_preview.json",
     # Consent to forward SSH_AUTH_SOCK: ``ssh_auth_sock_consent.is_granted``
     # reports no consent for an absent, empty, AND unreadable store alike, so a
     # pre-created ``{}`` means exactly "not forwarded" (criterion 1); the writer

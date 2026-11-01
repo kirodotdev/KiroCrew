@@ -10,6 +10,11 @@ describe('TailnetDirectLink', () => {
     expect(screen.getByTestId('tailnet-direct-link')).toHaveTextContent('Anyone allowed by Tailscale access rules can open this link.')
   })
 
+  it('shows the first URL in the field', () => {
+    render(<TailnetDirectLink direct={{ state: 'active', urls: ['http://100.64.0.1:5476/', 'https://crew.example.ts.net/'] } as never} />)
+    expect(screen.getAllByLabelText('Tailscale link to this Crew', { selector: 'input' })[0]).toHaveValue('http://100.64.0.1:5476/')
+  })
+
   it('a refused copy shows the shared error notice', async () => {
     render(<TailnetDirectLink direct={{ state: 'active', urls: ['https://crew.example.ts.net/'] } as never} />)
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }))

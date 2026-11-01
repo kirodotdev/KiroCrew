@@ -2,8 +2,8 @@
  *
  *  Renders only while the gateway reports `tailnet_direct.state === 'active'`.
  *  The link carries no token. Tailscale access rules decide who can reach it.
- *  The first URL is the MagicDNS name; the rest are the
- *  machine's tailnet addresses, as a fallback when MagicDNS is off. */
+ *  The first URL is the machine's tailnet IPv4 address; the rest are the
+ *  MagicDNS name and other addresses. */
 import { useState } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
 import type { TailnetDirect } from '../api/sharedCrew'

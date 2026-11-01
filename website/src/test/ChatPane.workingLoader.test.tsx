@@ -98,8 +98,9 @@ function mount(slotState: string, messages: Msg[], slotRunning?: boolean) {
 const USER_MSG: Msg = { role: 'user', content: 'hi', ts: '2026-09-01T00:00:00Z' }
 
 describe('ChatPane working indicator (ChatFooter wiring)', () => {
-  it('shows the loader carousel while a tool step runs', () => {
-    const { queryByTestId } = mount('tool_running', [USER_MSG])
+  it('shows the loader carousel while a tool step runs', async () => {
+    const { queryByTestId, findByTestId } = mount('tool_running', [USER_MSG])
+    await findByTestId('loader-carousel')
     expect(queryByTestId('chat-footer')).not.toBeNull()
     expect(queryByTestId('loader-carousel')).not.toBeNull()
   })

@@ -9,7 +9,7 @@
  * the frame-level measurements behind each.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { act, screen, fireEvent } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -146,6 +146,9 @@ describe('Notification Center sheet — slide-out on dismiss', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(document.activeElement).toBe(bell)
     expect(phase()).toBe('closing')
+    // The exit settle reports arrival later and unmounts the sheet; wait for that
+    // so its state update lands inside the test, not after it.
+    await waitFor(() => expect(sheet()).toBeNull(), { timeout: 2000 })
   })
 })
 

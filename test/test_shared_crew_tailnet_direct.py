@@ -875,8 +875,15 @@ def test_direct_origins_on_port_80_match_what_a_browser_sends():
 
 def test_share_urls_carry_no_token():
     urls = tailnet_direct.direct_urls(_gate(), PORT)
-    assert urls[0] == "http://crew.tail1234.ts.net:5476/"
     assert all("token" not in u for u in urls)
+
+
+def test_share_urls_order_is_ipv4_then_magicdns_then_ipv6():
+    assert tailnet_direct.direct_urls(_gate(), PORT) == [
+        "http://100.64.0.1:5476/",
+        "http://crew.tail1234.ts.net:5476/",
+        "http://[fd7a:115c:a1e0::1]:5476/",
+    ]
 
 
 # -- config ------------------------------------------------------------------- #

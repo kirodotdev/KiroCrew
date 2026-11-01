@@ -13,13 +13,11 @@
 1 conftest.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/deps.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
-1 test/test_agent_home_isolation.py
 2 test/test_cli_lazy_imports.py
 2 test/test_cli_manifest_signature.py
 2 test/test_config_baseline.py
 1 test/test_connections_tool_aliases.py
 6 test/test_ios_simulator_preview_skill.py
 1 test/test_perf_boot_path.py
-1 test/test_pr_readiness_publish.py
 2 test/test_prepare_pr_prove.py
 3 test/test_spawn_exec_shim.py
