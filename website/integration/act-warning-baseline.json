@@ -296,7 +296,6 @@
   "src/test/MarkdownPanelMoreCoverage.test.tsx",
   "src/test/MarkdownPanelRailNarrow.test.tsx",
   "src/test/MarkdownRenderer.blockedLink.test.tsx",
-  "src/test/MarkdownRenderer.brokenImage.test.tsx",
   "src/test/MarkdownRenderer.contextmenu.test.tsx",
   "src/test/MarkdownRenderer.folderChip.test.tsx",
   "src/test/MarkdownRenderer.inlineCodeCopy.test.tsx",
