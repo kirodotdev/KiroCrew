@@ -251,7 +251,6 @@
   "src/test/DesignTweakPreviewCov80.test.tsx",
   "src/test/DesignTweakProjectRailCov80.test.tsx",
   "src/test/DevFleetPage.test.tsx",
-  "src/test/DevFleetPageCoverage.test.tsx",
   "src/test/DiffBlock.test.tsx",
   "src/test/DropdownMenu.fileDragClose.test.tsx",
   "src/test/EditableCodeBlock.editorActions.test.tsx",
