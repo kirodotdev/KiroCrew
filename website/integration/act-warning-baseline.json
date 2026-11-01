@@ -2,7 +2,6 @@
   "integration/MarkdownPanelComment.integration.test.tsx",
   "src/apps/auto-research/ResearchLabPage.test.tsx",
   "src/apps/aws-control/ConsoleView.test.tsx",
-  "src/apps/aws-control/DrivePage.test.tsx",
   "src/apps/aws-control/shared.test.tsx",
   "src/apps/command-bar/CommandBarOverlay.artifacts.test.tsx",
   "src/apps/command-bar/CommandBarOverlay.test.tsx",
