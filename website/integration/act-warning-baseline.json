@@ -77,7 +77,6 @@
   "src/test/ChatPageMoreCoverage.test.tsx",
   "src/test/ChatPageW3Coverage.test.tsx",
   "src/test/ChatPane.dirSend.test.tsx",
-  "src/test/ChatPane.headerStacking.test.tsx",
   "src/test/ChatPane.stopEscalation.test.tsx",
   "src/test/ChatSidebar.boardColumnTagFilter.test.tsx",
   "src/test/ChatSidebar.boardDuplicate.test.tsx",
