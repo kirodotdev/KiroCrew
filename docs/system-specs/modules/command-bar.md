@@ -305,17 +305,17 @@ With a query, the sessions view sorts its hits in three keys, in order
 2. then the match score;
 3. then the backend's own order.
 
-An empty query is not re-sorted, so the backend's recency order stands. "Open" means the hit's
-key, with its `dashboard_` prefix removed (`normalizeKey`), is the key of a live dashboard slot
-(`openSessionKeys` in `useCommandBarOverlayEngines.ts`). A remote instance's row never counts as
-open. A history key that does not name a live slot, such as a cron session's, stays in the
-history tier; #25460 tracks marking open rows on the server instead.
+An empty query is not re-sorted, so the backend's recency order stands. "Open" means the server
+set `open: true` on the hit: `GET /api/sessions/search` and the local leg of the federated
+search compare each row with the transcript every live slot writes (`slot_history_key`, in
+`session_open_marks.py`), so an ordinary tab, a cron tab and a channel tab
+all match. A remote instance's row never counts as open.
 
-The open set is part of the search's cache key (`openSessionsKey` in
-`useCommandBarOverlaySlots.ts`), so opening or closing a session re-runs the search and re-ranks
-the rows. While only the open set changes, `placeholderData` keeps the old rows on screen; a new
-query drops them. The highlight stays on the same row index, so a re-rank can move it to a
-different session.
+The open slots' sorted keys (`openSessionsKey`) are part of both search cache keys, the
+provider's and `useCommandBarOverlaySlots.ts`'s, so opening or closing a session fetches fresh
+flags and re-ranks the rows. While only the open set changes, `placeholderData` keeps the old
+rows on screen; a new query drops them. The highlight follows its row: when a re-rank under an
+unchanged query moves the selected row, the selection moves with it.
 
 ### A stale Enter is latched, not acted on and not dropped
 

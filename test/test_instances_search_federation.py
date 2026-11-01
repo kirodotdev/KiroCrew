@@ -137,6 +137,29 @@ class TestSearchAllEndpoint:
         assert mgr.calls and mgr.calls[0][0] == "a"
 
     @pytest.mark.asyncio
+    async def test_marks_local_open_tabs_and_never_a_peer_row(self, monkeypatch):
+        """A local hit an open tab owns carries ``open``; a peer's own ``open``
+        is dropped, so another gateway's tab never ranks as open here."""
+        _enable_instances(monkeypatch)
+        mgr = _Mgr({"a": (True, {"sessions": [{"key": "cron_job7", "open": True}]})})
+        state = _state([{"key": "cron_job7"}, {"key": "dashboard_chat-old"}], mgr)
+        state._slots = {
+            "cron-job7": SimpleNamespace(
+                key="cron-job7", linked_session_key="cron:job7", channel_origin=False
+            )
+        }
+
+        resp = await hi.api_instances_search_sessions(_request(state))
+
+        rows = (await _json_of(resp))["sessions"]
+        opened = [(r["key"], r.get("instance_id"), r.get("open")) for r in rows]
+        assert opened == [
+            ("cron_job7", None, True),
+            ("cron_job7", "a", None),
+            ("dashboard_chat-old", None, None),
+        ]
+
+    @pytest.mark.asyncio
     async def test_unreachable_peer_degrades_without_failing_the_request(self, monkeypatch):
         """A dead peer becomes an ``unreachable`` entry; local results still land."""
         _enable_instances(monkeypatch)

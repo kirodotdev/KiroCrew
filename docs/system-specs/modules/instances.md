@@ -2795,7 +2795,9 @@ browser: only known fields are copied, strings are type-checked, and `title` /
 peer claims to have redacted, but this hub does not take its word for it. Rows
 from a peer additionally carry `instance_id` + `instance_name`; local rows carry
 neither, so the reply shape for a hub with no peers degrades to exactly the
-local search's own.
+local search's own. A local row a live slot owns gets `open: true`, the same
+mark the plain search sets; `open` is not on the peer allowlist, so a remote row
+never carries it, even from a peer that set it.
 
 The endpoint runs behind the same `_guard()` as every §6 route (owner-only,
 never Slack, `instances.enabled`, SEL-audited as `instances_search_sessions`)
