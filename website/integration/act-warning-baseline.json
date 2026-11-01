@@ -173,7 +173,6 @@
   "src/test/useInstanceShortcuts.test.tsx",
   "src/test/useKeyboardShortcuts.test.tsx",
   "src/test/useQueuedMessageActions.test.tsx",
-  "src/test/useRefreshScheduler.test.tsx",
   "src/test/useSessionActions.test.tsx",
   "src/test/useTheme.authReplay.test.tsx"
 ]
