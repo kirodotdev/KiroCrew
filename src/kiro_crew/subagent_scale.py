@@ -118,10 +118,12 @@ class SubagentEventCoalescer:
             entry.update({k: v for k, v in payload.items() if k != "id"})
             self._ensure_tick()
             return True
-        # Lifecycle / unknown event: pass through. A done/spawn between ticks
-        # must not overtake this agent's buffered deltas — flush first so
-        # ordering is preserved (e.g. buffered chunk text lands before done).
-        if etype in ("subagent_done", "subagent_spawn"):
+        # Lifecycle / unknown event: pass through. A done/spawn/recovering
+        # between ticks must not overtake this agent's buffered deltas — flush
+        # first so ordering is preserved (e.g. buffered chunk text lands before
+        # done, and an older buffered tool update cannot land after a
+        # recovering frame and clear its retrying flag).
+        if etype in ("subagent_done", "subagent_spawn", "subagent_recovering"):
             self._flush_if_pending()
         return False
 
