@@ -295,6 +295,10 @@ const FORWARDING_PROVEN = [
   // two-press clear forwards its ref to its <button>, and both clear-all
   // call sites register their location.
   'NotificationClearButton',
+  // Proven in src/pages/ChatPage.views.test.tsx: the chat header's
+  // TipClickable forwards its ref to the Clickable it renders, so the
+  // side-panel toggle is the one element registered as chat.side-panel-open.
+  'TipClickable',
 ]
 
 describe('a marker must register the element it sits on', () => {

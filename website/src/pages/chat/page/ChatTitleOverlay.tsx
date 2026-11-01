@@ -1,4 +1,4 @@
-import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
+import { forwardRef, type ComponentPropsWithoutRef, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import { CrewWorkerBreadcrumb } from '../../../components/crew/CrewWorkerBreadcrumb'
 import { Undo2, ExternalLink, Columns2 } from 'lucide-react'
 import type { SidePanelDock } from '../../../hooks/useSidePanelDock'
@@ -17,7 +17,7 @@ import SessionTitleControl from '../SessionTitleControl'
 import { EdgeFade } from '../../../app-sdk/ChatScrollChrome'
 import { SidePanelGlyph } from '../../../components/SidePanelGlyph'
 import Clickable from '../../../components/Clickable'
-import type { useLabelTip } from '../../../components/InstantTip'
+import { useLabelTip } from '../../../components/InstantTip'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 import { crewRootOf } from '../../../lib/crewMode'
@@ -67,9 +67,29 @@ interface ChatTitleOverlayProps {
   sidePanelWantsMount: boolean
   mobileNewSessionItem: { label: string; disabled: boolean; onSelect: () => void; }
   mobileSessionsToggle: JSX.Element
-  popOutTip: ReturnType<typeof useLabelTip>
-  activityTip: ReturnType<typeof useLabelTip>
 }
+
+/**
+ * An icon-only header control that shows its own aria-label in an InstantTip
+ * on hover or keyboard focus, at once, instead of a native title the browser
+ * holds back for about a second. The tip's state lives in this component, so
+ * it mounts and unmounts with the control: the pop-out and side-panel toggles
+ * each go away under the pointer when pressed, and a tip held above them
+ * would paint again, stale, when the control came back.
+ */
+// Forwards its ref so a `uiLocation` marker spread on it registers the real
+// control, as it did when the call sites rendered `Clickable` directly.
+const TipClickable = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<typeof Clickable> & { 'aria-label': string }>(
+  function TipClickable({ children, ...props }, ref) {
+    const tip = useLabelTip(props['aria-label'])
+    return (
+      <Clickable ref={ref} {...props} {...tip.handlers}>
+        {children}
+        {tip.bubble}
+      </Clickable>
+    )
+  },
+)
 
 /**
  * The session title row over the transcript (header menu, title, pop-out, side panel and split controls, the header fade), the pinned-prompt fold sentinel, and the pinned prompt.
@@ -78,7 +98,7 @@ export default function ChatTitleOverlay({
   embedMode, popout, activeSlot, dispatch, filteredSlots, isMobile, titleInTopbar, activityOpen, setActionError, showActionError, onPinCollapsedHeight, pinCardRef, pinExpanded, pinFoldRef, pinned,
   scrollToPinnedPrompt, scrollTranscriptBy, setPinExpanded, activePoppedOut, focusActivePopout, openActivePopout, returnSelfToMain, splitFeatureEnabled, currentSlot, headerColorStyle, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarPinned, sidebarAutoHidden, sidebarPinned, sidePanelDock, splitAnchorForActive, toggleAct, openSidebar, sidebarOnScreen,
-  sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, popOutTip, activityTip,
+  sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle,
 }: ChatTitleOverlayProps) {
   const currentCrewRoot = crewRootOf(currentSlot)
   return (
@@ -202,10 +222,9 @@ export default function ChatTitleOverlay({
             <ExternalLink size={13} /> {i18nT('pages.chatPage.popped_out')}
           </Clickable>
         ) : (
-          <Clickable className="flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 text-muted hover:text-text pointer-events-auto" onClick={() => openActivePopout(activeSlot, currentSlot?.title)} aria-label={i18nT('pages.chatPage.pop_out_session_to_its_own_window')} {...popOutTip.handlers}>
+          <TipClickable className="flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 text-muted hover:text-text pointer-events-auto" onClick={() => openActivePopout(activeSlot, currentSlot?.title)} aria-label={i18nT('pages.chatPage.pop_out_session_to_its_own_window')}>
             <ExternalLink size={15} />
-            {popOutTip.bubble}
-          </Clickable>
+          </TipClickable>
         ))}
         {/* Activity panel open toggle — relocated here from the top bar
             (item 2.4) so opening the panel no longer narrows the now
@@ -215,16 +234,14 @@ export default function ChatTitleOverlay({
             above it opens beside the chat. There is no width at which
             the button does nothing. */}
         {!embedMode && !popout && !activityOpen && (
-          <Clickable
+          <TipClickable
             className="pi-morph flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
             onClick={toggleAct}
             aria-label={i18nT('pages.chatPage.open_activity_panel')}
             {...uiLocation('chat.side-panel-open')}
-            {...activityTip.handlers}
           >
             <SidePanelGlyph size={15} />
-            {activityTip.bubble}
-          </Clickable>
+          </TipClickable>
         )}
         {!embedMode && splitFeatureEnabled && (splitAnchorForActive && !activeIsSplitAnchor ? (
           <Clickable className="flex items-center gap-1 text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded" onClick={() => enterSplit(splitAnchorForActive)} title={i18nT('pages.chatPage.this_session_is_open_in_a_split_return_to_it')} aria-label={i18nT('pages.chatPage.return_to_split_view')}>

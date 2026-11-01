@@ -64,6 +64,7 @@ vi.mock('../api/client', () => ({ api: { resolveApproval: vi.fn(async () => unde
 import ChatPaneChrome from './chat/page/ChatPaneChrome'
 import SessionsSidebarChrome from './chat/page/SessionsSidebarChrome'
 import ChatTitleOverlay from './chat/page/ChatTitleOverlay'
+import { registeredCopies } from '../uiLocations/targetRegistry'
 import ChatTranscriptView from './chat/page/ChatTranscriptView'
 import { api } from '../api/client'
 import { requestSlotReveal } from '../store/chatSlice'
@@ -158,7 +159,7 @@ describe('ChatTitleOverlay', () => {
   const base = (over: Partial<TitleProps>): TitleProps => props<TitleProps>({
     isMobile: false, titleInTopbar: false, filteredSlots: [], activeSlot: 'slot-a', pinned: null,
     sidebarAutoHidden: { current: 'focus' as never }, dispatch: vi.fn() as never,
-    popOutTip: { handlers: {}, bubble: null } as never, activityTip: { handlers: {}, bubble: null } as never, ...over,
+    ...over,
   })
 
   it('reveals the session in the sidebar: pins the desktop sidebar, or opens the phone drawer', () => {
@@ -204,6 +205,26 @@ describe('ChatTitleOverlay', () => {
     render(<ChatTitleOverlay {...base({ activePoppedOut: false, openActivePopout, currentSlot: { key: 'slot-a', title: 'Alpha' } as never })} />)
     fireEvent.click(screen.getByRole('button', { name: /pop out/i }))
     expect(openActivePopout).toHaveBeenCalledWith('slot-a', 'Alpha')
+  })
+
+  it('the pop-out control\'s tip does not come back stale after the session pops out and returns', async () => {
+    const over = { activePoppedOut: false, currentSlot: { key: 'slot-a', title: 'Alpha' } as never }
+    const { rerender } = render(<ChatTitleOverlay {...base(over)} />)
+    const btn = screen.getByRole('button', { name: /pop out/i })
+    fireEvent.mouseEnter(btn)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(btn.getAttribute('aria-label')!)
+    // Popping out swaps the control for the "Popped out" chip under the
+    // pointer; returning brings it back with no tip up.
+    rerender(<ChatTitleOverlay {...base({ ...over, activePoppedOut: true })} />)
+    rerender(<ChatTitleOverlay {...base(over)} />)
+    expect(screen.getByRole('button', { name: /pop out/i })).toBeInTheDocument()
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('the side-panel toggle registers itself as the chat.side-panel-open location', () => {
+    render(<ChatTitleOverlay {...base({ activityOpen: false, embedMode: undefined, popout: false })} />)
+    const btn = screen.getByRole('button', { name: 'Open activity panel' })
+    expect(registeredCopies('location', 'chat.side-panel-open')).toEqual([btn])
   })
 
   it('toggles and jumps to the pinned prompt', () => {
