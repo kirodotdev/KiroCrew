@@ -575,12 +575,12 @@ class TestControllerDispatch:
                 "kiro_crew.service.controller.current_platform",
                 return_value=Platform.LAUNCHD,
             ),
-            patch.object(svc_macos, "status", return_value='"PID" = 1234;\n'),
-            patch.object(svc_macos, "is_active", return_value=True),
+            patch.object(svc_macos, "status", return_value="dev.kirocrew.gateway: running\n"),
+            patch.object(svc_macos, "is_up", return_value=True),
         ):
             rc = controller.service_status()
         assert rc == 0
-        assert "PID" in capsys.readouterr().out
+        assert "running" in capsys.readouterr().out
 
     def test_status_routes_to_macos_inactive_returns_1(self):
         from kiro_crew.service import controller
@@ -592,7 +592,7 @@ class TestControllerDispatch:
                 return_value=Platform.LAUNCHD,
             ),
             patch.object(svc_macos, "status", return_value=""),
-            patch.object(svc_macos, "is_active", return_value=False),
+            patch.object(svc_macos, "is_up", return_value=False),
         ):
             rc = controller.service_status()
         assert rc == 1
