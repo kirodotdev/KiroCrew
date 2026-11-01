@@ -263,7 +263,6 @@
   "src/test/FilePathMenu.test.tsx",
   "src/test/FilesHomePanel.test.tsx",
   "src/test/FolderConfigModal.test.tsx",
-  "src/test/FolderPanel.deadline.test.tsx",
   "src/test/FolderPanel.search.test.tsx",
   "src/test/FolderPanel.test.tsx",
   "src/test/FolderPanel.tree.test.tsx",
