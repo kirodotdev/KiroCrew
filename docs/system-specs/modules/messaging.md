@@ -1341,7 +1341,8 @@ owner-DM, session-conversation or Slack leg in `_deliver_send_message_fallback`
 sends. A refusal sends on none of them and answers 403 `channel_not_permitted`,
 the code a refused owner DM already answers. A caller no app owns is the person,
 whose surface profile the MCP tool already vets, so it is not re-asked; the
-dashboard notification is not an egress leg and is not gated.
+dashboard notification is not an egress leg and is not gated. The
+`update_message` edit route asks the same grant (see In-place edits).
 
 `"slack"` is deliberately **not** a legal `channel_type`: Slack is absent from
 `state.channel_transports` on purpose, so the shared ladder skips it and accepting
@@ -1680,7 +1681,12 @@ The route is `POST /api/update-message`
 fall-through, exactly like `/api/send-message` and `/api/delete-message`). It
 applies `api_send_message`'s outbound floor —
 `redact_for_display` over the text, `_sanitize_blocks` over the blocks — because
-the replacement content reaches Slack as-is. It applies the tracked-channel
+the replacement content reaches Slack as-is. Before it resolves the target it
+re-asks the calling app's own messaging grant (`_vet_app_messaging`, audited
+under `update_message`), as every `send_message` egress leg does, because the
+MCP tool's vet runs where no app is known: an app whose `capabilities.messaging`
+is revoked gets 403 `channel_not_permitted` and the owner DM is not opened. It
+applies the tracked-channel
 allowlist to ROOM targets: a public or private channel must still be in
 `slack.tracking_channels` (403 `channel_not_tracked`). That allowlist is the
 operator's revocation lever, not only a first-contact check — without this rung a
