@@ -2385,13 +2385,16 @@
           "repositories": "रिपॉज़िटरी"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "मौजूदा रिव्यू सेशन की जाँच नहीं हो सकी — रिफ़्रेश पर फिर कोशिश होगी",
           "open_ai_code_review_session_for_this": "इस {{label}} के लिए AI कोड-समीक्षा चैट सेशन खोलो",
           "resume_ai_code_review_session_for_this": "इस {{label}} के लिए AI कोड-समीक्षा चैट सेशन फिर शुरू करो",
           "review": "समीक्षा करें"
         },
         "settingsSection": {
+          "account": "खाता",
           "connect_repo": "रिपो कनेक्ट करें",
           "general": "सामान्य",
+          "repositories": "रिपॉज़िटरी",
           "repository_settings": "रिपॉज़िटरी सेटिंग",
           "gitlab_groups": "GitLab समूह"
         },
@@ -2493,7 +2496,10 @@
       "connectRepoModal": {
         "close": "बंद करें",
         "close_connect_dialog": "कनेक्ट डायलॉग बंद करें",
+        "connect": "कनेक्ट करो",
         "connect_a_repo": "रिपो कनेक्ट करें",
+        "connect_count_one": "{{count}} कनेक्ट करो",
+        "connect_count_other": "{{count}} कनेक्ट करो",
         "connecting": "{{total}} में से {{done}} कनेक्ट हो रहे हैं…"
       },
       "issueRadarPage": {
@@ -2508,6 +2514,14 @@
           "crew_sort_created": "बनाया गया"
         },
         "links": {
+          "merge_request": "मर्ज रिक्वेस्ट",
+          "merge_request_title": "मर्ज रिक्वेस्ट",
+          "merge_requests": "मर्ज रिक्वेस्ट",
+          "merge_requests_title": "मर्ज रिक्वेस्ट",
+          "pull_request": "पुल रिक्वेस्ट",
+          "pull_request_title": "पुल रिक्वेस्ट",
+          "pull_requests": "पुल रिक्वेस्ट",
+          "pull_requests_title": "पुल रिक्वेस्ट",
           "read_only_here_apply_in_provider": "यहाँ केवल-पढ़ने योग्य — {{provider}} रिपॉज़िटरी को {{productName}} से नहीं बदला जा सकता; परिवर्तन {{provider}} में करो",
           "tracked_items_work_items": "वर्क आइटम",
           "tracked_items_issues": "इश्यू"
@@ -3043,6 +3057,9 @@
       "welcomeCarousel": {
         "back": "पीछे",
         "carl_sagan": "— Carl Sagan",
+        "connect": "कनेक्ट करो",
+        "connect_count_one": "{{count}} कनेक्ट करो",
+        "connect_count_other": "{{count}} कनेक्ट करो",
         "connecting_n_of_total": "{{total}} में से {{n}} कनेक्ट हो रहे हैं…",
         "next": "आगे",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar शुरू से शुरू करने के बजाय वही पढ़ता है जो तुम्हारे बॉट पहले ही खोज चुके हैं।",
