@@ -549,13 +549,17 @@ class TestDispatchLoopAuditAttribution:
         )
         try:
             harness.send(_tools_call(31, "blocked"))
-            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
-            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert harness.wait_for(
+                lambda: len(harness.sel_mock.log_tool_invocation.call_args_list) >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args_list[0].kwargs
             assert kw["outcome"] == "rejected_excluded"
             assert kw["session_key"] == LIVE_KEY
             harness.send(_tools_call(32, "echo"))
-            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 2)
-            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert harness.wait_for(
+                lambda: len(harness.sel_mock.log_tool_invocation.call_args_list) >= 2
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args_list[1].kwargs
             assert kw["outcome"] == "failed"
             assert kw["session_key"] == LIVE_KEY
         finally:

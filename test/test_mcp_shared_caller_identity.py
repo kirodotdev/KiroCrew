@@ -139,8 +139,10 @@ class TestStdioLoopCallerIdentity:
             assert "carried no session token" in body
             assert "agents directory" not in body
             assert "Retry shortly" not in body
-            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
-            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert harness.wait_for(
+                lambda: len(harness.sel_mock.log_tool_invocation.call_args_list) >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args_list[0].kwargs
             assert kw["outcome"] == "rejected_policy_unresolved"
             assert kw["session_key"] == "dashboard:chat-11"
             assert kw["error"] == "managedToolPolicy.unresolved:identity_unattested"
@@ -172,8 +174,10 @@ class TestStdioLoopCallerIdentity:
             assert "identity_unattestable" in body
             assert "could not prove which session it acts for" in body
             assert "the gateway refused the tool-policy read" not in body
-            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
-            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert harness.wait_for(
+                lambda: len(harness.sel_mock.log_tool_invocation.call_args_list) >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args_list[0].kwargs
             assert kw["outcome"] == "rejected_policy_unresolved"
             assert kw["session_key"] == "dashboard:chat-13"
             assert kw["error"] == "managedToolPolicy.unresolved:identity_unattestable"
@@ -203,8 +207,10 @@ class TestStdioLoopCallerIdentity:
             assert "identity_unattested" in body
             assert "could not prove which session it acts for" in body
             assert body.endswith(mcp_shared.external_client_identity_note("test-server"))
-            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
-            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert harness.wait_for(
+                lambda: len(harness.sel_mock.log_tool_invocation.call_args_list) >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args_list[0].kwargs
             assert kw["outcome"] == "rejected_policy_unresolved"
             assert kw["session_key"] == "dashboard:chat-copied-by-hand"
         finally:
@@ -489,8 +495,10 @@ class TestStdioLoopCallerIdentity:
         )
         try:
             harness.send(_tools_call_with_caller(21, "blocked", "dashboard:chat-9"))
-            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
-            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert harness.wait_for(
+                lambda: len(harness.sel_mock.log_tool_invocation.call_args_list) >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args_list[0].kwargs
             assert kw["outcome"] == "rejected_excluded"
             assert kw["session_key"] == "dashboard:chat-9"
         finally:
@@ -519,8 +527,10 @@ class TestStdioLoopCallerIdentity:
             assert "tool policy could not be read" in body
             assert "policy_unreadable" in body
             # And it is attributable: the audit names the caller and the path.
-            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
-            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert harness.wait_for(
+                lambda: len(harness.sel_mock.log_tool_invocation.call_args_list) >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args_list[0].kwargs
             assert kw["outcome"] == "rejected_policy_unresolved"
             assert kw["session_key"] == "dashboard:chat-7"
             assert kw["error"] == "managedToolPolicy.unresolved:policy_unreadable"
@@ -868,8 +878,10 @@ class TestStdioLoopCallerIdentity:
         try:
             harness.send(_tools_call_with_caller(31, "echo", "dashboard:chat-5"))
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
-            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
-            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert harness.wait_for(
+                lambda: len(harness.sel_mock.log_tool_invocation.call_args_list) >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args_list[0].kwargs
             assert kw["outcome"] == "failed"
             assert kw["session_key"] == "dashboard:chat-5"
         finally:
