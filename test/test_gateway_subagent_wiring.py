@@ -110,7 +110,7 @@ class _Done:
         self.clients: list[Any] = [self.client]
         sessions = MagicMock(name="sessions")
         sessions.get_or_create = AsyncMock(side_effect=self._get_or_create)
-        sessions.reset = AsyncMock(side_effect=lambda key: self.calls.append(("reset", key)))
+        sessions.reset = AsyncMock(side_effect=self._reset)
         sessions.cancel_current = AsyncMock(
             side_effect=lambda key, **_kw: self.calls.append(("cancel", key))
         )
@@ -191,6 +191,10 @@ class _Done:
         self.calls.append(("acquire", key))
         client = self.clients.pop(0) if len(self.clients) > 1 else self.clients[0]
         return client, True, False
+
+    async def _reset(self, key: str, **_kw: Any) -> bool:
+        self.calls.append(("reset", key))
+        return True
 
     def _slot_for_parent(self, _state: Any, _key: str) -> Any:
         slot = self.bound_slots.pop(0) if self.bound_slots else self.bound_slot

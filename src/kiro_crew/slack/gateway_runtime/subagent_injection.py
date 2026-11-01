@@ -856,40 +856,7 @@ async def _finish_subagent_cron_or_notify(
                     "Subagent %s: failed to deliver cron response",
                     info.id,
                 )
-        # Reset only when no subagents running or QUEUED AND no
-        # injections pending. Queued spawns (behind the concurrency /
-        # stagger gate) have no SubagentInfo in `running` yet — a
-        # sibling completing while the rest of the wave is still
-        # queued must not reset the parent out from under them.
-        still_running = self.subagent_mgr and (
-            any(
-                a.parent_session_key == parent_key and a.id != info.id
-                for a in self.subagent_mgr.running
-            )
-            or await _subagent_queued_count(self.subagent_mgr, parent_key) > 0
-        )
-        still_injecting = self._cron_injecting.get(parent_key, 0) > 0
-        if not still_running and not still_injecting:
-            try:
-                await self.sessions.reset(parent_key)
-                logger.info("Cron session %s: last subagent done, session reset", parent_key)
-                # reset succeeded → the reaper does not need the
-                # registered ephemeral key. Clear inside try so a failed
-                # reset leaves the key registered (ephemeral session may
-                # still be alive — reaper must be able to target it).
-                # parent_key is "cron:{job_id}" (persistent) or
-                # "cron:{job_id}:{run_id}" (ephemeral); job_id is the
-                # second colon-separated segment in both cases. Exact-key
-                # tracking means an older deferred reset removes only its
-                # own key even after a newer run registers another one,
-                # without stripping the reaper/ownership fence for either.
-                cron_svc = getattr(self, "cron_svc", None)
-                if cron_svc is not None:
-                    parts = parent_key.split(":", 2)
-                    if len(parts) >= 2:
-                        cron_svc.clear_active_session_key(parts[1], parent_key)
-            except Exception:
-                logger.exception("Cron session %s: reset failed after last subagent", parent_key)
+        await self._reset_cron_parent_when_idle(info, parent_key)
 
     # Dashboard notification
     if self.dashboard_state and not info.silent:
@@ -905,3 +872,169 @@ async def _finish_subagent_cron_or_notify(
         # route's whole delivery. A cron parent acknowledges in
         # ``_inject_with_retry`` instead, and only when it lands.
         info._report_delivered = True
+
+
+async def _reset_cron_parent_when_idle(
+    self: GatewayOrchestrator,
+    info: SubagentInfo,
+    parent_key: str,
+    *,
+    skip_if_busy: bool = False,
+) -> None:
+    """Run the cron session reset a cron fire deferred while it still had children.
+
+    The fire's own ``finally`` skips the reset while a child is running, queued or
+    being injected, and leaves it to the last completion. ``skip_if_busy`` keeps a
+    live turn on *parent_key* (a dashboard tab driving the job's persistent session)
+    from being torn down under it.
+    """
+    assert self.sessions is not None
+    # Reset only when no subagents running or QUEUED AND no
+    # injections pending. Queued spawns (behind the concurrency /
+    # stagger gate) have no SubagentInfo in `running` yet — a
+    # sibling completing while the rest of the wave is still
+    # queued must not reset the parent out from under them.
+    still_running = self.subagent_mgr and (
+        any(
+            a.parent_session_key == parent_key and a.id != info.id
+            for a in self.subagent_mgr.running
+        )
+        or await _subagent_queued_count(self.subagent_mgr, parent_key) > 0
+    )
+    still_injecting = self._cron_injecting.get(parent_key, 0) > 0
+    if still_running or still_injecting:
+        return
+    try:
+        if skip_if_busy:
+            if not await self.sessions.reset(parent_key, skip_if_busy=True):
+                # Declined: a live turn owns the session, so it keeps its
+                # registration for the reaper and the ownership scan. The
+                # tab only ever runs on the job's own ``cron:<job>`` key, and
+                # the fire or tab turn holding it resets or reuses it there.
+                logger.info("Cron session %s: busy, deferred reset declined", parent_key)
+                return
+        else:
+            await self.sessions.reset(parent_key)
+        logger.info("Cron session %s: last subagent done, session reset", parent_key)
+        # reset succeeded → the reaper does not need the
+        # registered ephemeral key. Clear inside try so a failed
+        # reset leaves the key registered (ephemeral session may
+        # still be alive — reaper must be able to target it).
+        # parent_key is "cron:{job_id}" (persistent) or
+        # "cron:{job_id}:{run_id}" (ephemeral); job_id is the
+        # second colon-separated segment in both cases. Exact-key
+        # tracking means an older deferred reset removes only its
+        # own key even after a newer run registers another one,
+        # without stripping the reaper/ownership fence for either.
+        cron_svc = getattr(self, "cron_svc", None)
+        if cron_svc is not None:
+            parts = parent_key.split(":", 2)
+            if len(parts) >= 2:
+                cron_svc.clear_active_session_key(parts[1], parent_key)
+    except Exception:
+        logger.exception("Cron session %s: reset failed after last subagent", parent_key)
+
+
+async def _route_cron_parent_to_tab(
+    self: GatewayOrchestrator,
+    info: SubagentInfo,
+    *,
+    parent_key: str,
+    **route_kwargs: Any,
+) -> None:
+    """Hand a cron completion to its open tab, then settle the cron session.
+
+    The tab route never reaches :func:`_finish_subagent_cron_or_notify`, which owns
+    the reset a cron fire defers to its last child. So this counts the hand-off in
+    ``_cron_injecting`` until the tab has no turn left in flight, which keeps a
+    fire ending meanwhile from resetting the session. That covers the turn this
+    hand-off launched and, when the tab was busy and the completion was queued,
+    the running turn and every queued turn the drain starts after it: the drain
+    assigns ``slot.task`` before the finishing turn completes, so the chain has no
+    idle gap. Waiting runs in the dashboard's background set so the bounded
+    completion callback can return as soon as the hand-off is complete.
+    *route_kwargs* are :meth:`_route_subagent_to_tab`'s own.
+    """
+
+    dashboard_state = self.dashboard_state
+    assert dashboard_state is not None
+    background_tasks = dashboard_state._background_tasks
+    released = False
+
+    def _release_injection() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 1) - 1
+        if self._cron_injecting[parent_key] <= 0:
+            self._cron_injecting.pop(parent_key, None)
+
+    self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 0) + 1
+    try:
+        await self._route_subagent_to_tab(info, parent_key=parent_key, **route_kwargs)
+    except BaseException:
+        _release_injection()
+        raise
+
+    slot = route_kwargs.get("_injection_slot")
+
+    def _turn_in_flight() -> Any:
+        current = getattr(slot, "task", None)
+        if asyncio.isfuture(current) and not current.done():
+            return current
+        return None
+
+    def _completion_parked() -> bool:
+        # A completion card still in the tab's queue with no turn running is
+        # parked (a pending Stop, sign-in, memory preparation, a reserved
+        # admission). Its turn has yet to read the cron conversation, so the
+        # reset is left to the fire that next owns the session.
+        queue = getattr(slot, "_queue", None) or []
+        return any(
+            isinstance(item, dict) and item.get("kind") == SUBAGENT_COMPLETION_KIND
+            for item in queue
+        )
+
+    async def _reset_unless_parked() -> None:
+        if _completion_parked():
+            logger.info("Cron session %s: completion still queued, reset left", parent_key)
+            return
+        await self._reset_cron_parent_when_idle(info, parent_key, skip_if_busy=True)
+
+    first_turn = _turn_in_flight()
+    if first_turn is None:
+        _release_injection()
+        await _reset_unless_parked()
+        return
+
+    async def _settle_after_turn() -> None:
+        try:
+            current = first_turn
+            while current is not None:
+                try:
+                    await asyncio.shield(current)
+                except asyncio.CancelledError:
+                    # A stopped tab turn surfaces through the shield; only this
+                    # coroutine's own cancellation propagates.
+                    if not current.cancelled():
+                        raise
+                except Exception:
+                    # The turn's own done callback reports its failure.
+                    pass
+                current = _turn_in_flight()
+        finally:
+            _release_injection()
+            await _reset_unless_parked()
+
+    settlement = asyncio.create_task(_settle_after_turn())
+    background_tasks.add(settlement)
+
+    def _settlement_done(task: asyncio.Task[None]) -> None:
+        background_tasks.discard(task)
+        # A task cancelled before its coroutine first runs never enters the
+        # ``finally`` above, so the count is released here and no reset is
+        # attempted. Only shutdown cancels the task that early.
+        _release_injection()
+
+    settlement.add_done_callback(_settlement_done)
