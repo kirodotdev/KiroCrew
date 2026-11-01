@@ -66,7 +66,6 @@
   "src/test/ApprovalModePicker.menuKeyboard.test.tsx",
   "src/test/ArtifactBody.iframeBlob.test.tsx",
   "src/test/ArtifactDeployPageCoverage.test.tsx",
-  "src/test/ArtifactDetailPage.anchoredComments.test.tsx",
   "src/test/ArtifactDetailPage.test.tsx",
   "src/test/ArtifactDetailPageCoverage.test.tsx",
   "src/test/ArtifactFolderDeleteDialog.test.tsx",

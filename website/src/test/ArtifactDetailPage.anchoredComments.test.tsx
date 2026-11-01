@@ -321,18 +321,18 @@ describe('ArtifactDetailPage anchored comments', () => {
     // The bridge only trusts messages whose `source` is the frame's contentWindow.
     const source = { postMessage: vi.fn() }
     Object.defineProperty(frame, 'contentWindow', { value: source, configurable: true })
-    window.dispatchEvent(new MessageEvent('message', {
+    act(() => { window.dispatchEvent(new MessageEvent('message', {
       data: { type: 'mc-comment-select', quote: 'widget body', prefix: 'before ', suffix: ' after', startOffset: 7, endOffset: 18, rect: { x: 20, y: 40 } },
       source: source as unknown as Window,
-    }))
+    })) })
 
     fireEvent.change(await screen.findByLabelText(COMPOSER_INPUT), { target: { value: 'from the frame' } })
     // A second drag-select inside the frame while the draft is open: the box
     // keeps its passage, and so must the anchor the comment is posted with.
-    window.dispatchEvent(new MessageEvent('message', {
+    act(() => { window.dispatchEvent(new MessageEvent('message', {
       data: { type: 'mc-comment-select', quote: 'other passage', prefix: 'x ', suffix: ' y', startOffset: 1, endOffset: 14, rect: { x: 20, y: 90 } },
       source: source as unknown as Window,
-    }))
+    })) })
     fireEvent.click(screen.getByLabelText('Add comment'))
     await waitFor(() => expect(vi.mocked(api).postArtifactComment).toHaveBeenCalledTimes(1))
     expect(vi.mocked(api).postArtifactComment.mock.calls[0][1].anchor).toEqual({ quote: 'widget body', prefix: 'before ', suffix: ' after' })
@@ -352,10 +352,10 @@ describe('ArtifactDetailPage anchored comments', () => {
     const frame = container.querySelector('iframe') as HTMLIFrameElement
     const source = { postMessage: vi.fn() }
     Object.defineProperty(frame, 'contentWindow', { value: source, configurable: true })
-    window.dispatchEvent(new MessageEvent('message', {
+    act(() => { window.dispatchEvent(new MessageEvent('message', {
       data: { type: 'mc-comment-select', quote: 'old widget body', prefix: '', suffix: '', startOffset: 0, endOffset: 15, rect: { x: 20, y: 40 } },
       source: source as unknown as Window,
-    }))
+    })) })
     await settle()
     expect(screen.queryByLabelText(COMPOSER_INPUT)).toBeNull()
   })
@@ -501,10 +501,10 @@ describe('ArtifactDetailPage anchored comments', () => {
     })
     const source = { postMessage: vi.fn() }
     Object.defineProperty(frame, 'contentWindow', { value: source, configurable: true })
-    window.dispatchEvent(new MessageEvent('message', {
+    act(() => { window.dispatchEvent(new MessageEvent('message', {
       data: { type: 'mc-comment-select', quote: 'widget body', prefix: '', suffix: '', startOffset: 0, endOffset: 11, rect: { x: 20, y: 40 } },
       source: source as unknown as Window,
-    }))
+    })) })
     fireEvent.change(await screen.findByLabelText(COMPOSER_INPUT), { target: { value: 'from the frame' } })
 
     fireEvent.click(await findMoreItem('Send to a session'))
