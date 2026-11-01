@@ -1142,7 +1142,7 @@ class TestSyncReportedArgv:
         return len(strip_spawn_shim(spawned)) < len(spawned)
 
     def test_completed_process_reports_the_command_not_the_shim(self):
-        result = run_limited(["/bin/echo", "hi"], capture_output=True, text=True)
+        result = run_limited(["/bin/echo", "hi"], capture_output=True, text=True, encoding="utf-8")
         assert result.args == ["/bin/echo", "hi"]
         assert not any("--rlimits=" in a for a in result.args)
 
@@ -1236,10 +1236,16 @@ class TestSyncRealChild:
         try:
             probe = "import resource;print(resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
             wrapped = run_limited(
-                [sys.executable, "-c", probe], capture_output=True, text=True
+                [sys.executable, "-X", "utf8", "-c", probe],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
             ).stdout.strip()
             bare = subprocess.run(
-                [sys.executable, "-c", probe], capture_output=True, text=True
+                [sys.executable, "-X", "utf8", "-c", probe],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
             ).stdout.strip()
             inherited = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
             assert int(bare) == inherited

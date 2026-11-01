@@ -2989,6 +2989,9 @@
           }
         },
         "taggingView": {
+          "analyse_next_issues_many": "Analizza le {{count}} issue successive",
+          "analyse_next_issues_one": "Analizza {{count}} issue successiva",
+          "analyse_next_issues_other": "Analizza le {{count}} issue successive",
           "analyzing": "Analisi in corso…",
           "apply_suggestion_many": "Applica {{count}} suggerimenti",
           "apply_suggestion_one": "Applica {{count}} suggerimento",
@@ -3013,6 +3016,9 @@
           "loading_the_untagged_queue": "Caricamento della coda senza tag…",
           "newest_first": "prima i più recenti",
           "read_only_repo_needs_triage_or_push_access": "Repo in sola lettura — serve accesso di triage o push",
+          "reanalyse_issues_many": "Rianalizza {{count}} issue che hanno già una proposta",
+          "reanalyse_issues_one": "Rianalizza {{count}} issue che ha già una proposta",
+          "reanalyse_issues_other": "Rianalizza {{count}} issue che hanno già una proposta",
           "reload_the_untagged_queue": "Ricarica la coda senza tag",
           "repo_labels": "Etichette del repo",
           "s_labels": " - etichette:",

@@ -422,10 +422,15 @@ class TestLearnCliGate:
         args = argparse.Namespace(
             learn_action="add", rule="Always frobnicate", category="tool", negative=None
         )
-        cli_commands._learn(args)
-        out = capsys.readouterr().out
-        assert "NOT saved" in out
-        assert "persistence_enabled" in out
+        # A refusal saves nothing, so it must read as a failure to a script:
+        # non-zero exit, message on stderr, nothing on stdout.
+        with pytest.raises(SystemExit) as exc:
+            cli_commands._learn(args)
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "NOT saved" in captured.err
+        assert "persistence_enabled" in captured.err
         # Nothing reached either store.
         assert LessonStore().load_all() == []
         # And no store was opened on the way to the refusal: constructing the

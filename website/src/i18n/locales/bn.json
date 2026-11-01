@@ -2922,6 +2922,8 @@
           }
         },
         "taggingView": {
+          "analyse_next_issues_one": "পরবর্তী {{count}}টি ইস্যু বিশ্লেষণ করো",
+          "analyse_next_issues_other": "পরবর্তী {{count}}টি ইস্যু বিশ্লেষণ করো",
           "analyzing": "বিশ্লেষণ হচ্ছে…",
           "apply_suggestion_one": "{{count}}টি পরামর্শ প্রয়োগ করুন",
           "apply_suggestion_other": "{{count}}টি পরামর্শ প্রয়োগ করুন",
@@ -2943,6 +2945,8 @@
           "loading_the_untagged_queue": "ট্যাগ-না-করা কিউ লোড হচ্ছে…",
           "newest_first": "নতুন আগে",
           "read_only_repo_needs_triage_or_push_access": "রিড-অনলি রিপো — triage বা push অ্যাক্সেস দরকার",
+          "reanalyse_issues_one": "আগে থেকেই প্রস্তাব আছে এমন {{count}}টি ইস্যু আবার বিশ্লেষণ করো",
+          "reanalyse_issues_other": "আগে থেকেই প্রস্তাব আছে এমন {{count}}টি ইস্যু আবার বিশ্লেষণ করো",
           "reload_the_untagged_queue": "ট্যাগ-না-করা কিউ আবার লোড করুন",
           "repo_labels": "রেপো লেবেল",
           "s_labels": "-এর লেবেল:",

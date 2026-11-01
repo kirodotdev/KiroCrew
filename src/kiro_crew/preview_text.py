@@ -21,16 +21,29 @@ from typing import Callable
 
 from kiro_crew.constants import OPTIONS_RE_LINE, md_link_destination, strip_control_comments
 
-# Fenced code blocks — ```lang ... ``` (or unterminated, running to the end
-# of the message). Replaced with a short placeholder; the code body would
-# dominate a 80–120 char preview otherwise.
-_FENCE_RE = re.compile(r"```([^\n`]*)\n?[\s\S]*?(?:```|\Z)")
+# Fenced code blocks — ```lang ... ``` or a line-anchored ~~~lang ... ~~~ (or
+# unterminated, running to the end of the message). Replaced with a short
+# placeholder; the code body would dominate a 80–120 char preview otherwise.
+# One alternation, so whichever fence opens first wins and a ``` inside a ~~~
+# block (or the reverse) stays part of that block.
+_FENCE_RE = re.compile(
+    r"```([^\n`]*)\n?[\s\S]*?(?:```|\Z)"
+    # A ~~~ fence closes only on a run at least as long as its opener.
+    r"|^[^\S\n]{0,3}(?P<tildes>~{3,})([^\n]*)\n?[\s\S]*?"
+    r"(?:^[^\S\n]{0,3}(?P=tildes)~*[^\S\n]*$|\Z)",
+    re.MULTILINE,
+)
 # <mcwidget> bodies render as an iframe elsewhere; raw HTML is noise here.
 _MCWIDGET_RE = re.compile(r"<mcwidget\b[^>]*>[\s\S]*?(?:</mcwidget>|\Z)", re.IGNORECASE)
 # Control-tag comment stripping lives in ``constants.strip_control_comments``
 # (grammar + recognizer split documented on ``constants._TRAILING_CONTROL_LINES_RE``);
 # this module deliberately has no local spelling to drift.
-_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+# Inline code spans are swapped for ``\x00<n>\x00`` tokens while the link,
+# header and emphasis passes run, then put back, so ``__init__``, ``**kwargs``
+# and ``~~x~~`` inside backticks keep their markers. NUL renders as nothing, so
+# any NUL in the input is dropped first and cannot forge a token.
+_BACKTICK_RUN_RE = re.compile(r"`+")
+_CODE_TOKEN_RE = re.compile(r"\x00(\d+)\x00")
 #: A link destination keeps a balanced ``(...)`` pair, as the channel renderers
 #: read it; see :func:`kiro_crew.constants.md_link_destination`. A label stops at
 #: the next ``[``, so a run of ``[`` cannot make every opener rescan the text.
@@ -60,8 +73,52 @@ _STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
 
 
 def _fence_placeholder(m: re.Match) -> str:
-    lang = (m.group(1) or "").strip().lower()
+    lang = (m.group(1) or m.group(3) or "").strip().lower()
     return " (diff) " if lang == "diff" else " (code) "
+
+
+def _protect_inline_code(text: str, spans: list[str]) -> str:
+    """Swap each inline code span in *text* for a ``\\x00<n>\\x00`` token.
+
+    A span opens on a run of N backticks and closes on the next run of exactly
+    N backticks on the same line, as CommonMark reads it; the code goes into
+    *spans* without its delimiters (one padding space trimmed from each side
+    when both are there). A run with no closer stays literal text. One pass
+    over the backtick runs, so the cost stays linear in the input.
+    """
+    runs: list[tuple[int, int, int]] = []
+    line = 0
+    last = 0
+    for m in _BACKTICK_RUN_RE.finditer(text):
+        line += text.count("\n", last, m.start())
+        last = m.start()
+        runs.append((m.start(), m.end(), line))
+    # closer[i] = index of the next run with the same length on the same line.
+    closer: list[int | None] = [None] * len(runs)
+    latest: dict[tuple[int, int], int] = {}
+    for i in range(len(runs) - 1, -1, -1):
+        start, end, line = runs[i]
+        key = (line, end - start)
+        closer[i] = latest.get(key)
+        latest[key] = i
+    out: list[str] = []
+    pos = 0
+    i = 0
+    while i < len(runs):
+        j = closer[i]
+        if j is None:
+            i += 1
+            continue
+        code = text[runs[i][1] : runs[j][0]]
+        if len(code) > 2 and code[0] == " " and code[-1] == " " and code.strip(" "):
+            code = code[1:-1]
+        out.append(text[pos : runs[i][0]])
+        out.append(f"\x00{len(spans)}\x00")
+        spans.append(code)
+        pos = runs[j][1]
+        i = j + 1
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def drop_format_chars(text: str) -> str:
@@ -146,7 +203,7 @@ def strip_markdown_preview(text: str) -> str:
     empty-preview fallbacks fire. Truncation is the caller's job — this only
     cleans.
     """
-    t = drop_format_chars(text)
+    t = drop_format_chars(text).replace("\x00", "")
     t = _FENCE_RE.sub(_fence_placeholder, t)
     t = _MCWIDGET_RE.sub(" (widget) ", t)
     # Only RECOGNIZED control tags (keep-visible, heartbeat deliver
@@ -154,10 +211,13 @@ def strip_markdown_preview(text: str) -> str:
     # inline code: a tag an assistant quotes in inline code renders literally
     # and is visible content. Shared implementation; see constants.py.
     t = strip_control_comments(t)
-    t = _INLINE_CODE_RE.sub(r"\1", t)
+    # The quick-reply line goes before code is protected: a backtick-wrapped
+    # ``[OPTIONS: ...]`` line still renders as buttons, not as text.
+    t = _OPTIONS_RE.sub("", t)
+    spans: list[str] = []
+    t = _protect_inline_code(t, spans)
     t = _IMAGE_RE.sub(lambda m: m.group(1) or "(image)", t)
     t = _LINK_RE.sub(r"\1", t)
-    t = _OPTIONS_RE.sub("", t)
     # Line-anchored markers must go before whitespace collapse.
     t = _HR_RE.sub("", t)
     t = _HEADER_RE.sub("", t)
@@ -166,4 +226,5 @@ def strip_markdown_preview(text: str) -> str:
     t = _BOLD_RE.sub(r"\2", t)
     t = _ITALIC_STAR_RE.sub(r"\1", t)
     t = _STRIKE_RE.sub(r"\1", t)
+    t = _CODE_TOKEN_RE.sub(lambda m: spans[int(m.group(1))], t)
     return " ".join(t.split())

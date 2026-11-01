@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import React from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -150,7 +150,7 @@ describe('SpecBuilder accessibility contract', () => {  const SPECS = [{ name: '
     renderPage()
 
     const row = await screen.findByRole('button', { name: /my-spec/ })
-    row.click()
+    await act(async () => { row.click() })
 
     const splitter = await screen.findByRole('separator', { name: 'Resize document panel' })
     expect(splitter).toHaveAttribute('aria-orientation', 'vertical')

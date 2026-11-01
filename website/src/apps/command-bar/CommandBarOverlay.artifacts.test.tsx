@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import CommandBarOverlay from './CommandBarOverlay'
+import { DEBOUNCE_MS } from './commandBarOverlayModel'
 
 /**
  * The Command Bar's artifacts view.
@@ -164,6 +165,10 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+afterEach(() => {
+  vi.useRealTimers()
+})
+
 describe('command bar — artifacts view', () => {
   it('offers the view as a command row, named as a view rather than a command', async () => {
     mount()
@@ -218,13 +223,19 @@ describe('command bar — artifacts view', () => {
     mount()
     await enterView()
     await waitFor(() => expect(artifacts).toHaveBeenCalledTimes(1))
+    // Fake timers go on only now that the view has settled: installed before the
+    // render, the `waitFor`s above would never advance.
+    vi.useFakeTimers()
     type('r')
-    // Waited PAST the field's debounce on purpose. Asserting as soon as the listing
+    // Stepped PAST the field's debounce on purpose. Asserting as soon as the listing
     // rows are on screen proves nothing: they are the rows the first request already
     // returned, so the count is still 1 simply because the debounced request has not
     // had time to fire. A mutation removing the threshold survived that version of
     // this test; it only fails once the window the request would arrive in has closed.
-    await new Promise(resolve => setTimeout(resolve, 400))
+    // The debounced update is the overlay's own timer, so it fires inside act here.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 2)
+    })
     // One character would return most of the corpus — which the listing already
     // shows — so it stays on the listing rather than buying a second scan.
     expect(artifacts).toHaveBeenCalledTimes(1)

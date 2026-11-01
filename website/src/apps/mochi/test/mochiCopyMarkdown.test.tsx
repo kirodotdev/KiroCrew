@@ -8,7 +8,7 @@
  * shared `copyToClipboard` helper and gates "Copied" on the resolved boolean.
  */
 import React from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../../utils/clipboard', () => ({
@@ -40,14 +40,16 @@ describe('mochi ChatPanel copy-markdown button', () => {
     render(<Bubble animate={false} message={assistantMessage('the answer is 42')} />)
 
     const btn = screen.getByLabelText(i18nT('apps.mochi.chatPanel.copy_markdown'))
-    fireEvent.click(btn)
+    await act(async () => {
+      fireEvent.click(btn)
+    })
 
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('the answer is 42'))
     await waitFor(() =>
       expect(screen.getByLabelText(i18nT('apps.mochi.chatPanel.copied'))).toBeInTheDocument(),
     )
 
-    vi.advanceTimersByTime(1600)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600) })
     await waitFor(() =>
       expect(screen.getByLabelText(i18nT('apps.mochi.chatPanel.copy_markdown'))).toBeInTheDocument(),
     )
@@ -58,7 +60,9 @@ describe('mochi ChatPanel copy-markdown button', () => {
     render(<Bubble animate={false} message={assistantMessage('the answer is 42')} />)
 
     const btn = screen.getByLabelText(i18nT('apps.mochi.chatPanel.copy_markdown'))
-    fireEvent.click(btn)
+    await act(async () => {
+      fireEvent.click(btn)
+    })
 
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalled())
     expect(screen.queryByLabelText(i18nT('apps.mochi.chatPanel.copied'))).toBeNull()

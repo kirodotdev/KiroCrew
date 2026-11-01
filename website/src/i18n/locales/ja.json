@@ -2943,6 +2943,7 @@
           }
         },
         "taggingView": {
+          "analyse_next_issues_other": "次の {{count}} 件の Issue を分析",
           "analyzing": "分析中…",
           "apply_suggestion_other": "{{count}} 件の提案を適用",
           "applying": "適用中…",
@@ -2961,6 +2962,7 @@
           "loading_the_untagged_queue": "タグなしキューを読み込み中…",
           "newest_first": "最新のものから",
           "read_only_repo_needs_triage_or_push_access": "読み取り専用リポジトリ。トリアージまたはプッシュアクセスが必要です",
+          "reanalyse_issues_other": "提案済みの {{count}} 件の Issue を再分析",
           "reload_the_untagged_queue": "タグなしキューを再読み込み",
           "repo_labels": "リポジトリラベル",
           "s_labels": "のラベル:",

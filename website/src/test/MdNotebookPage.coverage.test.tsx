@@ -130,15 +130,19 @@ const DOC = {
  */
 const TREE_READY = { timeout: 5000 }
 
-function renderPage() {
+async function renderPage() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   })
-  return render(
-    <QueryClientProvider client={client}>
-      <MdNotebookPage />
-    </QueryClientProvider>,
-  )
+  let view!: ReturnType<typeof render>
+  await act(async () => {
+    view = render(
+      <QueryClientProvider client={client}>
+        <MdNotebookPage />
+      </QueryClientProvider>,
+    )
+  })
+  return view
 }
 
 /** Render, wait for the panel, then open `One.md`. */
@@ -225,7 +229,7 @@ describe('MdNotebookPage', () => {
       resolveVaults = resolve
     })
     mockApi.listVaults.mockReturnValue(pending)
-    renderPage()
+    await renderPage()
     expect(screen.getByText('Loading…')).toBeTruthy()
     await act(async () => {
       resolveVaults({ vaults: [], hasPat: false, hasGhAuth: false })

@@ -51,8 +51,9 @@ describe('WarmSwap', () => {
     expect(screen.queryByTestId('impl')).toBeNull()
   })
 
-  it('does not duplicate fallback text inside hidden staging', () => {
-    const view = render(<PierrePatch patch={PATCH} />)
+  it('does not duplicate fallback text inside hidden staging', async () => {
+    let view!: ReturnType<typeof render>
+    await act(async () => { view = render(<PierrePatch patch={PATCH} />) })
     expect(view.container.querySelectorAll('pre')).toHaveLength(1)
     expect(view.container.querySelectorAll('[aria-hidden="true"] pre')).toHaveLength(0)
   })

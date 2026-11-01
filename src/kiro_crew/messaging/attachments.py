@@ -656,13 +656,31 @@ async def transcribe_audio_attachments(result: IngestResult, source: str) -> Ing
     return result
 
 
+def image_location_note(path: str) -> str:
+    """Tell the agent where an inlined image is saved.
+
+    ``build_prompt_blocks`` replaces an inlined image's path with
+    ``[image: <name>]``, so the model sees the picture but not where the file
+    is, and its file tools cannot open the original. This note names the folder
+    and the file SEPARATELY: a whole path ending in an image suffix would be
+    rewritten to the marker again, while a folder alone matches no image path.
+    Every messaging channel adds it; the dashboard keeps its prompt unchanged.
+    """
+    folder, name = os.path.split(path)
+    return (
+        f"[Image {name} is saved in the folder {folder}{os.sep} until this turn ends; "
+        "join the two to open the original file]"
+    )
+
+
 def append_attachment_context(text: str, result: IngestResult) -> str:
     """Append prompt-ready attachment material to the user's message text.
 
     Image and opaque-file paths are appended as bare lines. The ACP encoder
     inlines recognized image paths as image content blocks; every other path remains
     text for agent file tools. Text, metadata and rejection blocks follow, separated
-    by blank lines for prompt readability.
+    by blank lines for prompt readability. Each image also gets an
+    :func:`image_location_note`, because the encoder hides its path.
 
     Channel-neutral: every transport that ingests attachments uses this same
     layout, so the model sees a consistent attachment presentation regardless
@@ -673,7 +691,8 @@ def append_attachment_context(text: str, result: IngestResult) -> str:
         paths_text = "\n".join(paths)
         text = f"{text}\n{paths_text}" if text else paths_text
 
-    blocks = [*result.text_blocks, *result.rejections]
+    locations = [image_location_note(p) for p in result.image_paths]
+    blocks = [*result.text_blocks, *locations, *result.rejections]
     if blocks:
         blocks_text = "\n\n".join(blocks)
         text = f"{text}\n\n{blocks_text}" if text else blocks_text

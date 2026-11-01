@@ -681,6 +681,7 @@ class TestBarePathPassKeepsProse:
             IngestResult,
             _make_temp,
             append_attachment_context,
+            image_location_note,
         )
 
         spaced_dir = tmp_path / "John Smith"
@@ -692,8 +693,9 @@ class TestBarePathPassKeepsProse:
         # Spaced, or this pins nothing: an unspaced path strips by another rule.
         assert " " in dest
         assert os.path.dirname(dest) == str(spaced_dir)
-        assert row == f"look at this\n{dest}"
-        assert strip_image_refs(row) == f"look at this\n{STRIPPED_IMAGE_MARKER}"
+        note = image_location_note(dest)
+        assert row == f"look at this\n{dest}\n\n{note}"
+        assert strip_image_refs(row) == f"look at this\n{STRIPPED_IMAGE_MARKER}\n\n{note}"
 
 
 class TestTheTitlePromptKeepsItsOwnImageHandling:

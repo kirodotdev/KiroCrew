@@ -768,7 +768,7 @@ async def _start_kiro_runtime_impl(
                 should_load = True
             else:
                 session_file = kiro_sessions_dir() / f"{resume_sid}.json"
-                should_load = session_file.exists()
+                should_load = await asyncio.to_thread(session_file.exists)
             if should_load:
                 # F2 load-recovery: retry past a stale "active in another
                 # process" lock (Phase 1); on persistent failure fall through

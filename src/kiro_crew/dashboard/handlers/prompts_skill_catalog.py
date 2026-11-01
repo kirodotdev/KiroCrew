@@ -643,7 +643,7 @@ async def api_skill_tree(request: web.Request) -> web.Response:
     # against the *resolved* home too; otherwise a symlinked home (e.g. macOS
     # ``/var`` → ``/private/var``) would mismatch and leak the real path.
     display_root = str(root)
-    for home in {str(Path.home()), str(Path.home().resolve())}:
+    for home in {str(Path.home()), str(await asyncio.to_thread(Path.home().resolve))}:
         display_root = display_root.replace(home, "~")
     _sel().log_tool_invocation(
         session_key="",

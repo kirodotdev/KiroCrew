@@ -26,7 +26,7 @@
  *   - `dispatched` / `queued` -> recorded normally.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import type { SendReceipt } from '../chat-core/transport/sendTurn'
 import { i18nT } from '../i18n/t'
 
@@ -86,14 +86,17 @@ describe('Issue Radar seed — the sendTurn receipt decides', () => {
    *  snapshot taken before the await. */
   async function open() {
     const { result } = renderHook(() => useIssueRadarSession())
-    const opened = await result.current.openSession({
-      repoRef: { host: 'github.com', owner: 'acme', repo: 'demo-repo' } as never,
-      number: 4237,
-      title: '#4237 · seed refused',
-      prompt: 'seed',
-      existing: null,
+    let opened: unknown = null
+    await act(async () => {
+      opened = await result.current.openSession({
+        repoRef: { host: 'github.com', owner: 'acme', repo: 'demo-repo' } as never,
+        number: 4237,
+        title: '#4237 · seed refused',
+        prompt: 'seed',
+        existing: null,
+      })
     })
-    return { opened, result }
+    return { opened: opened as Awaited<ReturnType<typeof result.current.openSession>>, result }
   }
 
   beforeEach(() => {
@@ -218,14 +221,17 @@ describe('Auto Improvement seed — the same receipt contract', () => {
 
   async function open() {
     const { result } = renderHook(() => useAutoImproveSession())
-    const opened = await result.current.openSession({
-      kind: 'pr',
-      id: 42,
-      repo: 'acme/demo-repo',
-      title: 'PR #42 · seed',
-      prompt: 'seed',
+    let opened: unknown = null
+    await act(async () => {
+      opened = await result.current.openSession({
+        kind: 'pr',
+        id: 42,
+        repo: 'acme/demo-repo',
+        title: 'PR #42 · seed',
+        prompt: 'seed',
+      })
     })
-    return { opened, result }
+    return { opened: opened as Awaited<ReturnType<typeof result.current.openSession>>, result }
   }
 
   it('sends the seed through the transport, addressed to the new slot', async () => {

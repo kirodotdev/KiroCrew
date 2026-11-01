@@ -2749,6 +2749,8 @@
           }
         },
         "taggingView": {
+          "analyse_next_issues_one": "अगले {{count}} इश्यू का विश्लेषण करो",
+          "analyse_next_issues_other": "अगले {{count}} इश्यू का विश्लेषण करो",
           "analyzing": "विश्लेषण हो रहा है…",
           "apply_suggestion_one": "{{count}} सुझाव लागू करें",
           "apply_suggestion_other": "{{count}} सुझाव लागू करें",
@@ -2770,6 +2772,8 @@
           "loading_the_untagged_queue": "अनटैग्ड कतार लोड हो रही है…",
           "newest_first": "नवीनतम पहले",
           "read_only_repo_needs_triage_or_push_access": "केवल पढ़ने वाला रिपो — triage या push एक्सेस चाहिए",
+          "reanalyse_issues_one": "पहले से प्रस्ताव वाले {{count}} इश्यू का फिर से विश्लेषण करो",
+          "reanalyse_issues_other": "पहले से प्रस्ताव वाले {{count}} इश्यू का फिर से विश्लेषण करो",
           "reload_the_untagged_queue": "अनटैग्ड कतार पुनः लोड करें",
           "repo_labels": "रिपो लेबल",
           "s_labels": "के लेबल:",

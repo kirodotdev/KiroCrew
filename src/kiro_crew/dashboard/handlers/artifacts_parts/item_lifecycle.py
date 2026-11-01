@@ -4,6 +4,7 @@ lifecycle event and relocating its ``source_path``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -587,7 +588,7 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
             strip_extended_length_prefix,
         )
 
-        resolved_path = Path(os.path.expanduser(source_path)).resolve()
+        resolved_path = await asyncio.to_thread(Path(os.path.expanduser(source_path)).resolve)
         # The folded path is what gets stat'ed and stored, so a name only the
         # ``\\?\`` spelling can reach (a trailing dot, a DOS device) is refused:
         # its plain spelling names a different file.
@@ -649,9 +650,9 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
             )
             return _err("cannot point to a sensitive path", status=403)
         # `resolved_path` is now proven under an allowed root AND not sensitive.
-        if not resolved_path.exists():
+        if not await asyncio.to_thread(resolved_path.exists):
             return _err(f"path does not exist: {source_path}", status=400)
-        if resolved_path.is_dir():
+        if await asyncio.to_thread(resolved_path.is_dir):
             return _err("source_path must be a file, not a directory", status=400)
         source_path = str(resolved_path)
 
