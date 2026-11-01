@@ -20,18 +20,18 @@ _MAX_EPISODIC_PER_CONSOLIDATION = 10
 _MAX_LESSONS_PER_CONSOLIDATION = 10
 
 # Characters the ``## Current Semantic Memory`` block of ONE consolidation prompt
-# may hold. The block hands the model the active semantic table so it updates
-# or deletes the keys it already holds instead of minting near-duplicates, and
-# the table only grows: one long-lived store measured 1,977 active rows
-# rendering to about 2 million characters, 97% of the prompt, until a pass
-# failed as too large to send. The chat path reads the same table under
-# ``semantic_cap`` (12,000 characters per turn); consolidation runs rarely (a
-# 30-message threshold or a 3-hour idle) and reads the table as the context it
-# merges INTO, so its allowance is wider: 64 KiB, a few times the per-turn cap
-# and the scale of the transcript span beside it, which keeps the whole prompt
-# in the low hundreds of thousands of characters on a store of any size. At the
-# measured median row (856-character values) the cap keeps about 70 of the most
-# recently updated rows; a table that fits renders exactly as before.
+# may hold, its omission notice included. The block hands the model the active
+# semantic table so it updates or deletes the keys it already holds instead of
+# minting near-duplicates, and the table only grows: one long-lived store
+# measured 1,977 active rows rendering to about 2 million characters, 97% of the
+# prompt, until a pass failed as too large to send. The chat path reads the same
+# table under ``semantic_cap`` (12,000 characters per turn); consolidation runs
+# rarely (a 30-message threshold or a 3-hour idle) and reads the table as the
+# context it merges INTO, so its allowance is wider: 64 KiB, a few times the
+# per-turn cap and the scale of the transcript span beside it, which keeps the
+# whole prompt in the low hundreds of thousands of characters on a store of any
+# size. A table that fits renders whole; one that does not keeps about 70 rows
+# at the measured median row (856-character values), picked by the pools below.
 _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION = 65_536
 
 # Longest value, in characters as the per-turn facts block renders it, that ONE
@@ -49,6 +49,46 @@ _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION = 65_536
 # long tail is refused. Fixed rather than derived from that cap, so a budget retune
 # cannot move write policy silently: a test pins it under the cap instead.
 _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS = 2_000
+
+# How an over-cap block is picked (``_bounded_semantic_table``): pools in this
+# order, each row taken once. Each of these three caps what its pool takes and
+# reserves nothing; what they leave unspent goes to the two pools after them.
+# The rotation is a slice of the table in key order, resumed after the last key
+# the previous pass's slice showed, so a row that is never relevant and never
+# recent is still shown in turn: about this many characters of the table each
+# time the cursor advances, the knob for a faster sweep of a large store. The
+# lessons allowance holds the ``lesson.*`` rows most relevant to the span: a
+# lesson's only retirement path in a pass is a delete, and a delete of a key the
+# block did not show is withheld, while lessons left to compete with facts on
+# recency can fill the block. The recency allowance shows the newest facts
+# whatever their score, which covers a row written with its vector deferred. The
+# rest of the cap goes to the facts most relevant to the span, then to whatever
+# is newest. The three come to 24 KiB of the 64 KiB, so the lessons and recency
+# pools run short of room only on a pass whose rotation shows one row wider than
+# the cap less both their allowances and the notice (about 48,800 characters):
+# they then share what that row leaves, lessons first, the price of showing it.
+_SEMANTIC_ROTATION_CHARS_PER_CONSOLIDATION = 8_192
+_SEMANTIC_LESSON_CHARS_PER_CONSOLIDATION = 8_192
+_SEMANTIC_RECENCY_CHARS_PER_CONSOLIDATION = 8_192
+
+# Seconds an over-cap pass waits for its relevance scores, counted from the moment
+# it asks. They need one ``PRIORITY_BULK`` embed of the span, and bulk work has no
+# deadline of its own: it queues behind every interactive and normal embed and the
+# backfill sweep's pace, and a native call already running cannot be stopped, so an
+# unbounded wait holds the pass and its lease for as long as a busy or wedged
+# embedder takes. Past the first allowance the embed gives up and the rows score on
+# keywords alone. 20 s covers an embed queued behind a sweep row and its pace (about
+# 7 s at the default duty) and a burst of interactive embeds, and is a third of what
+# the pass's own writes may spend embedding (``_EMBED_BUDGET_SECS_PER_PASS``). The
+# second allowance is for the keyword and cosine scans around the embed and the wait
+# for an admission to the background memory pool; past both the pass stops waiting
+# and fills the block from the rotation and recency alone. The scorer's thread keeps
+# its admission, one of that pool's two, until it returns, waited for or not, so a
+# pass whose scorer finds another still running takes no scores
+# (``consolidation_relevance._SCORER_IN_FLIGHT``): scorers that passes gave up on never
+# hold the other admission, which every later pass's writes need.
+_SEMANTIC_RELEVANCE_EMBED_SECS_PER_CONSOLIDATION = 20.0
+_SEMANTIC_RELEVANCE_SCAN_SECS_PER_CONSOLIDATION = 10.0
 
 # Ceiling on episodic rows ONE semantic write may retire, and the reason it needs a
 # ceiling at all. `_retire_stale_episodic` tombstones episodes that reference a value

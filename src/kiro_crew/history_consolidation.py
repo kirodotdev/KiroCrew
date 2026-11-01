@@ -59,6 +59,7 @@ from kiro_crew._facade_bindings import own_methods
 from kiro_crew.config import live
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
+from kiro_crew.history_consolidation_memory import _SEMANTIC_OMISSION_NOTICE_UNSCORED
 from kiro_crew.history_consolidation_skills import _session_touched_sensitive
 from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_EMPTY,
@@ -96,7 +97,12 @@ from kiro_crew.vector_memory_constants import (
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
+    _SEMANTIC_LESSON_CHARS_PER_CONSOLIDATION,
     _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
+    _SEMANTIC_RECENCY_CHARS_PER_CONSOLIDATION,
+    _SEMANTIC_RELEVANCE_EMBED_SECS_PER_CONSOLIDATION,
+    _SEMANTIC_RELEVANCE_SCAN_SECS_PER_CONSOLIDATION,
+    _SEMANTIC_ROTATION_CHARS_PER_CONSOLIDATION,
 )
 from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
@@ -1179,7 +1185,13 @@ _BOUND_FOR_IMPORTERS = (
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
+    _SEMANTIC_LESSON_CHARS_PER_CONSOLIDATION,
+    _SEMANTIC_OMISSION_NOTICE_UNSCORED,
     _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
+    _SEMANTIC_RECENCY_CHARS_PER_CONSOLIDATION,
+    _SEMANTIC_RELEVANCE_EMBED_SECS_PER_CONSOLIDATION,
+    _SEMANTIC_RELEVANCE_SCAN_SECS_PER_CONSOLIDATION,
+    _SEMANTIC_ROTATION_CHARS_PER_CONSOLIDATION,
     authored_lesson_applies,
     background_turn,
     copy,

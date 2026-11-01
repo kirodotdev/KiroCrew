@@ -1,8 +1,9 @@
 """The memory a consolidation pass reads into its prompt and writes back.
 
 A pass shows the model a bounded ``## Current Semantic Memory`` table
-(:func:`_bounded_semantic_table`) and withholds deletes of keys the table did not show
-(:func:`_withhold_unseen_deletes`). A ``lesson.*`` key the model put in the ``semantic``
+(:func:`_bounded_semantic_table`: over its cap, the rows relevant to the span, the newest
+and a slice that rotates through the rest) and withholds deletes of keys the table did not
+show (:func:`_withhold_unseen_deletes`). A ``lesson.*`` key the model put in the ``semantic``
 array is moved to the ``lessons`` array first (:func:`_reroute_lesson_semantic_keys`), so
 it gets the lessons path's dedup and checks instead of a plain semantic write. It then
 writes what the model extracted:
@@ -55,6 +56,9 @@ from kiro_crew.vector_memory_constants import (
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
+    _SEMANTIC_LESSON_CHARS_PER_CONSOLIDATION,
+    _SEMANTIC_RECENCY_CHARS_PER_CONSOLIDATION,
+    _SEMANTIC_ROTATION_CHARS_PER_CONSOLIDATION,
 )
 
 if TYPE_CHECKING:
@@ -76,26 +80,51 @@ if TYPE_CHECKING:
 _EMBED_BUDGET_SECS_PER_PASS = 60.0
 
 
-#: The one line under a bounded ``## Current Semantic Memory`` table. The prompt
-#: tells the model to update or delete the keys it can see, so a table that lost
-#: rows silently would read as "those facts do not exist" and invite a deletion
-#: of nothing or a near-duplicate of a dropped key. Same vocabulary as the chat
-#: path's startup omission notice, so a reader learns one shape.
+#: The one line under a bounded ``## Current Semantic Memory`` table, inside its
+#: cap (a cap too small to hold it gets the empty table alone:
+#: ``_bounded_semantic_table``). The prompt tells the model to update or delete
+#: the keys it can see, so a table that lost rows silently would read as "those
+#: facts do not exist" and invite a deletion of nothing or a near-duplicate of a
+#: dropped key. Same vocabulary as the chat path's startup omission notice, so a
+#: reader learns one shape. This is the line of a block whose rows were ranked by
+#: relevance; :data:`_SEMANTIC_OMISSION_NOTICE_UNSCORED` is the line of one picked
+#: without it.
 _SEMANTIC_OMISSION_NOTICE = (
     "[Context budget: omitted {count} of {total} semantic rows above the "
-    "{limit}-character consolidation budget; the least recently updated rows were "
-    "left out. The table above is PARTIAL: a key you do not see may still exist, "
-    "so update or delete only keys listed above and treat a missing key as "
-    "unknown, not absent.]"
+    "{limit}-character consolidation budget; the rows shown were chosen for "
+    "relevance to this conversation, recent updates and a rotating slice of the "
+    "rest. The table above is PARTIAL: a key you do not see may still exist, so "
+    "update or delete only keys listed above and treat a missing key as unknown, "
+    "not absent.]"
+)
+
+#: :data:`_SEMANTIC_OMISSION_NOTICE` for a block picked without relevance: no row
+#: scored above zero, or the pass had no scores (none were had, in time, or in the
+#: rows' vector space). It names only the pools that picked the rows.
+_SEMANTIC_OMISSION_NOTICE_UNSCORED = (
+    "[Context budget: omitted {count} of {total} semantic rows above the "
+    "{limit}-character consolidation budget; the rows shown are the most recent "
+    "updates and a rotating slice of the rest. The table above is PARTIAL: a key "
+    "you do not see may still exist, so update or delete only keys listed above "
+    "and treat a missing key as unknown, not absent.]"
 )
 
 
 class _BoundedTable(NamedTuple):
-    """A rendered semantic table, how many rows it left out, and the keys it shows."""
+    """A rendered semantic block, how many rows it left out, and the keys it shows.
+
+    ``rotation_last`` is the last key the block's rotating slice showed or passed
+    over, for the caller to record once the model's answer is applied; ``None``
+    when there is no slice to record: the table fit whole, or the block shows no
+    row because the cap is too small for the notice beside an empty table or the
+    block would have rendered past its room. A block whose every row is wider than
+    its room shows no row either, but records the last key its rotation passed over.
+    """
 
     text: str
     omitted: int
     visible_keys: frozenset[str]
+    rotation_last: str | None
 
 
 #: Rows per ``get_all_semantic`` call when a consolidation pass snapshots the table.
@@ -157,47 +186,177 @@ def _recency(updated_at: object) -> tuple[int, float]:
     return 1, parsed.timestamp()
 
 
-def _bounded_semantic_table(rows: list[dict], entries: list[dict], cap: int) -> _BoundedTable:
-    """Render ``entries`` as the prompt's semantic table within ``cap`` characters.
+def _bounded_semantic_table(
+    rows: list[dict],
+    entries: list[dict],
+    cap: int,
+    *,
+    scores: list[float] | None = None,
+    rotation_after: str | None = None,
+) -> _BoundedTable:
+    """Render ``entries`` as the prompt's semantic block, its notice included, in ``cap``.
 
     ``rows`` are the store rows (in the store's key order) that ``entries`` were
-    rendered from, one to one. A table that fits renders whole and byte-identical
-    to the uncapped form. Over the cap, the most recently updated rows are kept
-    -- the order the chat path's ``semantic_cap`` reads without a query -- and
-    rendered in the same key order, so the block keeps its shape and only loses
-    its oldest rows. Returns the block, the number of rows left out, and the keys
-    the block shows, which is what the writers may update or delete.
+    rendered from, one to one; ``scores`` is each row's relevance to the span being
+    consolidated (``score_consolidation_rows``) and ``rotation_after`` the last key
+    the previous pass's rotating slice showed. A table that fits renders whole and
+    byte-identical to the uncapped form, with no notice and no rotation.
 
-    The fit is found by bisection on the row count with the real renderer rather
-    than by an estimate per row, so the bound is exact for whatever ``indent``
-    and escaping produce, at the cost of O(log n) serialisations. A row is kept
-    whole or not at all: when even the newest row alone is over the cap the
-    table is ``[]`` and every row counts as omitted, because a value cut short
-    would read as the fact itself.
+    Over the cap the block is the kept rows, in the same key order as the whole
+    table, then a newline and the omission notice, all within ``cap``. A cap too
+    small for the notice beside an empty table keeps no row and renders ``[]``
+    alone, or nothing under a cap of 0 or 1: a notice cut short would not say what
+    it is for, and no row could fit beside a whole one. Rows are kept by pools, in
+    order, each row once:
+
+    1. rotation, ``_SEMANTIC_ROTATION_CHARS_PER_CONSOLIDATION``: the rows after
+       ``rotation_after`` in key order, wrapping, for as long as each fits. The
+       slice is contiguous, so the key it reached never lies past a row it could
+       have shown and left out, and its first row only has to fit the block, so the
+       slice reaches at least one row past ``rotation_after``; a row wider than the
+       whole block is passed over and counted as omitted, so it cannot stall the
+       rotation either.
+    2. lessons, ``_SEMANTIC_LESSON_CHARS_PER_CONSOLIDATION``: ``lesson.*`` rows by
+       score, then recency.
+    3. recency, ``_SEMANTIC_RECENCY_CHARS_PER_CONSOLIDATION``: the other rows,
+       newest first.
+    4. relevance, the rest of the block: the other rows that score above zero,
+       best first.
+    5. backfill, whatever is still free: the other rows newest first, then the
+       lessons newest first.
+
+    Pools 2 to 5 take every row that fits and pass over one that does not, and what
+    pools 1 to 3 leave of their allowance stays free for 4 and 5. An allowance caps
+    what its pool takes and reserves nothing: pools 2 and 3 run short of room only
+    when the rotation leaves less than both their allowances. At the production cap
+    the rotation takes at most its own allowance unless it shows one row wider than
+    that, so they run short only on a pass whose rotation shows a row wider than
+    the room less both allowances (about 48,800 characters), and then share what
+    that row leaves, lessons first. Reserving their allowances instead would leave
+    such a row unshown for as long as they have rows to fill them: it cannot fit
+    beside them, and the rotation, the one pool that reaches every row, would have
+    to stall at it or pass it.
+
+    ``visible_keys`` are exactly the keys rendered, which is what the delete fence
+    reads, whichever pool kept a row. ``scores`` that are not one finite number per
+    row are no signal: the relevance pool is then empty and lessons rank by recency
+    alone. The notice says the rows were chosen for relevance only when some row
+    scores above zero (:data:`_SEMANTIC_OMISSION_NOTICE`); otherwise it names the
+    recent updates and the rotating slice alone
+    (:data:`_SEMANTIC_OMISSION_NOTICE_UNSCORED`). The room is what the wider of the
+    two leaves, so the line a block ends with never changes the rows it keeps.
+
+    Costs are exact, not estimated, because ``json.dumps(list, indent=1)`` is
+    additive: ``"[\\n"``, the rows joined by ``",\\n"``, ``"\\n]"``, each row
+    rendered as it is alone in a list. A list of rows renders to 2 plus the sum
+    of each row's one-element render less 2 (``[]`` included), so a pick is
+    priced without re-rendering the block. A row is kept whole or not at all,
+    because a value cut short would read as the fact itself. Returns the block,
+    how many rows it left out, the keys it shows and the key its rotation
+    reached.
     """
+    keys = [str(r.get("key", "")) for r in rows]
     whole = json.dumps(entries, indent=1) if entries else "[]"
     if len(whole) <= cap:
-        return _BoundedTable(whole, 0, frozenset(str(r.get("key", "")) for r in rows))
-    # Newest first; key as the tiebreak so rows written in the same second keep
-    # one order across runs (a stable sort on top of the key order given).
-    by_recency = sorted(range(len(rows)), key=lambda i: str(rows[i].get("key", "")))
-    by_recency.sort(key=lambda i: _recency(rows[i].get("updated_at")), reverse=True)
+        return _BoundedTable(whole, 0, frozenset(keys), None)
+    total = len(rows)
+    score = [0.0] * total
+    if isinstance(scores, list) and len(scores) == total:
+        try:
+            given = [
+                float(s) for s in scores if isinstance(s, (int, float)) and not isinstance(s, bool)
+            ]
+        except OverflowError:
+            given = []
+        if len(given) == total and all(math.isfinite(s) for s in given):
+            score = given
+    # The notice says relevance picked rows only when a score could pick one.
+    template = (
+        _SEMANTIC_OMISSION_NOTICE
+        if any(s > 0 for s in score)
+        else _SEMANTIC_OMISSION_NOTICE_UNSCORED
+    )
+    # The room is the same whichever line the block ends with, so the line chosen
+    # never changes which rows fit.
+    widest_notice = max(
+        (
+            notice.format(count=total, total=total, limit=cap)
+            for notice in (_SEMANTIC_OMISSION_NOTICE, _SEMANTIC_OMISSION_NOTICE_UNSCORED)
+        ),
+        key=len,
+    )
+    # What the rows may add to the table's two bracket characters.
+    room = cap - len("\n" + widest_notice) - 2
+    if room < 0:
+        return _BoundedTable("[]" if cap >= 2 else "", total, frozenset(), None)
+    cost = [len(json.dumps([entry], indent=1)) - 2 for entry in entries]
+    lesson = [key.startswith("lesson.") for key in keys]
+    recency = [_recency(r.get("updated_at")) for r in rows]
+    taken = [False] * total
+    spent = 0
 
-    def _render(count: int) -> str:
-        kept = sorted(by_recency[:count])
-        return json.dumps([entries[i] for i in kept], indent=1) if kept else "[]"
+    def take(order: list[int], allowance: int | None) -> None:
+        nonlocal spent
+        pool = 0
+        for index in order:
+            if taken[index] or spent + cost[index] > room:
+                continue
+            if allowance is not None and pool + cost[index] > allowance:
+                continue
+            taken[index] = True
+            spent += cost[index]
+            pool += cost[index]
 
-    fits, overflows = 0, len(rows)
-    rendered = "[]"
-    while overflows - fits > 1:
-        middle = (fits + overflows) // 2
-        candidate = _render(middle)
-        if len(candidate) <= cap:
-            fits, rendered = middle, candidate
-        else:
-            overflows = middle
-    visible = frozenset(str(rows[i].get("key", "")) for i in by_recency[:fits])
-    return _BoundedTable(rendered, len(rows) - fits, visible)
+    by_key = sorted(range(total), key=lambda i: (keys[i], i))
+    start = 0
+    if isinstance(rotation_after, str):
+        # The first key past the cursor, wrapping: a cursor whose own row is gone
+        # still resumes at the next live key.
+        start = next((pos for pos, i in enumerate(by_key) if keys[i] > rotation_after), 0)
+    rotation_last: str | None = None
+    rotated = 0
+    for index in by_key[start:] + by_key[:start]:
+        if cost[index] > room:
+            rotation_last = keys[index]
+            continue
+        if rotated and rotated + cost[index] > min(
+            _SEMANTIC_ROTATION_CHARS_PER_CONSOLIDATION, room
+        ):
+            break
+        taken[index] = True
+        spent += cost[index]
+        rotated += cost[index]
+        rotation_last = keys[index]
+
+    # Newest first, the key breaking a tie so rows written in the same second keep
+    # one order across runs (a stable sort on top of the key order).
+    newest = sorted(range(total), key=lambda i: keys[i])
+    newest.sort(key=lambda i: recency[i], reverse=True)
+    lessons = sorted((i for i in range(total) if lesson[i]), key=lambda i: keys[i])
+    lessons.sort(key=lambda i: (score[i], recency[i]), reverse=True)
+    relevant = sorted(
+        (i for i in range(total) if not lesson[i] and score[i] > 0), key=lambda i: keys[i]
+    )
+    relevant.sort(key=lambda i: score[i], reverse=True)
+    take(lessons, _SEMANTIC_LESSON_CHARS_PER_CONSOLIDATION)
+    take([i for i in newest if not lesson[i]], _SEMANTIC_RECENCY_CHARS_PER_CONSOLIDATION)
+    take(relevant, None)
+    take([i for i in newest if not lesson[i]] + [i for i in newest if lesson[i]], None)
+
+    shown = [i for i in range(total) if taken[i]]
+    table = json.dumps([entries[i] for i in shown], indent=1) if shown else "[]"
+    if len(table) > room + 2:
+        # The costs above are exact for any JSON value, so this does not happen;
+        # if a row ever rendered unlike its cost, the bound would still hold, and
+        # the rotation stays where it was rather than recording a slice it dropped.
+        shown, table, rotation_last = [], "[]", None
+    notice = template.format(count=total - len(shown), total=total, limit=cap)
+    return _BoundedTable(
+        f"{table}\n{notice}",
+        total - len(shown),
+        frozenset(keys[i] for i in shown),
+        rotation_last,
+    )
 
 
 def _withhold_unseen_deletes(

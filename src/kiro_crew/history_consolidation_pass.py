@@ -45,7 +45,6 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
 from kiro_crew.history_consolidation_memory import (
-    _SEMANTIC_OMISSION_NOTICE,
     _audit_oversized_semantic,
     _bounded_semantic_table,
     _is_plausible_memory_file,
@@ -87,6 +86,8 @@ from kiro_crew.vector_memory_constants import (
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
     _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
+    _SEMANTIC_RELEVANCE_EMBED_SECS_PER_CONSOLIDATION,
+    _SEMANTIC_RELEVANCE_SCAN_SECS_PER_CONSOLIDATION,
 )
 
 if TYPE_CHECKING:
@@ -611,12 +612,21 @@ async def _consolidate(
         # to update and delete them. Fetching globally would show crew B the
         # operator's semantic table and let its consolidation turn delete it.
         has_vector = vector_store is not None
+        # The rotation cursor this pass read and the last key its block's
+        # rotating slice reached: recorded only once the answer is applied.
+        semantic_scores: list[float] | None = None
+        rotation_after: str | None = None
+        rotation_last: str | None = None
+        semantic_snapshot: dict[str, dict] = {}
         if has_vector and vector_store is not None:
             private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
             # Offload: each page of the fetch serializes on the store's _db_lock,
             # and this coroutine runs on the gateway event loop — a worker
             # holding the lock (backfill's FAISS rebuild, reconcile's bulk
-            # UPDATEs) would otherwise block the whole loop here.
+            # UPDATEs) would otherwise block the whole loop here. The vector
+            # space is read before the first page: relevance below is kept only
+            # if every page was read in the space the span's query is embedded in.
+            fetched_in = vector_store.space_generation
             current_semantic = await asyncio.to_thread(_semantic_snapshot_in_pages, vector_store)
 
             def _prompt_value(e: dict) -> object:
@@ -653,26 +663,137 @@ async def _consolidate(
                 }
                 for e in current_semantic
             ]
-            # The PROMPT's copy of the table is bounded; ``current_semantic``
-            # itself stays whole, because the writers below read it as the
-            # snapshot that decides update-versus-create and the revision a
-            # correction is checked against. The keys the bounded copy shows
-            # travel with it: a row the model never read is not its to
-            # delete. Offloaded like the fetch: the fit is
-            # found by re-serialising a table that can run to megabytes,
-            # and this coroutine is on the gateway event loop.
-            semantic_json, semantic_omitted, semantic_visible = await asyncio.to_thread(
+            # Over the cap the block shows the rows relevant to this span, the
+            # newest, and a slice that rotates through the rest from pass to
+            # pass (``_bounded_semantic_table``). A table that fits needs no
+            # signal, so it costs no embed and leaves the rotation alone.
+            # Offloaded like the fetch: the table can run to megabytes, and
+            # this coroutine is on the gateway event loop.
+            overflows = await asyncio.to_thread(
+                lambda: len(json.dumps(semantic_entries, indent=1))
+                > _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION
+            )
+            if overflows:
+                # Both reads are still before the billed turn, where an error
+                # would re-arm the pass every idle tick, so each degrades on its
+                # own: a cursor that cannot be read restarts the rotation at the
+                # first key, and scores that cannot be had, or not in time, leave
+                # the block to the rotation and recency.
+                try:
+                    cursor = await asyncio.to_thread(vector_store.consolidation_rotation_cursor)
+                except Exception:
+                    self._logger.debug(
+                        "Consolidation rotation cursor unavailable for %s", key, exc_info=True
+                    )
+                    cursor = None
+                rotation_after = cursor if isinstance(cursor, str) else None
+                wait_secs = (
+                    _SEMANTIC_RELEVANCE_EMBED_SECS_PER_CONSOLIDATION
+                    + _SEMANTIC_RELEVANCE_SCAN_SECS_PER_CONSOLIDATION
+                )
+                try:
+                    # Imported here: the facade serves every name an owner binds
+                    # at module level, and its set of names is frozen.
+                    from kiro_crew.image_refs import STRIPPED_IMAGE_MARKER, strip_image_refs
+                    from kiro_crew.vector_memory_runtime.consolidation_relevance import (
+                        _SCORER_IN_FLIGHT,
+                    )
+
+                    # Facts restate or contradict what the user said, so the
+                    # user rows are the query; an assistant-only slice of a
+                    # long head falls back to every row it prompts. The text
+                    # is the rows' own words: not the ``[ts] ROLE:`` prefix the
+                    # conversation renders, which would match every ``user.*``
+                    # key on the word "user", nor the marker an image reference
+                    # renders as, whose words would match any ``*image*`` key.
+                    prompted = _prompt_rows(chunk)
+                    spoken = [m for m in prompted if m.get("role") == "user"] or prompted
+                    query_text = "\n".join(
+                        (m["content"] if is_sub_slice else strip_image_refs(m["content"])).replace(
+                            STRIPPED_IMAGE_MARKER, " "
+                        )
+                        for m in spoken
+                    )
+                    # Bounded twice: the deadline travels into the worker, where the
+                    # embed gives up on it and the rows score on keywords, and the
+                    # wait itself ends a scan's allowance later whatever the thread
+                    # is doing. A native call already running cannot be stopped, so
+                    # its thread is left to finish on its own, and it keeps its pool
+                    # admission until it does. So one scorer runs at a time in the
+                    # process: the claim is taken and given back on the pool thread
+                    # by the call itself, never by a wait that gave up, and a pass
+                    # that finds it held takes no scores rather than risk leaving a
+                    # second thread behind.
+                    score = vector_store.score_consolidation_rows
+
+                    def _score_unless_one_runs(*args: Any, **kwargs: Any) -> list[float] | None:
+                        if not _SCORER_IN_FLIGHT.acquire(blocking=False):
+                            self._logger.debug(
+                                "Consolidation relevance scores for %s skipped: another "
+                                "pass's scorer is still running",
+                                key,
+                            )
+                            return None
+                        try:
+                            return score(*args, **kwargs)
+                        finally:
+                            _SCORER_IN_FLIGHT.release()
+
+                    deadline = _time.monotonic() + _SEMANTIC_RELEVANCE_EMBED_SECS_PER_CONSOLIDATION
+                    semantic_scores = await asyncio.wait_for(
+                        _run_in_memory_background_pool(
+                            _score_unless_one_runs,
+                            current_semantic,
+                            [str(entry["value_json"]) for entry in semantic_entries],
+                            query_text,
+                            deadline=deadline,
+                        ),
+                        wait_secs,
+                    )
+                    if vector_store.space_generation != fetched_in:
+                        # The rows' vectors predate a model swap the query's
+                        # embed may not: a cosine across two spaces is noise.
+                        semantic_scores = None
+                except TimeoutError:
+                    self._logger.warning(
+                        "Consolidation relevance scores for %s took over %.0fs; this pass "
+                        "picks its semantic block by rotation and recency alone",
+                        key,
+                        wait_secs,
+                    )
+                    semantic_scores = None
+                except Exception:
+                    self._logger.debug(
+                        "Consolidation relevance signal unavailable for %s", key, exc_info=True
+                    )
+                    semantic_scores = None
+            # The PROMPT's copy of the table is bounded. The keys it shows travel
+            # with it: a row the model never read is not its to delete.
+            semantic_json, _, semantic_visible, rotation_last = await asyncio.to_thread(
                 _bounded_semantic_table,
                 current_semantic,
                 semantic_entries,
                 _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
+                scores=semantic_scores,
+                rotation_after=rotation_after,
             )
-            if semantic_omitted:
-                semantic_json += "\n" + _SEMANTIC_OMISSION_NOTICE.format(
-                    count=semantic_omitted,
-                    total=len(current_semantic),
-                    limit=_SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
-                )
+            # The writers below read the table as it was before the model call. On
+            # the private path a correction is verified against a row's value_json,
+            # updated_at and record_revision; the V1 writer reads only value_json,
+            # to retire it, and keeps updated_at so both paths hold one shape. A key
+            # the block did not show can still be corrected, so every key is kept
+            # with those fields alone; the rows, their stored vectors and the
+            # prompt's copy are dropped here (a scorer that overran its wait above
+            # still holds the rows until its thread ends).
+            semantic_snapshot = {
+                row["key"]: {
+                    field: row[field]
+                    for field in ("value_json", "updated_at", "record_revision")
+                    if field in row
+                }
+                for row in current_semantic
+            }
+            del current_semantic, semantic_entries
             semantic_fields = (
                 '"delete": false, "metadata": {"category": "contact", "subject": "user", '
                 '"predicate": "work_email", "scope": "", "source_ref": "brief evidence", '
@@ -1000,12 +1121,26 @@ async def _consolidate(
                         session_key=key,
                         source_total=member_source_total,
                         result=consolidation,
-                        snapshot={row["key"]: row for row in current_semantic},
+                        snapshot=semantic_snapshot,
                         messages=receipt_messages,
                         facets=facets,
                         kind_routing=kind_routing,
                     )
                     publication.mark_committed()
+                    # The answer is applied, so the model has read the slice: the
+                    # next pass rotates past it. Only here and after the V1 writes
+                    # below -- an empty, unsent, discarded or replayed pass shows the
+                    # same slice again. A compare-and-set, so two passes that showed
+                    # the same slice move the cursor once, over rows the slice showed
+                    # or passed as too wide and keys this pass's snapshot does not
+                    # hold, which wait for the next sweep. Inside the apply's hold,
+                    # so the lease and switch check that admitted the apply admit
+                    # the advance too. Its own commit, not a part of the apply's:
+                    # a cursor write that fails costs a repeated slice, never the
+                    # applied answer.
+                    if rotation_last is not None:
+                        with contextlib.suppress(Exception):
+                            store.advance_consolidation_rotation(rotation_after, rotation_last)
                     return applied
 
             await _run_in_memory_background_pool(_apply_member_consolidation)
@@ -1047,11 +1182,26 @@ async def _consolidate(
                 key,
                 vector_store,
                 facets=facets,
-                snapshot={row["key"]: row for row in current_semantic},
+                snapshot=semantic_snapshot,
                 visible_keys=semantic_visible,
                 messages=unconsolidated,
                 commit_state=commit_state,
             )
+            # Same rule as the member store's apply above, in a hold of its own
+            # with the same lease and switch check: an answer with no semantic or
+            # episodic row takes none of the writer's holds, and its slice was
+            # still read. A refused hold refuses the pass as any write's does.
+            if rotation_last is not None:
+                stage = "rotation cursor"
+                rotation_store = vector_store
+                reached = rotation_last
+
+                def _advance_rotation_under_hold() -> None:
+                    with self._publication_hold_checked(key, commit_state):
+                        with contextlib.suppress(Exception):
+                            rotation_store.advance_consolidation_rotation(rotation_after, reached)
+
+                await asyncio.to_thread(_advance_rotation_under_hold)
 
         # Legacy V1 Markdown writes (skip if migrated or private V2). Each value
         # replaces the whole file, so a non-file answer (e.g. the literal
