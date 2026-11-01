@@ -53,6 +53,7 @@ begin on its own line; the assembly newline-terminates the caller's
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
 | 4a | `[TOOL NAMES]` | `context_assembly/tool_names.py` → `tool_names_block`; the spelling rule in `agent_sdk/kas_tool_names.py` | KAS sessions only (`provider_type` is KAS's label); also in a minimal start and re-sent after a compaction. KAS resolves an MCP call only by `mcp_<server>_<tool>` or `@<server>/<tool>`, and Crew's prompts name tools bare |
+| 4b | `[ACTIVE MODEL]` | `context_assembly/sections.py` → `active_model_block`, from the live provider's `served_model` (the accessor the dashboard's model label reads); the harness gate in `agent_sdk/served_model_identity.py` | goose sessions only (`crew_states_served_model`: goose's own system prompt names no model, kiro-cli's does), when the session reports a model; also in a minimal start and a slim resume, and restated every follow-up (§2). Without it a model asked which model it is answers from training priors |
 | 5 | `[CREW MEMBER OPERATING MODE]` | constant prose | member DM slot, and `_member_dispatch_held`: the live session's `member_dispatch_mounted` (whether its composer actually appended the session-control entry), falling back to `_member_backend_can_dispatch` only when no provider evidence reached the build |
 | 6 | `[MEMBER IDENTITY]` … | `_build_member_section` (see §5) | V1 member sessions |
 | 7 | `[UI LANGUAGE]` | `_build_ui_language_section`, the configured language | only when set explicitly |
@@ -237,6 +238,7 @@ it adds:
 | Block | Source | When |
 |---|---|---|
 | `[RUNTIME]` refresh | trusted `runtime_source` | every follow-up; a channel turn also re-asserts the diff-block mandate |
+| `[ACTIVE MODEL]` refresh | the live provider's `served_model` | every follow-up on a goose session that reports a model, because a live `set_model` keeps the conversation and the session-start line would name the old model |
 | Channel history | `channel_history.context_for` | group-channel turns, except a thread turn that carries `[SLACK THREAD REPLIES]` |
 | `[SLACK THREAD CONTEXT]` | thread parent / metadata | Slack threads |
 | `[SLACK THREAD REPLIES]` | `slack/thread_replies.py`, fenced as untrusted | a Slack thread turn with replies it has not seen |

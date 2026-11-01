@@ -6848,7 +6848,7 @@ importable from `kiro_crew.context`:
 |---|---|
 | `markers.py` | marker and fence neutralization of untrusted text (`_neutralize_structural_markers` and `_member_marker_spans` stay on the facade) |
 | `budget.py` | character caps, model windows, the embedding deadline, whole-block background admission (`_resolve_caps` stays on the facade) |
-| `sections.py` | stable conduct sections: runtime identity and refresh, user profile, reply-style preferences, workspace identity, the widget pointer |
+| `sections.py` | stable conduct sections: runtime identity and refresh, the `[ACTIVE MODEL]` served-model line, user profile, reply-style preferences, workspace identity, the widget pointer |
 | `replay.py` | replay and recall projection of transcript rows: row quotas, delivery-identity merge, replay budget, thread-history fallback, turn restores |
 | `inclusion.py` | context-group scope, the folder-steering renderer, the skills loader call session start and re-injection share |
 | `member.py` | the member identity section and the V2 essentials envelope; delivery stays at the `member_turn_context` chokepoint |
