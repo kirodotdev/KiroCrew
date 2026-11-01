@@ -13096,6 +13096,7 @@
         "take_over_instead_hint": "Clé d'accès ou puzzle ?",
         "take_over_instead": "Prendre la main sur la page",
         "error_no_field": "Kiro n'a pas trouvé où saisir sur cet écran. Prends la main pour terminer sur la page.",
+        "error_too_long": "Ce champ accepte moins de caractères que ce que tu as saisi. Raccourcis-le et renvoie.",
         "secure_sign_in": "Connexion sécurisée",
         "enter": "Saisir",
         "confirm_then": "Ensuite : Kiro appuie une fois sur « {{button}} »",

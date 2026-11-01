@@ -12682,6 +12682,7 @@
         "take_over_instead_hint": "パスキーやパズルですか？",
         "take_over_instead": "ページを引き継ぐ",
         "error_no_field": "Kiro はこの画面で入力する場所を見つけられませんでした。引き継いでページで完了してください。",
+        "error_too_long": "この欄は入力した文字数より少ない文字しか入りません。短くしてもう一度送ってください。",
         "secure_sign_in": "安全なサインイン",
         "enter": "入力",
         "confirm_then": "次に: Kiro が「{{button}}」を 1 回押します",

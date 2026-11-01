@@ -5958,6 +5958,7 @@
         "take_over_instead_hint": "Passkey or puzzle?",
         "take_over_instead": "Take over the page",
         "error_no_field": "Kiro couldn't find where to type on this screen. Take over to finish on the page.",
+        "error_too_long": "This field takes fewer characters than you entered. Shorten it and send again.",
         "secure_sign_in": "Secure sign-in",
         "enter": "Enter",
         "confirm_then": "Then: Kiro presses “{{button}}” once",

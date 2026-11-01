@@ -13096,6 +13096,7 @@
         "take_over_instead_hint": "Chave de acesso ou quebra-cabeça?",
         "take_over_instead": "Assumir a página",
         "error_no_field": "O Kiro não encontrou onde digitar nesta tela. Assuma para terminar na página.",
+        "error_too_long": "Este campo aceita menos caracteres do que você digitou. Encurte e envie de novo.",
         "secure_sign_in": "Login seguro",
         "enter": "Preencher",
         "confirm_then": "Depois: o Kiro pressiona “{{button}}” uma vez",

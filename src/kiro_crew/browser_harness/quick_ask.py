@@ -68,6 +68,8 @@ FILLED = "filled"
 SUBMITTED = "submitted"
 #: The sign-in walk found no field to type into in time (the ask stays open).
 NO_FIELD = "no_field"
+#: A value longer than the bound field takes: nothing is written, the ask stays open.
+TOO_LONG = "too_long"
 DECLINED = "declined"
 PASSED = "passed"
 CONFIRMED = "confirmed"
@@ -455,6 +457,8 @@ _INSERT_JS = """function (v, origin) {
   if (location.origin !== origin) return false;
   var root = this.getRootNode ? this.getRootNode() : document;
   if (root.activeElement !== this) return false;
+  // The field would cut the value short and the insert would still report success.
+  if (typeof this.maxLength === 'number' && this.maxLength >= 0 && v.length > this.maxLength) return 'too_long';
   return document.execCommand('insertText', false, v) === true;
 }"""
 
@@ -1226,7 +1230,10 @@ async def _write(ask: QuickAsk, login: _Login, node: int, value: str) -> None:
     await login.probe.call(node, login.ctx, _PREPARE_JS)
     # Last thing before the value leaves the gateway: the ask is still live.
     _still_live(ask)
-    if await login.probe.call(node, login.ctx, _INSERT_JS, value, login.origin) is not True:
+    inserted = await login.probe.call(node, login.ctx, _INSERT_JS, value, login.origin)
+    if inserted == TOO_LONG:
+        raise AskError(TOO_LONG)
+    if inserted is not True:
         raise AskError(ORIGIN_CHANGED)
 
 
@@ -1380,7 +1387,10 @@ async def fill(probe: PageProbe, ask: QuickAsk, values: dict[str, str]) -> None:
         await fprobe._send("DOM.focus", {"backendNodeId": b.node})
         await fprobe.call(b.node, ctx, _PREPARE_JS)
         _still_live(ask)
-        if await fprobe.call(b.node, ctx, _INSERT_JS, value, ask.origin) is not True:
+        inserted = await fprobe.call(b.node, ctx, _INSERT_JS, value, ask.origin)
+        if inserted == TOO_LONG:
+            raise AskError(TOO_LONG)
+        if inserted is not True:
             raise AskError(ORIGIN_CHANGED)
 
 

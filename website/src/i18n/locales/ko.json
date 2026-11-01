@@ -12682,6 +12682,7 @@
         "take_over_instead_hint": "패스키나 퍼즐인가요?",
         "take_over_instead": "페이지 직접 조작",
         "error_no_field": "Kiro가 이 화면에서 입력할 곳을 찾지 못했어요. 직접 조작해서 페이지에서 마무리하세요.",
+        "error_too_long": "이 칸은 입력한 글자 수보다 적게 받아요. 줄여서 다시 보내세요.",
         "secure_sign_in": "안전한 로그인",
         "enter": "입력",
         "confirm_then": "그다음: Kiro가 ‘{{button}}’을 한 번 누릅니다",

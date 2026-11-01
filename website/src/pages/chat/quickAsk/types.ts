@@ -64,7 +64,7 @@ export type QuickAskUsername = 'required' | 'optional' | 'none'
 
 export type QuickAskAction = 'fill' | 'decline' | 'take_over' | 'done' | 'confirm' | 'cancel'
 export interface QuickAskValues { username?: string; password?: string; text?: string; otp?: string }
-export type QuickAskError = 'origin_changed' | 'stale' | 'not_owner' | 'too_large' | 'bad_action' | 'no_field'
+export type QuickAskError = 'origin_changed' | 'stale' | 'not_owner' | 'too_large' | 'bad_action' | 'no_field' | 'too_long'
 export interface QuickAskAnswer { ok: boolean; outcome?: string; error?: QuickAskError | string }
 
 const KINDS: ReadonlySet<string> = new Set(['credentials', 'text', 'otp', 'human_check', 'confirm'])

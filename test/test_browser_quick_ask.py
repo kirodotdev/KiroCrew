@@ -253,7 +253,10 @@ class FakePage:
                 url = self.frame["url"] if fid == self.frame["id"] else self.frames[fid]["url"]
                 want = params["arguments"][1]["value"]
                 value = self.focused == node and qa.origin_of(url) == want
-                if value:
+                limit = self.nodes[node].get("maxlength")
+                if value and limit is not None and len(params["arguments"][0]["value"]) > limit:
+                    value = qa.TOO_LONG
+                elif value:
                     self.inserts.append((node, params["arguments"][0]["value"]))
             elif fn == qa._PREPARE_JS:
                 self.nodes[node]["asked"] = True
@@ -839,6 +842,21 @@ async def test_an_otp_box_too_short_for_the_code_is_refused_at_ask_time(
         assert out == {"ok": True, "outcome": "refused", "code": "too_short"}
     else:
         assert out["ok"] is True and "ask_id" in out
+
+
+async def test_a_value_longer_than_the_field_takes_is_refused_and_the_ask_stays_open() -> None:
+    """A field with maxlength would cut the value short while the insert still reports
+    success: nothing is written, the answer says too_long, and the person can retry."""
+    page = FakePage()
+    page.add("e7", type="text", maxlength=4)
+    _hub, _rec, ask = await _asked(page, {"kind": "text", "targets": ["text=e7"], "reason": "r"})
+    status, out, _ = await _answer(
+        {"ask_id": ask.id, "action": "fill", "values": {"text": "12345"}}
+    )
+    assert (status, out.get("error")) == (409, "too_long"), (status, out)
+    assert page.written() == [] and not ask.outcome
+    status, out, _ = await _answer({"ask_id": ask.id, "action": "fill", "values": {"text": "1234"}})
+    assert (status, out) == (200, {"ok": True, "outcome": "filled"})
 
 
 async def test_an_otp_box_that_submits_itself_still_reads_as_filled() -> None:

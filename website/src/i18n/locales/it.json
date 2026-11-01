@@ -13096,6 +13096,7 @@
         "take_over_instead_hint": "Passkey o rompicapo?",
         "take_over_instead": "Prendi il controllo della pagina",
         "error_no_field": "Kiro non ha trovato dove scrivere in questa schermata. Prendi il controllo per finire sulla pagina.",
+        "error_too_long": "Questo campo accetta meno caratteri di quelli che hai scritto. Accorcialo e invia di nuovo.",
         "secure_sign_in": "Accesso sicuro",
         "enter": "Inserisci",
         "confirm_then": "Poi: Kiro preme «{{button}}» una volta",

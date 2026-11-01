@@ -12682,6 +12682,7 @@
         "take_over_instead_hint": "要用通行密钥或做验证题？",
         "take_over_instead": "接管页面",
         "error_no_field": "Kiro 在这个页面上找不到要填写的地方。请接管，在页面上完成登录。",
+        "error_too_long": "这个输入框能填的字符比你输入的少。请缩短后再发送。",
         "secure_sign_in": "安全登录",
         "enter": "填写",
         "confirm_then": "然后：Kiro 点一次“{{button}}”",

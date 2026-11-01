@@ -13096,6 +13096,7 @@
         "take_over_instead_hint": "¿Llave de acceso o acertijo?",
         "take_over_instead": "Tomar el control de la página",
         "error_no_field": "Kiro no encontró dónde escribir en esta pantalla. Toma el control para terminar en la página.",
+        "error_too_long": "Este campo admite menos caracteres de los que escribiste. Acórtalo y vuelve a enviarlo.",
         "secure_sign_in": "Inicio de sesión seguro",
         "enter": "Escribir",
         "confirm_then": "Después: Kiro pulsa “{{button}}” una vez",

@@ -9,6 +9,7 @@ import type { DecodedBrowserFrame } from '../hooks/useBrowserLive.frame'
 import { readRecording } from '../hooks/useBrowserLive.replay'
 import { eventLabel } from '../pages/chat/BrowserLiveReplayStage'
 import { askUi } from '../pages/chat/quickAsk/askUi'
+import { answerErrorText } from '../pages/chat/quickAsk/QuickAskParts'
 import { readQuickAsk } from '../pages/chat/quickAsk/types'
 import { __REMEMBER_STORAGE_KEY, recall, remember } from '../pages/chat/quickAsk/remember'
 
@@ -461,5 +462,11 @@ describe('quick ask: surfaces and parsing', () => {
     expect(e.actor).toBe('user')
     expect(rec.events[1].op).toBe('other')
     expect(rec.events[1].person).toBeUndefined()
+  })
+})
+
+describe('answerErrorText', () => {
+  it('says a value too long for its field should be shortened', () => {
+    expect(answerErrorText('too_long')).toBe(i18next.t('pages.chat.quickAsk.error_too_long'))
   })
 })

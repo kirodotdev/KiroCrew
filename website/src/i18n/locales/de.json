@@ -12889,6 +12889,7 @@
         "take_over_instead_hint": "Passkey oder Rätsel?",
         "take_over_instead": "Seite übernehmen",
         "error_no_field": "Kiro hat auf dieser Seite kein Eingabefeld gefunden. Übernimm, um auf der Seite fertig zu werden.",
+        "error_too_long": "Dieses Feld nimmt weniger Zeichen an, als du eingegeben hast. Kürze es und sende erneut.",
         "secure_sign_in": "Sichere Anmeldung",
         "enter": "Eingeben",
         "confirm_then": "Dann: Kiro drückt einmal „{{button}}“",

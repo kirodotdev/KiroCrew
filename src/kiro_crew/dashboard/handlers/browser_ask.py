@@ -326,6 +326,11 @@ async def _act(
                 await qa.click_once(probe, ask)
                 outcome = qa.CONFIRMED
     except qa.AskError as exc:
+        if exc.code == qa.TOO_LONG:
+            # The field takes fewer characters: nothing was written, the ask stays
+            # open so the person can shorten the value or take over.
+            _audit("browser_ask_answer", "too_long", "fill")
+            return _fail(409, qa.TOO_LONG)
         if exc.code == qa.NO_FIELD:
             # The walk found nothing to type into: the ask stays open, so the person
             # can take over (a passkey, a puzzle) or try again. Values are gone.
