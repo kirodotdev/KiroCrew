@@ -951,6 +951,32 @@ def _reset_creator_titles():
         _reset()
 
 
+@pytest.fixture(autouse=True)
+def _reset_queue_drains():
+    """Give every test an EMPTY mid-turn drain registry (``messaging.queue_drain``).
+
+    Every DM dispatcher registers its drain process-wide when it is built, and a drain
+    that sets aside another transport's queue entry wakes whatever is registered under
+    that transport. Left over, the drain a later test's wake calls belongs to an earlier
+    test's dispatcher, bound to that test's sessions and finished event loop; one that
+    cannot finish parks the waking test until the per-test timeout. The wake's
+    in-flight and owed-wake records are cleared with it. Read from ``sys.modules``
+    rather than imported, like ``_reset_creator_titles``.
+    """
+    import sys as _sys
+
+    def _reset() -> None:
+        mod = _sys.modules.get("kiro_crew.messaging.queue_drain")
+        if mod is not None:
+            mod.reset_drains()
+
+    _reset()
+    try:
+        yield
+    finally:
+        _reset()
+
+
 #: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
 #: ROOTDIR ``conftest.py``, not here. The data home has to be pinned for every
 #: testpath, including the ~108 test modules that ship inside the package under
