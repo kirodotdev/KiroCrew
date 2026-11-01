@@ -214,7 +214,6 @@
   "src/test/SideChat.imeEnter.test.tsx",
   "src/test/SideChat.steerQueue.test.tsx",
   "src/test/SideChat.thinking.test.tsx",
-  "src/test/SpecBuilderSpecDetailCoverage.test.tsx",
   "src/test/SttSettings.surface.test.tsx",
   "src/test/SubagentProgressBar.stalledRow.i18n.test.tsx",
   "src/test/SystemPage.test.tsx",
