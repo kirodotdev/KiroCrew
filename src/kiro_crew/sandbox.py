@@ -71,6 +71,9 @@ from kiro_crew import (  # noqa: F401
 )
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent  # noqa: F401
 from kiro_crew.config.paths import config_dir, kiro_agents_dir  # noqa: F401
+from kiro_crew.config.write_provenance import (  # noqa: F401
+    launcher_record as _published_file_record,
+)
 from kiro_crew.constants import (  # noqa: F401
     KIROCREW_SANDBOX_TOOL_ENV,
     KIROCREW_SANDBOX_TOOL_VALUE,
