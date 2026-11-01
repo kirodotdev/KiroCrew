@@ -44,6 +44,33 @@ pytestmark = pytest.mark.skipif(
     reason="requires the workflow file plus a POSIX bash and jq",
 )
 
+
+def _has_gnu_date() -> bool:
+    """The Deliver step formats its header with GNU ``date -d``; BSD ``date``
+    (macOS) has no such flag. The workflow only runs on Linux runners."""
+    if shutil.which("date") is None:
+        return False
+    probe = subprocess.run(
+        ["date", "-u", "-d", "@0", "+%s"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return probe.returncode == 0
+
+
+# Stands in for GNU `date -d` where date(1) lacks it: any `-d` call prints a
+# fixed header date; every other call runs the real date.
+BSD_DATE_STUB = r"""#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = "-d" ]; then
+    echo "Aug 09 12:00 AM"
+    exit 0
+  fi
+done
+exec "@REAL_DATE@" "$@"
+"""
+
 START = "2026-08-09T00:00:00Z"
 END = "2026-08-09T12:00:00Z"
 
@@ -580,6 +607,12 @@ def test_plain_mode_links_no_issue(runner: Runner) -> None:
 
 def test_the_delivery_sanitizer_keeps_issue_and_pr_links_only(runner: Runner) -> None:
     """mrkdwn delivery escapes every '<' except a github.com PR or issue link."""
+    if not _has_gnu_date():
+        # The step only formats its header with `date -d`; this test checks the
+        # body, so a fixed header date keeps it running on BSD date (macOS).
+        stub = runner.work.parent / "bin" / "date"
+        stub.write_text(BSD_DATE_STUB.replace("@REAL_DATE@", shutil.which("date") or "/bin/date"))
+        stub.chmod(0o755)
     body = (
         "<https://github.com/o/r/issues/7|#7> <https://github.com/o/r/pull/8|#8> "
         "<https://evil.example/x|#9> <!channel>\n"
@@ -599,3 +632,16 @@ def test_the_delivery_sanitizer_keeps_issue_and_pr_links_only(runner: Runner) ->
     assert "<https://github.com/o/r/pull/8|#8>" in safe
     assert "&lt;https://evil.example/x|#9>" in safe
     assert "&lt;!channel>" in safe
+
+
+def test_no_bare_variable_runs_into_non_ascii_text(steps: dict[str, dict]) -> None:
+    """macOS bash 3.2 reads a byte past 0x7f as part of a variable name, so
+    `$A–$B` expands an unset `A\\xe2...` and `set -u` fails. Braces end the name."""
+    bare = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]")
+    offenders = [
+        f"{name}: {line.strip()}"
+        for name, step in steps.items()
+        for line in str(step.get("run", "")).splitlines()
+        if bare.search(line)
+    ]
+    assert not offenders, offenders
