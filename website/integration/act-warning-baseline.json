@@ -54,7 +54,6 @@
   "src/test/App.creditPillError.test.tsx",
   "src/test/App.deployRoute.test.tsx",
   "src/test/App.metricsPopover.test.tsx",
-  "src/test/App.mobileSingleTopbar.test.tsx",
   "src/test/App.navPinnedRail.test.tsx",
   "src/test/App.notificationSheetExit.test.tsx",
   "src/test/App.offlinePill.test.tsx",
