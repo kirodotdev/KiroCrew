@@ -565,9 +565,19 @@ def interactive_guidance(
     session_key: str | None,
     agent: str | None,
     minimal_context: bool,
+    producer_is_user_facing: bool = False,
 ) -> list[str]:
-    """The per-turn ``[OPTIONS:]`` and dashboard-tool guidance paragraphs."""
+    """The per-turn ``[OPTIONS:]`` and dashboard-tool guidance paragraphs.
+
+    *producer_is_user_facing* says a person sent this turn on a dashboard
+    slot. It defaults to False, the applier's own default, so a caller that
+    does not say is never offered a tool the applier refuses.
+    """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    # Function-local: context_assembly owners import no kiro_crew module at module
+    # scope (test_owners_import_no_kiro_crew_module_at_module_scope).
+    from kiro_crew.directive_origin import user_origin_gate_admits
 
     _interactive_guidance: list[str] = []
     if interactive:
@@ -615,13 +625,21 @@ def interactive_guidance(
             )
             # A follow-up card is distinct from both: it offers concrete NEXT
             # tasks after work is done, optionally handing one to a worktree.
-            _interactive_guidance.append(
-                "\n\n(The suggest_followup tool offers up to 3 NEXT tasks below the "
-                "composer, each with a complete standalone handoff prompt. DEFAULT TO "
-                "SILENCE: only after a genuinely large finished task and only for "
-                "valuable follow-ups. Never after small tasks, per-turn, to repeat "
-                "an acted-on card, or for a clarifying question -- ask that inline.)"
-            )
+            # The applier also asks WHO sent the turn: a cron, a loop's wake, a
+            # sub-agent or a peer send riding this tab is refused. Offer the
+            # tool only when that same gate would let the card through.
+            if user_origin_gate_admits(
+                "suggest_followup",
+                session_key or "",
+                producer_is_user_facing=producer_is_user_facing,
+            ):
+                _interactive_guidance.append(
+                    "\n\n(The suggest_followup tool offers up to 3 NEXT tasks below the "
+                    "composer, each with a complete standalone handoff prompt. DEFAULT TO "
+                    "SILENCE: only after a genuinely large finished task and only for "
+                    "valuable follow-ups. Never after small tasks, per-turn, to repeat "
+                    "an acted-on card, or for a clarifying question -- ask that inline.)"
+                )
     return _interactive_guidance
 
 
