@@ -268,6 +268,26 @@ export function fmtDuration(
 }
 
 /**
+ * `value` rounded to the `digits` decimal places it will be PRINTED with.
+ *
+ * Every band below picks a unit by comparing against that band's ceiling, then
+ * prints the value with fewer digits than it compared. Testing the raw value
+ * lets a band print its own upper limit — `60s` from the sub-minute band,
+ * `1,000kB` from the kilobyte band — because the printed rounding crosses a
+ * ceiling the test had already cleared. Rounding to the displayed precision
+ * first moves such a value into the next band instead.
+ *
+ * Rounds half away from zero, which is `Intl.NumberFormat`'s default
+ * `roundingMode`, so the band test and the digits `Intl` prints agree on every
+ * finite input. A bare `Math.round` rounds a negative half toward zero and
+ * would disagree.
+ */
+function roundToDigits(value: number, digits: number): number {
+  const step = 10 ** digits
+  return Math.sign(value) * Math.round(Math.abs(value) * step) / step
+}
+
+/**
  * A settled elapsed time — `4.2s`, `37s`, `6m 38s`, `1h 7m 11s`.
  *
  * Three bands under an hour, because the useful precision changes with magnitude: a sub-10s
@@ -275,6 +295,10 @@ export function fmtDuration(
  * minutes place carries the meaning. Rounds to whole seconds BEFORE splitting so
  * a value like 119.6s reads `2m 0s` and never the invalid `1m 60s` — flooring
  * minutes first and rounding the remainder can push it to 60.
+ *
+ * Each band is tested on the value rounded to the precision that band prints,
+ * so a span that would read as the band's own ceiling steps up instead: 59.6s
+ * is `1m 0s`, never `60s`, and 9.96s is `10s`, never `10.0s`.
  *
  * A fourth band starts at an hour (`1h 7m 11s`), so a long run never reads as
  * `67m 11s`.
@@ -291,11 +315,13 @@ export function fmtDuration(
 export function fmtElapsed(ms: number, options?: { wholeSeconds?: boolean }): string {
   if (!Number.isFinite(ms)) return '—'
   const s = ms / 1000
+  const tenths = roundToDigits(s, 1)
+  const total = Math.round(s)
+  // Each band prints the very value it was chosen by, so the two cannot disagree.
   // `wholeSeconds` drops the tenths band for a live 1 Hz counter, whose input is
   // already whole seconds and would otherwise read `4.0s`, `5.0s`, ...
-  if (s < 10 && !options?.wholeSeconds) return fmtUnit(s, 'second', { maximumFractionDigits: 1, minimumFractionDigits: 1 })
-  if (s < 60) return fmtUnit(Math.round(s), 'second', { maximumFractionDigits: 0 })
-  const total = Math.round(s)
+  if (tenths < 10 && !options?.wholeSeconds) return fmtUnit(tenths, 'second', { maximumFractionDigits: 1, minimumFractionDigits: 1 })
+  if (total < 60) return fmtUnit(total, 'second', { maximumFractionDigits: 0 })
   // Past an hour the hours place carries the meaning: `1h 7m 11s`, not `67m 11s`.
   if (total < 3600) return fmtDuration([[Math.floor(total / 60), 'minute'], [total % 60, 'second']])
   return fmtDuration([[Math.floor(total / 3600), 'hour'], [Math.floor((total % 3600) / 60), 'minute'], [total % 60, 'second']])
@@ -335,14 +361,25 @@ export function fmtCompact(value: number, options?: NumberOptions): string {
  * step for most values.
  *
  * English output changes `KB` → `kB`, which is the SI spelling CLDR uses.
+ *
+ * Each band is chosen by, and then prints, the value rounded to the digits that
+ * band shows — so a size never renders as its own band's ceiling: 999,950 bytes
+ * is `1MB`, not `1,000kB`. The digit count comes from the caller's
+ * `maximumFractionDigits` when it supplies one, because that is what decides
+ * the printed precision. The terabyte band has no ceiling, so it rounds nothing
+ * and leaves the digits entirely to `Intl`.
  */
 export function fmtBytes(bytes: number, options?: NumberOptions): string {
   if (!Number.isFinite(bytes)) return '—'
-  const abs = Math.abs(bytes)
-  if (abs < 1000) return fmtUnit(bytes, 'byte', { maximumFractionDigits: 0, ...options })
-  if (abs < 1000 ** 2) return fmtUnit(bytes / 1000, 'kilobyte', { maximumFractionDigits: 1, ...options })
-  if (abs < 1000 ** 3) return fmtUnit(bytes / 1000 ** 2, 'megabyte', { maximumFractionDigits: 1, ...options })
-  if (abs < 1000 ** 4) return fmtUnit(bytes / 1000 ** 3, 'gigabyte', { maximumFractionDigits: 1, ...options })
+  const digits = options?.maximumFractionDigits
+  const b = roundToDigits(bytes, digits ?? 0)
+  if (Math.abs(b) < 1000) return fmtUnit(b, 'byte', { maximumFractionDigits: 0, ...options })
+  const kb = roundToDigits(bytes / 1000, digits ?? 1)
+  if (Math.abs(kb) < 1000) return fmtUnit(kb, 'kilobyte', { maximumFractionDigits: 1, ...options })
+  const mb = roundToDigits(bytes / 1000 ** 2, digits ?? 1)
+  if (Math.abs(mb) < 1000) return fmtUnit(mb, 'megabyte', { maximumFractionDigits: 1, ...options })
+  const gb = roundToDigits(bytes / 1000 ** 3, digits ?? 1)
+  if (Math.abs(gb) < 1000) return fmtUnit(gb, 'gigabyte', { maximumFractionDigits: 1, ...options })
   return fmtUnit(bytes / 1000 ** 4, 'terabyte', { maximumFractionDigits: 1, ...options })
 }
 
