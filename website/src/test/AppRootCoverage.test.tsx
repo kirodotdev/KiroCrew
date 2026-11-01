@@ -369,9 +369,9 @@ describe('App — header capsule resource posture', () => {
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    expect(await screen.findByText('Critical')).toBeInTheDocument()
+    const chip = await screen.findByRole('button', { name: 'Critical' })
     expect(screen.getByText('· cap: 2')).toBeInTheDocument()
-    expect(screen.getByTitle(/Host memory is critically low \(1.3 GB free\)/)).toBeInTheDocument()
+    expect(chip).toHaveAccessibleDescription(/Memory is very low on this computer \(1.3 GB free\).*Up to 2 subagents can run at once/)
   })
 
   it('flags a tight host posture', async () => {
@@ -382,8 +382,8 @@ describe('App — header capsule resource posture', () => {
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    expect(await screen.findByText('Tight')).toBeInTheDocument()
-    expect(screen.getByTitle(/Host memory is tight \(3.0 GB free\)/)).toBeInTheDocument()
+    const chip = await screen.findByRole('button', { name: 'Tight' })
+    expect(chip).toHaveAccessibleDescription('Memory is low on this computer (3.0 GB free). Heavy work may be slower.')
     // No cap reported, so no cap clause is appended.
     expect(screen.queryByText(/cap:/)).toBeNull()
   })

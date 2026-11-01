@@ -8,6 +8,7 @@
   "app.n_more",
   "app.notification_count",
   "app.show_more_apps",
+  "app.subagent_cap_explained",
   "apps.autoTriagePipeline.global.resumed_times",
   "apps.autoTriagePipeline.global.step_heading",
   "apps.autoTriagePipeline.global.turns_n",
