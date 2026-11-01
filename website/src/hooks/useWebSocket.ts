@@ -65,7 +65,7 @@ import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashb
 import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay, focusedSlotForCurrentSurface } from './websocket/attention'
-import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory } from './websocket/browserEvents'
+import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory, emitResumeAllDone } from './websocket/browserEvents'
 import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
 import { applySharedCrewFrame, onSharedCrewSocketOpen, setSharedCrewSender } from './sharedCrew/sharedCrewSocket'
 import { batchedUnlessOpen } from '../lib/streamBatch'
@@ -352,6 +352,11 @@ export function useWebSocket() {
           }
           case 'artifact_update':
             handleArtifactUpdate(queryClient, data)
+            break
+          case 'resume_all_done':
+            // Owner-only frame: one bulk Resume run's outcome. The sidebar row
+            // that started the run shows it; the slots push already moved the rows.
+            emitResumeAllDone(data)
             break
           case 'notification': {
             const n = data as Notification
