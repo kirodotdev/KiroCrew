@@ -20,6 +20,7 @@ import { pathForFile, canPickFolderNatively } from '../../lib/electron'
 import ErrorNotice from '../../components/ErrorNotice'
 import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButton'
 import { useConfigSetHintsV1 } from '../../hooks/useGatewayPlatform'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
 /** A site name as the gateway compares it: lowercase, no trailing dot. */
 function normalizeSite(site: string): string {
@@ -741,10 +742,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
 
       {showAdd && (
         <div className="border border-border rounded-lg p-4 bg-bg-elevated space-y-3">
-          <div className="text-sm font-medium">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="text-sm font-medium" id="knowledge-add-source-label">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
+          <RadioChipGroup className="flex gap-2 flex-wrap" ariaLabelledBy="knowledge-add-source-label">
             {(['local', 'url', 'bedrock_kb'] as const).map(t => (
-              <button key={t} type="button" onClick={() => setAddType(t)} aria-pressed={addType === t}
+              <button key={t} type="button" onClick={() => setAddType(t)} {...radioChip(addType === t)}
                 className={`px-3 py-1.5 text-[13px] rounded-md border flex items-center gap-1 ${addType === t ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted'}`}>
                 {t === 'local'
                   ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.files_and_folders')}</>
@@ -753,7 +754,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   : <><Database size={12} /> {i18nT('pages.knowledge.sourcesList.bedrock_kb')}</>}
               </button>
             ))}
-          </div>
+          </RadioChipGroup>
           {/* A fetched page is stored in the default namespace, and a remote KB
               holds no items at all, so neither offers a namespace picker. */}
           {addType === 'local' && <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />}

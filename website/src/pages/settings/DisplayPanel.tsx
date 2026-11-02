@@ -47,6 +47,7 @@ import { useExplorePreview } from '../../hooks/usePreviewFlag'
 import { useCloseAction } from '../../hooks/useCloseAction'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
  * not ceremony" preference). Colors come from theme CSS vars via Tailwind
@@ -1180,14 +1181,14 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <ErrorNotice message={unreadDotError} variant="inline" />
           {/* Color swatches use raw buttons — circular color dots don't fit SettingsButtonGroup's text-button pattern */}
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.displayPanel.default_for_new_sessions')}>
-            <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button type="button" aria-label={i18nT('pages.settings.displayPanel.no_color')} aria-pressed={defaultColor === null} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultColor === null ? 'border-accent scale-110' : 'border-border'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => dispatch(setSessionDefaultColor(null))} title={i18nT('pages.settings.displayPanel.no_color')} />
+            <span className="text-[13px] font-semibold text-text" id="display-default-session-color-label">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>
+            <RadioChipGroup className="flex flex-wrap items-center gap-1.5" ariaLabelledBy="display-default-session-color-label">
+              <button type="button" aria-label={i18nT('pages.settings.displayPanel.no_color')} {...radioChip(defaultColor === null)} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultColor === null ? 'border-accent scale-110' : 'border-border'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => dispatch(setSessionDefaultColor(null))} title={i18nT('pages.settings.displayPanel.no_color')} />
               {colors.map((c, i) => (
-                <button type="button" key={i} aria-label={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} aria-pressed={defaultSlot === i} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultSlot === i ? 'border-accent scale-110' : 'border-border'}`} style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${c} ${boost.activePct[i]}%, var(--bg-accent)) 50%, color-mix(in srgb, ${c} ${boost.idlePct[i]}%, var(--bg-accent)) 50%)` }} onClick={() => dispatch(setSessionDefaultColor(i))} title={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} />
+                <button type="button" key={i} aria-label={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} {...radioChip(defaultSlot === i)} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultSlot === i ? 'border-accent scale-110' : 'border-border'}`} style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${c} ${boost.activePct[i]}%, var(--bg-accent)) 50%, color-mix(in srgb, ${c} ${boost.idlePct[i]}%, var(--bg-accent)) 50%)` }} onClick={() => dispatch(setSessionDefaultColor(i))} title={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} />
               ))}
-              <button type="button" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border transition-all ${defaultColor === 'auto' ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'}`} onClick={() => dispatch(setSessionDefaultColor('auto'))}>{i18nT('pages.settings.displayPanel.auto')}</button>
-            </div>
+              <button type="button" {...radioChip(defaultColor === 'auto')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border transition-all ${defaultColor === 'auto' ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'}`} onClick={() => dispatch(setSessionDefaultColor('auto'))}>{i18nT('pages.settings.displayPanel.auto')}</button>
+            </RadioChipGroup>
           </div>
         </SettingsCard>
       </SettingsSection>

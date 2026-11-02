@@ -54,7 +54,7 @@ describe('Ultra Mode Crew tab', () => {
   it('opens on Status: Overview from the ledger goal, Needs your input, Milestones and Recap', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
-    expect(screen.getByTestId('ultra-view-status')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('ultra-view-status')).toHaveAttribute('aria-checked', 'true')
     expect(await screen.findByText('Plan the launch.')).toBeInTheDocument()
     expect(screen.getByTestId('ultra-needs-you')).toBeInTheDocument()
     expect(screen.getByTestId('ultra-milestones')).toBeInTheDocument()

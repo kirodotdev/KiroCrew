@@ -114,19 +114,19 @@ afterEach(() => {
 describe('ProjectsPage — mode tabs', () => {
   it('switches to the YAML panel and back to Compose, persisting the choice', async () => {
     renderWithProviders(<ProjectsPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'From YAML' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From YAML' }))
     expect(screen.getByPlaceholderText('Paste YAML workflow or upload a .yaml file...')).toBeInTheDocument()
     expect(screen.getByText(/YAML workflows bypass the LLM decomposer/)).toBeInTheDocument()
     await waitFor(() => expect(sessionStorage.getItem('tr-mode')).toBe('yaml'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Compose' }))
     expect(screen.getByPlaceholderText('Describe your task...')).toBeInTheDocument()
     await waitFor(() => expect(sessionStorage.getItem('tr-mode')).toBe('compose'))
   })
 
   it('keeps typed spec text in sessionStorage', async () => {
     renderWithProviders(<ProjectsPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From Spec' }))
     const ta = screen.getByPlaceholderText('Paste spec content or upload a file...')
     fireEvent.change(ta, { target: { value: 'step one' } })
     expect((ta as HTMLTextAreaElement).value).toBe('step one')
@@ -137,7 +137,7 @@ describe('ProjectsPage — mode tabs', () => {
 describe('ProjectsPage — spec and YAML uploads', () => {
   it('reads a picked spec file into the spec textarea and clears the picker', async () => {
     renderWithProviders(<ProjectsPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From Spec' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['# plan body'], 'plan.md', { type: 'text/markdown' })] } })
     const ta = screen.getByPlaceholderText('Paste spec content or upload a file...') as HTMLTextAreaElement
@@ -148,7 +148,7 @@ describe('ProjectsPage — spec and YAML uploads', () => {
 
   it('refuses a YAML file on the spec tab and leaves the spec text untouched', async () => {
     renderWithProviders(<ProjectsPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From Spec' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['a: 1'], 'flow.yaml', { type: 'text/yaml' })] } })
     expect(alertSpy).toHaveBeenCalledWith('YAML files should be uploaded via the "From YAML" tab.')
@@ -158,7 +158,7 @@ describe('ProjectsPage — spec and YAML uploads', () => {
 
   it('reads a picked .yml file into the YAML textarea', async () => {
     renderWithProviders(<ProjectsPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'From YAML' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From YAML' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['steps: []'], 'flow.yml', { type: 'text/yaml' })] } })
     const ta = screen.getByPlaceholderText('Paste YAML workflow or upload a .yaml file...') as HTMLTextAreaElement
@@ -169,7 +169,7 @@ describe('ProjectsPage — spec and YAML uploads', () => {
   it('refuses a non-YAML file on the YAML tab', async () => {
     renderWithProviders(<ProjectsPage />)
     await waitFor(() => expect(api.taskRunnerStatus).toHaveBeenCalled())
-    fireEvent.click(screen.getByRole('button', { name: 'From YAML' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From YAML' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['hi'], 'notes.md', { type: 'text/markdown' })] } })
     expect(alertSpy).toHaveBeenCalledWith('Only .yaml/.yml files are accepted here. Use the "From Spec" tab for other formats.')
@@ -178,7 +178,7 @@ describe('ProjectsPage — spec and YAML uploads', () => {
   it('ignores a picker change that carries no file', async () => {
     renderWithProviders(<ProjectsPage />)
     await waitFor(() => expect(api.taskRunnerStatus).toHaveBeenCalled())
-    fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From Spec' }))
     fireEvent.change(screen.getByLabelText('Upload a file'), { target: { files: [] } })
     expect(alertSpy).not.toHaveBeenCalled()
   })

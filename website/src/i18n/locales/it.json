@@ -5375,7 +5375,8 @@
         "agents_other": "{{count}} agenti",
         "events_one": "{{count}} evento",
         "events_many": "{{count}} eventi",
-        "events_other": "{{count}} eventi"
+        "events_other": "{{count}} eventi",
+        "view_label": "Vista"
       }
     },
     "commandBar": {
@@ -7316,7 +7317,8 @@
       "slides_thumbstrip": "Diapositive",
       "slides_truncated": "Limite di diapositive raggiunto a {{n}}; il resto della presentazione non viene mostrato.",
       "light_background": "Sfondo chiaro",
-      "dark_background": "Sfondo scuro"
+      "dark_background": "Sfondo scuro",
+      "sheet_tabs_label": "Fogli"
     },
     "folderColorNames": {
       "amber": "Ambra",
@@ -16815,7 +16817,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "I file YAML devono essere caricati tramite la scheda \"Da YAML\".",
       "yaml_workflows_bypass_the_llm_decomposer": "I workflow YAML aggirano il decompositore LLM —",
       "action_failed": "Azione non riuscita",
-      "project_renamed_to": "Progetto rinominato in {{name}}"
+      "project_renamed_to": "Progetto rinominato in {{name}}",
+      "plan_mode_label": "Modalità di pianificazione"
     },
     "remoteArtifactDetailPage": {
       "back": "Indietro",
@@ -17232,7 +17235,8 @@
       "group_today": "Oggi",
       "group_yesterday": "Ieri",
       "group_earlier": "Precedenti",
-      "empty_title": "Nessuna sessione"
+      "empty_title": "Nessuna sessione",
+      "filter_label": "Filtro sessioni"
     },
     "sessionsTab": {
       "agent": "Agente",
@@ -20063,11 +20067,13 @@
       "slots_open_one": "{{n}} slot libero",
       "slots_open_many": "{{n}} slot liberi",
       "slots_open_other": "{{n}} slot liberi",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "Scena"
     },
     "worldsPopout": {
       "hide_controls": "Nascondi i controlli",
-      "show_controls": "Mostra i controlli"
+      "show_controls": "Mostra i controlli",
+      "scene_label": "Scena"
     },
     "membersPage": {
       "drawer_delegated_working": "Attività delegate in esecuzione",

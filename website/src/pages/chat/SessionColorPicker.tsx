@@ -8,6 +8,7 @@ import { Popover, PopoverTrigger, PopoverContent } from '../../components/ui/pop
 import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 export default function SessionColorPicker({ slotKey, colorIndex }: { slotKey?: string; colorIndex?: number | null }) {
   const dispatch = useAppDispatch()
   const { paletteColors } = useSessionPalette()
@@ -65,12 +66,12 @@ export default function SessionColorPicker({ slotKey, colorIndex }: { slotKey?: 
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="p-2.5 w-fit">
-        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={i18nT('pages.chat.sessionColorPicker.session_colors')}>
-          <button type="button" aria-label={i18nT('pages.chat.sessionColorPicker.no_color')} aria-pressed={colorIndex == null} className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorIndex == null ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('pages.chat.sessionColorPicker.no_color')} />
+        <RadioChipGroup className="flex flex-wrap items-center gap-1.5" ariaLabel={i18nT('pages.chat.sessionColorPicker.session_colors')}>
+          <button type="button" aria-label={i18nT('pages.chat.sessionColorPicker.no_color')} {...radioChip(colorIndex == null)} className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorIndex == null ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('pages.chat.sessionColorPicker.no_color')} />
           {paletteColors.map((c, i) => (
-            <button type="button" key={i} aria-label={colorName(c)} aria-pressed={colorIndex === i} className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
+            <button type="button" key={i} aria-label={colorName(c)} {...radioChip(colorIndex === i)} className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
           ))}
-        </div>
+        </RadioChipGroup>
         <div className="text-[11px] text-muted mt-1.5">{i18nT('pages.chat.sessionColorPicker.change_your_color_palette_in_display_settings')}</div>
         {/* askAgent on: the picker holds no draft — the store is already rolled
             back to the colour the server kept, so a hand-off loses nothing. */}

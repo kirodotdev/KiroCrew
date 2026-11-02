@@ -5497,7 +5497,8 @@
         "events_one": "{{count}} событие",
         "events_few": "{{count}} события",
         "events_many": "{{count}} событий",
-        "events_other": "{{count}} события"
+        "events_other": "{{count}} события",
+        "view_label": "Вид"
       }
     },
     "commandBar": {
@@ -7474,7 +7475,8 @@
       "slides_thumbstrip": "Слайды",
       "slides_truncated": "Достигнут предел в {{n}} слайдов; остальная часть презентации не показана.",
       "light_background": "Светлый фон",
-      "dark_background": "Тёмный фон"
+      "dark_background": "Тёмный фон",
+      "sheet_tabs_label": "Листы"
     },
     "folderColorNames": {
       "amber": "Янтарный",
@@ -17166,7 +17168,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Файлы YAML нужно загружать на вкладке «Из YAML».",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML-воркфлоу обходят LLM-декомпозитор —",
       "action_failed": "Действие не выполнено",
-      "project_renamed_to": "Проект переименован в {{name}}"
+      "project_renamed_to": "Проект переименован в {{name}}",
+      "plan_mode_label": "Режим планирования"
     },
     "remoteArtifactDetailPage": {
       "back": "Назад",
@@ -17597,7 +17600,8 @@
       "group_today": "Сегодня",
       "group_yesterday": "Вчера",
       "group_earlier": "Ранее",
-      "empty_title": "Нет сессий"
+      "empty_title": "Нет сессий",
+      "filter_label": "Фильтр сессий"
     },
     "sessionsTab": {
       "agent": "Агент",
@@ -20462,11 +20466,13 @@
       "slots_open_few": "{{n}} свободных слота",
       "slots_open_many": "{{n}} свободных слотов",
       "slots_open_other": "{{n}} свободного слота",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "Сцена"
     },
     "worldsPopout": {
       "hide_controls": "Скрыть управление",
-      "show_controls": "Показать управление"
+      "show_controls": "Показать управление",
+      "scene_label": "Сцена"
     },
     "membersPage": {
       "drawer_delegated_working": "Выполняются делегированные задачи",

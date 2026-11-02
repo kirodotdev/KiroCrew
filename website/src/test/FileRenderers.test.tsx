@@ -691,7 +691,7 @@ describe('SheetViewer', () => {
   it('switches sheets via the sheet buttons and shows the truncation notice', async () => {
     stubFetch(async () => ({ ok: true, json: async () => payload }))
     render(<SheetViewer filePath="/ws/outbox/model.xlsx" />)
-    const tab = await screen.findByRole('button', { name: 'Assumptions' })
+    const tab = await screen.findByRole('radio', { name: 'Assumptions' })
     fireEvent.click(tab)
     expect(await screen.findByText('WACC')).toBeInTheDocument()
     expect(screen.getByText(/Showing first 1 rows/)).toBeInTheDocument()

@@ -23,6 +23,7 @@ import { awsControlApi } from './api'
 import type { DriveSection } from './types'
 import { CopyBtn, AwsErrorNotice } from './shared'
 import type { Failure } from './useDrivePageFiles'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
 const EXPIRY_LABEL_KEY: Record<string, string> = {
   '1h': 'apps.awsControl.console.expiry_1h',
@@ -518,19 +519,20 @@ export function ShareDialog({ account, section, fileKey, onClose }: { account: s
         {!url ? (
           <>
             <span className="mb-1 block text-[12px] text-muted">{i18nT('apps.awsControl.console.share_expiry')}</span>
-            <div className="mb-3 flex gap-1.5" data-testid="share-expiry" role="group" aria-label={i18nT('apps.awsControl.console.share_expiry')}>
+            <RadioChipGroup className="mb-3 flex gap-1.5" data-testid="share-expiry" ariaLabel={i18nT('apps.awsControl.console.share_expiry')}>
               {EXPIRY_OPTIONS.map((o) => (
                 <button
                   key={o.key}
+                  type="button"
                   onClick={() => setSecs(o.secs)}
-                  aria-pressed={secs === o.secs}
+                  {...radioChip(secs === o.secs)}
                   className={`rounded-md border px-2.5 py-1 text-[13px] cursor-pointer transition-colors ${secs === o.secs ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-transparent text-muted hover:text-text'}`}
                   data-testid={`share-expiry-${o.key}`}
                 >
                   {i18nT(EXPIRY_LABEL_KEY[o.key])}
                 </button>
               ))}
-            </div>
+            </RadioChipGroup>
             <label htmlFor="aws-share-note" className="mb-1 block text-[12px] text-muted">{i18nT('apps.awsControl.console.share_note')}</label>
             <Input id="aws-share-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder={i18nT('apps.awsControl.console.share_note_placeholder')} className="mb-3 w-full" data-testid="share-note" />
             {/* A refused share (publishing denied by policy, a dead key) used to

@@ -5219,7 +5219,8 @@
         "view_graph": "グラフ",
         "view_tree": "ツリー",
         "agents_other": "{{count}} 個のエージェント",
-        "events_other": "{{count}} 件のイベント"
+        "events_other": "{{count}} 件のイベント",
+        "view_label": "表示"
       }
     },
     "awsControl": {
@@ -7000,7 +7001,8 @@
       "slides_thumbstrip": "スライド",
       "slides_truncated": "スライドは {{n}} 枚目で上限に達しました。それ以降は表示されません。",
       "light_background": "明るい背景",
-      "dark_background": "暗い背景"
+      "dark_background": "暗い背景",
+      "sheet_tabs_label": "シート"
     },
     "folderColorNames": {
       "amber": "琥珀色",
@@ -16113,7 +16115,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML ファイルは「From YAML」タブ経由でアップロードしてください。",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML ワークフローはLLMデコンポーザーをバイパスします —",
       "action_failed": "アクション失敗",
-      "project_renamed_to": "プロジェクト名を {{name}} に変更しました"
+      "project_renamed_to": "プロジェクト名を {{name}} に変更しました",
+      "plan_mode_label": "計画モード"
     },
     "remoteArtifactDetailPage": {
       "back": "戻る",
@@ -16502,7 +16505,8 @@
       "group_today": "今日",
       "group_yesterday": "昨日",
       "group_earlier": "それ以前",
-      "empty_title": "セッションはありません"
+      "empty_title": "セッションはありません",
+      "filter_label": "セッションのフィルター"
     },
     "sessionsTab": {
       "agent": "エージェント",
@@ -19265,11 +19269,13 @@
       "agents_present_other": "{{n}} エージェント在席",
       "agents_active_other": "{{n}} 件アクティブ",
       "slots_open_other": "空きスロット {{n}} 個",
-      "summary": "{{present}}、{{active}}、{{open}}"
+      "summary": "{{present}}、{{active}}、{{open}}",
+      "scene_label": "シーン"
     },
     "worldsPopout": {
       "hide_controls": "コントロールを隠す",
-      "show_controls": "コントロールを表示"
+      "show_controls": "コントロールを表示",
+      "scene_label": "シーン"
     },
     "membersPage": {
       "drawer_delegated_working": "委任したタスクを実行中",

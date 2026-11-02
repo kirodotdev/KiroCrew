@@ -33,6 +33,7 @@ import type { SessionFilterKey } from './types'
 import { SESSION_FILTERS } from './filters'
 import { modelFilterLabel } from './models'
 import { DisclosureChevron } from './chrome'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import type { SidebarScope } from './scope'
 
 /**
@@ -43,23 +44,18 @@ import type { SidebarScope } from './scope'
  *
  * `role="radio"`, not the toggle-button `aria-pressed`: each list is one choice
  * out of a mutually exclusive set, so a screen reader must hear "which one is in
- * effect", not "this toggle is on". The caller wraps the chips in a
- * `role="radiogroup"` (`DurationChipGroup`) so the set is one named group,
- * matching the desktop submenu's `menuitemradio` grammar.
- *
- * A radio is operated as a group, not as N buttons: only one chip is a Tab stop
- * (`tabbable` — the checked one, or the first when none is checked) and the
- * group's arrow keys move between them. The caller decides `tabbable` because
- * only it knows whether ANY chip is checked (a custom Recent window matches no
- * preset).
+ * effect", not "this toggle is on". The caller wraps the chips in the shared
+ * `RadioChipGroup` so the set is one named group, matching the desktop
+ * submenu's `menuitemradio` grammar. The group owns the roving tab stop (the
+ * checked chip, or the first when a custom Recent window matches no preset) and
+ * the arrow keys; `selectOnArrow` keeps #22330's "arrow moves AND selects", since
+ * a duration pick here is cheap and undone by the next arrow.
  */
-function DurationChip({ label, selected, tabbable, onSelect }: { label: string; selected: boolean; tabbable: boolean; onSelect: () => void }) {
+function DurationChip({ label, selected, onSelect }: { label: string; selected: boolean; onSelect: () => void }) {
   return (
     <button
       type="button"
-      role="radio"
-      aria-checked={selected}
-      tabIndex={tabbable ? 0 : -1}
+      {...radioChip(selected)}
       className="px-2 py-0.5 rounded-full text-[11px] cursor-pointer border transition-colors"
       style={selected
         ? { background: 'color-mix(in srgb, var(--ok) 12%, transparent)', color: 'var(--ok)', borderColor: 'color-mix(in srgb, var(--ok) 35%, transparent)' }
@@ -71,45 +67,6 @@ function DurationChip({ label, selected, tabbable, onSelect }: { label: string; 
     >
       {label}
     </button>
-  )
-}
-
-/** Arrow-key step through a radio group (WAI-ARIA radio pattern: Right/Down is
- *  the next radio, Left/Up the previous, wrapping at either end). */
-const RADIO_KEY_STEP: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }
-
-/**
- * The `role="radiogroup"` around a run of `DurationChip`s, with the radio
- * keyboard behaviour: an arrow key (or Home/End) moves focus to the adjacent
- * chip AND selects it, as a native radio group does. The key is consumed
- * (`stopPropagation`) so the host Radix menu does not also treat it as its own
- * item-to-item arrow navigation and pull focus out of the group.
- */
-function DurationChipGroup({ ariaLabel, ariaLabelledBy, className, children }: {
-  ariaLabel?: string
-  ariaLabelledBy?: string
-  className?: string
-  children: React.ReactNode
-}) {
-  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const isEdge = e.key === 'Home' || e.key === 'End'
-    if (!isEdge && RADIO_KEY_STEP[e.key] === undefined) return
-    const radios = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
-    if (radios.length === 0) return
-    e.preventDefault()
-    e.stopPropagation()
-    const current = radios.indexOf(document.activeElement as HTMLButtonElement)
-    const next = e.key === 'Home' ? 0
-      : e.key === 'End' ? radios.length - 1
-        : (Math.max(current, 0) + RADIO_KEY_STEP[e.key] + radios.length) % radios.length
-    radios[next].focus()
-    radios[next].click()
-  }
-  return (
-    // eslint-disable-next-line jsx-a11y/interactive-supports-focus -- a radiogroup is not itself a Tab stop; focus lives on its one tabbable radio (roving tabindex), and this handler only routes arrow keys between them
-    <div role="radiogroup" aria-label={ariaLabel} aria-labelledby={ariaLabelledBy} className={className} onKeyDown={onKeyDown}>
-      {children}
-    </div>
   )
 }
 
@@ -331,17 +288,16 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                         onMouseDown={e => e.stopPropagation()}
                         onKeyDown={e => e.stopPropagation()}
                       >
-                        <DurationChipGroup ariaLabel={i18nT(FILTER_LABEL_KEY.recent)} className="flex flex-wrap gap-1 px-1 mb-2">
-                          {RECENT_WINDOW_PRESETS.map((preset, i) => (
+                        <RadioChipGroup selectOnArrow ariaLabel={i18nT(FILTER_LABEL_KEY.recent)} className="flex flex-wrap gap-1 px-1 mb-2">
+                          {RECENT_WINDOW_PRESETS.map(preset => (
                             <DurationChip
                               key={preset.ms}
                               label={preset.label}
                               selected={recentWindowMs === preset.ms}
-                              tabbable={recentWindowMs === preset.ms || (i === 0 && !RECENT_WINDOW_PRESETS.some(p => p.ms === recentWindowMs))}
                               onSelect={() => selectRecentPreset(preset.ms)}
                             />
                           ))}
-                        </DurationChipGroup>
+                        </RadioChipGroup>
                         <div className="px-1 text-[12px] text-muted">
                           <div className="mb-1">{i18nT('pages.chatSidebar.custom')}</div>
                           <div className="flex items-center gap-1.5">
@@ -736,17 +692,16 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                           {staleRowBody}
                         </DropdownMenuLabel>
                         {staleCaption}
-                        <DurationChipGroup ariaLabelledBy="stale-collapse-presets-label" className="flex flex-wrap gap-1 px-2 pb-1.5">
-                          {STALE_COLLAPSE_PRESETS_MS.map((ms, i) => (
+                        <RadioChipGroup selectOnArrow ariaLabelledBy="stale-collapse-presets-label" className="flex flex-wrap gap-1 px-2 pb-1.5">
+                          {STALE_COLLAPSE_PRESETS_MS.map(ms => (
                             <DurationChip
                               key={ms}
                               label={staleLabel(ms)}
                               selected={staleCollapseMs === ms}
-                              tabbable={staleCollapseMs === ms || (i === 0 && !STALE_COLLAPSE_PRESETS_MS.includes(staleCollapseMs))}
                               onSelect={() => setStaleCollapseMs(ms)}
                             />
                           ))}
-                        </DurationChipGroup>
+                        </RadioChipGroup>
                       </>
                     )
                   }

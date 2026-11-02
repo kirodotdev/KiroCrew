@@ -854,10 +854,10 @@ describe('DisplayPanel – Font Family picker (OpenDyslexic option)', () => {
   // tests.
   it('lists OpenDyslexic as a fourth font family option alongside Sans/Mono/System', () => {
     renderPanel()
-    expect(screen.getByRole('button', { name: 'Sans' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Mono' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'System' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'OpenDyslexic' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Sans' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Mono' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'System' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'OpenDyslexic' })).toBeInTheDocument()
   })
 })
 
@@ -875,26 +875,26 @@ describe('DisplayPanel – sidebar session colors', () => {
     const { store } = renderPanel()
     const state = () => store.getState().dashboard
 
-    fireEvent.click(screen.getByRole('button', { name: 'Gradient' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Gradient' }))
     expect(state().sessionColorsMode).toBe('gradient')
-    fireEvent.click(screen.getByRole('button', { name: 'Solid Tint' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Solid Tint' }))
     expect(state().sessionColorsMode).toBe('tint')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Vivid' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Vivid' }))
     expect(state().sessionColorsIntensity).toBe('vivid')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Horizon' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Horizon' }))
     expect(state().sessionColorsPalette).toBe('horizon')
 
     const defaults = within(
       screen.getByText('Default for New Sessions').parentElement as HTMLElement,
     )
-    fireEvent.click(defaults.getByRole('button', { name: 'Auto' }))
+    fireEvent.click(defaults.getByRole('radio', { name: 'Auto' }))
     expect(state().sessionDefaultColor).toBe('auto')
-    fireEvent.click(defaults.getByRole('button', { name: 'Color 2' }))
+    fireEvent.click(defaults.getByRole('radio', { name: 'Color 2' }))
     expect(state().sessionDefaultColor).toBe(1)
-    expect(defaults.getByRole('button', { name: 'Color 2' })).toHaveAttribute('aria-pressed', 'true')
-    fireEvent.click(defaults.getByRole('button', { name: 'No color' }))
+    expect(defaults.getByRole('radio', { name: 'Color 2' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(defaults.getByRole('radio', { name: 'No color' }))
     expect(state().sessionDefaultColor).toBeNull()
   })
 })

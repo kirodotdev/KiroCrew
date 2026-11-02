@@ -322,8 +322,8 @@ describe('ChatPanel — Composer', () => {
 
   it('stores the follow-up bar layout from the button group', async () => {
     wrap('composer')
-    const group = await screen.findByRole('group', { name: 'Follow-Up Bar Layout' })
-    fireEvent.click(within(group).getByRole('button', { name: 'Multiline' }))
+    const group = await screen.findByRole('radiogroup', { name: 'Follow-Up Bar Layout' })
+    fireEvent.click(within(group).getByRole('radio', { name: 'Multiline' }))
     await waitFor(() => expect(storedChat().followUpLayout).toBe('multiline'))
   })
 
@@ -406,15 +406,15 @@ describe('ChatPanel — Composer', () => {
 describe('ChatPanel — Messages', () => {
   it('stores the text streaming style from the button group', async () => {
     wrap()
-    const group = await screen.findByRole('group', { name: 'Text Streaming Style' })
-    fireEvent.click(within(group).getByRole('button', { name: 'Immediate' }))
+    const group = await screen.findByRole('radiogroup', { name: 'Text Streaming Style' })
+    fireEvent.click(within(group).getByRole('radio', { name: 'Immediate' }))
     await waitFor(() => expect(storedChat().streamMode).toBe('immediate'))
   })
 
   it('stores the content width from the button group', async () => {
     wrap()
-    const group = await screen.findByRole('group', { name: 'Content Width' })
-    fireEvent.click(within(group).getByRole('button', { name: 'Full' }))
+    const group = await screen.findByRole('radiogroup', { name: 'Content Width' })
+    fireEvent.click(within(group).getByRole('radio', { name: 'Full' }))
     await waitFor(() => expect(storedChat().contentWidth).toBe('full'))
   })
 

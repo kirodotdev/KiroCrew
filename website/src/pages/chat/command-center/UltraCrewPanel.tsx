@@ -28,6 +28,7 @@ import { crewRouteNotServed, crewSubDispatcher, crewWorkerGroup, mergeCrewWorker
 import { fmtRelativeTime } from '../sessionOrder'
 import { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewPanelBack, CrewWorkerSearch, openCrewSession, reopenCrewWorker, useCrewWorkerQuery, useCrewWorkers, useLiveCrewWorkers } from './CrewWorkerList'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
+import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
 
 export interface UltraCounts { total: number; done: number; running: number; approvals: number; questions: number }
 
@@ -420,14 +421,14 @@ export default function UltraCrewPanel({ root, viewing, active }: { root: string
           the route is not a failure (the live rows stand in). */}
       {listed.isError && !crewRouteNotServed(listed.error) && <div className="shrink-0 px-3 pt-3"><ErrorNotice variant="inline" message={i18nT(live.length ? 'commandCenter.workers_error_live' : 'commandCenter.workers_error')} askAgent /></div>}
       <div className="shrink-0 px-3 pt-3">
-        <div role="group" aria-label={i18nT('commandCenter.workers_view_label')} className="flex gap-1 rounded-lg border border-border bg-bg-hover/40 p-0.5" data-testid="ultra-view-switch">
+        <RadioChipGroup ariaLabel={i18nT('commandCenter.workers_view_label')} className="flex gap-1 rounded-lg border border-border bg-bg-hover/40 p-0.5" data-testid="ultra-view-switch">
           {(['status', 'list'] as const).map(v => (
-            <button key={v} type="button" aria-pressed={view === v} data-testid={`ultra-view-${v}`} onClick={() => setView(v)}
+            <button key={v} type="button" {...radioChip(view === v)} data-testid={`ultra-view-${v}`} onClick={() => setView(v)}
               className={`flex-1 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${view === v ? 'bg-bg-elevated text-text shadow-sm' : 'text-muted hover:text-text'}`}>
               {i18nT(v === 'status' ? 'components.crewMode.ultra_view_status' : 'components.crewMode.ultra_view_list')}
             </button>
           ))}
-        </div>
+        </RadioChipGroup>
       </div>
       {view === 'status' ? (
         <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4" data-testid="ultra-status">

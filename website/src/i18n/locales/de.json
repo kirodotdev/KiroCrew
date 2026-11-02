@@ -5342,7 +5342,8 @@
         "agents_one": "{{count}} Agent",
         "agents_other": "{{count}} Agenten",
         "events_one": "{{count}} Ereignis",
-        "events_other": "{{count}} Ereignisse"
+        "events_other": "{{count}} Ereignisse",
+        "view_label": "Ansicht"
       }
     },
     "awsControl": {
@@ -7158,7 +7159,8 @@
       "slides_thumbstrip": "Folien",
       "slides_truncated": "Folienlimit bei {{n}} erreicht; der Rest der Präsentation wird nicht angezeigt.",
       "light_background": "Heller Hintergrund",
-      "dark_background": "Dunkler Hintergrund"
+      "dark_background": "Dunkler Hintergrund",
+      "sheet_tabs_label": "Tabellenblätter"
     },
     "folderColorNames": {
       "amber": "Bernstein",
@@ -16464,7 +16466,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML-Dateien sollten über den Tab „Aus YAML“ hochgeladen werden.",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML-Workflows umgehen den LLM-Zerleger —",
       "action_failed": "Aktion fehlgeschlagen",
-      "project_renamed_to": "Projekt umbenannt in {{name}}"
+      "project_renamed_to": "Projekt umbenannt in {{name}}",
+      "plan_mode_label": "Planungsmodus"
     },
     "remoteArtifactDetailPage": {
       "back": "Zurück",
@@ -16867,7 +16870,8 @@
       "group_today": "Heute",
       "group_yesterday": "Gestern",
       "group_earlier": "Früher",
-      "empty_title": "Keine Sitzungen"
+      "empty_title": "Keine Sitzungen",
+      "filter_label": "Sitzungsfilter"
     },
     "sessionsTab": {
       "agent": "Agent",
@@ -19664,11 +19668,13 @@
       "agents_active_other": "{{n}} aktiv",
       "slots_open_one": "{{n}} Slot frei",
       "slots_open_other": "{{n}} Slots frei",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "Szene"
     },
     "worldsPopout": {
       "hide_controls": "Steuerung ausblenden",
-      "show_controls": "Steuerung anzeigen"
+      "show_controls": "Steuerung anzeigen",
+      "scene_label": "Szene"
     },
     "membersPage": {
       "drawer_delegated_working": "Delegierte Aufgaben laufen",

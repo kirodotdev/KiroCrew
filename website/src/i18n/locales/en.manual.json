@@ -1109,7 +1109,8 @@
         "run_detail": "Run detail",
         "unknown": "Unknown",
         "view_graph": "Graph",
-        "view_tree": "Tree"
+        "view_tree": "Tree",
+        "view_label": "View"
       }
     },
     "crewCompanion": {
@@ -2503,7 +2504,8 @@
       "slides_thumbstrip": "Slides",
       "slides_truncated": "Slide limit reached at {{n}}; the rest of the deck is not shown.",
       "light_background": "Light background",
-      "dark_background": "Dark background"
+      "dark_background": "Dark background",
+      "sheet_tabs_label": "Sheets"
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (not installed)",
@@ -7729,7 +7731,8 @@
       "planning_request_failed": "Planning request failed",
       "planning_timed_out_try_again": "Planning timed out. Try again.",
       "project": "Project",
-      "action_failed": "Action failed"
+      "action_failed": "Action failed",
+      "plan_mode_label": "Planning mode"
     },
     "remoteArtifactDetailPage": {
       "fork_failed": "Fork failed",
@@ -7913,7 +7916,8 @@
       "group_today": "Today",
       "group_yesterday": "Yesterday",
       "group_earlier": "Earlier",
-      "empty_title": "No sessions"
+      "empty_title": "No sessions",
+      "filter_label": "Session filter"
     },
     "settings": {
       "mobileLoginCard": {
@@ -9335,11 +9339,13 @@
     },
     "worldsPage": {
       "hide_controls": "Hide controls",
-      "show_controls": "Show controls"
+      "show_controls": "Show controls",
+      "scene_label": "Scene"
     },
     "worldsPopout": {
       "hide_controls": "Hide controls",
-      "show_controls": "Show controls"
+      "show_controls": "Show controls",
+      "scene_label": "Scene"
     },
     "developer": {
       "featurePreviewsTab": {

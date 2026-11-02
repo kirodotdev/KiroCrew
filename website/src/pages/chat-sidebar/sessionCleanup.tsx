@@ -13,6 +13,7 @@ import type { Slot } from './types'
 import type { QueryClient } from '@tanstack/react-query'
 import type { AppDispatch } from '../../store'
 import type { SidebarScope } from './scope'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
 /** Inactivity windows offered by the cleanup panel, in days. The backend accepts any
  *  value >= 1, so this list is purely the set of presets the picker renders. */
@@ -70,14 +71,14 @@ export function renderSessionCleanupPanel(shell: SidebarScope): React.ReactNode 
         return (
           <div className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise">
             <div className="font-medium text-text-strong mb-2"><BrushCleaning size={14} className="lucide-inline" /> {i18nT('pages.chatSidebar.clean_up_sessions_2')}</div>
-            <div className="text-muted text-[12px] mb-2">{i18nT('pages.chatSidebar.archive_sessions_with_no_activity_in_the_last')}</div>
-            <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <div className="text-muted text-[12px] mb-2" id="session-cleanup-window-label">{i18nT('pages.chatSidebar.archive_sessions_with_no_activity_in_the_last')}</div>
+            <RadioChipGroup className="flex items-center gap-2 mb-3 flex-wrap" ariaLabelledBy="session-cleanup-window-label">
               {CLEANUP_WINDOW_DAYS.map(d => (
-                <button key={d} type="button" aria-pressed={cleanupDays === d} className={`px-2.5 py-1 rounded-md text-[12px] border transition-all cursor-pointer ${
+                <button key={d} type="button" {...radioChip(cleanupDays === d)} className={`px-2.5 py-1 rounded-md text-[12px] border transition-all cursor-pointer ${
                   cleanupDays === d ? 'bg-accent text-accent-fg border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'
                 }`} onClick={() => setCleanupDays(d)}>{i18nT('pages.chatSidebar.day', { count: d })}</button>
               ))}
-            </div>
+            </RadioChipGroup>
             <div className="text-[12px] text-muted mb-3">
               {cleanupPreviewLoading
                 ? i18nT('pages.chatSidebar.checking')
