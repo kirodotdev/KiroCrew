@@ -546,9 +546,9 @@ class TestAConcurrentEditIsNeverLost:
             fh = real_open(file, *a, **k)
             return _CountingReads(fh) if str(file) == str(p) else fh
 
-        monkeypatch.setattr(builtins, "open", counting_open)
-        loaded = CloudConfig.load(p)
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(builtins, "open", counting_open)
+            loaded = CloudConfig.load(p)
 
         assert pulled, "the loader never read the file, so nothing here tested the bound"
         assert max(pulled) <= _MAX_FILE_BYTES + 1, (
