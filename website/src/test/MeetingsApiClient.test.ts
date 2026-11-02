@@ -198,6 +198,12 @@ describe('the note transport', () => {
     expect(init.headers['Content-Type']).toBe('application/json')
   })
 
+  it('sends the save order beside the content when given one', async () => {
+    fetchMock.mockResolvedValue(response(200, { ok: true, content: 'x', updated_at: '', path: '' }))
+    await meetingsApi.saveNote('m1', 'x', { order: { editor: 'view-1', seq: 7 } })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ content: 'x', editor: 'view-1', seq: 7 })
+  })
+
   it('sends the tab-close save with keepalive while the body fits the 64 KiB cap', async () => {
     fetchMock.mockResolvedValue(response(200, { ok: true, content: 'short', updated_at: '', path: '' }))
     await meetingsApi.saveNote('m1', 'short', { keepalive: true })

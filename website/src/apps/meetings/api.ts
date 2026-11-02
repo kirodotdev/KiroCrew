@@ -89,6 +89,16 @@ export interface MeetingNote {
   path: string
 }
 
+/**
+ * Where one note save sits among one meeting view's saves. The server
+ * drops a save older than one it already stored for the same `editor`, and says
+ * so with `superseded: true`.
+ */
+export interface NoteSaveOrder {
+  editor: string
+  seq: number
+}
+
 /** One stored note image. `alt` is the meeting's elapsed time, or `''` if not started. */
 export interface NoteImage {
   ok: boolean
@@ -434,9 +444,15 @@ export const meetingsApi = {
    * and the browser would refuse it. A body over the cap is sent as a plain fetch,
    * since a keepalive request that large is refused outright.
    */
-  saveNote: (id: string, content: string, { keepalive = false } = {}) => {
-    const body = JSON.stringify({ content })
-    return request<{ ok: boolean } & MeetingNote>(`/meetings/${encodeURIComponent(id)}/note`, {
+  saveNote: (
+    id: string,
+    content: string,
+    { keepalive = false, order }: { keepalive?: boolean; order?: NoteSaveOrder } = {},
+  ) => {
+    // `order` lets the server drop a save older than one this editor already
+    // stored; `superseded` in the answer says it did.
+    const body = JSON.stringify(order ? { content, editor: order.editor, seq: order.seq } : { content })
+    return request<{ ok: boolean; superseded?: boolean } & MeetingNote>(`/meetings/${encodeURIComponent(id)}/note`, {
       method: 'PUT',
       body,
       keepalive: keepalive && new TextEncoder().encode(body).byteLength <= NOTE_KEEPALIVE_MAX_BYTES,
