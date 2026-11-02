@@ -5,11 +5,12 @@ data home, the strict JSON writers they share, and the durable tag snapshot.
 
 Instance fields of ``DashboardState`` this module reads and writes:
 
-Writes: ``_chat_pins``, ``_cron_folders``, ``_cron_folders_authoritative``, ``_folders``,
-``_folders_authoritative``, ``_folders_generation``,
-``_pinned_order_rev``, ``_pinned_session_order``, ``_pinned_session_order_loaded``,
-``_pinned_session_order_stored``, ``_tag_boards``, ``_tags``, ``_tags_authoritative``,
-``_tags_generation``, ``_unparsed_chat_pin_entries``, ``_unparsed_cron_folder_entries``,
+Writes: ``_chat_pins``, ``_chat_pins_load_failed``, ``_cron_folders``,
+``_cron_folders_authoritative``, ``_folders``, ``_folders_authoritative``,
+``_folders_generation``, ``_pinned_order_rev``, ``_pinned_session_order``,
+``_pinned_session_order_loaded``, ``_pinned_session_order_stored``, ``_tag_boards``,
+``_tag_boards_load_failed``, ``_tags``, ``_tags_authoritative``, ``_tags_generation``,
+``_tags_load_failed``, ``_unparsed_chat_pin_entries``, ``_unparsed_cron_folder_entries``,
 ``_unparsed_tag_board_entries``, ``_unparsed_tag_entries``.
 Reads only: ``_CHAT_PINS_FILE``, ``_CRON_FOLDERS_FILE``, ``_DEFAULT_TAGS``,
 ``_FOLDERS_FILE``, ``_TAGS_FILE``, ``_TAG_BOARDS_FILE``, ``_chat_pins_lock``,
@@ -62,6 +63,25 @@ def _safe_folder_tree(folders: object) -> list[dict[str, Any]]:
     if not isinstance(folders, list):
         return []
     return [f for f in folders if isinstance(f, dict) and isinstance(f.get("id"), str)]
+
+
+def _refuse_write_after_failed_load(self: DashboardState, flag: str, file_name: str) -> None:
+    """Raise ``OSError`` when *file_name* is present on disk but its load failed.
+
+    A whole-file load failure (unparseable JSON, a non-list root) leaves the
+    in-memory list empty while the file still holds the user's rows. A save
+    from that state writes ``[*active, *unparsed]`` with both lists empty, so
+    it would replace every saved row with only the new one. Refusing keeps the
+    file bytes intact; callers already roll back and answer 5xx when a save
+    raises. *flag* is read through ``getattr`` because ``__new__``-built states
+    never ran ``__init__``, and only a real ``True`` refuses, so a state double
+    whose attributes are all truthy stand-ins keeps writing.
+    """
+    if getattr(self, flag, False) is True:
+        raise OSError(
+            f"{file_name} could not be loaded; refusing to overwrite it "
+            "(repair the file and restart the dashboard)"
+        )
 
 
 @dataclass(frozen=True)
@@ -417,7 +437,9 @@ def load_chat_pins(self: DashboardState) -> None:
 
     Error classification:
     - Missing file: normal (first run) → empty list.
-    - Malformed JSON / invalid shape: tolerated for compatibility → empty list.
+    - Malformed JSON / invalid shape: tolerated for compatibility → empty list,
+      and ``_chat_pins_load_failed`` is set so ``save_chat_pins`` refuses to
+      replace the file it could not read. A leading UTF-8 BOM is not malformed.
     - Transient I/O errors (PermissionError, OSError): MUST NOT replace
       valid in-memory state — re-raise so callers know load failed.
     """
@@ -426,12 +448,15 @@ def load_chat_pins(self: DashboardState) -> None:
         if not path.exists():
             self._chat_pins = []
             self._unparsed_chat_pin_entries = []
+            self._chat_pins_load_failed = False
             return
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        # Malformed content — treat as empty (data corruption).
+        raw = loads_user_json(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        # Malformed content — treat as empty (data corruption). RecursionError
+        # is json.loads on nesting deeper than the interpreter stack.
         logger.warning("chat_pins.json has malformed content: %s", exc)
         self._chat_pins = []
+        self._chat_pins_load_failed = True
         # Whole-file parse failure: nothing was parsed, so there are no
         # per-entry bytes to preserve. Do NOT clear a prior load's
         # preserved entries against an unreadable read.
@@ -444,6 +469,7 @@ def load_chat_pins(self: DashboardState) -> None:
     if not isinstance(raw, list):
         logger.warning("chat_pins.json is not a list (%s); ignoring", type(raw).__name__)
         self._chat_pins = []
+        self._chat_pins_load_failed = True
         return
 
     # Reuse the create-time ingress caps (source of truth: chat_pins.py) so a
@@ -488,6 +514,7 @@ def load_chat_pins(self: DashboardState) -> None:
     )
     self._chat_pins = valid
     self._unparsed_chat_pin_entries = unparsed
+    self._chat_pins_load_failed = False
 
 
 def save_chat_pins(self: DashboardState) -> None:
@@ -497,8 +524,12 @@ def save_chat_pins(self: DashboardState) -> None:
     time (``_unparsed_chat_pin_entries``), so a save triggered by an
     unrelated pin operation cannot erase bytes a hand-edit left in a shape
     this loader could not validate.
+
+    Raises ``OSError`` without writing when the boot load could not parse the
+    file (see :func:`_refuse_write_after_failed_load`).
     """
     path = config_dir() / self._CHAT_PINS_FILE
+    _refuse_write_after_failed_load(self, "_chat_pins_load_failed", self._CHAT_PINS_FILE)
     unparsed = getattr(self, "_unparsed_chat_pin_entries", [])
     atomic_write(
         path,
@@ -671,8 +702,8 @@ def read_durable_tags_snapshot(self: DashboardState) -> _DurableTagSnapshot | No
             return None
         return None
     try:
-        raw = json.loads(encoded.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        raw = loads_user_json(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return None
     if not isinstance(raw, list):
         return None
@@ -695,7 +726,10 @@ def load_tags(self: DashboardState) -> None:
     Only seed when ``tags.json`` does not exist. An explicitly-empty file
     is left as-is (so a user who deletes every tag stays at zero tags
     across restarts), and a parse failure is left untouched (so a
-    transient I/O error never silently overwrites saved data).
+    transient I/O error never silently overwrites saved data). A present
+    file that fails to load sets ``_tags_load_failed`` (``tags.json``) or
+    ``_tag_boards_load_failed`` (``tag_boards.json``), and that store's
+    writers refuse until a later load succeeds. A leading UTF-8 BOM loads.
     """
     # Claim this process's tag-revision epoch here: load_tags runs off the
     # event loop at startup (asyncio.to_thread) and before any slot is
@@ -706,7 +740,7 @@ def load_tags(self: DashboardState) -> None:
     try:
         vocab_ok = True
         if file_existed:
-            raw = json.loads(tags_path.read_text(encoding="utf-8"))
+            raw = loads_user_json(tags_path.read_text(encoding="utf-8"))
             if isinstance(raw, list):
                 # Keep rows the active list dropped verbatim so the seed/
                 # back-fill save below (and every later save) round-trips
@@ -735,12 +769,15 @@ def load_tags(self: DashboardState) -> None:
         # seeded below) or parsed as a list — INCLUDING a legitimately-
         # empty [] — so restore-time pruning of dangling ids is safe.
         self._tags_authoritative = vocab_ok
+        self._tags_load_failed = not vocab_ok
     except Exception:
         logger.warning("Failed to load tags", exc_info=True)
         # Treat a parse error like a present file: do not re-seed.
         file_existed = True
         # Vocabulary state unknown — restore-time pruning must fail open.
         self._tags_authoritative = False
+        # The file holds rows this process never saw: no save may replace it.
+        self._tags_load_failed = True
     # Back-fill the status flag for legacy tags saved before the field existed.
     # The 5 seed ids are canonical status tags; everything else defaults to False.
     seed_ids = {t["id"] for t in self._DEFAULT_TAGS}
@@ -800,9 +837,13 @@ def load_tags(self: DashboardState) -> None:
     # Empty list = single implicit "all sessions" column (legacy UX).
     columns_path = config_dir() / self._TAG_BOARDS_FILE
     try:
+        boards_ok = True
         if columns_path.exists():
-            raw = json.loads(columns_path.read_text(encoding="utf-8"))
-            if isinstance(raw, list):
+            raw = loads_user_json(columns_path.read_text(encoding="utf-8"))
+            if not isinstance(raw, list):
+                boards_ok = False
+                logger.warning("tag_boards.json is not a list; ignoring it")
+            else:
                 # Preserve dropped columns verbatim so a later save
                 # round-trips them rather than erasing a hand-edited-but-
                 # typo'd column. Same id rule as the tag rows above.
@@ -829,8 +870,10 @@ def load_tags(self: DashboardState) -> None:
                         tag_ids = col.get("tag_ids")
                         if isinstance(tag_ids, list):
                             col["tag_ids"] = [t for t in tag_ids if t in known]
+        self._tag_boards_load_failed = not boards_ok
     except Exception:
         logger.warning("Failed to load sidebar columns", exc_info=True)
+        self._tag_boards_load_failed = True
 
 
 def save_tags(self: DashboardState) -> None:
@@ -840,7 +883,15 @@ def save_tags(self: DashboardState) -> None:
     (``_unparsed_tag_entries``) so a save — including the seed/back-fill
     save that runs during ``load_tags`` itself — cannot erase bytes a
     hand-edit left in a shape the loader could not validate.
+
+    Skips the write with a warning when the load could not parse the file,
+    matching this writer's log-and-continue contract.
     """
+    try:
+        _refuse_write_after_failed_load(self, "_tags_load_failed", self._TAGS_FILE)
+    except OSError:
+        logger.warning("Not writing %s", self._TAGS_FILE, exc_info=True)
+        return
     unparsed = getattr(self, "_unparsed_tag_entries", [])
     self._atomic_write_json(config_dir() / self._TAGS_FILE, [*self._tags, *unparsed])
     self.bump_tags_generation()
@@ -859,8 +910,10 @@ def save_tags_snapshot(self: DashboardState, snapshot: list[dict]) -> None:
     are appended so this write path preserves them too.
 
     Raises on I/O failure so callers can roll back in-memory state and
-    surface HTTP 5xx rather than silently losing data.
+    surface HTTP 5xx rather than silently losing data, and raises ``OSError``
+    without writing when the load could not parse the file.
     """
+    _refuse_write_after_failed_load(self, "_tags_load_failed", self._TAGS_FILE)
     unparsed = getattr(self, "_unparsed_tag_entries", [])
     self._atomic_write_json_strict(config_dir() / self._TAGS_FILE, [*snapshot, *unparsed])
     self.bump_tags_generation()
@@ -872,7 +925,15 @@ def save_tag_boards(self: DashboardState) -> None:
     Appends any malformed columns preserved at load time
     (``_unparsed_tag_board_entries``) so a save cannot erase bytes a
     hand-edit left in a shape the loader could not validate.
+
+    Skips the write with a warning when the load could not parse the file,
+    matching this writer's log-and-continue contract.
     """
+    try:
+        _refuse_write_after_failed_load(self, "_tag_boards_load_failed", self._TAG_BOARDS_FILE)
+    except OSError:
+        logger.warning("Not writing %s", self._TAG_BOARDS_FILE, exc_info=True)
+        return
     unparsed = getattr(self, "_unparsed_tag_board_entries", [])
     self._atomic_write_json(
         config_dir() / self._TAG_BOARDS_FILE,
@@ -895,8 +956,10 @@ def save_tag_boards_snapshot(self: DashboardState, snapshot: list[dict]) -> None
     preserves them too.
 
     Raises on I/O failure so callers can roll back in-memory state and
-    surface HTTP 5xx rather than silently losing data.
+    surface HTTP 5xx rather than silently losing data, and raises ``OSError``
+    without writing when the load could not parse the file.
     """
+    _refuse_write_after_failed_load(self, "_tag_boards_load_failed", self._TAG_BOARDS_FILE)
     unparsed = getattr(self, "_unparsed_tag_board_entries", [])
     self._atomic_write_json_strict(config_dir() / self._TAG_BOARDS_FILE, [*snapshot, *unparsed])
     self.bump_tags_generation()

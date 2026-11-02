@@ -142,6 +142,8 @@ async def _reconcile_failed_tag_create(
         state._tags = durable.tags
         state._unparsed_tag_entries = durable.unparsed
         state._tags_authoritative = True
+        # The in-memory vocabulary mirrors the file it just read.
+        state._tags_load_failed = False
         committed = next((row for row in durable.tags if row.get("id") == tag_id), None)
         if committed is not None:
             logger.warning(
