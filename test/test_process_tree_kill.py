@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.config import KiroCrewConfig
+from kiro_crew.platform_compat_proctable import DarwinKinfoProc
 from kiro_crew.session import SessionManager
 from kiro_crew.subagent import SubagentManager
 
@@ -288,6 +289,12 @@ class TestSigkillSessionProcessTree:
             patch("kiro_crew.acp.client._kill_escaped_children"),
             patch("kiro_crew.platform_compat.pid_exists", return_value=True),
             patch("kiro_crew.platform_compat.get_process_start_id", return_value=_START_ID),
+            # The group is alive: on macOS the EPERM is settled by the kernel's group
+            # listing, so list a running member rather than read the host's real table.
+            patch(
+                "kiro_crew.platform_compat.darwin_pgroup_members",
+                return_value=[DarwinKinfoProc(pid=54321, zombie=False, start_id=_START_ID)],
+            ),
         ):
             result = await mgr._sigkill_session(
                 "subagent:test1", _subagent_handle(mgr, "subagent:test1")
