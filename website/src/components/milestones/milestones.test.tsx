@@ -68,7 +68,7 @@ import MilestonesIndicator, { MilestonesPill } from './MilestonesIndicator'
 import MilestonesMenuItem from './MilestonesMenuItem'
 import MilestonesSheet from './MilestonesSheet'
 import MilestoneNoticeToast, { __resetMilestoneNotices } from './MilestoneNoticeToast'
-import { __resetMilestonesRouteMissing, closeMilestonesPanel, earnedBadges, gettingStarted, openMilestonesPanel, tryToday } from './useMilestones'
+import { __resetMilestonesRouteMissing, __resetPendingArrival, ARRIVAL_WAIT_MS, closeMilestonesPanel, earnedBadges, gettingStarted, openMilestonesPanel, tryToday } from './useMilestones'
 import { INTRO_VIDEO_ID, INTRO_VIDEO_POSTER, INTRO_VIDEO_SRC } from './ExploreIntroVideo'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
@@ -153,6 +153,7 @@ beforeEach(() => {
   store.dispatch(setActiveSlot(null))
   __resetMilestoneNotices()
   __resetMilestonesRouteMissing()
+  __resetPendingArrival()
   vi.spyOn(api, 'milestoneEvent').mockResolvedValue({})
   vi.spyOn(api, 'milestoneMarkDone').mockResolvedValue({})
   videoVerdicts = {}
@@ -463,7 +464,7 @@ describe('"Kiro Crew in 15 seconds" card', () => {
 })
 
 describe('Explore panel', () => {
-  it('lists Try today rows with Try it and Mark as done, and Your progress below', async () => {
+  it('lists Try today rows with Try it only, and Your progress below', async () => {
     vi.spyOn(api, 'milestones').mockResolvedValue(payload())
     renderWith(<MilestonesSheet />)
     const row = await openRow('parallel-chats')
@@ -472,12 +473,17 @@ describe('Explore panel', () => {
     expect(row.textContent).toContain('Run two chats at once')
     expect(row.textContent).not.toContain('First parallel chats')
     expect(row.textContent).toContain('Try it')
-    expect(row.textContent).toContain('Mark as done')
+    // Getting there completes a Try today row, so it has no "Mark as done",
+    // and the section says so.
+    expect(row.textContent).not.toContain('Mark as done')
+    expect(screen.getByTestId('milestones-try-today-hint').textContent).toBe(enManual.milestones.try_today_hint)
     // Skipped and done rows are not in Try today.
     expect(screen.queryByTestId('milestone-row-mate')).toBeNull()
     expect(screen.queryByTestId('milestone-row-pr-watch')).toBeNull()
-    fireEvent.click(within(row).getByText('Mark as done'))
-    expect(api.milestoneMarkDone).toHaveBeenCalledWith('parallel-chats', undefined)
+    // A Getting started row keeps its real counter, and with it "Mark as done".
+    const started = within(screen.getByTestId('milestones-getting-started')).getByTestId('milestone-row-widgets')
+    fireEvent.click(within(started).getByText('Mark as done'))
+    expect(api.milestoneMarkDone).toHaveBeenCalledWith('widgets', undefined)
     expect(screen.getByTestId('milestones-streak-line').textContent).toBe('4 days · best 9')
     // A bar per achievement, toward its next tier.
     expect(screen.getByTestId('milestone-next-chats-opened').textContent).toBe('37 / 100')
@@ -688,6 +694,121 @@ describe('starter tasks (Try it)', () => {
     expect(prefillNow()).toMatchObject({ prompt: 'Every morning, give me a brief' })
     expect(asked).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('where').textContent).toBe('/chat')
+  })
+})
+
+describe('Try it in Try today completes on arrival', () => {
+  const tryIt = (row: HTMLElement) => fireEvent.click(within(row).getByText('Try it'))
+  const actions = () => vi.mocked(api.milestoneEvent).mock.calls.map(c => [c[0], c[1]])
+  const arrivals = () => vi.mocked(api.milestoneEvent).mock.calls.filter(c => c[1] === 'starter_arrived')
+
+  it('completes a route row once its page shows, after the click is recorded', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    const row = await openRow('mate')
+    expect(screen.getByTestId('milestones-try-today').contains(row)).toBe(true)
+    tryIt(row)
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/members?member=mate'))
+    await waitFor(() => expect(arrivals()).toEqual([['mate', 'starter_arrived', undefined, 'panel']]))
+    // The server counts an arrival only after the click it recorded.
+    expect(actions().filter(([id]) => id === 'mate')).toEqual([['mate', 'starter_clicked'], ['mate', 'starter_arrived']])
+  })
+
+  it('completes a prompt row once its new chat shows', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    tryIt(await openRow('slack'))
+    await waitFor(() => expect(arrivals()).toEqual([['slack', 'starter_arrived', 'dashboard:new-slot', 'panel']]))
+    expect(screen.getByTestId('where').textContent).toBe('/chat')
+    expect(store.getState().chat.activeSlot).toBe('new-slot')
+  })
+
+  it('sends nothing when a click never arrives: the page keeps its draft', async () => {
+    function KeepsDraft() { useRegisterNavigationLeaveGuard(() => false); usePublishNavigationStake(true); return null }
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<NavigationLeaveGuardProvider><KeepsDraft /><MilestonesSheet /></NavigationLeaveGuardProvider>)
+    tryIt(await openRow('mate'))
+    await act(async () => {})
+    expect(screen.getByTestId('where').textContent).toBe('/chat')
+    expect(arrivals()).toHaveLength(0)
+  })
+
+  it('sends nothing when the user picked another chat while the new one was being created', async () => {
+    const chat = await import('../../store/chatSlice')
+    vi.mocked(chat.createSlot).mockImplementationOnce((() => (dispatch: (a: unknown) => void) => {
+      dispatch(chat.setActiveSlot('picked-meanwhile'))
+      return { unwrap: () => Promise.resolve({ key: 'new-slot' }) }
+    }) as never)
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    tryIt(await openRow('slack'))
+    await waitFor(() => expect(chat.createSlot).toHaveBeenCalled())
+    await act(async () => {})
+    act(() => { store.dispatch(setActiveSlot('new-slot')) })
+    await act(async () => {})
+    expect(arrivals()).toHaveLength(0)
+  })
+
+  it('posts one arrival per Try it, however often the page shows again', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    tryIt(await openRow('mate'))
+    await waitFor(() => expect(arrivals()).toHaveLength(1))
+    act(() => { store.dispatch(setActiveSlot('other')) })
+    act(() => { store.dispatch(setActiveSlot(null)) })
+    await act(async () => {})
+    expect(arrivals()).toHaveLength(1)
+  })
+
+  it('forgets an arrival whose page shows only after the wait', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    const row = await openRow('mate')
+    const now = 1_793_170_000_000
+    // Armed at `now`; every later reading is past the wait.
+    const spy = vi.spyOn(Date, 'now').mockReturnValueOnce(now).mockReturnValue(now + ARRIVAL_WAIT_MS + 1)
+    tryIt(row)
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/members?member=mate'))
+    await act(async () => {})
+    spy.mockRestore()
+    act(() => { store.dispatch(setActiveSlot('other')) })
+    await act(async () => {})
+    expect(arrivals()).toHaveLength(0)
+  })
+
+  it('says so when an arrival is not saved, and saves it on retry without a second chat', async () => {
+    const chat = await import('../../store/chatSlice')
+    vi.mocked(chat.createSlot).mockClear()
+    vi.mocked(api.milestoneEvent).mockImplementation(async (_id, action) => {
+      if (action === 'starter_arrived') throw new Error('could not save milestones')
+      return {}
+    })
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, ALL_OPEN()))
+    renderWith(<MilestonesSheet />)
+    tryIt(await openRow('slack'))
+    await waitFor(() => expect(arrivals()).toHaveLength(1))
+    act(() => openMilestonesPanel())
+    const retry = await screen.findByTestId('milestones-arrival-retry')
+    expect(screen.getByText(enManual.milestones.arrival_failed)).toBeTruthy()
+    vi.mocked(api.milestoneEvent).mockResolvedValue({})
+    fireEvent.click(retry)
+    await waitFor(() => expect(arrivals()).toHaveLength(2))
+    expect(arrivals()[1]).toEqual(['slack', 'starter_arrived', 'dashboard:new-slot', 'panel'])
+    await waitFor(() => expect(screen.queryByTestId('milestones-arrival-retry')).toBeNull())
+    expect(chat.createSlot).toHaveBeenCalledTimes(1)
+  })
+
+  it('never completes a Getting started row on arrival', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesSheet />)
+    await openRow('scheduled-task')
+    const started = within(screen.getByTestId('milestones-getting-started')).getByTestId('milestone-row-scheduled-task')
+    tryIt(started)
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/chat'))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('new-slot'))
+    await act(async () => {})
+    expect(actions()).toContainEqual(['scheduled-task', 'starter_clicked'])
+    expect(arrivals()).toHaveLength(0)
   })
 })
 

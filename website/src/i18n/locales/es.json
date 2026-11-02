@@ -21588,6 +21588,9 @@
     "getting_started": "Primeros pasos",
     "intro_video_close": "Cerrar video",
     "try_today": "Prueba hoy",
+    "try_today_hint": "Hecho en cuanto «Probar» te lleva allí. Hoy cuenta para tu racha.",
+    "arrival_failed": "No se pudo guardar que fuiste allí.",
+    "retry": "Reintentar",
     "notice_count_many": "{{count}} novedades en Explorar",
     "notice_one": "Logrado: {{title}}"
   }
