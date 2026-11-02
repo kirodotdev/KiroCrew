@@ -44,12 +44,17 @@ class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
     ):
         """Every other field matches ``build_agent_config()`` exactly, except the
         work-ledger mount (:class:`TestItMountsTheWorkLedger`), which only adds."""
+        from kiro_crew.agent_materialization.skill_resources import prompt_skill_uris
+
         template = agent.build_agent_config()
-        mounted = ("tools", "allowedTools", "mcpServers")
+        mounted = ("tools", "allowedTools", "mcpServers", "resources")
         for key, value in template.items():
             if key in ("name", "description", "excludedTools", *mounted):
                 continue
             assert installed.get(key) == value, key
+        # The mounted ledger maps the skills its prompt names onto the template's own.
+        mapped = {*prompt_skill_uris("goal-conductor"), *prompt_skill_uris("dashboard")}
+        assert [r for r in installed["resources"] if r not in mapped] == template.get("resources")
         assert {k: v for k, v in installed["mcpServers"].items() if k != "kirocrew-work"} == (
             template["mcpServers"]
         )
@@ -219,8 +224,10 @@ _READ = "@kirocrew-work/work_ledger_read"
 def _install_with_work(
     tmp_path, monkeypatch, *, withhold_record: bool = False, select: bool = True
 ) -> dict:
-    """The installed conductor spec when the template carries ``kirocrew-work``, as it
-    will once the ledger is mounted on the conductor (the mount is a separate change)."""
+    """The installed conductor spec when only the template carries ``kirocrew-work``.
+
+    The installer's own mount is stubbed out, so *select* and *withhold_record* decide
+    what the spec holds and the mapping is read against exactly that."""
     from kiro_crew.agent_materialization import auto_approve, managed_mcp
 
     real = agent.build_agent_config
@@ -237,6 +244,7 @@ def _install_with_work(
         return config
 
     monkeypatch.setattr(agent, "build_agent_config", with_work)
+    monkeypatch.setattr(service_agents, "_mount_work_ledger", lambda config, grants: None)
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
     if withhold_record:
         real_may = auto_approve._may_auto_approve
@@ -251,18 +259,37 @@ def _install_with_work(
     )
 
 
+def _install_without_ledger(tmp_path, monkeypatch) -> dict:
+    """The installed conductor spec with the installer's ledger mount stubbed out."""
+    monkeypatch.setattr(service_agents, "_mount_work_ledger", lambda config, grants: None)
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    service_agents._install_mate_conductor_agent()
+    return json.loads(
+        (paths_mod.mate_agents_dir() / MATE_CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8")
+    )
+
+
 def _goal_conductor_uri() -> str:
     from kiro_crew.agent_materialization.skill_resources import prompt_skill_uris
 
     return prompt_skill_uris("goal-conductor")[0]
 
 
-def test_without_the_ledger_the_conductor_maps_no_goal_conductor_skill(installed):
+def test_without_the_ledger_the_conductor_maps_no_goal_conductor_skill(tmp_path, monkeypatch):
     from kiro_crew.member_mate_tools import spec_has_ledger_tools
 
-    assert "kirocrew-work" not in installed["mcpServers"]
-    assert _goal_conductor_uri() not in (installed.get("resources") or [])
-    assert not spec_has_ledger_tools(installed)
+    spec = _install_without_ledger(tmp_path, monkeypatch)
+    assert "kirocrew-work" not in spec["mcpServers"]
+    assert _goal_conductor_uri() not in (spec.get("resources") or [])
+    assert not spec_has_ledger_tools(spec)
+
+
+def test_the_installed_conductor_mounts_the_ledger_and_maps_goal_conductor(installed):
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
+    assert "kirocrew-work" in installed["mcpServers"]
+    assert _goal_conductor_uri() in installed["resources"]
+    assert spec_has_ledger_tools(installed)
 
 
 def test_with_the_ledger_the_conductor_maps_goal_conductor_for_patrol_budget(tmp_path, monkeypatch):
@@ -309,6 +336,8 @@ def test_a_crewmate_on_the_conductor_reads_the_installed_conductor_spec(tmp_path
     )
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
     service_agents._install_mate_conductor_agent()
+    assert member_mate_tools.binding_has_ledger_tools(binding) is True
+    _install_without_ledger(tmp_path, monkeypatch)
     assert member_mate_tools.binding_has_ledger_tools(binding) is False
     _install_with_work(tmp_path, monkeypatch)
     assert member_mate_tools.binding_has_ledger_tools(binding) is True
