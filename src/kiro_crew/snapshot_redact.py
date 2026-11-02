@@ -287,7 +287,10 @@ def outbound_redaction_enabled() -> bool:
     if not path.is_file():
         return False
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        # The undecoded bytes let ``json.loads`` detect the encoding, so a switch saved by a
+        # Windows tool as UTF-8 with a byte-order mark or as UTF-16 reads as its value.
+        # Bytes that decode as no JSON encoding raise ``UnicodeDecodeError``, a ``ValueError``.
+        raw = json.loads(path.read_bytes())
     except (ValueError, OSError) as e:
         raise RedactionSwitchUnreadable(f"{path} could not be read as JSON ({e})") from e
     if not isinstance(raw, dict):
