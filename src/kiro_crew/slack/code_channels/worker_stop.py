@@ -51,15 +51,21 @@ from kiro_crew.slack.code_channels.board.render import WORKER_STOP_ACTION, _esca
 logger = logging.getLogger(__name__)
 
 OPERATION = "slack.code_channel.stop"
+#: The final gate's verdict when the per-channel ceiling refuses the channel.
+_CHANNEL_REFUSED = "channel not allowed by policy"
 
 NOT_THIS_TAB_TEXT = "That button isn't from this channel's Workers tab."
 NOT_ON_BOARD_TEXT = "That worker isn't on this channel's board any more."
 FAILED_TEXT = "That Stop could not be completed. Nothing was stopped by it; try again."
 #: A ledger item id (``it_<hex>``): anything else is not one of ours.
 _ITEM_ID = re.compile(r"^it_[0-9a-f]{8,32}$")
-#: A second Stop for the same worker this soon is answered without stopping again.
+#: A second Stop for the same worker TURN this soon is answered without stopping
+#: again; a Stop aimed at its next (queued) turn is a new stop.
 _REPEAT_SECS = 5.0
-_recent: dict[tuple[str, str], float] = {}
+#: ``(channel, item id) -> (monotonic time, stopped turn generation, the slot)``:
+#: a repeat is the same turn of the SAME slot object (a resumed worker's new
+#: slot counts its turns from 1 again).
+_recent: dict[tuple[str, str], tuple[float, int, Any]] = {}
 _MAX_TRACKED = 4096
 
 
@@ -125,8 +131,11 @@ async def handle_stop_click(orch: Any, payload: dict[str, Any]) -> bool:
     """
     if not code_channels_on(live_config(orch)):
         return False
+    # Filled by _handle once the click is admitted, so even the error reply below
+    # is asked the admitted channel's activation and the board's scope.
+    admitted: dict[str, Any] = {}
     try:
-        await _handle(orch, payload)
+        await _handle(orch, payload, admitted)
     except Exception:
         logger.exception("code channel workers-tab stop failed")
         click, _view, value = parse(payload)
@@ -137,16 +146,19 @@ async def handle_stop_click(orch: Any, payload: dict[str, Any]) -> bool:
             f"channel={click.channel} action=worker-stop item={value[:40] or '-'}",
             "internal error",
         )
-        await actions._responder(click.channel, click.user)(FAILED_TEXT)
+        await _responder(click, admitted)(FAILED_TEXT)
     return True
 
 
-async def _handle(orch: Any, payload: dict[str, Any]) -> str:
+async def _handle(
+    orch: Any, payload: dict[str, Any], admitted: dict[str, Any] | None = None
+) -> str:
     click, view_id, value = parse(payload)
     resources = f"channel={click.channel} action=worker-stop item={value[:40] or '-'}"
     if not _first_delivery(click):
         return "duplicate"
-    respond = actions._responder(click.channel, click.user)
+    admitted = {} if admitted is None else admitted
+    respond = _responder(click, admitted)
 
     async def deny(why: str, text: str, outcome: str = "denied") -> str:
         surface.audit(click.user, OPERATION, outcome, resources, why)
@@ -160,6 +172,7 @@ async def _handle(orch: Any, payload: dict[str, Any]) -> str:
     binding = await actions.admit(click, respond, resources, operation=OPERATION)
     if binding is None:
         return "denied"
+    admitted["binding"] = binding  # every reply from here is gated on its channel
     # Asked first only to answer a refused person early; the final gate below asks
     # every one of these again with nothing in between it and the stop. The
     # surface store is loaded OFF the loop here, so both checks read memory only.
@@ -184,18 +197,21 @@ async def _handle(orch: Any, payload: dict[str, Any]) -> str:
         return await deny("not a worker on this board", NOT_ON_BOARD_TEXT)
     title = _escape(str(getattr(row, "title", "") or "that worker"))
     mark = (click.channel, value)
-    now = time.monotonic()
-    if now - _recent.get(mark, -_REPEAT_SECS) < _REPEAT_SECS:
-        surface.audit(click.user, OPERATION, "allowed", f"{resources} result=repeat")
-        await respond(f"Already stopping *{title}*.")
-        return "repeat"
     from kiro_crew.dashboard.chat_handlers import stop_slot_turn
     from kiro_crew.messaging.identity import channel_inbound_permitted
+    from kiro_crew.slack.channel_policy import channel_refusal
 
+    channel = click.channel
     # The ``channels`` policy walks the profile store off the loop, so it is
     # asked again here, after the board read and as the last await before the
-    # stop; the final gate re-asks the in-memory gates of ``actions.admit``.
-    if not await channel_inbound_permitted("slack"):
+    # stop, paired with the per-channel ceiling (allowed_channel_ids) as every
+    # inbound gate is; the final gate re-asks the in-memory gates of
+    # ``actions.admit``, that ceiling included.
+    if not (
+        await channel_inbound_permitted("slack")
+        and not channel_refusal(channel, operation=OPERATION, caller=click.user)
+    ):
+        # No reply goes out either: the responder asks the same ceiling.
         return await deny("channels governance policy", actions.NOT_AUTHORIZED_TEXT)
     # ── The final gate: SYNCHRONOUS, and nothing may suspend between it and the
     # stop (the rule session_control.stop_target follows). The board read above
@@ -209,7 +225,7 @@ async def _handle(orch: Any, payload: dict[str, Any]) -> str:
             return "idle"
         text = (
             actions.NOT_AUTHORIZED_TEXT
-            if verdict == "unauthorized sender"
+            if verdict in {"unauthorized sender", _CHANNEL_REFUSED}
             else (
                 NOT_THIS_TAB_TEXT
                 if verdict == "not this channel's Workers tab"
@@ -217,18 +233,56 @@ async def _handle(orch: Any, payload: dict[str, Any]) -> str:
             )
         )
         return await deny(verdict, text)
-    slot, cancel_key = verdict
+    slot, cancel_key, generation = verdict
+    now = time.monotonic()
+    seen = _recent.get(mark)
+    if (
+        seen is not None
+        and seen[2] is slot
+        and seen[1] == generation
+        and now - seen[0] < _REPEAT_SECS
+    ):
+        # The same turn, pressed again: answered, never re-sent.
+        surface.audit(click.user, OPERATION, "allowed", f"{resources} result=repeat")
+        await respond(f"Already stopping *{title}*.")
+        return "repeat"
+    # Expired marks go first: each holds its slot, and is only of use for
+    # _REPEAT_SECS, so a closed worker's slot is not kept alive by its last Stop.
+    for old in [k for k, v in _recent.items() if now - v[0] >= _REPEAT_SECS]:
+        _recent.pop(old, None)
     if len(_recent) > _MAX_TRACKED:
         _recent.clear()
-    _recent[mark] = now
+    entry = (now, generation, slot)
+    _recent[mark] = entry
     # The dashboard Stop's own cancel on the WORKER's slot only, pinned to the
     # session the gate just checked, never escalated: a second click is
     # answered, not turned into a kill.
-    result = await stop_slot_turn(
-        state, slot, source="slack", escalate=False, cancel_key=cancel_key
-    )
+    try:
+        result = await stop_slot_turn(
+            state, slot, source="slack", escalate=False, cancel_key=cancel_key
+        )
+    except BaseException:
+        # Nothing was stopped by this press: a retry is a fresh stop.
+        if _recent.get(mark) is entry:
+            _recent.pop(mark, None)
+        raise
     info = str(result.get("info") or "stopping")
     surface.audit(click.user, OPERATION, "allowed", f"{resources} slot={slot.key} result={info}")
+    # The stop awaited: the title is the ledger's, so it is said only while the
+    # channel is still in the board's scope; otherwise the worker goes unnamed and
+    # no "Stopped by" line is noted for a board the channel may not see.
+    in_scope = not surface.write_refusal_now(
+        click.channel,
+        binding,
+        activation=True,
+        scope=lambda: source.scope_admits(state, binding),
+    )
+    if not in_scope:
+        title = "that worker"
+        # Refused: nothing of this press is kept (its reply is not sent either);
+        # a press while the channel is refused is turned away by the final gate.
+        if _recent.get(mark) is entry:
+            _recent.pop(mark, None)
     if result.get("compacting"):
         _recent.pop(mark, None)
         await respond(f"*{title}* is compacting its context and can't stop yet. Try again shortly.")
@@ -242,15 +296,52 @@ async def _handle(orch: Any, payload: dict[str, Any]) -> str:
         _recent.pop(mark, None)
         await respond(f"*{title}* isn't running.")
         return "stop:idle"
-    await respond(f"Stopping *{title}*. The conductor keeps going.")
     from kiro_crew.slack.code_channels import board
     from kiro_crew.slack.code_channels.board import stops
 
     # The board and the Workers tab say who stopped it, from the next refresh
-    # until the worker's next turn starts.
-    stops.note(slot, click.user)
-    board.note_session_turn(str(slot.key))
+    # until the worker's next turn starts. Noted for the generation the final
+    # gate read, so a queued turn that already started is never marked.
+    if in_scope:
+        stops.note(slot, click.user, generation=generation)
+        board.note_session_turn(str(slot.key))
+    await respond(f"Stopping *{title}*. The conductor keeps going.")
     return f"stop:{info}"
+
+
+def _responder(click: actions.Click, admitted: dict[str, Any]) -> Any:
+    """The private reply to the presser, asked the package's write gate right
+    before it is sent: before admission the channel's own gate (policy, archive,
+    Stop); once the binding is admitted also its activation (Off or Review) and
+    the board's scope, since replies can name a worker from the ledger. A
+    refused reply is simply not sent."""
+
+    async def _respond(text: str) -> None:
+        slack = surface.slack()
+        if slack is None or not (click.channel and click.user):
+            return
+        binding = admitted.get("binding")
+        if binding is None:
+            refused = await surface.write_refusal(click.channel)
+        else:
+            from kiro_crew.slack.code_channels.board import source
+
+            refused = await surface.write_refusal(
+                click.channel,
+                binding,
+                activation=True,
+                scope=lambda: source.scope_admits(surface.dashboard_state(), binding),
+            )
+        # After the gate's one await, synchronously: a channel the per-channel
+        # ceiling refuses gets no reply (dropped, as every inbound gate drops).
+        if refused or not _channel_still_admitted(click.channel):
+            return
+        try:
+            await slack.post_ephemeral(click.channel, click.user, text)
+        except Exception:
+            logger.debug("code channel workers-tab reply failed", exc_info=True)
+
+    return _respond
 
 
 def _workers_view(channel: str) -> str:
@@ -275,8 +366,9 @@ def _final_gate(
     worker: str,
     *,
     cfg: Any,
-) -> tuple[Any, str] | str:
-    """``(worker slot, cancel key)`` the stop may land on, or why it may not.
+) -> tuple[Any, str, int] | str:
+    """``(worker slot, cancel key, stopped turn generation)`` the stop may land on,
+    or why it may not.
 
     Synchronous and disk-free, so it sits directly before the stop: the channel's
     binding is still the one admitted (same session and anchor, not archived),
@@ -298,6 +390,8 @@ def _final_gate(
     # caller's last await.
     if not code_channels_on(cfg) or not _workspace_still_admitted(click.team):
         return "unauthorized sender"
+    if not _channel_still_admitted(channel):
+        return _CHANNEL_REFUSED
     loaded = store().loaded_bindings()
     current = next((b for b in loaded or () if b.channel_id == channel), None)
     if (
@@ -311,6 +405,10 @@ def _final_gate(
         return "not this channel's Workers tab"
     if not actions._may_stop(orch, current, click.user, cfg=cfg):
         return "unauthorized sender"
+    if not source.scope_admits(state, current):
+        # The board read admitted the channel; it may have turned shared (or its
+        # slot been relinked) since. Its worker is not one this channel may see.
+        return "not a worker on this board"
     conductor = session_ledger.ledger_key(current.session_key)
     slot = source.find_slot(state, worker)
     if slot is None or session_ledger.ledger_key(str(slot.key)) == conductor:
@@ -327,7 +425,11 @@ def _final_gate(
     owner = surface.caller_slot_key(state, cancel_key)
     if not cancel_key or owner != slot.key or session_ledger.ledger_key(owner) == conductor:
         return "the cancel target is not that worker"
-    return slot, cancel_key
+    from kiro_crew.slack.code_channels.board.stops import generation_of
+
+    # The turn this stop is aimed at, read here, before the stop awaits: a queued
+    # turn that starts meanwhile is a new generation nobody stopped.
+    return slot, cancel_key, generation_of(slot)
 
 
 def _workspace_still_admitted(team_id: str) -> bool:
@@ -345,6 +447,26 @@ def _workspace_still_admitted(team_id: str) -> bool:
         return bool(ctx.slack_gate.check_message_origin(team_id))
     except Exception:
         logger.debug("workspace origin re-check failed", exc_info=True)
+        return False
+
+
+def _channel_still_admitted(channel: str) -> bool:
+    """The per-channel ceiling (``allowed_channel_ids``), asked again in the final gate.
+
+    Synchronous: ``channel_refusal`` reads the ceiling of the context the click's
+    entry gate already installed, and with none installed this refuses rather than
+    compose one on the way to a stop. Not audited (the entry gate wrote the row
+    for this decision); a ceiling that cannot be read refuses.
+    """
+    from kiro_crew.platform.context import installed_context
+    from kiro_crew.slack.channel_policy import channel_refusal
+
+    if installed_context() is None:
+        return False
+    try:
+        return not channel_refusal(channel, operation=OPERATION, audit=False)
+    except Exception:
+        logger.debug("code channel %s: channel policy re-check failed", channel, exc_info=True)
         return False
 
 

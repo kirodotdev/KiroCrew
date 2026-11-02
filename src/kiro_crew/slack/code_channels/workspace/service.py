@@ -1753,7 +1753,10 @@ class WorkspaceService(BoardCache, WorkerPrs):
         # A board that could not be read (or PRs the forge did not answer for)
         # leaves its tabs alone: only PRs SEEN merged or closed lose theirs.
         await tabs.sync_pr_tabs(
-            binding, tabs.wanted_prs(own, rows), settled=tabs.settled_prs(own, rows)
+            binding,
+            tabs.wanted_prs(own, rows),
+            settled=tabs.settled_prs(own, rows),
+            own=record.pr_number if own is not None else 0,
         )
 
     async def _publish_resource(self, record: WorkspaceRecord, binding: Any = None) -> None:

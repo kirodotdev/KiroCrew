@@ -651,6 +651,11 @@ async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title:
             )
             view_note = " It is the Plan tab; people can comment, only you edit it."
             if removed and views.is_pr_tab({"key": removed, "type": views.PR_VIEW_TYPE}):
+                from kiro_crew.slack.code_channels import board
+
+                # The board and the Workers tab may link the removed PR tab: they
+                # are rendered again without it.
+                board.note_tab_removed(channel)
                 view_note += (
                     f" To make room, the pull request tab {removed!r} was removed; it comes "
                     "back when a tab frees up."
@@ -659,6 +664,11 @@ async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title:
                 view_note += f" To make room, your older view {removed!r} was removed."
         except CodeChannelApiError as exc:
             logger.info("code channel %s: plan tab not attached: %s", channel, exc.code)
+            if exc.code in {views.STOPPED, views.CHANNEL_OFF, "channels_policy", "archived"}:
+                # The write gate refused the tab (Slack's Stop, Off or Review, the
+                # channels policy, an archive): said as such (the canvas content
+                # itself is already saved).
+                raise
             if exc.code == views.TOO_MANY_VIEWS:
                 view_note = " " + PLAN_TAB_FULL_TEXT
     verb = "Created" if created else "Updated"
