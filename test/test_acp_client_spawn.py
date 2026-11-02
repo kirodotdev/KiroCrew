@@ -16,6 +16,7 @@ from spawn_test_helpers import strip_spawn_shim
 import kiro_crew.acp.client as acp_client
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 
 class TestAcpClientInit:
@@ -57,8 +58,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -84,8 +84,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -133,8 +132,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -188,8 +186,7 @@ class TestAcpClientSessionKey:
                 patch("kiro_crew.session._track_session_pid"),
             ):
                 mock_proc = MagicMock()
-                # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-                mock_proc.pid = 12345
+                mock_proc.pid = UNALLOCATABLE_PID
                 mock_proc.returncode = None
                 mock_exec.return_value = mock_proc
 
@@ -222,8 +219,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -251,8 +247,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -280,8 +275,7 @@ class TestAcpClientSessionKey:
             patch.dict(os.environ, clean_env, clear=True),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -308,8 +302,7 @@ class TestAcpClientSessionKey:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -347,8 +340,7 @@ class TestSpawnStderrDrainCleanup:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -377,8 +369,7 @@ class TestSpawnStderrDrainCleanup:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = AsyncMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -533,8 +524,7 @@ class TestAcpClientBackendSelection:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -686,8 +676,7 @@ class TestAcpClientBackendSelection:
             patch("kiro_crew.session._track_session_pid"),
         ):
             mock_proc = MagicMock()
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            mock_proc.pid = 12345
+            mock_proc.pid = UNALLOCATABLE_PID
             mock_proc.returncode = None
             mock_exec.return_value = mock_proc
 
@@ -791,8 +780,7 @@ class TestEnsureReadyRetryOnAcpError:
             spawn_count += 1
             if spawn_count == 1:
                 raise FileNotFoundError("adapter replaced in place")
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            client._process = MagicMock(returncode=None, pid=101)
+            client._process = MagicMock(returncode=None, pid=UNALLOCATABLE_PID)
 
         async def fake_init():
             client._session_id = "sess-ok"
@@ -817,8 +805,7 @@ class TestEnsureReadyRetryOnAcpError:
         released: list[int] = []
 
         async def fake_spawn():
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; tracked for a de-flake pass
-            client._process = MagicMock(returncode=None, pid=123)
+            client._process = MagicMock(returncode=None, pid=UNALLOCATABLE_PID)
             client._bound_workspace_fd = 77
             client._spawn_work_dir = "/dev/fd/77"
 
