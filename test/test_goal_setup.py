@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from kiro_crew import change_card_catalog as catalog
+from kiro_crew import crewmate_prompts
 from kiro_crew.dashboard import goal_setup
 from kiro_crew.testing.wait import async_wait_until
 
@@ -196,14 +197,19 @@ def test_a_saved_goal_asks_about_the_heartbeat_in_plain_words(has_mate_tools: bo
     text = goal_setup.kickoff_prompt(rec, GOAL_A["id"], has_mate_tools=has_mate_tools)
     assert text is not None
     step1 = text.split("\n1. ", 1)[1].split("\n2. ", 1)[0]
-    ask = step1.index("keep track of this goal on your own")
-    assert ask < step1.index("Heartbeat")
-    assert "spends credits" in step1 and "keeps the work moving while they are away" in step1
+    # Structure only; the wording lives in crewmate_prompts.json.
+    asks = (
+        crewmate_prompts.text("goal_setup.kickoff_heartbeat_tools"),
+        crewmate_prompts.text("goal_setup.kickoff_heartbeat_no_tools"),
+    )
+    ask = asks[0] if has_mate_tools else asks[1]
+    assert ask in step1
     assert ("set_check_ins" in step1) is has_mate_tools
     on = goal_setup.kickoff_prompt(
         {**rec, "schedules": {"heartbeat": True}}, GOAL_A["id"], has_mate_tools=has_mate_tools
     )
-    assert on is not None and "Heartbeat" not in on and "Ask nothing else yet." in on
+    assert on is not None and not any(a in on for a in asks)
+    assert crewmate_prompts.text("goal_setup.kickoff_ask_nothing") in on
 
 
 @pytest.mark.parametrize("has_mate_tools", [True, False])
