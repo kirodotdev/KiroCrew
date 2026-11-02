@@ -51,9 +51,22 @@ def _sniff_image_dimensions(data: bytes, mime: str) -> tuple[int | None, int | N
         elif mime == "image/webp":
             return _sniff_webp_dimensions(data)
         elif mime == "image/bmp":
-            # BITMAPINFOHEADER: signed little-endian int32 width at 18 and
-            # height at 22. A negative height means a top-down bitmap, so take
-            # the magnitude rather than reporting a negative dimension.
+            # The DIB header size at 14 picks the layout. The 12-byte
+            # BITMAPCOREHEADER (OS/2 1.x) keeps unsigned little-endian uint16
+            # width at 18 and height at 20.
+            if (
+                len(data) >= 22
+                and data[:2] == b"BM"
+                and int.from_bytes(data[14:18], "little") == 12
+            ):
+                width = int.from_bytes(data[18:20], "little")
+                height = int.from_bytes(data[20:22], "little")
+                if width and height:
+                    return width, height
+                return None, None
+            # BITMAPINFOHEADER and later: signed little-endian int32 width at 18
+            # and height at 22. A negative height means a top-down bitmap, so
+            # take the magnitude rather than reporting a negative dimension.
             if len(data) >= 26 and data[:2] == b"BM":
                 width = int.from_bytes(data[18:22], "little", signed=True)
                 height = int.from_bytes(data[22:26], "little", signed=True)
