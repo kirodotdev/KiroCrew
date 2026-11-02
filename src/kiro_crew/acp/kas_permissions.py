@@ -784,7 +784,8 @@ _EFFECTS = frozenset({"allow", "deny", "ask"})
 #: call shapes cannot drift apart.
 _AuditDecision = Callable[[str, str, str], None]
 
-#: Size bounds on an authored block, over which it is refused whole.
+#: Size bounds on an authored block, over which it is refused whole -- except a
+#: ``match`` list, which is split instead (:func:`_split_authored_rule`).
 #:
 #: Not tidiness. KAS compiles each rule into Cedar statements and its own compiler
 #: records that a condition tree past roughly 114 patterns overflows cedar-wasm's
@@ -835,6 +836,46 @@ def _refuse_block(
     )
 
 
+#: What :func:`_parse_rule` returns for a rule left out on its own, the block kept.
+_DROPPED: dict[str, Any] = {}
+
+
+def _drop_rule(agent_id: str, where: str, count: int, audit_decision: _AuditDecision) -> None:
+    """Report one authored ``allow`` left out for an ``exclude`` list too long to send."""
+    if audit_decision is _asking_only:
+        return
+    audit_decision(
+        f"the authored `permissions` {where}",
+        "withheld",
+        f"an allow whose `exclude` carries {count} patterns, over {_MAX_PATTERNS_PER_RULE}",
+    )
+    logger.warning(
+        "agent %r: not relaying %s of its `permissions` block -- an allow whose "
+        "`exclude` carries %d patterns, over the %d KAS's policy compiler stays "
+        "shallow for. An exclude list cannot be split, so what that allow covered "
+        "keeps prompting; the rest of the block still travels",
+        agent_id,
+        where,
+        count,
+        _MAX_PATTERNS_PER_RULE,
+    )
+
+
+def _split_authored_rule(rule: dict[str, Any]) -> list[dict[str, Any]]:
+    """*rule* as rules of at most :data:`_MAX_PATTERNS_PER_RULE` ``match`` patterns each.
+
+    The same grant. KAS already compiles each ``match`` pattern into a statement of
+    its own, with the rule's ``exclude`` ANDed onto every one, and decides on the
+    most restrictive match whatever the order. So each part keeps the capability,
+    the effect and the whole ``exclude``, and together the parts cover exactly the
+    patterns the author listed. The parts stay next to each other, in order.
+    """
+    match = rule.get("match")
+    if not isinstance(match, list) or len(match) <= _MAX_PATTERNS_PER_RULE:
+        return [rule]
+    return _chunked_rules(rule["capability"], rule["effect"], match, exclude=rule.get("exclude"))
+
+
 def _parse_rule(
     entry: Any,
     index: int,
@@ -843,7 +884,12 @@ def _parse_rule(
 ) -> dict[str, Any] | None:
     """One rule of a user block, or ``None`` when the whole block must be refused.
 
-    Every failure here is fatal to the BLOCK, not to the rule: a block that is
+    A ``match`` over :data:`_MAX_PATTERNS_PER_RULE` patterns is accepted here and
+    split on the way out (:func:`_split_authored_rule`). An ``allow`` whose
+    ``exclude`` is over that bound returns :data:`_DROPPED`: it cannot be split, and
+    leaving one allow out only narrows the block.
+
+    Every other failure here is fatal to the BLOCK, not to the rule: a block that is
     half relayed is a policy nobody wrote, and the half that survives is the half
     with no ``deny`` in it. KAS itself is stricter still in the same direction --
     an agent-profile policy it cannot parse fail-closes its engine to deny-all
@@ -906,11 +952,20 @@ def _parse_rule(
                 audit_decision=audit_decision,
             )
             return None
-        if len(patterns) > _MAX_PATTERNS_PER_RULE:
+        if key == "exclude" and len(patterns) > _MAX_PATTERNS_PER_RULE:
+            # A long `match` is split later; a long `exclude` cannot be. Each
+            # exclude is ANDed onto its rule, so two rules sharing a `match` with
+            # halves of the list each let through what the other half excludes.
+            # Dropping one rule only narrows when it is an `allow`: a dropped
+            # `deny` or `ask` would let the block's allows cover what it guarded.
+            if effect == "allow":
+                _drop_rule(agent_id, where, len(patterns), audit_decision)
+                return _DROPPED
             _refuse_block(
                 agent_id,
-                f"{where} `{key}` carries {len(patterns)} patterns, over the "
-                f"{_MAX_PATTERNS_PER_RULE} KAS's policy compiler stays shallow for",
+                f"{where} `exclude` carries {len(patterns)} patterns, over the "
+                f"{_MAX_PATTERNS_PER_RULE} KAS's policy compiler stays shallow for, "
+                "and an exclude list cannot be split without changing what it means",
                 audit_decision=audit_decision,
             )
             return None
@@ -993,7 +1048,19 @@ def parse_user_permissions(
         rule = _parse_rule(entry, index, agent_id, audit_decision)
         if rule is None:
             return None
-        parsed.append(rule)
+        if rule is not _DROPPED:
+            parsed.append(rule)
+    # The bound is on what travels, and a long `match` travels as several rules.
+    sent = sum(len(_split_authored_rule(rule)) for rule in parsed)
+    if sent > _MAX_RULES:
+        _refuse_block(
+            agent_id,
+            f"it comes to {sent} rules once each `match` is split to "
+            f"{_MAX_PATTERNS_PER_RULE} patterns, over the {_MAX_RULES} this projection "
+            "relays -- the policy travels on every session",
+            audit_decision=audit_decision,
+        )
+        return None
     return parsed
 
 
@@ -1152,7 +1219,9 @@ def merge_user_permissions(
 
     1. The block is parsed against KAS's shape and refused whole when it does not
        fit (:func:`parse_user_permissions`). No salvage: a partially accepted
-       block is a policy nobody wrote.
+       block is a policy nobody wrote. Two size cases are not misfits: a
+       ``match`` too long for one rule is sent as several, and an ``allow`` whose
+       ``exclude`` is too long is left out alone, which only narrows.
     2. A user ``deny`` or ``ask`` travels unconditionally. Narrowing is always
        safe, and an author who writes ``deny`` is entitled to be obeyed even where
        the ceiling would have allowed.
@@ -1231,7 +1300,10 @@ def merge_user_permissions(
         f"{source}, ceiling cleared",
     )
     base = list(derived["rules"]) if derived else []
-    return {"rules": kept + base}
+    # Split only now: each decision above is about the rule the author wrote, so
+    # an allow travels or stays home whole rather than in permitted parts.
+    sent = [part for rule in kept for part in _split_authored_rule(rule)]
+    return {"rules": sent + base}
 
 
 #: Every capability an ``allow`` can reach KAS for from this module: the ones
@@ -1469,11 +1541,21 @@ def _patterns(value: Any) -> list[str]:
     )
 
 
-def _chunked_rules(capability: str, effect: str, patterns: list[str]) -> list[dict[str, Any]]:
-    """One rule per :data:`_MAX_PATTERNS_PER_RULE` patterns, so no rule is refused for size."""
+def _chunked_rules(
+    capability: str,
+    effect: str,
+    patterns: list[str],
+    *,
+    exclude: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """One rule per :data:`_MAX_PATTERNS_PER_RULE` patterns, so no rule is refused for size.
+
+    *exclude*, when given, is carried whole on every part.
+    """
     step = _MAX_PATTERNS_PER_RULE
+    narrowing = {} if exclude is None else {"exclude": list(exclude)}
     return [
-        {"capability": capability, "match": patterns[i : i + step], "effect": effect}
+        {"capability": capability, "match": patterns[i : i + step], **narrowing, "effect": effect}
         for i in range(0, len(patterns), step)
     ]
 
