@@ -7932,6 +7932,7 @@
       "remote_media_site": "站点：<host/>",
       "remote_media_sites": "站点：<host/>",
       "remote_media_gateway_refused": "媒体未加载：它的地址经过本仪表板自己的服务器转发，无法显示它最终会访问哪个站点。",
+      "refused_link_destination": "链接不可用：无法在此处打开它的目标地址。",
       "couldnt_copy_select_the_text_to_copy_it_manually": "无法复制 — 请选中文本手动复制",
       "couldnt_copy_the_full_session_id_for_label": "无法复制 {{label}} 的完整会话 ID。",
       "couldnt_copy_the_session_id_label": "无法复制会话 ID {{label}}。",
