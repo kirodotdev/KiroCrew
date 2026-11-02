@@ -373,12 +373,19 @@ def _build_undo(
         # above. The inverse binds to the revision the PUT returned (step 1's
         # evidence), never a fresh read's — a write another tab landed after ours
         # would otherwise become the baseline and Undo would overwrite it.
-        ops = capability_inverse(
-            p["draft"], before.get("rows") or [], severed=before.get("mode") == "mate"
-        )
+        rows = before.get("rows") or []
+        severed = before.get("mode") == "mate"
+        ops = capability_inverse(p["draft"], rows, severed=severed)
         revision = ev(1).get("revision")
         if ops is None:
-            return None, "redacted_server_definition"
+            touched = {(op.get("section"), op.get("id")) for op in p["draft"]["operations"]}
+            listed = severed and any(
+                isinstance(r, dict)
+                and r.get("listed")
+                and (r.get("section"), r.get("id")) in touched
+                for r in rows
+            )
+            return None, "listed_skill_entry" if listed else "redacted_server_definition"
         if not revision:
             return None, "revision_unknown"
         return _capability_plan(p["member"], revision, {"operations": ops}), None
