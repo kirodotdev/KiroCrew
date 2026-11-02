@@ -885,7 +885,7 @@ class TestMcpCallSiteAuthCoverage:
             ("/api/artifacts/{X}/comments", "f-string with an interpolation"),
             ("/api/session-tool-policy", "direct urllib Request, leading f-string"),
             ("/api/apps/issue-radar/crew", "path held in a module-level constant"),
-            ("/api/browser/command", "module constant interpolated into an f-string"),
+            ("/api/browser/op", "module constant interpolated into an f-string"),
             ("/api/computer-use/invoke", "own Request + header, outside mcp_tools"),
             ("/api/computer-use/frame", "path returned by a zero-arg URL builder"),
             ("/api/artifacts", "literal passed to an exempted wrapper's caller"),

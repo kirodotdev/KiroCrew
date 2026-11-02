@@ -364,8 +364,8 @@ def _would_soften_a_strict_path(candidate: str) -> bool:
 
     * candidate is a strict entry, or a CHILD of one — the obvious case.
     * candidate is an ANCESTOR of a strict entry — the case a one-directional
-      check misses. Contributing ``/api/browser`` against the strict
-      ``/api/browser/command`` admits every route beneath it, so a request for
+      check misses. Contributing ``/api/terminal`` against the strict
+      ``/api/terminal/external-grant`` admits every route beneath it, so a request for
       the strict path matches BOTH sets, and token_auth's off-loopback arm tests
       ``_matches_mixed`` first (``elif _matches_internal: if _matches_mixed:``) —
       the strict hard-deny is replaced by cookie acceptance.

@@ -648,37 +648,8 @@ The wizard installs the agent config, then walks through the workspace
 directory, timezone, dashboard URL, and (on macOS) the desktop app. Messaging
 channels are opt-in: pass `--slack` for guided Slack credentials and slash
 commands, or `--whatsapp` to check the optional dependency and pairing state
-before enabling WhatsApp. It also does NOT install a browser: browsing is
-available through the desktop app's built-in Browser panel, while the separate
-Playwright CLI fallback is installed from **Settings → Browser** or manually
-(see [Browser](#browser)).
-
-**Want the Playwright CLI at your own shell?** That is a separate tool from the
-Browser Mode above, and it has its own installer, which bootstraps Node when your
-machine has none and reports enterprise-registry failures (mirror login, proxy,
-blocked browser CDN) as specific remedies rather than a raw npm dump:
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/kirodotdev/KiroCrew/main/playwright-cli.sh
-less playwright-cli.sh          # read it before you run it
-sh playwright-cli.sh --version 0.1.18
-```
-
-The download-and-read form is listed first on purpose: piping a script into a
-shell is prohibited on many corporate machines, and `raw.githubusercontent.com`
-itself is blocked or rate-limited on some — which is the same audience whose
-network this script exists to cope with. If yours allows it, `curl -fsSL … | sh`
-works as a one-liner; if it does not, take the file from a checkout or a release
-and run it locally. Either way the script reaches only three hosts: the npm
-registry (or the mirror you point it at), the Node mirror when it has to
-bootstrap a toolchain, and the Playwright CDN for the browser binaries — that
-last one only unless you pass `--skip-browsers`, and `--download-host` points it
-at an internal mirror instead.
-
-Windows uses `playwright-cli.ps1` with the same flags in PowerShell spelling.
-`--help` lists all of them; `--dry-run` prints the plan without changing anything.
-Design notes and the exit-code table:
-[browser module spec](../system-specs/modules/browser.md).
+before enabling WhatsApp. It also does NOT install a browser: the agent's
+browser engine is installed from **Settings → Browser** (see [Browser](#browser)).
 
 **Messaging channels are optional.** The default wizard configures none, and the
 web dashboard is fully functional without any messaging credentials. Connect a
@@ -712,40 +683,31 @@ so all user customizations survive.
 
 ## Browser
 
-The desktop app includes the Browser panel and its native embedded Chromium
-path. An agent uses the bounded `browser` MCP operation set (`navigate`,
-`snapshot`, `click`, `type`, and related actions) against that visible panel; no
-Playwright CLI installation is required for this path.
+Kiro Crew's `browser` tool drives one browser through
+[Browser Harness](https://github.com/browser-use/browser-harness), run locally by
+the gateway with its telemetry and cloud path switched off. **Settings → Browser**
+shows one card for it, whose single button follows the state:
 
-When no native panel serves the session, or `dashboard.use_builtin_browser` is
-off, Kiro Crew directs the agent to the `playwright-cli` fallback. Install the
-managed copy from **Settings → Browser**. For a system-wide manual install, use
-Node.js 20 or newer:
+1. **The engine.** The pinned driver lives in Kiro Crew's own data home
+   (`<data-home>/browser-harness`). No `npm`, no Node.js, no `sudo`. While it
+   installs the card says so; if it is not installed the card offers Install,
+   and a failed install offers Retry with the reason.
+2. **Your own Chrome** (macOS, Linux desktop, Windows): open
+   `chrome://inspect/#remote-debugging` once and turn remote debugging on; the
+   first time the agent connects, Chrome asks **Allow remote debugging?** and
+   you click Allow (the card turns yellow until you do). Your logins are used
+   where they exist; the agent never types a password. On Windows without Chrome
+   the agent uses Edge the same way. Or set **Which browser** to Kiro's Chromium,
+   and under **More** turn on **Run with no window** for a server or a remote
+   gateway with no display.
+3. **Try it.** Ask the agent to open a page. The page appears in the chat as a
+   live card; click it to take over (a CAPTCHA, a 2FA prompt, a login), press
+   Esc to hand it back.
 
-```bash
-npm install -g @playwright/cli@latest
-playwright-cli install-browser chromium
-playwright-cli install --skills agents --global
-```
-
-The explicit `chromium` argument avoids installing every browser engine.
-`--with-deps` is useful only on Debian/Ubuntu because Playwright implements its
-OS-package step through `apt`; on Fedora, RHEL, CentOS, or Amazon Linux install
-the required libraries with the host package manager. The Settings installer
-adapts to the host and reports any root-only command separately. See the
-[browser module spec](../system-specs/modules/browser.md#install-flow).
-
-The Browser panel shows the live page and lets you take over with real mouse and
-keyboard for CAPTCHA or 2FA. The CLI fallback can also attach to your own running
-Chrome with `playwright-cli attach --extension`; treat that browser as borrowed
-because it carries your live tabs and logins.
-
-The native MCP path has its own bounded, governance-checked surface and drives
-only public HTTP(S) navigation automatically; local and private targets are
-refused to the approval-gated CLI path. CLI commands follow the ordinary shell
-approval ladder: under normal mode the first command prompts, after which you
-may approve once or trust a command pattern for the session. Installing the CLI
-makes the capability available; it does not silently widen approval.
+The side panel keeps a **Preview** tab for your own local dev server; the agent
+does not drive it. A browser CLI directory left under the data home by an
+earlier version is no longer used; `kirocrew doctor` names it and you can delete
+it. Details: [browser module spec](../system-specs/modules/browser.md).
 
 ## Configuration
 

@@ -380,7 +380,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 | P2 | `settings-about-report-a-problem` | As a user, I want to click Report a Problem in Settings > About, so that I can file an issue with diagnostics attached. | `/settings/about` | minimal | nightly | 3 |
 | P2 | `settings-about-update-channel-and-notifications` | As a user, I want to choose stable or insider Update channel and set Update the gateway automatically, which installs updates and restarts where this install can and only notifies where it cannot, so that I control how I receive updates. | `/settings/about` | minimal | nightly | 4 |
 | P2 | `settings-browser-attach-token` | As a dashboard user, I want to paste an extension token in Settings > Browser, so that attaching to my own Chrome skips the per-attach prompt. | `/settings/browser` | minimal | nightly | 3 |
-| P2 | `settings-browser-panel` | As a dashboard user, I want to open Settings > Browser and see whether playwright-cli is installed and toggle the built-in browser, so that the agent can browse. | `/settings/browser` | minimal | nightly | 3 |
+| P2 | `settings-browser-panel` | As a dashboard user, I want to open Settings > Browser and see whether the browser engine is installed and which browser is connected, and set the live view and local preview options, so that the agent can browse. | `/settings/browser` | minimal | nightly | 3 |
 | P2 | `settings-chat-content-width-buttongroup` | As a dashboard user, I want to switch Content Width in Settings > Chat, so that the chat column uses more or less of the screen. | `/settings/chat` | sessions-a-few | nightly | 3 |
 | P2 | `settings-chat-select-default-model` | As a dashboard user, I want to pick a Default Model in Settings > Chat, so that new sessions start with that model. | `/settings/chat` | minimal | nightly | 4 |
 | P2 | `settings-chat-select-response-verbosity` | As a dashboard user, I want to set Response Verbosity in Settings > Chat, so that agent replies are as terse as I prefer. | `/settings/chat` | minimal | nightly | 3 |
@@ -450,7 +450,7 @@ Features the lane cannot drive on its target. Listed so the gap is a decision, n
 
 | Tier | Id | Feature | Title | Why |
 |---|---|---|---|---|
-| native-only | `chat-browser-panel` | browser-panel | Browser panel | The panel is owned by the Electron native Chromium view and Annotate is IPC-only. Web-only degradation is limited to asserting the tab and its 'use playwright-cli' guidance / empty state render, which browser-panel-open… |
+| native-only | `chat-browser-panel` | browser-panel | Live browser card in the chat | The frames come from a real browser the gateway drives; on the fake-ACP, no-network target the card never leaves its empty state, so only the Settings > Browser surface is web-renderable here. |
 | native-only | `app-crew-companion-reminders` | apps | Crew Companion: set break interval and add a reminder | Requires the Electron desktop app and its companion process; the target has no Electron. Degradable to web-only only for the offline landing state and cached Memories. |
 | native-only | `app-mochi-dashboard` | apps | Mochi: enable the desktop pet and view activity, watchlist, and plan | Pet window, click-through transparency, and panel windows need Electron, which the target lacks; the dashboard data page alone is degradable to web-only. |
 | native-only | `settings-channels-imessage-configure` | channels | Configure iMessage channel (enable, allowed handles, service, DB path) | Requires the macOS Messages database; form rendering is degradable to web-only but the channel cannot start on Linux. |
@@ -510,7 +510,7 @@ Features the lane cannot drive on its target. Listed so the gap is a decision, n
 | excluded | `standalone-cloud-launch` | remote-instances | Cloud launch | Kept excluded rather than needs-secret: beyond real AWS credentials it provisions billable infrastructure and exposes Stop/Delete-by-tag lifecycle, so it must not run even with secrets. Only the lane selector and IAM po… |
 | excluded | `kas-auth-chat-error-row-sign-in-link` | auth | An auth-required turn renders a 'Sign in to Kiro' error row deep-linking to the card | Excluded: the fake ACP backend cannot emit the AcpAuthRequired vocabulary (only [[ERROR]]), so the row and its deep link are unreachable on the target. Closing that harness gap (an auth-required sentinel) is the prerequ… |
 | excluded | `settings-about-check-for-updates` | settings | Check for updates and install | Network-dependent and restarts the application; not pixel-testable. |
-| excluded | `settings-browser-install-cli` | settings | Install playwright-cli and a browser engine from Settings | Network download and host mutation; not pixel-testable deterministically. |
+| excluded | `settings-browser-install-engine` | settings | Install the browser engine from Settings | Network download and host mutation; not pixel-testable deterministically. |
 | excluded | `settings-ui-prefs-backup` | settings | UI preference host backup | Cross-cutting mechanism with no UI of its own; verified through the settings rows it backs, not pixels. |
 | excluded | `settings-voice-stt-model-download` | settings | Download a local STT model | Requires large external download and disk writes; not suitable for pixel tests. |
 

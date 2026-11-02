@@ -639,7 +639,7 @@ class TestTheLeafIsSealed:
     def test_engines_is_read_only_in_the_sandbox_and_fenced_at_the_tool_gate(self):
         """A sandboxed KAS process must read and execute the engine; nothing in a
         sandbox may rewrite the code the next session runs. Same disposition as
-        ``playwright-cli``, and the same precreate + no-follow pins so an absent
+        ``browser-harness``, and the same precreate + no-follow pins so an absent
         directory on a fresh install is not a name the agent gets to create."""
         from kiro_crew import sandbox, security
 

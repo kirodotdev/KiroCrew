@@ -143,12 +143,13 @@ describe('SettingsPage tabs', () => {
     expect(screen.queryByText('Provider')).not.toBeInTheDocument()
   })
 
-  it('renders the BrowserPanel when the browser tab is active', () => {
+  it('renders the BrowserPanel when the browser tab is active', async () => {
     renderAt('/settings?tab=browser')
-    expect(screen.getByTestId('browser-panel')).toBeInTheDocument()
+    // Lazy chunk: the panel arrives after its import resolves.
+    expect(await screen.findByTestId('browser-panel', {}, { timeout: 5000 })).toBeInTheDocument()
   })
 
-  it('contains the Releases pane, and only that one, instead of scrolling the page', () => {
+  it('contains the Releases pane, and only that one, instead of scrolling the page', async () => {
     // The archive puts a version rail beside the notes, so a page scroll took
     // the "Releases" heading and the rail away with it. Every other tab is a
     // form that should keep growing.
@@ -157,7 +158,8 @@ describe('SettingsPage tabs', () => {
 
     cleanup()
     renderAt('/settings?tab=browser')
-    expect(screen.getByTestId('browser-panel').parentElement!.className).toContain('pb-8')
+    // Lazy chunk: wait for the import rather than relying on an earlier test warming it.
+    expect((await screen.findByTestId('browser-panel', {}, { timeout: 5000 })).parentElement!.className).toContain('pb-8')
   })
 
   it('hides the Webhooks tab while its preview flag is off', () => {

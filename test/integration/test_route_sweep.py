@@ -59,10 +59,6 @@ UNGUARDED_GET: dict[str, tuple[int, str]] = {
     "/": (200, "the SPA shell; an unauthenticated browser needs it to render the login"),
     "/favicon.ico": (200, "SPA asset served beside the shell"),
     "/logo.png": (200, "SPA asset served beside the shell"),
-    "/browser-view": (
-        404,
-        "native browser panel route; this build serves no panel, so 404 to everyone",
-    ),
     "/api/health": (200, "liveness probe for supervisors; carries only ok/app/version"),
     "/api/live": (200, "liveness probe (alias of health)"),
     "/api/ready": (200, "readiness probe for supervisors; boolean startup checks only"),
@@ -146,10 +142,6 @@ UNGUARDED_OTHER: dict[tuple[str, str], tuple[int, str]] = {
     ("GET", "/vendor/{tail}"): (
         404,
         "import-map shims, public like /assets (token_auth bypass); the stand-in names no file",
-    ),
-    ("GET", "/browser-view/{tail}"): (
-        404,
-        "native browser panel route; this build serves no panel",
     ),
     ("GET", "/artifact-app/{slug}/{token}/{path}"): (
         404,

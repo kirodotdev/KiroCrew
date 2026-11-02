@@ -686,6 +686,25 @@ read other members' files. Ordinary transport authentication, host sandbox,
 credential protection and enterprise policy remain in force. No additional
 member-memory sandbox is required.
 
+### Browser
+
+Which browser the agent drives, and the live view of it in the chat. Every key is
+edited on Settings → Browser and applies without a restart.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `browser.choice` | `auto` picks your Chrome (with your logins, once remote debugging is allowed in it), then Edge on Windows, then Kiro's own Chromium without a window where there is no display or Chrome's policy forbids remote debugging. `user_chrome` and `kiro_chromium` pin one of those; `headless` runs Kiro's Chromium without a window even on a desktop. Any other stored value reads as `auto` with one warning | `"auto"` |
+| `browser.live.enabled` | Show a live card of the page in the chat turn while the agent browses; click it to take over. Off hides the card, the agent still browses | `true` |
+| `browser.live.quality` | `auto` adapts frame rate and picture quality to your link (frame rate first, picture only when the lowest frame rate does not fit; a still page gets one sharp frame); `high`, `medium` or `low` pins the picture and leaves only the frame rate adaptive | `"auto"` |
+| `browser.live.max_fps` | Frame-rate ceiling of the live view: `15`, `30` or `60`. No frames are sent while the card is off screen | `60` |
+| `browser.live.mask_passwords` | Cover password boxes in the live picture. Passwords are only ever typed by you during a takeover and never pass through the agent | `true` |
+| `browser.recording.enabled` | Keep a replay of each turn the agent browses: masked pictures of the page (at most 5 a second, only when it changes) and the clicks, typing and scrolls. Password fields are covered before a picture is kept and typed secrets are kept as a length only. Kept on this machine only, removed with the chat | `true` |
+| `browser.recording.max_session_mb` | The most replay one chat keeps, in MB; past it the chat's oldest turns are removed first | `200` |
+| `browser.recording.max_total_mb` | The most replay all chats keep together, in MB; past it the oldest turns are removed first, whichever chat they belong to | `1024` |
+| `browser.credentials.enabled` | Start Kiro's own Chromium signed in to the sites your edition's sign-in provider serves. Unset follows the edition's default; with no provider it does nothing. Your own Chrome is never changed | unset |
+| `browser.credentials.domains` | The sites that sign-in may be used for (`example.com` covers its subdomains). Only a site both listed here and served by the provider is used. Empty follows the provider's default | `[]` |
+| `dashboard.browser_local_origins` | The loopback origins the side panel's Preview tab may open, each `host:port` with host `localhost`, `127.0.0.1` or `[::1]` (`localhost:5173` for a Vite dev server). The tab is for previewing your own dev server; the agent never drives it, and an outside URL is answered with "Open this in your Chrome, or ask Kiro". The same list is the only way the agent's `browser` tool may open a loopback address, so listing an origin also opens it to the agent's browser (which may be your own Chrome). Empty keeps every address refused. Entries in any other shape are dropped | `[]` |
+
 ### Skills
 
 | Key | Description | Default |

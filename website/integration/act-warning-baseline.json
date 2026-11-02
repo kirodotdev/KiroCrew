@@ -33,5 +33,6 @@
   "src/test/WidgetFrame.test.tsx",
   "src/test/chatPins.test.tsx",
   "src/test/toolDisclosureKey.renderSite.test.tsx",
+  "src/test/useDashboardHealthProbe.test.tsx",
   "src/test/useKeyboardShortcuts.test.tsx"
 ]

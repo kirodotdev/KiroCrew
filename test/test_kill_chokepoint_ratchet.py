@@ -83,7 +83,7 @@ PID_KILL_PRIMITIVES = frozenset(
 #: session runtime, so an ownership gate there would consult a table that can
 #: never hold a lease for it. Raising it for a site the change itself adds is what
 #: the ratchet exists to stop.
-BYPASS_BASELINE = 67
+BYPASS_BASELINE = 64
 
 #: Functions that must say who fired before they signal anything, as module path
 #: -> function name. These are the paths every other kill funnels into: the

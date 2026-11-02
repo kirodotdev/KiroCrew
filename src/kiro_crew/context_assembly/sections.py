@@ -535,19 +535,19 @@ _BROWSER_SPAN = re.compile(
     re.DOTALL,
 )
 
-# What the marked section becomes while browsing is not set up on this host: no
-# vetted ``playwright-cli`` resolves, and the ``browser`` tool refuses every op. Its
+# What the marked section becomes while browsing is not set up on this host: the
+# Browser Harness is not installed, and the ``browser`` tool refuses every op. Its
 # last sentence covers a session that stays open across the install, which the tool
 # notices on its next call while this session's prompt keeps this text.
 _BROWSER_UNAVAILABLE = (
     "## Browser\n"
     "\n"
-    "Not available in this session: browsing is not set up on this host (no\n"
-    "`playwright-cli`), so the `browser` tool refuses every op. Read pages with\n"
+    "Not available in this session: browsing is not set up on this host (the browser\n"
+    "engine is not installed), so the `browser` tool refuses every op. Read pages with\n"
     "`web_fetch` / `web_search`, and tell a user who needs a real browser that they can\n"
     "install it from Settings → Browser (one click). The `web-preview` marker still\n"
-    "shows a local dev server in the dashboard and needs no `playwright-cli`: read the\n"
-    "`web-preview` skill first. If a `browser` call works anyway,\n"
+    "shows a local dev server in the dashboard's Preview tab and needs no browser\n"
+    "engine: read the `web-preview` skill first. If a `browser` call works anyway,\n"
     "browsing was set up after this session started: read the `web-browse` skill before\n"
     "you drive a page."
 )
