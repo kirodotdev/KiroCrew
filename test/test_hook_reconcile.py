@@ -468,6 +468,40 @@ async def test_stop_runs_a_final_drain_pass_before_shutdown(monkeypatch):
     assert passes == ["pass"], "stop must run exactly one final drain reconcile pass"
 
 
+def _task_on_a_closed_loop() -> Any:
+    """A pending reconcile whose loop is gone, so it never finishes or clears its slot."""
+    other = asyncio.new_event_loop()
+    try:
+        return other.create_future()
+    finally:
+        other.close()
+
+
+@pytest.mark.asyncio
+async def test_a_task_left_by_a_torn_down_loop_does_not_skip_the_app(_harness):
+    calls, (set_current, _, _) = _harness
+    app = _app_info("watchtower")
+    set_current(app)
+    hr._inflight_app_tasks["watchtower"] = _task_on_a_closed_loop()
+    await hr.reconcile_once([app])
+    assert calls == [("enable", "watchtower")]
+
+
+@pytest.mark.asyncio
+async def test_the_stop_drain_drops_a_task_left_by_a_torn_down_loop(monkeypatch):
+    async def quiet_reconcile_once(installed):
+        return None
+
+    monkeypatch.setattr(hr, "POLL_INTERVAL_SECS", 100.0)  # no natural tick during the test
+    monkeypatch.setattr(hr, "list_apps", lambda: [])
+    monkeypatch.setattr(hr, "reconcile_once", quiet_reconcile_once)
+
+    hr.init_hook_reconciler()
+    hr._inflight_app_tasks["gone"] = _task_on_a_closed_loop()
+    await hr.stop_hook_reconciler()
+    assert "gone" not in hr._inflight_app_tasks
+
+
 @pytest.mark.asyncio
 async def test_degraded_app_with_retained_startup_is_torn_down(_harness, monkeypatch):
     """GPT [BLOCKING]: a degraded/timed-out startup leaves the loaded-signature
