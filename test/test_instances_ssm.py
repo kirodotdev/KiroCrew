@@ -1342,7 +1342,7 @@ class TestSsmDiagnostics:
         import kiro_crew.instances.diagnostics as diag
 
         async def no_node(*a, **k):
-            return False
+            return diag._NODE_UNREACHABLE
 
         monkeypatch.setattr(diag, "_probe_ssm_managed", no_node)
         res = await diag.diagnose_instance_ssm("i-0123456789abcdef0", 7777, 7777)
@@ -1352,11 +1352,93 @@ class TestSsmDiagnostics:
         assert "ssh" not in res.reason.lower()
 
     @pytest.mark.asyncio
+    async def test_unlisted_node_is_target_missing_not_unreachable(self, monkeypatch):
+        """A replaced instance's old id is reported as gone, not as offline.
+
+        After an Auto Scaling instance refresh the row keeps the old ``ssm_target``.
+        SSM lists no node with that id (``[0].PingStatus`` prints ``None``), and
+        the ladder reports ``ssm_target_missing`` rather than ``ssm_unreachable``
+        with its "check the SSM agent" advice. Driven through the real ``cloud.ssm`` read with a fake
+        ``run_aws``, so the whole first rung is exercised without AWS.
+        """
+        import kiro_crew.instances.diagnostics as diag
+        from kiro_crew.cloud import aws, ssm
+
+        calls: list[list[str]] = []
+
+        def fake_run_aws(argv, profile="", region=""):
+            calls.append(list(argv))
+            return 0, "None\n", ""
+
+        monkeypatch.setattr(aws, "run_aws", fake_run_aws)
+        res = await diag.diagnose_instance_ssm(
+            "i-0123456789abcdef0", 7777, 7777, aws_profile="dev", aws_region="us-east-1"
+        )
+        assert res.code == diag.SSM_TARGET_MISSING == "ssm_target_missing"
+        assert res.ok is False
+        assert res.probes == [{"name": "ssm_managed_node", "ok": False}]
+        assert "replaced" in res.reason and "ssm_target" in res.reason
+        assert "ssh" not in res.reason.lower()
+        # One read, the same one the rung always made: no new AWS call.
+        assert len(calls) == 1
+        assert calls[0][:2] == ["ssm", "describe-instance-information"]
+        assert ssm.NODE_NOT_REGISTERED == ssm.managed_node_ping_status("i-0123456789abcdef0")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("rc", "out"),
+        [(0, "ConnectionLost\n"), (0, "Inactive\n"), (0, ""), (255, ""), (254, "None\n")],
+    )
+    async def test_listed_offline_or_failed_read_stays_unreachable(self, monkeypatch, rc, out):
+        """Only a SUCCESSFUL read that prints ``None`` means missing.
+
+        A listed node whose agent is offline, a read that printed nothing, and a
+        read that failed (credentials, IAM denial, bad region) establish nothing
+        about the node's existence, so they keep ``ssm_unreachable``.
+        """
+        import kiro_crew.instances.diagnostics as diag
+        from kiro_crew.cloud import aws
+
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (rc, out, "err"))
+        res = await diag.diagnose_instance_ssm("i-0123456789abcdef0", 7777, 7777)
+        assert res.code == diag.SSM_UNREACHABLE
+
+    @pytest.mark.parametrize(
+        ("rc", "out", "expected"),
+        [
+            (0, "Online\n", "Online"),
+            (0, "ConnectionLost\n", "ConnectionLost"),
+            (0, "None\n", "NotRegistered"),
+            (0, "", None),
+            (0, "  \n", None),
+            (255, "", None),
+            (254, "None\n", None),
+        ],
+    )
+    def test_managed_node_ping_status_answers(self, monkeypatch, rc, out, expected):
+        from kiro_crew.cloud import aws, ssm
+
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (rc, out, ""))
+        assert ssm.managed_node_ping_status("i-0123456789abcdef0") == expected
+        assert ssm.instance_is_managed("i-0123456789abcdef0") is (expected == "Online")
+
+    @pytest.mark.asyncio
+    async def test_probe_exception_is_unreachable(self, monkeypatch):
+        import kiro_crew.instances.diagnostics as diag
+        from kiro_crew.cloud import ssm
+
+        def boom(*a, **k):
+            raise RuntimeError("dispatch failed")
+
+        monkeypatch.setattr(ssm, "managed_node_ping_status", boom)
+        assert await diag._probe_ssm_managed("i-0123456789abcdef0") == diag._NODE_UNREACHABLE
+
+    @pytest.mark.asyncio
     async def test_remote_down_then_not_connected_then_ok(self, monkeypatch):
         import kiro_crew.instances.diagnostics as diag
 
         async def node_ok(*a, **k):
-            return True
+            return diag._NODE_ONLINE
 
         monkeypatch.setattr(diag, "_probe_ssm_managed", node_ok)
 
@@ -1421,6 +1503,16 @@ class TestSsmExitErrorClassification:
         t = self._tunnel("")
         t._probe_failed = True
         assert "health probe failed" in t._exit_error(0)
+
+    def test_target_not_connected_names_a_replaced_instance(self):
+        """StartSession's error for a replaced instance's old id is the same
+        as for an offline agent, so the message names both and points at Diagnose."""
+        msg = self._tunnel(
+            "An error occurred (TargetNotConnected) when calling the StartSession "
+            "operation: i-0123456789abcdef0 is not connected."
+        )._exit_error(255)
+        assert "not a connected managed node" in msg
+        assert "replaced" in msg and "ssm_target" in msg and "Diagnose checks" in msg
 
     def test_ssh_classification_unchanged(self):
         """Regression guard: the ssh classifier still owns ssh instances."""

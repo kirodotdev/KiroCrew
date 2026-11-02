@@ -30,6 +30,7 @@ export interface InstanceTunnelStatus {
       | 'not_connected'
       | 'ssh_unreachable'
       | 'ssm_unreachable'
+      | 'ssm_target_missing'
       | 'remote_down'
       | 'tunnel_down'
       | 'unknown'

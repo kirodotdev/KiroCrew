@@ -833,8 +833,22 @@ def wait_for_local_port(
     return False
 
 
-def instance_is_managed(instance_id: str, profile: str = "", region: str = "") -> bool:
-    """True if SSM reports the instance as a managed, online node (Agent up)."""
+#: :func:`managed_node_ping_status` answer when the read succeeded and SSM lists
+#: no managed node with that id in the account and region it was asked about.
+NODE_NOT_REGISTERED = "NotRegistered"
+
+
+def managed_node_ping_status(instance_id: str, profile: str = "", region: str = "") -> str | None:
+    """What SSM reports for *instance_id*, from one ``describe-instance-information`` read.
+
+    Returns the node's ``PingStatus`` (``Online``, ``ConnectionLost``,
+    ``Inactive``), :data:`NODE_NOT_REGISTERED` when the read succeeded but SSM
+    lists no node with that id, or ``None`` when the read itself failed
+    (credentials, an IAM denial, a bad region) or printed nothing, so nothing is
+    known about the node. The not-registered answer is what an id looks like once SSM has
+    dropped the node, as it does for a terminated instance; it is also what an id
+    looks like from the wrong account or region, so callers word it as either.
+    """
     rc, out, _err = aws.run_aws(
         [
             "ssm",
@@ -849,7 +863,20 @@ def instance_is_managed(instance_id: str, profile: str = "", region: str = "") -
         profile,
         region,
     )
-    return rc == 0 and out.strip() == "Online"
+    if rc != 0:
+        return None
+    value = out.strip()
+    # `--output text` prints a JMESPath null (an empty list's [0]) as "None".
+    # Only that literal is evidence of an empty list; an empty stdout says
+    # nothing, so it is unknown like a failed read.
+    if value == "None":
+        return NODE_NOT_REGISTERED
+    return value or None
+
+
+def instance_is_managed(instance_id: str, profile: str = "", region: str = "") -> bool:
+    """True if SSM reports the instance as a managed, online node (Agent up)."""
+    return managed_node_ping_status(instance_id, profile, region) == "Online"
 
 
 @dataclass
