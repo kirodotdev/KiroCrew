@@ -104,9 +104,9 @@ class TestWebhooksRead:
         assert ctx["context_chars"] == len(padding + secret)
 
     @pytest.mark.asyncio
-    async def test_contexts_carry_shared_freshness(self, wired):
-        # flake-ok: pre-existing real-clock anchor for the registration offsets the handler ages on its own clock, moved verbatim; tracked for a de-flake pass
-        now = time.time()
+    async def test_contexts_carry_shared_freshness(self, wired, monkeypatch, manual_clock):
+        manual_clock.install(monkeypatch, H)
+        now = manual_clock.time()
         (wired / "hooks.json").write_text(
             json.dumps(
                 {
@@ -130,8 +130,7 @@ class TestWebhooksRead:
         assert fresh["context_chars"] == 2500
         assert len(fresh["context_summary"]) == webhooks.CONTEXT_SUMMARY_TRANSPORT_MAX
         assert fresh["session_key"] == "hook:review:pr-1"
-        # flake-ok: pre-existing 55-120 s real-clock age window around the 60 s registration offset, moved verbatim; tracked for a de-flake pass
-        assert 55 <= fresh["age_seconds"] <= 120
+        assert fresh["age_seconds"] == 60
         assert by_id["old:job"]["freshness"] == "expired"
         # Newest registration first.
         assert data["contexts"][0]["hook_id"] == "review:pr-1"
