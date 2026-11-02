@@ -347,34 +347,34 @@ describe('createSessionsProvider — backend relevance order is the score tiebre
 })
 
 describe('createSessionsProvider — open sessions rank above history (issue #21290)', () => {
+  // The server sets `open: true` on a local row an open tab owns (#25460).
   const fixture = async (): Promise<SessionSearchResponse> => ({
     sessions: [
       { key: 'old-best', title: 'grid' },
       { key: 'old-body', title: 'Unrelated', snippet: 'grid in body' },
-      { key: 'open-weak', title: 'my grid notes' },
-      { key: 'open-body', title: 'Other', snippet: 'grid again' },
-      { key: 'open-body', title: 'Remote twin', snippet: 'grid', instance_id: 'i', instance_name: 'peer' },
+      { key: 'cron_job-1', title: 'my grid notes', open: true },
+      { key: 'slack_1785.1', title: 'Other', snippet: 'grid again', open: true },
+      { key: 'slack_1785.1', title: 'Remote twin', snippet: 'grid', instance_id: 'i', instance_name: 'peer', open: true },
     ],
   })
-  const isOpenSession = (key: string) => key.startsWith('open-')
 
   it('puts open hits first, even over a better history title match', async () => {
     const { d } = deps({ fetchSessions: vi.fn(fixture) })
-    const results = await createSessionsProvider({ ...d, isOpenSession }).search('grid')
+    const results = await createSessionsProvider(d).search('grid')
     expect(results.map(r => r.title)).toEqual([
       'my grid notes', 'Other', 'grid', 'Unrelated', 'Remote twin',
     ])
   })
 
-  it('never counts a remote row as open, even when its key matches a local open one', async () => {
+  it('never counts a remote row as open, even when it carries the flag', async () => {
     const { d } = deps({ fetchSessions: vi.fn(fixture) })
-    const results = await createSessionsProvider({ ...d, isOpenSession }).search('grid')
+    const results = await createSessionsProvider(d).search('grid')
     const remoteAt = results.findIndex(r => r.title === 'Remote twin')
     expect(remoteAt).toBeGreaterThan(results.findIndex(r => r.title === 'grid'))
   })
 
-  it('matches a dashboard history key against its live slot key', async () => {
-    // The search returns `dashboard_chat-1-1`; the open slot is `chat-1-1`.
+  it('reads only the flag, never the key shape', async () => {
+    // A `dashboard_` key with no flag is history, whatever tab name it resembles.
     const fetchSessions = vi.fn(
       async (): Promise<SessionSearchResponse> => ({
         sessions: [
@@ -384,20 +384,13 @@ describe('createSessionsProvider — open sessions rank above history (issue #21
       }),
     )
     const { d } = deps({ fetchSessions })
-    const open = new Set(['chat-1-1'])
-    const results = await createSessionsProvider({ ...d, isOpenSession: k => open.has(k) }).search('grid')
-    expect(results.map(r => r.title)).toEqual(['my grid notes', 'grid'])
-  })
-
-  it('keeps the old order when no open-session check is given', async () => {
-    const { d } = deps({ fetchSessions: vi.fn(fixture) })
     const results = await createSessionsProvider(d).search('grid')
-    expect(results[0].title).toBe('grid')
+    expect(results.map(r => r.title)).toEqual(['grid', 'my grid notes'])
   })
 
   it('leaves the empty-query listing in backend order', async () => {
     const { d } = deps({ fetchSessions: vi.fn(fixture) })
-    const results = await createSessionsProvider({ ...d, isOpenSession }).search('')
+    const results = await createSessionsProvider(d).search('')
     expect(results.map(r => r.title)).toEqual(['grid', 'Unrelated', 'my grid notes', 'Other', 'Remote twin'])
   })
 })

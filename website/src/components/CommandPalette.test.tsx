@@ -125,6 +125,8 @@ const H = vi.hoisted(() => {
     sessResult,
     allProvider,
     sessionsProvider,
+    // Every openSessionsKey the palette handed useSessionsProvider, in order.
+    sessionsOpenKeys: [] as Array<string | undefined>,
     pagesProvider,
     actionsProvider,
     knowledgeProvider,
@@ -157,7 +159,10 @@ vi.mock('./commandPalette/providers', () => ({
 }))
 vi.mock('./commandPalette/providers/allAggregator', () => ({ useAllAggregator: () => H.allProvider }))
 vi.mock('./commandPalette/providers/sessionsProvider', () => ({
-  useSessionsProvider: () => H.sessionsProvider,
+  useSessionsProvider: (opts?: { openSessionsKey?: string }) => {
+    H.sessionsOpenKeys.push(opts?.openSessionsKey)
+    return H.sessionsProvider
+  },
 }))
 vi.mock('./commandPalette/providers/pagesProvider', () => ({ usePagesProvider: () => H.pagesProvider }))
 vi.mock('./commandPalette/providers/actionsProvider', () => ({
@@ -233,6 +238,7 @@ afterEach(() => {
   H.nav.current = null
   H.storeState.dashboard.slots = []
   H.storeState.dashboard.unreadSlots = []
+  H.sessionsOpenKeys.length = 0
   H.storeState.chat.slotStatusDetail = {}
   // localStorage is file-scoped, not per-test: a chat-config write (e.g. the
   // simplifiedToolNames toggle test) would otherwise persist into siblings.
@@ -468,6 +474,16 @@ describe('CommandPalette — render', () => {
     // The visible tab strip is gone — scoping is prefix+Tab / sigil driven.
     expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.getByPlaceholderText('Search for anything')).toBeInTheDocument()
+  })
+
+  it('keys the sessions search on the open tab set, so a tab change re-fetches', () => {
+    H.storeState.dashboard.slots = [{ key: 'chat-b' }, { key: 'chat-a' }]
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    expect(H.sessionsOpenKeys.at(-1)).toBe('chat-a\u0000chat-b')
+
+    H.storeState.dashboard.slots = [{ key: 'chat-b' }]
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+    expect(H.sessionsOpenKeys.at(-1)).toBe('chat-b')
   })
 
   it('refreshes recents when a running slot starts a real tool call', async () => {
@@ -1045,6 +1061,26 @@ describe('CommandPalette — scoped provider error state (issue #1928)', () => {
     expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument()
     // The ordinary empty copy must NOT appear for a failure.
     expect(screen.queryByText('No matches')).toBeNull()
+  })
+
+  it('re-runs the Sessions search when a tab opens, inside the cache window', async () => {
+    H.storeState.dashboard.slots = [{ key: 'chat-a' }]
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'sess' } })
+    await screen.findByText('Sessions')
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' })
+    })
+    await screen.findByText('Session Result')
+    const before = H.sessionsProvider.search.mock.calls.length
+
+    // A tab opens; nothing else changes. The ranking reads `open`, so the
+    // outer palette query must not serve its cached rows.
+    H.storeState.dashboard.slots = [{ key: 'chat-a' }, { key: 'chat-b' }]
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+
+    await waitFor(() => expect(H.sessionsProvider.search.mock.calls.length).toBeGreaterThan(before))
   })
 
   it('the Retry button refetches the scoped provider and shows the results', async () => {

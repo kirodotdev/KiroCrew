@@ -163,6 +163,24 @@ def test_open_tab_is_excluded_and_reported_as_skipped() -> None:
     assert skipped == 1
 
 
+def test_an_open_tabs_double_prefixed_file_is_excluded_too() -> None:
+    # A resume round-trip leaves `dashboard_dashboard_<slot>`; the canonical fold
+    # maps it to the open tab, the same fold the Older-sessions list and the
+    # session search use, so the bulk clear leaves it alone as well.
+    doubled = "dashboard_dashboard_chat-1"
+    state, _ = _fake_state(
+        [{"key": doubled}, {"key": "plain"}], slots={"chat-1": _FakeSlot("chat-1")}
+    )
+    state.conversation_log._canonical_key.side_effect = lambda k: k.replace(
+        "dashboard_dashboard_", "dashboard:"
+    )
+
+    clearable, skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
+
+    assert clearable == ["plain"]
+    assert skipped == 1
+
+
 def test_pinned_session_is_excluded() -> None:
     state, _ = _fake_state([{"key": "a"}, {"key": "b"}], metadata={"a": {"pinned": True}})
 
