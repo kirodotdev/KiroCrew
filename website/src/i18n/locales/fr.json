@@ -10691,6 +10691,22 @@
         "tool_search_description": "Charger à la demande des spécifications d’outils MCP différées."
       }
     },
+    "sendFolderToInstanceSubmenu": {
+      "lands_in_folder": "Les copies arrivent sur la crew sous Imported › from (nom de cette instance) › (nom de ce dossier).",
+      "nothing_to_send": "Aucune session à envoyer",
+      "progress": "{{done}} sur {{total}}",
+      "resend_all": "Un nouveau clic renvoie les {{total}} (en double)",
+      "retry_failed": "Clique pour renvoyer les {{count}} en échec",
+      "sent_all": "Envoyé : {{count}}",
+      "sent_some": "{{sent}} sur {{total}} envoyées",
+      "sent_transcript_only": "Envoyé : {{sent}} ({{count}} en transcription seule)",
+      "skipped_private_many": "{{count}} sessions incognito ou temporaires ne sont pas envoyées",
+      "skipped_private_one": "{{count}} session incognito ou temporaire n’est pas envoyée",
+      "skipped_private_other": "{{count}} sessions incognito ou temporaires ne sont pas envoyées",
+      "transcript_only_hint_many": "Cette crew n'a pas pu restaurer le contexte complet de la conversation ; {{count}} copies reprennent uniquement à partir de la transcription.",
+      "transcript_only_hint_one": "Cette crew n'a pas pu restaurer le contexte complet de la conversation ; {{count}} copie reprend uniquement à partir de la transcription.",
+      "transcript_only_hint_other": "Cette crew n'a pas pu restaurer le contexte complet de la conversation ; {{count}} copies reprennent uniquement à partir de la transcription."
+    },
     "runYourselfCard": {
       "copy_failed": "Copie impossible, alors sélectionne la commande et copie-la à la main.",
       "no_terminal": "Impossible d'exécuter des commandes ici, alors copie-la dans l'application Terminal de ton ordinateur.",

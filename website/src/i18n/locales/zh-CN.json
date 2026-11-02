@@ -10365,6 +10365,18 @@
         "tool_search_description": "按需加载延迟的 MCP 工具规范。"
       }
     },
+    "sendFolderToInstanceSubmenu": {
+      "lands_in_folder": "副本会放在 Crew 上 Imported › from (此实例名称) › (此文件夹名称) 下。",
+      "nothing_to_send": "没有可发送的会话",
+      "progress": "{{done}} / {{total}}",
+      "resend_all": "再次点击会重新发送全部 {{total}} 个 (会产生重复)",
+      "retry_failed": "点击重新发送失败的 {{count}} 个",
+      "sent_all": "已发送：{{count}}",
+      "sent_some": "已发送 {{sent}} / {{total}}",
+      "sent_transcript_only": "已发送：{{sent}}（{{count}} 个仅对话记录）",
+      "skipped_private_other": "{{count}} 个无痕或临时会话不会发送",
+      "transcript_only_hint_other": "该 Crew 无法恢复完整的对话上下文，因此这 {{count}} 份副本仅从对话记录继续。"
+    },
     "runYourselfCard": {
       "copy_failed": "复制失败，请选中命令手动复制。",
       "no_terminal": "这里不能运行命令，请把它复制到你电脑上的终端应用里。",
