@@ -151,7 +151,7 @@ describe('KnowledgePage — failed requests are shown', () => {
   it('a failed entity read is not shown as "No items found"', async () => {
     entityItemsError = new Error('entity lookup failed')
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /Graph/ }, PAGE_REQUEST_CHAIN()))
+    await userEvent.click(await screen.findByRole('tab', { name: /Graph/ }, PAGE_REQUEST_CHAIN()))
     await userEvent.click(await screen.findByRole('button', { name: 'stub-graph-pick' }, PAGE_REQUEST_CHAIN()))
     const notice = await screen.findByTestId('knowledge-entity-items-error', {}, PAGE_REQUEST_CHAIN())
     expect(notice).toHaveTextContent("Couldn't load the items for this entity")
