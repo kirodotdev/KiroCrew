@@ -200,8 +200,7 @@ class TestTunnelStatus:
         class _Parked(_SshTunnel):
             async def _terminate(self):
                 entered.set()
-                # flake-ok: pre-existing park on the test's own release event, set before the bounded task wait, moved verbatim
-                await release.wait()
+                await await_until(release, what="the test releasing the teardown")
 
         t = _Parked("cd-1", "h", 7778, 7777)
         t.status.state = TunnelState.CONNECTED
