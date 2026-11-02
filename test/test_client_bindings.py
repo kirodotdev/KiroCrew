@@ -388,6 +388,8 @@ _DECLARED = frozenset(
     {
         "_claude_shipped_restrictions",
         "_entitlement_probe_inflight",
+        "_launch_unbound",
+        "_launch_view_source",
         "_member_dispatch_mounted",
         "_session_mcp_excludes_local",
         "_session_mcp_inline_settings",

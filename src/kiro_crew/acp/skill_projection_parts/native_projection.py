@@ -42,6 +42,17 @@ class NativeSkillProjection:
     specs: dict[str, dict[str, Any]] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
     search_agents: set[str] = field(default_factory=set)
+    #: Agents whose spec was read across an unreadable-main-spec episode, whatever
+    #: file it was (:func:`kiro_crew.agent.unprojected_main_spec_source`). Also
+    #: in ``errors``; :meth:`agent` refuses them through the start gate's own
+    #: refusal, so each one writes its SEL denial and schedules the early retry.
+    main_spec_refused: set[str] = field(default_factory=set)
+    #: The spec file each view was built from, agent -> absolute path, recorded
+    #: by the preparation. A process keeps its launch view for life, so a launch
+    #: keeps its view's entry (``_launch_view_source``) for every later session
+    #: open, which, like a ``set_mode`` naming a view, is checked as a view's
+    #: (:func:`kiro_crew.agent.require_main_spec_launch_bound`, ``view_source``).
+    sources: dict[str, str] = field(default_factory=dict)
     #: The agent a DIRECT CLIENT (one process / one session) was launched as,
     #: recorded by that spawn caller after preparation. The process is already
     #: running as it, so its first ``session/set_mode`` activation must be
@@ -124,6 +135,16 @@ class NativeSkillProjection:
             )
 
     def agent(self, name: str) -> str:
+        return self._resolve(name, audit=True)
+
+    def _resolve(self, name: str, *, audit: bool) -> str:
+        """The strict resolution behind :meth:`agent`.
+
+        A name refused because its spec was read across an unreadable-main-spec
+        episode raises in both modes. With *audit* the refusal is
+        the start gate's own (one SEL denial and the early retry); without it the
+        same name raises with no side effect.
+        """
         if is_skill_view_name(name):
             if name in self.aliases.values():
                 return name
@@ -132,6 +153,13 @@ class NativeSkillProjection:
                 raise RetiredSkillView(name)
             name = source
         if name not in self.aliases:
+            if audit and name in self.main_spec_refused:
+                from kiro_crew.agent import refuse_unprojected_main_spec_start
+
+                # No view was prepared: the read overlapped an episode. It is not
+                # resolved by name, and once the episode closes a new start
+                # prepares the view again.
+                raise ValueError(refuse_unprojected_main_spec_start(name, by_name=False))
             if name in self.errors:
                 raise ValueError(f"Agent {name!r}: {self.errors[name]}")
             raise ValueError(f"Agent {name!r} has no prepared skill discovery view")
@@ -160,18 +188,50 @@ class NativeSkillProjection:
         # than aborting a spawn over a skill view it never asked for.
         return name
 
+    def decides(self, name: str) -> bool:
+        """Whether this projection decides *name*'s start itself: a view, or a refusal.
+
+        False is the no-view case :meth:`spawn_agent` gives back unchanged, where
+        kiro-cli resolves the bare name on its own; such a start is bound by
+        :func:`kiro_crew.agent.require_main_spec_launch_bound` instead.
+        """
+        return is_skill_view_name(name) or name in self.aliases or name in self.errors
+
+    def view_source(self, alias: str) -> str:
+        """The spec file the view published as *alias* was built from; ``""`` if unknown."""
+        for agent_name, published in self.aliases.items():
+            if published == alias:
+                return self.sources.get(agent_name, "")
+        return ""
+
+    def mode_id(self, name: str) -> str:
+        """The ``modeId`` :meth:`request` would put on a ``set_mode`` naming *name*.
+
+        The same resolution with no side effect: it writes no SEL denial,
+        schedules no retry, and reads the launch agent's one-time exemption
+        without consuming it. It raises ``ValueError`` wherever :meth:`request`
+        would refuse, so a switch checks the name this returns before the send
+        translates it, and the send's own refusal is the one audited.
+        """
+        return self._mode_alias(name, audit=False)
+
+    def _mode_alias(self, name: str, *, audit: bool) -> str:
+        """The ``modeId`` a ``set_mode`` naming *name* carries; *audit* as in :meth:`_resolve`."""
+        # The launched agent's own activation is tolerated even with no
+        # prepared view: the process is already running as it, so the initial
+        # ``set_mode`` that activates it must not be refused. It keeps its name
+        # (``spawn_agent``'s answer when no view exists); every other modeId takes
+        # the strict resolution, so a mid-session switch to a mode this projection
+        # never prepared is still rejected and an agent cannot escape its scope.
+        if name and name == self.spawn_agent_name and not self.decides(name):
+            return name
+        return self._resolve(name, audit=audit)
+
     def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "session/set_mode":
             mode_id = str(params.get("modeId", ""))
-            # The launched agent's own activation is tolerated even with no
-            # prepared view: the process is already running as it, so the initial
-            # ``set_mode`` that activates it must not be refused. ``spawn_agent``
-            # gives that name back unchanged; every other modeId takes the strict
-            # ``agent``, so a mid-session switch to a mode this projection never
-            # prepared is still rejected and an agent cannot escape its scope.
             tolerated = bool(mode_id) and mode_id == self.spawn_agent_name
-            resolve = self.spawn_agent if tolerated else self.agent
-            translated = {**params, "modeId": resolve(mode_id)}
+            translated = {**params, "modeId": self._mode_alias(mode_id, audit=True)}
             if tolerated:
                 # CONSUME the exemption once spent: it covers only the launched
                 # agent's FIRST activation. Cleared, a later set_mode back to the

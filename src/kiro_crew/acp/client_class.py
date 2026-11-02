@@ -102,6 +102,8 @@ class AcpClient:
     # Fields first set by a member an owner module defines, declared so the class names them.
     _claude_shipped_restrictions: frozenset[tuple[str, str]]
     _entitlement_probe_inflight: asyncio.Future[tuple[list[dict[str, str]], float]] | None
+    _launch_unbound: bool
+    _launch_view_source: str | None
     _member_dispatch_mounted: bool
     _session_mcp_excludes_local: bool
     _session_mcp_inline_settings: dict[str, Any] | None

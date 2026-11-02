@@ -1226,6 +1226,8 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         _adopt_skill_projection = runtime_module.AcpRuntime._adopt_skill_projection
         _resolve_start_alias = runtime_module.AcpRuntime._resolve_start_alias
         _superseding_alias = runtime_module.AcpRuntime._superseding_alias
+        _check_mode_frame = runtime_module.AcpRuntime._check_mode_frame
+        _launch_copy_source = runtime_module.AcpRuntime._launch_copy_source
         _refuse_if_view_superseded = runtime_module.AcpRuntime._refuse_if_view_superseded
         _refuse_if_view_unverified = runtime_module.AcpRuntime._refuse_if_view_unverified
         _note_unadopted_skill_projection = (
@@ -1238,6 +1240,7 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         # agent (it has an alias), so activating it must take the strict alias path
         # this test asserts, not the launched-agent allowance.
         _agent = "launcher"
+        _launch_agent = ""
 
         async def terminate_session(self, sid):
             terminated.append(sid)
