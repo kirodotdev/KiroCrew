@@ -7,7 +7,7 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_config_options``, ``_mcp_launches``,
+Instance fields written: ``_config_options``, ``_mcp_connected_seen``, ``_mcp_launches``,
 ``_mcp_reattempt_counts``, ``_mcp_reattempt_waiting``, ``_mcp_sign_in_completed``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``, ``_mcp_sign_in_dropped``, ``_mcp_sign_in_needed``,
 ``_mcp_sign_in_wanted``, ``_oauth_emitted_servers``, ``_pending_oauth_requests``.
@@ -455,6 +455,12 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
     read without offering: a link they started would land between turns,
     and a start that fails is torn down.
 
+    A tracked server that connects logs its completed sign-in at INFO, and a
+    server that connected on this session and is then reported
+    ``failedAuthorization`` logs a WARNING, so a sign-in the engine drops is
+    named in the gateway log. Both carry the sanitized server name and the
+    session id only.
+
     Bounded like the session's MCP report reads the same frame: at most
     ``BUCKET_CAP`` entries, and a name over ``NAME_CAP`` is skipped rather
     than truncated, because a cut name names a server the engine does not
@@ -481,12 +487,30 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
             continue
         present.add(name)
         if server.get("failedAuthorization") is True:
+            if name in self._mcp_connected_seen:
+                self._mcp_connected_seen.discard(name)
+                logger.warning(
+                    "MCP server %s on session %s needs a sign-in again after it "
+                    "connected: the engine reported it unauthorized on this process",
+                    sanitize_sink_text(name, NAME_CAP),
+                    self._session_id,
+                )
             self._mcp_sign_in_needed.add(name)
             self._mcp_reattempt_waiting.discard(name)
         elif server.get("status") in ("connected", "disabled"):
             tracked = name in self._mcp_sign_in_needed or (
                 name in self._mcp_reattempt_waiting and self._mcp_reattempt_counts.get(name, 0) > 0
             )
+            if server.get("status") == "connected" and (
+                name in self._mcp_connected_seen or len(self._mcp_connected_seen) < BUCKET_CAP
+            ):
+                self._mcp_connected_seen.add(name)
+            if server.get("status") == "connected" and name in self._mcp_sign_in_needed:
+                logger.info(
+                    "MCP sign-in for %s completed on session %s",
+                    sanitize_sink_text(name, NAME_CAP),
+                    self._session_id,
+                )
             if server.get("status") == "connected" and tracked:
                 # Only a server that was being signed in to (or re-attempted)
                 # counts as a completion; an ordinary connected server yields
@@ -510,6 +534,7 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
         ):
             self._mcp_reattempt_waiting.add(name)
     self._mcp_sign_in_needed &= present
+    self._mcp_connected_seen &= present
     self._mcp_sign_in_wanted &= self._mcp_sign_in_needed
     self._mcp_reattempt_waiting &= present
     self._sync_mcp_reattempting()

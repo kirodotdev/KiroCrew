@@ -212,9 +212,9 @@ class TestHandshakeNeverDefer:
     """The KAS ``initialize`` request built from the projected spawn spec."""
 
     def _caps(self, monkeypatch, spec):
-        from kiro_crew.acp import kas_secret_storage, runtime_spawn_launch
+        from kiro_crew.acp import runtime_spawn_launch
 
-        monkeypatch.setattr(kas_secret_storage, "persistence_enabled", lambda: False)
+        monkeypatch.setattr(runtime_spawn_launch, "_mcp_sign_in_storage_decision", lambda: False)
         monkeypatch.setattr(
             runtime_spawn_launch,
             "_known_server_tool_names",

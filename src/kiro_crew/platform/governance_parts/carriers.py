@@ -689,6 +689,15 @@ class GovernanceCeiling:
     # "Auto-approval duration"). 0 = no cap. Read through
     # ``safety_override_permits.yolo_ttl_cap``.
     yolo_max_seconds: int = 0
+    # Policy-only admin opt-in (top-level ``mcp_persist_sign_in``).
+    # ``True`` lets a governed host (this policy installed, or
+    # ``agent.mcp_registry_mode``) keep a
+    # KAS remote MCP server's OAuth sign-in in Crew's grant vault, as a regular
+    # install does by default. ``False`` (absent) keeps every sign-in in the engine's
+    # memory there, whatever ``agent.kas_persist_mcp_sign_in`` says. A profile
+    # cannot carry this key. Read through
+    # ``kas_secret_storage.policy_permit``.
+    mcp_persist_sign_in: bool = False
     # Which precedence tier produced this ceiling (one of the ``TIER_*`` names, or
     # "" for a ceiling parsed outside the loader).  Its one consumer is the tier
     # audit in ``compose_tier_ladder``, which names authority and subordinate in the

@@ -1223,20 +1223,52 @@ async def _with_mcp_sign_in_storage(runtime: AcpRuntime, base: dict[str, Any]) -
     """*base*, plus ``_meta.kiro.secretStorage`` when this spawn keeps MCP sign-ins.
 
     Only a host that runs MCP sign-ins through Crew (``opens_external_urls``, KAS
-    today) can be asked, and only with ``agent.kas_persist_mcp_sign_in`` on. The
-    decision is made once per spawn and held on the runtime as the server that
-    answers this process's ``_kiro/secret/*`` requests, so the reader loop serves
-    them exactly when this handshake declared the capability, whatever config
-    says later.
+    today) can be asked. A regular install keeps sign-ins unless the operator set
+    ``agent.kas_persist_mcp_sign_in`` false. A governed install (a security policy
+    installed, or ``agent.mcp_registry_mode``) keeps them
+    only when the admin's security policy also sets ``mcp_persist_sign_in``
+    (:func:`_mcp_sign_in_storage_decision`). The decision is made once per spawn
+    and held on the runtime as the server that answers this process's
+    ``_kiro/secret/*`` requests, so the reader loop serves them exactly when this
+    handshake declared the capability, whatever config says later.
     """
     runtime._mcp_secret_server = None
     if not runtime._harness.opens_external_urls:
         return base
-    if not await asyncio.to_thread(kas_secret_storage.persistence_enabled):
+    if not await asyncio.to_thread(_mcp_sign_in_storage_decision):
         return base
     runtime._mcp_secret_server = kas_secret_storage.SecretStorageServer()
     logger.info("AcpRuntime handshake: remote MCP sign-ins are kept in Crew's grant vault")
     return kas_secret_storage.with_secret_storage(base)
+
+
+def _mcp_sign_in_storage_decision() -> bool:
+    """Whether a KAS spawn keeps remote MCP sign-ins in Crew's grant vault. Blocking.
+
+    Both config inputs come from one effective-config read
+    (:func:`kas_secret_storage.sign_in_settings`), and a read that raised or came
+    back degraded keeps sign-ins in memory. Otherwise the operator's
+    ``agent.kas_persist_mcp_sign_in`` (true by default) decides on a regular
+    install. A governed install -- one with a security policy installed, or one
+    declaring ``agent.mcp_registry_mode`` -- keeps sign-ins only when the admin's
+    ``mcp_persist_sign_in`` policy field also allows it, so a ``config.json`` true
+    alone never widens a governed host and a false in either place keeps sign-ins
+    in memory. A governed host left in memory says why, once per spawn.
+    """
+    settings = kas_secret_storage.sign_in_settings()
+    if settings is None or not settings.keep:
+        return False
+    permit = kas_secret_storage.policy_permit()
+    if not (settings.registry_governed or permit.installed):
+        return True
+    if permit.permits:
+        return True
+    logger.info(
+        "AcpRuntime handshake: remote MCP sign-ins stay in the engine's memory on this "
+        "governed host; the admin's security policy enables keeping them with "
+        "mcp_persist_sign_in"
+    )
+    return False
 
 
 def _projected_spawn_spec(self: AcpRuntime) -> dict[str, Any] | None:

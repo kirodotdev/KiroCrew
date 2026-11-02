@@ -262,16 +262,16 @@ async def test_a_vault_failure_is_a_value_free_refusal(tmp_path, monkeypatch, ca
 # ── the opt-in key and the handshake ──────────────────────────────────────────
 
 
-def test_the_key_is_off_by_default_and_read_from_config(tmp_path, monkeypatch):
+def test_the_key_is_on_by_default_and_read_from_config(tmp_path, monkeypatch):
     from kiro_crew.config import loader as L
     from kiro_crew.config.loader import KiroCrewConfig
 
     monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
-    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
-    assert kss.persistence_enabled() is False
-    (tmp_path / "config.json").write_text(json.dumps({"agent": {"kas_persist_mcp_sign_in": True}}))
     assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is True
-    assert kss.persistence_enabled() is True
+    assert kss.sign_in_settings() == kss.SignInSettings(keep=True, registry_governed=False)
+    (tmp_path / "config.json").write_text(json.dumps({"agent": {"kas_persist_mcp_sign_in": False}}))
+    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+    assert kss.sign_in_settings() == kss.SignInSettings(keep=False, registry_governed=False)
 
 
 def test_the_shipped_declaration_never_carries_secret_storage():
@@ -295,7 +295,7 @@ def test_the_shipped_declaration_never_carries_secret_storage():
 async def test_the_handshake_declares_only_when_asked_on_a_sign_in_host(
     monkeypatch, backend, enabled, declared
 ):
-    monkeypatch.setattr(kss, "persistence_enabled", lambda: enabled)
+    monkeypatch.setattr(runtime_spawn_launch, "_mcp_sign_in_storage_decision", lambda: enabled)
     runtime = AcpRuntime(acp_backend=backend)
     runtime._tool_search = None
     caps = await runtime_spawn_launch._handshake_client_capabilities(runtime)
@@ -309,10 +309,10 @@ async def test_the_handshake_declares_only_when_asked_on_a_sign_in_host(
 async def test_a_handshake_with_the_key_off_drops_an_earlier_server(monkeypatch):
     runtime = AcpRuntime(acp_backend=ACP_BACKEND_KAS)
     runtime._tool_search = None
-    monkeypatch.setattr(kss, "persistence_enabled", lambda: True)
+    monkeypatch.setattr(runtime_spawn_launch, "_mcp_sign_in_storage_decision", lambda: True)
     await runtime_spawn_launch._handshake_client_capabilities(runtime)
     assert runtime._mcp_secret_server is not None
-    monkeypatch.setattr(kss, "persistence_enabled", lambda: False)
+    monkeypatch.setattr(runtime_spawn_launch, "_mcp_sign_in_storage_decision", lambda: False)
     await runtime_spawn_launch._handshake_client_capabilities(runtime)
     assert runtime._mcp_secret_server is None
 
@@ -432,7 +432,7 @@ async def _run_stub(tmp_path, capture, monkeypatch, mode: str) -> dict:
 async def test_a_new_kas_process_reuses_the_stored_grant(
     kas_secret_stub, tmp_path, monkeypatch, caplog
 ):
-    monkeypatch.setattr(kss, "persistence_enabled", lambda: True)
+    monkeypatch.setattr(runtime_spawn_launch, "_mcp_sign_in_storage_decision", lambda: True)
     recorded: list[dict] = []
 
     async def record(backend, frame, wire_bytes=0):
@@ -459,7 +459,7 @@ async def test_a_new_kas_process_reuses_the_stored_grant(
 async def test_with_the_key_off_nothing_is_declared_or_stored(
     kas_secret_stub, tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(kss, "persistence_enabled", lambda: False)
+    monkeypatch.setattr(runtime_spawn_launch, "_mcp_sign_in_storage_decision", lambda: False)
     seen = await _run_stub(tmp_path, kas_secret_stub, monkeypatch, "write")
     assert "secretStorage" not in seen["clientMeta"]["kiro"]
     assert seen["store"]["error"]["code"] == -32601

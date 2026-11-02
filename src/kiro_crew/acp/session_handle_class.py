@@ -616,6 +616,10 @@ class AcpSessionHandle:
         # ``BUCKET_CAP``; a change is logged once, so a steady overflow does not
         # repeat the warning on every snapshot.
         self._mcp_sign_in_dropped = 0
+        # Servers whose status reported ``connected`` on this session, so one later
+        # reported ``failedAuthorization`` is named as having lost its sign-in.
+        # Bounded by ``BUCKET_CAP`` names.
+        self._mcp_connected_seen: set[str] = set()
         # Servers whose last status entry for this session was ``failed`` with
         # an error that reads as a missing or refused credential (not an OAuth
         # authorization failure, which the sign-in above handles), and how many

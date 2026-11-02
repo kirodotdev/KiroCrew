@@ -316,7 +316,7 @@ class AcpRuntime:
         # vault only on a process that was spawned expecting it.
         self._kas_host_auth = False
         # Answers this process's ``_kiro/secret/*`` requests when its handshake
-        # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
+        # declared ``secretStorage`` (``_with_mcp_sign_in_storage``); None
         # otherwise, and those requests then get -32601. Set at each handshake.
         self._mcp_secret_server: kas_secret_storage.SecretStorageServer | None = None
         # Set for a remote session: built-in file/shell tools give way to the workspace server.

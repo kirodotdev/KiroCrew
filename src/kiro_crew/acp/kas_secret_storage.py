@@ -1,10 +1,13 @@
-"""Crew as the KAS engine's store for remote MCP sign-ins (opt-in).
+"""Crew as the KAS engine's store for remote MCP sign-ins (on by default).
 
-When ``agent.kas_persist_mcp_sign_in`` is on, the KAS handshake declares
+When the spawn keeps sign-ins (``agent.kas_persist_mcp_sign_in``, true unless the
+operator sets it false; on a governed host -- a security policy installed, or
+``agent.mcp_registry_mode`` -- only when the admin's security
+policy also sets ``mcp_persist_sign_in``), the KAS handshake declares
 ``_meta.kiro.secretStorage`` and the engine keeps an MCP server's OAuth state
 through three connection-level requests that name no session:
 ``_kiro/secret/get {key}`` -> ``{value}``, ``_kiro/secret/store {key, value}``
-and ``_kiro/secret/delete {key}``. Off (the default), nothing is declared, the
+and ``_kiro/secret/delete {key}``. Otherwise nothing is declared, the
 engine holds every grant in its own memory, and a stray request is answered
 -32601 by the reader loop like any other unclaimed method.
 
@@ -39,6 +42,7 @@ import asyncio
 import copy
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -51,10 +55,13 @@ __all__ = [
     "METHOD_SECRET_STORE",
     "SECRET_METHODS",
     "McpGrantStore",
+    "PolicyPermit",
     "SecretStorageRefused",
     "SecretStorageServer",
+    "SignInSettings",
     "is_secret_method",
-    "persistence_enabled",
+    "policy_permit",
+    "sign_in_settings",
     "with_secret_storage",
 ]
 
@@ -90,21 +97,89 @@ class SecretStorageRefused(Exception):
     """A secret request Crew will not serve. The message never holds a value."""
 
 
-def persistence_enabled() -> bool:
-    """``agent.kas_persist_mcp_sign_in`` as configured. Blocking; call off the loop.
+@dataclass(frozen=True)
+class SignInSettings:
+    """The two ``config`` inputs to a spawn's decision, from ONE effective-config read.
 
-    Any failure to read config is OFF: the feature is opt-in, so a broken config
-    keeps today's in-memory behaviour rather than starting to store tokens.
+    ``keep`` is ``agent.kas_persist_mcp_sign_in`` (true unless the operator set it
+    false) and ``registry_governed`` is ``agent.mcp_registry_mode``. Both come from
+    the same load, so the two can never describe different files.
+    """
+
+    keep: bool
+    registry_governed: bool
+
+
+def sign_in_settings() -> SignInSettings | None:
+    """Read :class:`SignInSettings` from the effective config. Blocking; off the loop.
+
+    None when the read raised, or when it came back degraded: a ``config.json``
+    or ``config.local.json`` that is present but unparseable, or a discarded
+    ``agent`` section, loads as field defaults, and those defaults say "keep
+    sign-ins" and "not registry-governed" -- the opposite of what a governed
+    host's own file may say. A degraded read therefore keeps sign-ins in memory
+    rather than deciding on values the operator did not write.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
 
-        return bool(KiroCrewConfig.load().agent.kas_persist_mcp_sign_in)
+        cfg = KiroCrewConfig.load()
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "MCP sign-in persistence stays off: config unreadable (%s)", type(exc).__name__
         )
-        return False
+        return None
+    if cfg._base_unreadable or cfg._overlay_unreadable or "agent" in cfg.degraded_sections:
+        logger.warning(
+            "MCP sign-in persistence stays off: the config read was degraded, so its "
+            "agent settings are defaults rather than the operator's"
+        )
+        return None
+    return SignInSettings(
+        keep=cfg.agent.kas_persist_mcp_sign_in is True,
+        registry_governed=cfg.agent.mcp_registry_mode is True,
+    )
+
+
+@dataclass(frozen=True)
+class PolicyPermit:
+    """What the installed security policy says about keeping sign-ins.
+
+    ``installed`` is whether a governance ceiling is installed at all (a
+    standalone host with no ``security_policy.json`` has none); ``permits`` is
+    its top-level ``mcp_persist_sign_in``.
+    """
+
+    installed: bool
+    permits: bool
+
+
+def policy_permit() -> PolicyPermit:
+    """Read :class:`PolicyPermit` from the installed governance ceiling.
+
+    The policy's top-level ``mcp_persist_sign_in``
+    (``GovernanceCeiling.mcp_persist_sign_in``). ``security_policy.json``
+    is a keystone the sandbox mounts read-only and the agent file gate refuses to
+    write, so the opt-in is the admin's alone. A ceiling that cannot be read
+    answers installed and not permitting: a host that may be governed stays
+    strict. A memory read of the installed ceiling.
+    """
+    try:
+        from kiro_crew.platform.context import current_context
+
+        governance = current_context().governance
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "MCP sign-in persistence stays off: the security policy could not be read (%s)",
+            type(exc).__name__,
+        )
+        return PolicyPermit(installed=True, permits=False)
+    if governance is None:
+        return PolicyPermit(installed=False, permits=False)
+    return PolicyPermit(
+        installed=True,
+        permits=getattr(governance, "mcp_persist_sign_in", False) is True,
+    )
 
 
 def with_secret_storage(capabilities: dict[str, Any]) -> dict[str, Any]:

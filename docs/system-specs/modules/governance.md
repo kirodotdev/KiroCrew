@@ -3802,6 +3802,19 @@ enterprise build caps at 1800 seconds (`30m`, the shortest choice); the baseline
 already denies `yolo` there until a policy permits it. Two tiers fold to the
 lower cap.
 
+**`mcp_persist_sign_in` (policy top level, policy-only).** A JSON
+boolean, `false` when absent; any other value fails the load, and a profile
+carrying it is rejected. It is the admin's opt-in for a governed host -- any
+host with this policy installed, and any host declaring `agent.mcp_registry_mode`:
+`true` lets a KAS process there keep a remote MCP
+server's OAuth sign-in in Crew's grant vault (`kas/mcp-grants/`), as a regular
+install does by default ([acp-client](acp-client.md) § KAS MCP OAuth sign-in). Off, every
+sign-in on that host stays in the engine's memory and a new KAS process asks
+again; `agent.kas_persist_mcp_sign_in: true` in `config.json` does not lift it,
+and `false` there still turns persistence off when the policy permits it.
+Because it widens the host it is in the authority-only class: a lower tier
+cannot supply it, and the authority's value stands.
+
 **Enterprise values under local tiers.** In an enterprise build
 `tiers._with_enterprise_value_floors` fills the authority's `updates.channel`
 (`stable`), `yolo_max_seconds` (1800) and, when `slack` is a permitted member, an

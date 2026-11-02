@@ -259,6 +259,7 @@ _STRUCTURAL_KEYS = frozenset(
         "distribution",
         "fallback",
         "yolo_max_seconds",
+        "mcp_persist_sign_in",
     }
 )
 
@@ -574,6 +575,7 @@ def parse_policy(
     if raw_updates is not None and not isinstance(raw_updates, dict):
         raise PlatformCompositionError("security policy 'updates' must be an object")
     yolo_max_seconds = _parse_yolo_max_seconds(data.get("yolo_max_seconds"))
+    persist_sign_in = _parse_persist_sign_in(data.get("mcp_persist_sign_in"))
     raw_distribution = data.get("distribution")
     if raw_distribution is not None and not isinstance(raw_distribution, dict):
         raise PlatformCompositionError("security policy 'distribution' must be an object")
@@ -619,7 +621,24 @@ def parse_policy(
         agentcore_gateway_url=composed_gateway_url,
         agentcore_workload_name=composed_workload_name,
         yolo_max_seconds=yolo_max_seconds,
+        mcp_persist_sign_in=persist_sign_in,
     )
+
+
+def _parse_persist_sign_in(raw: object) -> bool:
+    """The policy's ``mcp_persist_sign_in``: a JSON boolean, or absent (off).
+
+    Fails closed on any other value: a string ``"true"`` or a ``1`` is not an
+    admin's unambiguous opt-in to storing OAuth tokens on a governed
+    host, and a load that guessed either way would decide the ceiling for them.
+    """
+    if raw is None:
+        return False
+    if not isinstance(raw, bool):
+        raise PlatformCompositionError(
+            f"security policy 'mcp_persist_sign_in' must be true or false, got {raw!r}"
+        )
+    return raw
 
 
 def _parse_yolo_max_seconds(raw: object) -> int:
@@ -686,6 +705,13 @@ def parse_profile(data: Mapping[str, object]) -> Profile:
     if "yolo_max_seconds" in data:
         raise PlatformCompositionError(
             "profiles may not set 'yolo_max_seconds' — the auto-approve cap is policy-only"
+        )
+    # ``mcp_persist_sign_in`` is POLICY-ONLY for the same mechanical
+    # reason, and because it widens the host: a profile is narrow-only.
+    if "mcp_persist_sign_in" in data:
+        raise PlatformCompositionError(
+            "profiles may not set 'mcp_persist_sign_in' — the registry "
+            "sign-in opt-in is policy-only (a profile can only narrow the ceiling)"
         )
     if "fallback" in data:
         raise PlatformCompositionError(

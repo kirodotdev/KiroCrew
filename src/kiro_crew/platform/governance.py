@@ -1276,6 +1276,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ipv6_or_none,
         _parse_control,
         _parse_controls,
+        _parse_persist_sign_in,
         _parse_yolo_max_seconds,
         _read_json_file,
         _refuse_inexact_origin_entries,
