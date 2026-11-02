@@ -529,8 +529,9 @@ async def test_adopt_leaves_a_row_this_incarnation_just_accepted_alone(
 
     assert report.cancelled == [] and store.state_of(waiting.id) == m.QUEUED
     assert h.done()
-    # flake-ok: pre-existing unbounded await of the admit task parked above, moved verbatim; tracked for a de-flake pass
-    live = await parked  # the slot freed and the live admission claimed it
+    live = await await_until(
+        parked, timeout=30, what="parked admission gets the freed slot"
+    )  # the slot freed and the live admission claimed it
     assert live.generation == 1 and live.done()
 
 
@@ -607,8 +608,7 @@ async def test_adopt_leaves_a_retry_wait_row_carrying_an_answer_alone(
     assert adm_a.answer_input(rec.id, "hunter2") is True
     wait.cancel()  # -- crash before the re-admission
     with pytest.raises(asyncio.CancelledError):
-        # flake-ok: pre-existing await of the input-wait task cancelled just above, moved verbatim; tracked for a de-flake pass
-        await wait
+        await await_until(wait, timeout=30, what="cancelled input wait settles")
     assert store_a.state_of(rec.id) == m.RETRY_WAIT
     store_a.close()
 
@@ -860,8 +860,7 @@ async def test_answer_is_restored_from_the_wake_event_after_a_rebuild(
     # -- crash before the coroutine is re-admitted: RAM is gone.
     wait.cancel()
     with pytest.raises(asyncio.CancelledError):
-        # flake-ok: pre-existing await of the input-wait task cancelled just above, moved verbatim; tracked for a de-flake pass
-        await wait
+        await await_until(wait, timeout=30, what="cancelled input wait settles")
     assert store_a.state_of(rec.id) == m.RETRY_WAIT  # claimable, no lease
     store_a.close()
     store_b = TaskStore(path, window=8, clock=clock, network_fs=False).open()
