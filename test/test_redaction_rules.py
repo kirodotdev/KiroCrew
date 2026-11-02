@@ -845,21 +845,26 @@ class TestStructuralRows:
 
 class TestSessionCookie:
     @pytest.mark.parametrize(
-        "template",
+        "template, expected_rule_id",
         [
-            "Set-Cookie: sessionid={v}; Path=/; HttpOnly; Secure",
-            "Cookie: theme=dark; PHPSESSID={v}; lang=en",
-            "Cookie: JSESSIONID={v}",
-            "Set-Cookie: connect.sid={v}; Path=/",
-            "Set-Cookie: ASP.NET_SessionId={v}; path=/",
-            'curl -H "Cookie: session={v}" https://app.example.com/me',
+            ("Set-Cookie: sessionid={v}; Path=/; HttpOnly; Secure", "labelled.session_cookie"),
+            ("Cookie: theme=dark; PHPSESSID={v}; lang=en", "labelled.session_cookie"),
+            ("Cookie: JSESSIONID={v}", "labelled.session_cookie"),
+            ("Set-Cookie: connect.sid={v}; Path=/", "labelled.session_cookie"),
+            ("Set-Cookie: ASP.NET_SessionId={v}; path=/", "labelled.session_cookie"),
+            (
+                'curl -H "Cookie: session={v}" https://app.example.com/me',
+                "labelled.session_generic",
+            ),
         ],
     )
-    def test_session_value_is_redacted_and_other_cookies_kept(self, template: str) -> None:
+    def test_session_value_is_redacted_and_other_cookies_kept(
+        self, template: str, expected_rule_id: str
+    ) -> None:
         value = synth(32, ALNUM, 80)
         result = redact(template.format(v=value))
         assert result.text == template.format(v=rr.PLACEHOLDER)
-        assert rule_ids(result) in (["labelled.session_cookie"], ["labelled.session_generic"])
+        assert rule_ids(result) == [expected_rule_id]
 
     def test_short_or_placeholder_session_is_kept(self) -> None:
         for text in ("session=abc", "sessionid=<session-id>", "session: ${SESSION}"):
