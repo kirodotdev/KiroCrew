@@ -119,7 +119,10 @@ class TestDraftOnlyPolicy:
         # target the configured base.
         assert "--draft" in cmd
         assert "--yes" in cmd
-        assert "--description-file" in cmd
+        # The body is passed as text, the flag every glab release has; older glab
+        # rejects --description-file as unknown.
+        assert "--description-file" not in cmd
+        assert cmd[cmd.index("--description") + 1] == "# perf: faster\n\nbody\n"
         assert "--title" in cmd
         assert "--source-branch" in cmd
         assert "--target-branch" in cmd and "main" in cmd
@@ -387,9 +390,15 @@ class TestProviderSelection:
 
 class TestProfileSelectsTheRecipe:
     def test_a_gitlab_target_gets_the_mr_recipe_on_field_five(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _public_dns: None
     ) -> None:
         """One profile serves both hosts; only field ⑤ changes with the provider."""
+        # ``_public_dns`` stubs the SSRF resolve; also pin the glab transport
+        # probe so profile selection reads neither DNS nor the installed CLI config.
+        monkeypatch.setattr(
+            "kiro_crew.apps.builtins.auto_improvement.backend.clone_setup._glab_prefers_ssh",
+            lambda _host: False,
+        )
         monkeypatch.setattr(
             "kiro_crew.apps.builtins.auto_improvement.backend.store.data_dir",
             lambda: tmp_path / "data",

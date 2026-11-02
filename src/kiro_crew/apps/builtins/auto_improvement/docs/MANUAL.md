@@ -109,7 +109,9 @@ The gate runs your suite several times per candidate (build → lint → collect
 
 1. Paste an `https://github.com/<owner>/<repo>` or `https://gitlab.com/<group>/<project>`
    URL and click **Connect**. A self-hosted GitLab URL works once its host is listed in
-   the `dashboard.gitlab_hosts` allowlist.
+   the `dashboard.gitlab_hosts` allowlist and resolves to a public address. A host that
+   resolves to a private (RFC 1918), loopback, link-local or other reserved address is
+   refused even when it is listed.
 2. Pick a **base branch**.
 
 The app clones into its own scratch directory and immediately **disables push** on that

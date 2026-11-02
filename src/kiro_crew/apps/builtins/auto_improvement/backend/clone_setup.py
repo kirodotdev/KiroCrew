@@ -49,6 +49,7 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from ..profiles import GITHUB_HOSTS as _GITHUB_HOSTS
 from ..profiles.gitlab_repo.glab_cli import GITLAB_SAAS_HOSTS as _GITLAB_SAAS_HOSTS
 from ..profiles.gitlab_repo.glab_cli import glab_prefers_ssh as _glab_prefers_ssh
+from ..profiles.gitlab_repo.glab_cli import host_pinned_env as _glab_host_pinned_env
 from ..spine.git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 
 #: Alias the ONE shared safe-config so this helper cannot drift from the others (the
@@ -115,9 +116,33 @@ _GITHUB_RE = re.compile(
     r"^https://(?:www\.)?github\.com/(?P<owner>[A-Za-z0-9._-]{1,100})"
     r"/(?P<repo>[A-Za-z0-9._-]{1,100}?)(?:\.git)?(?:/.*)?$"
 )
-#: One GitLab namespace/project segment. GitLab nests groups, so the full project
-#: path is a '/'-joined run of these (group/subgroup/project).
-_GITLAB_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+#: The characters one GitLab namespace/project segment may hold. GitLab nests groups,
+#: so the full project path is a '/'-joined run of segments (group/subgroup/project).
+_GITLAB_SEGMENT_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
+)
+_GITLAB_SEGMENT_MAX = 100
+
+
+def _is_gitlab_segment(seg: str) -> bool:
+    """True when ``seg`` is 1-100 characters, all from :data:`_GITLAB_SEGMENT_CHARS`."""
+    return 0 < len(seg) <= _GITLAB_SEGMENT_MAX and all(c in _GITLAB_SEGMENT_CHARS for c in seg)
+
+
+def _keep_allowed(text: str, allowed: frozenset[str], sep: str) -> str:
+    """``text`` with every run of characters outside ``allowed`` replaced by one ``sep``."""
+    out: list[str] = []
+    in_run = False
+    for ch in text:
+        if ch in allowed:
+            out.append(ch)
+            in_run = False
+        elif not in_run:
+            out.append(sep)
+            in_run = True
+    return "".join(out)
+
+
 #: The separator of a URL PATH (always '/', on every OS) — never a filesystem path.
 _URL_SEP = "/"
 _MAX_URL_LEN = 400
@@ -729,7 +754,7 @@ def _gitlab_dir_name(host: str, path: str) -> str:
     ends with a digest of the lower-cased ``host/path`` (GitLab paths are
     case-insensitive), so two projects whose readable parts fold together stay apart.
     """
-    readable = re.sub(r"[^A-Za-z0-9._-]+", "--", f"{host}--{path}").strip("-.")
+    readable = _keep_allowed(f"{host}--{path}", _GITLAB_SEGMENT_CHARS, "--").strip("-.")
     digest = hashlib.sha256(f"{host}/{path}".lower().encode("utf-8")).hexdigest()[:12]
     return f"gitlab+{readable}--{digest}"
 
@@ -750,7 +775,7 @@ def _parse_gitlab_path(raw_path: str) -> str:
     if len(segments) < 2:
         return ""
     for seg in segments:
-        if seg in {".", ".."} or not _GITLAB_SEGMENT_RE.match(seg):
+        if seg in {".", ".."} or not _is_gitlab_segment(seg):
             return ""
     return "/".join(segments)
 
@@ -873,6 +898,14 @@ def validate_target_url(url: str) -> tuple[CloneSpec | None, str]:
         gl_host = "gitlab.com" if host in _GITLAB_SAAS_HOSTS else candidate
         if _host_is_blocked(host):
             return None, "URL host is not allowed (blocked address)."
+        # The url is stored and shown as typed, so a `?private_token=...` query (or a
+        # `;`-params / `#` fragment carrying one) would put a credential in the app's
+        # config. Validation reads only the path, so refuse anything after it.
+        if parsed.query or parsed.fragment or parsed.params:
+            return None, (
+                "Remove the query or fragment (anything after ? or #) from the URL; "
+                "the forge CLI (gh or glab) supplies the credentials."
+            )
         path = _parse_gitlab_path(parsed.path)
         if not path:
             return None, "URL did not match a GitLab <host>/<group>/<project> URL."
@@ -993,13 +1026,24 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
     # parent (the scratch root, created above) is named as ``cwd``; the operand is made
     # absolute so it is not re-resolved against that cwd.
     dest_where = _git_cwd(dest)
+    # The credential helper belongs to the target's forge: `glab` holds GitLab logins,
+    # `gh` GitHub ones. Global/system git config is disabled above, so this one helper
+    # is the only way a private https clone authenticates. The glab helper runs under
+    # the same host pin as every other glab child, so an ambient gitlab.com token never
+    # answers a self-managed host's credential request.
+    clone_env = _git_env(network_protocol=protocol)
+    if spec.provider == PROVIDER_GITLAB:
+        helper = "credential.helper=!glab auth git-credential"
+        clone_env = _glab_host_pinned_env(clone_env, spec.host)
+    else:
+        helper = "credential.helper=!gh auth git-credential"
     try:
         proc = subprocess.run(
             [
                 "git",
                 *_GIT_SAFE_CONFIG,
                 "-c",
-                "credential.helper=!gh auth git-credential",
+                helper,
                 "clone",
                 "--origin",
                 "origin",
@@ -1009,7 +1053,7 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
             capture_output=True,
             timeout=timeout_s,
             shell=False,
-            env=_git_env(network_protocol=protocol),
+            env=clone_env,
             cwd=os.path.dirname(dest_where),
             **UTF8_TEXT,
         )
@@ -1526,6 +1570,7 @@ def _ok(spec: CloneSpec, dest: Path, *, reused: bool) -> dict:
         # The real remote, for the trusted publishers only. Kept in config rather than in
         # the clone so agent-run Bash inside the clone cannot discover it from git.
         "origin_url": spec.clone_url,
-        # Rebuilt from the validated owner/repo, so nothing else in the pasted URL is stored.
-        "target_url": f"https://github.com/{spec.display}",
+        # Rebuilt from the validated host and project path, so nothing else in the pasted
+        # URL is stored. A GitLab `display` already carries its host, so it cannot be used.
+        "target_url": f"https://{spec.host}/{spec.path}",
     }

@@ -10,9 +10,8 @@ needed at all and how it is narrowed.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from .. import GITHUB_HOSTS
 from ..pr_recipe_base import ProviderPRRecipe
@@ -31,17 +30,78 @@ DRAFT_MR_CMD = ("mr", "create", "--draft")
 #: GitHub pull URLs from ever matching. Host is deliberately unpinned: self-managed
 #: GitLab lives on arbitrary domains. Scan for the FIRST real URL, not the last
 #: line, for the same trailing-chatter reason as the GitHub recipe.
-_MR_URL_RE = re.compile(r"https://[^\s/]+/(?:[^\s/]+/)+-/merge_requests/(\d+)")
+_HTTPS = "https://"
+_DIGITS = frozenset("0123456789")
+#: The separator of a URL PATH (always '/', on every OS) — never a filesystem path.
+_URL_SEP = "/"
+
+
+def _mr_url_at(candidate: str) -> str | None:
+    """The MR URL ``candidate`` starts with, cut after the MR number, else None.
+
+    Parsed with ``urlsplit``; the path is split on ``/`` and the ``-``,
+    ``merge_requests`` and number segments are compared as exact tokens, after at
+    least one non-empty namespace/project segment.
+    """
+    try:
+        parts = urlsplit(candidate)
+    except ValueError:
+        return None
+    if parts.scheme != "https" or not parts.netloc:
+        return None
+    segs = parts.path.split(_URL_SEP)
+    # segs[0] is the empty text before the leading "/".
+    for i in range(2, len(segs) - 2):
+        if segs[i] != "-" or segs[i + 1] != "merge_requests":
+            continue
+        if not all(segs[1:i]):
+            return None
+        number = ""
+        for ch in segs[i + 2]:
+            if ch not in _DIGITS:
+                break
+            number += ch
+        if not number:
+            return None
+        return f"{_HTTPS}{parts.netloc}{_URL_SEP.join(segs[: i + 2])}{_URL_SEP}{number}"
+    return None
 
 
 def extract_mr_url(stdout: str) -> str | None:
     """Return the first real GitLab MR URL in ``stdout``, else None."""
-    match = _MR_URL_RE.search(stdout or "")
-    return match.group(0) if match else None
+    for token in (stdout or "").split():
+        start = token.find(_HTTPS)
+        while start != -1:
+            found = _mr_url_at(token[start:])
+            if found:
+                return found
+            start = token.find(_HTTPS, start + 1)
+    return None
 
 
-#: ``https://<host>/<nested/project/path>[.git]`` → host + project path.
-_HTTPS_GITLAB_RE = re.compile(r"^https://(?P<host>[^/\s]+)/(?P<path>[^\s]+?)(?:\.git)?/?$")
+def _https_host_and_path(url: str) -> tuple[str, str] | None:
+    """``https://<host>/<nested/project/path>[.git][/]`` → (host, project path), else None.
+
+    Parsed with ``urlsplit``. A query, fragment or whitespace means it is not a plain
+    remote, so it is left alone.
+    """
+    value = url.strip()
+    if any(c.isspace() for c in value):
+        return None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return None
+    if parts.scheme != "https" or not parts.netloc or parts.query or parts.fragment:
+        return None
+    if not value.startswith(_HTTPS):
+        return None
+    path = parts.path[1:]
+    path = path.removesuffix("/")
+    path = path.removesuffix(".git")
+    if not path:
+        return None
+    return parts.netloc, path
 
 
 def prefer_authenticated_gitlab_remote(url: str) -> str:
@@ -53,15 +113,15 @@ def prefer_authenticated_gitlab_remote(url: str) -> str:
     groups, so this cannot retarget the push. GitHub hosts pass through untouched;
     that transport decision belongs to the GitHub recipe.
     """
-    match = _HTTPS_GITLAB_RE.match(url.strip())
-    if not match:
+    found = _https_host_and_path(url)
+    if found is None:
         return url
-    host = match.group("host").lower()
+    host, path = found[0].lower(), found[1]
     # GitHub hosts belong to the GitHub recipe. scp-like ssh has no port slot, so a
     # port-carrying self-managed host keeps its https url.
     if host in GITHUB_HOSTS or ":" in host or not _glab_prefers_ssh(host):
         return url
-    return f"git@{host}:{match.group('path')}.git"
+    return f"git@{host}:{path}.git"
 
 
 def _remote_host(url: str) -> str:
@@ -107,8 +167,11 @@ class GitLabMRRecipe(ProviderPRRecipe):
             *DRAFT_MR_CMD,
             "--title",
             summary,
-            "--description-file",
-            str(body_path),
+            # The redacted body goes in as text: `--description` exists in every glab
+            # release, while `--description-file` is missing from older ones and makes
+            # `glab mr create` exit on an unknown flag after the branch is pushed.
+            "--description",
+            body_path.read_text(encoding="utf-8"),
             "--source-branch",
             branch,
         ]
@@ -125,5 +188,5 @@ class GitLabMRRecipe(ProviderPRRecipe):
         return cmd
 
     def _extract_ref(self, stdout: str) -> str | None:
-        """The first real MR URL in ``glab``'s stdout — see :data:`_MR_URL_RE`."""
+        """The first real MR URL in ``glab``'s stdout — see :func:`extract_mr_url`."""
         return extract_mr_url(stdout)

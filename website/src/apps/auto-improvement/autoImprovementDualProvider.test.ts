@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest'
 
-import { commitUrlOf } from '../apps/auto-improvement/AutoImprovementPage'
+import { commitUrlOf } from './AutoImprovementPage'
 import {
   isMergeRequestUrl,
   changeRequestNoun,
@@ -20,7 +20,7 @@ import {
   prPrompt,
   findingPrompt,
   rulerPrompt,
-} from '../apps/auto-improvement/lib/prompts'
+} from './lib/prompts'
 
 /** A committed ledger row: the direct-commit path stores a bare sha in `cr`. */
 const committed = (sha: string) => ({ fp: 'f1', kind: 'perf', target: 'x', status: 'committed', cr: sha })
@@ -68,6 +68,22 @@ describe('commitUrlOf (commit links derive from the configured target URL)', () 
       .toBe('https://github.com/o/r/commit/abcdef0')
     expect(commitUrlOf(committed('abcdef0'), 'https://gitlab.com/g/p/'))
       .toBe('https://gitlab.com/g/p/-/commit/abcdef0')
+    // Several trailing slashes, and `.git` before them, come off too.
+    expect(commitUrlOf(committed('abcdef0'), 'https://gitlab.com/g/p.git///'))
+      .toBe('https://gitlab.com/g/p/-/commit/abcdef0')
+    expect(commitUrlOf(committed('abcdef0'), 'https://github.com/o/r.git/tree/main'))
+      .toBe('https://github.com/o/r/commit/abcdef0')
+    // Only a whole `.git` suffix is removed.
+    expect(commitUrlOf(committed('abcdef0'), 'https://gitlab.com/g/digit'))
+      .toBe('https://gitlab.com/g/digit/-/commit/abcdef0')
+  })
+
+  it('reads the GitHub host from URL.hostname, dropping only a leading `www.`', () => {
+    // A host that merely contains github.com is not GitHub.
+    expect(commitUrlOf(committed('abcdef0'), 'https://notgithub.com/g/p'))
+      .toBe('https://notgithub.com/g/p/-/commit/abcdef0')
+    expect(commitUrlOf(committed('abcdef0'), 'https://github.com.example/g/p'))
+      .toBe('https://github.com.example/g/p/-/commit/abcdef0')
   })
 
   it('returns null rather than guessing when the target is missing or unparseable', () => {

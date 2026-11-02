@@ -74,6 +74,55 @@ class TestGitLabSaaSUrls:
         assert spec is None
         assert err.startswith("Remove the user name or token from the URL")
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://gitlab.com/group/project?private_token=glpat-abcdefghij",
+            "https://gitlab.com/group/project.git?access_token=x",
+            "https://gitlab.com/group/project/-/tree/main?private_token=x",
+            "https://gitlab.com/group/project#private_token=x",
+            "https://gitlab.com/group/project;private_token=x",
+            "https://gl.corp.example/group/project?private_token=x",
+        ],
+    )
+    def test_a_gitlab_url_with_a_query_or_fragment_is_refused(
+        self, no_dns, https_transport, allowlist, url: str
+    ) -> None:
+        """Validation reads only the path, but the url is stored as typed: a token in
+        the query, fragment or params would land in the app's config."""
+        allowlist("gl.corp.example")
+        spec, err = clone_setup.validate_target_url(url)
+        assert spec is None
+        assert err.startswith("Remove the query or fragment")
+
+    @pytest.mark.parametrize(
+        ("url", "target"),
+        [
+            ("https://gitlab.com/group/project", "https://gitlab.com/group/project"),
+            ("https://www.gitlab.com/g/sub/p.git", "https://gitlab.com/g/sub/p"),
+            ("https://gl.corp.example:8443/g/p", "https://gl.corp.example:8443/g/p"),
+            ("https://github.com/owner/repo", "https://github.com/owner/repo"),
+        ],
+    )
+    def test_setup_stores_the_target_url_of_its_own_forge(
+        self, no_dns, https_transport, allowlist, monkeypatch, tmp_path, url: str, target: str
+    ) -> None:
+        """The stored target_url picks the provider and pins the origin, so a GitLab
+        project must not be stored as a github.com URL."""
+        allowlist("gl.corp.example:8443")
+        monkeypatch.setattr(clone_setup, "_push_disabled", lambda dest: True)
+        spec, err = clone_setup.validate_target_url(url)
+        assert err == "" and spec is not None
+        result = clone_setup._ok(spec, tmp_path, reused=False)
+        assert result["target_url"] == target
+        again, err = clone_setup.validate_target_url(result["target_url"])
+        assert err == "" and again is not None
+        assert (again.provider, again.host, again.path) == (spec.provider, spec.host, spec.path)
+
+    def test_a_plain_gitlab_url_still_passes_the_query_check(self, no_dns, https_transport) -> None:
+        spec, err = clone_setup.validate_target_url("https://gitlab.com/group/project/")
+        assert err == "" and spec is not None
+
     def test_the_clone_dir_never_collides_with_another_forge(
         self, no_dns, https_transport, allowlist
     ) -> None:
@@ -391,11 +440,14 @@ class TestDepsProviderSwitch:
 
     @pytest.fixture
     def auth(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, bool]:
-        """Per-CLI `auth status` outcome, delivered through a patched subprocess.run."""
+        """Per-CLI `auth status` outcome, delivered through a patched subprocess.run.
+
+        Any other probe (the gate's `python -m pytest --version`) succeeds.
+        """
         state = {"gh": True, "glab": True}
 
         def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-            code = 0 if state.get(cmd[0], False) else 1
+            code = 0 if state.get(cmd[0], True) else 1
             return subprocess.CompletedProcess(args=cmd, returncode=code, stdout="", stderr="")
 
         monkeypatch.setattr(deps.subprocess, "run", _run)
@@ -465,3 +517,64 @@ class TestDepsProviderSwitch:
         self._cfg(target_url="https://gl.corp.example/g/p")
         report = deps.check_deps()
         assert report["blocking"] == ["glab"]
+
+
+class TestTheCloneUsesTheTargetForgesCredentialHelper:
+    """A private https clone authenticates only through the one helper the clone names.
+
+    Global/system git config is disabled for the clone, so a GitLab target cloned with
+    the ``gh`` helper has no way to authenticate. The spawn is captured, not run.
+    """
+
+    @pytest.fixture
+    def captured(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        def _fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if "clone" in argv:
+                seen["argv"] = argv
+                seen["env"] = kwargs.get("env") or {}
+            return subprocess.CompletedProcess(argv, 1, "", "fatal: stub")
+
+        monkeypatch.setattr(clone_setup.subprocess, "run", _fake_run)
+        monkeypatch.setenv("GITLAB_TOKEN", "glpat-ambient-saas-token")
+        monkeypatch.setenv("GITLAB_HOST", "steer.example")
+        return seen
+
+    @staticmethod
+    def _helper(argv: list[str]) -> str:
+        return next(a for a in argv if a.startswith("credential.helper="))
+
+    def test_a_gitlab_com_target_uses_glab(
+        self, no_dns, https_transport, captured, tmp_path
+    ) -> None:
+        _result, err = clone_setup.setup_safe_clone(
+            "https://gitlab.com/group/project", tmp_path / "scratch"
+        )
+        assert "git clone failed" in err
+        assert self._helper(captured["argv"]) == "credential.helper=!glab auth git-credential"
+        assert captured["env"]["GITLAB_HOST"] == "gitlab.com"
+        assert captured["env"]["GITLAB_TOKEN"] == "glpat-ambient-saas-token"
+
+    def test_a_self_managed_target_never_sees_the_saas_token(
+        self, no_dns, https_transport, allowlist, captured, tmp_path
+    ) -> None:
+        allowlist("gl.corp.example:8443")
+        _result, err = clone_setup.setup_safe_clone(
+            "https://gl.corp.example:8443/team/svc", tmp_path / "scratch"
+        )
+        assert "git clone failed" in err
+        assert self._helper(captured["argv"]) == "credential.helper=!glab auth git-credential"
+        assert captured["env"]["GITLAB_HOST"] == "gl.corp.example:8443"
+        assert "GITLAB_TOKEN" not in captured["env"]
+
+    def test_a_github_target_keeps_the_gh_helper(
+        self, no_dns, https_transport, captured, tmp_path
+    ) -> None:
+        _result, err = clone_setup.setup_safe_clone(
+            "https://github.com/owner/repo", tmp_path / "scratch"
+        )
+        assert "git clone failed" in err
+        assert self._helper(captured["argv"]) == "credential.helper=!gh auth git-credential"
+        # The GitHub path is unchanged: no GitLab host pin is applied to its env.
+        assert captured["env"]["GITLAB_HOST"] == "steer.example"

@@ -113,6 +113,11 @@ const COMMITTED_STATUS = 'committed'
 /** A short commit sha, as the direct-commit path records it in the ledger's `cr`. */
 const SHA_RE = /^[0-9a-f]{7,40}$/i
 
+/** `path` without one trailing `.git`. */
+function stripGitSuffix(path: string): string {
+  return path.endsWith('.git') ? path.slice(0, -'.git'.length) : path
+}
+
 /** The code-host URL for a committed finding's sha, or null when we cannot build one.
  *
  *  The direct-commit path stores a bare sha (e.g. `1537c449`) rather than a url, so
@@ -137,16 +142,19 @@ export function commitUrlOf(finding: Finding, targetUrl: string): string | null 
   // `.git` suffix or a trailing slash that a web commit URL must not repeat.
   // Setup also accepts a deep link (`/o/r/tree/main`, `/g/p/-/tree/main`) and
   // validates only the project part, so the link is cut back to that part below.
-  const raw = base.pathname.split('/-/')[0].replace(/\/+$/, '').replace(/\.git$/, '')
+  let raw = base.pathname.split('/-/')[0]
+  while (raw.endsWith('/')) raw = raw.slice(0, -1)
+  raw = stripGitSuffix(raw)
   if (!raw || raw === '/') return null
   // Setup accepts github.com (with or without `www.`) as the one GitHub host; every
   // other allowed host is a GitLab (gitlab.com or a configured self-hosted instance),
   // whose web path is `/-/commit/`.
-  const isGitHub = base.hostname.replace(/^www\./, '') === 'github.com'
+  const host = base.hostname.startsWith('www.') ? base.hostname.slice('www.'.length) : base.hostname
+  const isGitHub = host === 'github.com'
   const infix = isGitHub ? '/commit/' : '/-/commit/'
   // A GitHub project is exactly `owner/repo`; a GitLab one is the whole path before `/-/`.
   const path = isGitHub
-    ? `/${raw.split('/').filter(Boolean).slice(0, 2).join('/')}`.replace(/\.git$/, '')
+    ? stripGitSuffix(`/${raw.split('/').filter(Boolean).slice(0, 2).join('/')}`)
     : raw
   if (isGitHub && path.split('/').length < 3) return null
   return `${base.origin}${path}${infix}${sha}`

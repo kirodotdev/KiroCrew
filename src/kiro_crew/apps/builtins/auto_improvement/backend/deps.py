@@ -28,6 +28,7 @@ from kiro_crew.security import redact_and_truncate
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 from ..profiles import target_provider
+from ..profiles.gitlab_repo.glab_cli import gitlab_url_host, glab_env
 from ..spine.push_policy import strip_credential_env
 from .clone_setup import PROVIDER_GITHUB, PROVIDER_GITLAB
 from .store import config_path, read_json
@@ -41,19 +42,24 @@ def _which(binary: str) -> str:
     return shutil.which(binary) or ""
 
 
-def _forge_cli_authenticated(binary: str) -> tuple[bool, str]:
+def _forge_cli_authenticated(
+    binary: str, *, host: str = "", env: "dict[str, str] | None" = None
+) -> tuple[bool, str]:
     """Whether a forge CLI (``gh``/``glab``) has a live login.
 
     Presence on PATH is not enough: an unauthenticated CLI fails only when a
-    pull/merge request is drafted, which is the worst moment to find out.
+    pull/merge request is drafted, which is the worst moment to find out. A
+    *host* asks about that host's login alone (``--hostname``).
     """
     if not _which(binary):
         return False, f"{binary} is not on PATH"
+    argv = [binary, "auth", "status"] + (["--hostname", host] if host else [])
     try:
         proc = subprocess.run(
-            [binary, "auth", "status"],
+            argv,
             capture_output=True,
             timeout=_PROBE_TIMEOUT_S,
+            env=env,
             **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -99,8 +105,15 @@ def _gh_authenticated() -> tuple[bool, str]:
     return _forge_cli_authenticated("gh")
 
 
-def _glab_authenticated() -> tuple[bool, str]:
-    return _forge_cli_authenticated("glab")
+def _glab_authenticated(host: str) -> tuple[bool, str]:
+    """``glab``'s login on the target *host* only, with the host-pinned environment.
+
+    An unpinned ``glab auth status`` checks every host in glab's config with the
+    ambient gitlab.com token, so it would send that token to a self-managed host.
+    """
+    if not host:
+        return False, "the GitLab target has no host"
+    return _forge_cli_authenticated("glab", host=host, env=glab_env(host))
 
 
 def _configured_provider() -> str:
@@ -109,6 +122,12 @@ def _configured_provider() -> str:
     if not str(cfg.get("target_url") or "").strip():
         return ""
     return target_provider(cfg)
+
+
+def _configured_host() -> str:
+    """The configured target's canonical GitLab host (port kept), or ``""``."""
+    cfg = read_json(config_path(), {}) or {}
+    return gitlab_url_host(str(cfg.get("target_url") or ""))
 
 
 def check_deps() -> dict[str, Any]:
@@ -121,7 +140,12 @@ def check_deps() -> dict[str, Any]:
     provider = _configured_provider()
     git_path = _which("git")
     gh_ok, gh_detail = _gh_authenticated()
-    glab_ok, glab_detail = _glab_authenticated()
+    if provider == PROVIDER_GITLAB:
+        glab_ok, glab_detail = _glab_authenticated(_configured_host())
+    else:
+        # glab's login is checked only for a GitLab target, against that host.
+        glab_path = _which("glab")
+        glab_ok, glab_detail = bool(glab_path), glab_path or "glab is not on PATH"
     ruff_path = _which("ruff")
     pytest_problem = gate_pytest_problem()
 
