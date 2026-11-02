@@ -474,6 +474,43 @@ class TestReorderUniqueOrders:
             assert orders[a["id"]] >= 2
 
 
+class TestCreateAfterDeleteAppends:
+    @pytest.mark.asyncio
+    async def test_new_column_after_deletes_lands_last(self, tmp_path, monkeypatch):
+        """A column created after two deletes sorts after every survivor.
+
+        Four columns hold orders 0-3; deleting the first two leaves 2 and 3, so a
+        position counted from the list length (2) would tie the first survivor.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            made = {}
+            for name in ("A", "B", "C", "D"):
+                resp = await client.post("/api/chat/tag-columns", json={"name": name})
+                assert resp.status == 201
+                made[name] = await resp.json()
+            for name in ("A", "B"):
+                resp = await client.delete(f"/api/chat/tag-columns/{made[name]['id']}")
+                assert resp.status == 200
+            resp = await client.post("/api/chat/tag-columns", json={"name": "E"})
+            assert resp.status == 201
+            listed = await (await client.get("/api/chat/tag-columns")).json()
+            assert [c["name"] for c in listed] == ["C", "D", "E"]
+            assert len({c["order"] for c in listed}) == 3
+
+    @pytest.mark.asyncio
+    async def test_first_column_gets_order_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/tag-columns", json={"name": "Only"})
+            assert resp.status == 201
+            assert (await resp.json())["order"] == 0
+
+
 class TestDropOnMixedColumn:
     @pytest.mark.asyncio
     async def test_drop_on_status_plus_filter_still_swaps_status(self, tmp_path, monkeypatch):
