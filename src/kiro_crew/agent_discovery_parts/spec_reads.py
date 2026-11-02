@@ -594,9 +594,16 @@ def spec_by_declared_name(
         # directory is untrusted input, and both texts reach a terminal.
         names = ", ".join(repr(str(path)) for path in match_paths)
         if divergent:
+            # The message is what a refused KAS session start shows the user,
+            # so it names every file and the one repair that works: the scan
+            # matches the declared ``name``, so renaming a file changes nothing.
             raise AmbiguousAgentSpecError(
                 f"{len(match_paths)} specs declare the name {agent_id!r} with differing "
-                f"content: {names}. Which one is live is undefined -- remove or rename one.",
+                f"content: {names}. Kiro Crew will not pick one, because each can "
+                "carry its own tools and prompt. To fix it, keep exactly one: delete "
+                'the others, or change the "name" field inside all but one. Renaming '
+                'a file alone does not help, because agents are matched by the "name" '
+                "they declare.",
                 paths=match_paths,
             )
         # The name and the filenames are untrusted input from a user-writable
