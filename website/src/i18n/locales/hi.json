@@ -8336,6 +8336,7 @@
       "no_ci_checks_were_returned": "कोई CI जाँच नहीं लौटाई गई।",
       "no_commits_were_returned": "कोई कमिट नहीं लौटाया गया।",
       "no_description_was_provided": "कोई विवरण नहीं दिया गया।",
+      "open_check_details": "{{name}} जाँच का विवरण खोलो",
       "open_pull_request": "पुल रिक्वेस्ट खोलें",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "{{sections}} के लिए प्रोवाइडर के नतीजे अधूरे हो सकते हैं। पूरी सूची के लिए मर्ज रिक्वेस्ट खोलें।",

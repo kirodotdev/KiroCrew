@@ -606,7 +606,7 @@ function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; sou
           target="_blank"
           rel="noopener noreferrer"
           className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2.5 no-underline hover:bg-bg-hover transition-colors"
-          aria-label={`Open ${check.name} check details`}
+          aria-label={i18nT('components.pullRequestPanel.open_check_details', { name: check.name })}
         >
           {details}
         </a>

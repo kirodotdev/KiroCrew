@@ -8336,6 +8336,7 @@
       "no_ci_checks_were_returned": "Es wurden keine CI-Prüfungen zurückgegeben.",
       "no_commits_were_returned": "Es wurden keine Commits zurückgegeben.",
       "no_description_was_provided": "Es wurde keine Beschreibung angegeben.",
+      "open_check_details": "Details der Prüfung {{name}} öffnen",
       "open_pull_request": "Pull Request öffnen",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Die Anbieterergebnisse können für {{sections}} unvollständig sein. Öffne den Merge Request für den vollständigen Satz.",

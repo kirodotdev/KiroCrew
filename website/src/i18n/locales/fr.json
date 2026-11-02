@@ -8475,6 +8475,7 @@
       "no_ci_checks_were_returned": "Aucune vérification CI n'a été renvoyée.",
       "no_commits_were_returned": "Aucun commit n'a été renvoyé.",
       "no_description_was_provided": "Aucune description n'a été fournie.",
+      "open_check_details": "Ouvrir les détails de la vérification {{name}}",
       "open_pull_request": "Ouvrir la pull request",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Les résultats du fournisseur peuvent être partiels pour {{sections}}. Ouvrez la merge request pour l’ensemble complet.",

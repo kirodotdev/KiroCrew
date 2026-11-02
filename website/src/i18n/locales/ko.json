@@ -8197,6 +8197,7 @@
       "no_ci_checks_were_returned": "CI 검사가 반환되지 않았습니다.",
       "no_commits_were_returned": "커밋이 반환되지 않았습니다.",
       "no_description_was_provided": "설명이 제공되지 않았습니다.",
+      "open_check_details": "{{name}} 검사 세부 정보 열기",
       "open_pull_request": "풀 리퀘스트 열기",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "{{sections}}에 대한 공급자 결과가 일부일 수 있습니다. 전체를 보려면 머지 리퀘스트를 여세요.",

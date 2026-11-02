@@ -8475,6 +8475,7 @@
       "no_ci_checks_were_returned": "Non è stato restituito alcun controllo CI.",
       "no_commits_were_returned": "Non è stato restituito alcun commit.",
       "no_description_was_provided": "Non è stata fornita alcuna descrizione.",
+      "open_check_details": "Apri i dettagli del controllo {{name}}",
       "open_pull_request": "Apri la pull request",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "I risultati del provider potrebbero essere parziali per {{sections}}. Apri la merge request per l’insieme completo.",

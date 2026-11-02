@@ -8197,6 +8197,7 @@
       "no_ci_checks_were_returned": "未返回任何 CI 检查。",
       "no_commits_were_returned": "未返回任何提交。",
       "no_description_was_provided": "未提供描述。",
+      "open_check_details": "打开 {{name}} 检查详情",
       "open_pull_request": "打开拉取请求",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "服务商返回的结果可能不完整：{{sections}}。打开合并请求以获取完整内容。",
