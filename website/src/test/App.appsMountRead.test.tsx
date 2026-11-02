@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { configureStore } from '@reduxjs/toolkit'
 import dashboardReducer from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
@@ -17,6 +17,7 @@ import instancesReducer from '../store/instancesSlice'
 import App from '../App'
 import { ThemeProvider } from '../hooks/useTheme'
 import { api } from '../api/client'
+import { newQueryClient } from '../api/queryClient'
 
 // Mock the routed pages so App mounts without real page trees — the test
 // asserts the NAV RAIL's rows, not page content.
@@ -120,7 +121,16 @@ function renderApp() {
       instances: instancesReducer,
     },
   })
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // The dashboard's own client policy (staleTime: Infinity), not a bare
+  // client. The lazy LinkPreviewLayer and MessageActionLayer are ['apps']
+  // observers whose mount can land after the boot read settles; when it does
+  // depends on whether an earlier test already loaded their modules, and on
+  // runner load. Under a bare client's staleTime 0 each such late mount sent
+  // another GET, so the read counts below depended on test order. The
+  // dashboard serves those mounts from cache. retry stays off: the shell's
+  // own backoff owns retries.
+  const qc = newQueryClient()
+  qc.setDefaultOptions({ queries: { ...qc.getDefaultOptions().queries, retry: false } })
   render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
