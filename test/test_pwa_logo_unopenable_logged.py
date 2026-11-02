@@ -51,7 +51,7 @@ def _unopenable_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRe
     ]
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _fresh_open_log(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     monkeypatch.setattr(dist_file_response, "_UNOPENABLE_LAST_LOGGED", {})
     caplog.set_level(logging.WARNING, logger=dist_file_response.logger.name)
@@ -82,6 +82,7 @@ def _assert_one_warning(caplog: pytest.LogCaptureFixture, target: Path, err: int
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_open_log")
 @pytest.mark.parametrize(("err", "status"), _ERRORS)
 async def test_an_unopenable_pwa_file_logs_once_and_keeps_its_status(
     tmp_path: Path,
@@ -104,6 +105,7 @@ async def test_an_unopenable_pwa_file_logs_once_and_keeps_its_status(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_open_log")
 @pytest.mark.parametrize(("err", "status"), _ERRORS)
 async def test_an_unopenable_custom_avatar_logs_once_and_keeps_its_status(
     tmp_path: Path,
@@ -124,6 +126,7 @@ async def test_an_unopenable_custom_avatar_logs_once_and_keeps_its_status(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_open_log")
 @pytest.mark.parametrize(("err", "status"), _ERRORS)
 async def test_an_unopenable_default_logo_logs_once_and_keeps_its_status(
     tmp_path: Path,
@@ -146,6 +149,7 @@ async def test_an_unopenable_default_logo_logs_once_and_keeps_its_status(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_fresh_open_log")
 async def test_served_and_missing_pwa_files_and_logos_log_no_open_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
