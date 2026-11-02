@@ -641,6 +641,19 @@ class TestParseIcs:
         )
         assert len(cal.parse_ics(text)) == 1
 
+    @pytest.mark.parametrize("status", ["CANCELLED", "cancelled", " Cancelled "])
+    def test_a_cancelled_event_is_not_listed(self, status: str):
+        text = _ics(
+            _vevent(UID="off", SUMMARY="Called off", DTSTART=_stamp(1), STATUS=status),
+            _vevent(UID="on", SUMMARY="Still on", DTSTART=_stamp(2)),
+        )
+        assert [e.title for e in cal.parse_ics(text)] == ["Still on"]
+
+    @pytest.mark.parametrize("status", ["TENTATIVE", "CONFIRMED"])
+    def test_a_tentative_or_confirmed_event_is_still_listed(self, status: str):
+        text = _ics(_vevent(UID="u", SUMMARY="Kept", DTSTART=_stamp(1), STATUS=status))
+        assert [e.title for e in cal.parse_ics(text)] == ["Kept"]
+
     def test_events_sorted_by_start(self):
         text = _ics(
             _vevent(UID="later", SUMMARY="Later", DTSTART=_stamp(5)),

@@ -172,6 +172,23 @@ class TestPollOnce:
         assert store.tasks_path(meeting_id, root).is_file()
 
     @pytest.mark.asyncio
+    async def test_a_cancelled_imminent_event_is_neither_cached_nor_pre_created(
+        self, root: Path, enabled, tmp_path: Path
+    ):
+        ics = tmp_path / "cancelled.ics"
+        ics.write_text(
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:off\nSUMMARY:Called off\n"
+            f"DTSTART:{_stamp(timedelta(minutes=5))}\nSTATUS:CANCELLED\n"
+            "END:VEVENT\nEND:VCALENDAR\n"
+        )
+        _configure_ics(root, ics)
+        app = make_app(root)
+        await poller.poll_once(app)
+
+        assert store.read_calendar_cache(root) == []
+        assert _meeting_dirs(root) == set()
+
+    @pytest.mark.asyncio
     async def test_the_pre_created_meeting_matches_what_the_dashboard_would_init(
         self, root: Path, enabled, calendar: Path
     ):
