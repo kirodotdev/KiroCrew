@@ -397,8 +397,10 @@ async def api_session_control_create(request: web.Request) -> web.Response:
 
         caller = session_ledger.ledger_key(_read_session_key(request))
         ledger = await holds_ledger(caller)
+        # Attested only while the caller holds a ledger: without one nothing is armed.
+        attested = await conductor_patrol.attested_caller_slot(request, state) if ledger else ""
         patrol, reason = await conductor_patrol.ensure_patrol(
-            state, caller, has_ledger=ledger, source="session-create"
+            state, caller, has_ledger=ledger, source="session-create", attested_caller=attested
         )
         result = {**result, "patrol": patrol, "patrol_reason": reason}
         note = conductor_patrol.patrol_note(state, caller, reason, has_ledger=ledger)
