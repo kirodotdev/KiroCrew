@@ -68,7 +68,7 @@ function configResponse(overrides: Partial<MeetingsConfig> = {}): ConfigResponse
 
 const TERM: DictionaryTerm = { correct: 'Kiro Crew', aliases: ['kiro cru', 'kero crew'] }
 
-function renderView() {
+async function renderView() {
   const notify = vi.fn()
   const onBack = vi.fn()
   const queryClient = new QueryClient({
@@ -79,6 +79,9 @@ function renderView() {
       <SettingsView onBack={onBack} notify={notify} />
     </QueryClientProvider>,
   )
+  // The registries arrive after the first paint, and Radix mounts its option rows when they do.
+  // Wait for the loaded roster so those mounts settle inside the wait, not after it.
+  await screen.findByText('note-taker')
   return { ...utils, notify, onBack, queryClient }
 }
 
@@ -111,7 +114,7 @@ afterEach(() => {
 
 describe('Meetings SettingsView — rendering', () => {
   it('populates both provider pickers from the backend registries', async () => {
-    renderView()
+    await renderView()
 
     expect(await screen.findByRole('combobox', { name: 'Task provider' })).toHaveTextContent(
       'Taskei',
@@ -126,7 +129,7 @@ describe('Meetings SettingsView — rendering', () => {
   })
 
   it('lists every configured agent with its own default-enabled switch', async () => {
-    renderView()
+    await renderView()
 
     expect(await screen.findByText('note-taker')).toBeInTheDocument()
     expect(screen.getByText('sketch-artist')).toBeInTheDocument()
@@ -149,7 +152,7 @@ describe('Meetings SettingsView — rendering', () => {
         ],
       }),
     )
-    renderView()
+    await renderView()
 
     expect(
       await screen.findByRole('switch', { name: 'Enable Note Taker by default' }),
@@ -161,7 +164,7 @@ describe('Meetings SettingsView — rendering', () => {
 
   it('shows the source field only for a provider that declares requires_source', async () => {
     apiMocks.config.mockResolvedValue(configResponse({ calendar: { provider: 'none', source: '' } }))
-    renderView()
+    await renderView()
 
     await screen.findByRole('combobox', { name: 'Calendar provider' })
     expect(screen.queryByLabelText('Calendar source')).not.toBeInTheDocument()
@@ -172,7 +175,7 @@ describe('Meetings SettingsView — rendering', () => {
   })
 
   it('returns to the meetings list from the header action', async () => {
-    const { onBack } = renderView()
+    const { onBack } = await renderView()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Back' }))
     expect(onBack).toHaveBeenCalledTimes(1)
@@ -181,7 +184,7 @@ describe('Meetings SettingsView — rendering', () => {
 
 describe('Meetings SettingsView — saving config', () => {
   it('sends the whole config with only the task provider replaced', async () => {
-    const { notify } = renderView()
+    const { notify } = await renderView()
 
     await pickOption('Task provider', 'GitHub')
 
@@ -191,7 +194,7 @@ describe('Meetings SettingsView — saving config', () => {
   })
 
   it('keeps the existing calendar source when only the provider changes', async () => {
-    renderView()
+    await renderView()
 
     await pickOption('Calendar provider', 'No calendar')
 
@@ -201,7 +204,7 @@ describe('Meetings SettingsView — saving config', () => {
   })
 
   it('trims the typed source, saves it, and drops the local draft', async () => {
-    renderView()
+    await renderView()
 
     const field = await screen.findByLabelText('Calendar source')
     fireEvent.change(field, { target: { value: '  /srv/calendars/team.ics  ' } })
@@ -219,7 +222,7 @@ describe('Meetings SettingsView — saving config', () => {
   })
 
   it('reports a failed save and leaves the chain usable for the next change', async () => {
-    const { notify } = renderView()
+    const { notify } = await renderView()
     apiMocks.saveConfig.mockRejectedValueOnce(new Error('boom'))
 
     await pickOption('Task provider', 'GitHub')
@@ -234,7 +237,7 @@ describe('Meetings SettingsView — saving config', () => {
   })
 
   it('rewrites only the toggled agent and leaves the rest of the roster alone', async () => {
-    renderView()
+    await renderView()
 
     fireEvent.click(
       await screen.findByRole('switch', { name: 'Enable Sketch Artist by default' }),
@@ -253,7 +256,7 @@ describe('Meetings SettingsView — saving config', () => {
   })
 
   it('derives a queued save from the config the previous save landed', async () => {
-    renderView()
+    await renderView()
 
     // Hold the first response open so the second toggle is queued while the
     // first request is still in flight — the race the chain exists for.
@@ -288,13 +291,13 @@ describe('Meetings SettingsView — saving config', () => {
 
 describe('Meetings SettingsView — speech dictionary', () => {
   it('offers the empty state until a correction exists', async () => {
-    renderView()
+    await renderView()
 
     expect(await screen.findByTestId('empty-state-title')).toHaveTextContent('No corrections yet')
   })
 
   it('refuses a correction that is missing either half', async () => {
-    const { notify } = renderView()
+    const { notify } = await renderView()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add' }))
     expect(notify).toHaveBeenCalledWith('Enter what was heard and what it should say.', {
@@ -310,7 +313,7 @@ describe('Meetings SettingsView — speech dictionary', () => {
   })
 
   it('splits the aliases on commas, submits on Enter, and clears both fields', async () => {
-    renderView()
+    await renderView()
 
     const aliases = await screen.findByLabelText('Misheard forms')
     const correct = screen.getByLabelText('Correct term')
@@ -330,7 +333,7 @@ describe('Meetings SettingsView — speech dictionary', () => {
   })
 
   it('ignores every key other than Enter in the correct-term field', async () => {
-    renderView()
+    await renderView()
 
     const correct = await screen.findByLabelText('Correct term')
     fireEvent.change(screen.getByLabelText('Misheard forms'), { target: { value: 'kiro cru' } })
@@ -342,7 +345,7 @@ describe('Meetings SettingsView — speech dictionary', () => {
 
   it('reports a correction the backend rejected', async () => {
     apiMocks.addTerm.mockRejectedValueOnce(new Error('nope'))
-    const { notify } = renderView()
+    const { notify } = await renderView()
 
     fireEvent.change(await screen.findByLabelText('Misheard forms'), {
       target: { value: 'kiro cru' },
@@ -359,7 +362,7 @@ describe('Meetings SettingsView — speech dictionary', () => {
 
   it('removes a correction and falls back to the empty state', async () => {
     apiMocks.dictionary.mockResolvedValue({ terms: [TERM] })
-    renderView()
+    await renderView()
 
     expect(await screen.findByText('kiro cru, kero crew')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Remove Kiro Crew' }))
