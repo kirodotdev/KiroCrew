@@ -492,6 +492,39 @@ class TestToSlackMrkdwnKeepTables:
         assert "| Model | Cost |" in result
         assert "•" not in result
 
+    def test_a_lone_pipe_row_is_never_swallowed(self):
+        """A pipe line with no separator under it is prose, not a header."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("Legend:\n| a | b |\nend") == "Legend:\n| a | b |\nend"
+
+    def test_a_table_inside_a_code_fence_is_left_alone(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        src = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
+        assert to_slack_mrkdwn(src) == src
+
+    def test_a_table_in_a_tilde_or_longer_fence_is_left_alone(self):
+        from kiro_crew.slack.format import _convert_tables
+
+        table = "| a | b |\n|---|---|\n| 1 | 2 |"
+        for src in (f"~~~\n{table}\n~~~", f"````\n```\n{table}\n````"):
+            assert _convert_tables(src) == src
+
+    def test_escaped_and_inline_code_pipes_stay_in_their_cell(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        escaped = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| a \\| b | or |")
+        assert escaped == "• *op:* a | b | *meaning:* or"
+        code = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| `a|b` | or |")
+        assert code == "• *op:* `a|b` | *meaning:* or"
+
+    def test_an_empty_row_keeps_its_place(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn("| a | b |\n|---|---|\n| 1 | 2 |\n|  |  |\n| 3 | 4 |")
+        assert out == "• *a:* 1 | *b:* 2\n• —\n• *a:* 3 | *b:* 4"
+
     def test_keep_tables_still_converts_headings(self):
         from kiro_crew.slack.format import to_slack_mrkdwn
 

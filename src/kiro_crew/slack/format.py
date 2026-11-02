@@ -22,6 +22,9 @@ from kiro_crew.messaging.display_safety import (
     strip_ansi,
 )
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
+from kiro_crew.messaging.tables import _MAX_INDENT as _TABLE_MAX_INDENT
+from kiro_crew.messaging.tables import _cells as _table_cells
+from kiro_crew.messaging.tables import _fence_delimiter, _is_row_candidate, _table_run_end
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security.exfil import redact_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials
@@ -1002,49 +1005,97 @@ def _convert_inline(line: str) -> str:
     return line
 
 
-# Markdown table: line starting with | and containing at least one more |
-_TABLE_ROW_RE = re.compile(r"^\s*\|(.+\|)\s*$")
-# Separator row: only |, -, :, spaces
-_TABLE_SEP_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
+def _table_bullets(headers: list[str], data_rows: list[list[str]]) -> list[str]:
+    """One ``•`` line per data row, each cell labelled by its column header.
+
+    An empty row keeps its place as ``• —``. A table whose every row is
+    empty returns ``[]``, so the caller keeps the authored table instead.
+    """
+    bullets: list[str] = []
+    any_cell = False
+    for row in data_rows:
+        parts: list[str] = []
+        for i, cell in enumerate(row):
+            if not cell:
+                continue
+            if i < len(headers):
+                parts.append(f"*{headers[i]}:* {cell}")
+            else:
+                parts.append(cell)
+        any_cell = any_cell or bool(parts)
+        bullets.append("• " + (" | ".join(parts) if parts else "—"))
+    return bullets if any_cell else []
+
+
+def _starts_with_pipe(line: str) -> bool:
+    return line.lstrip(" \t").startswith("|")
+
+
+def _slack_table_end(lines: list[str], start: int) -> int | None:
+    """Exclusive end of the table whose header is ``lines[start]``, or None.
+
+    Every row starts with ``|``, as Slack tables always have here. The header
+    and separator are checked by :func:`kiro_crew.messaging.tables._table_run_end`
+    on just those two lines; body rows run while lines start with ``|``.
+    """
+    if not _starts_with_pipe(lines[start]) or _table_run_end(lines[start : start + 2], 0) is None:
+        return None
+    end = start + 2
+    while end < len(lines) and _starts_with_pipe(lines[end]) and _is_row_candidate(lines[end]):
+        end += 1
+    return end
 
 
 def _convert_tables(text: str) -> str:
-    """Convert markdown tables to vertical list format for mobile readability."""
+    """Convert markdown tables to vertical list format for mobile readability.
+
+    Only a real GFM table is converted: a header row, a separator row right
+    under it, and matching cell counts, the grammar
+    :mod:`kiro_crew.messaging.tables` validates. Anything else keeps every
+    byte, so a lone ``| a | b |`` line stays in the reply. Fenced code
+    (backtick or tilde, in a list or not) is opaque, as it is to
+    :func:`kiro_crew.messaging.tables.render_tables`. Cells are split by the
+    same module, so ``\\|`` and a pipe inside inline code stay cell text.
+    """
     lines = text.split("\n")
     result: list[str] = []
-    headers: list[str] = []
-    data_rows: list[list[str]] = []
-
-    def _flush_table() -> None:
-        if not headers or not data_rows:
-            return
-        for row in data_rows:
-            parts: list[str] = []
-            for i, cell in enumerate(row):
-                if not cell:
-                    continue
-                if i < len(headers):
-                    parts.append(f"*{headers[i]}:* {cell}")
-                else:
-                    parts.append(cell)
-            result.append("• " + " | ".join(parts))
-        headers.clear()
-        data_rows.clear()
-
-    for line in lines:
-        if _TABLE_ROW_RE.match(line):
-            if _TABLE_SEP_RE.match(line):
-                continue
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            if not headers:
-                headers.extend(cells)
-            else:
-                data_rows.append(cells)
-        else:
-            _flush_table()
+    # Fence state follows render_tables: run length and char of the open
+    # fence (0 = closed) and the indent window its closer must sit in.
+    fence_run = 0
+    fence_char = ""
+    fence_min_indent = 0
+    fence_max_indent = _TABLE_MAX_INDENT
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        run_len, char, rest, close_min, close_max = _fence_delimiter(
+            line,
+            min_indent=fence_min_indent if fence_run else 0,
+            max_indent=fence_max_indent if fence_run else _TABLE_MAX_INDENT,
+            allow_list_container=not fence_run,
+        )
+        if fence_run:
             result.append(line)
-
-    _flush_table()
+            if char == fence_char and run_len >= fence_run and not rest.strip():
+                fence_run, fence_char = 0, ""
+                fence_min_indent, fence_max_indent = 0, _TABLE_MAX_INDENT
+            index += 1
+            continue
+        if run_len and not (char == "`" and "`" in rest):
+            fence_run, fence_char = run_len, char
+            fence_min_indent, fence_max_indent = close_min, close_max
+            result.append(line)
+            index += 1
+            continue
+        end = _slack_table_end(lines, index)
+        if end is None:
+            result.append(line)
+            index += 1
+            continue
+        run = lines[index:end]
+        bullets = _table_bullets(_table_cells(run[0]), [_table_cells(r) for r in run[2:]])
+        result.extend(bullets if bullets else run)
+        index = end
     return "\n".join(result)
 
 
