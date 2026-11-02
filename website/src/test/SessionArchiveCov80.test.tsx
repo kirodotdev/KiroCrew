@@ -18,13 +18,23 @@ const ENTRIES: Entry[] = [
 
 /** Route /api/session/archive to the list, /api/session/archive/<name> to a body. */
 function stubFetch(opts: { listFails?: boolean; body?: string; bodyFails?: boolean } = {}) {
+  // The list read now goes through the typed `api.sessionArchiveList()` (which
+  // runs `j`), so a fake Response must carry what `j`'s auth-recovery pipeline
+  // reads: `headers.get(...)` and `url`. The body read is handed back raw and
+  // only touches `ok`/`status`/`text`, but gets the same shape for consistency.
+  const resp = (url: string, init: { ok: boolean; status: number; json?: () => Promise<unknown>; text?: () => Promise<string> }) => ({
+    ...init,
+    url,
+    headers: new Headers(),
+    clone() { return resp(url, init) },
+  })
   const fetchMock = vi.fn(async (url: string) => {
     if (url === '/api/session/archive') {
-      if (opts.listFails) return { ok: false, status: 500, text: async () => 'list-blew-up' }
-      return { ok: true, status: 200, json: async () => ({ archives: ENTRIES }) }
+      if (opts.listFails) return resp(url, { ok: false, status: 500, text: async () => 'list-blew-up' })
+      return resp(url, { ok: true, status: 200, json: async () => ({ archives: ENTRIES }) })
     }
-    if (opts.bodyFails) return { ok: false, status: 404, text: async () => 'read-blew-up' }
-    return { ok: true, status: 200, text: async () => opts.body ?? 'archive-body' }
+    if (opts.bodyFails) return resp(url, { ok: false, status: 404, text: async () => 'read-blew-up' })
+    return resp(url, { ok: true, status: 200, text: async () => opts.body ?? 'archive-body' })
   })
   vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
   return fetchMock
