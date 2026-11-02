@@ -861,14 +861,18 @@ class TestStaleTurnProbeAccounting:
     ):
         """A consult slower than the cutoff must not itself end the turn."""
         monkeypatch.setattr(acp_client, "_READ_TIMEOUT", 0.01)
+        # The client family reads one clock; a virtual one lets the stubbed
+        # consult cost 0.15 s on it, so the consult's runtime is arithmetic
+        # and no wall-clock wait stands in for it.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
         client = self._silent_client(tmp_path)
+        client._last_activity = clock.monotonic()
         consults = {"n": 0}
 
         async def _slow_consult():
             consults["n"] += 1
-            # flake-ok: the stubbed consult outlasts the patched cutoff on purpose; the assertion is about that latency
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed consult is slower than the cutoff on purpose; the test measures that latency
-            await asyncio.sleep(0.15)  # 3x the cutoff patched below
+            clock.advance(0.15)  # 3x the cutoff patched below
             return VERDICT_UNKNOWN, "flat counters"
 
         client._consult_liveness_model_wait = _slow_consult
