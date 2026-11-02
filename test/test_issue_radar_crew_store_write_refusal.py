@@ -29,7 +29,6 @@ from issue_radar_crew_store_helpers import (  # noqa: F401 -- the autouse fixtur
 )
 
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
-from kiro_crew.apps.builtins.issue_radar.backend import crew_store_ledger
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.crew_log.schema import KIND_SESSION
@@ -66,7 +65,7 @@ def test_a_crews_writes_are_serialized_so_two_editors_cannot_both_pass(tmp_path,
     entered = threading.Event()
     at_lock = threading.Event()
     real_fold = cs._fold_checkpoint
-    real_lock_for = crew_store_ledger._crew_write_lock
+    real_lock_for = cs._crew_write_lock
 
     def slow_fold(crew_id, units):
         checkpoint = real_fold(crew_id, units)
@@ -81,7 +80,8 @@ def test_a_crews_writes_are_serialized_so_two_editors_cannot_both_pass(tmp_path,
         return real_lock_for(crew_id)
 
     monkeypatch.setattr(cs, "_fold_checkpoint", slow_fold)
-    monkeypatch.setattr(crew_store_ledger, "_crew_write_lock", lock_for)
+    # Through the facade: it reaches every owner that holds the lock factory.
+    monkeypatch.setattr(cs, "_crew_write_lock", lock_for)
     outcomes: dict[int, object] = {}
 
     def write(number):
