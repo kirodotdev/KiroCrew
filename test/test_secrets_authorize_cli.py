@@ -512,3 +512,54 @@ def test_authorize_without_origin_and_without_remove_exits_2(tmp_path, monkeypat
     assert exc_info.value.code == 2
     # Nothing was published: no policy file exists.
     assert not (policy_path(tmp_path)).exists()
+
+
+def test_authorize_refuses_on_windows_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    """On Windows the mediated call route refuses every call, so signing a grant
+    there only produces one the host can never use. Adding an authorization must
+    refuse at this first surface, exit 1, name the platform, and create neither
+    the hidden directory nor ``policy.json``.
+
+    The seam is Windows with the namespace precreate OFF, which is exactly the
+    arrangement that would otherwise have the CLI create the directory itself
+    (``_spawn_precreates_policy_directory`` false) and write the policy."""
+    from kiro_crew import cli_commands, platform_compat
+    from kiro_crew.secrets_mediation.provenance import REQUEST_POLICY_DIRNAME
+
+    # Start from a host with nothing precreated, so a failure to refuse would
+    # leave the directory + policy behind for the assertions to catch.
+    policy_path(tmp_path).parent.rmdir()
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(cli_commands_secrets, "_spawn_precreates_policy_directory", lambda: False)
+
+    args = argparse.Namespace(
+        name="K", origin="https://api.example.com", header=None, remove=False, reset=False
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli_commands._handle_secrets_authorize(args)
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "Windows" in err
+    assert not (tmp_path / REQUEST_POLICY_DIRNAME).exists()
+    assert not policy_path(tmp_path).exists()
+
+
+def test_authorize_remove_still_works_on_windows(tmp_path, monkeypatch):
+    """``--remove`` under Windows is unchanged: an owner whose entry was signed on
+    another host (or before an upgrade) can still clear it. The Windows add-refuse
+    guard must not catch the remove path."""
+    from kiro_crew import cli_commands, platform_compat
+
+    # Seed an entry on a non-Windows host first (IS_WINDOWS defaults false here).
+    _run_authorize(monkeypatch, tmp_path, secret_name="GONE", origin="https://api.example.com")
+    load_authorization(tmp_path, "GONE")  # present before removal
+
+    # Now, as Windows, remove it. origin=None mirrors the omitted optional positional.
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    args = argparse.Namespace(name="GONE", origin=None, header=None, remove=True, reset=False)
+    cli_commands._handle_secrets_authorize(args)  # must NOT raise SystemExit
+
+    with pytest.raises(Exception) as exc_info:
+        load_authorization(tmp_path, "GONE")
+    assert "authoriz" in str(exc_info.value).lower()

@@ -71,6 +71,20 @@ def _handle_secrets_authorize(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+    # Adding a grant on Windows signs a policy no call can use: ``call_api_with_secret``
+    # refuses every mediated call under ``platform_compat.IS_WINDOWS`` (it needs a
+    # Unix-domain socket with peer-credential attestation, which Windows cannot
+    # provide). Refuse at this first surface the owner touches — before any directory
+    # or policy is created — so no unusable grant is ever written. ``--remove`` is
+    # untouched so an owner can still clear an entry a non-Windows host authorized.
+    if not args.remove and platform_compat.IS_WINDOWS:
+        print(
+            "error: custom-secret mediation is not supported on Windows (it needs a "
+            "Unix-domain socket with peer-credential attestation); nothing was "
+            "authorized.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     from kiro_crew.config import loader as _loader
     from kiro_crew.secrets_mediation.policy import POLICY_LOCK_FILENAME, policy_path
     from kiro_crew.secrets_mediation.provenance import REQUEST_POLICY_DIRNAME

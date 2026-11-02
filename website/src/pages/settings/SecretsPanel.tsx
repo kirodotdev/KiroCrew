@@ -22,6 +22,7 @@ import { i18nT } from '../../i18n/t'
 import { Link } from 'react-router-dom'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 
 /**
  * The three secrets requests go through `api/client.ts`, not a local `fetch`.
@@ -279,6 +280,11 @@ function ManagedSecretRow({
 
 export function SecretsPanel() {
   const queryClient = useQueryClient()
+  // On Windows the mediated call route refuses every call (it needs a
+  // Unix-domain socket with peer-credential attestation), so the authorize
+  // command only signs a grant the host can never use. Show a notice in place
+  // of the command there, mirroring the CLI's own refusal.
+  const gatewayPlatform = useGatewayPlatform()
   const [showAdd, setShowAdd] = useState(false)
   const [newName, setNewName] = useState('')
   const [newValue, setNewValue] = useState('')
@@ -489,12 +495,18 @@ export function SecretsPanel() {
               <p className="text-sm text-muted">
                 {i18nT('settings.secrets.custom_description')}
               </p>
-              <p className="text-sm text-muted">
-                {i18nT('settings.secrets.custom_authorize', { server: SECRETS_SERVER_GRANT })}
-                <code className="block mt-1.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 font-mono text-[12px] text-accent overflow-x-auto">
-                  {SECRETS_AUTHORIZE_COMMAND}
-                </code>
-              </p>
+              {gatewayPlatform === 'windows' ? (
+                <p className="text-sm text-muted">
+                  {i18nT('settings.secrets.custom_authorize_windows')}
+                </p>
+              ) : (
+                <p className="text-sm text-muted">
+                  {i18nT('settings.secrets.custom_authorize', { server: SECRETS_SERVER_GRANT })}
+                  <code className="block mt-1.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 font-mono text-[12px] text-accent overflow-x-auto">
+                    {SECRETS_AUTHORIZE_COMMAND}
+                  </code>
+                </p>
+              )}
 
               {otherNames.length > 0 ? (
                 <div className="space-y-2">
