@@ -9216,26 +9216,6 @@
       "drag_to_select_the_screen_region_to_capture": "Перетащите, чтобы выбрать область экрана для захвата",
       "screen_capture_drag_the_area_you_want_it_attache": "Снимок экрана — выделите нужную область; она вложится автоматически при отпускании"
     },
-    "meetYourMatesIntro": {
-      "sample_line_1": "Ночью я нашёл нестабильный тест и исправил его.",
-      "sample_line_2": "PR готов. Выполнить слияние?",
-      "sample_merge": "Слить",
-      "sample_show_first": "Сначала покажи"
-    },
-    "startupVideoModal": {
-      "close": "Закрыть",
-      "crewmates_description": "Они сами находят работу, выполняют её и спрашивают тебя только тогда, когда ты им нужен.",
-      "crewmates_title": "Знакомься: твои напарники.",
-      "got_it": "Понятно",
-      "media_failed": "Не удалось загрузить видео о функции",
-      "new_tag": "Новое",
-      "not_now": "Не сейчас",
-      "share": "Поделиться",
-      "share_description": "Превратите это видео о функции в карточку, которую можно опубликовать где угодно.",
-      "share_include_title": "Добавить название видео",
-      "streaming": "Играет из сети",
-      "try_now": "Попробовать"
-    },
     "tagManagerList": {
       "adopt_tag": "Настроить разрешения агентов",
       "adopting_tag": "Настройка…",
@@ -21933,7 +21913,6 @@
     "try_today_entry_one": "Попробуй сегодня: {{count}} новая функция",
     "getting_started_result": "Первый готовый результат",
     "getting_started_brief": "Настроить утреннюю сводку",
-    "intro_video_title": "{{productName}} за 15 секунд",
     "indicator_label": "Обзор: опробовано {{done}} из {{total}} функций",
     "streak_days_other": "{{count}} дня · рекорд {{best}}",
     "close": "Закрыть обзор",
@@ -21962,6 +21941,7 @@
     "title": "Обзор",
     "notice_count_few": "{{count}} новости в обзоре",
     "streak_days_many": "{{count}} дней · рекорд {{best}}",
-    "notice_count_many": "{{count}} новостей в обзоре"
+    "notice_count_many": "{{count}} новостей в обзоре",
+    "video_failed": "Не удалось загрузить видео о функции"
   }
 }

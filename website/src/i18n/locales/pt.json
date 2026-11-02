@@ -9071,26 +9071,6 @@
       "drag_to_select_the_screen_region_to_capture": "Arraste para selecionar a região da tela a capturar",
       "screen_capture_drag_the_area_you_want_it_attache": "Captura de tela — arraste a área desejada; ela é anexada automaticamente ao soltar"
     },
-    "meetYourMatesIntro": {
-      "sample_line_1": "Encontrei um teste instável durante a noite e o corrigi.",
-      "sample_line_2": "O PR está pronto. Quer que eu faça o merge?",
-      "sample_merge": "Fazer o merge",
-      "sample_show_first": "Mostre-me antes"
-    },
-    "startupVideoModal": {
-      "close": "Fechar",
-      "crewmates_description": "Eles encontram o trabalho, fazem e só perguntam quando precisam de você.",
-      "crewmates_title": "Conheça seus colegas.",
-      "got_it": "Entendi",
-      "media_failed": "Não foi possível carregar o vídeo do recurso",
-      "new_tag": "Novo",
-      "not_now": "Agora não",
-      "share": "Compartilhar",
-      "share_description": "Transforme este vídeo do recurso em um card que você pode publicar em qualquer lugar.",
-      "share_include_title": "Incluir o título do vídeo",
-      "streaming": "Reproduz online",
-      "try_now": "Experimentar agora"
-    },
     "tagManagerList": {
       "adopt_tag": "Configurar permissões de agentes",
       "adopting_tag": "Configurando…",
@@ -21497,7 +21477,6 @@
     "question_waiting_you": "Kiro aguarda a sua resposta"
   },
   "milestones": {
-    "intro_video_title": "{{productName}} em 15 segundos",
     "notice_count_one": "{{count}} novidade em Explorar",
     "pill_count": "Explorar {{done}}/{{total}}",
     "streak_days_one": "{{count}} dia · melhor {{best}}",
@@ -21533,7 +21512,8 @@
     "streak_short_one": "Sequência de {{count}} dia",
     "indicator_label_streak_many": "Explorar: {{done}} de {{total}} recursos experimentados, sequência de {{count}} dias",
     "notice_count_other": "{{count}} novidades em Explorar",
-    "intro_video_save_failed": "Não foi possível salvar que você assistiu ou fechou este vídeo. Tente de novo."
+    "intro_video_save_failed": "Não foi possível salvar que você assistiu ou fechou este vídeo. Tente de novo.",
+    "video_failed": "Não foi possível carregar o vídeo do recurso"
   },
   "milestone": {
     "widgets": {

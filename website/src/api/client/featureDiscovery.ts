@@ -1,6 +1,6 @@
 /**
  * What the dashboard surfaces unprompted: welcome-screen suggestions, the
- * startup feature videos, and tips.
+ * Explore panel's feature videos, and tips.
  */
 
 import type { ClientTransport } from './transport'
@@ -11,82 +11,37 @@ export type SuggestionKind = 'code' | 'review' | 'ops' | 'tasks' | 'write' | 're
 /** One `/api/suggestions` item. `kind` is a string on the wire, so an unknown value is possible. */
 export type SuggestionItem = string | { text: string; kind?: string }
 
-/** One feature-intro clip, as GET /api/feature-videos/next reports it.
+/** One feature-intro clip, as GET /api/feature-videos/library lists it.
  *
- *  `src` and `poster` are whole URLs the BACKEND authored, and the only correct
- *  use of them is to play them verbatim. A clip cached on disk is named by a
- *  same-origin path under `/feature-videos/<release>/`; a clip still on the CDN
- *  is named by an absolute `https://` URL. Which of the two it is is stated in
- *  `source`, so the client never has to guess from the string and never composes
- *  a URL of its own — that is what keeps a config value from pointing the player
- *  at a third-party host. */
+ *  `src` and `poster` are same-origin paths the BACKEND authored, and the only
+ *  correct use of them is to play them verbatim. Every clip offered is on this
+ *  machine already (a downloaded clip under `/feature-videos/<release>/`), so the
+ *  client never composes a URL of its own -- that is what keeps a config value
+ *  from pointing the player at a third-party host. */
 export interface FeatureVideo {
   id: string
-  /** Which dashboard feature the clip introduces — the per-feature key the
-   *  backend dedupes on, so a verdict survives the clip being re-cut under a
-   *  new id. */
+  /** Which dashboard feature the clip introduces. */
   feature: string
+  /** Manifest data, English only, like the clip itself. */
   title: string
   description: string
   src: string
   poster: string
   duration_s: number
   /** Docs FILENAME, as the backend's catalog stores it (`"feature-tips.md"`) --
-   *  not a URL, and unlike `tipsNext` no resolved `doc_link` ships beside it.
-   *  Resolve it with `tipDocHref` from `utils/docsLink`, which validates the
-   *  filename shape and returns the public docs URL. */
+   *  not a URL. Resolve it with `tipDocHref` from `utils/docsLink`. */
   doc?: string
-  /** Where the bytes are RIGHT NOW: `'local'` means the release folder on this
-   *  machine has the file, `'remote'` means the player will stream it from the
-   *  CDN. It changes what the clip costs to open, not what it is -- so it drives
-   *  `preload` and the streaming hint, and nothing else.
-   *
-   *  Optional because a gateway that predates the remote catalog sends no such
-   *  field, and an absent answer means the clip is the local kind it has always
-   *  been. The release a clip belongs to is NOT here: the settings panel reads
-   *  that from `FeatureVideoStatus`, and a second copy on the clip had no
-   *  reader. */
-  source?: 'local' | 'remote'
-  /** In-dashboard route for "Try now" (e.g. `/members?member=mate`). When set,
-   *  the footer is "Not now" / "Try now" with no header close, and "Not now"
-   *  hands a "New" tag to the rail item for that route. Absent on older
-   *  gateways and on intros with no call to action. */
-  cta_route?: string
-  /** The dashboard component that IS this intro, in place of a clip: `src` and
-   *  `poster` are empty and nothing is fetched. `"crewmates"` is the
-   *  "Meet your Mates." dialog. Absent on older gateways and on every clip. */
-  component?: string
 }
 
-/** GET /api/feature-videos/next.
+/** GET /api/feature-videos/library.
  *
- *  `video: null` is the steady state, not an error — it is what the endpoint
- *  returns once every clip has been seen or dismissed, which for most launches
- *  is always. `enabled` is the operator kill switch, reported separately so a
- *  disabled install still answers 200 rather than making the client read a
- *  failure as a policy. */
-export interface FeatureVideoNext {
-  video: FeatureVideo | null
+ *  Every clip the Explore card may show: on disk, no `seen` / `dismissed`
+ *  verdict, and not for a feature already in use. An empty list is the steady
+ *  state once everything is finished, and hides the card. `enabled` is the
+ *  operator kill switch; with it off the list is empty. */
+export interface FeatureVideoLibrary {
+  videos: FeatureVideo[]
   enabled: boolean
-  /** May this install pull clip bytes over the network at all? Reported beside
-   *  the clip because it is what makes a `'remote'` offer playable: with
-   *  downloads off there is no route to the bytes, so the modal treats a remote
-   *  clip as unshowable rather than opening a player that cannot fill.
-   *  Optional on the wire so a gateway that predates it reads as OFF -- the
-   *  fail-closed direction. */
-  download_enabled?: boolean
-}
-
-/** GET /api/feature-videos/probe.
- *
- *  Server-side reachability for one clip, by id. It replaces a client-side HEAD,
- *  which could only ever work for a same-origin path: a CDN URL answers a
- *  cross-origin HEAD without CORS headers, so the browser reports a network
- *  failure and an entirely healthy clip reads as missing. The server has no such
- *  restriction, and it is also the side that knows whether the file is in the
- *  release folder. */
-export interface FeatureVideoProbe {
-  ok: boolean
 }
 
 /** GET /api/feature-videos/status — the cache readout the settings panel shows. */
@@ -187,9 +142,8 @@ export function createFeatureDiscoveryEndpoints({ get, post, j, jfetch: fetch, j
   }
 
   const featureVideos = {
-    // Feature intro videos (startup). This GET carries METADATA only — the clip
-    // itself is fetched by the <video> element, and only after the modal opens,
-    // so a launch that shows nothing costs one small JSON round trip.
+    // Feature intro videos (the Explore card). This GET carries METADATA only:
+    // the clip itself is fetched by the <video> element, and only after Watch.
     //
     // `sessionKey` MUST carry the active slot's key (`dashboard:<slot>`). Both routes
     // call the server's `_is_restricted_session`, and that guard treats the shared
@@ -198,21 +152,13 @@ export function createFeatureDiscoveryEndpoints({ get, post, j, jfetch: fetch, j
     // thing left standing between a session that keeps nothing and a PERMANENT verdict
     // is the dashboard's client-side gate. Same cooperative-honesty contract as
     // `mobileLoginLink` (`./remoteAccess`).
-    featureVideoNext: (sessionKey?: string, blockedRoutes: string[] = []) =>
-      get('/api/feature-videos/next' + (blockedRoutes.length ? '?blocked_routes=' + encodeURIComponent(blockedRoutes.join(',')) : ''), sessionKey)
-        .then(j) as Promise<FeatureVideoNext>,
+    featureVideoLibrary: (sessionKey?: string) =>
+      get('/api/feature-videos/library', sessionKey).then(j) as Promise<FeatureVideoLibrary>,
     /** Permanent per-video verdict, not a snooze: `seen` retires the clip on
      *  completion or an explicit acknowledgement, `dismissed` retires it on a
      *  close, and the backend never offers that video again after either. */
     featureVideoFeedback: (id: string, status: 'seen' | 'dismissed', sessionKey?: string) =>
       post('/api/feature-videos/feedback', { id, status }, sessionKey).then(j) as Promise<{ ok: true }>,
-    /** Is this clip's file actually reachable? Asked of the SERVER, because the
-     *  client cannot ask it: a remote clip lives on another origin, where a HEAD
-     *  from the page is refused for want of CORS headers and a healthy clip is
-     *  indistinguishable from a missing one. */
-    featureVideoProbe: (id: string, sessionKey?: string) =>
-      get('/api/feature-videos/probe?id=' + encodeURIComponent(id), sessionKey)
-        .then(j) as Promise<FeatureVideoProbe>,
     /** Cache readout for the settings panel.
      *
      *  `sessionKey` MUST carry the active slot's key, for the same reason the two

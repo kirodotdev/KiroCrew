@@ -9071,26 +9071,6 @@
       "drag_to_select_the_screen_region_to_capture": "Trascina per selezionare l'area dello schermo da catturare",
       "screen_capture_drag_the_area_you_want_it_attache": "Cattura dello schermo — trascina l'area desiderata; viene allegata automaticamente al rilascio"
     },
-    "meetYourMatesIntro": {
-      "sample_line_1": "Stanotte ho trovato un test instabile e l'ho sistemato.",
-      "sample_line_2": "La PR è pronta. Vuoi che la unisca?",
-      "sample_merge": "Uniscila",
-      "sample_show_first": "Mostramela prima"
-    },
-    "startupVideoModal": {
-      "close": "Chiudi",
-      "crewmates_description": "Trovano il lavoro, lo fanno e ti chiedono solo quando hanno bisogno di te.",
-      "crewmates_title": "Scopri i tuoi compagni.",
-      "got_it": "Ho capito",
-      "media_failed": "Non è stato possibile caricare il video della funzionalità",
-      "new_tag": "Nuovo",
-      "not_now": "Non ora",
-      "share": "Condividi",
-      "share_description": "Trasforma questo video della funzione in una scheda che puoi pubblicare dove vuoi.",
-      "share_include_title": "Includi il titolo del video",
-      "streaming": "Riproduce online",
-      "try_now": "Prova ora"
-    },
     "tagManagerList": {
       "adopt_tag": "Configura le autorizzazioni degli agenti",
       "adopting_tag": "Configurazione…",
@@ -21582,13 +21562,13 @@
     "intro_video_save_failed": "Impossibile salvare che hai guardato o chiuso questo video. Riprova.",
     "streak_short_one": "Serie di {{count}} giorno",
     "streak_short_other": "Serie di {{count}} giorni",
-    "intro_video_title": "{{productName}} in 15 secondi",
     "pill_count": "Esplora {{done}}/{{total}}",
     "intro_video_watch": "Guarda",
     "notice_one": "Raggiunto: {{title}}",
     "getting_started_result": "Un primo risultato finito",
     "indicator_label_streak_one": "Esplora: {{done}} funzioni provate su {{total}}, serie di {{count}} giorno",
     "streak_short_many": "Serie di {{count}} giorni",
-    "try_it": "Prova"
+    "try_it": "Prova",
+    "video_failed": "Non è stato possibile caricare il video della funzionalità"
   }
 }

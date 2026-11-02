@@ -8781,26 +8781,6 @@
       "drag_to_select_the_screen_region_to_capture": "ドラッグしてキャプチャする画面領域を選択してください",
       "screen_capture_drag_the_area_you_want_it_attache": "スクリーンキャプチャ — ドラッグして希望の領域を選択してください; 放すと自動的に添付されます"
     },
-    "meetYourMatesIntro": {
-      "sample_line_1": "夜間に不安定なテストを見つけて修正しました。",
-      "sample_line_2": "PR の準備ができました。マージしますか？",
-      "sample_merge": "マージする",
-      "sample_show_first": "先に見せて"
-    },
-    "startupVideoModal": {
-      "close": "閉じる",
-      "crewmates_description": "仕事を見つけて片付け、あなたが必要なときだけ尋ねます。",
-      "crewmates_title": "クルーメイトをご紹介します。",
-      "got_it": "了解しました",
-      "media_failed": "機能紹介動画を読み込めませんでした",
-      "new_tag": "新着",
-      "not_now": "今はしない",
-      "share": "共有",
-      "share_description": "この機能紹介動画を、どこにでも投稿できる共有カードにします。",
-      "share_include_title": "動画のタイトルを含める",
-      "streaming": "オンライン再生",
-      "try_now": "今すぐ試す"
-    },
     "tagManagerList": {
       "adopt_tag": "エージェント権限を設定",
       "adopting_tag": "設定中…",
@@ -20823,7 +20803,6 @@
     "indicator_label_streak_other": "探索：{{total}} 機能中 {{done}} 試した、{{count}} 日連続",
     "getting_started_result": "最初にできあがった成果",
     "title": "探索",
-    "intro_video_title": "15 秒でわかる {{productName}}",
     "try_today_none": "まずは下の「はじめに」から。",
     "intro_video_watch": "見る",
     "try_today": "今日試す",
@@ -20843,6 +20822,7 @@
     "try_today_entry_other": "今日試す：新しい機能 {{count}} 件",
     "load_failed": "探索を読み込めませんでした。",
     "getting_started": "はじめに",
-    "streak_days_other": "{{count}} 日 · 最長 {{best}} 日"
+    "streak_days_other": "{{count}} 日 · 最長 {{best}} 日",
+    "video_failed": "機能紹介動画を読み込めませんでした"
   }
 }

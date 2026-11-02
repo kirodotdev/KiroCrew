@@ -1803,26 +1803,6 @@
       "reject_all": "Reject all — refuse the rest without asking",
       "reject_once": "Reject once — keep asking about the rest"
     },
-    "meetYourMatesIntro": {
-      "sample_line_1": "I found a flaky test overnight and fixed it.",
-      "sample_line_2": "The PR is ready. Want me to merge it?",
-      "sample_merge": "Merge it",
-      "sample_show_first": "Show me first"
-    },
-    "startupVideoModal": {
-      "close": "Close",
-      "crewmates_description": "They find the work, do it, and ask only when they need you.",
-      "crewmates_title": "Meet your Mates.",
-      "got_it": "Got it",
-      "media_failed": "Feature video could not be loaded",
-      "new_tag": "New",
-      "not_now": "Not now",
-      "share": "Share",
-      "share_description": "Turn this feature video into a share card you can post anywhere.",
-      "share_include_title": "Include the video title",
-      "streaming": "Plays online",
-      "try_now": "Try now"
-    },
     "tailnetMobile": {
       "automatic_https": "After HTTPS is enabled for this tailnet, Tailscale creates and renews the private certificate automatically.",
       "setting_up": "Setting up phone access…",
@@ -10531,7 +10511,6 @@
     "try_today_entry_other": "Try today: {{count}} new features",
     "notice_count_one": "{{count}} new in Explore",
     "notice_count_other": "{{count}} new in Explore",
-    "intro_video_title": "{{productName}} in 15 seconds",
     "intro_video_watch": "Watch",
     "intro_video_close": "Close video",
     "intro_video_save_failed": "Could not save that you watched or closed this video. Try again.",
@@ -10543,6 +10522,7 @@
     "streak_short_one": "{{count}}-day streak",
     "streak_short_other": "{{count}}-day streak",
     "pill_count": "Explore {{done}}/{{total}}",
-    "more_to_try": "Also worth a look"
+    "more_to_try": "Also worth a look",
+    "video_failed": "Feature video could not be loaded"
   }
 }

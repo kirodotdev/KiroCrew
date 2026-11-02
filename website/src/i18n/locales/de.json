@@ -8926,26 +8926,6 @@
       "drag_to_select_the_screen_region_to_capture": "Ziehen, um den zu erfassenden Bildschirmbereich auszuwählen",
       "screen_capture_drag_the_area_you_want_it_attache": "Bildschirmaufnahme — ziehen Sie den gewünschten Bereich; er wird beim Loslassen automatisch angehängt"
     },
-    "meetYourMatesIntro": {
-      "sample_line_1": "Ich habe über Nacht einen instabilen Test gefunden und behoben.",
-      "sample_line_2": "Der PR ist fertig. Soll ich ihn mergen?",
-      "sample_merge": "Mergen",
-      "sample_show_first": "Erst zeigen"
-    },
-    "startupVideoModal": {
-      "close": "Schließen",
-      "crewmates_description": "Sie finden die Arbeit, erledigen sie und fragen nur, wenn sie dich brauchen.",
-      "crewmates_title": "Lern deine Crewmates kennen.",
-      "got_it": "Verstanden",
-      "media_failed": "Feature-Video konnte nicht geladen werden",
-      "new_tag": "Neu",
-      "not_now": "Nicht jetzt",
-      "share": "Teilen",
-      "share_description": "Verwandeln Sie dieses Feature-Video in eine Karte, die Sie überall posten können.",
-      "share_include_title": "Videotitel einschließen",
-      "streaming": "Läuft online",
-      "try_now": "Jetzt ausprobieren"
-    },
     "tagManagerList": {
       "adopt_tag": "Agentenberechtigungen einrichten",
       "adopting_tag": "Einrichtung läuft…",
@@ -21187,7 +21167,6 @@
   "milestones": {
     "your_progress": "Dein Fortschritt",
     "intro_video_watch": "Ansehen",
-    "intro_video_title": "{{productName}} in 15 Sekunden",
     "group_streak": "Serie",
     "getting_started": "Erste Schritte",
     "title": "Entdecken",
@@ -21216,6 +21195,7 @@
     "getting_started_brief": "Ein Morgen-Briefing einrichten",
     "indicator_label_streak_other": "Entdecken: {{done}} von {{total}} Funktionen ausprobiert, {{count}} Tage in Folge",
     "streak_short_one": "{{count}} Tag in Folge",
-    "load_failed": "Entdecken konnte nicht geladen werden."
+    "load_failed": "Entdecken konnte nicht geladen werden.",
+    "video_failed": "Feature-Video konnte nicht geladen werden"
   }
 }
