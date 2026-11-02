@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import PdfPreview from '../apps/papyrus/PdfPreview'
+import PdfPreview from './PdfPreview'
 
 // The pane must embed the PDF in an ELEMENT THE DASHBOARD'S OWN CSP ALLOWS.
 //
@@ -17,7 +17,7 @@ import PdfPreview from '../apps/papyrus/PdfPreview'
 // the part a well-meaning refactor would undo.
 
 const SOURCE = readFileSync(
-  join(__dirname, '..', 'apps', 'papyrus', 'PdfPreview.tsx'),
+  join(__dirname, 'PdfPreview.tsx'),
   'utf-8',
 )
 

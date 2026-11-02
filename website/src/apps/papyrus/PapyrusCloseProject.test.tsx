@@ -18,13 +18,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import PapyrusPage from '../apps/papyrus/PapyrusPage'
-import { renderWithProviders } from './helpers'
-import { readSource } from './readSource'
-import { papyrusApi } from '../apps/papyrus/api'
+import PapyrusPage from './PapyrusPage'
+import { renderWithProviders } from '../../test/helpers'
+import { readSource } from '../../test/readSource'
+import { papyrusApi } from './api'
 
-vi.mock('../apps/papyrus/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/papyrus/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   papyrusApi: {
     health: vi.fn(),
     listProjects: vi.fn(),
@@ -50,7 +50,7 @@ vi.mock('../apps/papyrus/api', async (importOriginal) => ({
 // buffer can't be made dirty without one. forwardRef because the page attaches a
 // `PapyrusEditorHandle` ref for jump-to-line; a plain function component would
 // warn and drop it.
-vi.mock('../apps/papyrus/PapyrusEditor', async () => {
+vi.mock('./PapyrusEditor', async () => {
   const { forwardRef, useImperativeHandle } = await import('react')
   return {
     default: forwardRef<
@@ -64,7 +64,7 @@ vi.mock('../apps/papyrus/PapyrusEditor', async () => {
 })
 
 // The PDF pane fetches a blob URL; irrelevant here and noisy under jsdom.
-vi.mock('../apps/papyrus/PdfPreview', () => ({ default: () => <div data-testid="pdf" /> }))
+vi.mock('./PdfPreview', () => ({ default: () => <div data-testid="pdf" /> }))
 
 const api = vi.mocked(papyrusApi)
 

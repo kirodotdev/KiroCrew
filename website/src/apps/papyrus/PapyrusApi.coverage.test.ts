@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
-import { papyrusApi, pdfUrl, PapyrusApiError } from '../apps/papyrus/api'
+import { papyrusApi, pdfUrl, PapyrusApiError } from './api'
 
 interface Seen {
   url: string

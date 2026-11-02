@@ -16,12 +16,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import PapyrusPage from '../apps/papyrus/PapyrusPage'
-import { renderWithProviders } from './helpers'
-import { papyrusApi, type ProjectDetail } from '../apps/papyrus/api'
+import PapyrusPage from './PapyrusPage'
+import { renderWithProviders } from '../../test/helpers'
+import { papyrusApi, type ProjectDetail } from './api'
 
-vi.mock('../apps/papyrus/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/papyrus/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   papyrusApi: {
     health: vi.fn(),
     listProjects: vi.fn(),
@@ -36,7 +36,7 @@ vi.mock('../apps/papyrus/api', async (importOriginal) => ({
   },
 }))
 
-vi.mock('../apps/papyrus/PapyrusEditor', async () => {
+vi.mock('./PapyrusEditor', async () => {
   const { forwardRef, useImperativeHandle } = await import('react')
   return {
     default: forwardRef<{ jumpToLine: (line: number) => void; focus: () => void }, unknown>(
@@ -48,7 +48,7 @@ vi.mock('../apps/papyrus/PapyrusEditor', async () => {
   }
 })
 
-vi.mock('../apps/papyrus/PdfPreview', () => ({ default: () => <div data-testid="pdf" /> }))
+vi.mock('./PdfPreview', () => ({ default: () => <div data-testid="pdf" /> }))
 
 const api = vi.mocked(papyrusApi)
 

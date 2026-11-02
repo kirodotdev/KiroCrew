@@ -18,21 +18,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import PapyrusPage from '../apps/papyrus/PapyrusPage'
-import { createTestStore, renderWithProviders } from './helpers'
-import { papyrusApi } from '../apps/papyrus/api'
-import { api as client } from '../api/client'
-import { sseSlots } from '../store/dashboardSlice'
-import { LAST_PROJECT_KEY, SLOT_KEY_PREFIX } from '../apps/papyrus/lib'
-import type { ChatSlot } from '../types'
+import PapyrusPage from './PapyrusPage'
+import { createTestStore, renderWithProviders } from '../../test/helpers'
+import { papyrusApi } from './api'
+import { api as client } from '../../api/client'
+import { sseSlots } from '../../store/dashboardSlice'
+import { LAST_PROJECT_KEY, SLOT_KEY_PREFIX } from './lib'
+import type { ChatSlot } from '../../types'
 
 const hoisted = vi.hoisted(() => ({
   jumpToLine: vi.fn(),
   navigate: vi.fn(),
 }))
 
-vi.mock('../apps/papyrus/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/papyrus/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   papyrusApi: {
     health: vi.fn(),
     listProjects: vi.fn(),
@@ -54,8 +54,8 @@ vi.mock('../apps/papyrus/api', async (importOriginal) => ({
   },
 }))
 
-vi.mock('../api/client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../api/client')>()
+vi.mock('../../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/client')>()
   return {
     ...actual,
     api: {
@@ -77,7 +77,7 @@ vi.mock('react-router-dom', async (importOriginal) => ({
 // Monaco has no accessible input under jsdom. The two extra buttons stand in for
 // the editor callbacks the page owns but Monaco would otherwise be the only caller
 // of: the cursor readout and the diagnostics jump handle.
-vi.mock('../apps/papyrus/PapyrusEditor', async () => {
+vi.mock('./PapyrusEditor', async () => {
   const { forwardRef, useImperativeHandle } = await import('react')
   return {
     default: forwardRef<
@@ -106,11 +106,11 @@ vi.mock('../apps/papyrus/PapyrusEditor', async () => {
   }
 })
 
-vi.mock('../apps/papyrus/PdfPreview', () => ({ default: () => <div data-testid="pdf" /> }))
+vi.mock('./PdfPreview', () => ({ default: () => <div data-testid="pdf" /> }))
 
 // CoAuthorPanel mounts the whole ChatPage; only the handlers the page passes it
 // are under test here.
-vi.mock('../apps/papyrus/CoAuthorPanel', () => ({
+vi.mock('./CoAuthorPanel', () => ({
   default: ({ slotKey, onStartSession, onSessionGone, onSessionReplaced, onOpenFull, onClose }: {
     slotKey: string | null
     onStartSession: () => void
