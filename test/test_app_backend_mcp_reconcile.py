@@ -12,6 +12,7 @@ import pytest
 from app_backend_helpers import _FakeHealthResp, _FakeProc, _probe_outcome
 
 from kiro_crew.apps.backend import AppProcess
+from kiro_crew.testing.wait import default_timeout
 
 
 def _reconcile_lock_held() -> bool:
@@ -34,8 +35,8 @@ def _reconcile_lock_held() -> bool:
 
     t = threading.Thread(target=_probe)
     t.start()
-    # flake-ok: joins a probe thread that only makes one non-blocking acquire; moved verbatim, tracked for a de-flake pass
-    t.join()
+    t.join(timeout=default_timeout())
+    assert not t.is_alive(), "the lock probe thread never finished its one non-blocking acquire"
     return result[0]
 
 
