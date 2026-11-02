@@ -27,7 +27,6 @@ src/apps/issue-radar/views/SettingsView.tsx 0.0   # 0/3
 src/apps/md-notebook/SettingsPage.tsx 64.0   # 73/114
 src/apps/meetings/MeetingView.tsx 0.0   # 0/32
 src/apps/meetings/api.ts 55.6   # 45/81
-src/apps/meetings/components/TaskSidebar.tsx 3.6   # 1/28
 src/apps/mochi/mochiHelpers.ts 0.0   # 0/2
 src/apps/mochi/panel/MochiSnipHost.tsx 0.0   # 0/48
 src/apps/mochi/pet/main.tsx 0.0   # 0/21
