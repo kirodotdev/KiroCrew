@@ -851,9 +851,9 @@ def test_an_unlistable_directory_is_reported_incomplete_not_as_no_decision(monke
             raise OSError(5, "input/output error")
         return real(self)
 
-    monkeypatch.setattr(Path, "iterdir", _refuse_one)
-    reading = SessionTree().reading(with_edges=True)
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "iterdir", _refuse_one)
+        reading = SessionTree().reading(with_edges=True)
     assert reading.incomplete is True
 
 
@@ -947,10 +947,10 @@ def test_a_failed_stat_in_the_whole_file_scan_is_not_answered_as_no_decision(mon
         return _stat
 
     # The unit itself: its ONE stat of the segment fails, and it must not answer ``None``.
-    monkeypatch.setattr(Path, "stat", _refuser(1))
-    with pytest.raises(OSError):
-        crew_store._scan_whole_for_types(segment, crew_store._TREE_EDGE_TYPES)
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "stat", _refuser(1))
+        with pytest.raises(OSError):
+            crew_store._scan_whole_for_types(segment, crew_store._TREE_EDGE_TYPES)
 
     # And the walk above it does not convert that into "no decision". Its bounded window
     # stats the segment FIRST, so the scan's own stat is the second one.
