@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         _TEARDOWN_REPORT_GRACE,
         MAX_ERROR_DETAIL_LEN,
         SUBAGENT_COMPLETION_PREFIX,
+        Iterable,
         Mapping,
         ProcessHandle,
         Stats,
@@ -229,6 +230,53 @@ class TerminalCoordinator(ManagerComponent):
         info._finalized = True
         return True
 
+    def suppress_retired_delivery_impl(
+        self, info: SubagentInfo, members: Iterable[str] = ()
+    ) -> bool:
+        """Suppress *info*'s delivery when its parent has been retired; True if it did.
+
+        Retired means the teardown marked *info*'s own id, or one of *members*
+        (the ids a parked completion carries or holds), in
+        ``_teardown_cancelled_ids``. ``_on_done`` and the gateway's routes resolve
+        the parent key through the session registry and inject, which CREATES a
+        session when none is live, so delivering a retired completion rebuilds the
+        conversation the teardown took down and seeds it with a retired run's text.
+        The terminal report asks this before ``_on_done``, and a parked completion
+        before its route (``_finish_parked``). False leaves the record untouched.
+
+        On True the delivery is stopped and the wave hold released with it. A wave
+        member parks its siblings' announces on its own digest (``_digest_held_at``,
+        ``_digest_settle_deliveries``), and the reaper's hold-expiry sweep arms a
+        ``force_digest_flush`` for a batch whose hold has aged out. That flush builds
+        a SYNTHETIC record with a fresh id, which the id gate cannot match, so it
+        would reach ``_on_done`` on its own and rebuild the retired parent's
+        conversation. Dropping *info* out of the hold and marking the siblings it was
+        holding leaves no injector armed for the wave. The siblings are NOT marked
+        delivered: their results never reached a parent, so orphan reconciliation
+        must still be able to find them. A memory-wait expiry held here is the
+        exception: it has no folder, and the store owes its report only to the parent
+        that ended, so its owed mark is cleared. *info*'s own id is discarded from the
+        gate, which has done its job for it, so the gate depends on its age backstop
+        only for an id whose delivery is never attempted; and ``_report_delivered``
+        is set, since the report was owed only to the parent that ended. The run's
+        result file is unaffected; a caller holding the completion's own delivery
+        marks writes them.
+        """
+        gate = getattr(self._manager, "_teardown_cancelled_ids", ())
+        if info.id not in gate and not any(member in gate for member in members):
+            return False
+        info._digest_held_at = 0.0
+        held, info._digest_settle_deliveries = info._digest_settle_deliveries, []
+        if held:
+            self._manager._teardown_cancelled_ids.update(delivery.agent_id for delivery in held)
+            owed = [delivery.agent_id for delivery in held if delivery.report_owed]
+            if owed:
+                self._manager._admission.taskq_clear_owed_reports(owed)
+        logger.info("Reaper: skipping parent delivery for %s — its parent ended", info.id)
+        self._manager._teardown_cancelled_ids.discard(info.id)
+        info._report_delivered = True
+        return True
+
     async def _report_terminal_impl(
         self,
         info: SubagentInfo,
@@ -441,44 +489,9 @@ class TerminalCoordinator(ManagerComponent):
             # No parent consumer is wired: nothing will ever deliver it here.
             info._report_delivered = True
             return True
-        if info.id in getattr(self._manager, "_teardown_cancelled_ids", ()):
-            # The parent this would report to has been retired. ``_on_done``
-            # resolves the parent key through the session registry and injects,
-            # which CREATES a session when none is live — so delivering here
-            # rebuilds the conversation the teardown just took down and seeds it
-            # with a retired run's terminal text. The ``subagent_done`` event above
-            # has already gone out, so a dashboard watching the card still sees it
-            # end; what is skipped is the injection into a conversation that is
-            # over. The run's own result file and tombstone are unaffected.
-            # Releasing the hold is part of the same statement. A wave member parks
-            # its siblings' announces on its own digest (``_digest_held_at``,
-            # ``_digest_settle_deliveries``), and the reaper's hold-expiry sweep arms a
-            # ``force_digest_flush`` for a batch whose hold has aged out. That flush
-            # builds a SYNTHETIC record with a fresh id, so the gate above can never
-            # match it: it would reach ``_on_done`` on its own and rebuild the retired
-            # parent's conversation minutes after this skip. Dropping this run out of
-            # the hold, and marking the siblings it was holding, leaves no injector
-            # armed for the wave. The siblings are NOT marked delivered -- their results
-            # never reached a parent, so orphan reconciliation must still be able to
-            # find them. A memory-wait expiry held here is the exception: it has no
-            # folder, and the store owes its report only to the parent that ended,
-            # so the mark is cleared rather than left for a restart to deliver.
-            info._digest_held_at = 0.0
-            held, info._digest_settle_deliveries = info._digest_settle_deliveries, []
-            if held:
-                self._manager._teardown_cancelled_ids.update(delivery.agent_id for delivery in held)
-                owed = [delivery.agent_id for delivery in held if delivery.report_owed]
-                if owed:
-                    self._manager._admission.taskq_clear_owed_reports(owed)
-            logger.info("Reaper: skipping parent delivery for %s — its parent ended", info.id)
-            # The gate has now done its job for this run: the delivery it existed to stop
-            # has been stopped, and ``_on_done`` was never called, so none of the gateway's
-            # injection paths can fire for it either. Discarding here is what keeps the gate
-            # from depending on its age backstop in the ordinary case -- an id is retained
-            # until the run's delivery is actually suppressed rather than for a fixed span.
-            self._manager._teardown_cancelled_ids.discard(info.id)
-            # Owed only to the parent that ended, so this skip settles it.
-            info._report_delivered = True
+        # A retired parent gets no injection. The ``subagent_done`` event above has
+        # already gone out, so a dashboard watching the card still sees the run end.
+        if self.suppress_retired_delivery_impl(info):
             return True
         if info._left_for_next_start:  # reported by the next start's orphan sweep
             return True

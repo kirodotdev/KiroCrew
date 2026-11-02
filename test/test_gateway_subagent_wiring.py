@@ -110,7 +110,7 @@ class _Done:
         self.clients: list[Any] = [self.client]
         sessions = MagicMock(name="sessions")
         sessions.get_or_create = AsyncMock(side_effect=self._get_or_create)
-        sessions.reset = AsyncMock(side_effect=lambda key: self.calls.append(("reset", key)))
+        sessions.reset = AsyncMock(side_effect=self._reset)
         sessions.cancel_current = AsyncMock(
             side_effect=lambda key, **_kw: self.calls.append(("cancel", key))
         )
@@ -198,6 +198,11 @@ class _Done:
             # The bound tab is the one the registry now holds under its key.
             self.registry[slot.key] = slot
         return slot
+
+    async def _reset(self, key: str, **_kw: Any) -> bool:
+        """An idle session's reset: recorded, and it happened."""
+        self.calls.append(("reset", key))
+        return True
 
     async def _load(self, slot: Any) -> None:
         self.calls.append(("load", slot.key))

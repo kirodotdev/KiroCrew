@@ -27,7 +27,7 @@ import time
 from typing import Any, Callable, Optional
 
 from kiro_crew import platform_compat
-from kiro_crew.install_liveness import install_pruned, respawned_by_pool
+from kiro_crew.install_liveness import install_pruned, is_pooled_backend, respawned_by_pool
 from kiro_crew.mcp_caller import (
     INFLIGHT_CAPABILITY_KEY,
     INFLIGHT_NOTIFICATION,
@@ -1127,7 +1127,9 @@ def _run_stdio_dispatch_loop(
             refuse()
 
     def _commit_settled(entry: _DeferredEntry, text: str) -> None:
-        """Commit with the call's identity installed, then answer with ``text``."""
+        """Commit with the call's identity installed, answer with ``text``, then
+        tell the call whether that answer reached the client (``on_answered``).
+        """
         set_current_caller(entry.caller_ctx)
         set_current_tenant_nonce(entry.tenant_nonce)
         try:
@@ -1141,7 +1143,26 @@ def _run_stdio_dispatch_loop(
         finally:
             set_current_caller(None)
             set_current_tenant_nonce("")
-        respond(entry.req_id, _tool_response(text))
+        # A write that raises propagates before the hook below: unanswered, the
+        # call is told nothing, which claims nothing delivered.
+        written = respond(entry.req_id, _tool_response(text)) is True
+        # A pooled backend writes into the MCP gateway's broker, whose relay to
+        # the client confirms nothing back, so none of its answers counts.
+        _tell_answered(entry, written and not is_pooled_backend())
+
+    def _tell_answered(entry: _DeferredEntry, written: bool) -> None:
+        """Run the call's ``on_answered`` with its identity installed."""
+        set_current_caller(entry.caller_ctx)
+        set_current_tenant_nonce(entry.tenant_nonce)
+        try:
+            entry.deferred.on_answered(written)
+        except Exception:  # noqa: BLE001 - one call's hook must not end the server
+            logger.warning(
+                "%s: on_answered failed for request %s", server_name, entry.req_id, exc_info=True
+            )
+        finally:
+            set_current_caller(None)
+            set_current_tenant_nonce("")
 
     def _harvest_step(key: str, entry: _DeferredEntry) -> bool:
         """Consume a FINISHED step: answer or drop the call as its outcome and
