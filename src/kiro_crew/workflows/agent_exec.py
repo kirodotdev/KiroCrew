@@ -150,6 +150,79 @@ async def vet_step_spawn(
     return resolved
 
 
+async def persist_step_usage_row(
+    *,
+    slot_key: str,
+    model: str,
+    provider: Any,
+    agent: str,
+    elapsed_ms: int,
+) -> None:
+    """Write ONE per-turn workflow usage row through the existing usage writer.
+
+    The single source of truth for the ``ctx.agent()`` step usage row, shared by
+    both executors: the cold-start path (``build_agent_fn``) and the default warm
+    pool (``agent_pool``'s pooled worker and its unpooled overflow leg), so every
+    step attributes its spend through the same writer.
+
+    ``slot_key`` is the step session's REAL key (``wf:``, ``wf-pool:`` or
+    ``wf-unpooled:``); the row is attributed to exactly the session that ran.
+    ``surface``/``trigger`` are fixed ``"workflow"`` — one surface for one
+    concept, the same values every path writes — and ``provider`` doubles as the
+    live ``model_source`` so the writer can name the model that actually ran when
+    the caller resolved none.
+
+    Best-effort analytics that must never break the workflow run — but the guards
+    are deliberately NARROW. A single wide try around the import + context read +
+    persist would swallow ANY of them at debug, so one import failure or a
+    context-read failure would silently drop the ENTIRE row (the workflow surface
+    writing zero rows).
+
+    The import stays function-local on purpose: kiro_crew.dashboard.handlers.usage
+    pulls in the slack handler chain, so a module-scope import can raise
+    ImportError under some import orders. A genuine failure here is a real wiring
+    bug, so surface it (warning) instead of hiding it — while still not aborting
+    the run.
+    """
+    try:
+        from kiro_crew.dashboard.handlers.usage import (
+            persist_token_record_async,
+            read_context_tokens,
+            read_effective_agent,
+        )
+    except ImportError:
+        logger.warning(
+            "workflow usage row skipped: usage handlers unimportable",
+            exc_info=True,
+        )
+        return
+    # Context occupancy is enrichment only. Guard it on its OWN so a
+    # read failure degrades to (0, 0) instead of taking the row down.
+    try:
+        _used, _window = read_context_tokens(provider)
+    except Exception:
+        logger.debug("workflow context-token read failed", exc_info=True)
+        _used, _window = 0, 0
+    # Only the persist stays in a best-effort try: a write failure
+    # must not break the workflow run, but nothing else hides here.
+    try:
+        await persist_token_record_async(
+            slot_key,
+            model,
+            provider_last_turn_usage(provider),
+            provider="acp",
+            surface="workflow",
+            agent=read_effective_agent(provider) or agent,
+            context_used=_used,
+            context_window=_window,
+            elapsed_ms=elapsed_ms,
+            model_source=provider,
+            trigger="workflow",
+        )
+    except Exception:
+        logger.debug("workflow usage row persist failed", exc_info=True)
+
+
 def build_agent_fn(
     sessions: Any,
     *,
@@ -233,60 +306,16 @@ def build_agent_fn(
                 max_turns=_MAX_TURNS_PER_STEP,
             )
             # ── Per-turn usage row: attribute workflow spend. ──
-            # Best-effort analytics that must never break the workflow run — but
-            # the guards are deliberately NARROW. A single wide try around the
-            # import + context read + persist would swallow ANY of them at
-            # debug, so one import failure or a context-read failure would
-            # silently drop the ENTIRE row (the workflow surface writing zero
-            # rows).
-            #
-            # The import stays function-local on purpose: kiro_crew.dashboard.
-            # handlers.usage pulls in the slack handler chain, so a module-scope
-            # import can raise ImportError under some import orders. A genuine
-            # failure here is a real wiring bug, so surface it (warning) instead
-            # of hiding it — while still not aborting the run.
-            try:
-                from kiro_crew.dashboard.handlers.usage import (
-                    persist_token_record_async,
-                    read_context_tokens,
-                    read_effective_agent,
-                )
-            except ImportError:
-                logger.warning(
-                    "workflow usage row skipped: usage handlers unimportable",
-                    exc_info=True,
-                )
-            else:
-                # Context occupancy is enrichment only. Guard it on its OWN so a
-                # read failure degrades to (0, 0) instead of taking the row down.
-                try:
-                    _used, _window = read_context_tokens(provider)
-                except Exception:
-                    logger.debug("workflow context-token read failed", exc_info=True)
-                    _used, _window = 0, 0
-                # Only the persist stays in a best-effort try: a write failure
-                # must not break the workflow run, but nothing else hides here.
-                try:
-                    await persist_token_record_async(
-                        key,
-                        opts.get("model") or default_model or "",
-                        provider_last_turn_usage(provider),
-                        provider="acp",
-                        surface="workflow",
-                        agent=(
-                            read_effective_agent(provider)
-                            or opts.get("agent")
-                            or default_agent
-                            or ""
-                        ),
-                        context_used=_used,
-                        context_window=_window,
-                        elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
-                        model_source=provider,
-                        trigger="workflow",
-                    )
-                except Exception:
-                    logger.debug("workflow usage row persist failed", exc_info=True)
+            # One shared writer for both executors (see persist_step_usage_row);
+            # the pooled path calls the same helper so the default workflow path
+            # is not the only one that writes no row.
+            await persist_step_usage_row(
+                slot_key=key,
+                model=opts.get("model") or default_model or "",
+                provider=provider,
+                agent=opts.get("agent") or default_agent or "",
+                elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
+            )
             # Apply canonical output redaction to prevent credential or
             # exfiltration-URL leakage into workflow results stored in history
             # or injected into parent chat.
