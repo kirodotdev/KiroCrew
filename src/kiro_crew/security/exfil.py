@@ -1130,21 +1130,26 @@ def current_scoped_exempt_hosts() -> frozenset[str]:
 
 
 # Markerless 40-character values collide with OAuth entropy only for these
-# authorization-request fields (``code_verifier`` goes to the token endpoint;
-# a dynamically registered public ``client_id`` may be 43-char base64url).
+# authorization-request fields (``code_verifier`` goes to the token endpoint).
 _OAUTH_ENTROPY_QUERY_PARAMS = frozenset({"client_id", "code_challenge", "nonce", "state"})
 
-# The exemption is bounded to shapes the protocol itself can emit, so an
-# AWS-secret-shaped run cannot ride a front-channel parameter into the blanked
-# set. base64url (RFC 4648 s5) emits `-`/`_` and never `+`/`/`; an S256
-# challenge and a dynamic client id must be exactly 43 base64url characters.
+# The exemption is bounded to shapes the protocol itself can emit, so a
+# base64-standard run (`+`/`/`) cannot ride a front-channel parameter into the
+# blanked set: base64url (RFC 4648 s5) never emits `+`/`/`, and an S256 challenge
+# is exactly 43 of its characters. RFC 7591 sets no client_id format (PostHog mints
+# 40 alphanumerics), so a client_id needs 8-128 RFC 3986 unreserved characters. That
+# admits a `+`/`/`-free AWS secret there at a trusted endpoint, by design: see
+# "Operator OAuth consent-endpoint extension" in docs/system-specs/modules/security.md.
 _OAUTH_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
+_OAUTH_CLIENT_ID_RE = re.compile(r"[A-Za-z0-9._~-]{8,128}\Z")
+_OAUTH_SHAPES = {"code_challenge": _OAUTH_S256_CHALLENGE_RE, "client_id": _OAUTH_CLIENT_ID_RE}
 
 
 def _oauth_entropy_form_is_protocol_shaped(key: str, form: str) -> bool:
     """Return True when ONE decoded form of a value keeps a protocol shape."""
-    if key in {"client_id", "code_challenge"}:
-        return bool(_OAUTH_S256_CHALLENGE_RE.fullmatch(form))
+    shape = _OAUTH_SHAPES.get(key)
+    if shape is not None:
+        return bool(shape.fullmatch(form))
     return "+" not in form and "/" not in form
 
 
@@ -1186,18 +1191,21 @@ def _oauth_credential_scan_target(
     code-owned state, nonce, PKCE challenge and client_id fields are omitted from the
     markerless bare-secret heuristic, and only when the value carries a shape
     the protocol can emit (see
-    :func:`_oauth_entropy_value_is_protocol_shaped`). Other recognized values,
+    :func:`_oauth_entropy_value_is_protocol_shaped`; ``client_id`` only when the
+    query names one, so repeats cannot multiply the blank). Other recognized values,
     parameter names, unknown parameters, and every non-query URL component
     remain in the scan target.
     """
     if not approved_endpoint or not query:
         return url
 
+    single_client_id = [s.partition("=")[0] for s in query.split("&")].count("client_id") == 1
     sanitized_segments: list[str] = []
     for key, separator, value in (segment.partition("=") for segment in query.split("&")):
         approved_value = (
             bool(separator)
             and key in _OAUTH_ENTROPY_QUERY_PARAMS
+            and (key != "client_id" or single_client_id)
             and _oauth_entropy_value_is_protocol_shaped(key, value)
         )
         sanitized_segments.append(

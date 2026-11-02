@@ -17,6 +17,12 @@ from unittest.mock import MagicMock
 from urllib.parse import urlencode
 
 import pytest
+from oauth_dcr_fixture import (
+    POSTHOG_AUTHORIZE,
+    POSTHOG_ISSUER,
+    POSTHOG_MCP,
+    posthog_consent_url,
+)
 from turn_harness import TurnScript, run_turn
 
 from kiro_crew import link_unfurl
@@ -28,6 +34,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
     AcpEvent,
 )
+from kiro_crew.connections.l0_probe import _authorization_metadata_url
 from kiro_crew.dashboard.chat_runner import _drain_session_init_oauth_requests
 from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
 from kiro_crew.dashboard.state import _ChatSlot
@@ -548,3 +555,45 @@ async def test_session_init_banner_without_a_match_is_still_refused(configured, 
     client = _FakeProviderClient([{"serverName": "idp", "oauthUrl": _consent_url()}])
     await _drain_session_init_oauth_requests(MagicMock(), slot, client)
     assert slot.messages[0]["meta"]["rejected_url"] is True
+
+
+class TestDynamicallyRegisteredClientId:
+    """PostHog: a 40-char alphanumeric DCR client_id at a discovered endpoint."""
+
+    @staticmethod
+    def _docs(
+        authorize: str = POSTHOG_AUTHORIZE, issuer: str = POSTHOG_ISSUER
+    ) -> dict[str, dict[str, Any]]:
+        return {
+            "https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp": {
+                "resource": POSTHOG_MCP,
+                "authorization_servers": [issuer],
+            },
+            _authorization_metadata_url(issuer): {
+                "issuer": issuer,
+                "authorization_endpoint": authorize,
+                "registration_endpoint": f"{issuer}/oauth/register/",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_posthog_consent_url_is_approved_and_passes(self, configured, served):
+        url = posthog_consent_url()
+        assert security.oauth_url_contains_credential(url)
+        configured(registry={"posthog": {"url": POSTHOG_MCP}})
+        served(self._docs())
+        assert await discovery.approve_discovered_oauth_endpoint("posthog", url)
+        assert not security.oauth_url_contains_credential(url)
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_advertised_host_is_approved_too(self, configured, served):
+        """Pins today's reach: discovery does NOT bind the consent host to the
+        configured server's origin or to the issuer's host. Whatever host the
+        server's metadata chain names is approved, which is also how PostHog
+        (mcp.posthog.com -> oauth.posthog.com) gets through."""
+        elsewhere = "https://consent.unrelated-host.example/authorize"
+        url = _consent_url(elsewhere)
+        configured(registry={"posthog": {"url": POSTHOG_MCP}})
+        served(self._docs(authorize=elsewhere, issuer="https://issuer.other-host.example"))
+        assert await discovery.approve_discovered_oauth_endpoint("posthog", url)
+        assert not security.oauth_url_contains_credential(url)

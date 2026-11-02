@@ -110,25 +110,33 @@ class TestOAuthAuthorizationUrlRedaction:
         assert security.diagnose_oauth_url_credential(url) is None
         assert oauth_url_contains_credential(url) is False
 
-    @pytest.mark.parametrize("parameter", ["redirect_uri", "client_id"])
-    def test_non_entropy_oauth_parameter_keeps_markerless_secret_scan(self, parameter: str) -> None:
+    def test_non_entropy_oauth_parameter_keeps_markerless_secret_scan(self) -> None:
         secret = self.BARE_AWS_SECRET_ALNUM
-        url = self.NOTION_URL + f"&{parameter}={secret}"
+        url = self.NOTION_URL + f"&redirect_uri={secret}"
 
         assert len(secret) == 40
         assert security._text_contains_bare_secret(secret)
         assert oauth_url_contains_credential(url) is True
 
+    def test_url_safe_client_id_of_any_length_is_exempt(self) -> None:
+        # RFC 7591 sets no client_id format: a dynamically registered id is
+        # whatever the provider mints, so the exemption takes any length 8-128.
+        # Pinned in full by test_security_oauth_client_id.py.
+        digest = hashlib.sha256(b"synthetic-oauth-entropy-regression").digest()
+        value = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+        for candidate in (value[:42], value + "Q", self.BARE_AWS_SECRET_ALNUM):
+            assert security._text_contains_bare_secret(candidate)
+            url = self.NOTION_URL.replace("client123", candidate, 1)
+            assert oauth_url_contains_credential(url) is False, candidate
+
     @pytest.mark.parametrize(
         ("label", "mutate"),
         [
-            ("42-chars", lambda value: value[:42]),
-            ("44-chars", lambda value: value + "Q"),
             ("standard-alphabet", lambda value: value[:41] + "+/"),
             ("percent-encoded-slash", lambda value: value[:40] + "%2F" + value[40:42]),
         ],
     )
-    def test_client_id_exemption_only_covers_exact_base64url_shape(
+    def test_client_id_exemption_only_covers_url_safe_shape(
         self, label: str, mutate: Callable[[str], str]
     ) -> None:
         digest = hashlib.sha256(b"synthetic-oauth-entropy-regression").digest()
