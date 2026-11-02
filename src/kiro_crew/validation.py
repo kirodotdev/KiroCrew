@@ -435,6 +435,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PATTERN_VALUE_MAX_LEN,
         _SUPPORTED_SCHEMA_KEYWORDS,
         _bounded_pattern_search,
+        _integral_float_as_int,
         _json_equal,
         _json_type_ok,
         _reject_malformed_keyword_shapes,

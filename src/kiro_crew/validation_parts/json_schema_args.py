@@ -81,7 +81,7 @@ def _bounded_pattern_search(pattern: str, value: str) -> bool | None:
 _JSON_SCHEMA_TYPES: dict[str, type | tuple[type, ...]] = {
     "string": str,
     "number": (int, float),
-    "integer": int,
+    "integer": (int, float),
     "boolean": bool,
     "object": dict,
     "array": list,
@@ -99,7 +99,27 @@ def _json_type_ok(value: Any, type_name: str) -> bool:
     # bool is a subclass of int: keep number/integer honest.
     if isinstance(value, bool) and type_name in ("number", "integer"):
         return False
+    if type_name == "integer" and isinstance(value, float):
+        # JSON Schema counts a number with a zero fractional part (3.0) as an
+        # integer; ``is_integer`` is False for inf and nan.
+        return value.is_integer()
     return True
+
+
+def _integral_float_as_int(value: Any, schema: Any) -> Any:
+    """Return ``int(value)`` for a float with no fraction in an ``integer``-only slot.
+
+    JSON Schema counts ``3.0`` as an integer, so the type check admits it; the
+    tool then gets the ``int`` its schema promised. A slot that also admits
+    ``number`` keeps the float, matching ``workflows/schema.py``.
+    """
+    if not isinstance(value, float) or not isinstance(schema, dict):
+        return value
+    declared = schema.get("type")
+    names = declared if isinstance(declared, list) else [declared]
+    if "integer" in names and "number" not in names and value.is_integer():
+        return int(value)
+    return value
 
 
 # Validation keywords the subset ENFORCES. A schema using any validation
@@ -253,6 +273,10 @@ def validate_mcp_tool_arguments(
     ``minimum``/``maximum`` (+ exclusive forms), ``minLength``/``maxLength``,
     ``minItems``/``maxItems``, ``uniqueItems``. Transport-level caps bound
     depth and string size regardless of schema.
+
+    A float with no fraction (``3.0``) satisfies ``integer``, as in JSON
+    Schema. In an ``integer``-only slot it is rewritten IN PLACE to ``int``
+    inside ``arguments``, so the tool receives ``3``.
     """
     if _depth > _MCP_ARGS_MAX_DEPTH:
         raise ValidationError(_path, "exceeds max nesting depth")
@@ -343,7 +367,20 @@ def validate_mcp_tool_arguments(
         min_items = schema.get("minItems")
         if isinstance(min_items, int) and len(arguments) < min_items:
             raise ValidationError(_path, f"fewer than minItems {min_items}")
+        items = schema.get("items")
+        if isinstance(items, (dict, bool)):
+            # dict subschema OR a boolean schema (`items: false` rejects every
+            # element; `items: true` accepts). Recursion handles all three.
+            for i, item in enumerate(arguments):
+                validate_mcp_tool_arguments(item, items, _path=f"{_path}[{i}]", _depth=_depth + 1)
+                arguments[i] = _integral_float_as_int(item, items)
+        else:
+            # No item schema: still bound depth/size of each element.
+            for i, item in enumerate(arguments):
+                validate_mcp_tool_arguments(item, {}, _path=f"{_path}[{i}]", _depth=_depth + 1)
         if schema.get("uniqueItems") is True:
+            # Runs after the item pass, so ``[3, 3.0]`` under ``integer`` items
+            # compares as the ``[3, 3]`` the tool would receive.
             # O(n) via canonical JSON keys instead of O(n^2) ``in`` scans (an
             # app-controlled array could otherwise saturate a validation
             # worker). ``json.dumps`` renders ``true``/``1`` distinctly, so this
@@ -357,16 +394,6 @@ def validate_mcp_tool_arguments(
                 if key in seen_keys:
                     raise ValidationError(_path, "items not unique")
                 seen_keys.add(key)
-        items = schema.get("items")
-        if isinstance(items, (dict, bool)):
-            # dict subschema OR a boolean schema (`items: false` rejects every
-            # element; `items: true` accepts). Recursion handles all three.
-            for i, item in enumerate(arguments):
-                validate_mcp_tool_arguments(item, items, _path=f"{_path}[{i}]", _depth=_depth + 1)
-        else:
-            # No item schema: still bound depth/size of each element.
-            for i, item in enumerate(arguments):
-                validate_mcp_tool_arguments(item, {}, _path=f"{_path}[{i}]", _depth=_depth + 1)
 
     if isinstance(arguments, dict):
         properties = schema.get("properties")
@@ -378,12 +405,13 @@ def validate_mcp_tool_arguments(
                     raise ValidationError(f"{_path}.{key}", "required")
         additional = schema.get("additionalProperties")
         allow_extra = additional is True or isinstance(additional, dict)
-        for key, value in arguments.items():
+        for key, value in list(arguments.items()):
             if not isinstance(key, str):
                 raise ValidationError(_path, "object keys must be strings")
             sub = props.get(key)
             if sub is not None:
                 validate_mcp_tool_arguments(value, sub, _path=f"{_path}.{key}", _depth=_depth + 1)
+                arguments[key] = _integral_float_as_int(value, sub)
             elif additional is False or (isinstance(properties, dict) and not allow_extra):
                 # Fail-closed: an explicit ``additionalProperties: false``
                 # rejects every undeclared key even when the schema declares
@@ -395,6 +423,7 @@ def validate_mcp_tool_arguments(
                 validate_mcp_tool_arguments(
                     value, additional, _path=f"{_path}.{key}", _depth=_depth + 1
                 )
+                arguments[key] = _integral_float_as_int(value, additional)
             else:
                 # No properties map at all: bound depth/size of the blob.
                 validate_mcp_tool_arguments(value, {}, _path=f"{_path}.{key}", _depth=_depth + 1)
