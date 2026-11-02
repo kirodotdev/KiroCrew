@@ -140,10 +140,13 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
     inputRef.current?.focus()
   }, [])
 
+  const searching = debouncedQuery.length >= 2
   const { data, isLoading, isFetching, error: discoverError, refetch } = useQuery({
-    queryKey: ['mcp-discover', debouncedQuery],
-    queryFn: () => api.mcpDiscover(debouncedQuery),
-    enabled: open && debouncedQuery.length >= 2,
+    // Below 2 characters the modal shows the bundled featured list instead of
+    // an empty "type to search" screen; typing still searches.
+    queryKey: ['mcp-discover', searching ? debouncedQuery : ''],
+    queryFn: () => (searching ? api.mcpDiscover(debouncedQuery) : api.mcpDiscover('', { featured: true })),
+    enabled: open,
     retry: false,
     staleTime: 30_000,
   })
@@ -300,7 +303,7 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
                 onRetry={() => { void refetch() }}
               />
             )}
-            <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="servers" />
+            <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="servers" featuredLabel={i18nT('components.mcpBrowserModal.popular_mcp_servers')} />
           </>
         )}
 

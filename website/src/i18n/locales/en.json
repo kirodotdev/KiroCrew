@@ -4697,7 +4697,8 @@
       "result_one": "{{count}} result",
       "result_other": "{{count}} results",
       "searching": "Searching...",
-      "type_at_least_2_characters_to_search": "Type at least 2 characters to search"
+      "type_at_least_2_characters_to_search": "Type at least 2 characters to search",
+      "type_to_search_for_more": "Type to search for more"
     },
     "embedTabStrip": {
       "close_tab": "Close tab",
@@ -5066,7 +5067,8 @@
       "select_a_server_to_preview": "Select a server to preview",
       "set_these_in_the_server_config_before_enabling_i": "Set these in the server config before enabling it.",
       "source": "Source",
-      "v": "v"
+      "v": "v",
+      "popular_mcp_servers": "Popular MCP servers"
     },
     "mcpCustomServerModal": {
       "args": "args",
@@ -5599,7 +5601,9 @@
       "skill_search_results": "Skill search results",
       "source": "Source",
       "installed_files_one": "Installed {{count}} file",
-      "installed_files_other": "Installed {{count}} files"
+      "installed_files_other": "Installed {{count}} files",
+      "popular_skills": "Popular skills",
+      "search_failed": "Couldn’t load skills. Try again."
     },
     "skillDirectoryBrowser": {
       "description": "Description",

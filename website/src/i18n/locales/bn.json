@@ -6970,7 +6970,8 @@
       "search_across_providers": "সব প্রোভাইডার জুড়ে {{subject}} খোঁজো...",
       "searching": "খোঁজা হচ্ছে...",
       "searching_2": "খোঁজা হচ্ছে: {{name}}",
-      "type_at_least_2_characters_to_search": "খুঁজতে অন্তত 2টি অক্ষর টাইপ করুন"
+      "type_at_least_2_characters_to_search": "খুঁজতে অন্তত 2টি অক্ষর টাইপ করুন",
+      "type_to_search_for_more": "আরও খুঁজতে টাইপ করো"
     },
     "embedTabStrip": {
       "close_tab": "ট্যাব বন্ধ করুন",
@@ -7938,7 +7939,8 @@
       "v": "v",
       "waiting_for_the_install_plan_to_load": "ইনস্টল প্ল্যান লোড হওয়ার অপেক্ষায়",
       "detail_load_failed": "এই সার্ভারের বিবরণ লোড করা যায়নি।",
-      "search_failed": "রেজিস্ট্রিতে খোঁজা যায়নি। আবার চেষ্টা করুন।"
+      "search_failed": "রেজিস্ট্রিতে খোঁজা যায়নি। আবার চেষ্টা করুন।",
+      "popular_mcp_servers": "জনপ্রিয় MCP সার্ভার"
     },
     "mcpCustomServerModal": {
       "add_custom_server": "কাস্টম সার্ভার যোগ করো",
@@ -8848,6 +8850,8 @@
       "license": "লাইসেন্স:",
       "loading_preview": "প্রিভিউ লোড হচ্ছে...",
       "no_preview_available": "কোনো প্রিভিউ নেই।",
+      "popular_skills": "জনপ্রিয় স্কিল",
+      "search_failed": "স্কিল লোড করা যায়নি। আবার চেষ্টা করো।",
       "overwrite": "ওভাররাইট করুন",
       "provider_could_not_search": "{{provider}}-এ খোঁজা যায়নি: {{reason}}",
       "provider_did_not_answer": "{{provider}} সাড়া দেয়নি।",

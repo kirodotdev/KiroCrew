@@ -7107,7 +7107,8 @@
       "search_across_providers": "Pesquisar {{subject}} em todos os provedores…",
       "searching": "Pesquisando...",
       "searching_2": "Pesquisando: {{name}}",
-      "type_at_least_2_characters_to_search": "Digite pelo menos 2 caracteres para pesquisar"
+      "type_at_least_2_characters_to_search": "Digite pelo menos 2 caracteres para pesquisar",
+      "type_to_search_for_more": "Digite para pesquisar mais"
     },
     "embedTabStrip": {
       "close_tab": "Fechar aba",
@@ -8083,7 +8084,8 @@
       "v": "v",
       "waiting_for_the_install_plan_to_load": "Aguardando o carregamento do plano de instalação",
       "detail_load_failed": "Não foi possível carregar os detalhes deste servidor.",
-      "search_failed": "Não foi possível pesquisar no registro. Tente novamente."
+      "search_failed": "Não foi possível pesquisar no registro. Tente novamente.",
+      "popular_mcp_servers": "Servidores MCP populares"
     },
     "mcpCustomServerModal": {
       "add_custom_server": "Adicionar servidor personalizado",
@@ -9007,6 +9009,8 @@
       "license": "Licença:",
       "loading_preview": "Carregando prévia...",
       "no_preview_available": "Nenhuma prévia disponível.",
+      "popular_skills": "Habilidades populares",
+      "search_failed": "Não foi possível carregar as habilidades. Tente novamente.",
       "overwrite": "Substituir",
       "provider_could_not_search": "Não foi possível pesquisar em {{provider}}: {{reason}}",
       "provider_did_not_answer": "{{provider}} não respondeu.",
