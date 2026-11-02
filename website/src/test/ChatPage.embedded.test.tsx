@@ -4,8 +4,8 @@
  * Verifies that when `embedded={true}`, ChatPage does NOT sync URLs —
  * preventing navigation in the host app when mounted inside an app container.
  */
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { describe, it, expect, beforeEach, vi, afterEach, onTestFinished } from 'vitest'
+import { render, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route, useLocation, useSearchParams } from 'react-router-dom'
@@ -138,11 +138,16 @@ describe('ChatPage embedded mode', () => {
       expect(currentUrl).toBe('/apps/workbench')
     })
 
+    // The clock is faked only now, after the last real-timer wait, so the page's boot reads
+    // that settle during the window land inside act() instead of after the test.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+
     // Change active slot — URL must NOT change to /chat?sid=chat-2-200
-    store.dispatch({ type: 'chat/switchSlot/fulfilled', payload: { key: 'chat-2-200', messages: [], has_more: false, total: 0 } })
+    act(() => { store.dispatch({ type: 'chat/switchSlot/fulfilled', payload: { key: 'chat-2-200', messages: [], has_more: false, total: 0 } }) })
 
     // Give effects time to run
-    await new Promise(r => setTimeout(r, 100))
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
 
     expect(currentUrl).toBe('/apps/workbench')
   })
@@ -150,7 +155,10 @@ describe('ChatPage embedded mode', () => {
   it('does not activate slot from ?sid= in URL', async () => {
     renderEmbedded({ route: '/apps/workbench?sid=chat-1-100', slots })
 
-    await new Promise(r => setTimeout(r, 100))
+    // Fake clock after the render, advanced inside act() (see the first test).
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
 
     // URL should stay as-is, not redirect to /chat
     expect(currentUrl).toBe('/apps/workbench?sid=chat-1-100')
@@ -161,7 +169,10 @@ describe('ChatPage embedded mode', () => {
   it('does not consume pendingInput searchParams', async () => {
     renderEmbedded({ route: '/apps/workbench?autoSend=1&prefill=hello', slots })
 
-    await new Promise(r => setTimeout(r, 100))
+    // Fake clock after the render, advanced inside act() (see the first test).
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
 
     // URL should stay unchanged — embedded mode doesn't consume these params
     expect(currentUrl).toBe('/apps/workbench?autoSend=1&prefill=hello')
