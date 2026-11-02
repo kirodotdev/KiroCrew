@@ -1156,6 +1156,7 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         import asyncio as _asyncio
 
         finished = _asyncio.Event()
+        release = _asyncio.Event()
         observed: list[str] = []
 
         class _SlowHandler:
@@ -1170,9 +1171,9 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
                 verb: str = "",
             ) -> int:
                 try:
-                    # flake-ok: slow reap double sleeps 0.25 s so the patched 0.01 s parent wait expires first; the test awaits the reap's finished event; moved verbatim
-                    # nosemgrep: kirocrew.test-sleep-as-barrier -- the slow reap double that must outlast the patched 0.01 s parent wait; the test then awaits its finished event; moved verbatim
-                    await _asyncio.sleep(0.25)
+                    # The reap stays in flight until the test releases it, so it is still
+                    # running when the patched 0.01 s parent wait expires.
+                    await _asyncio.wait_for(release.wait(), timeout=30.0)
                     observed.append("completed")
                 except _asyncio.CancelledError:
                     observed.append("cancelled")
@@ -1189,6 +1190,7 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         with patch("kiro_crew.session_lifecycle._CHILD_CANCEL_TIMEOUT_SECS", 0.01):
             await mgr.remove("dashboard:chat-9")
 
+        release.set()
         await await_until(finished, what="the slow child reap settling")
         assert observed == ["completed"], (
             "the parent's wait expiring cancelled the reap itself, so a child could "
