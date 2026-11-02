@@ -300,7 +300,9 @@ def _head_meta(path: Path, within_root: Path, cap: int = 2048) -> dict[str, str]
         _audit_unread("api_steering_list", "steering", "error", {"path": str(path)})
         return _empty_meta()
     truncated = len(raw) > cap
-    head = raw[:cap].decode("utf-8", errors="replace")
+    # utf-8-sig drops one leading byte-order mark, which would otherwise hide the
+    # column-0 frontmatter fence and list a manual document as always.
+    head = raw[:cap].decode("utf-8-sig", errors="replace")
     fields, body = split_frontmatter(head, STEERING_LOADER)
     if not fields and body == head:
         # ``split_frontmatter`` already returns the text AFTER a fence that
@@ -752,7 +754,9 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
         return "", display, f"toolarge:>{STEERING_FILE_MAX_BYTES}"
     if data is None:
         return "", display, "readfailed"
-    return data.decode("utf-8", errors="replace"), display, None
+    # utf-8-sig: the editor gets the text without a leading byte-order mark, so a
+    # mode edit finds the column-0 fence and a save writes the file without it.
+    return data.decode("utf-8-sig", errors="replace"), display, None
 
 
 def _create_path_too_long(exc: OSError) -> bool:

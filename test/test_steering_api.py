@@ -319,6 +319,16 @@ class TestInclusionMetadata:
         assert entry["inclusion"] == STEERING_INCLUSION_DEFAULT
         assert entry["inclusion_declared"] == "manaul"
 
+    def test_a_byte_order_mark_does_not_hide_the_declared_mode(self, fake_home):
+        """A document saved as "UTF-8 with BOM" lists with its declared mode."""
+        path = fake_home / ".kiro" / "steering" / "doc.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xef\xbb\xbf---\ninclusion: manual\n---\n# Payroll rules\n")
+        entry = list_steering_blocking(None)["files"][0]
+        assert entry["inclusion"] == "manual"
+        assert entry["inclusion_declared"] == "manual"
+        assert entry["description"] == "Payroll rules"
+
     def test_mode_spelling_is_canonicalized(self, fake_home):
         entry = self._entry(fake_home, "---\ninclusion: FILEMATCH\n---\n# Doc\n")
         assert entry["inclusion"] == "fileMatch"
@@ -1000,6 +1010,17 @@ class TestReadEndpoint:
         content, _display, err = mod._resolve_and_read_blocking("user/a.md", None)
         assert err is not None
         assert "aws_secret_access_key" not in content
+
+    def test_the_editor_read_drops_a_byte_order_mark(self, fake_home):
+        """The editor gets text without the mark, so a mode edit finds the fence."""
+        from kiro_crew.dashboard.handlers import steering as mod
+
+        path = fake_home / ".kiro" / "steering" / "a.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xef\xbb\xbf---\ninclusion: manual\n---\n# Doc\n")
+        content, _display, err = mod._resolve_and_read_blocking("user/a.md", None)
+        assert err is None
+        assert content == "---\ninclusion: manual\n---\n# Doc\n"
 
     @pytest.mark.asyncio
     async def test_growth_past_cap_mid_read_is_413_not_500(self, fake_home, monkeypatch):
