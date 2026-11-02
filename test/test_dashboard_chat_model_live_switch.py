@@ -12,6 +12,7 @@ from chat_test_helpers import _make_state
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.testing.wait import until_parked
 
 
 class TestCrewmatePicksOnItsHarness:
@@ -608,15 +609,13 @@ class TestSlotModelLiveSwitch:
             slow = asyncio.create_task(
                 client.post("/api/chat/slots/a/model", json={"model": "claude-opus-4.8"})
             )
-            # flake-ok: the pick parks on the slot's lock and sets no signal to await
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the pick parks on the slot's lock and sets no signal to await
-            await asyncio.sleep(0.05)  # slow pick holds the lock, parked at its await
+            # slow pick holds the lock, parked at its await
+            await until_parked(release_slow)
             fast = asyncio.create_task(
                 client.post("/api/chat/slots/a/model", json={"model": "deepseek-3.2"})
             )
-            # flake-ok: the pick parks on the slot's lock and sets no signal to await
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the pick parks on the slot's lock and sets no signal to await
-            await asyncio.sleep(0.05)  # fast pick queued on the lock
+            # fast pick queued on the lock
+            await until_parked(slot._lock)
             release_slow.set()
             slow_resp = await slow
             fast_resp = await fast
@@ -668,15 +667,11 @@ class TestSlotModelLiveSwitch:
             first = asyncio.create_task(
                 client.post("/api/chat/slots/a/model", json={"model": "claude-opus-4.8"})
             )
-            # flake-ok: the pick parks on the slot's lock and sets no signal to await
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the pick parks on the slot's lock and sets no signal to await
-            await asyncio.sleep(0.05)
+            await until_parked(release_first)
             second = asyncio.create_task(
                 client.post("/api/chat/slots/a/model", json={"model": "deepseek-3.2"})
             )
-            # flake-ok: the pick parks on the slot's lock and sets no signal to await
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the pick parks on the slot's lock and sets no signal to await
-            await asyncio.sleep(0.05)
+            await until_parked(slot._lock)
             # First refusal completes while the second pick is still pending.
             release_first.set()
             first_resp = await first
