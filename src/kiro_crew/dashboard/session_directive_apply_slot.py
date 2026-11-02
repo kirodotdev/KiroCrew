@@ -582,8 +582,8 @@ async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
         # its first button is "Start in new chat" (FollowUpCard.tsx gates on
         # projectDir): a plain new chat with no worktree. This confirmation is
         # the model's only window into that, so it can describe the card the
-        # user actually sees — Research Lab worker slots, for one, are created
-        # unscoped (auto_research/handlers.py).
+        # user actually sees — an app's worker slots, for one, may be created
+        # unscoped.
         return (
             "Follow-up card shown below the composer. Note: this session has no "
             "project directory, so the card offers 'Start in new chat' (a new "
