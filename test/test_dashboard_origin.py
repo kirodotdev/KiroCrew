@@ -890,6 +890,68 @@ class TestBuildHostCanonicalRedirect:
             assert "Location" not in resp.headers
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("cookie_name", ["mc_token_7777", "mc_refresh_7777"])
+    async def test_signed_in_literal_nav_is_served_not_redirected(self, cookie_name: str) -> None:
+        # The session cookie is host-only, so a browser signed in on 127.0.0.1
+        # does not carry it to localhost. Redirecting its document navigation
+        # there lands it on a host where it has no session: every API call 403s
+        # with X-Auth-Required and the page reads "Session expired" (#22843).
+        # A navigation bearing this gateway's session is served where it was sent.
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.server import build_host_canonical_redirect
+
+        async def _ok(_request: web.Request) -> web.Response:
+            return web.Response(text="served here")
+
+        app = web.Application(middlewares=[build_host_canonical_redirect("localhost")])
+        app.router.add_get("/apps/library", _ok)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/apps/library",
+                headers={
+                    "Host": "127.0.0.1:7777",
+                    "Sec-Fetch-Dest": "document",
+                    "Cookie": f"{cookie_name}=opaque",
+                },
+                allow_redirects=False,
+            )
+            assert resp.status == 200
+            assert await resp.text() == "served here"
+            assert "Location" not in resp.headers
+
+    @pytest.mark.asyncio
+    async def test_other_port_session_cookie_does_not_hold_the_redirect(self) -> None:
+        # Cookies are not port-isolated, so a 127.0.0.1 jar can hold another
+        # gateway's mc_token_<port>. That cookie is no session HERE, so it must
+        # not stop this gateway's spelling convergence.
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.server import build_host_canonical_redirect
+
+        async def _ok(_request: web.Request) -> web.Response:
+            return web.Response(text="ok")
+
+        app = web.Application(middlewares=[build_host_canonical_redirect("localhost")])
+        app.router.add_get("/chat", _ok)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/chat",
+                headers={
+                    "Host": "127.0.0.1:7777",
+                    "Sec-Fetch-Dest": "document",
+                    "Cookie": "mc_token_8888=opaque; mc_refresh_8888=opaque",
+                },
+                allow_redirects=False,
+            )
+            assert resp.status == 302
+            assert resp.headers["Location"].startswith("http://localhost:7777/chat")
+
+    @pytest.mark.asyncio
     async def test_literal_address_nav_is_redirected_when_it_carries_nothing(self) -> None:
         # End to end through the middleware: a credential-free document navigation
         # on a literal converges onto the canonical name, because both families

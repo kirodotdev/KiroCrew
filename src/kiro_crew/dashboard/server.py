@@ -177,6 +177,7 @@ from kiro_crew.dashboard.port_reclaim import (  # noqa: F401
     RECLAIMED,
     reclaim_stale_gateway_port,
 )
+from kiro_crew.dashboard.refresh_tokens import bears_session_cookie_for_host  # noqa: F401
 from kiro_crew.dashboard.relay_headers import relay_header_strip_middleware  # noqa: F401
 from kiro_crew.dashboard.routes import register_all
 from kiro_crew.dashboard.server_internal_paths import (  # noqa: F401
