@@ -322,21 +322,105 @@ async def test_the_slot_checkpoint_binds_a_dashboard_user(route):
         assert principals.principal_for(key) is None
 
 
-def test_the_gateways_own_loopback_writes_leave_a_binding_alone():
-    """A session's dashboard MCP tools tagging or filing its own slot must not conflict it."""
+async def _internal_slot_call(method: str, tail: str) -> str | None:
+    """Bind the owner, then send one X-Internal-Secret write through the real checkpoint.
+
+    Returns the key's principal afterwards.
+    """
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard.slot_ownership import slot_ownership_middleware
+
+    slot = _slot("chat-7")
+    state = SimpleNamespace(owner_id="U-OWNER", sessions=_Sessions(), _slots={"chat-7": slot})
+
+    @web.middleware
+    async def identity(request, handler):
+        if request.headers.get("X-Internal") == "1":
+            request["internal_auth"] = True  # what token_auth sets; no app claim
+        else:
+            request["user"] = "U-OWNER"
+            request["app"] = ""
+        return await handler(request)
+
+    async def ok(request):
+        return web.json_response({})
+
+    web_app = web.Application(middlewares=[identity, slot_ownership_middleware])
+    web_app["state"] = state
+    web_app.router.add_post("/api/chat/slots/{slot}/continue", ok)
+    if (method, tail) != ("POST", "continue"):
+        web_app.router.add_route(method, f"/api/chat/slots/{{slot}}/{tail}", ok)
+    async with TestClient(TestServer(web_app)) as client:
+        assert (await client.post("/api/chat/slots/chat-7/continue")).status == 200
+        key = effective_session_key(slot)
+        assert principals.principal_for(key) == "owner"
+        resp = await client.request(
+            method, f"/api/chat/slots/chat-7/{tail}", headers={"X-Internal": "1"}
+        )
+        assert resp.status == 200
+        return principals.principal_for(key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "tail"),
+    [
+        ("PATCH", "folder"),
+        ("PUT", "tags"),
+        ("PATCH", "pin"),
+        ("POST", "drop"),
+        ("PATCH", "color"),
+        ("PATCH", "title"),
+    ],
+)
+async def test_the_gateways_own_loopback_metadata_writes_leave_a_binding_alone(method, tail):
+    """A session's dashboard MCP tools tagging or filing a slot must not conflict it."""
+    assert await _internal_slot_call(method, tail) == "owner"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "tail"),
+    [
+        ("POST", "continue"),
+        ("POST", "regenerate"),
+        ("POST", "reload"),
+        ("POST", "edit-resend"),
+        ("POST", "agent"),
+        # A metadata tail on the wrong verb is not the metadata route.
+        ("POST", "tags"),
+    ],
+)
+async def test_an_internal_turn_route_conflicts_the_binding(method, tail):
+    """A script cron (internal secret, no app) continuing a person's slot gets no vault."""
+    assert await _internal_slot_call(method, tail) is None
+
+
+def test_an_internal_caller_with_an_app_claim_conflicts_even_on_metadata():
+    """An internal caller that does carry an app claim is an app: it conflicts."""
+    from unittest.mock import MagicMock
+
     slot = _slot()
     key = effective_session_key(slot)
-    owner = _Request(user="local-app", app="")
-    owner.method = "POST"
-    _bind_routed(owner, slot)
-    internal = _Request(internal_auth=True)  # X-Internal-Secret, no app claim
-    internal.method = "PATCH"
-    _bind_routed(internal, slot)
-    assert principals.principal_for(key) == "owner"
-    # An internal caller that does carry an app claim is an app: it conflicts.
+    principals.bind(key, "owner")
     app_internal = _Request(internal_auth=True, app="design-critique")
     app_internal.method = "PATCH"
+    app_internal.match_info = MagicMock()
+    app_internal.match_info.route.resource.canonical = "/api/chat/slots/{slot}/folder"
     _bind_routed(app_internal, slot)
+    assert principals.principal_for(key) is None
+
+
+def test_an_internal_request_without_a_route_conflicts():
+    """No readable route is not provably metadata-only: fail closed."""
+    slot = _slot()
+    key = effective_session_key(slot)
+    principals.bind(key, "owner")
+    internal = _Request(internal_auth=True)
+    internal.method = "PATCH"
+    _bind_routed(internal, slot)
     assert principals.principal_for(key) is None
 
 

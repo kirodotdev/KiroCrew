@@ -37,6 +37,22 @@ logger = logging.getLogger(__name__)
 #: Link reads a binder retries when a channel link lands mid-read; then it conflicts.
 _LINK_READ_ATTEMPTS = 3
 
+#: Per-slot write routes that only change sidebar metadata: no turn, no respawn.
+#: The gateway's loopback caller (a session's dashboard MCP tools filing,
+#: tagging, pinning or moving a slot) may write these without touching the
+#: binding. Every other internal write (continue, regenerate, reload, a script
+#: cron's ``/continue`` ...) conflicts the key like any non-person caller.
+_INTERNAL_METADATA_ROUTES = frozenset(
+    {
+        ("PATCH", "folder"),
+        ("PUT", "tags"),
+        ("PATCH", "pin"),
+        ("POST", "drop"),
+        ("PATCH", "color"),
+        ("PATCH", "title"),
+    }
+)
+
 __all__ = [
     "OWNER_PRINCIPAL",
     "abind_slot_to_principal",
@@ -155,9 +171,25 @@ async def bind_routed_slot(request: web.Request, slot: Any) -> None:
     """
     if slot is None or request.method in ("GET", "HEAD", "OPTIONS"):
         return
-    if request.get("internal_auth") is True and "app" not in request:
-        # The gateway's own loopback caller (a session's dashboard MCP tools
-        # filing, tagging or pinning a slot): no person and no app, and it
-        # starts no turn, so it leaves the binding as it is.
+    if (
+        request.get("internal_auth") is True
+        and "app" not in request
+        and _is_metadata_route(request)
+    ):
+        # The gateway's own loopback caller on a metadata-only write: no person,
+        # no app and no turn, so it leaves the binding as it is.
         return
     await bind_slot_to_request_user(request, slot)
+
+
+def _is_metadata_route(request: web.Request) -> bool:
+    """Whether *request* is one of :data:`_INTERNAL_METADATA_ROUTES`. Unreadable is False."""
+    try:
+        canonical = request.match_info.route.resource.canonical
+    except Exception:  # noqa: BLE001 -- an unknown route is not provably metadata-only
+        return False
+    prefix = "/api/chat/slots/{"
+    if not isinstance(canonical, str) or not canonical.startswith(prefix):
+        return False
+    _param, sep, tail = canonical[len(prefix) :].partition("}/")
+    return bool(sep) and (request.method, tail) in _INTERNAL_METADATA_ROUTES
