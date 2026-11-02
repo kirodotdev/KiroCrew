@@ -10988,7 +10988,6 @@
       "make_sure_the_gateway_s": "。ゲートウェイの",
       "make_the_default_profile": "{{name}} をデフォルトのプロファイルに設定",
       "missing_sso_start_url_sso_region": "不足 … sso_start_url、sso_region",
-      "more": "詳細",
       "never_boto3_so_credential_resolution_stays_in_yo": "を経由します（boto3 は使用しません）。\n              そのため認証情報解決は OS 認証情報ストア内に留まります。{{productName}} は IAM を書き込まず、\n              アカウント、ユーザー、またはロールを管理しません — 生成された最小権限ポリシーを自分で適用してください。",
       "never_credentials": "— 認証情報なし）",
       "new_profile": "新しいプロファイル",
@@ -11082,7 +11081,8 @@
       "col_actions": "アクション",
       "col_type": "タイプ",
       "col_url": "リンク",
-      "col_cost": "コスト"
+      "col_cost": "コスト",
+      "more_count_other": "ほか {{n}} 件"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} に公開済み",
@@ -12015,7 +12015,6 @@
         "aria_collapse_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を折りたたむ",
         "aria_expand_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を展開",
         "current_task": "現在のタスク",
-        "more": "ほか…",
         "task_completion": "タスクの完了状況",
         "aria_mark_done": "完了にする: {{task}}。エージェントはやり直しません。もう一度クリックで元に戻せます。",
         "aria_mark_not_done": "未完了にする: {{task}}。エージェントは未着手として扱います。もう一度クリックで元に戻せます。",
@@ -12029,7 +12028,8 @@
         "set_by_you_done": "あなたが完了にしました。エージェントはまだ確認していません。",
         "set_by_you_open": "あなたが未完了にしました。エージェントはまだ確認していません。",
         "sending": "送信中",
-        "done_of_total": "{{done}} ／ {{total}}"
+        "done_of_total": "{{done}} ／ {{total}}",
+        "more_count_other": "ほか {{n}} 件…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "モデルの推論を折りたたむ",
@@ -12239,7 +12239,7 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "スナップショットを読み込めませんでした:",
-        "events": "イベント"
+        "events_count_other": "{{n}} 件のイベント"
       },
       "pins": {
         "pinned_messages": "ピン留めされたメッセージ",

@@ -6473,7 +6473,6 @@
       "machine_running_the_gateway": "machine running the gateway",
       "make_sure_the_gateway_s": ". Make sure the gateway's",
       "missing_sso_start_url_sso_region": "missing … sso_start_url, sso_region",
-      "more": "more",
       "never_boto3_so_credential_resolution_stays_in_yo": "(never boto3),\n              so credential resolution stays in your OS credential store. {{productName}} never writes IAM and\n              never manages accounts, users, or roles — you apply the generated least-privilege policy yourself.",
       "never_credentials": "— never credentials)",
       "new_profile": "New profile",
@@ -6535,7 +6534,9 @@
       "4_optional_install_auto_cleanup": "4. Optional: install auto-cleanup",
       "auto_cleanup_explainer": "Only needed for deploys you want to expire on their own.",
       "deploy_publishes_directly_from_this_page": "Deploy publishes from this page after you confirm.",
-      "deployments_read_live_from_tags": "This list is read live from AWS resource tags, so a deploy you just made can take a couple of minutes to appear here."
+      "deployments_read_live_from_tags": "This list is read live from AWS resource tags, so a deploy you just made can take a couple of minutes to appear here.",
+      "more_count_one": "+{{n}} more",
+      "more_count_other": "+{{n}} more"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· a newer version is available in the remote copy",
@@ -7014,8 +7015,9 @@
       },
       "taskProgressBar": {
         "done_of_total": "{{done}} of {{total}}",
-        "more": "more…",
-        "task_completion": "Task completion"
+        "task_completion": "Task completion",
+        "more_count_one": "+ {{n}} more…",
+        "more_count_other": "+ {{n}} more…"
       },
       "thinkingBlock": {
         "thinking": "Thinking",
@@ -7123,7 +7125,8 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Could not load snapshot:",
-        "events": "events"
+        "events_count_one": "{{n}} event",
+        "events_count_other": "{{n}} events"
       },
       "pins": {
         "pinned_messages": "Pinned messages",

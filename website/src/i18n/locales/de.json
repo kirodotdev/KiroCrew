@@ -11164,7 +11164,6 @@
       "make_sure_the_gateway_s": ". Stellen Sie sicher, dass das Gateway",
       "make_the_default_profile": "{{name}} zum Standardprofil machen",
       "missing_sso_start_url_sso_region": "fehlt … sso_start_url, sso_region",
-      "more": "mehr",
       "never_boto3_so_credential_resolution_stays_in_yo": "(niemals boto3),\n              sodass die Anmeldedatenauflösung im Anmeldeinformationsspeicher Ihres Betriebssystems bleibt. {{productName}} schreibt niemals IAM und\n              verwaltet niemals Konten, Benutzer oder Rollen — Sie wenden die generierte Least-Privilege-Richtlinie selbst an.",
       "never_credentials": "— niemals Anmeldedaten)",
       "new_profile": "Neues Profil",
@@ -11260,7 +11259,9 @@
       "col_actions": "Aktionen",
       "col_type": "Typ",
       "col_url": "URL",
-      "col_cost": "Kosten"
+      "col_cost": "Kosten",
+      "more_count_one": "+{{n}} mehr",
+      "more_count_other": "+{{n}} mehr"
     },
     "artifactDetailPage": {
       "published_to_provider": "Veröffentlicht in {{provider}}",
@@ -12229,7 +12230,6 @@
         "aria_collapse_task_list": "{{done}} von {{total}} Aufgaben abgeschlossen. Aufgabenliste einklappen",
         "aria_expand_task_list": "{{done}} von {{total}} Aufgaben abgeschlossen. Aufgabenliste aufklappen",
         "current_task": "Aktuelle Aufgabe",
-        "more": "mehr…",
         "task_completion": "Aufgabenabschluss",
         "aria_mark_done": "Als erledigt markieren: {{task}}. Der Agent macht sie nicht noch einmal. Nochmal klicken macht es rückgängig.",
         "aria_mark_not_done": "Als offen markieren: {{task}}. Der Agent behandelt sie als noch offen. Nochmal klicken macht es rückgängig.",
@@ -12243,7 +12243,9 @@
         "set_by_you_done": "Du hast das als erledigt markiert; der Agent hat es noch nicht bestätigt.",
         "set_by_you_open": "Du hast das als offen markiert; der Agent hat es noch nicht bestätigt.",
         "sending": "Wird gesendet",
-        "done_of_total": "{{done}} von {{total}}"
+        "done_of_total": "{{done}} von {{total}}",
+        "more_count_one": "+ {{n}} mehr…",
+        "more_count_other": "+ {{n}} mehr…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Denkprozess des Modells einklappen",
@@ -12458,7 +12460,8 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Snapshot konnte nicht geladen werden:",
-        "events": "Ereignisse"
+        "events_count_one": "{{n}} Ereignis",
+        "events_count_other": "{{n}} Ereignisse"
       },
       "pins": {
         "pinned_messages": "Angeheftete Nachrichten",

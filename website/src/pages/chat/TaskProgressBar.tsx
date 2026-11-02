@@ -337,7 +337,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
             })}
             {tasks.length > MAX_VISIBLE_ROWS && (
               <li className="text-[11px] text-muted font-mono pl-[18px]">
-                + {tasks.length - MAX_VISIBLE_ROWS} {i18nT('pages.chat.taskProgressBar.more')}
+                {i18nT('pages.chat.taskProgressBar.more_count', { count: tasks.length - MAX_VISIBLE_ROWS, n: fmtNumber(tasks.length - MAX_VISIBLE_ROWS) })}
               </li>
             )}
           </ul>

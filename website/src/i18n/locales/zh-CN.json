@@ -10988,7 +10988,6 @@
       "make_sure_the_gateway_s": "。请确保网关的",
       "make_the_default_profile": "将 {{name}} 设为默认配置文件",
       "missing_sso_start_url_sso_region": "缺少 … sso_start_url、sso_region",
-      "more": "更多",
       "never_boto3_so_credential_resolution_stays_in_yo": "（从不使用 boto3），\n              因此凭证解析始终留在你的操作系统凭证存储中。{{productName}} 从不写入 IAM，\n              也从不管理账户、用户或角色 — 生成的最小权限策略需由你自行应用。",
       "never_credentials": "— 从不包含凭证）",
       "new_profile": "新建配置文件",
@@ -11082,7 +11081,8 @@
       "col_actions": "操作",
       "col_type": "类型",
       "col_url": "链接",
-      "col_cost": "费用"
+      "col_cost": "费用",
+      "more_count_other": "另外 {{n}} 个"
     },
     "artifactDetailPage": {
       "published_to_provider": "已发布到 {{provider}}",
@@ -12015,7 +12015,6 @@
         "aria_collapse_task_list": "已完成 {{done}}/{{total}} 个任务。折叠任务列表",
         "aria_expand_task_list": "已完成 {{done}}/{{total}} 个任务。展开任务列表",
         "current_task": "当前任务",
-        "more": "更多…",
         "task_completion": "任务完成度",
         "aria_mark_done": "标记完成：{{task}}。agent 不会重做。再点一次可撤销。",
         "aria_mark_not_done": "标记未完成：{{task}}。agent 会当作还没做。再点一次可撤销。",
@@ -12029,7 +12028,8 @@
         "set_by_you_done": "你标成了完成，agent 还没确认。",
         "set_by_you_open": "你标成了未完成，agent 还没确认。",
         "sending": "发送中",
-        "done_of_total": "{{done}} / {{total}}"
+        "done_of_total": "{{done}} / {{total}}",
+        "more_count_other": "另外 {{n}} 个…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "收起模型推理",
@@ -12239,7 +12239,7 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "无法加载快照：",
-        "events": "个事件"
+        "events_count_other": "{{n}} 个事件"
       },
       "pins": {
         "pinned_messages": "已置顶消息",

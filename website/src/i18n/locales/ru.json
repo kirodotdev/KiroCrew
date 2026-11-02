@@ -11516,7 +11516,6 @@
       "make_sure_the_gateway_s": ". Убедитесь, что переменная",
       "make_the_default_profile": "Сделать {{name}} профилем по умолчанию",
       "missing_sso_start_url_sso_region": "отсутствует … sso_start_url, sso_region",
-      "more": "ещё",
       "never_boto3_so_credential_resolution_stays_in_yo": "(никогда boto3),\n              поэтому получение учётных данных остаётся в хранилище учётных данных вашей ОС. {{productName}} никогда не изменяет IAM и\n              никогда не управляет аккаунтами, пользователями и ролями — сгенерированную политику минимальных привилегий вы применяете сами.",
       "never_credentials": "— никогда учётные данные)",
       "new_profile": "Новый профиль",
@@ -11616,7 +11615,11 @@
       "col_actions": "Действия",
       "col_type": "Тип",
       "col_url": "Ссылка",
-      "col_cost": "Стоимость"
+      "col_cost": "Стоимость",
+      "more_count_one": "ещё {{n}}",
+      "more_count_few": "ещё {{n}}",
+      "more_count_many": "ещё {{n}}",
+      "more_count_other": "ещё {{n}}"
     },
     "artifactDetailPage": {
       "published_to_provider": "Опубликовано в {{provider}}",
@@ -12657,7 +12660,6 @@
         "aria_collapse_task_list": "Выполнено задач: {{done}} из {{total}}. Свернуть список задач",
         "aria_expand_task_list": "Выполнено задач: {{done}} из {{total}}. Развернуть список задач",
         "current_task": "Текущая задача",
-        "more": "ещё…",
         "task_completion": "Выполнение задачи",
         "aria_mark_done": "Отметить выполненной: {{task}}. Агент не будет её переделывать. Нажми ещё раз, чтобы отменить.",
         "aria_mark_not_done": "Отметить невыполненной: {{task}}. Агент будет считать её открытой. Нажми ещё раз, чтобы отменить.",
@@ -12671,7 +12673,11 @@
         "set_by_you_done": "Ты отметил это как выполненное; агент ещё не подтвердил.",
         "set_by_you_open": "Ты отметил это как невыполненное; агент ещё не подтвердил.",
         "sending": "Отправка",
-        "done_of_total": "{{done}} из {{total}}"
+        "done_of_total": "{{done}} из {{total}}",
+        "more_count_one": "ещё {{n}}…",
+        "more_count_few": "ещё {{n}}…",
+        "more_count_many": "ещё {{n}}…",
+        "more_count_other": "ещё {{n}}…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Свернуть рассуждения модели",
@@ -12896,7 +12902,10 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Не удалось загрузить снимок:",
-        "events": "событий"
+        "events_count_one": "{{n}} событие",
+        "events_count_few": "{{n}} события",
+        "events_count_many": "{{n}} событий",
+        "events_count_other": "{{n}} события"
       },
       "pins": {
         "pinned_messages": "Закреплённые сообщения",

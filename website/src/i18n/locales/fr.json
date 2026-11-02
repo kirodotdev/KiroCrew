@@ -11340,7 +11340,6 @@
       "make_sure_the_gateway_s": ". Assurez-vous que le",
       "make_the_default_profile": "Définir {{name}} comme profil par défaut",
       "missing_sso_start_url_sso_region": "manquant … sso_start_url, sso_region",
-      "more": "de plus",
       "never_boto3_so_credential_resolution_stays_in_yo": "(jamais boto3),\n              afin que la résolution des identifiants reste dans le magasin d'identifiants de votre système. {{productName}} n'écrit jamais dans IAM et\n              ne gère jamais les comptes, les utilisateurs ou les rôles — vous appliquez vous-même la politique de moindre privilège générée.",
       "never_credentials": "— jamais les identifiants)",
       "new_profile": "Nouveau profil",
@@ -11438,7 +11437,10 @@
       "col_actions": "Actions",
       "col_type": "Type",
       "col_url": "URL",
-      "col_cost": "Coût"
+      "col_cost": "Coût",
+      "more_count_one": "+{{n}} de plus",
+      "more_count_many": "+{{n}} de plus",
+      "more_count_other": "+{{n}} de plus"
     },
     "artifactDetailPage": {
       "published_to_provider": "Publié sur {{provider}}",
@@ -12443,7 +12445,6 @@
         "aria_collapse_task_list": "{{done}} sur {{total}} tâches terminées. Réduire la liste des tâches",
         "aria_expand_task_list": "{{done}} sur {{total}} tâches terminées. Développer la liste des tâches",
         "current_task": "Tâche en cours",
-        "more": "de plus…",
         "task_completion": "Progression des tâches",
         "aria_mark_done": "Marquer terminée : {{task}}. L'agent ne la refera pas. Clique à nouveau pour annuler.",
         "aria_mark_not_done": "Marquer non terminée : {{task}}. L'agent la considère comme encore ouverte. Clique à nouveau pour annuler.",
@@ -12457,7 +12458,10 @@
         "set_by_you_done": "Tu as marqué cette ligne terminée ; l'agent ne l'a pas encore confirmé.",
         "set_by_you_open": "Tu as marqué cette ligne non terminée ; l'agent ne l'a pas encore confirmé.",
         "sending": "Envoi en cours",
-        "done_of_total": "{{done}} sur {{total}}"
+        "done_of_total": "{{done}} sur {{total}}",
+        "more_count_one": "+ {{n}} de plus…",
+        "more_count_many": "+ {{n}} de plus…",
+        "more_count_other": "+ {{n}} de plus…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Réduire le raisonnement du modèle",
@@ -12677,7 +12681,9 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Impossible de charger l'instantané :",
-        "events": "événements"
+        "events_count_one": "{{n}} événement",
+        "events_count_many": "{{n}} événements",
+        "events_count_other": "{{n}} événements"
       },
       "pins": {
         "pinned_messages": "Messages épinglés",
