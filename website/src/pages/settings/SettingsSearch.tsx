@@ -13,6 +13,7 @@ import { settingsSubtitle } from '../../components/commandPalette/settingsTabLab
 import type { SettingEntry } from '../../components/commandPalette/settingsTypes'
 import { makeScoreThenNameComparator } from '../../utils/fuzzyMatch'
 import { useListKeyboardNav } from '../../hooks/useListKeyboardNav'
+import { usePreviewFlagRevision } from '../../hooks/usePreviewFlag'
 import { SidePanelDockContext } from '../../components/SidePanelLayout'
 import { SearchInput } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
@@ -80,11 +81,16 @@ export default function SettingsSearch() {
   // The governance every settings search shares, so this search and the panels
   // it lands on hide a row together.
   const governance = useSettingsSearchGovernance()
+  // `settingEntryOffered` reads preview flags (Display > Explore, Session
+  // Environments), so a flipped switch must rerun the open search too.
+  const previewRev = usePreviewFlagRevision()
 
   const q = query.trim()
   const results = useMemo(
     () => (q ? searchSettings(q, governance) : []),
-    [q, governance],
+    // The revision is an invalidation token: the flags live in localStorage.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [q, governance, previewRev],
   )
   const open = q.length > 0 && !dismissed
 
