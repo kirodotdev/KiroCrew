@@ -1140,7 +1140,12 @@ When a ruling needs content, read that one session through the
 workspace-authorized session tools. Act, then `--mark-handled KEY TAG DIGEST`
 (DIGEST is the `d=` field on the fired line), or the signal re-fires forever. A
 stale digest is refused (exit 3): the payload moved on since you read it —
-re-probe and act on what is there now, never mark blind.
+re-probe and act on what is there now, never mark blind. A mark against a state
+file that exists but cannot be read is refused (exit 4) and the file is left
+untouched, because writing past it would erase every disposition it holds. A
+transient lock clears on the next attempt; a file that keeps refusing needs a
+person to repair or remove `<config>.state.json`, so escalate it rather than
+retrying every cycle.
 
 **Classification anchors at the START of a worker's message, and tolerates
 leading markdown.** A worker that writes `**BLOCKED:**` is following the protocol
