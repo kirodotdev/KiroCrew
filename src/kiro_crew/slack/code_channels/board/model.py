@@ -32,6 +32,8 @@ added without amending that rule:
   then host paths and host names out, one line, cut to :data:`STEP_CHARS`.
   With no call in flight, the first line of a fresh progress report, through
   the same passes, or the fixed word :data:`STEP_THINKING`.
+* for a worker someone stopped from the Workers tab, that person's Slack user id
+  and the ``HH:MM`` of the stop, until the worker's next turn (:mod:`.stops`).
 
 Never the acceptance bar, the conductor's decision, the event log, or any other
 transcript text (no model output, no tool result, no arguments beyond the one
@@ -383,6 +385,14 @@ class WorkerRow:
     #: For an ``approval`` wait: a short digest of the pending approval's request
     #: id (never shown), so a second approval in the same report pages again.
     approval_key: str = ""
+    #: Who stopped this worker from the Workers tab (a Slack user id) and when
+    #: (``HH:MM`` UTC), until its next turn starts (:mod:`.stops`).
+    stopped_by: str = ""
+    stopped_at: str = ""
+
+    @property
+    def stopped(self) -> bool:
+        return bool(self.stopped_by) and not self.settled
 
     @property
     def needs_owner(self) -> bool:

@@ -92,6 +92,11 @@ class Facts:
     #: One outcome line per worker of a conductor-led channel
     #: (``• Fix login: PR #12 merged``), already escaped and redacted.
     workers: tuple[str, ...] = ()
+    #: Whether the Code tab holds the channel's diff, and the channel's own
+    #: pull-request tabs (``(PR number, view id)``, newest first): linked from
+    #: the wrap-up with ``rich_text`` ``channel`` elements.
+    code_tab: bool = False
+    pr_tabs: tuple[tuple[int, str], ...] = ()
 
 
 def _gather_facts_sync(binding: Binding) -> Facts:
@@ -108,6 +113,8 @@ def _gather_facts_sync(binding: Binding) -> Facts:
         pr_state=record.pr_state,
         pr_ci=record.pr_ci,
         worktree=record.worktree,
+        code_tab=bool(record.view_id and record.diff_hash),
+        pr_tabs=_pr_tabs(binding.channel_id, _open_prs(binding, record)),
     )
     tree = record.worktree
     if not tree:
@@ -146,6 +153,78 @@ def _workers_still_admitted(binding: Binding) -> bool:
         return bool(source.scope_admits(surface.dashboard_state(), binding))
     except Exception:
         return False
+
+
+def _open_prs(binding: Binding, record: Any) -> set[int]:
+    """The channel's PRs still open: its own (the workspace record's) and its workers'
+    (the board the workspace last published). A merged PR's tab is about to go, so
+    the wrap-up -- which stays in the channel -- does not link it."""
+    numbers = (
+        {record.pr_number} if record.pr_number and record.pr_state in ("open", "draft") else set()
+    )
+    try:
+        from kiro_crew.slack.code_channels.workspace import core as workspace
+
+        service = workspace.service()
+        board = service.board(binding.team_id, binding.channel_id) if service else None
+    except Exception:
+        board = None
+    for row in getattr(board, "rows", ()) or ():
+        if row.pr_number and row.pr_state in ("open", "draft"):
+            numbers.add(int(row.pr_number))
+    return numbers
+
+
+def _pr_tabs(channel_id: str, open_prs: set[int]) -> tuple[tuple[int, str], ...]:
+    """The channel's pull-request tabs this gateway opened, for PRs still open (blocking)."""
+    from kiro_crew.slack.code_channels import views
+    from kiro_crew.slack.code_channels.surface_store import store as surface_store
+
+    try:
+        record = surface_store().get(channel_id)
+    except Exception:
+        return ()
+    held = [
+        v
+        for v in (record.views if record else ())
+        if views.is_pr_tab(v) and v.get("view_id") and views.pr_number(v) in open_prs
+    ]
+    return tuple(sorted(((views.pr_number(v), str(v["view_id"])) for v in held), reverse=True))
+
+
+def _is_slack_id(value: str) -> bool:
+    """A Slack id put into a ``channel`` element (a channel id or a view id):
+    1 to 64 ASCII letters and digits."""
+    return 0 < len(value) <= 64 and value.isascii() and value.isalnum()
+
+
+#: The built-in Code tab's static ``tab_id``.
+_CODE_TAB_ID = "code"
+
+
+def _tab_block(facts: Facts, channel_id: str) -> dict[str, Any] | None:
+    """``Tabs: Code · PR #12``: deep links to the channel's Code and pull-request tabs.
+
+    Each tab is a ``rich_text`` ``channel`` element whose ``tab_id`` is the view id
+    ``setView`` answered with (the Code tab's is the static ``code``); Slack shows
+    it under the tab's own name.
+    """
+    if not _is_slack_id(channel_id or ""):
+        return None
+    ids = ([_CODE_TAB_ID] if facts.code_tab else []) + [
+        view_id for _n, view_id in facts.pr_tabs if _is_slack_id(view_id)
+    ]
+    if not ids:
+        return None
+    elements: list[dict[str, Any]] = [{"type": "text", "text": "Tabs: "}]
+    for index, tab_id in enumerate(ids):
+        if index:
+            elements.append({"type": "text", "text": " · "})
+        elements.append({"type": "channel", "channel_id": channel_id, "tab_id": tab_id})
+    return {
+        "type": "rich_text",
+        "elements": [{"type": "rich_text_section", "elements": elements}],
+    }
 
 
 async def gather_facts(binding: Binding) -> Facts:
@@ -251,6 +330,9 @@ def wrap_up_blocks(summary: str, facts: Facts, channel_id: str) -> list[dict[str
         blocks.append(
             {"type": "context", "elements": [{"type": "mrkdwn", "text": "\n".join(lines)}]}
         )
+    tab_block = _tab_block(facts, channel_id)
+    if tab_block is not None:
+        blocks.append(tab_block)
     blocks.append(
         {
             "type": "actions",
@@ -449,9 +531,24 @@ async def post_wrap_up(
             blocks = wrap_up_blocks(summary, facts, channel)
         try:
             ts = str(await slack.post_blocks(channel, blocks, fallback) or "")
-        except Exception:
-            logger.warning("code channel %s: wrap-up post failed", channel, exc_info=True)
+        except Exception as exc:
             ts = ""
+            plain = [b for b in blocks if b.get("type") != "rich_text"]
+            try:
+                refused = str((getattr(exc, "response", None) or {}).get("error", "") or "")
+            except Exception:
+                refused = ""
+            if refused in {"invalid_blocks", "invalid_blocks_format"} and plain != blocks:
+                # The tab links are a convenience: the wrap-up and its Archive
+                # button go out without them rather than not at all.
+                logger.info("code channel %s: wrap-up tab links refused (%s)", channel, refused)
+                try:
+                    blocks = plain
+                    ts = str(await slack.post_blocks(channel, blocks, fallback) or "")
+                except Exception:
+                    ts = ""
+            if not ts:
+                logger.warning("code channel %s: wrap-up post failed", channel, exc_info=True)
         if not ts:
             surface.audit(
                 caller, "slack.code_channel.wrap_up", "error", f"channel={channel}", "post failed"
