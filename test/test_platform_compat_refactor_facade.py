@@ -393,6 +393,8 @@ _CARVED_IMPORTS: dict[str, frozenset[str]] = {
             "kiro_crew.platform_compat_identity",
             "kiro_crew.platform_compat_liveness",
             "kiro_crew.platform_compat_native",
+            # darwin_pgroup_members settles pgroup_exists's macOS EPERM.
+            "kiro_crew.platform_compat_proctable",
             "kiro_crew.platform_compat_trust",
             "kiro_crew.platform_compat_winproc",
             "kiro_crew.platform_compat_wintree",

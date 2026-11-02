@@ -30,6 +30,7 @@ from kiro_crew.platform_compat_native import (
     _OWN_PGID,
     _SUBPROCESS_NO_WINDOW,
     _WINDOWS_PID_MAX,
+    IS_MACOS,
     IS_POSIX,
     IS_WINDOWS,
     SIGKILL,
@@ -37,6 +38,7 @@ from kiro_crew.platform_compat_native import (
     _close_process_handle,
     _open_process_query_handle,
 )
+from kiro_crew.platform_compat_proctable import darwin_pgroup_members
 from kiro_crew.platform_compat_trust import trusted_system_bin
 from kiro_crew.platform_compat_winproc import open_process_termination_handle
 from kiro_crew.platform_compat_wintree import (
@@ -64,7 +66,9 @@ def pgroup_exists(pgid: int) -> bool:
     escaped-children reapers, not this.
 
     POSIX: ``os.killpg(pgid, 0)`` -- conservative on EPERM and on an integer
-    outside the native ``pid_t`` range (both read as alive/unknown). Windows:
+    outside the native ``pid_t`` range (both read as alive/unknown), except
+    that on macOS an EPERM is settled by ``darwin_pgroup_members``: a group
+    whose listed members are all zombies is empty. Windows:
     process groups in this sense do not exist and ``kill_process_tree`` already
     walks the whole child tree via ``taskkill /T``, so the group id (== the
     launcher pid) is probed as a plain pid via :func:`pid_exists`. A value wider
@@ -85,6 +89,15 @@ def pgroup_exists(pgid: int) -> bool:
         # Persisted owner markers can be syntactically numeric without fitting
         # pid_t. Unknown identity is not proof that cleanup is safe.
         return True
+    except PermissionError:
+        # macOS answers EPERM, not ESRCH, for a group whose only members are
+        # zombies (an exited leader not yet reaped). The kernel's group listing
+        # tells that apart from a running member; an unreadable listing stays
+        # alive/unknown.
+        if not IS_MACOS:
+            return True
+        members = darwin_pgroup_members(pgid)
+        return members is None or any(not member.zombie for member in members)
     except OSError:
         return True  # exists but we can't signal it
     return True
