@@ -363,8 +363,40 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
     return response
 
 
+async def install_peer_export(
+    request: web.Request, source: Any, *, origin: str = ""
+) -> web.Response:
+    """Install a session this hub FETCHED from a peer's export route.
+
+    The pull counterpart of the tunnel's ``send_session_bundle``: *source* is
+    the peer's live ``GET /api/chat/slots/{key}/export`` response, and its body
+    is the exact file that route hands a user. It goes through the one arrival
+    path (:func:`_install_arrived_bundle`), so the rules for "a session arrived
+    here" -- the format sniff, the admissions, redaction, the arrival folders,
+    copy semantics -- hold for a fetch without a second implementation.
+
+    *request* is the hub's own request (the owner asking for the copy); it
+    decides the caller identity and filing, never the peer.
+
+    *origin* is the name THIS hub's registry has for the peer it read from. It
+    replaces the bundle's own ``origin``, which a crew's export always leaves
+    empty (it is a file for a person, not a push from a named sender), so without
+    it a fetched copy would land under a bare ``Imported`` looking like an
+    anonymous file. Taken from the hub's registry, never from the peer's bytes.
+    """
+    async with contextlib.AsyncExitStack() as keep:
+        response = await _install_arrived_bundle(
+            request, keep, source=source, origin_override=origin
+        )
+    return response
+
+
 async def _install_arrived_bundle(
-    request: web.Request, keep: contextlib.AsyncExitStack
+    request: web.Request,
+    keep: contextlib.AsyncExitStack,
+    *,
+    source: Any = None,
+    origin_override: str = "",
 ) -> web.Response:
     """Materialise one arrived bundle. See :func:`api_chat_slot_import`.
 
@@ -406,7 +438,7 @@ async def _install_arrived_bundle(
             status=429,
         )
 
-    body, body_err = await _read_bundle_body(request, keep)
+    body, body_err = await _read_bundle_body(request, keep, source=source)
     if body_err is not None:
         return body_err
 
@@ -446,7 +478,9 @@ async def _install_arrived_bundle(
     source_title = bundle["title"] or "Untitled"
     source_title, _ = redact_exfiltration_urls(source_title)
     source_title, _ = redact_credentials(source_title)
-    origin = bundle["origin"]
+    # A fetch names its sender from the hub's own registry (see
+    # :func:`install_peer_export`); every other arrival uses the bundle's label.
+    origin = origin_override or bundle["origin"]
     origin, _ = redact_exfiltration_urls(origin)
     origin, _ = redact_credentials(origin)
     suffix = f" (from {origin})" if origin else ""
