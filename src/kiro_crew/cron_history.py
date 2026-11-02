@@ -603,9 +603,20 @@ class CronHistoryStore:
         return self._dir / ".history.lock"
 
     def _lock(self) -> int:
-        """Acquire advisory lock, return fd."""
+        """Acquire advisory lock, return fd.
+
+        The caller owns the returned fd and closes it via ``_unlock``. When the
+        acquire itself raises (an ``OSError`` on lock timeout), no fd has been
+        handed back for the caller to close, so close it here before re-raising
+        — otherwise the open handle lingers and on Windows blocks deleting the
+        lock file or the history folder.
+        """
         fd = platform_compat.open_create_or_existing(str(self._lock_path()), os.O_WRONLY, 0o600)
-        platform_compat.acquire_lock(fd, exclusive=True)
+        try:
+            platform_compat.acquire_lock(fd, exclusive=True)
+        except OSError:
+            os.close(fd)
+            raise
         return fd
 
     def _unlock(self, fd: int) -> None:
