@@ -46,6 +46,7 @@ if TYPE_CHECKING:
         _record_explicit_agent_selection,
         _redact_meta,
         _run_chat,
+        _send_binds_agent,
         _send_writes_persona,
         _start_next_queued_turn,
         _wake_pending_reset_retry,
@@ -138,11 +139,6 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
             source="turn_start_sweep",
             resources=cls.get("request_id", ""),
         )
-
-
-def _send_binds_agent(agent: str, slot: Any) -> bool:
-    """Whether a ``POST /api/chat`` naming *agent* writes it onto *slot*."""
-    return bool(agent) and slot.agent in (None, "")
 
 
 async def _send_harness_command(message: str, state: DashboardState, slot: _ChatSlot) -> str:
@@ -1350,21 +1346,22 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     )
     # A queued card's open editor holds the queue: a send joins it behind the
     # held entries, steer or not, rather than being answered first.
+    from kiro_crew.dashboard.chat_utils_injected_rows import signout_gate
     from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
 
     _edit_held = edit_hold_blocks_user_turn(slot)
+    _so_held = signout_gate(slot, message)
+    _signout_queued = _person_send and _so_held and not slot.running
     # A card never queues or steers: any state that would queue this send instead of
     # running it now -- a hold, a behind-parked slot, a teardown hold (a pending
     # conversation discard deferred by a lingering child) or a queued card's edit
     # hold -- refuses it so the host falls back to the composer. A queued card entry
     # carries no cardOrigin marker, so it would drain later as a trusted owner turn
     # with the person's directive authority, losing every card-send restriction.
-    if card_origin and (_held or _behind_parked or _teardown_hold or _edit_held):
+    if card_origin and (_held or _behind_parked or _teardown_hold or _edit_held or _so_held):
         return card_send.busy_refusal(request, slot)
-    if (
-        (not (steer and not _agent_origin) and (_held or _behind_parked))
-        or _teardown_hold
-        or _edit_held
+    if (not (steer and not _agent_origin) and (_held or _behind_parked)) or (
+        _teardown_hold or _edit_held or _signout_queued
     ):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
@@ -1472,7 +1469,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # is what lands the discard and drains the queue this send joined.
             _arm_pending_reset_retry(state, slot)
             _wake_pending_reset_retry(state, slot)
-        if _behind_parked:
+        _signout_drain = _signout_queued and _from_composer and not (_edit_held or _teardown_hold)
+        if _signout_drain:
+            await _drain_parked_queues(state, [slot.key], signout_drain=True)
+        elif _behind_parked:
             await _start_next_queued_turn(state, slot)
         elif not subagents_hold_user_messages(state, _sub_key):
             # The admission await (a config refresh included, even when admission

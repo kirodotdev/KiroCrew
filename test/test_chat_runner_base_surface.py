@@ -957,7 +957,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_drain_parked_queues",
             "async function",
-            "(state: 'DashboardState', slot_keys: 'list[str]') -> 'None'",
+            "(state: 'DashboardState', slot_keys: 'list[str]', *, signout_drain: 'bool' = False) -> 'None'",
         ),
         (
             "drain_idle_parent_queue_for_stall",
@@ -985,7 +985,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_start_next_queued_turn",
             "async function",
-            "(state: 'DashboardState', slot: '_ChatSlot', *, allow_user_during_subagents: 'bool' = False, required_queue_id: 'str | None' = None, predecessor_actor: 'str' = '', predecessor_turn_id: 'str' = '', end_batch: 'bool' = False) -> 'bool'",
+            "(state: 'DashboardState', slot: '_ChatSlot', *, allow_user_during_subagents: 'bool' = False, signout_drain: 'bool' = False, required_queue_id: 'str | None' = None, predecessor_actor: 'str' = '', predecessor_turn_id: 'str' = '', end_batch: 'bool' = False) -> 'bool'",
         ),
     ),
     "turn_entry": (

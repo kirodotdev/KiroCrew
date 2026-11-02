@@ -81,6 +81,7 @@ from kiro_crew.dashboard.chat_api import resume as _owner_resume
 from kiro_crew.dashboard.chat_api import resume_identity as _owner_resume_identity
 from kiro_crew.dashboard.chat_api import resume_live as _owner_resume_live
 from kiro_crew.dashboard.chat_api import resume_window as _owner_resume_window
+from kiro_crew.dashboard.chat_api import send_binding as _owner_send_binding
 from kiro_crew.dashboard.chat_api import session_relaunch as _owner_session_relaunch
 from kiro_crew.dashboard.chat_api import slot_approval as _owner_slot_approval
 from kiro_crew.dashboard.chat_api import slot_create as _owner_slot_create
@@ -130,7 +131,6 @@ from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
     _api_chat_send,
     _committed_if_accepted,
     _composer_locked_answer,
-    _send_binds_agent,
     _send_harness_command,
     _send_id_of,
     _settle_send_race,
@@ -239,6 +239,7 @@ from kiro_crew.dashboard.chat_api.resume_live import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.resume_window import (  # noqa: F401
     _reconcile_slot_window,
 )
+from kiro_crew.dashboard.chat_api.send_binding import _send_binds_agent  # noqa: F401
 from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     _report_reload_respawn,
     api_chat_slot_project,
@@ -546,6 +547,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     restore_replacement_if_handover_did_not_land,
+    signout_hold_active,
     slot_history_key,
     slot_transcript_key,
     subagents_attached_async,
@@ -1486,6 +1488,7 @@ _facade_compose(
         _owner_resume_identity,
         _owner_resume_live,
         _owner_resume_window,
+        _owner_send_binding,
         _owner_session_relaunch,
         _owner_slot_approval,
         _owner_slot_create,

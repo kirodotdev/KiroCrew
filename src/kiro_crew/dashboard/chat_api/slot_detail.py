@@ -1306,6 +1306,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # three restore marks because it reads them for `restored` and `held`
     # (`is_held_queue_entry`).
     from kiro_crew.dashboard.slot_queue_repository import (
+        PUT_BACK_KEY,
         RESTORED_BOOT_ACCEPTED_KEY,
         RESTORED_QUEUE_KEY,
         RESTORED_SEND_CHOSEN_KEY,
@@ -1322,6 +1323,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             RESTORED_QUEUE_KEY: q.get(RESTORED_QUEUE_KEY, False),
             RESTORED_SEND_CHOSEN_KEY: q.get(RESTORED_SEND_CHOSEN_KEY, False),
             RESTORED_BOOT_ACCEPTED_KEY: q.get(RESTORED_BOOT_ACCEPTED_KEY, False),
+            PUT_BACK_KEY: q.get(PUT_BACK_KEY),
             **({"edit_rev": q["edit_rev"]} if isinstance(q.get("edit_rev"), int) else {}),
         }
         for q in slot._queue

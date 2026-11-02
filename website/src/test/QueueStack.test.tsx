@@ -857,6 +857,16 @@ describe('QueueStack server-written entry (resource wake, MCP-App message)', () 
     expect(screen.getByTestId('queue-card').textContent).toContain('demo')
   })
 
+  it('a written entry offers no edit, and a cancel only when it is withdrawable', () => {
+    const card = (withdrawable: boolean) => ({ ...queued('held', 'q1'), meta: { queueId: 'q1', written: true, withdrawable } })
+    const { rerender } = render(<QueueStack messages={[card(false)]} onCancel={vi.fn()} onEdit={vi.fn()} />)
+    expect(screen.queryByLabelText('Cancel queued message')).toBeNull()
+    rerender(<QueueStack messages={[card(true), queued('next', 'q2')]} onCancel={vi.fn()} onEdit={vi.fn()} onReorder={vi.fn()} onInterrupt={vi.fn()} />)
+    fireEvent.click(document.querySelector('[aria-expanded]')!)
+    const held = screen.getAllByTestId('queue-card')[0]
+    expect([...held.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'))).toEqual(['Send now', 'Cancel queued message'])
+  })
+
   it('the person\'s own queued message keeps its pencil and its move-back-to-input cancel', () => {
     render(<QueueStack messages={[queued('my own words', 'q1')]} onCancel={vi.fn()} onEdit={vi.fn()} />)
     expect(screen.getByLabelText('Edit queued message')).toBeInTheDocument()
