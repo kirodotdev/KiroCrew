@@ -89,7 +89,6 @@ import { TOGGLE_RECT } from './chat/SessionFlyout'
 
 
 import type { ParsedSubagentCompletion } from './chat/subagentCompletion'
-import { useLabelTip } from '../components/InstantTip'
 import { sessionTitleRoster } from '../utils/sessionRoster'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
@@ -1054,11 +1053,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       ) : null}
     </>
   ), [composerAbove, deliveryStrip.show, deliveryStrip.onDismiss])
-  // The two icon-only controls at the header bar's right end look alike, so
-  // each shows its own aria-label in an InstantTip on hover or focus, at once,
-  // instead of a native title the browser holds back for about a second.
-  const popOutTip = useLabelTip(i18nT('pages.chatPage.pop_out_session_to_its_own_window'))
-  const activityTip = useLabelTip(i18nT('pages.chatPage.open_activity_panel'))
 
   return (
     <ChatPageFrame
@@ -1142,7 +1136,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               currentSlot={currentSlot} headerColorStyle={headerColorStyle} effectiveMode={effectiveMode} title={title} activeIsSplitAnchor={activeIsSplitAnchor} editingTitle={editingTitle} enterSplit={enterSplit}
               setEditingTitleSlot={setEditingTitleSlot} setSidebarPinned={setSidebarPinned} sidebarAutoHidden={sidebarAutoHidden} sidebarPinned={sidebarPinned} sidePanelDock={sidePanelDock}
               splitAnchorForActive={splitAnchorForActive} toggleAct={toggleAct} openSidebar={openSidebar} sidebarOnScreen={sidebarOnScreen} sidebarOpen={sidebarOpen}
-              sidePanelWantsMount={sidePanelWantsMount} mobileNewSessionItem={mobileNewSessionItem} mobileSessionsToggle={mobileSessionsToggle} popOutTip={popOutTip} activityTip={activityTip}
+              sidePanelWantsMount={sidePanelWantsMount} mobileNewSessionItem={mobileNewSessionItem} mobileSessionsToggle={mobileSessionsToggle}
             />
             <ChatDropOverlay active={dragOver} />
             <ChatTranscriptView
