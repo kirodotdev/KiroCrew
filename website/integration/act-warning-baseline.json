@@ -39,7 +39,6 @@
   "src/test/WidgetFrame.test.tsx",
   "src/test/chatPins.test.tsx",
   "src/test/toolDisclosureKey.renderSite.test.tsx",
-  "src/test/useAgentSync.recencyOrder.test.tsx",
   "src/test/useKeyboardShortcuts.test.tsx",
   "src/test/useTheme.authReplay.test.tsx"
 ]
