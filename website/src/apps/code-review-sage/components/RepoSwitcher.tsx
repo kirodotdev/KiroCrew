@@ -20,11 +20,24 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from '../../../components/ui/dropdown-menu'
-import { repoSlug, useSage, type ActiveRepo } from '../context'
+import { repoSlug, sameRepo, useSage, type ActiveRepo } from '../context'
 import { loadRecentRepos, rememberRecentRepo } from '../lib/persist'
+import { compactRepo, isEnterpriseHost } from '../lib/repoRef'
 
 import { i18nT } from '../../../i18n/t'
 import ErrorNotice from '../../../components/ErrorNotice'
+/** `owner/repo`, prefixed with the host for a GitHub Enterprise repo so the
+ *  same slug on two instances reads as two rows. */
+function RepoName({ r }: { r: ActiveRepo }) {
+  const host = isEnterpriseHost(r.host) ? `${(r.host ?? '').toLowerCase()}/` : ''
+  return (
+    <span className="flex-1 min-w-0 truncate" title={repoSlug(r)}>
+      {host && <span className="text-muted">{host}</span>}
+      {r.owner}/<span className="font-medium">{r.repo}</span>
+    </span>
+  )
+}
+
 export default function RepoSwitcher() {
   const {
     pinnedRepos, pinnedLoading, activeRepo, setActiveRepo,
@@ -39,23 +52,21 @@ export default function RepoSwitcher() {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return pinnedRepos
-    return pinnedRepos.filter((r) => `${r.owner}/${r.repo}`.toLowerCase().includes(q))
+    return pinnedRepos.filter((r) => repoSlug(r).toLowerCase().includes(q))
   }, [pinnedRepos, query])
 
   // Only recents that are still pinned, so a removed repo cannot linger as a
   // dead row. Suppressed while filtering: a search wants one flat result list.
   const recentRows = useMemo(() => {
     if (query.trim()) return []
-    return recent.filter((r) => pinnedRepos.some(
-      (p) => p.owner === r.owner && p.repo === r.repo))
+    return recent.filter((r) => pinnedRepos.some((p) => sameRepo(p, r)))
   }, [recent, pinnedRepos, query])
 
   // Dropped from the main list only when the Recent section is actually shown,
   // so nothing is hidden when there is no second place to find it.
   const rest = useMemo(() => {
     if (recentRows.length < 2) return filtered
-    return filtered.filter((r) => !recentRows.some(
-      (x) => x.owner === r.owner && x.repo === r.repo))
+    return filtered.filter((r) => !recentRows.some((x) => sameRepo(x, r)))
   }, [filtered, recentRows])
 
   const pick = (r: ActiveRepo) => {
@@ -133,17 +144,14 @@ export default function RepoSwitcher() {
           {recentRows.length >= 2 && (
             <>
               {recentRows.map((r) => {
-                const isActive = !!activeRepo
-                  && activeRepo.owner === r.owner && activeRepo.repo === r.repo
+                const isActive = sameRepo(activeRepo, r)
                 return (
                   <DropdownMenuItem
-                    key={`recent-${r.owner}/${r.repo}`}
-                    onSelect={() => pick({ owner: r.owner, repo: r.repo })}
+                    key={`recent-${repoSlug(r)}`}
+                    onSelect={() => pick(compactRepo(r))}
                   >
                     <Clock size={12} className="flex-shrink-0 text-muted" aria-hidden="true" />
-                    <span className="flex-1 min-w-0 truncate" title={`${r.owner}/${r.repo}`}>
-                      {r.owner}/<span className="font-medium">{r.repo}</span>
-                    </span>
+                    <RepoName r={r} />
                     {isActive && <Check size={13} className="text-accent flex-shrink-0" />}
                   </DropdownMenuItem>
                 )
@@ -156,17 +164,14 @@ export default function RepoSwitcher() {
           )}
 
           {rest.map((r) => {
-            const isActive = !!activeRepo
-              && activeRepo.owner === r.owner && activeRepo.repo === r.repo
+            const isActive = sameRepo(activeRepo, r)
             return (
               <DropdownMenuItem
-                key={`${r.owner}/${r.repo}`}
-                onSelect={() => pick({ owner: r.owner, repo: r.repo })}
+                key={repoSlug(r)}
+                onSelect={() => pick(compactRepo(r))}
               >
                 <GithubLogo size={13} className="flex-shrink-0" />
-                <span className="flex-1 min-w-0 truncate" title={`${r.owner}/${r.repo}`}>
-                  {r.owner}/<span className="font-medium">{r.repo}</span>
-                </span>
+                <RepoName r={r} />
                 {isActive && <Check size={13} className="text-accent flex-shrink-0" />}
               </DropdownMenuItem>
             )

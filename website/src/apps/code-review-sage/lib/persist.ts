@@ -20,6 +20,7 @@
 // current behaviour (default state, loading skeleton). Persistence must never be
 // able to break the app — a corrupt or outdated value is discarded, not trusted.
 import type { ListTab, MainView, PrRef } from './types'
+import { compactRepo, sameRepo, type RepoRef } from './repoRef'
 
 const PREFIX = 'kc:code-review-sage'
 export const UI_STATE_KEY = `${PREFIX}:ui-state`
@@ -48,16 +49,17 @@ const MAX_RECENT = 5
  *
  * Separate from the pinned list, which is server-side and ordered by when each
  * repo was added — useless for finding the two or three you keep returning to. */
-export function loadRecentRepos(): { owner: string; repo: string }[] {
+export function loadRecentRepos(): RepoRef[] {
   try {
     const raw = localStorage.getItem(RECENT_KEY)
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!parsed || parsed.v !== SCHEMA || !Array.isArray(parsed.repos)) return []
     return parsed.repos
-      .filter((r: unknown): r is { owner: string; repo: string } => (
+      .filter((r: unknown): r is RepoRef => (
         !!r && typeof (r as { owner?: unknown }).owner === 'string'
         && typeof (r as { repo?: unknown }).repo === 'string'
+        && ['undefined', 'string'].includes(typeof (r as { host?: unknown }).host)
       ))
       .slice(0, MAX_RECENT)
   } catch {
@@ -66,13 +68,10 @@ export function loadRecentRepos(): { owner: string; repo: string }[] {
 }
 
 /** Record a pick, moving it to the front. */
-export function rememberRecentRepo(
-  repo: { owner: string; repo: string },
-): { owner: string; repo: string }[] {
+export function rememberRecentRepo(repo: RepoRef): RepoRef[] {
   const next = [
-    { owner: repo.owner, repo: repo.repo },
-    ...loadRecentRepos().filter(
-      (r) => !(r.owner === repo.owner && r.repo === repo.repo)),
+    compactRepo(repo),
+    ...loadRecentRepos().filter((r) => !sameRepo(r, repo)),
   ].slice(0, MAX_RECENT)
   try {
     localStorage.setItem(RECENT_KEY, JSON.stringify({ v: SCHEMA, repos: next }))
@@ -85,7 +84,7 @@ export function rememberRecentRepo(
 export interface PersistedUiState {
   mainView: MainView
   listTab: ListTab
-  activeRepo: { owner: string; repo: string } | null
+  activeRepo: RepoRef | null
   selectedRunId: string | null
   selectedPr: PrRef | null
   /** Which tab of the PR detail pane was open (Sage Review / Description / …). */

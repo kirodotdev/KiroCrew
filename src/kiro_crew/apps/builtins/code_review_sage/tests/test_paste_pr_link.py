@@ -127,21 +127,49 @@ class TestRepoEndpointWithPullRequest(unittest.IsolatedAsyncioTestCase):
         cfg["github_hosts"] = ["github.com", "acme.ghe.com"]
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
 
-    async def test_a_ghe_pull_request_cannot_be_pinned(self):
-        # The pinned-repo store carries no host, so pinning would silently target
-        # the wrong instance later; the refusal points at the PR paste flow.
+    async def test_a_ghe_pull_request_pins_its_repo_with_the_host(self):
+        # The pinned row carries its host, so the picker later lists PRs on the
+        # right instance instead of the gh default host.
         self._allow_ghe_host()
         resp = await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]
             {"repo": "https://acme.ghe.com/o/r/pull/9"}))
-        self.assertEqual(resp.status, 400)
-        self.assertIn("unsupported_repo_host", _text(resp))
+        self.assertEqual(resp.status, 200)
+        body = json.loads(_text(resp))
+        self.assertEqual(body["added"], {
+            "owner": "o", "repo": "r", "host": "acme.ghe.com", "slug": "acme.ghe.com/o/r"})
+        self.assertEqual(body["pull_request"]["url"], "https://acme.ghe.com/o/r/pull/9")
+        pinned = routes.discovery.read_repos()
+        self.assertEqual([(p["host"], p["slug"]) for p in pinned],
+                         [("acme.ghe.com", "acme.ghe.com/o/r")])
 
-    async def test_a_ghe_repo_url_cannot_be_pinned(self):
+    async def test_a_ghe_repo_url_pins_with_the_host(self):
         self._allow_ghe_host()
         resp = await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]
             {"repo": "https://acme.ghe.com/o/r"}))
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(json.loads(_text(resp))["added"]["host"], "acme.ghe.com")
+
+    async def test_same_slug_on_two_hosts_are_two_pins(self):
+        self._allow_ghe_host()
+        await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]
+            {"repo": "https://github.com/o/r"}))
+        await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]
+            {"repo": "https://acme.ghe.com/o/r"}))
+        slugs = sorted(p["slug"] for p in routes.discovery.read_repos())
+        self.assertEqual(slugs, ["acme.ghe.com/o/r", "o/r"])
+
+    async def test_owner_repo_pair_with_unconfigured_host_is_refused(self):
+        resp = await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]
+            {"owner": "o", "repo": "r", "host": "evil.example"}))
         self.assertEqual(resp.status, 400)
-        self.assertIn("unsupported_repo_host", _text(resp))
+        self.assertIn("invalid_repo", _text(resp))
+
+    async def test_owner_repo_pair_with_configured_host_pins(self):
+        self._allow_ghe_host()
+        resp = await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]
+            {"owner": "o", "repo": "r", "host": "ACME.ghe.com"}))
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(json.loads(_text(resp))["added"]["host"], "acme.ghe.com")
 
     async def test_pull_request_ref_keeps_the_ghe_host(self):
         self._allow_ghe_host()

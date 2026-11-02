@@ -177,14 +177,14 @@ export const sageApi = {
 
   pinnedRepos: (): Promise<{ repos: PinnedRepo[] }> => getJSON('/repos'),
 
-  pinRepo: (owner: string, repo: string): Promise<{ repos: PinnedRepo[] }> =>
-    sendJSON('/repos', 'POST', { owner, repo }),
+  pinRepo: (owner: string, repo: string, host?: string): Promise<{ repos: PinnedRepo[] }> =>
+    sendJSON('/repos', 'POST', host ? { owner, repo, host } : { owner, repo }),
 
   pinRepoUrl: (url: string): Promise<AddRepoResponse> =>
     sendJSON('/repos', 'POST', { repo: url }),
 
-  unpinRepo: (owner: string, repo: string): Promise<{ repos: PinnedRepo[] }> =>
-    sendJSON('/repos', 'DELETE', { owner, repo }),
+  unpinRepo: (owner: string, repo: string, host?: string): Promise<{ repos: PinnedRepo[] }> =>
+    sendJSON('/repos', 'DELETE', host ? { owner, repo, host } : { owner, repo }),
 
   repoPrs: (repo: string): Promise<RepoPrsResponse> =>
     getJSON(`/repo-prs?repo=${encodeURIComponent(repo)}`),

@@ -793,7 +793,8 @@
           "repository_or_pull_request_url_or_owner_repo": "仓库或 pull request 的 URL，或 owner/repo",
           "setup_hint": "安装 GitHub CLI 并用下面的命令登录，就能列出你的仓库。你仍然可以在上方用 URL 添加任何仓库。",
           "these_lists_are_capped_so_a_repo_you_have_not_to": "这些列表有条数上限，所以你最近没碰过的仓库可能不在里面。看不到就在上方用 URL 添加。",
-          "your_repos": "你的仓库"
+          "your_repos": "你的仓库",
+          "host_unavailable": "{{host}} 不可用：{{message}}"
         },
         "bandChips": {
           "all": "全部",

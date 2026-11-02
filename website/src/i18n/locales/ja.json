@@ -793,7 +793,8 @@
           "your_repos": "あなたのリポジトリ",
           "contributed_events_other": "{{age}} · {{count}} 件のアクティビティ",
           "pushed_age": "{{age}}にプッシュ",
-          "newest_100_by_push_date": "プッシュ日時が新しい 100 件"
+          "newest_100_by_push_date": "プッシュ日時が新しい 100 件",
+          "host_unavailable": "{{host}} は利用できません: {{message}}"
         },
         "bandChips": {
           "all": "すべて",

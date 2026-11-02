@@ -491,7 +491,8 @@
           "contributed_events_one": "{{age}} · {{count}} event",
           "contributed_events_other": "{{age}} · {{count}} events",
           "pushed_age": "pushed {{age}}",
-          "newest_100_by_push_date": "newest 100 by push date"
+          "newest_100_by_push_date": "newest 100 by push date",
+          "host_unavailable": "{{host}} is unavailable: {{message}}"
         },
         "bandChips": {
           "all": "All",

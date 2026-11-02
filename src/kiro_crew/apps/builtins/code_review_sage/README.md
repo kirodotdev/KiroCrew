@@ -157,3 +157,21 @@ reads the other, so list a host in both to use it in both places; the one
 
 Hosts are matched exactly against the parsed URL hostname — never as a
 substring — so lookalike hosts are refused.
+
+Every configured host is first-class in the app:
+
+- **Pinning**: a GHE repo or PR link pins like a github.com one. A pinned row
+  stores its `host` (rows without one mean github.com), and its identity is
+  `host/owner/repo`, so `acme/api` on github.com and on an Enterprise instance
+  are two repos. Typing `ghe.example.com/owner/repo` in the add-repo field
+  works too.
+- **Discovery**: the add-repo dialog lists recent and reachable repos from every
+  configured host, each `gh` call pinned with `--hostname`. A host that is not
+  signed in or unreachable is named in the dialog (`host_errors`) instead of
+  blanking the other hosts; only when every host fails does the dialog show the
+  `gh` setup hint.
+- **Requests tab**: open PRs requesting your review are merged across hosts,
+  newest first. An Enterprise host is searched through `gh api search/issues
+  --hostname <host>`, because `gh search` has no per-call host flag.
+- **Reviews tab**: runs are attributed to the host-qualified repo, so picking a
+  GHE repo shows its reviews, including ones started from a pasted link.
