@@ -35,6 +35,7 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 from crew_log_fold_eager_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     GATEWAY,
     WORK_SLOT,
@@ -454,7 +455,7 @@ def test_the_real_append_path_wakes_the_eager_fold(monkeypatch):
     emit.on_session_opened(
         "s-emitted", agent="kirocrew", slot=slot, model="opus", cwd="/w", owner="raymond"
     )
-    assert emit.flush(timeout=10.0)
+    assert_drained()
 
     emit._write(
         "s-emitted",
@@ -469,7 +470,7 @@ def test_the_real_append_path_wakes_the_eager_fold(monkeypatch):
         },
         src="gateway",
     )
-    assert emit.flush(timeout=10.0)
+    assert_drained()
     assert eager.drain(timeout=10.0)
 
     assert (slot, "work") in _memo_keys()
@@ -621,7 +622,7 @@ def test_the_real_emitter_sends_a_worker_report_to_the_conductors_board(monkeypa
     emit.on_session_opened(
         "s-e2e-w", agent="kirocrew", slot=worker_slot, model="opus", cwd="/w", owner="raymond"
     )
-    assert emit.flush(timeout=10.0)
+    assert_drained()
 
     emit._write(
         "s-e2e-w",
@@ -637,7 +638,7 @@ def test_the_real_emitter_sends_a_worker_report_to_the_conductors_board(monkeypa
         },
         src="gateway",
     )
-    assert emit.flush(timeout=10.0)
+    assert_drained()
     assert eager.drain(timeout=10.0)
 
     warm = _memo_keys()

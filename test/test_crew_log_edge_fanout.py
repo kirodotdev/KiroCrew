@@ -12,6 +12,7 @@ import threading
 from unittest.mock import patch
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew.crew_log import CrewLog, crew_log_path, emit
 
@@ -100,7 +101,7 @@ class TestBurstFanout:
             t.join(timeout=30.0)
         assert not errors, f"Producer threads raised: {errors}"
 
-        assert emit.flush(timeout=10.0), "Writer did not drain in time"
+        assert_drained()
         assert emit.dropped_writes() == 0
         assert emit.buffered_writes() == 0
 
@@ -170,7 +171,7 @@ class TestSingleWriterHazard:
             emit.on_turn_completed(sid_b, 1, input_tokens=1, output_tokens=1)
 
         # After the failure + retry, everything should land
-        assert emit.flush(timeout=5.0)
+        assert_drained()
         assert emit.dropped_writes() == 0
 
         body_a = _body(sid_a)
@@ -208,7 +209,7 @@ class TestSingleWriterHazard:
                 emit.on_turn_started(sid, 1)
                 emit.on_turn_completed(sid, 1, input_tokens=1, output_tokens=1)
 
-        assert emit.flush(timeout=5.0)
+        assert_drained()
         assert emit.dropped_writes() == 0
 
         for sid in all_sids:
