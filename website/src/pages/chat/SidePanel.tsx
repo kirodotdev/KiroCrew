@@ -1099,6 +1099,7 @@ export default function SidePanel({
                 <FilesHomePanel
                   active={isActive && !panelHidden}
                   projectDir={projectDir ?? ''}
+                  title={viewTitles?.files}
                   // A diff open from the Changed segment opens the working-tree
                   // diff as its OWN tab (coexisting with any plain file tab for
                   // the same path, #9695) when the host supplies the opener;
