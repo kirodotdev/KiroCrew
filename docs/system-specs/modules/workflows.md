@@ -1462,6 +1462,9 @@ released.
   `waiting_dependency`, is settled `cancelled` by the admission itself
   (`taskq.md` § Runner adapters), so a cancelled run leaves no `workflow_agent`
   row behind and none is left `queued` for a dispatcher this kind does not have.
+  A cancel landing between the two, while the `running` mark is written, meets
+  the same synchronous `cancel` around `running_async`: `admit` has already
+  handed over the lane slot and the lease, and nothing else would give them back.
   A
   dependency error the adapters recognise parks the row in `waiting_dependency`
   with its slot released and re-runs the call on the wake, at most

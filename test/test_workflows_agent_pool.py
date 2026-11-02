@@ -1058,6 +1058,52 @@ async def test_a_cancelled_call_waiting_for_a_lane_slot_leaves_no_queued_row(tmp
 
 
 @pytest.mark.asyncio
+async def test_a_call_cancelled_during_its_running_mark_frees_its_slot(tmp_path, monkeypatch):
+    """The cancel can also land after ``admit`` handed the call its slot and
+    before the call's own cancel arm: while the ``running`` mark is written. The
+    handle holds the lane slot and the row's lease there too, so the call ends
+    the row and gives the slot back instead of leaving the lane one slot short
+    for the life of the gateway."""
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq.adapters.runner_handle import Admitted
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    store = TaskStore(tmp_path / "tasks.db", network_fs=False).open()
+    try:
+        ran: list[str] = []
+
+        async def _agent(prompt, opts):
+            ran.append(prompt)
+            return prompt
+
+        real_running = Admitted.running_async
+        marked, hold = asyncio.Event(), asyncio.Event()
+
+        async def _mark_then_hold(self, progress=None):
+            ok = await real_running(self, progress)
+            marked.set()
+            await hold.wait()  # the cancel lands here
+            return ok
+
+        monkeypatch.setattr(Admitted, "running_async", _mark_then_hold)
+        adm = _admission(1, store=store)
+        fn = admitted_agent_fn(_agent, adm, run_id="rm", session_key="chat:r")
+        call = asyncio.create_task(fn("p", {}))
+        await await_until(marked)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+
+        row = store.get("workflow:rm:agent1")
+        assert row.state == m.CANCELLED and row.lease_owner is None
+        assert ran == []
+        assert adm.lane.running == 0 and adm.lane.waiting == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_call_parked_on_a_dependency_leaves_no_orphan_wait(tmp_path):
     """Same for a call parked in ``waiting_dependency``: the coroutine that was
     waiting for the scope's wake is the only thing that could have resumed it."""
