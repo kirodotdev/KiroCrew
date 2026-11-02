@@ -115,7 +115,12 @@ jobs:
         with:
           # The leaf-test selector diffs against the PR base, so the base commit
           # must be present. Paid once here rather than on every shard job.
+          # Every commit and tree, but only the blobs the checkout needs: the
+          # history the diffs below walk is all there, and a blob an older commit
+          # needs is fetched on demand. The full-history clone carries ~3.5 GB of
+          # old blobs and took ~140s of this job; blobless is ~85 MB.
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
 
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -735,7 +740,12 @@ jobs:
 
   backend-lint:
     name: Backend Lint & Type Check
-    needs: [changes, await-fast-gate]
+    # Not behind `await-fast-gate`: the lint jobs run BESIDE the barrier, and
+    # `lint-gate` (which the heavy jobs need) requires both the lint verdicts
+    # and the barrier. Behind it, the ~3-minute Fast Gate wait and the lint
+    # time added up on the path to every test shard. A Fast Gate red now costs
+    # one extra lint job, not the matrix, which still waits for both.
+    needs: [changes]
     # black/flake8/isort/mypy read no file under website/, so a frontend-only
     # diff cannot change this verdict. Gated on only_frontend (not on a
     # positive "python changed" allowlist) so that anything the selector could
@@ -875,13 +885,40 @@ jobs:
       # are the last files that should go unlinted.
 
       - name: Check imports (isort)
-        run: isort --check-only src/kiro_crew test conftest.py xdist_budget.py
+        # --jobs: one process per core. The verdict is per file, so it is the
+        # serial run's (measured: 32s serial, ~5s at 8 jobs, same exit code).
+        run: isort --check-only src/kiro_crew test conftest.py xdist_budget.py --jobs "$(nproc)"
 
       - name: Lint (flake8)
         run: flake8 src/kiro_crew test conftest.py xdist_budget.py
 
+      # mypy is the longest step on the lint path (~150s cold over ~3,900
+      # files, ~5s warm). A pull request restores the cache main last saved,
+      # and mypy's own incremental check re-verifies every module whose source
+      # hash (or any dependency's) differs, so the verdict is the cold run's.
+      # A push to main never restores: it type-checks cold and saves the result,
+      # so a stale entry can never outlive one main commit. Saved from main
+      # only, because a pull request's entry is scoped to its own ref, no other
+      # pull request can read it, and it would crowd main's out of the
+      # repository's shared 10 GB cache.
+      - name: Restore the mypy cache (pull requests)
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .mypy_cache
+          key: mypy-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml', 'setup.cfg') }}-${{ github.sha }}
+          restore-keys: |
+            mypy-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml', 'setup.cfg') }}-
+
       - name: Type check (mypy)
         run: mypy src/kiro_crew/
+
+      - name: Save the mypy cache (main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .mypy_cache
+          key: mypy-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml', 'setup.cfg') }}-${{ github.sha }}
 
   # The backend ratchets, OFF the gate path. `lint-gate` deliberately does not
   # name this job, so it runs ALONGSIDE the heavy matrix instead of ahead of it.
@@ -929,7 +966,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Every commit and tree, but only the blobs the checkout needs: the
+          # history the diffs below walk is all there, and a blob an older commit
+          # needs is fetched on demand. The full-history clone carries ~3.5 GB of
+          # old blobs and took ~140s of this job; blobless is ~85 MB.
           fetch-depth: 0
+          filter: blob:none
 
       # No uv and no dependency install: every gate below is stdlib-only, so
       # setup-python is the whole toolchain this job needs. The one backend step
@@ -1199,6 +1241,30 @@ jobs:
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
           PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir "$RUNNER_TEMP/pytest-progress" --max-worker-restart=0)
+          # An explicit worker count, like the macOS lane's `-n 2`, instead of the
+          # xdist budget: that budget reserves 3 GiB a worker for a FULL-suite
+          # collection and granted a file shard 4 of the fleet runner's 8 cores.
+          # Sized from this shard's own measurement instead: at 8 workers the
+          # heaviest shard peaked at 15,050 of 15,738 MiB (~1.8 GiB a worker), so
+          # one worker per 2 GiB after 2 GiB for the host, capped at the core
+          # count: 6 on the 15 GiB fleet runner, 4 on a 4-core hosted runner.
+          # The step prints its peak memory after the run.
+          mem_mib=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
+          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
+          [ "$WORKERS" -ge 1 ] || WORKERS=1
+          echo "pytest workers: $WORKERS"
+          # Host memory in use (MemTotal - MemAvailable), sampled every 5s; the
+          # "Report peak memory" step prints the high-water mark.
+          (
+            peak=0
+            while sleep 5; do
+              used=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print int((t-a)/1024)}' /proc/meminfo)
+              if [ "$used" -gt "$peak" ]; then peak=$used; echo "$peak" > "$RUNNER_TEMP/mem-peak-mib"; fi
+            done
+          ) > /dev/null 2>&1 &
+          MEM_SAMPLER=$!
+          trap 'kill "$MEM_SAMPLER" 2>/dev/null || true' EXIT
           # Take the `python` problem matcher registered by actions/setup-python
           # out of scope before pytest writes a line. Its pattern is a traceback
           # frame followed by `raise SomeError('msg')`, matched anywhere in the
@@ -1248,24 +1314,24 @@ jobs:
             fi
             if [ "${#GATES[@]}" -gt 0 ]; then
               echo "::group::leaf corpus gates (${#GATES[@]} file(s), once)"
-              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n auto --timeout=120 --no-cov -m "not ipv6_required" ${GATES[@]+"${GATES[@]}"}
+              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required" ${GATES[@]+"${GATES[@]}"}
               echo "::endgroup::"
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
               echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
-              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n auto --timeout=120 --no-cov -m "not ipv6_required" ${CHANGED[@]+"${CHANGED[@]}"}
+              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required" ${CHANGED[@]+"${CHANGED[@]}"}
               echo "::endgroup::"
             done
             exit 0
           fi
           if [ "$REDUCED" = "true" ]; then
-            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n auto --timeout=120 -m "not ipv6_required" \
+            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required" \
               --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
               --no-cov \
               ${TARGETS[@]+"${TARGETS[@]}"}
             exit 0
           fi
-          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n auto --timeout=120 -m "not ipv6_required" \
+          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
@@ -1276,6 +1342,12 @@ jobs:
         # each carry `skipif(not userns_available())` on the tests that need a namespace
         # sandbox, so on this runner (`unshare(CLONE_NEWNS)` -> EPERM) those skip with a
         # named reason and the other ~523 run. See the note above the `jobs:` key.
+
+      - name: Report peak memory
+        if: ${{ always() }}
+        run: |
+          total=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
+          echo "peak memory in use: $(cat "$RUNNER_TEMP/mem-peak-mib" 2>/dev/null || echo unknown) MiB of ${total} MiB"
 
       - name: Upload Linux pytest progress
         if: ${{ always() }}
@@ -2027,7 +2099,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Every commit and tree, but only the blobs the checkout needs: the
+          # history the diffs below walk is all there, and a blob an older commit
+          # needs is fetched on demand. The full-history clone carries ~3.5 GB of
+          # old blobs and took ~140s of this job; blobless is ~85 MB.
           fetch-depth: 0
+          filter: blob:none
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -2712,12 +2789,24 @@ jobs:
         # The downloaded .coverage.<group> files are parallel data files;
         # `coverage combine` merges them. -o pins the output path (setup.cfg's
         # [coverage:xml] otherwise redirects it under build/coverage/).
+        #
+        # `xml` and `report` each re-analyse every measured source file (~80s
+        # apiece on the combined data, against ~4s for the combine), and both
+        # only READ .coverage, so they run side by side. Each exit status is
+        # waited on by PID, so either one failing still fails the step.
         run: |
           test -f .coverage.ipv6 || { echo "::error::required IPv6 coverage data missing"; exit 1; }
           test -f .coverage.kernel-lock-owner || { echo "::error::required kernel lock owner coverage data missing"; exit 1; }
           coverage combine
-          coverage xml -o coverage.xml
-          coverage report
+          coverage xml -o coverage.xml &
+          xml_pid=$!
+          coverage report > coverage-report.txt &
+          report_pid=$!
+          xml_rc=0; wait "$xml_pid" || xml_rc=$?
+          report_rc=0; wait "$report_pid" || report_rc=$?
+          cat coverage-report.txt
+          [ "$xml_rc" = 0 ] || { echo "::error::coverage xml failed ($xml_rc)"; exit "$xml_rc"; }
+          [ "$report_rc" = 0 ] || { echo "::error::coverage report failed ($report_rc)"; exit "$report_rc"; }
 
       - name: Upload combined coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -3042,7 +3131,8 @@ jobs:
 
   frontend-lint:
     name: Frontend Lint & Type Check
-    needs: [changes, await-fast-gate]
+    # Beside the barrier, not behind it: see `backend-lint`.
+    needs: [changes]
     # eslint/tsc/i18n over website/** only; a backend-only diff leaves every
     # input byte-identical. only_backend is the catch-all side of the same
     # decision, so an unclassifiable path still runs this.
@@ -3158,7 +3248,12 @@ jobs:
       # frontend-only diff, because `backend-ratchets` is skipped there.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Every commit and tree, but only the blobs the checkout needs: the
+          # history the diffs below walk is all there, and a blob an older commit
+          # needs is fetched on demand. The full-history clone carries ~3.5 GB of
+          # old blobs and took ~140s of this job; blobless is ~85 MB.
           fetch-depth: 0
+          filter: blob:none
 
       # CodeBuild images have no tool cache, so setup-node would resolve the
       # major through a GitHub API manifest call on every run; seed the cache
@@ -3652,6 +3747,16 @@ jobs:
           I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
             "$I18N_BASE_REF" 'the diff-scoped i18n test gates')" || exit 1
           export I18N_BASE_REF
+          # vite.config.ts caps forks at 3, sized for the 4-vCPU hosted runner.
+          # This job runs on the 8-core fleet runner, where 3 left most cores
+          # idle. One fork per core minus one for the main process (what vitest
+          # picks when uncapped), and at most one per 1.5 GiB of RAM (a coverage
+          # fork peaks at ~1.0-1.4 GB): 3 on a hosted runner, 7 on the fleet.
+          by_cpu=$(( $(nproc) - 1 ))
+          by_mem=$(( $(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo) * 2 / 3072 ))
+          FORKS=$(( by_cpu < by_mem ? by_cpu : by_mem ))
+          [ "$FORKS" -ge 1 ] || FORKS=1
+          echo "vitest forks: $FORKS"
           if [ "$REDUCED" = "true" ]; then
             # Subset run (backend-only diff): coverage of a subset is not
             # comparable to the repo floor, so it is not collected and the
@@ -3667,7 +3772,7 @@ jobs:
             # failing shard's log would end at "exit code 1" with no FAIL line
             # or summary; the second reporter keeps a human-readable verdict in
             # this job's own log.
-            npx vitest run --reporter=blob --reporter=default --passWithNoTests \
+            npx vitest run --maxWorkers="$FORKS" --reporter=blob --reporter=default --passWithNoTests \
               --shard=${{ matrix.shard }}/"$SHARD_COUNT" ${TARGETS[@]+"${TARGETS[@]}"}
           else
             # --reporter=blob stores results + per-shard coverage under
@@ -3679,7 +3784,7 @@ jobs:
             # failing shard's log would end at "exit code 1" with no FAIL line
             # or summary; the second reporter keeps a human-readable verdict in
             # this job's own log.
-            npx vitest run --coverage --reporter=blob --reporter=default \
+            npx vitest run --maxWorkers="$FORKS" --coverage --reporter=blob --reporter=default \
               --shard=${{ matrix.shard }}/"$SHARD_COUNT"
           fi
 
@@ -3956,12 +4061,10 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"
 
-      - name: Cache Playwright browsers
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium
-
+      # No actions/cache for the browser: across 77 recent runs the restore never
+      # hit (each pull request's entry is scoped to its own ref), the download
+      # below takes ~6s, and saving the 256 MB entry took ~30s per job while
+      # crowding main's entries out of the shared 10 GB cache.
       - name: Install Playwright browser (Chromium)
         timeout-minutes: 6
         working-directory: website
@@ -4026,7 +4129,15 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-          cache: pip
+
+      # uv, as the other backend jobs here install: pip took ~35-65s for the
+      # same set.
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
 
       # CodeBuild images have no tool cache, so setup-node would resolve the
       # major through a GitHub API manifest call on every run; seed the cache
@@ -4043,9 +4154,7 @@ jobs:
         # editable install doesn't add it to the runtime venv -- but
         # `setup.py test_e2e` imports setuptools.Command, so it must be present.
         shell: bash
-        run: |
-          python -m pip install --upgrade pip setuptools
-          pip install -e ".[voice,desktop]" --group dev
+        run: uv pip install --system setuptools -e ".[voice,desktop]" --group dev
 
       - name: Install frontend deps
         shell: bash
@@ -4087,9 +4196,6 @@ jobs:
       # textContent rather than measuring geometry. A future spec that asserts
       # glyph METRICS for a non-Latin script would need those fonts back -- add
       # them as their own bounded, non-fatal step, not by restoring `--with-deps`.
-      #
-      # The version key must be exact: a restore-key prefix could hand the job a
-      # different Chromium revision than @playwright/test expects.
       - name: Resolve Playwright version
         id: playwright-version
         shell: bash
@@ -4100,15 +4206,10 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"
 
-      - name: Cache Playwright browsers
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium
-
-      # Runs unconditionally rather than behind `cache-hit != 'true'`: on a hit it
-      # is a ~2s no-op, and that keeps a partially-written cache entry from turning
-      # into a missing-browser failure inside the specs.
+      # No actions/cache for the browser: across 77 recent runs the restore never
+      # hit (each pull request's entry is scoped to its own ref), the download
+      # below takes ~6s, and saving the 256 MB entry took ~30s per job while
+      # crowding main's entries out of the shared 10 GB cache.
       - name: Install Playwright browser (Chromium)
         # A step-level cap. The download itself takes ~7s, so anything approaching
         # this is a stalled mirror or CDN -- fail here with budget left for the

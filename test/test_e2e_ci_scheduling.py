@@ -482,14 +482,10 @@ raise SystemExit(m['main']())
         self.assertIn("I18N_BASE_REF", base["env"])
         self.assertNotIn("continue-on-error", base)
         self.assertNotIn("--no-vs-base", render["run"])
-        # The render needs the browser the E2E job provisions the same way: an
-        # exact version key, so a restore-key prefix cannot hand it a different
-        # Chromium revision than @playwright/test expects.
+        # The render needs the browser the E2E job provisions the same way: the
+        # exact revision @playwright/test pins, downloaded before the render.
         install = next(s for s in steps if s.get("run") == "npx playwright install chromium")
-        cache = next(s for s in steps if str(s.get("uses", "")).startswith("actions/cache@"))
-        self.assertLess(steps.index(cache), steps.index(install))
         self.assertLess(steps.index(install), steps.index(render))
-        self.assertNotIn("restore-keys", cache["with"])
         self.assertEqual(install["timeout-minutes"], 6)
         # The gate runs nowhere else in the workflow: one job owns it.
         owners = [

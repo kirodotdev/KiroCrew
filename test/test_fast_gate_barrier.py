@@ -279,7 +279,20 @@ _REACHES_BUT_SURVIVES_A_SKIP: dict[str, str] = {
     ),
 }
 
-_EDGE_EXEMPT: dict[str, str] = {**_MUST_NOT_REACH, **_REACHES_BUT_SURVIVES_A_SKIP}
+# These run BESIDE the barrier. They are what `lint-gate` aggregates, and
+# `lint-gate` itself needs `await-fast-gate`, so every heavy job still waits for
+# both verdicts; behind the barrier the two waits added up on the path to every
+# test shard. test_the_lint_gate_still_needs_the_barrier pins the other half.
+_RUNS_BESIDE_THE_BARRIER: dict[str, str] = {
+    "backend-lint": "aggregated by lint-gate, which needs the barrier itself",
+    "frontend-lint": "aggregated by lint-gate, which needs the barrier itself",
+}
+
+_EDGE_EXEMPT: dict[str, str] = {
+    **_MUST_NOT_REACH,
+    **_REACHES_BUT_SURVIVES_A_SKIP,
+    **_RUNS_BESIDE_THE_BARRIER,
+}
 
 
 def _workflow(path: Path) -> dict:
@@ -939,6 +952,16 @@ class TestTheEdgeReachesEveryExpensiveJob:
             f"only {len(guarded)} job(s) are subject to the edge requirement; the "
             "exemption list has grown until the contract checks almost nothing"
         )
+
+    def test_the_lint_gate_still_needs_the_barrier(self, ci: dict) -> None:
+        # The lint jobs may skip the barrier only because the gate the heavy jobs
+        # wait for does not: without this edge a Fast Gate red would release the
+        # matrix as soon as lint passed.
+        gate = ci["jobs"][_LINT_GATE]
+        assert "await-fast-gate" in self._needs(ci, _LINT_GATE)
+        assert _BARRIER_PASSED in str(gate["if"])
+        for job in _RUNS_BESIDE_THE_BARRIER:
+            assert job in self._needs(ci, _LINT_GATE), job
 
     @pytest.mark.parametrize("job", sorted(_MUST_NOT_REACH))
     def test_a_job_that_must_not_reach_the_barrier_does_not(self, ci: dict, job: str) -> None:
