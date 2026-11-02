@@ -319,6 +319,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         name_scope_unit _CGROUP_TOTAL_MEMORY_FRACTION _CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB
         _CGROUP_DEFAULT_MAX_TOTAL_TASKS _default_max_total_tasks _default_max_total_memory_mb
         _slice_limits_from_config _SLICE_LIMITS_APPLIED ensure_agents_slice_limits
+        _slice_limits_unit _slice_limits_dir _read_slice_limits
+        _unbounded_parent_properties _backfill_unbounded_parent
         _USER_MANAGER_CGROUP_BASE _agents_slice_cgroup_dir _read_cgroup_counters
         read_cgroup_int _SLICE_THROTTLE_PROBE_SEEN _SLICE_THROTTLE_EDGE_AT
         _SLICE_THROTTLE_EDGE_HOLD_SECS agents_slice_throttling _SLICE_OOM_SEEN
@@ -334,7 +336,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _disarm_slice_reclaim _log_slice_reclaim_skip_once _run_slice_reclaim_episode
         reclaim_agents_slice_page_cache
         _SLICE_MEMHIGH_EPOCH _slice_memory_high_is_stale _forget_stale_slice_memory_high
-        _SLICE_LIMITS_EPOCH _reapply_slice_limits_for_new_session
+        _SLICE_LIMITS_EPOCH _reapply_slice_limits_for_new_session _PARENT_FILL_TRIED
+        _SLICE_PARENT_ID _cgroup_dir_id
         """.split()),
     "kiro_crew.sandbox_rlimit": tuple("""
         _UNSET _RESOURCE_PREEXEC resource_limit_preexec _EXTRACTOR_PREEXEC
