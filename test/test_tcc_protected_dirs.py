@@ -13,7 +13,7 @@ expected contract.
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -172,7 +172,7 @@ class TestLibraryPruning:
 
     @pytest.mark.asyncio
     async def test_index_at_home_skips_gated_library(self, tmp_path):
-        """End-to-end through the walk that re-runs every 30s."""
+        """End-to-end through the index walk, which re-runs on each search past the TTL."""
         for rel in ("Library/Mail", "Library/CloudStorage/Work"):
             d = tmp_path / rel
             d.mkdir(parents=True)
@@ -266,7 +266,7 @@ def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-search", api_file_search)
     state = MagicMock()
-    state.file_indexes.get.return_value = None  # force the walk fallback
+    state.file_indexes.ensure = AsyncMock(return_value=None)  # force the walk fallback
     # A MagicMock attribute reads as a non-empty configured owner id, which no
     # caller can equal, so the owner gate would answer every row alike.
     state.owner_id = ""
@@ -322,6 +322,46 @@ class TestFileSearchPruning:
                 resp = await client.get("/api/file-search?q=target")
                 names = {r["name"] for r in (await resp.json())["results"]}
         assert "target.txt" in names
+
+    @pytest.mark.asyncio
+    async def test_explicit_home_search_keeps_gated_folders_after_index_warms(
+        self, tmp_path, mock_sel
+    ):
+        """An explicit ``?project=$HOME`` keeps finding Documents/Desktop/Downloads.
+
+        The index skips those folders from a home root, so a home root must
+        never be served from the index: every search of it takes the scoped
+        walk, which keeps them. The second request runs after the background
+        build has finished.
+        """
+        from kiro_crew.dashboard.file_index import FileIndexRegistry
+
+        _make_home(tmp_path)
+        app = _make_app()
+        registry = FileIndexRegistry()
+        app["state"].file_indexes = registry
+        home = os.path.realpath(str(tmp_path))
+        try:
+            with (
+                patch.object(platform_compat, "IS_MACOS", True),
+                patch.dict(os.environ, _home_env(tmp_path), clear=False),
+            ):
+                async with TestClient(TestServer(app)) as client:
+                    url = f"/api/file-search?q=target&project={tmp_path}"
+                    first = await client.get(url)
+                    assert first.status == 200
+                    task = registry._indexes[home]._task
+                    if task is not None:
+                        await task
+                    assert registry._indexes[home].usable is False
+                    second = await client.get(url)
+                    paths = {r["path"] for r in (await second.json())["results"]}
+            for name in _TCC_DIRS:
+                assert os.path.join(str(tmp_path), name, "target.txt") in paths, (
+                    f"{name}/target.txt must stay searchable from an explicit home root"
+                )
+        finally:
+            registry.stop_all()
 
     @pytest.mark.asyncio
     async def test_explicit_project_under_tcc_dir_still_searchable(self, tmp_path, mock_sel):
