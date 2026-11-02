@@ -1,4 +1,4 @@
-"""A workflow result whose chat is gone tests the live session ceiling (#27877).
+"""A workflow result whose chat is gone tests the live session ceiling.
 
 Every other slot allocator refuses at ``MAX_LIVE_SLOTS``. The ``workflow-<run_id>``
 fallback is an allocation too, so at the ceiling it creates nothing, logs one
@@ -26,8 +26,10 @@ _CAP = 3
 
 
 @pytest.fixture(autouse=True)
-def _small_ceiling(monkeypatch):
-    monkeypatch.setattr(workflow_inject, "MAX_LIVE_SLOTS", _CAP)
+def _small_ceiling(_floor_monkeypatch):
+    # raising=False keeps the tests runnable with the fix reverted, so they
+    # fail on the missing ceiling test rather than erroring in setup.
+    _floor_monkeypatch.setattr(workflow_inject, "MAX_LIVE_SLOTS", _CAP, raising=False)
 
 
 def _full(state_cls=_FakeState):

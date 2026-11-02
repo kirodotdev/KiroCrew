@@ -1563,9 +1563,9 @@ ceiling as every other allocator (`live_slot_count() >= MAX_LIVE_SLOTS`, 500).
 At the ceiling both delivery paths (`inject_workflow_result` and
 `inject_bound_workflow_result`, the latter before it binds the run's identity)
 create nothing, log one warning naming the run id, and return `False`; the result
-stays on the run record (`workflow_status`, the Runs view). Without the test, a
-workflow whose origin is gone on every run added one slot per run until the
-person's own new chat answered 429 `slot_cap_reached` (#27877). A re-fire into an
+stays on the run record (`workflow_status`, the Runs view). The test keeps a
+workflow whose origin is gone on every run from filling the slot table, which
+would answer the person's own new chat with 429 `slot_cap_reached`. A re-fire into an
 existing `workflow-<run_id>` slot and delivery into a live originating chat
 allocate nothing and are not tested.
 
