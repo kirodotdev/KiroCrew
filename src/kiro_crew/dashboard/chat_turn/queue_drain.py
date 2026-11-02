@@ -1125,11 +1125,15 @@ async def _start_next_queued_turn(
                 state, slot, row_role, next_msg, row_cls, meta=_drained_meta or None
             )
         else:
+            # The flush above already settled whether this successor is owed a
+            # held note (a structurally tagged one is not), so the row append
+            # does not decide it a second time.
             current_row = slot.append(
                 row_role,
                 next_msg,
                 row_cls,
                 meta=_drained_meta or None,
+                flush_held_notes=False,
             )
 
     # Per-turn consumption cell for a drained sub-agent completion (see

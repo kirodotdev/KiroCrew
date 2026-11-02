@@ -153,6 +153,85 @@ async def test_edit_resend_commit_advances_the_lifetime_message_counter(state) -
     assert slot.total_messages == before + 1
 
 
+def _hold_one_note(slot) -> None:
+    """Seat a held note the way a restart restores one: on a slot no turn owns."""
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    slot._deferred_notes = [
+        {
+            "id": "a1b2c3d4e5f6",
+            "content": "held note",
+            "cls": "reconcile-note",
+            "context": {"content": "held context", "source": "board-sync", "ephemeral": True},
+            "source": "",
+            "session": effective_session_key(slot),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_edit_resend_refusal_keeps_the_live_held_note(state) -> None:
+    """The prospective append must not flush the hold it shares with the live slot.
+
+    ``copy.copy`` leaves ``_deferred_notes`` and ``_pending_context`` aliased, so
+    a flush on the scratch copy empties the LIVE hold and queues its context
+    while the note's row goes only into a window the refusal throws away.
+    """
+    from kiro_crew.dashboard.chat_runner import drain_pending_context
+
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "first")
+    slot.append("assistant", "answer")
+    slot.drain()
+    _hold_one_note(slot)
+    state.sessions.discard_conversation = AsyncMock(side_effect=OSError("map write failed"))
+
+    with (
+        patch("kiro_crew.dashboard.chat_persistence._save_slot_to_history"),
+        patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()),
+    ):
+        async with _client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": "edited"}
+            )
+            assert resp.status == 503
+
+    assert [n["content"] for n in slot._deferred_notes] == ["held note"]
+    assert "held context" not in drain_pending_context(slot)
+    assert all(m.get("role") != "inject" for m in slot.messages)
+
+
+@pytest.mark.asyncio
+async def test_edit_resend_commit_delivers_the_held_note_to_the_edited_turn(state) -> None:
+    """The edited prompt is the next user turn, so the commit owes it the hold.
+
+    The note lands ABOVE the edited row, as a send orders it: history readers
+    treat the window's last row as the current message, so a note left last
+    would replay the edited prompt to the model as prior history.
+    """
+    from kiro_crew.dashboard.chat_runner import drain_pending_context
+
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "first")
+    slot.append("assistant", "answer")
+    slot.drain()
+    _hold_one_note(slot)
+
+    with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()):
+        async with _client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": "edited"}
+            )
+            assert resp.status == 200
+
+    assert slot._deferred_notes == []
+    assert [(m["role"], m["content"]) for m in slot.messages] == [
+        ("inject", "held note"),
+        ("user", "edited"),
+    ]
+    assert "held context" in drain_pending_context(slot)
+
+
 # ── edit-resend: app isolation ──
 # This endpoint discards the slot's NATIVE ACP conversation, so an app token
 # reaching a slot it does not own destroys a resume identity it has no claim on.

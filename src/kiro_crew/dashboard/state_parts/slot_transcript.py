@@ -300,7 +300,30 @@ def append(
     broadcast_user: bool = False,
     meta: dict | None = None,
     mint_mid: bool = True,
+    flush_held_notes: bool = True,
 ) -> dict[str, Any]:
+    # A held ``/note`` is owed to the next user turn, and the turn's own row is
+    # where it is owed: a live user row on a slot no turn owns delivers the
+    # hold above itself. This is the one seam every idle turn start crosses, so
+    # a dispatch path cannot forget it -- a hold restored by a restart onto an
+    # idle slot reaches the next send instead of waiting for that turn's end.
+    # A running slot keeps its hold (a steer is a user row too), and the queue
+    # drain passes ``flush_held_notes=False`` because it has already decided
+    # whether its successor is owed the note. The turn-start scan checks only
+    # ``spawn_guarded_turn`` callers, so a future caller that writes a live user
+    # row WITHOUT starting a turn must pass ``flush_held_notes=False`` itself.
+    if flush_held_notes and broadcast and role == "user" and getattr(self, "_deferred_notes", None):
+        if not self.running:
+            try:
+                self.flush_deferred_notes()
+            except Exception:
+                # The user's row matters more than the note's position: the hold
+                # keeps its unwritten suffix and the next seam delivers it.
+                logger.warning(
+                    "flush_deferred_notes failed before a user row on slot %s",
+                    self.key,
+                    exc_info=True,
+                )
     # A durable row ends the segment a permission request held open, so the
     # reply's text lands above it. Cleared first: the cut appends a row too.
     owed_cut = getattr(self, "_owed_segment_cut", None)

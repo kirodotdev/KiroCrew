@@ -39,6 +39,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
+from kiro_crew.dashboard.slot_buffers import adopt_note_hold, sever_note_hold
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
     checkpoint_slot_replaced,
@@ -327,6 +328,11 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # reach it -- the sole question left is whether an app drives the edit.
         _user_origin = not bool(request_app)
         redacted_content = queued_text_for_display(content, user_origin=_user_origin)
+        # A held note is owed to this turn and belongs ABOVE its row, the order a
+        # send produces. ``copy.copy`` shares the hold with the live slot, so it
+        # is severed first: the append below flushes the scratch copy, and the
+        # commit adopts the result (a refused rewind leaves the live hold whole).
+        note_hold = sever_note_hold(slot, prospective_slot)
         prospective_slot.append("user", redacted_content, "msg msg-u")
         msgs_snapshot = list(prospective_slot.messages)
         # The frozen-prefix boundary this snapshot must be written against. An
@@ -736,6 +742,10 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 # next flush repeat the destructive rewrite and discard any
                 # cross-process append (workflow/cron) that landed in between --
                 # and would move the monotone ``_disk_tail_ts`` floor backwards.
+
+                # The prospective append delivered the hold above the edited row;
+                # retire exactly those notes here and seat their context.
+                adopt_note_hold(slot, prospective_slot, note_hold, logger=logger)
                 if slot._pending:
                     slot.event.set()
                 else:

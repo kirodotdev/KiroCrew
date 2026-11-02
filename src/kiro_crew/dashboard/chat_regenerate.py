@@ -26,6 +26,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
+from kiro_crew.dashboard.slot_buffers import adopt_note_hold, sever_note_hold
 from kiro_crew.dashboard.slot_ownership import (
     checkpoint_slot_replaced,
     deny_app_slot_session_access,
@@ -589,6 +590,11 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             prospective_slot.event.set()
         prospective_slot._dirty = True
         prospective_slot._resumed_count = 0
+        # A held note is owed to this turn and belongs ABOVE its row, the order a
+        # send produces. The hold is not among the containers severed above, so
+        # it gets its own copy: the append flushes the scratch hold, and the
+        # commit adopts the result (a refused edit leaves the live hold whole).
+        note_hold = sever_note_hold(slot, prospective_slot)
         prospective_slot.append("user", _bc, "msg msg-u")
         msgs_snapshot = list(prospective_slot.messages)
         # Which question cards the prospective append retired. Announced at
@@ -982,11 +988,16 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                 # int -- so without this the edited row is invisible to every
                 # reader of it: the Slack mirror compares the counter against
                 # its own start value
-                # to decide whether anything happened. Incremented by ONE here
-                # rather than adopted from the copy, whose value predates the
+                # to decide whether anything happened. Incremented by the rows the
+                # prospective append added (the edited row plus any held note it
+                # delivered) rather than adopted from the copy, whose value predates the
                 # arrived rows above (which bumped the live counter themselves).
                 # Truncation deliberately does not decrement it.
-                slot.total_messages += 1
+                # The prospective append delivered the hold above the edited row;
+                # retire exactly those notes here, seat their context, and count
+                # their rows alongside the edited one.
+                delivered_notes = adopt_note_hold(slot, prospective_slot, note_hold, logger=logger)
+                slot.total_messages += 1 + delivered_notes
                 # Deliberately NOT copied from ``prospective_slot``: the
                 # persistence witnesses (``_pending_rewrite``, ``_disk_*``,
                 # ``_frozen_prefix_cache``). The save above ran on the LIVE slot
