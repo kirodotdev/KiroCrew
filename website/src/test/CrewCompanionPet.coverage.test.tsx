@@ -618,6 +618,9 @@ describe('the "Open session" call to action', () => {
     await waitFor(() => expect(cta()).not.toBeNull())
 
     fireEvent.click(cta()!)
+    // The click reached the CTA handler and its `false` result has been handled before any absence is judged.
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledTimes(1))
+    await act(async () => {})
     // Longer than the 300ms exit animation, so a bubble still on screen after
     // this was never asked to leave rather than being caught mid-animation.
     // Held as a wait that must time out: the window stays real-time, and the avatar's own timers that fire inside
