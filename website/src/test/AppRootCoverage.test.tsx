@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { setUpdateProgress, sseConnected, sseDisconnected } from '../store/dashboardSlice'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -137,10 +138,12 @@ function renderShell(route = '/chat') {
 const changelogDialog = () => screen.findByRole('dialog', { name: 'Changelog' })
 
 describe('baseline probe', () => {
-  it('renders the shell', () => {
+  it('renders the shell', async () => {
     localStorage.setItem('mc-last-version', '0.4.0')
-    renderWithProviders(<App />, { route: '/chat' })
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByTestId('dashboard-shell')).toBeInTheDocument()
+    // Chain: the shell's mount-time queries (status, system, kiro-usage, apps, ...) each answer and re-render App.
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0), namedCeiling('SHELL_QUERIES_SETTLED', 5000))
   })
 })
 
@@ -228,7 +231,8 @@ describe('App — changelog modal controls', () => {
 async function startUpdate(route = '/chat') {
   const rendered = renderShell(route)
   const dialog = await changelogDialog()
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Update Now' }))
+  // applyUpdate's failure lands in App a few microtasks after the click: keep it inside the act.
+  await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Update Now' })) })
   return rendered
 }
 
@@ -319,10 +323,10 @@ describe('App — update progress overlay', () => {
     const { store } = await startUpdate()
     await screen.findByText('Updating Kiro Crew…')
 
-    act(() => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+    await act(async () => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
     expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
 
-    act(() => { store.dispatch(sseDisconnected()) })
+    await act(async () => { store.dispatch(sseDisconnected()) })
     const note = screen.getByTestId('update-reconnecting')
     expect(note.textContent).toContain('Gateway is restarting — reconnecting…')
     // The idle copy stands down: both lines together would say "waiting" and
@@ -331,7 +335,7 @@ describe('App — update progress overlay', () => {
 
     // Reconnected (the gateway is back, the reload latch takes it from here):
     // the transient line yields back to the idle copy.
-    act(() => { store.dispatch(sseConnected()) })
+    await act(async () => { store.dispatch(sseConnected()) })
     expect(screen.queryByTestId('update-reconnecting')).toBeNull()
     expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
   })
@@ -484,6 +488,8 @@ describe('App — notification popover dismissal', () => {
 
     fireEvent.pointerDown(document.body)
     expect(bell.getAttribute('aria-expanded')).toBe('false')
+    // Chain: closePanel starts the slide-out; its settle callback flips the sheet to `closed` and unmounts it.
+    await waitFor(() => expect(document.querySelector('[data-nc-phase]')).toBeNull(), namedCeiling('NC_SHEET_SLID_OUT', 5000))
   })
 
   it('stays open when the press lands on the bell itself', async () => {
