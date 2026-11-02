@@ -75,10 +75,11 @@ async def test_failed_clone_preserves_existing_pat(fixtures) -> None:
     server_mod, _remote, _seed = fixtures
     async with signed_client(server_mod) as client:
         assert (await client.put("/api/pat", {"pat": "ghp_good_existing"}))[0] == 200
-        # Clone a bogus URL with a different token; the clone fails.
-        # flake-ok: pre-existing clone of a reserved .invalid host, which never resolves, so the clone fails without traffic; moved verbatim
+        # Clone a repository that does not exist beside the fixture remote, with a different
+        # token; the clone fails on the local filesystem, with no network involved.
         status, _ = await client.post(
-            "/api/vaults", {"url": "https://example.invalid/nope.git", "pat": "ghp_bad_new"}
+            "/api/vaults",
+            {"url": str(_remote.parent / "missing-repo.git"), "pat": "ghp_bad_new"},
         )
         assert status != 200
         # The good token must still be there (a boolean is all the API exposes,
