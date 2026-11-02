@@ -1785,7 +1785,7 @@ describe('Kiro Cloud Sessions profiles', () => {
     await screen.findByLabelText('Coder URL')
     // The Kiro Cloud list needs no Coder URL.
     fireEvent.click(cloudTab())
-    fireEvent.click(screen.getByRole('button', { name: 'Add Kiro Cloud profile' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Kiro Cloud Sessions profile' }))
     const field = screen.getByRole('group', { name: 'kiro-cloud-1' })
     fireEvent.change(within(field).getByLabelText('Profile name'), { target: { value: 'Cloud' } })
     // A trailing comma while typing is kept, then dropped on save.
@@ -1805,7 +1805,7 @@ describe('Kiro Cloud Sessions profiles', () => {
     mount()
     await screen.findByLabelText('Coder URL')
     fireEvent.click(cloudTab())
-    fireEvent.click(screen.getByRole('button', { name: 'Add Kiro Cloud profile' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Kiro Cloud Sessions profile' }))
     const repos = () => within(screen.getByRole('group', { name: 'kiro-cloud-1' })).getByLabelText('Repositories')
     // Typed one key at a time, then the comma is backspaced away: the field
     // shows what was typed, not the list rebuilt from it with ", " put back.
@@ -1875,7 +1875,7 @@ describe('Kiro Cloud Sessions profiles', () => {
     fireEvent.click(cloudTab())
     expand('Cloud')
     // Only the expanded row shows its Remove button.
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Kiro Cloud profile' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Kiro Cloud Sessions profile' }))
     expect(defaults).toHaveTextContent('Now Scratch: the default profile was removed. Discard changes to undo.')
     fireEvent.click(save())
     await waitFor(() => expect(writes).toHaveLength(1))
@@ -1905,10 +1905,13 @@ describe('Kiro Cloud Sessions profiles', () => {
     // The setup step names the backend by the label the Agent Harness picker shows.
     expect(within(configure).getByText(/choose the Kiro Agent backend/)).toHaveTextContent('Settings → Agent Harness')
     // Its controls are named for it, so they are not twins of the Coder ones.
-    expect(within(configure).getByRole('button', { name: 'Add Kiro Cloud profile' })).toBeEnabled()
+    expect(within(configure).getByRole('button', { name: 'Add Kiro Cloud Sessions profile' })).toBeEnabled()
     expect(within(configure).queryByRole('button', { name: 'Add Coder profile' })).toBeNull()
     fireEvent.click(within(configure).getByRole('button', { name: /^Cloud/, expanded: false }))
-    expect(within(configure).getByRole('button', { name: 'Remove Kiro Cloud profile' })).toBeInTheDocument()
+    expect(within(configure).getByRole('button', { name: 'Remove Kiro Cloud Sessions profile' })).toBeInTheDocument()
+    // The feature is Kiro Agent's Kiro Cloud Sessions: no shortened "Kiro Cloud" anywhere on the tab.
+    expect(document.body.textContent).toContain('Kiro Cloud Sessions profiles')
+    expect(document.body.textContent).not.toMatch(/Kiro[ -]Cloud(?! Sessions(?![A-Za-z]))/i)
   })
 
   it('says Kiro Cloud profiles are not checked ahead of time, and lists no sandboxes here', async () => {
@@ -1932,7 +1935,7 @@ describe('Kiro Cloud Sessions profiles', () => {
     await screen.findByLabelText('Coder URL')
     expect(screen.queryByText(/These profiles aren't checked ahead of time/)).not.toBeInTheDocument()
     fireEvent.click(cloudTab())
-    expect(screen.queryByRole('button', { name: 'Add Kiro Cloud profile' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Add Kiro Cloud Sessions profile' })).toBeNull()
     expect(screen.getByRole('region', { name: '1. Connect and configure' })).toHaveTextContent('does not support Session Environments settings')
   })
 })

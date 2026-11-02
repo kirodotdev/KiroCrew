@@ -218,6 +218,10 @@ class AcpProvider(LLMProvider):
         # egress check and the cloud start pass it to governance so an app-bound
         # profile applies.
         self.owning_app = ""
+        # A Kiro Cloud start's (session_key, agent, app), which every later turn
+        # re-checks governance against (``acp_turns._readmit_cloud_session``);
+        # None for every other session, which then skips the check.
+        self._cloud_governance_scope: tuple[str, str, str] | None = None
         # Kept on the provider, not only on the placeholder client: on the kiro
         # path ``_start_kiro_runtime_impl`` replaces that client with an
         # ``AcpRuntime`` it constructs itself, and a dedicated subagent's
