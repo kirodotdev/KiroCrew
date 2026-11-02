@@ -307,6 +307,10 @@ def _json_folder(folder_id: str, names: dict[str, str]) -> dict[str, Any] | None
     """
     if not folder_id:
         return None
+    if len(folder_id) > _MSG_PREVIEW_LEN:
+        # Minted ids are 8 hex; a longer one came from a hand-edited store and
+        # would blow the record past the byte budget. Say so, never cut it.
+        return {"id": None, "name": None, "error": "stored folder id is too long"}
     name = names.get(folder_id)
     return {
         "id": folder_id,

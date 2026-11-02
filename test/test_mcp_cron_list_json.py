@@ -117,6 +117,14 @@ class TestFolder:
         rec = json.loads(_call([_job(folder_id="eeee5555")]))["jobs"][0]
         assert rec["folder"] == {"id": "eeee5555", "name": None}
 
+    def test_an_oversized_stored_folder_id_is_refused_not_carried(self) -> None:
+        # A hand-edited store can hold any string; an unbounded id would push the
+        # first record past the byte budget and the response would be cut mid-JSON.
+        out = _call([_job(folder_id="f" * 200_000)])
+        rec = json.loads(out)["jobs"][0]
+        assert rec["folder"] == {"id": None, "name": None, "error": "stored folder id is too long"}
+        assert len(out) < 10_000
+
     def test_an_unreadable_store_degrades_to_null_names(self) -> None:
         self.path.write_text("{}", encoding="utf-8")
         rec = json.loads(_call([_job(folder_id="aaaa1111")]))["jobs"][0]

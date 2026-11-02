@@ -51,6 +51,7 @@ from kiro_crew.platform import redact_log_via_context
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
+from kiro_crew.terminal_safe import safe_terminal_line
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
     _MODEL_NAME_RE,
@@ -183,10 +184,14 @@ _CRON_LIST_UNGROUPED = "-"
 
 
 def _cron_folder_label(folder_id: str, names: dict[str, str]) -> str:
-    """A job's folder as ``cron list`` prints it: its name, else its raw id."""
+    """A job's folder as ``cron list`` prints it: its name, else its raw id.
+
+    Folder names are stored as written (an agent can write one), so the label
+    goes through ``safe_terminal_line`` before it reaches the terminal.
+    """
     if not folder_id:
         return "(none)"
-    return names.get(folder_id) or folder_id
+    return safe_terminal_line(names.get(folder_id) or folder_id)
 
 
 def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
@@ -490,6 +495,15 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             from kiro_crew.cron_service.fields import build_job
 
             build_job(**fields)
+            # An unreadable store refuses add_job, and a key that already has a
+            # job is refused by add_managed_job; refuse both here too, before the
+            # folder create. Unlocked pre-checks only: the locked checks in the
+            # store stay the ones that decide.
+            svc.raise_if_store_unreadable()
+            if managed_by is not None and any(
+                j.managed_by == managed_by for j in svc.list_jobs(include_disabled=True)
+            ):
+                _cron_add_fail(f"a job is already managed by {managed_by!r}")
             folder_id, folder_err = _cron_folder_ref(folder_ref)
             if folder_err:
                 _cron_add_fail(folder_err)
