@@ -298,6 +298,9 @@ The mechanism, when on:
   `[auto-nudge cycle N]` text it delivers: `_fire_dm_nudge` hands it to the
   dispatcher's `handle_message` as `skill_trigger_text`, and the channel pipeline
   (`ChannelTurns.answer`, `ChannelTurn.skill_trigger_text`) passes it to the build.
+  A single-agent cron turn reads the job's prompt, not the `[User has seen and
+  acknowledged ALL of the following ...]` list it appends for a job with
+  acknowledged items (`slack/gateway_runtime/cron_turn.py`).
 - `skill_runtime/delivery.py` → `split_triggered` decides delivery. **A matched
   skill's full body lands in the prompt as `[Skill: name]` the first time it
   matches in a provider session**; a later match of the same unconfined skill in
