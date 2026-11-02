@@ -1072,6 +1072,94 @@ async def test_a_reap_in_flight_names_whether_the_answer_had_finished(
     sessions.record_success.assert_not_called()
 
 
+async def _race_a_reap_against_the_answer(reason: str, *, user_stop: bool = False):
+    """A reap that begins while the answer streams; the answer then finishes."""
+    complete_go = asyncio.Event()
+    reset_go = asyncio.Event()
+
+    def factory(msg: str, *a, **kw):
+        async def _gen():
+            yield _text(_ANSWER)
+            await complete_go.wait()
+            yield _complete(STOP_REASON_END_TURN)
+
+        return _gen()
+
+    sessions = _mock_sessions(factory)
+    resets: list[str] = []
+
+    async def _reset(key, **_kw):
+        resets.append(key)
+        if len(resets) == 1:
+            await reset_go.wait()
+
+    sessions.reset = AsyncMock(side_effect=_reset)
+    mgr = _manager(sessions)
+    try:
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = mgr.spawn("do work")
+            assert info is not None
+            run = mgr._tasks[info.id]
+            await _wait_until(lambda: info.streaming_text, "the first chunk")
+            if user_stop:
+                info.user_stopped = True
+                info._reap_reason = "user_stop"
+                info._stop_origin = "stopped by user"
+            reaping = asyncio.ensure_future(mgr._force_reap(info.id, info, 601.0, reason=reason))
+            await _wait_until(lambda: resets, "the reap's reset")
+            complete_go.set()
+            await _wait_until(lambda: run.done(), "the run's own ending")
+            reset_go.set()
+            await await_until(reaping, what="the reap finishing")
+            await _wait_settled(mgr, info)
+    finally:
+        complete_go.set()
+        reset_go.set()
+    return info
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_stop", [False, True], ids=["deadline", "user stop"])
+async def test_a_finished_answer_a_reap_got_to_first_reaches_the_parent(user_stop: bool):
+    """The reap owns the report of a run whose answer finished under it, and
+    that report must still hand the parent the answer, named as finished --
+    not drop it behind the stop's error, nor call it a partial."""
+    from kiro_crew.slack.gateway import _compose_subagent_completion
+
+    info = await _race_a_reap_against_the_answer("deadline", user_stop=user_stop)
+    assert info._answer_finished and not info._ending_claimed
+    assert info.outcome == ("stopped" if user_stop else "failed")
+
+    report = _compose_subagent_completion(info, _flush_only=False)
+    assert _ANSWER.strip() in report.announce, report.announce
+    assert "finished its answer" in report.detail
+    assert "Partial output" not in report.detail
+
+
+@pytest.mark.parametrize("user_stop", [False, True], ids=["deadline", "user stop"])
+def test_a_truncated_finished_answer_under_a_reap_points_at_its_transcript(user_stop: bool):
+    """A finished answer the completion copy cut short reaches the parent as
+    any truncated result does -- a preview and the result.txt pointer -- so
+    the tail of the answer is not silently lost behind 'Its answer:'."""
+    from kiro_crew.slack.gateway import _compose_subagent_completion
+
+    info = SubagentInfo(
+        id="cut1",
+        task="do work",
+        result="HEAD OF THE ANSWER " * 400,
+        result_truncated=True,
+        result_path="/runs/cut1/result.txt",
+        user_stopped=user_stop,
+        error="" if user_stop else "reaped after 601s (deadline) — finished its answer",
+    )
+    info._answer_finished = True
+    info.done = True
+
+    report = _compose_subagent_completion(info, _flush_only=False)
+    assert "/runs/cut1/result.txt" in report.detail, report.detail
+    assert "finished its answer" in report.detail
+
+
 @pytest.mark.asyncio
 async def test_a_user_stop_no_reap_has_reached_yet_records_the_neutral_stop():
     """``cancel()`` stamps ``user_stopped`` synchronously and only then awaits

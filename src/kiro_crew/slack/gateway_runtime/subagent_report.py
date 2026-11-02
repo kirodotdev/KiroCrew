@@ -128,6 +128,16 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     # transcript on demand (read / grep / spawn_status) instead of re-running
     # the subagent.
     result_path = info.result_path or ""
+    # A whole answer a reap got to first: the reap owns the ending and the
+    # report, so the stop's outcome stands, but the parent still receives the
+    # answer, cut and pointed at result.txt like any other truncated result.
+    _finished_answer = ""
+    if getattr(info, "_answer_finished", False) and info.result and not info.partial:
+        _finished_answer = (
+            summarize_result(info.result, result_path)
+            if result_path and info.result_truncated
+            else info.result
+        )
     if info.user_stopped:
         _partial = info.result or ""
         # Same origin as the status line above: a parent end or a row
@@ -135,13 +145,24 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
         # the digest text.
         _origin = getattr(info, "_stop_origin", "") or "stopped by user"
         _who = "Stopped by the user" if _origin == "stopped by user" else f"Stopped ({_origin})"
-        detail = (
-            f"{_who} before completing. Do NOT treat this as "
-            "a finished result or retry it unprompted."
-            + (f"\n\nPartial output:\n{_partial}" if _partial else "")
-        )
+        if _finished_answer:
+            detail = (
+                f"{_who} as it finished its answer. Do NOT retry it unprompted."
+                f"\n\nIts answer:\n{_finished_answer}"
+            )
+        else:
+            detail = (
+                f"{_who} before completing. Do NOT treat this as "
+                "a finished result or retry it unprompted."
+                + (f"\n\nPartial output:\n{_partial}" if _partial else "")
+            )
     elif info.error:
         detail = f"Error: {info.error}"
+        if _finished_answer:
+            detail += (
+                "\n\nThe run finished its answer before the stop took effect:"
+                f"\n{_finished_answer}"
+            )
         # A run that ended on a stall / cancel / transport death keeps
         # what it streamed as a flagged PARTIAL (``info.partial``, set by
         # the stop-reason classifier in subagent_manager/run_turn.py); deliver
@@ -364,6 +385,13 @@ def _subagent_wave_digest(
                 f"— `{info.id}` {status} {emoji} · {task_text[:80]}{_model_tag}\n"
                 f"  Usage: {usage}\n"
                 f"  {detail[:400]}{'…' if len(detail) > 400 else ''}"
+                # A finished answer the stop owned is cut at 400 here, so its
+                # transcript is named outside the slice, as an ok line's is.
+                + (
+                    f"\n  → {result_path}"
+                    if result_path and getattr(info, "_answer_finished", False)
+                    else ""
+                )
             )
         _last = bp["total"] > 0 and bp["done"] >= bp["total"]
         if not _last:
