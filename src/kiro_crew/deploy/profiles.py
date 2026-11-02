@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
 
-from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.atomic_write import read_bytes_with_retry, replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import AWS_PROFILE_FIRST_CHARS, AWS_PROFILE_NAME_RE
 from kiro_crew.deploy import engine
@@ -126,6 +126,9 @@ def locked_registry() -> Generator[dict[str, Any], None, None]:
 
     The lock is held for the entire context — concurrent callers block until
     release. This prevents interleaved load/mutate/save from losing writes.
+
+    The save never replaces an unreadable ``profiles.json`` with an empty registry
+    plus one edit: :func:`_load_registry_for_update` moves such a file aside first.
     """
     _data_dir().mkdir(parents=True, exist_ok=True)
     lock_path = _registry_path().with_suffix(".lock")
@@ -136,10 +139,62 @@ def locked_registry() -> Generator[dict[str, Any], None, None]:
     # the Windows rationale.
     with open_lock_file(lock_path) as fd:
         with file_lock(fd, exclusive=True, required=True):
-            reg = load_registry()
+            reg = _load_registry_for_update()
             yield reg
             # Persist on clean exit (exceptions skip save, lock still releases)
             _write_registry_file(reg)
+
+
+class RegistryUnreadableError(Exception):
+    """``profiles.json`` cannot be read or set aside, so a write would replace it."""
+
+
+def _load_registry_for_update() -> dict[str, Any]:
+    """The registry a locked write starts from.
+
+    :func:`load_registry` degrades for readers, so one bad file cannot 500 every
+    route. A writer cannot start from that answer as it stands: the empty registry
+    it returns would be saved over the profiles still in the file. Here a present
+    file that cannot be decoded or parsed as a registry is moved aside to
+    ``<name>.corrupt-<utc>`` with a warning first, so its bytes outlive the save;
+    the write then starts where a missing file does. When the read itself fails, or
+    the move does, the write raises :class:`RegistryUnreadableError` and the file
+    stays as it is. A UTF-8 byte-order mark is not content and reads normally.
+    """
+    path = _registry_path()
+    try:
+        raw = json.loads(read_bytes_with_retry(path).decode("utf-8-sig"))
+    except FileNotFoundError:
+        return load_registry()
+    except OSError as e:
+        # A read that fails says nothing about the bytes, which may be a good registry:
+        # moving it aside would hide every profile, so the write is refused instead.
+        raise RegistryUnreadableError(f"{path} could not be read ({e}); not saving over it") from e
+    except ValueError as e:
+        _set_aside(path, e)
+        return load_registry()
+    # ``_parse_registry`` drops what it cannot use, so a ``profiles`` mapping or string
+    # would parse to an empty registry without raising. A writer keeps such a file.
+    if not isinstance(raw, dict) or not isinstance(raw.get("profiles", []), list):
+        _set_aside(path, "not a profile registry: no profiles list")
+        return load_registry()
+    return _parse_registry(raw)
+
+
+def _set_aside(path: Path, reason: object) -> None:
+    """Move an unreadable registry to ``<name>.corrupt-<utc>`` so a save cannot destroy it."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    aside = path.with_name(f"{path.name}.corrupt-{stamp}")
+    try:
+        replace_with_retry(path, aside)
+    except OSError as e:
+        raise RegistryUnreadableError(
+            f"{path} could not be read ({reason}) or moved aside ({e}); not saving over it"
+        ) from e
+    logger.warning(
+        "deploy profile registry %s could not be read (%s); moved it to %s before saving",
+        path, reason, aside.name,
+    )
 
 
 def _write_registry_file(reg: dict[str, Any]) -> None:
@@ -263,21 +318,27 @@ def load_registry() -> dict[str, Any]:
     at once instead of asking each call site to guard a shape it did not parse.
     A file that is not UTF-8 takes the same path: its ``UnicodeDecodeError`` is a
     ``ValueError``, not a ``json.JSONDecodeError``, so it is named separately.
+    Each read drops one leading UTF-8 byte-order mark (``utf-8-sig``), the form
+    Windows PowerShell 5.1 ``Set-Content -Encoding UTF8`` saves.
+
+    Writers do not start from this answer for a present file: :func:`locked_registry`
+    reads through :func:`_load_registry_for_update`, which moves a file this function
+    would degrade aside before the save.
     """
     try:
-        return _parse_registry(json.loads(_registry_path().read_text(encoding="utf-8")))
+        return _parse_registry(json.loads(_registry_path().read_text(encoding="utf-8-sig")))
     except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
             AttributeError, TypeError):
         pass
     # Legacy app-dir registry migration (apps/deploy-web/data/profiles.json)
     try:
-        return _parse_registry(json.loads(_legacy_registry_path().read_text(encoding="utf-8")))
+        return _parse_registry(json.loads(_legacy_registry_path().read_text(encoding="utf-8-sig")))
     except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
             AttributeError, TypeError):
         pass
     # v1 single-profile migration path (apps/deploy-web/data/config.json)
     try:
-        legacy = json.loads(_legacy_config_path().read_text(encoding="utf-8"))
+        legacy = json.loads(_legacy_config_path().read_text(encoding="utf-8-sig"))
         if _well_formed_entry({"name": legacy.get("profile", ""),
                                "region": legacy.get("region", "")}):
             name = str(legacy["profile"])
