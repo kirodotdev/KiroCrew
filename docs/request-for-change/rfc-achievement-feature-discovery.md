@@ -271,7 +271,7 @@ GET  /api/milestones
     "notices": ["widgets", "chats-opened:10"]               // due and not yet shown
   }
 
-POST /api/milestones/event          { "id": "widgets", "action": "starter_clicked" | "skipped" | "video_seen" | "notice_shown" | "panel_opened" }
+POST /api/milestones/event          { "id": "widgets", "action": "starter_clicked" | "starter_arrived" | "skipped" | "video_seen" | "notice_shown" | "panel_opened" }   // starter_arrived: section 9
 POST /api/milestones/mark-done      { "id": "slack" }    // features group only, see 4.6
 POST /api/milestones/mark-all-done  {}                   // every open feature row, see 4.6
 POST /api/milestones/skip-all       {}                   // empty state "Don't show again", see 4.5
@@ -540,6 +540,7 @@ Product telemetry uses only the existing anonymous metrics counters (`metrics.ev
 | `organic` | A hook counted the event with no recent starter click (always for usage tiers and streaks) | Yes |
 | `backfill` | Credited once at upgrade | No |
 | `manual` | "Mark as done" or "Mark all as done" | No |
+| `arrived` | A Try today "Try it" landed on its page (section 9): a visit, not proven use | No |
 
 Success criteria (read 4 weeks after Ship 1):
 
@@ -657,7 +658,7 @@ A "Try it" button anywhere in the panel keeps the send modes in 4.5: only `widge
 - **Only quick rows.** Try today picks only feature rows a person can finish in a few minutes: `widgets`, `parallel-chats`, `mate`, `scheduled-task` and `slack`. `pr-watch` (needs a PR link and waits on CI) and `crew-mode` (spend has no upper bound) stay in the full list but are never picked. The quick list is a fixed constant in the client.
 - **Ring of rows.** The quick rows that are not `unavailable`, in `order`, as a ring. Its size `N` does not change when a row is done or skipped, so the starting point stays put for the whole day.
 - **Pick.** Take the day number `d` (days since 1970-01-01 in the user's local time zone, the same day rule as the streak in 3.3). Start at index `d mod N`, walk forward around the ring, and take the first 3 rows whose state is `open`. The same day and the same state always give the same pick, on every tab and after a reload.
-- **Drop out.** When a row becomes `done` (used, or "Mark as done") or `skipped` ("Skip" on its row), it leaves today's list at once. The other picked rows stay where they are, and the next `open` row further round the ring takes the free place, if there is one. So "Try today" holds fewer than 3 rows only when fewer than 3 quick rows are `open`.
+- **Drop out.** When a row becomes `done` (used, reached through its own "Try it" as in section 9, or "Mark as done" elsewhere in the panel) or `skipped` ("Skip" on its row), it leaves today's list at once. The other picked rows stay where they are, and the next `open` row further round the ring takes the free place, if there is one. So "Try today" holds fewer than 3 rows only when fewer than 3 quick rows are `open`.
 - **Where it runs.** In the client, from the existing `GET /api/milestones` response (each feature row's `state`). No new server route, no new state field and no model turn. The server's `recommended` field is not used for this pick.
 - **Empty.** When no quick row is `open`, "Try today" shows nothing, the top-bar dot is off (8.7), and the new-chat page shows no entry card (8.6).
 
@@ -688,7 +689,7 @@ A "Try it" button anywhere in the panel keeps the send modes in 4.5: only `widge
 
 The badge tier is a fixed client-side table keyed by milestone id and tier value. It is derived from data the API already returns (`tiers_reached_at`, feature `state` and `done_at`), so it adds no server field.
 
-**Streak (Ship 1).** The streak keeps its rule from 3.3: a local day counts when the person sent at least one turn ("a day you used Crew").
+**Streak (Ship 1).** The streak keeps its rule from 3.3: a local day counts when the person sent at least one turn ("a day you used Crew"). A Try today arrival (section 9) also counts that day.
 
 ### 8.5 Notice wording
 
@@ -752,3 +753,16 @@ Listed only; each item gets its own design before it is built.
 - `session_pulse_counter.py`: unchanged; the milestone counter only shares its call site.
 - Mate first welcome: only one line of copy appended after `welcome.offer_tools`; the flow and the one-time marker are unchanged.
 - Crew Mode: its toggle, stamp and lock rules are unchanged; it is only read at turn start.
+
+## 9. Amendment, 2026-11-01: "Try it" completes a Try today row (D19)
+
+**D19 (product owner, 2026-11-01).** For a Try today row, what counts as done is simply "you went there". Once the row's "Try it" lands on the row's page (the new chat for a prompt row, the page for a route row), the row is done and that local day counts toward the streak. Try today rows drop "Mark as done", because "Try it" covers them. This amends D10, D11 and 8.3 for Try today rows only. Getting started, the rows Try today never picks, and every usage milestone keep their real counters and their "Mark as done".
+
+Before this, "Try it" only opened a row's page or chat, and a Try today row was done only by real use or "Mark as done".
+
+- **When it counts.** After a Try today "Try it", the client waits up to a minute for the place it leads to: the row's page for a route row (path and query), or the new chat on a chat page for a prompt row. When the router shows it, the client posts `starter_arrived` for that row on `POST /api/milestones/event`. A click whose navigation the user refused (the leave guard), a create that never took the view, or a move elsewhere sends nothing.
+- **What the server checks.** The server counts an arrival only within 10 minutes of the same row's `starter_clicked`, which it stamped itself; the client sends no time and no count. It writes `reached` with `source: "arrived"`, adds the row to `noticed` (no notice: the user just did it), emits `reached` with `via: "arrived"`, and counts today for the streak as 3.3 does. A second arrival is a no-op: the row is already done and the day already counted. `features_completed` reports `mixed` when any row was reached this way.
+- **A failed save.** When the arrival write fails, Explore says so and offers "Try again", which posts the arrival again: no second chat, no second prompt.
+- **What it never touches.** Only feature rows are accepted (a usage id gets 400). Getting started rows, the rows Try today never picks, and every usage milestone and tier keep their real counters; their "Try it" does not complete them.
+- **Copy.** Try today shows one line under its heading: "Done once Try it takes you there. Today counts toward your streak." Its rows show "Try it" only.
+- **No new store.** The same state file, the same event route and one new `reached` source. No new route and no new state field.
