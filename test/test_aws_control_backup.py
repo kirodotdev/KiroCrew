@@ -174,15 +174,14 @@ class TestAuthorizeUpload:
 
 class TestRunSnapshotBackup:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         # A successful push ends with the retention sweep, which LISTS the drive.
         # Stubbed here rather than per test: the sweep swallows its own failures by
         # design, so an unstubbed test would attempt a real CLI call and still
         # pass. Retention's own behaviour is covered in
         # test_aws_control_backup_retention.py.
-        monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
+        _floor_monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
         yield
 
     def test_failed_snapshot_build_raises_before_any_upload(self):
@@ -323,13 +322,12 @@ class TestRunSnapshotBackup:
 
 class TestRunSessionsBackup:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         # See TestRunSnapshotBackup: the push ends with a drive listing, and the
         # sweep swallows its own failures, so leaving it unstubbed would attempt a
         # real CLI call from a passing test.
-        monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
+        _floor_monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
         yield
 
     def test_empty_session_dirs_raise_before_upload(self, tmp_path, monkeypatch):
