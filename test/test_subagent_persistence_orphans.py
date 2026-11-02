@@ -18,7 +18,6 @@ lives in ``subagent_persistence_helpers.py``.
 from __future__ import annotations
 
 import json
-import time
 
 import pytest
 from subagent_persistence_helpers import (  # noqa: F401 -- the fixture is requested by name
@@ -653,21 +652,25 @@ class TestReaperPrunesTombstones:
     """Verify the reaper loop calls prune_stale_tombstones."""
 
     @pytest.mark.asyncio
-    async def test_reaper_prunes_old_tombstones(self, agent_root):
+    async def test_reaper_prunes_old_tombstones(self, agent_root, manual_clock, monkeypatch):
         """Old tombstoned folders are pruned during reaper sweep."""
+        from kiro_crew import subagent_persistence
         from kiro_crew.subagent_persistence import (
             create_agent_folder,
             prune_stale_tombstones,
             write_tombstone,
         )
 
+        # The prune's "now" and the tombstone writer's "died" stamp read one frozen
+        # clock, so a death stamp is an exact offset from the instant the prune uses.
+        manual_clock.install(monkeypatch, subagent_persistence)
+
         # Eight days old: past the 7-day prune cutoff.
         create_agent_folder("old_tomb", task="t")
         write_tombstone("old_tomb", cause="timeout", recovery_action="delivered")
         ts_path = agent_root / "old_tomb" / "tombstone.json"
         ts = json.loads(ts_path.read_text(encoding="utf-8"))
-        # flake-ok: an 8-day-old stamp against the 7-day cutoff leaves a day of margin; never a wait or a deadline; moved verbatim
-        ts["died"] = time.time() - (8 * 86400)
+        ts["died"] = manual_clock.time() - (8 * 86400)
         ts_path.write_text(json.dumps(ts))
 
         # Fresh tombstone: inside the cutoff, so it is kept.
