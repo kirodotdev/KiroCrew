@@ -118,6 +118,7 @@ class _GateMixin(ManagerComponent):
         target_member: str | None = None,
         delegation: dict[str, str] | None = None,
         backend: str | None = None,
+        failover_from: str | None = None,
         label: str = "",
         _execution_context: dict | None = None,
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
@@ -610,6 +611,8 @@ class _GateMixin(ManagerComponent):
             # The drain re-enters ``spawn`` from this dict alone: a run that hit
             # the concurrency gate would otherwise start on the default backend.
             "backend": backend,
+            # Same reason: a queued row would otherwise lose the hop it reports.
+            "failover_from": failover_from,
             # Same reason: a queued row would otherwise start under its task text.
             "label": label,
             "allowed_tools": allowed_tools,
@@ -942,6 +945,7 @@ class _GateMixin(ManagerComponent):
             "model": model or "",
             "reasoning_effort": reasoning_effort or "",
             "backend": backend,
+            "failover_from": failover_from,
             "allowed_tools": list(allowed_tools) if allowed_tools else [],
             "bare": bare,
             "keep": keep,

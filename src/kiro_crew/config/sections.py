@@ -173,6 +173,7 @@ from kiro_crew.config.sections_agent_fields import (  # noqa: F401
     _safe_motions,
     _safe_sounds,
     _sanitize_bot_name,
+    _unselectable_failover_names,
     _validated_completion_keep,
     coerce_effort,
     coerce_kas_bundle_url,
@@ -181,8 +182,10 @@ from kiro_crew.config.sections_agent_fields import (  # noqa: F401
     coerce_refusal_fallback_model,
     coerce_role_efforts,
     coerce_role_models,
+    normalize_acp_failover,
     normalize_agent_model,
     safe_imported,
+    validate_acp_failover,
     worker_session_defaults,
 )
 from kiro_crew.config.sections_channels import (  # noqa: F401

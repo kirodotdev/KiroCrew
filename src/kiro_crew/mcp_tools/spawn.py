@@ -432,6 +432,14 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             effort_pendings.append((str(d.get("id", "?")), (t_effort, str(d["effort_pending"]))))
         if d.get("runtime_note"):
             runtime_notes.append((str(d.get("id", "?")), ("", str(d["runtime_note"]))))
+        if d.get("failover_from"):
+            # The run is not on the backend this call named: say where it went.
+            runtime_notes.append(
+                (
+                    str(d.get("id", "?")),
+                    ("", _failover_note(str(d["failover_from"]), str(d.get("backend") or "?"))),
+                )
+            )
 
     def _receipt() -> str:
         return _spawn_run_receipt(
@@ -458,6 +466,14 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
         submit_one=_submit_one,
         receipt=_receipt,
         reconcile_lost=_reconcile_lost,
+    )
+
+
+def _failover_note(requested: str, ran_on: str) -> str:
+    """The receipt line for a run ``agent.acp_failover`` moved off the backend asked for."""
+    return (
+        f"backend {requested!r} could not start; running on {ran_on!r} instead"
+        " (agent.acp_failover). The prompt goes to that backend's vendor and bill."
     )
 
 
