@@ -32,7 +32,7 @@ from kiro_crew.slack.code_channels.surface_store import SurfaceStore
 from kiro_crew.slack.code_channels.surface_store import set_store as set_surface_store
 
 #: The real list reader, captured before ``Env`` swaps in a fixed list.
-REAL_AGENT_CHOICES = agent_picker.agent_choices
+REAL_AGENT_MENU = agent_picker.agent_menu
 
 CH = "C0CODE"
 ANCHOR = "300.000001"
@@ -232,10 +232,15 @@ def test_a_folder_default_agent_preselects_when_no_explicit_one(env: Env) -> Non
     assert _initial(asyncio.run(_open(env))) == "builder"
 
 
-def test_agents_that_cannot_be_listed_leave_a_plain_kickoff(env: Env) -> None:
+def test_agents_that_cannot_be_listed_leave_the_kickoff_without_a_picker(env: Env) -> None:
     env.agents = None
-    assert asyncio.run(_open(env)) == []
-    assert env.slack.posts[0][0] == CH  # the channel still opened, text only
+    blocks = asyncio.run(_open(env))
+    assert _select(blocks) is None  # no agent picker ...
+    from kiro_crew.slack.code_channels import approval_picker
+
+    ids = [(b.get("accessory") or {}).get("action_id") for b in blocks]
+    assert approval_picker.APPROVAL_SELECT_ACTION_ID in ids  # ... but the mode select stays
+    assert env.store.get_binding(CH) is not None  # the channel still opened
 
 
 def test_a_refused_block_kit_post_falls_back_to_text(env: Env) -> None:
@@ -284,7 +289,7 @@ def test_someone_elses_pick_is_refused_ephemerally_and_changes_nothing(env: Env)
     slot = _bind(env)
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder", user=STRANGER)))
     assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
-    assert env.slack.ephemerals == [(CH, STRANGER, agent_picker.NOT_ALLOWED_TEXT)]
+    assert env.slack.ephemerals == [(CH, STRANGER, agent_picker.OWNER_ONLY_TEXT)]
     # The select is put back on the agent the session runs.
     assert _initial(env.slack.edits[-1][3]) == "kirocrew-conductor"
     [row] = _rows(env, "denied")
@@ -300,7 +305,7 @@ def test_the_dispatcher_refuses_a_non_owner_before_the_picker(
     monkeypatch.setattr(interactions, "sel", lambda: env.sel)
     asyncio.run(interactions.dispatch(_pick("builder", user=STRANGER)))
     assert env.switches.calls == []
-    assert [e[1] for e in env.slack.ephemerals] == [STRANGER]
+    assert env.slack.ephemerals == [(CH, STRANGER, agent_picker.OWNER_ONLY_TEXT)]
     [row] = env.sel.ops("slack.interactive")
     assert row["outcome"] == "denied"
     [picker_row] = _rows(env, "denied")
@@ -381,15 +386,24 @@ def test_a_refusal_reason_is_redacted_before_it_reaches_slack(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _bind(env)
-    monkeypatch.setattr(
-        "kiro_crew.security.redact", lambda text: text.replace("SECRET", "[REDACTED]")
+    key = "AKIA" + "QWERTYUIOPASDFGH"
+    url = (
+        "https://attacker.example/collect?data="
+        + "c2VjcmV0LXRva2VuLXZhbHVlLWhlcmUtMTIzNDU2Nzg5MA=="
     )
+    # Split by markup: only the display sink's display-form scan finds it.
+    split = "AKIA**" + "ZXCVBNMASDFGHJKL**"
     env.switches.answers.append(
-        (503, {"error": "memory store unavailable: SECRET", "code": "store_unavailable"})
+        (503, {"error": f"unavailable: {key} {split} {url}", "code": "store_unavailable"})
     )
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
     [(_, _, text)] = env.slack.ephemerals
-    assert "SECRET" not in text and "[REDACTED]" in text
+    for secret in (key, "ZXCVBNMASDFGHJKL", "attacker.example/collect"):
+        assert secret not in text
+    assert "[REDACTED" in text
+    # The audit row carries the same redacted reason.
+    [row] = [r for r in _rows(env) if "store_unavailable" in r["resources"]]
+    assert "[REDACTED" in row["error"] and "ZXCVBNMASDFGHJKL" not in row["error"]
 
 
 def test_a_pick_during_a_turn_is_refused_with_try_again(env: Env) -> None:
@@ -445,6 +459,80 @@ def test_kirocrew_agent_name_switches_the_channel(env: Env) -> None:
     assert "via=command" in _rows(env, "allowed")[0]["resources"]
 
 
+@pytest.mark.parametrize("via", ["command", "select"])
+def test_picking_a_template_over_a_same_named_crewmate_switches(env: Env, via: str) -> None:
+    """A folder or Slack default can resolve a channel to the ``builder``
+    crewmate; picking the ``builder`` template must run the template, not
+    answer "unchanged" and keep the crewmate's bindings and memory."""
+    slot = _bind(env)
+    slot.agent, slot.agent_kind = "builder", "member"
+    if via == "command":
+        handled, replies = _command(env, "agent builder")
+        assert handled and replies == [agent_picker.SWITCHED_TEXT.format(agent="builder")]
+    else:
+        assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert [c["agent"] for c in env.switches.calls] == ["builder"]
+
+
+def test_picking_the_template_a_channel_already_runs_is_unchanged(env: Env) -> None:
+    slot = _bind(env)
+    slot.agent, slot.agent_kind = "builder", "template"
+    handled, replies = _command(env, "agent builder")
+    assert handled and replies == [agent_picker.SAME_AGENT_TEXT.format(agent="builder")]
+    assert env.switches.calls == []
+
+
+def test_the_kickoff_options_say_what_each_agent_does(env: Env) -> None:
+    """Each option has a plain label that tells it apart and is never cut, and what
+    the agent does in the option's own ``description`` line, within Slack's caps."""
+    env.agents = [
+        "kirocrew",
+        "kirocrew-conductor",
+        "kirocrew-team-lead",
+        "kirocrew-worker",
+        "builder",
+    ]
+    env.agent_descriptions = {
+        "builder": "Builds and tests changes in your repo",
+        "kirocrew-conductor": "Splits a goal into work items <!channel> " + "word " * 40,
+        "kirocrew-team-lead": "Splits a goal into work items " + "word " * 40,
+    }
+    select = _select(asyncio.run(_open(env))) or {}
+    options = select["options"]
+    labels = [o["text"]["text"] for o in options]
+    # Every label is unique, within the cap, and is the whole label (never cut).
+    assert len(set(labels)) == len(labels)
+    for option in options:
+        assert option["text"]["type"] == "plain_text"
+        assert 0 < len(option["text"]["text"]) <= 75 and "…" not in option["text"]["text"]
+        if "description" in option:
+            assert option["description"]["type"] == "plain_text"
+            assert 0 < len(option["description"]["text"]) <= 75
+    by_value = {o["value"]: o for o in options}
+    assert by_value["kirocrew-team-lead"]["text"]["text"] == "Team lead (kirocrew-team-lead)"
+    assert by_value["builder"]["text"]["text"] == "builder"  # not shipped: its name
+    assert by_value["builder"]["description"]["text"] == "Builds and tests changes in your repo"
+    assert "description" not in by_value["kirocrew"]  # no description: none shown
+    # Two descriptions that start alike are cut at a word, but the labels differ.
+    cut = by_value["kirocrew-conductor"]["description"]["text"]
+    assert cut.endswith("…") and not cut.endswith(" …") and cut.split()[-1] == "word…"
+    assert (
+        by_value["kirocrew-conductor"]["text"]["text"]
+        != by_value["kirocrew-team-lead"]["text"]["text"]
+    )
+    assert select["initial_option"] in options  # Slack requires an exact match
+
+
+def test_kirocrew_agent_lists_what_each_agent_does(env: Env) -> None:
+    _bind(env)
+    env.agent_descriptions = {"builder": "Builds and tests changes in your repo"}
+    _handled, [current] = _command(env, "agent")
+    _handled, [unknown] = _command(env, "agent nope", trigger="T-2")
+    for reply in (current, unknown):
+        assert "\n• `builder` — Builds and tests changes in your repo" in reply
+        assert "\n• `kirocrew`" in reply
+
+
 def test_kirocrew_agent_refuses_an_unknown_agent_with_the_list(env: Env) -> None:
     slot = _bind(env)
     handled, [reply] = _command(env, "agent nope")
@@ -457,7 +545,7 @@ def test_kirocrew_agent_refuses_an_unknown_agent_with_the_list(env: Env) -> None
 def test_kirocrew_agent_from_someone_else_is_refused(env: Env) -> None:
     slot = _bind(env)
     handled, replies = _command(env, "agent builder", user=STRANGER)
-    assert handled and replies == [agent_picker.NOT_ALLOWED_TEXT]
+    assert handled and replies == [agent_picker.OWNER_ONLY_TEXT]
     assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
     assert _rows(env, "denied")[0]["error"] == "unauthorized user"
     assert env.sel.ops("slack.code_channel.command")[-1]["outcome"] == "denied"
@@ -499,7 +587,11 @@ def test_settings_and_channel_pickers_list_the_same_choosable_roster(
 
     def row(name: str, owned: bool = True) -> AgentInfo:
         return AgentInfo(
-            name=name, description="", model="", filename=f"{name}.json", kirocrew_owned=owned
+            name=name,
+            description=f"what {name} does",
+            model="",
+            filename=f"{name}.json",
+            kirocrew_owned=owned,
         )
 
     installed = [
@@ -518,10 +610,13 @@ def test_settings_and_channel_pickers_list_the_same_choosable_roster(
 
     async def both() -> tuple[Any, Any]:
         view = await scs.code_settings_view(env.cfg(), env.state)
-        return view["code_channel_agents"], await REAL_AGENT_CHOICES(None)
+        return view["code_channel_agents"], await REAL_AGENT_MENU(None)
 
-    settings_list, channel_list = asyncio.run(both())
+    settings_list, channel_menu = asyncio.run(both())
+    channel_list = list(channel_menu)
     assert settings_list == channel_list == scs._choosable_agent_names(None)
+    # Each comes with what it does, for the kickoff and /kirocrew agent to show.
+    assert channel_menu["my-agent"] == "what my-agent does"
     assert {"kirocrew", "kirocrew-conductor", "kirocrew-team-lead", "my-agent"} <= set(channel_list)
     hidden = {"kirocrew-guest", "kirocrew-lite", "kirocrew-heartbeat", "kirocrew-dashboard-manager"}
     assert not hidden & set(channel_list)
@@ -569,8 +664,10 @@ def test_an_app_slot_is_switched_in_its_own_app_scope(env: Env) -> None:
     assert env.switches.calls[0]["caller"].app == "my-app"
 
 
-def test_an_agent_name_past_slacks_value_cap_is_not_offered() -> None:
-    long_name = "a" * 151
+@pytest.mark.parametrize("length", [76, 151])
+def test_an_agent_name_past_slacks_label_cap_is_not_offered(length: int) -> None:
+    """Its label would be cut, so it is not offered (``/kirocrew agent`` still reaches it)."""
+    long_name = "a" * length
     select = _select(agent_picker.kickoff_blocks("hi", ["kirocrew", long_name], "kirocrew"))
     assert select is not None and [o["value"] for o in select["options"]] == ["kirocrew"]
 
@@ -759,7 +856,17 @@ def test_an_agent_name_with_an_underscore_is_audited_by_name(env: Env) -> None:
 
 
 @pytest.mark.parametrize(
-    "change", ["activation_off", "archived", "feature_off", "owner_removed", "workspace_denied"]
+    "change",
+    [
+        "activation_off",
+        "archived",
+        "archive_finished",
+        "dropped",
+        "rebound",
+        "feature_off",
+        "owner_removed",
+        "workspace_denied",
+    ],
 )
 def test_a_gate_that_closes_inside_the_switch_refuses_its_commit(
     env: Env, monkeypatch: pytest.MonkeyPatch, change: str
@@ -774,6 +881,16 @@ def test_a_gate_that_closes_inside_the_switch_refuses_its_commit(
             env.activation[CH] = ACTIVATION_OFF
         elif change == "archived":
             surface._archived_here.add(CH)
+        elif change == "archive_finished":
+            # wrapup stores the stamp, then lifts the in-process fence.
+            env.store.update_binding(CH, archived_at=1.0)
+            surface._archived_here.discard(CH)
+        elif change == "dropped":
+            env.store.drop_binding(CH)
+        elif change == "rebound":
+            current = env.store.get_binding(CH)
+            assert current is not None
+            env.store.replace_binding(replace(current, session_key="chat-other-1"))
         elif change == "feature_off":
             env.on = False
         elif change == "owner_removed":
@@ -788,3 +905,152 @@ def test_a_gate_that_closes_inside_the_switch_refuses_its_commit(
     row = _rows(env, "denied")[-1]
     assert "code=caller_not_permitted" in row["resources"]
     assert _initial(env.slack.edits[-1][3]) == "kirocrew-conductor"
+
+
+def _refuse_channel(monkeypatch: pytest.MonkeyPatch, *, after: list[bool] | None = None) -> None:
+    from kiro_crew.slack import channel_policy
+
+    def verdict(channel: str) -> str:
+        if channel == CH and (after is None or after[0]):
+            return "slack channel refused by the security policy"
+        return ""
+
+    monkeypatch.setattr(channel_policy, "_verdict", verdict)
+
+
+def test_a_refused_channels_agent_pick_switches_nothing(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-channel ceiling (allowed_channel_ids), in the dispatcher and in authorize."""
+    from kiro_crew.slack import interactions
+
+    slot = _bind(env)
+    _refuse_channel(monkeypatch)
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    handled, replies = _command(env, "agent builder")
+    assert handled and replies == []  # dropped without a reply at the inbound gate
+    assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
+    monkeypatch.setattr(interactions, "_orch", env.orch)
+    monkeypatch.setattr(interactions, "is_allowed_user", lambda u: u in env.allowed)
+    asyncio.run(interactions.dispatch(_pick("builder")))
+    assert env.switches.calls == []
+
+
+def test_a_channel_refused_mid_switch_is_not_switched(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The policy narrows inside the switch: still_permitted refuses at the commit."""
+    slot = _bind(env)
+    flag = [False]
+    _refuse_channel(monkeypatch, after=flag)
+    env.switches.before_commit = lambda: flag.__setitem__(0, True)
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert slot.agent == "kirocrew-conductor"
+    assert "code=caller_not_permitted" in _rows(env, "denied")[-1]["resources"]
+
+
+# ── Each per-channel policy guard, alone ──────────────────────────────────
+
+
+def test_authorize_refuses_a_policy_refused_channel_silently(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """authorize's own guard: refused, audited, and "" so nothing is posted."""
+    _bind(env)
+    binding = env.store.get_binding(CH)
+    assert asyncio.run(agent_picker.authorize(env.orch, binding, OWNER, "T1", "r")) is None
+    _refuse_channel(monkeypatch)
+    assert asyncio.run(agent_picker.authorize(env.orch, binding, OWNER, "T1", "r")) == ""
+    assert _rows(env, "denied")[-1]["error"] == "channels governance policy"
+
+
+def test_the_commit_gates_close_on_a_policy_refused_channel(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_sync_gates' own guard: the synchronous commit fence answers False."""
+    _bind(env)
+    binding = env.store.get_binding(CH)
+    assert agent_picker._sync_gates(env.orch, binding, OWNER, "T1") is True
+    _refuse_channel(monkeypatch)
+    assert agent_picker._sync_gates(env.orch, binding, OWNER, "T1") is False
+
+
+def test_the_dispatcher_drops_a_refused_channels_pick_before_the_picker(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dispatcher's agent-select guard, alone: the picker is never called."""
+    _bind(env)
+    called: list[Any] = []
+
+    async def record(*a: Any, **_k: Any) -> bool:
+        called.append(a)
+        return True
+
+    async def permitted(_channel: str) -> bool:
+        return True
+
+    monkeypatch.setattr(interactions, "_orch", env.orch)
+    monkeypatch.setattr(interactions, "is_allowed_user", lambda u: u in env.allowed)
+    monkeypatch.setattr(interactions, "channel_inbound_permitted", permitted)
+    monkeypatch.setattr(agent_picker, "handle_select", record)
+    _refuse_channel(monkeypatch)
+    asyncio.run(interactions.dispatch(_pick("builder")))
+    assert called == []
+
+
+def test_a_refused_channels_pick_posts_nothing_in_the_channel(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past the dispatcher, a policy refusal writes nothing into the channel."""
+    slot = _bind(env)
+    _refuse_channel(monkeypatch)
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert slot.agent == "kirocrew-conductor"
+    assert env.slack.ephemerals == [] and env.slack.edits == []
+
+
+def test_kirocrew_agent_on_a_refused_channel_switches_nothing(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot = _bind(env)
+    _refuse_channel(monkeypatch)
+    _command(env, "agent builder")
+    assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
+
+
+def test_kirocrew_agent_refused_mid_switch_is_not_switched(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The command's switch commits through the same fence as the select."""
+    slot = _bind(env)
+    flag = [False]
+    _refuse_channel(monkeypatch, after=flag)
+    env.switches.before_commit = lambda: flag.__setitem__(0, True)
+    _command(env, "agent builder")
+    assert slot.agent == "kirocrew-conductor"
+    assert "code=caller_not_permitted" in _rows(env, "denied")[-1]["resources"]
+
+
+def test_the_switch_row_goes_through_the_display_sink(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dashboard row a switch writes passes the shared display sink: a
+    secret-shaped string in it is redacted, with no Slack mention defang."""
+    from kiro_crew import agent_switch_command
+
+    slot = _bind(env)
+    key = "AKIA" + "QWERTYUIOPASDFGH"
+
+    async def loaded(_slot: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(agent_picker, "_load_window", loaded)
+    monkeypatch.setattr(
+        agent_switch_command,
+        "switch_announcement",
+        lambda a, w: f"@{a} switched {key} AKIA**ZXCVBNMASDFGHJKL** {w}",
+    )
+    asyncio.run(agent_picker._announce(env.state, slot, "builder", ""))
+    [row] = env.transcript
+    assert key not in row and "ZXCVBNMASDFGHJKL" not in row and "[REDACTED" in row
+    assert "@builder" in row  # a transcript row: no Slack mention defang
