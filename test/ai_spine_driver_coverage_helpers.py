@@ -396,16 +396,15 @@ COMMITTED_HEAD = "c0ffee" + "0" * 34
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in a module that imports this fixture calls monkeypatch.undo()
-def _isolate_env(tmp_path, monkeypatch):
+def _isolate_env(tmp_path, _floor_monkeypatch):
     """No real home, no inherited fan-out overrides, no leaked log handlers."""
     from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
 
-    monkeypatch.setattr(clone_setup, "_repository_is_safe", lambda _clone: True)
-    monkeypatch.setattr(clone_setup, "_push_disabled", lambda _clone: True)
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setattr(clone_setup, "_repository_is_safe", lambda _clone: True)
+    _floor_monkeypatch.setattr(clone_setup, "_push_disabled", lambda _clone: True)
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     for var in ("AUTO_IMPROVEMENT_WIDE", "AUTO_IMPROVEMENT_DEEP"):
-        monkeypatch.delenv(var, raising=False)
+        _floor_monkeypatch.delenv(var, raising=False)
     named = logging.getLogger("auto_improvement.driver")
     before = list(named.handlers)
     yield
