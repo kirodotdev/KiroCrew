@@ -145,7 +145,7 @@ describe('drive folder restore', () => {
     renderDrive()
     await waitFor(() => expect(awsControlApi.driveList).toHaveBeenCalled())
     expect(requestedPaths()[0]).toBe('')
-    expect(await screen.findByTestId('drive-empty')).toBeTruthy()
+    expect(await screen.findByTestId('drive-empty')).toBeInTheDocument()
   })
 })
 
