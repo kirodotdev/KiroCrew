@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         on_gateway_shutdown,
         on_gateway_startup,
         refresh_materialized_agents,
+        start_app_backend_backstop,
         start_deferred_app_backends,
         start_enabled_app_backends,
         stop_hook_reconciler,
@@ -117,6 +118,15 @@ async def _start_app_backends(app: web.Application, state: DashboardState) -> No
     )
     if started_apps:
         logger.info("Started %d app backend(s): %s", len(started_apps), ", ".join(started_apps))
+
+    # Arm the level-triggered backstop: a coarse periodic sweep that re-seats an enabled
+    # app's backend when a lifecycle path dropped its tracked record without a successor
+    # (the edge-triggered health-watch/restart chain only acts while a record is tracked).
+    # It acts only on an app with NO tracked record that is still enabled and not
+    # mid-stop, re-vets governance/admission + enablement itself, spawns through the
+    # internal start path (no lifecycle START bump), and never kills another tenant's
+    # process — see apps/backend_runtime/backstop.py.
+    start_app_backend_backstop()
 
     # Both adapters are shared with the enable path (apps/routes_enable.py) so the two
     # entry points cannot drift into giving an app different capabilities.

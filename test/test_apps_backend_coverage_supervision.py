@@ -307,6 +307,8 @@ class TestRestartExitedBackend:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         ap = self._track()
+        with bmod._lock:
+            bmod._seated_backends.add("app")  # the gateway seated it before the exit
         audit = MagicMock()
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
         monkeypatch.setattr(bmod, "_forget_app_pid_if", lambda *_args: None)
@@ -346,6 +348,10 @@ class TestRestartExitedBackend:
             resources="app",
             error="signature required",
         )
+        # INVARIANT: a policy-refused restart keeps the app down WITHOUT routing through
+        # stop_app_backend, so it must clear the seated set itself — otherwise the
+        # level-triggered backstop would revive the backend the ceiling just refused.
+        assert "app" not in bmod._seated_backends
 
     def test_admission_revet_error_stops_restart_and_audits_denial(
         self, monkeypatch: pytest.MonkeyPatch
