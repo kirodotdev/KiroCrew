@@ -264,6 +264,116 @@ class TestRunChatRefusalFallback:
         assert any("Response declined by the model." in m.get("content", "") for m in error_msgs)
         # No fallback ran, so the card must NOT claim one declined.
         assert not any("fallback model also declined" in m.get("content", "") for m in error_msgs)
+        # The Disabled discovery sentence is shown, and the same-model notice
+        # row is NOT (the fallback is unset, not equal).
+        assert any("available but switched off" in m.get("content", "") for m in error_msgs)
+        assert not any(
+            (m.get("meta") or {}).get("notice") == "refusal_fallback_same_model"
+            for m in slot.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_same_model_fallback_posts_notice_token_and_never_swaps(
+        self, tmp_path, monkeypatch
+    ):
+        """A fallback equal to the refusing model disables the retry. The swap
+        is skipped (candidate == refusing model) and a SEPARATE notice row
+        carries the refusal_fallback_same_model gateway-notice token so the
+        dashboard localizes the explanation — the card itself is not tokenized,
+        and the Disabled sentence (which reads as 'no fallback set') is absent."""
+        # The refusing client serves 'fable-5'; set the fallback to the SAME id.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._configured_refusal_fallback",
+            lambda: "fable-5",
+        )
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_refusing_client(self._refusal_events(category="CYBER"))
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        # No swap: retrying the same model hits the same filter.
+        client.set_model.assert_not_awaited()
+        assert not slot._queue
+        # The terminal card still renders.
+        assert any(
+            m.get("role") == "error" and "Response declined by the model." in m.get("content", "")
+            for m in slot.messages
+        )
+        # A SEPARATE notice row carries the token; its English fallback content
+        # is the same-model sentence.
+        notices = [
+            m
+            for m in slot.messages
+            if m.get("role") == "notice"
+            and (m.get("meta") or {}).get("notice") == "refusal_fallback_same_model"
+        ]
+        assert len(notices) == 1, f"expected one same-model notice row, got {slot.messages}"
+        assert "agent.refusal_fallback_model" in notices[0]["content"]
+        assert "Pick a different model" in notices[0]["content"]
+        # The Disabled discovery sentence must NOT appear — a fallback IS set.
+        assert not any(
+            "available but switched off" in m.get("content", "")
+            for m in slot.messages
+            if m.get("role") == "error"
+        )
+
+    @pytest.mark.asyncio
+    async def test_same_model_notice_is_gated_to_attended_turns(self, tmp_path, monkeypatch):
+        """An unattended turn (cron/autonudge/sub-agent) never retries, so the
+        same-model notice — which tells the operator to pick a different
+        fallback to enable the retry — must NOT appear on it, even when the
+        fallback equals the refusing model. The gate matches the retry's own
+        eligibility (actor user, top-level prompt)."""
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._configured_refusal_fallback",
+            lambda: "fable-5",  # same as the refusing client's served model
+        )
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_refusing_client(self._refusal_events(category="CYBER"))
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "nightly scan wake", _turn_actor="subagent")
+
+        # The terminal refusal card still renders, but no same-model notice.
+        assert any(
+            m.get("role") == "error" and "Response declined by the model." in m.get("content", "")
+            for m in slot.messages
+        )
+        assert not any(
+            (m.get("meta") or {}).get("notice") == "refusal_fallback_same_model"
+            for m in slot.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_successful_swap_posts_no_same_model_notice(self, tmp_path, monkeypatch):
+        """A fallback that DIFFERS from the refusing model retries: the retry
+        notice renders and the same-model notice token is never posted (the
+        candidate is not equal to the refusing model)."""
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._configured_refusal_fallback",
+            lambda: "opus-test",
+        )
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_refusing_client(self._refusal_events(category="CYBER"))
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        client.set_model.assert_awaited_once_with("opus-test")
+        assert not any(
+            (m.get("meta") or {}).get("notice") == "refusal_fallback_same_model"
+            for m in slot.messages
+        )
 
     @pytest.mark.asyncio
     async def test_auto_uses_provider_recommended_model(self, tmp_path, monkeypatch):

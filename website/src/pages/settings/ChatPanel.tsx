@@ -659,7 +659,10 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
 
         <div>
         <h5 className="text-sm font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.refusal_fallback')}</h5>
-        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.refusal_fallback_desc')}</div>
+        <div className="text-[12px] text-muted mb-1">
+          {i18nT('pages.settings.chatPanel.refusal_fallback_desc')}{' '}
+          {i18nT('pages.settings.chatPanel.refusal_fallback_same_model_note')}
+        </div>
         <SettingsCard index={4}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.refusal_fallback_model')}
