@@ -20,7 +20,6 @@ src/kiro_crew/apps/builtins/mochi/hooks.py 76.6   # 357/466
 src/kiro_crew/apps/builtins/mochi/stats_service.py 66.9   # 212/317
 src/kiro_crew/apps/builtins/mochi/watchlist_file.py 59.3   # 207/349
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/cloudwatch.py 58.9   # 116/197
-src/kiro_crew/cloud/wizard.py 65.8   # 283/430
 src/kiro_crew/computer_use/macos_skylight.py 54.8   # 142/259
 src/kiro_crew/conpty.py 27.9   # 12/43
 src/kiro_crew/dashboard/_types.py 0.0   # 0/3
