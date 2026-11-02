@@ -1069,6 +1069,48 @@ class CapabilityManager(Protocol):
         """
         ...
 
+    def market_available(self) -> bool:
+        """True when this edition installs marketplace listings (the two ops below).
+
+        Separate from :meth:`available` because an edition can manage packages
+        without a marketplace. The core's liveness wrapper answers ``False`` for
+        an edition written before these ops existed, so it keeps working
+        unchanged and the dashboard simply shows no marketplace install.
+        """
+        ...
+
+    async def market_plan(self, ref: str) -> Dict[str, Any]:
+        """What installing marketplace listing *ref* would place. A READ op.
+
+        *ref* is ``<namespace>/<name>`` with an optional ``@<version or bounded
+        range>``. The edition's own installer resolves it, with any bundled
+        components and dependencies, into one plan and returns it as a dict:
+        ``items`` (each with string ``ref``, ``kind``, ``semver``, ``sha256``,
+        ``reason``, ``target`` and ``action``, ``publisher`` with a string
+        ``display``, and a ``requiredBy`` list of refs), ``permissions`` (the
+        UNION over every item: ``commands`` as a list of argv lists, ``network``
+        as a host list or ``"none"``/``"any"``, ``files`` and ``secrets`` as
+        string lists), a boolean ``installable`` with a ``refusal``
+        (``{code, message}``, or ``None``), ``conflicts`` (a string list, empty
+        when none), and ``planDigest``, a 64-hex digest naming exactly this plan.
+        A plan missing any of these is never shown for consent. The dashboard
+        shows the whole plan and asks for consent before :meth:`market_apply`.
+        Must not write anything.
+        """
+        ...
+
+    async def market_apply(self, ref: str, plan_digest: str) -> "CapabilityResult":
+        """Install *ref*, but only if it still resolves to the plan *plan_digest* names.
+
+        The edition MUST refuse (``ok=False``, nothing written) when the plan it
+        resolves now has another digest, so a dependency, a version or a
+        permission the user did not see can never ride along. Download, sha256
+        verification and file placement are the edition installer's, so files
+        land exactly where that installer puts them from its own command line.
+        Installing never runs what it installed.
+        """
+        ...
+
 
 #: The id AND kind of the provisioner the core ships: EC2 in the user's own
 #: AWS account, driven by ``cloud.launch_engine.RealLaunchEngine``. A companion

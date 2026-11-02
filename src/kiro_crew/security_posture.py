@@ -810,6 +810,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/hooks.py",
         "dashboard/handlers/hooks_scripts.py",
         "dashboard/handlers/hooks_webhooks.py",
+        # Same class as the capability routes in agent_admin/capabilities.py: the
+        # marketplace routes mask an edition installer's refusal message with
+        # `redact_external_text` before answering the dashboard's HTTP surface.
+        "dashboard/handlers/market.py",
         "dashboard/handlers/knowledge_agent_context.py",
         "dashboard/handlers/knowledge_bundles.py",
         "dashboard/handlers/knowledge_ingest.py",

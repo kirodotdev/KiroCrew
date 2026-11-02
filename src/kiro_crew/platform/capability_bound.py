@@ -204,6 +204,50 @@ class BoundedCapabilityManager:
             self._inner.sync_plugins(), timeout=CAPABILITY_INSTALL_TIMEOUT
         )
 
+    def market_available(self) -> bool:
+        # Feature-detected, unlike every other op: an edition written before the
+        # marketplace ops has none of them, and must keep working unchanged
+        # rather than fail every marketplace route with an AttributeError.
+        probe = getattr(self._inner, "market_available", None)
+        return bool(self._inner.available() and callable(probe) and probe())
+
+    async def market_plan(self, ref: str) -> Dict[str, Any]:
+        # A read: resolving a plan writes nothing, so governance is asked at apply.
+        if not self.market_available():
+            return {}
+        return await asyncio.wait_for(self._inner.market_plan(ref), timeout=CAPABILITY_READ_TIMEOUT)
+
+    async def market_apply(self, ref: str, plan_digest: str) -> "CapabilityResult":
+        # A plan can carry several kinds at once (a skill with the MCP server it
+        # needs), so each item is asked as its own ``extensions:<kind>:<ref>``,
+        # the way plugin sync asks each drifted package. The plan is re-read here
+        # and must still carry the confirmed digest, so the items asked are the
+        # items the edition is told to install: it refuses any other plan.
+        # Themes are data only and ride on the gate, which the off check asks.
+        denied = await _off_loop(_gov.extensions_off, "market_apply")
+        if denied:
+            return _refused(denied)
+        from kiro_crew.platform.interfaces import CapabilityResult
+
+        plan = await self.market_plan(ref)
+        if not isinstance(plan, dict) or plan.get("planDigest") != plan_digest:
+            return CapabilityResult(
+                ok=False,
+                message="the plan changed since it was shown; nothing was installed",
+            )
+        items = plan.get("items")
+        for item in items if isinstance(items, list) else []:
+            kind = item.get("kind") if isinstance(item, dict) else None
+            if kind in ("mcp", "skill"):
+                denied = await _off_loop(
+                    _gov.extension_install_denied, kind, str(item.get("ref", ""))
+                )
+                if denied:
+                    return _refused(denied)
+        return await asyncio.wait_for(
+            self._inner.market_apply(ref, plan_digest), timeout=CAPABILITY_INSTALL_TIMEOUT
+        )
+
 
 def bind_capability_manager(inner: "CapabilityManager") -> "CapabilityManager":
     """Return *inner* wrapped in :class:`BoundedCapabilityManager` (idempotent).
