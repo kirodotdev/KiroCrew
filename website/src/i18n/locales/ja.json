@@ -10769,6 +10769,7 @@
       "install_on_your_mac": "Mac にインストール",
       "installed": "インストール済み:",
       "installed_version": "インストール済み (v{{version}})",
+      "more_actions": "{{name}} のその他の操作",
       "installing": "インストール中…",
       "keep_app_data": "アプリデータを保持",
       "lifecycle": "| ライフサイクル:",

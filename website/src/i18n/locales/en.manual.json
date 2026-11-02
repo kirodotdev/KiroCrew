@@ -4855,6 +4855,7 @@
       "install_complete": "Install complete",
       "install_failed": "Install failed",
       "installed_version": "Installed (v{{version}})",
+      "more_actions": "More actions for {{name}}",
       "removing": "Removing…",
       "starting_install": "Starting install…",
       "retry": "Retry",

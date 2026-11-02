@@ -10769,6 +10769,7 @@
       "install_on_your_mac": "在你的 Mac 上安装",
       "installed": "已安装：",
       "installed_version": "已安装 (v{{version}})",
+      "more_actions": "{{name}} 的更多操作",
       "installing": "正在安装…",
       "keep_app_data": "保留应用数据",
       "lifecycle": "| 生命周期：",

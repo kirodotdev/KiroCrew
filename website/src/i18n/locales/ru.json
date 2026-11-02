@@ -11276,6 +11276,7 @@
       "install_on_your_mac": "Установите на своём Mac",
       "installed": "Установлено:",
       "installed_version": "Установлено (v{{version}})",
+      "more_actions": "Другие действия для {{name}}",
       "installing": "Установка…",
       "keep_app_data": "Сохранить данные приложения",
       "lifecycle": "| Жизненный цикл:",

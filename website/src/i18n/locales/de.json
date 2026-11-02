@@ -10938,6 +10938,7 @@
       "install_on_your_mac": "Auf Ihrem Mac installieren",
       "installed": "Installiert:",
       "installed_version": "Installiert (v{{version}})",
+      "more_actions": "Weitere Aktionen für {{name}}",
       "installing": "Wird installiert…",
       "keep_app_data": "App-Daten behalten",
       "lifecycle": "| Lebenszyklus:",
