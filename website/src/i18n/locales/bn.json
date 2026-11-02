@@ -11191,6 +11191,7 @@
       "failed_to_run_job": "জব চালানো যায়নি"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "পেছনে যান (টেক্সট ফিল্ডের বাইরে)",
       "chats_panel": "চ্যাট প্যানেল (টেক্সট ফিল্ডের বাইরে)",
       "cycle_agent": "এজেন্ট পাল্টানো",
       "cycle_approval_mode": "অনুমোদন মোড পাল্টানো",
@@ -11199,6 +11200,7 @@
       "focus_pending_approval": "অপেক্ষমাণ অনুমোদনে ফোকাস",
       "reject_pending_approval": "অপেক্ষমাণ টুল কল প্রত্যাখ্যান (এজেন্ট আবার চাইতে পারে)",
       "focus_text_input": "টেক্সট ইনপুটে ফোকাস",
+      "forward_outside_text_fields": "সামনে যান (টেক্সট ফিল্ডের বাইরে)",
       "edit_last_message": "শেষ বার্তাটি সম্পাদনা করো",
       "indent_list_line": "তালিকার লাইন ইন্ডেন্ট করো",
       "outdent_list_line": "তালিকার লাইনের ইন্ডেন্ট সরাও",

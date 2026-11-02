@@ -11439,6 +11439,7 @@
       "failed_to_run_job": "Impossibile eseguire il job"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "Indietro (fuori dai campi di testo)",
       "chats_panel": "Pannello delle chat (fuori dai campi di testo)",
       "cycle_agent": "Scorri gli agenti",
       "cycle_approval_mode": "Scorri le modalità di approvazione",
@@ -11447,6 +11448,7 @@
       "focus_pending_approval": "Attiva l’approvazione in attesa",
       "reject_pending_approval": "Rifiuta la chiamata allo strumento in attesa (l’agente può chiederla di nuovo)",
       "focus_text_input": "Attiva il campo di testo",
+      "forward_outside_text_fields": "Avanti (fuori dai campi di testo)",
       "edit_last_message": "Modifica l'ultimo messaggio",
       "indent_list_line": "Aumenta il rientro della riga di elenco",
       "outdent_list_line": "Riduci il rientro della riga di elenco",

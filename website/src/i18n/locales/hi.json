@@ -11191,6 +11191,7 @@
       "failed_to_run_job": "जॉब चलाने में विफल"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "पीछे जाओ (टेक्स्ट फ़ील्ड के बाहर)",
       "chats_panel": "चैट पैनल (टेक्स्ट फ़ील्ड के बाहर)",
       "cycle_agent": "एजेंट बदलते जाएँ",
       "cycle_approval_mode": "मंज़ूरी मोड बदलते जाएँ",
@@ -11199,6 +11200,7 @@
       "focus_pending_approval": "लंबित मंज़ूरी पर फ़ोकस करें",
       "reject_pending_approval": "इंतज़ार कर रहा टूल कॉल अस्वीकार करो (एजेंट फिर से पूछ सकता है)",
       "focus_text_input": "टेक्स्ट इनपुट पर फ़ोकस करें",
+      "forward_outside_text_fields": "आगे जाओ (टेक्स्ट फ़ील्ड के बाहर)",
       "edit_last_message": "अंतिम संदेश संपादित करो",
       "indent_list_line": "सूची पंक्ति इंडेंट करो",
       "outdent_list_line": "सूची पंक्ति का इंडेंट हटाओ",

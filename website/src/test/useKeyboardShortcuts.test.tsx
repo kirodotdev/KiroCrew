@@ -460,6 +460,18 @@ describe('history-back / history-forward registry entries', () => {
     expect(matchShortcutEvent(ev('ArrowLeft', { metaKey: true, shiftKey: true }), resolveShortcuts({}, 'mac'), 'mac')).toBeNull()
     expect(matchShortcutEvent(ev('ArrowLeft', { metaKey: true, altKey: true }), resolveShortcuts({}, 'mac'), 'mac')).toBeNull()
   })
+
+  // The handler leaves ⌘/Ctrl+←/→ to a focused text field (pinned under
+  // "route-history chord" below), so the shortcuts list must say so. The rows
+  // use list-only keys; the top-bar buttons keep the plain "Back"/"Forward"
+  // (NavHistoryArrows.test pins those names).
+  it('labels the Back/Forward rows with their focus rule in the shortcuts list', () => {
+    renderWithProviders(<ShortcutsModal onClose={vi.fn()} />)
+    expect(screen.getByText('Back (outside text fields)').parentElement!).toHaveTextContent('←')
+    expect(screen.getByText('Forward (outside text fields)').parentElement!).toHaveTextContent('→')
+    expect(screen.queryByText('Back')).toBeNull()
+    expect(screen.queryByText('Forward')).toBeNull()
+  })
 })
 
 describe('useKeyboardShortcuts — route-history chord', () => {
