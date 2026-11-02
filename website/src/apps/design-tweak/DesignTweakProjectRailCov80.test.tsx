@@ -6,11 +6,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import DesignTweak from '../apps/design-tweak/DesignTweakPage'
-import { renderWithProviders } from './helpers'
+import DesignTweak from './DesignTweakPage'
+import { renderWithProviders } from '../../test/helpers'
 
-vi.mock('../apps/design-tweak/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/design-tweak/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   fetchProjects: vi.fn(),
   fetchQueue: vi.fn(),
   fetchHistory: vi.fn(),
@@ -23,7 +23,7 @@ vi.mock('../apps/design-tweak/api', async (importOriginal) => ({
 
 // The component imports delivery.ts which may reference api internals; mock it
 // to keep the test focused on the rail UI.
-vi.mock('../apps/design-tweak/delivery', () => ({
+vi.mock('./delivery', () => ({
   deliveryVerdict: vi.fn(() => 'delivered'),
   needsDeliveryRetry: vi.fn(() => false),
 }))
@@ -37,9 +37,9 @@ import {
   addProject as apiAddProject,
   pickFolder as apiPickFolder,
   removeProject as apiRemoveProject,
-} from '../apps/design-tweak/api'
+} from './api'
 
-import type { Project, ProjectsResponse, QueueResponse, HistoryResponse, HealthResponse } from '../apps/design-tweak/types'
+import type { Project, ProjectsResponse, QueueResponse, HistoryResponse, HealthResponse } from './types'
 
 // Fixture helpers — produce minimal but valid shapes that satisfy the component.
 function makeProject(overrides: Partial<Project> = {}): Project {

@@ -1,10 +1,10 @@
-import { pageFamilyFiles } from './pageFamily'
-import { readSource } from './readSource'
+import { pageFamilyFiles } from '../../test/pageFamily'
+import { readSource } from '../../test/readSource'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { readSlotTranscript, setChatSlotProject } from '../apps/design-tweak/api'
+import { readSlotTranscript, setChatSlotProject } from './api'
 
 /**
  * The chat-slot API has two responses that both carry a `messages` field, and

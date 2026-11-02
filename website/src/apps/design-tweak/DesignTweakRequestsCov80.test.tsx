@@ -8,12 +8,12 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
-import DesignTweak from '../apps/design-tweak/DesignTweakPage'
-import { renderWithProviders } from './helpers'
-import { i18nT } from '../i18n/t'
+import DesignTweak from './DesignTweakPage'
+import { renderWithProviders } from '../../test/helpers'
+import { i18nT } from '../../i18n/t'
 
-vi.mock('../apps/design-tweak/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/design-tweak/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   fetchProjects: vi.fn(),
   fetchQueue: vi.fn(),
   fetchHistory: vi.fn(),
@@ -29,7 +29,7 @@ vi.mock('../apps/design-tweak/api', async (importOriginal) => ({
 }))
 
 // Grab typed references to the mocked api functions
-import * as api from '../apps/design-tweak/api'
+import * as api from './api'
 const mockFetchProjects = api.fetchProjects as ReturnType<typeof vi.fn>
 const mockFetchQueue = api.fetchQueue as ReturnType<typeof vi.fn>
 const mockFetchHistory = api.fetchHistory as ReturnType<typeof vi.fn>

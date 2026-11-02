@@ -13,12 +13,12 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent, act } from '@testing-library/react'
-import DesignTweak from '../apps/design-tweak/DesignTweakPage'
-import { renderWithProviders } from './helpers'
+import DesignTweak from './DesignTweakPage'
+import { renderWithProviders } from '../../test/helpers'
 
 // Mock every api function the page calls on mount (useQuery hooks).
-vi.mock('../apps/design-tweak/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/design-tweak/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   fetchProjects: vi.fn(),
   fetchQueue: vi.fn(),
   fetchHistory: vi.fn(),
@@ -28,7 +28,7 @@ vi.mock('../apps/design-tweak/api', async (importOriginal) => ({
 
 import {
   fetchProjects, fetchQueue, fetchHistory, fetchHealth, submitComment,
-} from '../apps/design-tweak/api'
+} from './api'
 
 const mockedFetchProjects = fetchProjects as ReturnType<typeof vi.fn>
 const mockedFetchQueue = fetchQueue as ReturnType<typeof vi.fn>

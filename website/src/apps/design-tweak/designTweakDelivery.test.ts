@@ -4,7 +4,7 @@ import {
   deliveryVerdict,
   needsDeliveryRetry,
   transcriptHasRequest,
-} from '../apps/design-tweak/delivery'
+} from './delivery'
 
 const RID = '1754350412345-a1b2c3'
 
