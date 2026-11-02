@@ -98,13 +98,169 @@ function decodeB64Safe(chunk: string): string {
   return ''
 }
 
-export function sanitizeCredentials(text: string): string {
-  let out = text
-  // Plaintext credential patterns
-  for (const re of CRED_PATTERNS) {
-    re.lastIndex = 0
-    out = out.replace(re, '[REDACTED]')
+// Each pattern again, anchored at `lastIndex`, to test one start inside a match.
+const CRED_PATTERNS_AT: RegExp[] = CRED_PATTERNS.map(
+  (re) => new RegExp(re.source, re.flags.replace('g', '') + 'y'),
+)
+
+// Which patterns read far before they can fail: the two JWT patterns read a whole
+// segment run, the userinfo pattern reads to the next `:` and `@`.
+const IS_JWT_PATTERN = CRED_PATTERNS.map((re) => re.source.startsWith('eyJ'))
+const IS_USERINFO_PATTERN = CRED_PATTERNS.map((re) => re.source.startsWith('https?'))
+
+// Nested credential matches a span may hold before the rest of its non-space run is
+// redacted unread, so a span full of nested starts costs a bounded number of reads.
+const GLUED_PROBES = 8
+
+// `trim` strips exactly the characters `\s` matches.
+function isSpace(ch: string): boolean {
+  return ch.trim() === ''
+}
+
+// A JWT segment character, `[A-Za-z0-9_-]` in the two JWT patterns.
+function isSegmentChar(code: number): boolean {
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) || code === 95 || code === 45
+}
+
+/** What one pass's glued probes already read. Probe positions only rise within a
+ *  pass, and the pass's text does not change, so each cached index stays valid. */
+interface ProbeCache {
+  // End of the segment run whose first `eyJ` was probed.
+  runEnd: number
+  // The first `:` and `@` at or after the last position each was searched from,
+  // or `text.length` when there is none.
+  colon: number
+  at: number
+}
+
+function newProbeCache(): ProbeCache {
+  return { runEnd: -1, colon: -1, at: -1 }
+}
+
+/** Whether the JWT patterns need testing at `pos`. Every `eyJ` in one segment run
+ *  has the same match end, because a JWT header must end where its run does, so
+ *  only the first `eyJ` of a run is tested and a long run is read once. */
+function jwtProbeNeeded(text: string, pos: number, cache: ProbeCache): boolean {
+  if (!text.startsWith('eyJ', pos) || pos < cache.runEnd) return false
+  let runEnd = pos + 3
+  while (runEnd < text.length && isSegmentChar(text.charCodeAt(runEnd))) runEnd++
+  cache.runEnd = runEnd
+  return true
+}
+
+/** Whether the userinfo pattern needs testing at `pos`: only after `http://` or
+ *  `https://` with a `:` later on and an `@` after that, so a probe never reads to
+ *  the end of the text only to fail. */
+function userinfoProbeNeeded(text: string, pos: number, cache: ProbeCache): boolean {
+  if (!text.startsWith('http', pos)) return false
+  const scheme = pos + (text[pos + 4] === 's' ? 5 : 4)
+  if (!text.startsWith('://', scheme)) return false
+  if (cache.colon < scheme + 3) {
+    const i = text.indexOf(':', scheme + 3)
+    cache.colon = i === -1 ? text.length : i
   }
+  if (cache.colon === text.length) return false
+  if (cache.at <= cache.colon) {
+    const i = text.indexOf('@', cache.colon + 1)
+    cache.at = i === -1 ? text.length : i
+  }
+  return cache.at < text.length
+}
+
+/** Where the span `text[start, end)` that pattern `from` matched ends once every
+ *  credential glued onto it is included.
+ *
+ *  Two credentials written back to back with nothing between them overlap when the
+ *  first one's body class also takes the second one's leading characters (a Slack
+ *  token takes a JWT's header up to its first `.`). The second pattern then no longer
+ *  matches what the first left, and most of the second credential stays on screen.
+ *  So every start inside the span is tested against this pattern and the ones after
+ *  it (the earlier ones already ran), and a match that runs past the span extends it.
+ *  A credential that starts exactly at the span's end needs nothing: no pattern here
+ *  guards its start, so the next scan finds it. */
+function gluedEnd(
+  text: string, start: number, end: number, from: number, cache: ProbeCache,
+): number {
+  let nested = 0
+  for (let pos = start + 1; pos < end; pos++) {
+    const jwt = jwtProbeNeeded(text, pos, cache)
+    const userinfo = userinfoProbeNeeded(text, pos, cache)
+    for (let i = from; i < CRED_PATTERNS_AT.length; i++) {
+      if ((IS_JWT_PATTERN[i] && !jwt) || (IS_USERINFO_PATTERN[i] && !userinfo)) continue
+      const re = CRED_PATTERNS_AT[i]
+      re.lastIndex = pos
+      const m = re.exec(text)
+      if (!m) continue
+      const mEnd = pos + m[0].length
+      if (mEnd > end) {
+        end = mEnd
+        nested = 0
+      } else if (++nested >= GLUED_PROBES) {
+        // Out of probes: a credential may start at a position not tested yet, so
+        // the rest of the non-space run is redacted rather than left to chance.
+        while (end < text.length && !isSpace(text[end])) end++
+        return end
+      }
+    }
+  }
+  return end
+}
+
+/** The next match of pattern `i` at or after `from`, or null.
+ *
+ *  The JWT and userinfo patterns can read far before they fail, and a plain search
+ *  retries them at every start, so they are tested only at the starts the probe
+ *  filters admit, one sticky match at a time. The other patterns fail within a few
+ *  characters, so their own search is used. */
+function nextMatch(
+  text: string, i: number, from: number, cache: ProbeCache,
+): RegExpExecArray | null {
+  if (!IS_JWT_PATTERN[i] && !IS_USERINFO_PATTERN[i]) {
+    const re = CRED_PATTERNS[i]
+    re.lastIndex = from
+    return re.exec(text)
+  }
+  const jwt = IS_JWT_PATTERN[i]
+  const lead = jwt ? 'eyJ' : 'http'
+  const re = CRED_PATTERNS_AT[i]
+  for (let pos = text.indexOf(lead, from); pos !== -1; pos = text.indexOf(lead, pos + 1)) {
+    if (!(jwt ? jwtProbeNeeded(text, pos, cache) : userinfoProbeNeeded(text, pos, cache))) continue
+    re.lastIndex = pos
+    const m = re.exec(text)
+    if (m) return m
+  }
+  return null
+}
+
+export function sanitizeCredentials(text: string): string {
+  // Plaintext credential patterns. Every pattern reads the original text, so one
+  // pattern's span can never hide another credential's start or end (an extended
+  // span that reaches past a URL's `@` still leaves the URL's own match whole);
+  // overlapping spans are then merged and each merged span is redacted once.
+  const spans: [number, number][] = []
+  CRED_PATTERNS.forEach((_re, i) => {
+    const cache = newProbeCache()
+    let m: RegExpExecArray | null
+    let from = 0
+    while ((m = nextMatch(text, i, from, cache))) {
+      from = gluedEnd(text, m.index, m.index + m[0].length, i, cache)
+      spans.push([m.index, from])
+    }
+  })
+  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1])
+  let out = ''
+  let last = 0
+  for (let k = 0; k < spans.length; k++) {
+    const start = spans[k][0]
+    let end = spans[k][1]
+    // Spans that touch without overlapping stay two placeholders, as two separate
+    // replacements left them.
+    while (k + 1 < spans.length && spans[k + 1][0] < end) end = Math.max(end, spans[++k][1])
+    out += text.slice(last, start) + '[REDACTED]'
+    last = end
+  }
+  out += text.slice(last)
   // Base64-encoded credentials
   B64_CHUNK.lastIndex = 0
   for (const m of text.matchAll(B64_CHUNK)) {
