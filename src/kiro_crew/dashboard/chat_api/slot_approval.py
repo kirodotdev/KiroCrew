@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         exact_trust_pattern,
         grant_deadline,
         logger,
+        native_resolution_target,
         parse_grant_ttl,
         read_bounded_json,
         record_trust_grant,
@@ -711,6 +712,25 @@ async def apply_approval_mode(
     return web.json_response({"ok": True, "mode": mode})
 
 
+def _strict_native_owner(
+    state: DashboardState, slot: _ChatSlot, request_id: str, request_mid: str
+) -> _ChatSlot | None:
+    """The slot holding the live native request *request_id* stamped *request_mid*.
+
+    That is *slot* itself or a slot sharing its session identity (the owner scan
+    the decide uses), and only while its future under the id is pending and
+    still carries that mid. ``None`` means the card's request is gone.
+    """
+    want_session = effective_session_key(slot)
+    for cand in (slot, *state._slots.values()):
+        if cand is not slot and effective_session_key(cand) != want_session:
+            continue
+        fut = cand._approval_futures.get(request_id)
+        if fut is not None and not fut.done() and cand.approval_instance(request_id) == request_mid:
+            return cand
+    return None
+
+
 def _sweep_pending_approvals(
     state: DashboardState, slot: _ChatSlot, mode: str, audit_caller: Callable[[str], str]
 ) -> None:
@@ -722,6 +742,8 @@ def _sweep_pending_approvals(
             # not an answer to it, and the card stays open.
             continue
         if not fut.done():
+            # Read while still pending: names the row the frame settles.
+            _mid = slot.approval_instance(aid) or ""
             fut.set_result("approved")
             # Persist resolved state into the permission message. The
             # periodic flush skips non-dirty slots, so the mark must
@@ -731,7 +753,12 @@ def _sweep_pending_approvals(
             # ``slot`` keys the frame for the slot-scoped WS gate.
             state.broadcast_ws(
                 "approval_resolved",
-                {"id": aid, "approved": True, "slot": slot.key},
+                {
+                    "id": aid,
+                    "approved": True,
+                    "slot": slot.key,
+                    **native_resolution_target(_mid),
+                },
             )
             try:
                 sel().log_api_access(
@@ -893,6 +920,15 @@ def _elicitation_not_an_approval() -> web.Response:
     )
 
 
+# What a strict native decide may carry. Trust verbs are included so a pending
+# card's standing grant is bound to the exact request (``request_mid``) the card
+# showed; ``yolo`` widens the whole session rather than one request and stays
+# off the strict path.
+_STRICT_NATIVE_ACTIONS = frozenset(
+    {"approved", "rejected", "rejected_once", "trust", "trust_reads", "trust_command", "trust_base"}
+)
+
+
 async def api_chat_slot_approve(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/approve — resolve a pending tool approval."""
     state: DashboardState = request.app["state"]
@@ -947,6 +983,8 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     if isinstance(request_id, str) and request_id in _pending_elicitation_ids(slot):
         return _elicitation_not_an_approval()
     strict_native = "origin" in body
+    # The one owner a strict native decide resolves on (``_strict_native_owner``).
+    strict_owner: _ChatSlot | None = None
     if not strict_native and not request_app and not bare_approval_decide_allowed(request):
         # A decide by request id alone, from a caller that is not the dashboard
         # owner's browser session: refuse it rather than resolve whichever
@@ -960,19 +998,19 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             or not request_id
             or not isinstance(request_mid, str)
             or not request_mid
-            or action not in ("approved", "rejected", "rejected_once")
+            # A non-string action (a list, an object) is unhashable: test the
+            # type first so it is refused as a bad target, not raised as a 500.
+            or not isinstance(action, str)
+            or action not in _STRICT_NATIVE_ACTIONS
         ):
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
-        # This caller displayed a native request from this exact slot. A stale
-        # card must not select a same-id coordinator or another slot's future.
-        native_future = slot._approval_futures.get(request_id)
-        if (
-            not native_future
-            or native_future.done()
-            or slot.approval_instance(request_id) != request_mid
-        ):
+        # This caller displayed a native request from this slot or one sharing
+        # its session identity. A stale card must not select a same-id
+        # coordinator approval or an unrelated slot's future.
+        strict_owner = _strict_native_owner(state, slot, request_id, request_mid)
+        if strict_owner is None:
             settled = shared_decisions.settled_reply(
                 state,
                 slot.key,
@@ -1004,9 +1042,14 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     # session loop consumes the future and gates subsequent tools — or the trust
     # opt-in silently fails on the running session while the UI reports success.
     owner = slot
-    if request_id:
+    if strict_owner is not None:
+        # The strict check above already chose the owner by the card's mid:
+        # the generic scan below picks by id alone and could land elsewhere.
+        owner = strict_owner
+        fut = owner._approval_futures.get(request_id)
+    elif request_id:
         fut = slot._approval_futures.get(request_id)
-        if (not fut or fut.done()) and not strict_native:
+        if not fut or fut.done():
             # The future can live on a DIFFERENT slot object only under
             # session-sharing / rehydration — i.e. a slot that resolves to the
             # SAME session identity as the addressed one. ACP request_ids are
@@ -1050,6 +1093,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         )
         if denied is not None:
             return denied
+    if strict_native and (not fut or fut.done()):
+        # The card's request settled while this decide was being read (the
+        # ttl and pattern checks above can await).
+        return web.json_response(
+            {"error": "no pending approval", "code": "approval_not_pending"}, status=404
+        )
     if request_app and (not fut or fut.done()):
         # No slot-level future means the id names (at most) a STATE-level
         # approval. Those are raised only by background sources -- cron,
@@ -1237,6 +1286,8 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         if settled is not None:
             return shared_decisions.respond(settled)
         return web.json_response({"error": "no pending approval"}, status=404)
+    # Read while still pending: names the row the frame below settles.
+    resolved_mid = (owner.approval_instance(request_id) or "") if request_id else ""
     if request_id:
         resolution = shared_decisions.resolve_slot_approval(
             state, request, owner, request_id, fut, resolved, response_id
@@ -1276,6 +1327,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 # Keys the frame for the slot-scoped WS gate (see
                 # ws_event_scope._SLOT_SCOPED_EVENTS).
                 "slot": owner.key,
+                **native_resolution_target(resolved_mid),
             },
         )
     if resolution is not None and resolution.decision is not None:

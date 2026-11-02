@@ -811,6 +811,27 @@ WebSocket event types include `chat_chunk`, `chat_thinking`, `chat_status`,
 emitted types and how each is scoped to an app; read it rather than this list
 when you need every type.
 
+An `approval_resolved` frame says a pending approval is no longer waiting. Its
+`data` carries:
+
+- `id`: the approval id. The id is the requester's and can recur, so it alone
+  does not name one request.
+- `approved`: `true` when the request was approved. `false` covers a
+  rejection and an expiry alike, so read `decision` before reporting a
+  rejection.
+- `slot`: the owning session, on an expiry of an approval that has one and on
+  a slot-level decision. A decided coordinator approval's frame carries no
+  `slot`, so match those by `id` and `instance`.
+- `instance`: present on a coordinator approval. It names the one request that
+  ended, so a card raised for a later request under the same id stays live.
+- `decision`: absent for an ordinary decision. `"expired"` means the wait timed
+  out and the request was denied.
+
+A request that takes over a live request's id raises its own `approval` frame
+with a new `instance`; no `approval_resolved` frame retires the request it
+replaced. A decide that names the old `instance` is refused, so a card kept for
+the replaced request cannot decide the new one.
+
 The app `slots` event (`mc:app:slots`) fires after the dashboard applies each
 `slots` or `slot_patch` frame. Its `detail` is `null`: the event says the slot
 list changed, not what it now holds. Re-read slots through your own scoped

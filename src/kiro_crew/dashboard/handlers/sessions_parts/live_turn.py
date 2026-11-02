@@ -126,6 +126,15 @@ async def _resolve_app_approval(
     return _app_not_found(request_app, "approval_resolve", f"approval={approval_id}", reason)
 
 
+async def _read_response_id(request: web.Request, shared_decisions: Any) -> tuple[str, bool]:
+    """The click's ``response_id`` from a decide body, and whether it is valid."""
+    try:
+        raw_body = await request.json() if request.can_read_body is True else {}
+    except ValueError:
+        raw_body = {}
+    return shared_decisions.read_response_id(raw_body if isinstance(raw_body, dict) else {})
+
+
 async def api_approval_resolve(request: web.Request) -> web.Response:
     """POST /api/approvals/{id}/{action} — approve, reject, or reject_once."""
     state: DashboardState = request.app["state"]
@@ -143,20 +152,70 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         # showed: the request id is minted by the caller and can recur in the same
         # slot, so a card left up from an expired record would otherwise resolve
         # the request that replaced it.
-        slot = request.query.get("slot", "")
+        # ``slot`` must be present but may be empty: a coordinator approval
+        # raised with no owning slot (a cron job's) is bound by its instance
+        # alone, and the record's own empty slot must still match.
+        slot = request.query.get("slot")
         instance = request.query.get("instance", "")
-        if request.query["origin"] != "coordinator" or not slot or not instance:
+        if request.query["origin"] != "coordinator" or slot is None or not instance:
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
+        if not slot:
+            # Imported here: chat_handlers imports this package at module scope.
+            from kiro_crew.dashboard.chat_handlers import bare_approval_decide_allowed
+
+            # Before the empty-slot target existed, a slotless record could be
+            # decided only by id, from the owner's browser session. The target
+            # names the request; it does not widen who may decide it.
+            if not bare_approval_decide_allowed(request):
+                return web.json_response(
+                    {
+                        "error": "only the dashboard owner may decide an approval with no session",
+                        "code": "approval_owner_required",
+                    },
+                    status=403,
+                )
+        # Shared Crew: the targeted decide settles through the same decision
+        # registry as the bare one, naming the verified responder, so a retry of
+        # this click replays and a different collaborator's later click gets 409
+        # with the winner. The slot and instance check above stays the fence.
+        from kiro_crew.shared_crew import decisions as shared_decisions
+
+        response_id, response_id_ok = await _read_response_id(request, shared_decisions)
+        if not response_id_ok:
+            return web.json_response(
+                {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
+            )
+        decision = (
+            "approved"
+            if action == "approve"
+            else "rejected_once" if action == "reject_once" else "rejected"
+        )
         pending = state._pending_approvals.get(approval_id)
         # No await between checking the record and resolving its state-only future.
-        ok = bool(
-            pending
-            and pending.get("slot") == slot
-            and pending.get("instance") == instance
-            and state.resolve_state_approval(approval_id, action == "approve")
+        current = (
+            pending.get("instance") if pending and (pending.get("slot") or "") == slot else None
         )
+        if current == instance:
+            reply = shared_decisions.resolve_state_approval(
+                state, request, approval_id, action == "approve", decision, response_id
+            )
+        elif pending is not None:
+            # Another request holds the id now: this card's request is gone,
+            # and the live one's outcome is not this click's to adopt.
+            reply = None
+        else:
+            reply = shared_decisions.settled_reply(
+                state,
+                slot,
+                approval_id,
+                response_id,
+                shared_decisions.request_principal(request),
+            )
+        if reply is not None:
+            return shared_decisions.respond(reply)
+        ok = False
     else:
         # Imported here: chat_handlers imports this package at module scope.
         from kiro_crew.dashboard.chat_handlers import bare_approval_decide_allowed
@@ -176,13 +235,7 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         # with the winning decision, a retry of the same click replays it.
         from kiro_crew.shared_crew import decisions as shared_decisions
 
-        try:
-            raw_body = await request.json() if request.can_read_body is True else {}
-        except ValueError:
-            raw_body = {}
-        response_id, response_id_ok = shared_decisions.read_response_id(
-            raw_body if isinstance(raw_body, dict) else {}
-        )
+        response_id, response_id_ok = await _read_response_id(request, shared_decisions)
         if not response_id_ok:
             return web.json_response(
                 {"error": "invalid response_id", "code": "invalid_response_id"}, status=400

@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
-import { appendMessage, resolveByApprovalId, setSlotRunning } from '../store/chatSlice'
+import { appendMessage, resolveApprovalRow, setSlotRunning } from '../store/chatSlice'
 import { renderWithProviders, createTestStore } from './helpers'
 import ToolCallLine from '../pages/chat/ToolCallLine'
 import TurnBlock from '../pages/chat/TurnBlock'
@@ -32,7 +32,7 @@ const toolMsg = (id = 'tc_1', ts = 1): ChatMessage =>
 const logEntry = (id: string, output?: string) =>
   ({ type: 'tool', text: `echo ${id}`, tool_call_id: id, input: 'x', ts: 1, ...(output !== undefined ? { output } : {}) })
 const pending = (id: string): ChatMessage =>
-  ({ role: 'permission', content: 'Approve?', cls: '', meta: { tool_call_id: id, approval_id: `ap-${id}` } })
+  ({ role: 'permission', content: 'Approve?', cls: '', meta: { tool_call_id: id, approval_id: `ap-${id}`, mid: `m-${id}` } })
 
 /** Live-report count for one row: reports minus undos. */
 function probe() {
@@ -111,7 +111,7 @@ describe('an approval auto-open is not a choice', () => {
       act(() => { store.dispatch(appendMessage(pending('tc_1'))) })
       rerender(ui())
       expect(p.live()).toBe(1)
-      act(() => { store.dispatch(resolveByApprovalId({ id: 'ap-tc_1', slot: 'A', decision: 'approved' })) })
+      act(() => { store.dispatch(resolveApprovalRow({ target: { origin: 'native', id: 'ap-tc_1', slot: 'A', mid: 'm-tc_1' }, decision: 'approved' })) })
       act(() => { store.dispatch(setSlotRunning(false)) })
       rerender(ui())
       await waitFor(() => expect(p.live()).toBe(0))

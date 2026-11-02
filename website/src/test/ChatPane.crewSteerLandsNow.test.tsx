@@ -39,7 +39,7 @@ vi.mock('../api/client', () => ({
     chatSlotAgent: vi.fn().mockResolvedValue(undefined),
     stopChat: vi.fn(),
     interruptSlot: vi.fn(),
-    resolveApproval: vi.fn().mockResolvedValue({ ok: true }),
+    decideApproval: vi.fn().mockResolvedValue({ ok: true }),
     answerQuestion: vi.fn().mockResolvedValue({ ok: true }),
   },
   SEARCH_MIN_CHARS: 2,
@@ -310,12 +310,13 @@ describe('mate responsive Send', () => {
   it('retains actionable spawn approvals even though routine subagent progress is hidden', async () => {
     const { store } = renderCrewmate({ width: 320 })
     await ready()
-    act(() => { store.dispatch(sseSubagentPending({ slot: SLOT, id: 'worker-fixed', task: 'Review report', approval_id: 'spawn-fixed' })) })
+    const target = { origin: 'coordinator' as const, id: 'spawn-fixed', slot: SLOT, instance: 'inst-spawn-fixed' }
+    act(() => { store.dispatch(sseSubagentPending({ slot: SLOT, id: 'worker-fixed', task: 'Review report', approval_id: 'spawn-fixed', approval_target: target })) })
     const card = await screen.findByTestId('spawn-approval-card')
     expect(card).toBeInTheDocument()
     expect(screen.queryByTestId('subagent-progress-probe')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Approve', exact: true }))
-    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('spawn-fixed', 'approve'))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith(target, 'approve'))
   })
 
   it('an ordinary Sessions pane retains its engineering affordances and sends no responsive flag', async () => {

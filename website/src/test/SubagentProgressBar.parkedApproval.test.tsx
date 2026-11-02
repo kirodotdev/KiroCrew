@@ -36,7 +36,7 @@ import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 
 const SLOT = 'test-slot'
 const PARKED_LABEL = 'Waiting for your approval to start'
-const GONE_ERROR = 'This approval has expired or was already decided'
+const GONE_ERROR = 'This approval expired, was already decided'
 const CHECKING = 'Checking whether it started…'
 
 function chip({ parked = 0, running = 0, seed }: {
