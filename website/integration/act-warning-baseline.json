@@ -87,6 +87,5 @@
   "src/test/useAgentSync.recencyOrder.test.tsx",
   "src/test/useBrowserView.test.tsx",
   "src/test/useKeyboardShortcuts.test.tsx",
-  "src/test/useSessionActions.test.tsx",
   "src/test/useTheme.authReplay.test.tsx"
 ]

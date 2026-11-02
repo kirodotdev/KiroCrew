@@ -44,7 +44,7 @@ vi.mock('../pages/chat/ChatSettings', () => cfgMock)
 import { store } from '../store'
 import { ApiError } from '../api/apiError'
 import { sseSlots, sseSlotPatch, markSlotUnread, updateSlotPin } from '../store/dashboardSlice'
-import { useSessionActions } from '../hooks/useSessionActions'
+import { useSessionActions, pinMutationKeysInFlight } from '../hooks/useSessionActions'
 import { recordError, __resetErrorJournalForTests } from '../utils/errorReport'
 
 /** A refusal as apiFailure (api/client.ts) builds it: `.message` is the friendly text, `.body` the raw body. */
@@ -337,7 +337,8 @@ describe('useSessionActions', () => {
     // before this tab's HTTP answer.
     act(() => { store.dispatch(sseSlotPatch({ slots: [{ key: SLOT, pinned: false }] })) })
     await act(async () => { answer({ ok: true, pinned: true }) })
-    await new Promise(resolve => setTimeout(resolve, 20))
+    // The pin batch closes only after the answer is reconciled, and a list re-read would be issued before it closes.
+    await waitFor(() => expect(pinMutationKeysInFlight()).toEqual([]))
     expect(slotOf()?.pinned).toBe(false)
     expect(mocks.chatSlots).not.toHaveBeenCalled()
   })
