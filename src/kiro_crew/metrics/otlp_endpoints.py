@@ -107,6 +107,10 @@ _ENTRY_KEYS = frozenset(
     }
 )
 
+# Every pattern is applied with ``fullmatch``: under ``match`` a ``$`` also
+# matches in front of a final ``"\n"``, so ``"ops\n"`` would pass as ``"ops"``.
+# Trailing whitespace is dropped (and warned about) before the check instead;
+# see :func:`_trimmed`.
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # RFC 9110 token characters.
 _HEADER_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$")
@@ -175,27 +179,61 @@ def reset_warnings() -> None:
 # ── parsing ─────────────────────────────────────────────────────────────────
 
 
-def _str_map(raw: object, where: str, key_re: "re.Pattern[str]", value_check: Any) -> "dict":
+def _trimmed(value: object, where: str, trimmed: "list[str]") -> object:
+    """*value* without trailing whitespace when it is a string; anything else as-is.
+
+    A value written with a line end after it (a pasted line, a block scalar from a
+    generated config) names the same header, variable, label or metric as the
+    value without it. Dropping the line end here lets the entry work as written,
+    instead of a header name the exporter refuses or a metric name that never
+    matches. *where* is added to *trimmed* so the caller can warn once per entry,
+    naming fields and never values.
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.rstrip()
+    if stripped != value and where not in trimmed:
+        trimmed.append(where)
+    return stripped
+
+
+def _str_map(
+    raw: object,
+    where: str,
+    key_re: "re.Pattern[str]",
+    value_check: Any,
+    trimmed: "list[str]",
+) -> "dict":
     if raw is None:
         return {}
     if not isinstance(raw, Mapping) or len(raw) > MAX_HEADERS:
         raise EntryError(f"{where} must be an object with at most {MAX_HEADERS} keys")
     out: "dict[str, str]" = {}
-    for key, value in raw.items():
-        if not isinstance(key, str) or not key_re.match(key):
+    for raw_key, raw_value in raw.items():
+        key = _trimmed(raw_key, where, trimmed)
+        if not isinstance(key, str) or not key_re.fullmatch(key):
             raise EntryError(f"{where} has an invalid key")
+        if key in out:
+            raise EntryError(f"{where} repeats a key once trailing whitespace is removed")
+        value = _trimmed(raw_value, f"{where}[{key}]", trimmed)
         if not isinstance(value, str) or not value_check(value):
             raise EntryError(f"{where}[{key}] has an invalid value")
         out[key] = value
     return out
 
 
-def _name_set(raw: object, where: str, item_re: "re.Pattern[str]") -> "frozenset[str]":
+def _name_set(
+    raw: object, where: str, item_re: "re.Pattern[str]", trimmed: "list[str]"
+) -> "frozenset[str]":
     if not isinstance(raw, list) or len(raw) > _MAX_LIST:
         raise EntryError(f"{where} must be a list of at most {_MAX_LIST} names")
-    if any(not isinstance(item, str) or not item_re.match(item) for item in raw):
-        raise EntryError(f"{where} has an invalid name")
-    return frozenset(raw)
+    items: "list[str]" = []
+    for raw_item in raw:
+        item = _trimmed(raw_item, where, trimmed)
+        if not isinstance(item, str) or not item_re.fullmatch(item):
+            raise EntryError(f"{where} has an invalid name")
+        items.append(item)
+    return frozenset(items)
 
 
 def resolve_preset(name: str) -> "frozenset[str]":
@@ -209,7 +247,7 @@ def resolve_preset(name: str) -> "frozenset[str]":
     return PRODUCT_METRICS
 
 
-def _allow(raw: object, where: str) -> "Optional[frozenset[str]]":
+def _allow(raw: object, where: str, trimmed: "list[str]") -> "Optional[frozenset[str]]":
     if raw is None:
         return None
     if isinstance(raw, str):
@@ -219,7 +257,7 @@ def _allow(raw: object, where: str) -> "Optional[frozenset[str]]":
             raise EntryError(
                 f"{where} names an unknown preset; known presets: {sorted(ALLOW_PRESETS)}"
             ) from None
-    return _name_set(raw, where, _METRIC_RE)
+    return _name_set(raw, where, _METRIC_RE, trimmed)
 
 
 def _endpoint(raw: object, where: str) -> str:
@@ -266,8 +304,11 @@ def parse_entry(
         )
     if unknown:
         raise EntryError(f"{label} has unknown key(s) {unknown}")
-    name = raw.get("name", default_name)
-    if not isinstance(name, str) or not _NAME_RE.match(name):
+    # Fields whose trailing whitespace was dropped, warned about once the entry
+    # is known to be usable (a refused entry already gets its own warning).
+    trimmed: "list[str]" = []
+    name = _trimmed(raw.get("name", default_name), f"{label}.name", trimmed)
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         raise EntryError(f"{label}.name must match {_NAME_RE.pattern}")
     temporality = raw.get("temporality", "")
     if not isinstance(temporality, str) or temporality not in TEMPORALITIES:
@@ -276,7 +317,8 @@ def parse_entry(
         raw.get("point_attributes"),
         f"{name}.point_attributes",
         _NAME_RE,
-        lambda v: bool(_POINT_VALUE_RE.match(v)),
+        lambda v: bool(_POINT_VALUE_RE.fullmatch(v)),
+        trimmed,
     )
     # The reviewed key set is checked here as well as where the reader is built,
     # so a refused key shows up as a refused ENTRY in the log and the panel.
@@ -287,7 +329,7 @@ def parse_entry(
     except ValueError as exc:
         raise EntryError(f"{name}.point_attributes: {exc}") from None
     resource_raw = raw.get("resource_allow")
-    return EndpointEntry(
+    entry = EndpointEntry(
         name=name,
         endpoint=_endpoint(raw.get("endpoint"), f"{name}.endpoint"),
         source=source,
@@ -296,18 +338,27 @@ def parse_entry(
                 raw.get("headers_env"),
                 f"{name}.headers_env",
                 _HEADER_RE,
-                lambda v: bool(_ENV_RE.match(v)),
+                lambda v: bool(_ENV_RE.fullmatch(v)),
+                trimmed,
             )
         ),
         temporality=temporality,
-        allow=_allow(raw.get("allow"), f"{name}.allow"),
+        allow=_allow(raw.get("allow"), f"{name}.allow", trimmed),
         point_attributes=MappingProxyType(point_attributes),
         resource_allow=(
             None
             if resource_raw is None
-            else _name_set(resource_raw, f"{name}.resource_allow", _RESOURCE_KEY_RE)
+            else _name_set(resource_raw, f"{name}.resource_allow", _RESOURCE_KEY_RE, trimmed)
         ),
     )
+    if trimmed:
+        _warn_once(
+            f"{label}:trimmed:{','.join(trimmed)}",
+            "OTLP endpoint entry %s: trailing whitespace removed from %s",
+            label,
+            ", ".join(trimmed),
+        )
+    return entry
 
 
 def _is_disabled(raw: object) -> bool:

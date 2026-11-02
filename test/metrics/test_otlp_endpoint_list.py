@@ -251,6 +251,103 @@ class TestEntries:
         assert _build_telemetry_config({}).otlp_endpoints == []
 
 
+# ── a trailing line end is normalized, not carried into the export ──────────
+
+
+class TestTrailingWhitespace:
+    """A value written with a line end after it names what it names without one."""
+
+    def _only(self, raw):
+        (dest,) = DefaultTelemetryProvider().otlp_destinations(
+            TelemetryConfig(otlp_endpoints=[raw])
+        )
+        return dest
+
+    def test_a_name_with_a_line_end_keeps_its_entry_under_the_clean_name(self, caplog):
+        dest = self._only({"name": "ops\n", "endpoint": OPS})
+        assert dest.name == "ops"
+        assert "telemetry.otlp_endpoints[0].name" in caplog.text
+
+    def test_a_header_and_its_variable_are_read_without_the_line_end(self, monkeypatch):
+        monkeypatch.setenv("OPS_SCOPE", "team-a")
+        dest = self._only(
+            {"name": "ops", "endpoint": OPS, "headers_env": {"X-Scope\n": "OPS_SCOPE\n"}}
+        )
+        assert dict(dest.headers_env) == {"X-Scope": "OPS_SCOPE"}
+        # The header the exporter is handed is one the HTTP client accepts.
+        assert pm._destination_headers(dest) == ({"X-Scope": "team-a"}, [])
+
+    def test_narrowing_names_match_the_metrics_and_keys_they_name(self):
+        dest = self._only(
+            {
+                "name": "ops",
+                "endpoint": OPS,
+                "allow": ["kirocrew.session.started\n"],
+                "point_attributes": {"ClientType": "cli\n"},
+                "resource_allow": ["service.name \n"],
+            }
+        )
+        assert dest.allow == frozenset({"kirocrew.session.started"})
+        assert dict(dest.point_attributes) == {"ClientType": "cli"}
+        assert dest.resource_allow == frozenset({"service.name"})
+
+    def test_one_warning_names_every_trimmed_field_and_no_value(self, caplog):
+        raw = {
+            "name": "ops",
+            "endpoint": OPS,
+            "headers_env": {"X-Scope": "S3CRET_HOLDER\n"},
+            "allow": ["kirocrew.session.started\n"],
+        }
+        # Resolved twice, as every recorder build and Privacy panel read does.
+        self._only(raw)
+        self._only(raw)
+        lines = [r.getMessage() for r in caplog.records if "trailing whitespace" in r.getMessage()]
+        assert len(lines) == 1
+        assert "ops.headers_env[X-Scope]" in lines[0] and "ops.allow" in lines[0]
+        assert "S3CRET_HOLDER" not in caplog.text
+
+    def test_a_clean_entry_logs_no_trim_warning(self, caplog):
+        self._only({"name": "ops", "endpoint": OPS, "allow": ["kirocrew.session.started"]})
+        assert "trailing whitespace" not in caplog.text
+
+    def test_two_keys_that_meet_once_trimmed_refuse_the_entry(self, caplog):
+        cfg = TelemetryConfig(
+            otlp_endpoints=[
+                {"name": "ops", "endpoint": OPS, "headers_env": {"X-Scope": "A", "X-Scope\n": "B"}},
+                {"name": "good", "endpoint": OPS},
+            ]
+        )
+        assert [d.name for d in DefaultTelemetryProvider().otlp_destinations(cfg)] == ["good"]
+        assert "repeats a key" in caplog.text
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"name": "ops\nx", "endpoint": OPS},
+            {"name": "\nops", "endpoint": OPS},
+            {"endpoint": OPS, "headers_env": {"X\nScope": "OPS_SCOPE"}},
+            {"endpoint": OPS, "allow": ["kirocrew.session\n.started"]},
+        ],
+    )
+    def test_a_line_end_inside_or_before_a_value_still_refuses_the_entry(self, raw):
+        cfg = TelemetryConfig(otlp_endpoints=[raw, {"name": "good", "endpoint": OPS}])
+        assert [d.name for d in DefaultTelemetryProvider().otlp_destinations(cfg)] == ["good"]
+
+    def test_every_pattern_refuses_a_final_line_end_on_its_own(self):
+        """``fullmatch``, not ``match``: under ``match`` a ``$`` matches before a final
+        line end, so the value would pass with the line end still in it."""
+        for pattern, value in [
+            (oe._NAME_RE, "ops"),
+            (oe._HEADER_RE, "X-Scope"),
+            (oe._ENV_RE, "OPS_SCOPE"),
+            (oe._POINT_VALUE_RE, "cli"),
+            (oe._METRIC_RE, "kirocrew.session.started"),
+            (oe._RESOURCE_KEY_RE, "service.name"),
+        ]:
+            assert pattern.fullmatch(value)
+            assert pattern.fullmatch(value + "\n") is None
+
+
 # ── edition rows ────────────────────────────────────────────────────────────
 
 
