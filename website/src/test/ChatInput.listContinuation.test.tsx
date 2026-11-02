@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, fireEvent, screen } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { stubStripHeights } from './stripHeights'
+import { namedCeiling } from './namedCeiling'
 import type { SendMode } from '../pages/chat/ChatSettings'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
 import { requestComposerExpand } from '../pages/chat/composerFocus'
@@ -32,11 +33,11 @@ function Host({ initial, sendOnEnter, onSend, blocks = [], collapsible = false }
 
 function mount(initial: string, sendOnEnter: SendMode = 'ctrl-enter', caret = initial.length, blocks: PasteBlock[] = []) {
   const onSend = vi.fn()
-  renderWithProviders(<Host initial={initial} sendOnEnter={sendOnEnter} onSend={onSend} blocks={blocks} />)
+  const { queryClient } = renderWithProviders(<Host initial={initial} sendOnEnter={sendOnEnter} onSend={onSend} blocks={blocks} />)
   const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-  ta.focus()
+  act(() => { ta.focus() })
   ta.setSelectionRange(caret, caret)
-  return { ta, onSend, value: () => screen.getByTestId('value').textContent }
+  return { ta, onSend, queryClient, value: () => screen.getByTestId('value').textContent }
 }
 
 /** One new-line action as the browser delivers it. Returns true when the
@@ -179,7 +180,7 @@ describe('textarea composer continues markdown lists on a new line', () => {
   })
 
   it('the WebKit candidate-commit Enter (latch set, native signals clear) is not a new item', async () => {
-    const { ta, value } = mount('- 項目')
+    const { ta, value, queryClient } = mount('- 項目')
     // WebKit: compositionend first, then the committing Enter keydown with
     // isComposing false and keyCode 13, inside the guard's post-composition
     // window; in ctrl-enter mode nothing claims it, so its line break follows.
@@ -190,6 +191,8 @@ describe('textarea composer continues markdown lists on a new line', () => {
     expect(value()).toBe('- 項目')
     // The decline is consumed by that one line break: once the latch window
     // (50ms) has passed, a plain new line continues the list again.
+    // The composer's mount-time reads (skills, slash commands, capabilities) land while the clock runs.
+    await waitFor(() => expect(queryClient.isFetching({ predicate: q => q.queryKey[0] !== 'custom-themes-catalog' })).toBe(0), namedCeiling('COMPOSER_READS_SETTLED', 5000))
     await new Promise(resolve => setTimeout(resolve, 80))
     expect(fireEvent.keyDown(ta, { key: 'Enter', keyCode: 13 })).toBe(true)
     expect(newLine(ta)).toBe(true)
