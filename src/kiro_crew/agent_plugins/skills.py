@@ -44,6 +44,19 @@ def _load_yaml(text: str) -> object:
         loader.dispose()
 
 
+def frontmatter_name(text: str) -> str | None:
+    """The ``name`` a ``SKILL.md`` declares, or ``None`` when it declares none."""
+    match = _FENCE_RE.match(text.removeprefix("\ufeff"))
+    if not match:
+        return None
+    try:
+        meta = _load_yaml(match.group(1))
+    except (yaml.YAMLError, ValueError, RecursionError):
+        return None
+    name = meta.get("name") if isinstance(meta, dict) else None
+    return name if isinstance(name, str) else None
+
+
 def is_valid_skill_name(name: object) -> bool:
     """Agent Skills name rule."""
     return isinstance(name, str) and bool(_SKILL_NAME_RE.match(name)) and "--" not in name

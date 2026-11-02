@@ -85,8 +85,74 @@ never fetched; only the 1.0.0 identifiers are recognised.
 Valid entries are stored as written. Placeholder expansion needs the data
 directory and belongs to the launcher.
 
-## 4. Side effects
+## 4. Converting client-specific plugins
 
-None. Discovery reads files only: it does not create `data/<name>/`, write any
+`agent_plugins.convert.convert_plugin(src, dest)` turns a Claude Code, Codex or
+Cursor package into a standard plugin, following the spec's migration guide. No
+caller uses it yet; the install flow (RFC Phase 4) will. Tests:
+`test/test_agent_plugins_convert.py`.
+
+- **Input.** The first of `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
+  `.cursor-plugin/plugin.json`, `.plugin/plugin.json`, `.github/plugin/plugin.json`,
+  else a root `plugin.json` without an Agent Plugins `$schema`. A folder that is
+  already standard, or has none of these, is refused. Every file the converter
+  reads from the package (manifests, MCP files, `SKILL.md`) is reached through
+  no link and must resolve inside the source; a manifest behind a linked folder
+  is never chosen.
+- **Output.** A copy of every regular file of the package (symbolic links and
+  Windows directory junctions are neither followed nor copied, `.git` and
+  `node_modules` are skipped, 20,000 files and 200 MiB at most), plus a generated
+  `plugin.json`, `mcp.json` and `skills/`. Generated JSON is indented when it fits
+  the loader's 256 KiB component limit and compact otherwise; a component that
+  still exceeds the limit is refused. The client's own files stay beside them. A
+  `dest` that exists or resolves inside the source is refused before anything is
+  created. The output is built in a hidden staging folder next to `dest`, validated
+  with the loader, and moved into place only when the manifest is valid. On any
+  failure the staging folder, the skills temporary folder and any parent folders
+  the call created are removed, so nothing is left behind. The source is never
+  written.
+- **Manifest.** `name` is lowercased and non-name characters become `-`; it is
+  refused if no valid name remains. The portable string fields and `keywords`
+  are copied; a string `author` becomes `{"name": ...}`. Every other key is
+  listed in `not_converted`; the generated `plugin.json` carries no record of
+  the conversion.
+- **Skills.** From the manifest's `skills` path or list, else `skills/`,
+  `.claude/skills/` and `.agents/skills/`. A declared folder holding `SKILL.md`
+  is one skill; otherwise its immediate child skill folders are scanned. A
+  declared path yielding no skill is noted. Each folder holding `SKILL.md`
+  becomes `skills/<frontmatter name>/`, or keeps its folder name when the
+  frontmatter has no valid name or `SKILL.md` exceeds the loader's 1 MiB limit
+  (then it is not read). A declared `.` or `./` with a root `SKILL.md` makes the
+  package root one skill: everything the package copy holds except its
+  top-level `skills/` (whose other entries are kept as below); without a valid
+  frontmatter name it takes the plugin name, or is noted and not placed when
+  that is not a valid skill name either. Every placed skill is copied into a
+  fresh folder in a second hidden temporary folder next to `dest`, outside the
+  staging folder, which then replaces `skills/`; no copy's source contains its
+  destination, and renames that chain or differ only in case lose nothing.
+  These copies have the same 20,000-file and 200 MiB bounds as the package
+  copy, counted separately. Names are compared case-insensitively; the first
+  claim wins and each dropped skill is named in `notes` and left out of
+  `skills/`. Other entries of the old `skills/` are kept unless a placed skill
+  takes their name, which is also noted.
+- **MCP.** From the manifest's inline `mcpServers` or the file it names, else
+  `.mcp.json`, else `mcp.json`. A named or default file may hold either an
+  `mcpServers` wrapper or a direct map whose values are server objects; any other
+  shape is noted and contributes no servers. Per server: a missing `type` becomes
+  `stdio` (with `command`) or `streamable-http` (with `url`); `http` becomes
+  `streamable-http`; `${CLAUDE_PLUGIN_ROOT}` becomes `${PLUGIN_ROOT}`; a bundled
+  relative command or `cwd` gains `./`; fields outside the closed set are dropped.
+  A server that needs any other `${VAR}` (found by a scan of every key and string
+  value for `${` up to the next `}`), holds a `${` with no closing `}`, has an
+  absolute command or `cwd`, a
+  path command that resolves outside the package or is not a file there, a
+  `cwd` outside the package, an unknown transport, or that the loader would
+  reject is listed in `skipped_servers` and not written. The output `mcp.json`
+  is exactly the converted servers, or absent when none convert; a client file
+  already at `mcp.json` is never kept, and its removal or replacement is noted.
+
+## 5. Side effects
+
+Conversion writes only under its staging folder and `dest`. Discovery reads files only: it does not create `data/<name>/`, write any
 index, start a process or add a skill root. Each read is size-bounded
 (`plugin.json` and `mcp.json` 256 KiB, `SKILL.md` 1 MiB, `installed.json` 1 MiB).
