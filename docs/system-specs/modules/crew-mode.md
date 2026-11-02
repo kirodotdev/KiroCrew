@@ -59,7 +59,7 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/members.py` | The per-crew member space's import and patch surface: a mirror facade over the `members_parts` owners below, so every name is still read and patched through `kiro_crew.members`; new member-space code goes to the owner whose responsibility it is |
 | `src/kiro_crew/members_parts/member_space.py` | The space's layout (every file and directory name), member display names and crew ids, slugs, the containment-checked member paths, the first-welcome marker |
 | `src/kiro_crew/members_parts/member_sessions.py` | A member's DM session: its key and alias, the backend it routes to, the session-level MCP mounts, the member turn chokepoint |
-| `src/kiro_crew/members_parts/dm_bindings.py` | The DM-thread binding under `trust/` and the identity it answers for a session |
+| `src/kiro_crew/members_parts/dm_bindings.py` | The DM-thread binding under `member-records/` and the identity it answers for a session |
 | `src/kiro_crew/members_parts/self_edit.py` | What a mate may change on its own record: cleaning, the update, its undo, the rename |
 | `src/kiro_crew/members_parts/prompt_layers.py` | The permanent rules and the self-maintained briefing |
 | `src/kiro_crew/members_parts/member_activity.py` | The activity log |
