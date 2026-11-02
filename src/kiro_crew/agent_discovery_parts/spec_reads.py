@@ -224,8 +224,32 @@ def _read_agent_spec(
             error="untrusted UNC path rejected",
         )
         return None
+    to_resolve = path
+    if _WINDOWS:
+        # A local spelling can still be a link (or sit under one) whose target
+        # names a share, and ``resolve`` would follow it into the SMB probe the
+        # check above exists to prevent. The hooks screen reads each link's own
+        # target without traversing it, so a chain reaching an untrusted share
+        # is refused before anything follows it. The screened target is what is
+        # resolved: re-following the original links would let a link retargeted
+        # after the screen reach the share anyway. *path* still names the spec
+        # for parsing and for the audit trail, and the pinned open below judges
+        # the inode actually read.
+        screened = hooks._screen_windows_links(str(path))
+        if screened is None:
+            _audit_denied(
+                operation=operation,
+                source=source,
+                resources=str(path),
+                error="untrusted link target rejected",
+            )
+            return None
+        if screened != str(path):
+            # A path with no link screens to itself; anything else had a
+            # link rewritten to its vetted target.
+            to_resolve = Path(screened)
     try:
-        real = path.resolve(strict=True)
+        real = to_resolve.resolve(strict=True)
     except (OSError, RuntimeError):
         # OSError: broken link / permission; RuntimeError: pathlib's signal for
         # a symlink LOOP (a self-referential agent symlink is one `ln -s` away
@@ -234,8 +258,8 @@ def _read_agent_spec(
         # `!agent` handler exits without replying.
         return None
     if _unc_refused(str(real)):
-        # A local link into a share: the resolve has already probed, and the
-        # read must still not load the remote document.
+        # A share the link screen admitted, or a resolve that still landed on
+        # one: the read must not load the remote document.
         _audit_denied(
             operation=operation,
             source=source,

@@ -166,7 +166,11 @@ def _managed_root_table(*, refuse_unverifiable: bool = False) -> _RootTable:
     workspaces = [config_dir() / "workspace"]
     workspaces.extend(workspace_dir_for(name) for name in cfg.workspaces)
     resolved_roots = {
-        root: _comparable_root(root, refuse_unverifiable=refuse_unverifiable)
+        root: (
+            _comparable_root(root, refuse_unverifiable=True)
+            if refuse_unverifiable
+            else _comparable_root(root)
+        )
         for root in dict.fromkeys([*roots, *workspaces])
     }
     return roots, workspaces, resolved_roots

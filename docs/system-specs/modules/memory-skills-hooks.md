@@ -1866,7 +1866,11 @@ directory that sits inside managed memory or member private state is refused, as
 is every such target when a managed root cannot be resolved. Entries with
 differing content that declare the same name are ambiguous. The member persona,
 the execution prompt, the session MCP spec and the side-turn read-only spec read
-templates this way; spec writers refuse links. A
+templates this way, and the read-only spec reaper counts such a base as present;
+spec writers refuse links. On Windows `_read_agent_spec` screens every link on
+the spec's path through `hooks._screen_windows_links` before it resolves
+anything, so a link whose target names an untrusted UNC share is refused and
+audited as `untrusted link target rejected` without the SMB probe. A
 relative `file://` prompt uses the project root when its template comes from the
 project's agents directory, and the user home when it comes from the global
 agents directory, even with a project bound. Both readers share the same path

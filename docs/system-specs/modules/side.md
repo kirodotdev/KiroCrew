@@ -596,8 +596,10 @@ hardened reader refuses a hardlink); its declared `name` equals its stem and is
 the derived name of the base its owner-marked `description` names; no provider
 in the session registry was spawned under it; and the base does not resolve
 where publication looks. A user-scope base resolves while any
-`<agent>.json`/`.md` entry exists or `agent.agent_spec_path` finds a spec
-declaring it (two declaring it still resolves). A project variant is reaped
+`<agent>.json`/`.md` entry exists, `agent.agent_spec_path` finds a spec
+declaring it (two declaring it still resolves), or
+`member_essential_context.linked_global_template_spec` finds a linked entry
+declaring it, the same lookup publication reads the base through. A project variant is reaped
 only when its recorded checkout is gone, or that checkout's `.kiro/agents`
 holds no entry named or declaring the agent; an unreadable or protected
 checkout, a variant recording no checkout or a relative path, one whose

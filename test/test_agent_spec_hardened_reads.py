@@ -1475,7 +1475,10 @@ _EXPECTED_TEMPLATE_SPEC_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 }
 _EXPECTED_LINKED_TEMPLATE_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/session_mcp.py": [("session_mcp_servers", "unknown")],
-    "kiro_crew/dashboard/side_readonly_spec.py": [("side_readonly_spec", "dashboard")],
+    "kiro_crew/dashboard/side_readonly_spec.py": [
+        ("side_readonly_reap", "unknown"),
+        ("side_readonly_spec", "dashboard"),
+    ],
     "kiro_crew/member_essential_context.py": [("forward:operation", "forward:source")],
 }
 _EXPECTED_DECLARED_ENTRY_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {

@@ -840,11 +840,19 @@ def _user_base_resolves(base: str, agents_dir: Path) -> bool:
     """
     from kiro_crew.agent import agent_spec_path
     from kiro_crew.agent_spec_format import agent_spec_candidates
+    from kiro_crew.member_essential_context import linked_global_template_spec
 
     if any(os.path.lexists(path) for path in agent_spec_candidates(agents_dir, base)):
         return True
     try:
-        return agent_spec_path(base, agents_dir=agents_dir) is not None
+        if agent_spec_path(base, agents_dir=agents_dir) is not None:
+            return True
+        # The publisher reads a base no regular spec claims through a link
+        # (:func:`_read_base_spec`), so the reaper must count the same base.
+        return (
+            linked_global_template_spec(base, operation="side_readonly_reap", source="unknown")
+            is not None
+        )
     except ValueError:
         return True
 
