@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import secrets
@@ -54,6 +55,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from kiro_crew.browser_harness.dom_census import MalformedDocument, closed_secret_count
 from kiro_crew.browser_harness.frames import FrameOps, FrameRegistry, enable_auto_attach
 
 logger = logging.getLogger(__name__)
@@ -591,7 +593,8 @@ class Relay(Protocol):
 MASK_WORLD = "kirocrew_mask"
 
 _MASK_JS = (
-    "(()=>{const r=[],f=[];let partial=false;"
+    "(()=>{const r=[],f=[],n=[];let partial=false;"
+    "const NAMED=/(^|[^a-z])(password|passwd|pwd|otp|totp|mfa|cvv|cvc|secret|token|apikey)([^a-z]|$)/i;"
     "const SEL='input[type=password],input[autocomplete~=current-password],"
     "input[autocomplete~=new-password],input[autocomplete~=one-time-code],input[data-kc-asked]';"
     "const OPAQUE={OBJECT:1,EMBED:1,FENCEDFRAME:1,PORTAL:1};"
@@ -609,6 +612,9 @@ _MASK_JS = (
     "for(const e of root.querySelectorAll('input')){let s=e.matches(SEL);"
     "if(!s){const t=getComputedStyle(e).webkitTextSecurity;s=!!t&&t!=='none';}"
     "if(s){const b=e.getBoundingClientRect();if(vis(b))r.push(box(b,ox,oy));}}"
+    "for(const e of root.querySelectorAll('input,textarea')){if(e.matches(SEL)||!e.value)continue;"
+    "const a=(e.getAttribute('name')||'')+' '+(e.getAttribute('id')||'')+' '+(e.getAttribute('autocomplete')||'');"
+    "if(NAMED.test(a)){const b=e.getBoundingClientRect();if(vis(b))n.push(box(b,ox,oy));}}"
     "for(const h of root.querySelectorAll('*')){const tag=h.tagName;"
     "const isF=tag==='IFRAME'||tag==='FRAME';"
     "if(!h.shadowRoot&&!isF&&!OPAQUE[tag])continue;"
@@ -622,8 +628,15 @@ _MASK_JS = (
     "walk(doc,d+1,ox+b.left+h.clientLeft+(parseFloat(cs.paddingLeft)||0),"
     "oy+b.top+h.clientTop+(parseFloat(cs.paddingTop)||0));}"
     "else{f.push(box(b,ox,oy));}}};"
-    "walk(document,0,0,0);return {boxes:r,frames:f,partial:partial,sx:scrollX,sy:scrollY};})()"
+    "walk(document,0,0,0);return {boxes:r,frames:f,named:n,partial:partial,sx:scrollX,sy:scrollY};})()"
 )
+
+
+def _is_box(b: Any) -> bool:
+    """A ``[x, y, w, h]`` of finite numbers with a positive size."""
+    return (
+        isinstance(b, list) and len(b) == 4 and all(_finite(v) for v in b) and b[2] > 0 and b[3] > 0
+    )
 
 
 def _finite(v: Any) -> bool:
@@ -759,7 +772,7 @@ class LiveStream:
         #: did not answer. A recorded frame needs this query and the one before it
         #: to agree: a field the page removed after the capture shows in neither
         #: the frame's mask nor a single query run after it.
-        self._mask_prev: list[Any] | None = None
+        self._mask_prev: tuple[list[Any], list[Any] | None] | None = None
         #: The recorder's mask for the frame in hand (see :meth:`_mask_rects`): a
         #: frame whose boxes did not come from its own answered query is never kept.
         self._mask_ok = False
@@ -1211,8 +1224,10 @@ class LiveStream:
             )
         value = ((reply.get("result") or {}).get("value")) if isinstance(reply, dict) else None
         frames: Any = []
+        named: Any = []
         if isinstance(value, dict):
             boxes, frames = value.get("boxes"), value.get("frames", [])
+            named = value.get("named", [])
         else:
             boxes = value
         if not isinstance(boxes, list) or not isinstance(frames, list):
@@ -1222,24 +1237,58 @@ class LiveStream:
                 self._mask_boxes, self.scale, width, height, limit=MASK_BOX_LIMIT
             )
         boxes = boxes + await self._frame_boxes()
-        self._mask_prev = list(boxes)
+        # The replay-only boxes are part of what must stand still around a frame:
+        # a field cleared or moved between the capture and this query would leave
+        # the captured one unpainted.
+        named_ok = isinstance(named, list) and all(_is_box(b) for b in named)
+        signature = (list(boxes), list(named) if named_ok else None)
+        self._mask_prev = signature
         self._mask_boxes = boxes
         rects = clip_mask_rects(boxes, self.scale, width, height, limit=MASK_BOX_LIMIT)
         partial = isinstance(value, dict) and bool(value.get("partial"))
+        # A secret field in a closed shadow root is out of the mask query's reach,
+        # so a frame of such a page is never recorded as masked.
+        closed = await self._closed_secrets() if force else 0
         if (
-            len(boxes) + len(frames) <= MASK_BOX_LIMIT
+            named_ok
+            and len(boxes) + len(frames) + len(named) <= MASK_BOX_LIMIT
             and not partial
+            and closed == 0
             and _same_scroll(value, scroll)
             and not new_world
-            and prev == boxes
+            and prev == signature
         ):
             opaque = clip_mask_rects(frames, self.scale, width, height, limit=MASK_BOX_LIMIT)
-            self._rec_boxes = rects + opaque
+            # Filled fields the walker's secret rule names (an OTP, a token): painted
+            # over in the replay only, so the owner's live card still shows them.
+            secret = clip_mask_rects(named, self.scale, width, height, limit=MASK_BOX_LIMIT)
+            self._rec_boxes = rects + opaque + secret
             self._mask_ok = True
             if force:
                 self._rec_last = list(self._rec_boxes)
                 self._rec_last_size = (width, height)
         return list(rects)
+
+    async def _closed_secrets(self) -> int | None:
+        """Secret-looking fields in closed shadow roots of the tab, or ``None``.
+
+        Read from the browser's own DOM (``DOM.getDocument`` with ``pierce``),
+        which reaches into closed roots no page-side query can enter.
+        """
+        try:
+            reply = await self.relay.send(
+                "DOM.getDocument", {"depth": -1, "pierce": True}, self.session_id
+            )
+        except Exception:  # noqa: BLE001 - unknown: the frame is not recorded as masked
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                await self.relay.send("DOM.disable", {}, self.session_id)
+        root = reply.get("root") if isinstance(reply, dict) else None
+        try:
+            return closed_secret_count(root)
+        except MalformedDocument:
+            return None
 
     async def _mask_query(self, sid: str) -> Any:
         """Run :data:`_MASK_JS` in an isolated world of *sid*'s own frame.

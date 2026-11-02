@@ -77,7 +77,11 @@ class Game:
         self.row[0] = str(int(self.row[0] or "0") + 2)
 
     async def helper(self, name: str, **kwargs: Any) -> Any:
-        if name == "js":
+        if name == "closed_secret_count":
+            return 0
+        if name == "frame_owner_count":
+            return 0
+        if name in ("js", "js_isolated"):
             expr = kwargs["expression"]
             assert expr.startswith(ops.WALKER_SOURCE)
             match = self._CALL.match(expr[len(ops.WALKER_SOURCE) :])
@@ -168,7 +172,7 @@ class Game:
             return {"focused": True, "password": False, "tag": "input"}
         if method == "passwordBoxes":
             return self.password_boxes
-        if method == "askedValues":
+        if method in ("askedValues", "unreadableFrames", "framesSeen", "objectsSeen"):
             return 0
         raise AssertionError(f"unexpected walker method {method}")
 

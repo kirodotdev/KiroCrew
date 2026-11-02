@@ -84,9 +84,13 @@ class FakePage:
         self.shots = 0
 
     async def helper(self, name: str, **kwargs: Any) -> Any:
-        if name != "js":
+        if name == "closed_secret_count":
+            return 0
+        if name == "frame_owner_count":
+            return 0
+        if name not in ("js", "js_isolated"):
             self.calls.append((name, kwargs))
-        if name == "js":
+        if name in ("js", "js_isolated"):
             expr = kwargs["expression"]
             assert expr.startswith(ops.WALKER_SOURCE)
             match = self._CALL.match(expr[len(ops.WALKER_SOURCE) :])
@@ -120,6 +124,8 @@ class FakePage:
             return self.password_boxes
         if method == "askedValues":
             return self.asked_values
+        if method in ("unreadableFrames", "framesSeen", "objectsSeen"):
+            return 0
         if method == "canvasRects":
             return {"w": 1000, "h": 500, "rects": self.canvases}
         raise AssertionError(f"unexpected walker method {method}")

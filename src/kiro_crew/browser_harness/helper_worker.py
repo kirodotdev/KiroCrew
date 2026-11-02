@@ -25,6 +25,7 @@ if anything else ever reaches the pipe.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import traceback
 from typing import Any, Callable
@@ -49,8 +50,15 @@ _ALLOWLIST: dict[str, tuple[str, tuple[str, ...]]] = {
     "close_tab": ("close_tab", ("target",)),
     "current_tab": ("current_tab", ()),
     "js": ("js", ("expression", "target_id")),
+    "js_isolated": ("_local_js_isolated", ("expression",)),
+    "frame_owner_count": ("_local_frame_owner_count", ()),
+    "closed_secret_count": ("_local_closed_secret_count", ()),
     "page_clock": ("_local_page_clock", ("state",)),
 }
+
+#: The world :func:`_local_js_isolated` evaluates in: the top frame's own isolated
+#: world, where page script cannot replace the DOM functions the guard counts with.
+_GUARD_WORLD = "kirocrew_guard_walker"
 
 #: Longest error text sent back; a Python traceback can be pages.
 _ERROR_CAP = 4000
@@ -132,10 +140,152 @@ def _local_page_clock(helpers: Any, state: str) -> dict[str, str]:
     return {"state": state}
 
 
+def _local_js_isolated(helpers: Any, expression: str) -> Any:
+    """Evaluate *expression* in an isolated world of the current tab's top frame.
+
+    The screenshot guards count asked and password fields here, not in the page's
+    own world: a page that replaces ``document.querySelectorAll`` there cannot make
+    the count read zero in this one. Any step that does not give a value raises, so
+    the gateway's guard fails closed instead of reading an empty answer as zero.
+    """
+    tree = helpers.cdp("Page.getFrameTree")
+    frame_id = ((tree.get("frameTree") or {}).get("frame") or {}).get("id")
+    if not isinstance(frame_id, str) or not frame_id:
+        raise RuntimeError("js_isolated: the tab has no top frame")
+    made = helpers.cdp(
+        "Page.createIsolatedWorld",
+        frameId=frame_id,
+        worldName=_GUARD_WORLD,
+        grantUniveralAccess=False,
+    )
+    context_id = made.get("executionContextId")
+    if not isinstance(context_id, int) or isinstance(context_id, bool):
+        raise RuntimeError("js_isolated: no isolated world was created")
+    out = helpers.cdp(
+        "Runtime.evaluate", expression=expression, contextId=context_id, returnByValue=True
+    )
+    if out.get("exceptionDetails"):
+        raise RuntimeError("js_isolated: the expression threw")
+    return (out.get("result") or {}).get("value")
+
+
+def _pierced_document(helpers: Any, who: str) -> dict[str, Any]:
+    """The tab's whole DOM as the browser sees it (``DOM.getDocument`` with ``pierce``).
+
+    Read by the browser, not by page script, so closed shadow roots are included,
+    and so is the owner element of a frame that runs out of process. The DOM
+    domain is turned off again afterwards, so the session is not sent mutation
+    events for the rest of its life. Raises when there is no document.
+    """
+    try:
+        reply = helpers.cdp("DOM.getDocument", depth=-1, pierce=True)
+    finally:
+        try:
+            helpers.cdp("DOM.disable")
+        except Exception:  # noqa: BLE001 - already off: nothing to undo
+            pass
+    root = reply.get("root") if isinstance(reply, dict) else None
+    if not isinstance(root, dict):
+        raise RuntimeError(f"{who}: the tab has no document")
+    return root
+
+
+def _walk_dom(root: dict[str, Any], who: str) -> Any:
+    """Every node under *root* with whether it sits inside a closed shadow root.
+
+    Descends into children, shadow roots and documents the browser hands back
+    inline. Raises on any malformed node, so a guard built on it fails closed.
+    """
+    pending: list[tuple[Any, bool]] = [(root, False)]
+    while pending:
+        node, closed = pending.pop()
+        if not isinstance(node, dict) or not isinstance(node.get("nodeName"), str):
+            raise RuntimeError(f"{who}: malformed node")
+        yield node, closed
+        kids = node.get("children")
+        if kids is not None:
+            if not isinstance(kids, list):
+                raise RuntimeError(f"{who}: malformed node")
+            pending.extend((k, closed) for k in kids)
+        roots = node.get("shadowRoots")
+        if roots is not None:
+            if not isinstance(roots, list):
+                raise RuntimeError(f"{who}: malformed node")
+            for r in roots:
+                inner = closed or (isinstance(r, dict) and r.get("shadowRootType") == "closed")
+                pending.append((r, inner))
+        doc = node.get("contentDocument")
+        if doc is not None:
+            pending.append((doc, closed))
+
+
+def _local_frame_owner_count(helpers: Any) -> int:
+    """How many ``iframe``/``frame``/``object``/``embed`` elements the tab's DOM holds.
+
+    Counted from :func:`_pierced_document`, so an element in a closed shadow root
+    is counted, and so is one whose frame runs out of process (the frame tree of
+    this session would miss that one).
+    """
+    root = _pierced_document(helpers, "frame_owner_count")
+    return sum(
+        1
+        for node, _closed in _walk_dom(root, "frame_owner_count")
+        if node["nodeName"].upper() in _FRAME_OWNERS
+    )
+
+
+def _local_closed_secret_count(helpers: Any) -> int:
+    """How many secret-looking fields sit inside closed shadow roots.
+
+    Page-world and isolated-world walks cannot enter a closed root, so a password,
+    one-time-code or quick-ask field there is invisible to the screenshot guards
+    and the replay mask. Counted from the browser's own DOM by the walker's own
+    rule (:func:`_secret_attrs`), whether or not the field holds a value (the DOM
+    gives attributes, not the live value), so the guard refuses rather than passes.
+    """
+    root = _pierced_document(helpers, "closed_secret_count")
+    return sum(
+        1
+        for node, closed in _walk_dom(root, "closed_secret_count")
+        if closed and _secret_attrs(node)
+    )
+
+
+def _secret_attrs(node: dict[str, Any]) -> bool:
+    """Whether a DOM node is a field the walker's ``secretish`` names a secret."""
+    if node["nodeName"].upper() not in ("INPUT", "TEXTAREA"):
+        return False
+    flat = node.get("attributes") or []
+    if not isinstance(flat, list):
+        raise RuntimeError("closed_secret_count: malformed node")
+    attrs = {str(flat[i]).lower(): str(flat[i + 1]) for i in range(0, len(flat) - 1, 2)}
+    if attrs.get("type", "").lower() == "password" or "data-kc-asked" in attrs:
+        return True
+    auto = attrs.get("autocomplete", "").lower()
+    if any(word in auto.split() for word in _SECRET_AUTOCOMPLETE):
+        return True
+    named = " ".join((attrs.get("name", ""), attrs.get("id", ""), attrs.get("autocomplete", "")))
+    return bool(_SECRET_NAME_RE.search(named))
+
+
+#: The elements that can hold a document of their own.
+_FRAME_OWNERS = frozenset({"IFRAME", "FRAME", "OBJECT", "EMBED"})
+#: ``autocomplete`` tokens that name a secret (the replay mask's rule).
+_SECRET_AUTOCOMPLETE = ("current-password", "new-password", "one-time-code")
+#: The walker's ``SECRET_NAME_RE`` (snapshot_walker.js), kept equal by a test.
+_SECRET_NAME_RE = re.compile(
+    r"(^|[^a-z])(password|passwd|pwd|otp|totp|mfa|cvv|cvc|secret|token|apikey)([^a-z]|$)",
+    re.IGNORECASE,
+)
+
+
 _LOCAL: dict[str, Callable[..., Any]] = {
     "_local_mouse_move": _local_mouse_move,
     "_local_drag": _local_drag,
     "_local_page_clock": _local_page_clock,
+    "_local_js_isolated": _local_js_isolated,
+    "_local_frame_owner_count": _local_frame_owner_count,
+    "_local_closed_secret_count": _local_closed_secret_count,
 }
 
 

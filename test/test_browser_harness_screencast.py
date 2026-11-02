@@ -819,3 +819,109 @@ async def test_a_frame_that_answers_junk_boxes_is_masked_whole_and_the_frame_sti
     await relay.on_event(frame_event(make_jpeg(1280, 768)))
     header, _ = sink.frames[-1]
     assert header["mask"] and header["mask"][0][:2] == [100, 200]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("document", "masked"),
+    [
+        ({"nodeName": "#document", "children": [{"nodeName": "BODY"}]}, True),
+        (
+            {
+                "nodeName": "#document",
+                "children": [
+                    {
+                        "nodeName": "DIV",
+                        "shadowRoots": [
+                            {
+                                "nodeName": "#document-fragment",
+                                "shadowRootType": "closed",
+                                "children": [{"nodeName": "INPUT", "attributes": ["name", "otp"]}],
+                            }
+                        ],
+                    }
+                ],
+            },
+            False,
+        ),
+        (None, False),
+    ],
+)
+async def test_a_secret_field_in_a_closed_shadow_root_is_never_recorded_as_masked(
+    document: Any, masked: bool
+) -> None:
+    """The mask query cannot enter a closed root, so a page with a secret field in
+    one is never recorded as masked; the browser's own DOM is asked about it."""
+    stream, relay, _clock, _sink = make_stream()
+    relay.answers["Runtime.evaluate"] = {
+        "result": {"value": {"boxes": [], "frames": [], "partial": False, "sx": 0, "sy": 0}}
+    }
+    relay.answers["DOM.getDocument"] = {"root": document} if document is not None else {}
+    await stream.start()
+    await stream._mask_rects(1280, 768, force=True)
+    await stream._mask_rects(1280, 768, force=True)
+    assert stream._mask_ok is masked
+    assert relay.methods("DOM.getDocument")
+    assert relay.methods("DOM.disable")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("named", "ok", "rec"),
+    [
+        ([[0, 0, 10, 10]], True, [[0, 0, 11, 11]]),
+        ([], True, []),
+        ("x", False, []),
+        ([[]], False, []),
+        ([[0, 0, 0, 10]], False, []),
+        ([["a", 0, 1, 1]], False, []),
+    ],
+)
+async def test_a_filled_secret_named_field_is_painted_over_in_the_replay_only(
+    named: Any, ok: bool, rec: list[list[int]]
+) -> None:
+    """A plain ``name="otp"`` field the mask selector misses is reported as ``named``:
+    the replay paints over it, the owner's live card does not."""
+    stream, relay, _clock, _sink = make_stream()
+    relay.answers["Runtime.evaluate"] = {
+        "result": {
+            "value": {"boxes": [], "frames": [], "named": named, "partial": False, "sx": 0, "sy": 0}
+        }
+    }
+    await stream.start()
+    card = await stream._mask_rects(1280, 768, force=True)
+    card = await stream._mask_rects(1280, 768, force=True)
+    assert card == []
+    assert stream._mask_ok is ok
+    assert stream._rec_boxes == rec
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after", [[], [[50, 50, 10, 10]]])
+async def test_a_secret_named_field_that_moved_or_went_between_queries_is_not_kept(
+    after: list[list[int]],
+) -> None:
+    """The replay keeps a frame only when what it paints over stood still: a filled
+    OTP field cleared or moved between the capture and the query is not masked."""
+    stream, relay, _clock, _sink = make_stream()
+    replies = iter([[[10, 10, 10, 10]], after])
+
+    def _evaluate() -> dict[str, Any]:
+        return {
+            "result": {
+                "value": {
+                    "boxes": [],
+                    "frames": [],
+                    "named": next(replies),
+                    "partial": False,
+                    "sx": 0,
+                    "sy": 0,
+                }
+            }
+        }
+
+    relay.answers["Runtime.evaluate"] = _evaluate
+    await stream.start()
+    await stream._mask_rects(1280, 768, force=True)
+    await stream._mask_rects(1280, 768, force=True)
+    assert stream._mask_ok is False

@@ -563,6 +563,40 @@
     return null;
   }
 
+  // The frames (`iframe`, `frame`, `object`, `embed`) one walk of the top
+  // document reaches through open shadow roots and readable frames: how many,
+  // and how many of them have a document this world cannot read. Past depth 8
+  // the walk stops and counts one unreadable, so a guard refuses.
+  function scanFrames() {
+    var n = 0;
+    var seen = 0;
+    function embeds(el) {
+      var tag = (el.tagName || "").toLowerCase();
+      return tag === "iframe" || tag === "frame" || tag === "object" || tag === "embed";
+    }
+    function innerDoc(el) {
+      try { return el.contentDocument || null; } catch (e) { return null; }
+    }
+    function walkRoot(root, d) {
+      var all = root.querySelectorAll("*");
+      for (var j = 0; j < all.length; j++) {
+        var el = all[j];
+        var inner = embeds(el) ? innerDoc(el) : null;
+        if (embeds(el)) seen++;
+        // An `object` or `embed` counts even when its document is readable: the
+        // secret-field counts only walk into iframe and frame documents.
+        if (embeds(el) && (!inner || !isFrame(el))) n++;
+        if (!el.shadowRoot && !inner) continue;
+        // Too deep to look: count it, so the guard refuses rather than passes.
+        if (d >= 8) { n++; return; }
+        if (el.shadowRoot) walkRoot(el.shadowRoot, d + 1);
+        if (inner) walkRoot(inner, d + 1);
+      }
+    }
+    walkRoot(document, 0);
+    return { unreadable: n, seen: seen };
+  }
+
   var api = {
     // `cap`: the node budget left (the gateway walks cross-origin frames after this
     // document and hands each the rest). Same-origin frames are walked in place;
@@ -704,6 +738,10 @@
         focused: true,
         password: inputType(active) === "password",
         asked: asked(active),
+        // A filled field `secretish` names (an OTP, a token) that is not a password
+        // box: a select or copy chord there would carry its value somewhere the
+        // agent reads, as it would from an asked field.
+        secret: inputType(active) !== "password" && secretish(active) && !!active.value,
         tag: (active.tagName || "").toLowerCase(),
         hasFocus: hasFocus
       };
@@ -779,6 +817,25 @@
       }
       walkRoot(document, 0);
       return n;
+    },
+
+    // How many frames in the top document (open shadow roots and same-origin
+    // frames included) this world cannot read: a cross-origin frame has no
+    // `contentDocument` here. With no frame inspector to count inside them, the
+    // screenshot guards refuse while this is not 0.
+    // Every such frame counts, hidden or not: a page can show a hidden frame for
+    // the moment the image is taken and hide it again before either count, so
+    // visibility is no proof it is absent from the pixels. `object` and `embed`
+    // can load a page too, so they count like frames.
+    unreadableFrames: function () {
+      return scanFrames().unreadable;
+    },
+
+    // How many frames (and `object`/`embed`) this walk reached at all. A frame in
+    // a closed shadow root is out of its reach; the gateway compares this with the
+    // browser's own count of frame elements and refuses when the two differ.
+    framesSeen: function () {
+      return scanFrames().seen;
     },
 
     // How many password inputs have a box on the page, by the live view's mask

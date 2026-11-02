@@ -73,7 +73,11 @@ class Page:
         return int((end - self.t0) * 100)
 
     async def helper(self, name: str, **kw: Any) -> Any:
-        if name == "js":
+        if name == "closed_secret_count":
+            return 0
+        if name == "frame_owner_count":
+            return 0
+        if name in ("js", "js_isolated"):
             expr = kw["expression"]
             assert expr.startswith(ops.WALKER_SOURCE)
             method, _, rest = expr[len(ops.WALKER_SOURCE) + 1 :].partition("(")
@@ -143,6 +147,8 @@ class Page:
         if method == "state":
             return {"href": "https://page.example/"}
         if method == "passwordBoxes":
+            return 0
+        if method in ("unreadableFrames", "framesSeen", "objectsSeen"):
             return 0
         if method == "askedValues":
             return 0

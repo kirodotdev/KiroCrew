@@ -78,7 +78,8 @@ ERROR = "error"
 
 #: The helpers :meth:`HarnessSupervisor.call` will forward, with the keyword
 #: arguments each accepts. Mirrors ``helper_worker._ALLOWLIST``; ``js`` exists only
-#: for the gateway's own accessibility walker (``browser_harness/snapshot_walker.js``).
+#: for the gateway's own accessibility walker (``browser_harness/snapshot_walker.js``),
+#: and ``js_isolated`` runs that walker's screenshot-guard counts in an isolated world.
 HELPERS: Mapping[str, tuple[str, ...]] = {
     "goto": ("url",),
     "click": ("x", "y", "button", "clicks"),
@@ -96,6 +97,9 @@ HELPERS: Mapping[str, tuple[str, ...]] = {
     "close_tab": ("target",),
     "current_tab": (),
     "js": ("expression", "target_id"),
+    "js_isolated": ("expression",),
+    "frame_owner_count": (),
+    "closed_secret_count": (),
     "page_clock": ("state",),
 }
 

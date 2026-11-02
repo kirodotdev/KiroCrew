@@ -59,6 +59,9 @@ class FakeRelay:
         self.answers: dict[str, Any] = {
             "Page.getFrameTree": {"frameTree": {"frame": {"id": "F1"}}},
             "Page.createIsolatedWorld": {"executionContextId": 7},
+            # A clean page as the browser's own DOM sees it: no secret field in a
+            # closed shadow root (screencast._closed_secrets).
+            "DOM.getDocument": {"root": {"nodeName": "#document"}},
         }
         self.fail: set[str] = set()
 

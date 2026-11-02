@@ -1067,9 +1067,18 @@ async def test_a_screenshot_is_refused_while_an_asked_field_holds_its_value(
     calls: list[str] = []
 
     async def helper(name: str, **kw: Any) -> Any:
+        if name == "closed_secret_count":
+            return 0
+        if name == "frame_owner_count":
+            return 0
         calls.append(name)
-        if name == "js":
+        if name in ("js", "js_isolated"):
             if ".passwordBoxes(" in kw["expression"]:
+                return 0
+            if any(
+                f".{m}(" in kw["expression"]
+                for m in ("unreadableFrames", "framesSeen", "objectsSeen")
+            ):
                 return 0
             return asked if ".askedValues(" in kw["expression"] else None
         if name == "screenshot":

@@ -820,7 +820,45 @@ internal-secret only) and renders the gateway's answer. It holds no state.
 `browser_harness.ops.run_op(op, args, ctx)` runs in the gateway. It reaches the
 browser only through `ctx.helper(name, **kwargs)` -- one allowlisted Harness
 helper over the daemon's IPC -- and the `js` helper is only ever given
-`snapshot_walker.js` plus one method call. The walker installs `window.__kcWalker`
+`snapshot_walker.js` plus one method call. The screenshot guards' counts
+(`askedValues`, `passwordBoxes`) run through `js_isolated` instead: the same
+walker call, evaluated in an isolated world of the tab's top frame
+(`helper_worker._local_js_isolated`), so a page script that replaces
+`document.querySelectorAll` in its own world cannot force them to 0. A count
+that cannot be taken refuses: `screenshot` answers `secret_check_failed`, and a
+decision-hook capture is skipped. Any frame, `object` or `embed` the top
+document cannot read (`unreadableFrames`), hidden or not, refuses too, with or
+without the live view: `screenshot` answers `unreadable_frame_on_page`. The live
+stream's frame inspector (`FrameOps.count`) still adds its child-frame counts,
+but it does not yet prove it checked every frame, so it is not trusted to lift
+the refusal. A hidden frame counts because a page can show it for the moment the
+image is taken. An `object` or `embed` always counts: the field counts walk only
+into iframe and frame documents, so a PDF opened in the tab refuses too. A frame
+in a closed shadow root is out of the walk's reach, so the browser's own count
+of `iframe`/`frame`/`object`/`embed` elements (`frame_owner_count`:
+`DOM.getDocument` with `pierce`, read by the helper worker, which also sees
+out-of-process frames) is compared with the ones the walk reached
+(`framesSeen`); any it missed count, and more seen than the browser holds means
+the page changed between the reads and refuses as well. The cost: a page that
+embeds a frame from another site (a video, a map, an ad, a sign-in widget)
+refuses screenshots for now, live view or not; snapshot still works. A secret-looking field (a password, one-time-code or quick-ask field, or one
+the walker's `secretish` names) inside a closed shadow root is out of every
+page-side walk, so the browser's own DOM is asked (`closed_secret_count`, and
+the live stream's replay mask asks the same through its session): any such
+field refuses the screenshot (`secret_field_on_page`) and the decision capture,
+and keeps that replay frame from being recorded as masked. `press_key` refuses
+select, copy and cut chords on a focused, filled field `secretish` names, as it
+already does on a quick-ask field. While the census finds any secret field in a closed root, or cannot
+be taken, every modified key is refused, since focus inside a closed root reads
+as its host. The replay also paints over filled fields the walker's secret rule
+names (`named` in the mask query), which the owner's live card leaves visible. A
+follow-up is to restore live-view screenshots behind a check that every frame
+was inspected. `screenshot` writes the image into the hidden IPC leaf first, judges the
+page again after the capture (URL gate, frames, filled fields), and only then
+moves the image into the screenshot directory; a rejected image is deleted, and
+a delete that fails is named in the refusal. A page can still edit its own DOM (remove
+`data-kc-asked`, change an input's type), which no isolated world prevents.
+The walker installs `window.__kcWalker`
 per document; it mints `eN` refs into `window.__kcRefs` (dropped when the element
 leaves the DOM), never reads a password or credential-shaped value, and hooks
 `console.*` so `console` returns in-page messages since the last navigate or

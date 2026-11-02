@@ -34,7 +34,13 @@ class FakeBrowser:
 
     def __init__(self, tmp_path: Path) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.page: dict[str, Any] = {"askedValues": 0, "passwordBoxes": 0}
+        self.page: dict[str, Any] = {
+            "askedValues": 0,
+            "passwordBoxes": 0,
+            "unreadableFrames": 0,
+            "framesSeen": 0,
+            "objectsSeen": 0,
+        }
         self.helpers: dict[str, Any] = {}
         self.steps: list[str] = []
         self.held = False
@@ -43,10 +49,14 @@ class FakeBrowser:
         self.tmp = tmp_path
 
     async def call(self, helper: str, **kwargs: Any) -> Any:
+        if helper == "closed_secret_count":
+            return 0
+        if helper == "frame_owner_count":
+            return 0
         if helper == "current_tab" and helper not in self.helpers:
             return {"url": "https://example.com/"}
         self.calls.append((helper, kwargs))
-        if helper == "js":
+        if helper in ("js", "js_isolated"):
             expression = kwargs["expression"]
             assert expression.startswith(ops.WALKER_SOURCE), "js must carry the walker"
             m = _METHOD_RE.search(expression[len(ops.WALKER_SOURCE) :])
@@ -81,7 +91,7 @@ class FakeBrowser:
     def page_methods(self) -> list[str]:
         out = []
         for h, kw in self.calls:
-            if h == "js":
+            if h in ("js", "js_isolated"):
                 m = _METHOD_RE.search(kw["expression"][len(ops.WALKER_SOURCE) :])
                 out.append(m.group(1) if m else "?")
         return out

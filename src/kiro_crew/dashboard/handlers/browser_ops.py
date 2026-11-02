@@ -98,6 +98,7 @@ from kiro_crew.browser_harness.live_hub import (
     LiveHub,
     get_live_hub,
 )
+from kiro_crew.browser_harness.supervisor import IPC_LEAF
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
 from kiro_crew.dashboard.state import _normalize_slot_key
@@ -248,6 +249,7 @@ def build_context(
         in_control=_in_control,
         agent_targets=_agent_targets,
         screenshot_dir=harness_ops.screenshot_dir(config_dir()),
+        staging_dir=config_dir() / IPC_LEAF / "shots",
         sleep=asyncio.sleep,
         url_allowed=committed_url_allowed,
         loop=_loop,

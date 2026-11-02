@@ -202,6 +202,11 @@ class OpContext:
     #: read at call time, or ``None`` when no stream holds the tab: then a frame ref
     #: is stale and the outline marks those frames as not read.
     frames: Callable[[], Any] = lambda: None
+    #: Where ``screenshot`` writes the image while it is still being judged: a leaf
+    #: no sandboxed agent can read (the hidden IPC leaf). The image moves into
+    #: ``screenshot_dir`` only once the check after the capture passes. ``None``
+    #: writes straight into ``screenshot_dir`` (tests).
+    staging_dir: Path | None = None
 
 
 def screenshot_dir(home: Path) -> Path:
@@ -321,8 +326,100 @@ async def _refuse_current_url(ctx: OpContext) -> dict[str, Any] | None:
     return await _refuse_committed_url(ctx, url)
 
 
+#: The walker counts the screenshot guards read: fields the person filled through a
+#: quick ask that still hold a value, and password or secret-looking boxes.
+GUARD_COUNTS = ("askedValues", "passwordBoxes")
+
+
+async def _guard_count(ctx: OpContext, method: str) -> int | None:
+    """*method*'s count over the top document and its frames, or ``None`` when any
+    part of it could not be taken.
+
+    The top document is counted in an isolated world (the ``js_isolated`` helper),
+    not the page's own world: there a page script could replace
+    ``document.querySelectorAll`` and make the count read zero. Cross-origin frames
+    are counted in their own isolated worlds (``FrameOps.count``), which already
+    counts an unreadable frame as one. With no frame inspector (no live stream
+    holds the tab, so ``ctx.frames()`` is ``None``), a cross-origin frame cannot be
+    counted at all, so any frame the top document cannot read makes the count
+    ``None``. What the isolated world cannot stop is a page that edits its own DOM
+    (drops ``data-kc-asked``, changes an input's type).
+    """
+    value = await _isolated_count(ctx, method)
+    if value is None:
+        return None
+    frames = ctx.frames()
+    # A frame no one looks inside makes the count unknown, so the guard refuses.
+    if await _frames_unchecked(ctx) != 0 or await _closed_secrets(ctx) != 0:
+        return None
+    if frames is None:
+        return value
+    try:
+        value += await frames.count(method)
+    except Exception:  # noqa: BLE001 - no count: the caller fails closed
+        return None
+    return value
+
+
+async def _frames_unchecked(ctx: OpContext) -> int | None:
+    """How many frames, objects and embeds no one looks inside, or ``None`` when
+    that cannot be told.
+
+    Every one whose document the top page's walk cannot read counts
+    (``unreadableFrames``), live stream or not: the live stream's frame inspector
+    (``FrameOps``) does not yet prove it checked every such frame, so it is not
+    trusted to. Every ``object`` and ``embed`` counts too, since no field count
+    walks their documents. The walk cannot reach a frame in a closed shadow root,
+    so the browser's own count of frame owners (``frame_owner_count``) is compared
+    with the ones the walk reached (``framesSeen``): any it missed count as well.
+    """
+    unreadable = await _isolated_count(ctx, "unreadableFrames")
+    seen = await _isolated_count(ctx, "framesSeen")
+    try:
+        owners = await ctx.helper("frame_owner_count")
+    except Exception:  # noqa: BLE001 - no tree: the caller fails closed
+        return None
+    if unreadable is None or seen is None:
+        return None
+    if not isinstance(owners, int) or isinstance(owners, bool) or owners < 0:
+        return None
+    if seen > owners:
+        # The walk reached more frames than the browser holds: the page changed
+        # between the two reads (frames added for one, gone for the other), so
+        # neither can be trusted to account for the other.
+        return None
+    return unreadable + (owners - seen)
+
+
+async def _closed_secrets(ctx: OpContext) -> int | None:
+    """How many secret-looking fields sit in closed shadow roots, or ``None``.
+
+    No walk from page or isolated world can enter a closed root, so the field
+    counts cannot see these; the browser's own DOM does (``closed_secret_count``).
+    """
+    try:
+        value = await ctx.helper("closed_secret_count")
+    except Exception:  # noqa: BLE001 - no count: the caller fails closed
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return None
+    return value
+
+
+async def _isolated_count(ctx: OpContext, method: str) -> int | None:
+    """A walker count taken in the top frame's isolated world, or ``None``."""
+    try:
+        value = await ctx.helper("js_isolated", expression=f"{WALKER_SOURCE}.{method}()")
+    except Exception:  # noqa: BLE001 - no count: the caller fails closed
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return None
+    return value
+
+
 async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
-    """Call one method of the walker in the page: the ONLY use of the ``js`` helper.
+    """Call one method of the walker in the page: the ONLY use of the ``js`` and
+    ``js_isolated`` helpers (the guard counts run in the isolated one).
 
     A ``f<tag>eN`` ref runs the method in that cross-origin frame instead, through
     the gateway's session (``resolve`` then answers page pixels). The guards'
@@ -359,12 +456,12 @@ async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
             if refused is not None:
                 raise _PageRefused(refused)
         return value if value is not None else {"ok": False, "code": "ref_stale"}
+    if method in GUARD_COUNTS:
+        # A count that could not be taken reads as one field: the guard refuses.
+        counted = await _guard_count(ctx, method)
+        return 1 if counted is None else counted
     rendered = ", ".join(json.dumps(a) for a in args)
     value = await ctx.helper("js", expression=f"{WALKER_SOURCE}.{method}({rendered})")
-    if method in ("askedValues", "passwordBoxes") and isinstance(value, int):
-        frames = ctx.frames()
-        if frames is not None:
-            value += await frames.count(method)
     if method == "activeField" and isinstance(value, dict) and value.get("frame"):
         frames = ctx.frames()
         inner = await frames.focused() if frames is not None else None
@@ -788,6 +885,23 @@ async def _press_key(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
             # Neither a character nor any modified key (select, copy, cut) on the
             # person's field: a copy would carry its value into one the agent reads.
             return _asked_refusal(None)
+        if modifiers and await _closed_secrets(ctx) != 0:
+            # A secret field in a closed shadow root: focus inside it reads as its
+            # host (or as nothing, when the host is the body), so no select, copy or
+            # cut chord while one is on the page, whatever the focus reads as.
+            return refusal(
+                "secret_field",
+                "the page holds a secret field this tool cannot see into; select, copy "
+                "and cut keys are refused. Press Tab to move on",
+            )
+        if focused and active.get("secret") and modifiers:
+            # A filled OTP or token field the person typed during a takeover: no
+            # select, copy or cut chord, so its value cannot be pasted elsewhere.
+            return refusal(
+                "secret_field",
+                "the focused field holds a secret (a code or token); select, copy and "
+                "cut keys are refused there. Press Tab to leave it",
+            )
         if (
             focused
             and active.get("password")
@@ -895,20 +1009,121 @@ def _screenshot_path(ctx: OpContext) -> Path:
 async def _screenshot(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
     # A field the person filled through `ask` would be in the pixels (a code, an
     # email; a password once a "show" toggle is clicked). The snapshot withholds it.
-    if await _page(ctx, "askedValues"):
-        return refusal(
-            "asked_value_on_page",
-            "a field the user filled through `ask` still holds its value; use snapshot "
-            "instead, or take the screenshot after the page moves on",
-        )
+    refused = await _refuse_current_url(ctx)
+    if refused is not None:
+        return refused
+    blocked = await _screenshot_blocked(ctx)
+    if blocked is not None:
+        return blocked
     await _step(ctx, "Take a screenshot")
     path = _screenshot_path(ctx)
     # The gateway is the directory's only writer, so it bounds it on each write.
     await asyncio.to_thread(prune_snapshots, path.parent, time.time())
-    await ctx.helper("screenshot", path=str(path))
-    if not await asyncio.to_thread(path.exists):
+    staged = await asyncio.to_thread(_staged_path, ctx, path)
+    await ctx.helper("screenshot", path=str(staged))
+    if not await asyncio.to_thread(staged.exists):
         return refusal("screenshot_error", "the browser wrote no image")
+    # Judged again AFTER the capture, as the decision hooks do: a filled field, a
+    # cross-origin frame no one can look inside, or a refused page that arrived
+    # while the image was taken discards it before the agent can read it.
+    blocked = await _screenshot_blocked(ctx, after=True)
+    if blocked is not None:
+        if not await asyncio.to_thread(_unlink, staged):
+            blocked["error"] += f" The image could not be deleted: {staged}"
+        return blocked
+    if staged != path:
+        await asyncio.to_thread(os.replace, staged, path)
     return {"ok": True, "path": str(path)}
+
+
+async def _screenshot_blocked(ctx: OpContext, *, after: bool = False) -> dict[str, Any] | None:
+    """The refusal ``screenshot`` answers now, or ``None`` when the image may be kept."""
+    if after:
+        refused = await _refuse_current_url(ctx)
+        if refused is not None:
+            return refused
+    lead = (
+        "the page changed while the screenshot was taken; the image was discarded. "
+        if after
+        else ""
+    )
+    unreadable = await _frames_unchecked(ctx)
+    if unreadable is None:
+        return refusal(
+            "secret_check_failed",
+            lead + "could not check the page's frames; use snapshot instead",
+        )
+    if unreadable:
+        return refusal(
+            "unreadable_frame_on_page",
+            lead + "the page embeds a frame, object or embed from another site that "
+            "cannot be checked for secret fields, so no screenshot is taken; use "
+            "snapshot instead",
+        )
+    closed = await _closed_secrets(ctx)
+    if closed is None:
+        return refusal(
+            "secret_check_failed",
+            lead + "could not check the page for secret fields; use snapshot instead",
+        )
+    if closed:
+        return refusal(
+            "secret_field_on_page",
+            lead + "the page holds a password or one-time-code field that cannot be "
+            "checked for a value, so no screenshot is taken; use snapshot instead",
+        )
+    asked = await _guard_count(ctx, "askedValues")
+    if asked is None:
+        return refusal(
+            "secret_check_failed",
+            lead + "could not check the page for fields the user filled through `ask`; "
+            "use snapshot instead",
+        )
+    if asked:
+        return refusal(
+            "asked_value_on_page",
+            lead + "a field the user filled through `ask` still holds its value; use "
+            "snapshot instead, or take the screenshot after the page moves on",
+        )
+    return None
+
+
+#: How long a staged image may sit before it is taken for a leftover.
+STAGED_MAX_AGE_S = 300.0
+
+
+def _staged_path(ctx: OpContext, final: Path) -> Path:
+    """Where the image is written until the check after the capture passes."""
+    if ctx.staging_dir is None:
+        return final
+    ctx.staging_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(ctx.staging_dir, 0o700)
+    except OSError:  # pragma: no cover - Windows ACLs
+        pass
+    # A gateway that died between the capture and the move left its image here;
+    # one older than any capture still in flight is dropped (another session's
+    # screenshot may be staged right now, so a fresh one is left alone).
+    cutoff = time.time() - STAGED_MAX_AGE_S
+    for stale in ctx.staging_dir.glob("shot-*.png"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink()
+        except OSError:
+            continue
+    return ctx.staging_dir / final.name
+
+
+def _unlink(path: Path) -> bool:
+    """Delete *path*; ``False`` when it is still there."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 async def _tabs(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
