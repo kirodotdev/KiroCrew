@@ -155,8 +155,10 @@ def test_boot_persists_launch_state_only_after_process_readiness(tmp_path):
             if task.get_name() == "mcp-launch-approval-persist"
         )
         orch._mcp_launch_approval_ready.set()
-        # flake-ok: pre-existing unbounded await of the gateway's own persist task, released by the readiness event the test sets first, moved verbatim; tracked for a de-flake pass
-        await persist
+        # The persist task is released by the readiness event set above. The ceiling only names a hang.
+        _done, pending = await asyncio.wait({persist}, timeout=30.0)
+        assert not pending, "persist task did not finish after readiness was signalled"
+        persist.result()
 
     with (
         patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
