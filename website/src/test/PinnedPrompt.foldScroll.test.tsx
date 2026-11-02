@@ -227,7 +227,7 @@ describe('PinnedPrompt — the forwarder yields to the card own scroll region', 
 
 // A line-mode wheel (Firefox) is converted with a line height, and WHICH element that
 // is read from is the whole question. `box` is the `.user-bubble` div, whose `text-sm`
-// sets line-height 1.25rem (20px); the paragraph is `my-1 leading-6` (24px). The
+// sets line-height 1.25rem (20px); the paragraph's differs (stubbed as 24px). The
 // earlier line-mode test could not catch a box read, because happy-dom computes no
 // line-height at all and the 24px fallback answered either way. So this test states
 // both values and checks the delta.

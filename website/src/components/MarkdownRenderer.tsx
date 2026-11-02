@@ -89,6 +89,7 @@ import { dashboardPreviewRef, dashboardPreviewTargetFromHref } from '../utils/da
 import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
 import { activatePath, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
+import { MD_FLOW_ROOT_CLS, MD_PARAGRAPH_CLS } from './markdown/typography'
 import { InlineCode } from './markdown/InlineCode'
 import { MarkdownTable } from './markdown/MarkdownTable'
 import { ImgWithFallback } from './markdown/ImgWithFallback'
@@ -476,7 +477,7 @@ function MdParagraph({ node, children }: React.HTMLAttributes<HTMLParagraphEleme
   // whether the reference ends it or sits mid-sentence. Only such a paragraph
   // gets the slot, so every other paragraph keeps its exact DOM.
   if (holdsSessionRef(node)) return <ParagraphWithNoticeSlot node={node}>{children}</ParagraphWithNoticeSlot>
-  return <p {...sp(node)} className="my-1 leading-6">{children}</p>
+  return <p {...sp(node)} className={MD_PARAGRAPH_CLS}>{children}</p>
 }
 
 function ParagraphWithNoticeSlot({ node, children }: { node?: HastElement; children?: React.ReactNode }) {
@@ -485,7 +486,7 @@ function ParagraphWithNoticeSlot({ node, children }: { node?: HastElement; child
   const [slot, setSlot] = useState<HTMLElement | null>(null)
   return (
     <ParagraphNoticeSlotCtx.Provider value={slot}>
-      <p {...sp(node)} className="my-1 leading-6">{children}</p>
+      <p {...sp(node)} className={MD_PARAGRAPH_CLS}>{children}</p>
       {/* A `div` so the notices stack as blocks; empty, it takes no height. */}
       <div ref={setSlot} data-paragraph-notices="" />
     </ParagraphNoticeSlotCtx.Provider>
@@ -1374,7 +1375,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
     <div
       ref={rootRef}
-      className={`group${animClass}${streamClass}`}
+      className={`group${animClass}${streamClass} ${MD_FLOW_ROOT_CLS}`}
       onClick={handleClick}
       data-image-scope=""
       data-tip-flow=""

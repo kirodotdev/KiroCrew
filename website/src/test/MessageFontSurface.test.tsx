@@ -106,11 +106,12 @@ describe('message font size scales the conversation surface', () => {
       const table = scopedRules().find((r) => r.selector.replace(/\s+/g, ' ') === '.mc-message-font-scope.msg-content table')
       expect(table?.body).toMatch(/font-size:\s*inherit/)
       // `text-sm` also fixes line-height at 1.25rem; the table re-derives it
-      // from the setting (20/14) and td, whose own `text-sm` sets it again,
-      // hands it back to the table so rows do not tighten as text grows.
+      // from the setting (20/14) for th, and td, whose own `text-sm` sets it
+      // again, takes the body text's unitless 1.5, which scales with the
+      // cell's (now inherited) size, so rows do not tighten as text grows.
       expect(table?.body).toMatch(/line-height:\s*calc\(var\(--mc-message-font-size, 14px\) \* 1\.4286\)/)
       const td = scopedRules().find((r) => r.selector.replace(/\s+/g, ' ') === '.mc-message-font-scope.msg-content td')
-      expect(td?.body).toMatch(/line-height:\s*inherit/)
+      expect(td?.body).toMatch(/line-height:\s*1\.5;/)
     })
 
     it('hands Pierre both the size and the line-height, so the stand-in swap stays height-neutral', () => {
