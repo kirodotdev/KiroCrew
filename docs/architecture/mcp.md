@@ -4843,7 +4843,10 @@ pinned exactly as registration pins it, never read from the spec, and with
 `PYTHONPATH` and `KIROCREW_HOME` set from that pin over anything the spec
 declares. A user app, a shadowed builtin, or a builtin app that ships its own
 binary is not Kiro Crew's code and gets no element. gatewayd's set stays the
-managed servers: a pooled app server is not handed the token.
+managed servers: a pooled app server is not handed the token. KAS never reaches
+`kiro_control_plane_servers`; its hoist tokens the same app servers from the
+same manifest launch (`acp/kas_app_identity.py`, see
+[acp-client](../system-specs/modules/acp-client.md)).
 
 `register_hook` resolves through `require_strict_session_key`. Member hooks
 capture their originating execution record before provider allocation; Global
