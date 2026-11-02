@@ -122,15 +122,46 @@ async def test_a_damaged_global_memory_db_is_named_and_left_untouched(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_a_non_damage_global_failure_keeps_the_restore_advice(monkeypatch):
+async def test_a_non_damage_global_failure_gets_the_files_advice(monkeypatch):
+    """The restore pass already ran, so a later failure is never a pending restore."""
     gateway = _gateway(monkeypatch)
     _stub_preparation_steps(monkeypatch)
-    gateway.vector_memory.init.side_effect = ValueError("restore staging is incomplete")
+    gateway.vector_memory.init.side_effect = ValueError("vector schema check failed")
     try:
         assert await gateway._wait_for_memory_preparation() is True
         with pytest.raises(MemoryStartupUnavailable) as caught:
             require_memory_ready()
-        assert "Inspect or cancel this store's pending restore" in str(caught.value)
+        message = str(caught.value)
+        assert "Global memory files" in message
+        assert "pending restore" not in message
+    finally:
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_preferences_seeding_write_names_the_memory_files(monkeypatch, tmp_path):
+    """A seeding rename that fails (WinError 17) is not a pending restore."""
+    gateway = _gateway(monkeypatch)
+    _stub_preparation_steps(monkeypatch)
+    store = MemoryStore(workspace=tmp_path)
+    real_write = store._files.write
+
+    def failing_write(path, content, **kwargs):
+        if path.name == "preferences.md":
+            raise OSError(17, "The system cannot move the file to a different disk drive")
+        return real_write(path, content, **kwargs)
+
+    monkeypatch.setattr(store._files, "write", failing_write)
+    gateway.ctx_builder = SimpleNamespace(memory=store)
+    try:
+        assert await gateway._wait_for_memory_preparation() is True
+        with pytest.raises(MemoryStartupUnavailable) as caught:
+            require_memory_ready()
+        message = str(caught.value)
+        assert "different disk drive" in message
+        assert f"Global memory files in {store._memory_dir}" in message
+        assert "pending restore" not in message
+        assert not list(tmp_path.rglob("*restore*"))
     finally:
         await asyncio.to_thread(gateway._stop_memory_startup)
 
@@ -149,7 +180,8 @@ async def test_damage_outside_the_vector_open_does_not_name_memory_db(monkeypatc
         with pytest.raises(MemoryStartupUnavailable) as caught:
             require_memory_ready()
         message = str(caught.value)
-        assert "Inspect or cancel this store's pending restore" in message
+        assert "Global memory files" in message
+        assert "pending restore" not in message
         assert "memory.db" not in message
     finally:
         await asyncio.to_thread(gateway._stop_memory_startup)
