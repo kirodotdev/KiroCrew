@@ -13,6 +13,7 @@ import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { servedUploadMb } from '../../utils/fileTokens'
+import { pathBasename } from '../../utils/pathBasename'
 import { pathForFile, canPickFolderNatively } from '../../lib/electron'
 import ErrorNotice from '../../components/ErrorNotice'
 import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButton'
@@ -232,7 +233,7 @@ function FolderConfirmDialog({ fileCount, uri, onConfirm, onCancel, isPending }:
   )
 }
 
-function FolderProgress({ sourceId }: { sourceId: string }) {
+export function FolderProgress({ sourceId }: { sourceId: string }) {
   const queryClient = useQueryClient()
   const wasScanning = useRef(false)
   const { data } = useQuery({
@@ -292,14 +293,14 @@ function FolderProgress({ sourceId }: { sourceId: string }) {
       {scanning && (
         <div className="flex items-center gap-1.5 text-[12px]">
           <RefreshCw size={11} className="text-accent animate-spin" />
-          <span className="text-text truncate">{scanning.file_path.split('/').pop()}</span>
+          <span className="text-text truncate">{pathBasename(scanning.file_path)}</span>
         </div>
       )}
       {/* Recent done */}
       {recentDone.map(f => (
         <div key={f.file_path} className="flex items-center gap-1.5 text-[12px]">
           <CheckCircle size={11} className="text-ok" />
-          <span className="text-muted truncate">{f.file_path.split('/').pop()}</span>
+          <span className="text-muted truncate">{pathBasename(f.file_path)}</span>
           <span className="text-[10px] text-muted ml-auto">{f.item_count} {i18nT('pages.knowledge.sourcesList.items')}</span>
         </div>
       ))}
@@ -307,7 +308,7 @@ function FolderProgress({ sourceId }: { sourceId: string }) {
       {failed.map(f => (
         <div key={f.file_path} className="flex items-center gap-1.5 text-[12px]">
           <AlertCircle size={11} className="text-danger" />
-          <span className="text-text truncate flex-1" title={f.error_message || ''}>{f.file_path.split('/').pop()}</span>
+          <span className="text-text truncate flex-1" title={f.error_message || ''}>{pathBasename(f.file_path)}</span>
           <span className="text-[10px] text-danger truncate max-w-[120px]">{f.error_message}</span>
           <button onClick={() => retryMutation.mutate(f.file_path)} className="text-[10px] text-accent hover:underline">{i18nT('pages.knowledge.sourcesList.retry')}</button>
           <button onClick={() => skipMutation.mutate(f.file_path)} className="text-[10px] text-muted hover:underline">{i18nT('pages.knowledge.sourcesList.skip')}</button>

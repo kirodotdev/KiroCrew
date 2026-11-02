@@ -20,6 +20,7 @@ import FileBrowserRail from './FileBrowserRail'
 import WebPreviewPanel from '../../components/WebPreviewPanel'
 import CliPanel from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
+import { pathBasename } from '../../utils/pathBasename'
 import { useQueryClient } from '@tanstack/react-query'
 import type { PanelTab } from '../../hooks/usePanelTabs'
 import { usePanelTerminalsPending } from '../../hooks/usePanelTabs'
@@ -416,7 +417,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
             <button className="text-[12px] text-text-strong truncate hover:text-accent cursor-pointer transition-colors bg-transparent border-none p-0" onClick={() => { onFileOpen?.(tab.path || '') }} title={i18nT('pages.chat.sidePanel.open_in_editor_2', { path: tab.path || '' })}>
               {/* Bare filename: the tab title carries '- Diff', which would
                   read redundantly next to the Turn Diff badge here. */}
-              {(tab.path || '').split('/').pop() || tab.title}
+              {pathBasename(tab.path || '') || tab.title}
             </button>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-medium shrink-0">{i18nT('pages.chat.sidePanel.turn_diff')}</span>
             {(added > 0 || removed > 0) && <span className="text-[11px] font-mono font-semibold shrink-0">{added > 0 && <span className="text-ok">+{added}</span>}{removed > 0 && <span className="text-danger ml-1.5">-{removed}</span>}</span>}

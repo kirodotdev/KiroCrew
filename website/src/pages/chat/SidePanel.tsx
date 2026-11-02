@@ -51,6 +51,7 @@ import { AppPanelTabBody, AppPanelTabsErrorNotice, McpAppTabBody, TabBody } from
 import { useSidePanelSize } from './useSidePanelSize'
 import { crewModeRoot, crewRootOf } from '../../lib/crewMode'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
+import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
 
 // The panel's parts live in sibling owners that never import this module:
 // `SidePanelAddMenu.tsx` (the + menu's catalog and gates), `SidePanelTabChip.tsx`
@@ -1168,7 +1169,7 @@ export default function SidePanel({
                 onDiskContent={(c, binary, partial) => patchTab(t.id, { content: c, savedContent: c, ...(binary === undefined ? {} : { binary }), ...(partial === undefined ? {} : { partial }) })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
                 onRevealConsumed={() => patchTab(t.id, { revealLine: undefined })}
-                onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
+                onPathChange={(p) => patchTab(t.id, { path: p, title: pathBasename(stripTrailingSeparators(p)) || p })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
                 // A folder opened from a file tab keeps that tab's origin chat.
