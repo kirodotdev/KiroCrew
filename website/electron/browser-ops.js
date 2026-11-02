@@ -413,6 +413,21 @@ const WALKER_SOURCE = `(() => {${PAGE_HELPERS_SOURCE}
       // The Browser panel's annotate overlay (browser-annotate.js) is ours, not
       // the page's: its marker badges must not show up in the agent's outline.
       if (el.id === "${ANNOTATE_HOST_ID}") continue;
+      // display: contents generates no box of its own (0x0 rect, null
+      // offsetParent) while its children render normally, so the box checks
+      // in visible() would drop the whole subtree. Treat it as transparent:
+      // walk its children at the same depth and let each child's own computed
+      // style decide (visibility is inherited, so a hidden wrapper still hides
+      // children that do not override it). The wrapper itself is not emitted
+      // even when it is interactive (a display: contents button or link): it
+      // has no box, so resolveExpression could never return a point to click
+      // for its ref; its rendered children carry the refs instead.
+      var cs = window.getComputedStyle(el);
+      if (cs && cs.display === "contents") {
+        walk(el, depth);
+        if (el.shadowRoot) walk(el.shadowRoot, depth);
+        continue;
+      }
       if (!visible(el)) continue;
       var next = emit(el, depth);
       walk(el, next);
