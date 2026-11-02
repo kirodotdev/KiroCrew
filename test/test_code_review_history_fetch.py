@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 import yaml
 from git_maintenance_helpers import git_global_config_text, git_maintenance_off_entries
+from test_ai_review_workflows_code_review_greps import _pcre_grep_path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "code-review.yml"
@@ -317,13 +318,23 @@ def test_the_commit_range_and_the_rule_greps_run_on_the_fetched_history(world) -
         ), enforced.stdout
     work, res, sha = _diff_base(o, by_name["normal"], "autosde-rules")
     assert res.returncode == 0, res.stderr
+    # The rule step runs on a Linux runner with GNU `grep -P`; a host whose
+    # grep lacks -P (BSD grep on macOS) runs it through the perl shim.
+    pcre_path = _pcre_grep_path(shutil.which("bash"), o.tmp)
     rules = _run(
         o,
         work / "website",
         steps["Check frontend blocking rules"]["run"],
-        {"BASE": sha, "HEAD": by_name["normal"]["head"], "GIT_NO_LAZY_FETCH": "1"},
+        {
+            "BASE": sha,
+            "HEAD": by_name["normal"]["head"],
+            "GIT_NO_LAZY_FETCH": "1",
+            "PATH": pcre_path,
+        },
     )
-    assert rules.returncode != 0 and "Never write HTML via innerHTML" in rules.stdout, rules.stdout
+    assert rules.returncode != 0 and "Never write HTML via innerHTML" in rules.stdout, (
+        rules.stdout + rules.stderr
+    )
 
 
 def test_a_fetch_that_fails_once_is_retried(world) -> None:
