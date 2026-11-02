@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import subprocess
@@ -179,8 +180,26 @@ def kill_process_group(pgid: int, sig: int = SIGTERM) -> bool:
         raise OSError("kill_process_group: no POSIX process groups on this platform")
     if type(pgid) is not int or pgid <= 1 or pgid == _OWN_PGID:
         raise ValueError(f"kill_process_group: refusing broadcast/self process group {pgid!r}")
-    os.killpg(pgid, sig)
+    _killpg(pgid, sig)
     return True
+
+
+def _killpg(pgid: int, sig: int) -> None:
+    """``os.killpg``, reading macOS's EPERM for an all-zombie group as an emptied one.
+
+    macOS answers EPERM, not ESRCH, when every member of the group is a zombie
+    (an exited leader not yet reaped). That group is gone in every sense a
+    signal can reach, so it raises ``ProcessLookupError`` like an empty group.
+    A running member, or a listing that cannot be read, keeps the EPERM.
+    """
+    try:
+        os.killpg(pgid, sig)
+    except PermissionError:
+        if IS_MACOS:
+            members = darwin_pgroup_members(pgid)
+            if members is not None and all(member.zombie for member in members):
+                raise ProcessLookupError(errno.ESRCH, "process group holds only zombies") from None
+        raise
 
 
 def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
@@ -217,7 +236,7 @@ def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
             )
             os.kill(pid, sig)
             return True
-        os.killpg(pgid, sig)
+        _killpg(pgid, sig)
         return True
     taskkill_bin = trusted_system_bin("taskkill")
     if taskkill_bin is None:
