@@ -27,6 +27,28 @@ from mcp_computer_helpers import _enable
 from kiro_crew import mcp_computer, mcp_core
 from kiro_crew.computer_use.types import ERROR_PREFIX, TOOL_LIST_APPS, AppRef
 from kiro_crew.mcp_caller import CallerContext, set_current_caller, set_current_tenant_nonce
+from kiro_crew.testing.wait import DEFAULT_INTERVAL_SECS, default_timeout
+
+
+def _serve_in_background(server: http.server.HTTPServer) -> None:
+    """Run ``serve_forever`` on a daemon thread that re-reads its stop flag every tick."""
+    threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": DEFAULT_INTERVAL_SECS}, daemon=True
+    ).start()
+
+
+def _stop_listener(server: http.server.HTTPServer) -> None:
+    """Stop a listener started by ``_serve_in_background`` and close its socket.
+
+    ``shutdown()`` waits on an event that only the serve loop sets, with no bound of its
+    own. It runs on a helper thread joined under the lost-run bound, so a loop that never
+    leaves ``serve_forever`` fails here by name instead of hanging the worker.
+    """
+    stopper = threading.Thread(target=server.shutdown, daemon=True)
+    stopper.start()
+    stopper.join(timeout=default_timeout())
+    assert not stopper.is_alive(), "the loopback listener never left serve_forever"
+    server.server_close()
 
 
 class TestUnresolvedSessionsAreNamespaced:
@@ -287,7 +309,7 @@ class TestTheInvokeCallIsNeverProxied:
                 pass  # keep pytest output clean
 
         server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        _serve_in_background(server)
         return server, server.server_address[1]
 
     def test_the_secret_reaches_the_gateway_and_not_the_proxy(self, monkeypatch):
@@ -312,9 +334,8 @@ class TestTheInvokeCallIsNeverProxied:
 
             decoded = mcp_computer._invoke("dashboard:main", TOOL_LIST_APPS, {})
         finally:
-            # flake-ok: shutdown() of a port-0 loopback listener returns at serve_forever's next 0.5 s poll; moved verbatim, tracked for a de-flake pass
-            gateway.shutdown()
-            proxy.shutdown()
+            _stop_listener(gateway)
+            _stop_listener(proxy)
 
         assert proxy_hits == [], f"the internal secret reached the proxy: {proxy_hits}"
         assert [h["secret"] for h in gateway_hits] == [self.CANARY]
@@ -352,9 +373,8 @@ class TestTheInvokeCallIsNeverProxied:
 
             mcp_computer._invoke("dashboard:main", TOOL_LIST_APPS, {})
         finally:
-            # flake-ok: shutdown() of a port-0 loopback listener returns at serve_forever's next 0.5 s poll; moved verbatim, tracked for a de-flake pass
-            gateway.shutdown()
-            proxy.shutdown()
+            _stop_listener(gateway)
+            _stop_listener(proxy)
 
         assert proxy_hits == [], f"the secret proxied despite no_proxy=localhost: {proxy_hits}"
         assert [h["secret"] for h in gateway_hits] == [self.CANARY]
@@ -410,7 +430,7 @@ class TestUnresolvedKeysAreNeverDeclared:
                 pass
 
         server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        _serve_in_background(server)
         return server, server.server_address[1]
 
     def _invoke_through(self, monkeypatch, session_key: str) -> dict:
@@ -423,8 +443,7 @@ class TestUnresolvedKeysAreNeverDeclared:
             monkeypatch.setattr(mcp_computer, "_internal_secret", lambda: "not-a-secret")
             decoded = mcp_computer._invoke(session_key, TOOL_LIST_APPS, {})
         finally:
-            # flake-ok: shutdown() of a port-0 loopback listener returns at serve_forever's next 0.5 s poll; moved verbatim, tracked for a de-flake pass
-            server.shutdown()
+            _stop_listener(server)
         assert decoded == {"text": "ok"}
         assert len(hits) == 1
         return hits[0]
