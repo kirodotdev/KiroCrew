@@ -6807,7 +6807,18 @@
       "attachment_removed": "{{file}} eliminado de los adjuntos",
       "attachment_restored": "{{file}} adjuntado",
       "trusted_command_until": "«{{cmd}}» es de confianza hasta las {{time}}; después vuelve a preguntar",
-      "trusted_base_until": "Cualquier comando «{{base}}» es de confianza hasta las {{time}}; después vuelve a preguntar"
+      "trusted_base_until": "Cualquier comando «{{base}}» es de confianza hasta las {{time}}; después vuelve a preguntar",
+      "composer_action_dialog": "{{title}}, de {{app}}",
+      "composer_action_close": "Cerrar",
+      "composer_action_timed_out": "{{app}} tardó demasiado y se detuvo. No se insertó nada.",
+      "composer_action_app_error": "{{app}} tuvo un error. No se insertó nada.",
+      "composer_action_revoked": "{{app}} se desactivó. No se insertó nada.",
+      "composer_action_failed": "{{app}} no respondió. No se insertó nada.",
+      "composer_action_from": "Proporcionado por la app {{app}}",
+      "composer_action_footer_host": "{{productName}} revisó el borrador. {{app}} sigue sin poder verlo.",
+      "composer_action_needs_empty": "{{app}} solo puede insertar en un mensaje vacío. Vacía primero el borrador.",
+      "composer_action_would_resolve": "El texto de {{app}} empieza por /, ! o @, o contiene un $skill, un archivo o una imagen, así que se ejecutaría en vez de enviarse como texto. No se insertó.",
+      "composer_action_footer": "{{app}} no puede ver tu borrador. Su texto se inserta tal cual y tú decides si lo envías."
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -11265,7 +11276,8 @@
         "keeps_builtin_until": "Hasta entonces sigue siendo una app integrada.",
         "keeps_builtin": "Sigue siendo una app integrada.",
         "installed_needs_newer_host": "La versión instalada de {{name}} necesita un {{productName}} más reciente. Actualiza {{productName}}; tus datos no cambian."
-      }
+      },
+      "grants_reconsent_composer_actions": "Botones del editor: permite que la app añada estos botones al menú + del editor. Un clic inserta el texto de la app en tu borrador; la app no puede ver el borrador ni enviarlo."
     },
     "appPage": {
       "loading_app": "Cargando la app…",

@@ -4,6 +4,7 @@ import type { ResizeInfo } from '../../utils/resizeImage'
 import type { SendMode } from '../../pages/chat/ChatSettings'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { PasteBlock } from '../../utils/pasteTokens'
+import type { ComposerActionItem } from '../../composerActions/composerActionRegistry'
 import type { FileKind } from '../FilePickerMenu'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { ApprovalModeRemote } from '../ApprovalModePicker'
@@ -253,6 +254,10 @@ export interface ChatInputProps {
   /** Session Environment chip for this slot (`SessionEnvironmentChip`). It owns
    *  its own separated shelf group and renders nothing until profiles exist. */
   environmentSlot?: string | null
+  /** App-contributed composer actions (contributes.composerActions in app.json):
+   *  rows in the "+" menu whose app offers text the composer inserts as visible
+   *  text, refused when it holds anything the composer would resolve. */
+  composerActions?: readonly ComposerActionItem[]
   /** App-contributed session controls (contributes.sessionControls in app.json). */
   sessionControls?: {
     key: string

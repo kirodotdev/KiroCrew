@@ -2227,7 +2227,18 @@
       "attachment_removed": "{{file}} removed from attachments",
       "attachment_restored": "{{file}} attached",
       "trusted_command_until": "Trusted “{{cmd}}” until {{time}}, then it asks again",
-      "trusted_base_until": "Trusted any “{{base}}” command until {{time}}, then it asks again"
+      "trusted_base_until": "Trusted any “{{base}}” command until {{time}}, then it asks again",
+      "composer_action_dialog": "{{title}}, from {{app}}",
+      "composer_action_close": "Close",
+      "composer_action_timed_out": "{{app}} took too long, so it was stopped. Nothing was inserted.",
+      "composer_action_app_error": "{{app}} hit an error. Nothing was inserted.",
+      "composer_action_revoked": "{{app}} was turned off. Nothing was inserted.",
+      "composer_action_failed": "{{app}} didn't respond. Nothing was inserted.",
+      "composer_action_from": "Provided by the {{app}} app",
+      "composer_action_footer_host": "{{productName}} checked the draft. {{app}} still can't see it.",
+      "composer_action_needs_empty": "{{app}} can only insert into an empty message. Clear the draft first.",
+      "composer_action_would_resolve": "{{app}}'s text starts with /, ! or @, or holds a $skill, a file or an image, so it would run instead of being sent as text. It was not inserted.",
+      "composer_action_footer": "{{app}} can't see your draft. Its text goes in as written, and you choose to send it."
     },
     "chatPane": {
       "crewmate_quiet": "{{name}} hasn't said anything to you yet.",
@@ -4884,7 +4895,8 @@
         "keeps_builtin_until": "Until then it stays a built-in app.",
         "keeps_builtin": "It stays a built-in app.",
         "installed_needs_newer_host": "The installed version of {{name}} needs a newer {{productName}}. Update {{productName}}; your data is unchanged."
-      }
+      },
+      "grants_reconsent_composer_actions": "Composer buttons: lets the app add these buttons to the composer's + menu. A click inserts the app's text into your draft; the app can't see the draft or send it."
     },
     "appsPage": {
       "action_failed": "Failed to {{action}} {{name}}",

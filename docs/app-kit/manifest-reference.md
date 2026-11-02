@@ -1118,6 +1118,110 @@ put a **Copy** or **Open &lt;host&gt;** item in that menu: nothing is
 copied or opened until the user picks it. Links inside the frame open through the
 dashboard's link bridge.
 
+### `contributes.composerActions` — Buttons That Put Text in the Composer
+
+A composer action is a row in the chat composer's **+** menu. When the user clicks
+it, the app's frame opens in a small popover above the composer, and the app hands
+back text. The host puts that text into the empty composer, where the user can
+read it, edit it and send it. The app never sends a message.
+
+```json
+{
+  "contributes": {
+    "composerActions": [
+      {
+        "id": "insert-snippet",
+        "title": "Insert snippet",
+        "icon": "Zap",
+        "entry": "dist/composer.mjs",
+        "popover": { "width": 360, "maxHeight": 320 }
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Storage-safe slug, unique within the app |
+| `title` | string | The row's label, at most 40 characters. The row also shows the app's name |
+| `icon` | string | Optional host glyph name: one of `Shield`, `Bot`, `Search`, `Tag`, `Users`, `Zap`, `Star`, `Package`, `Cat`, `AudioLines`, `Mic`. Any other name falls back to `Package`; a URL is refused |
+| `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
+| `popover` | object | Optional. `width` 200-480 and `maxHeight` 120-600, in CSS pixels |
+
+At most **two** actions per app. A field of the wrong type, or a field not in this
+table, is refused at install. The block is signed.
+
+**What the app sees.** Nothing from the composer: not the draft, not the selection,
+not the session. The click is the whole input. An app that needs the user's
+words asks for them in its own popover.
+
+**Approval.** Each action is part of what the owner approves for the app. An update
+that adds an action waits on the app's page until the owner approves it; renaming
+one or changing its icon needs nothing. A disabled app, or an action whose approval
+is withdrawn, loses its row, and an open popover is closed.
+
+**Where the module runs.** In the same sandboxed, opaque-origin frame as a link
+preview (see `contributes.linkPreviews`), loaded from
+`/app-frame/<app>/composerActions/<id>/…`. The module exports `activate(ctx)`,
+which returns an `invoke(call)` handler. The host calls it once per click.
+
+```ts
+export function activate(ctx: {
+  appName: string
+  point: 'composerActions'
+  theme(): 'dark' | 'light'
+  /** fetch() to this app's own backend routes; `path` is relative. */
+  fetch(path: string, init?: RequestInit): Promise<Response>
+}): {
+  // Nothing from the composer is passed in: only this click's own controls.
+  invoke(call: {
+    invocationId: string
+    deadlineMs: number        // how long the click has, restarted by each resize
+    signal: AbortSignal       // aborted when the user closes the popover, or at the deadline
+    // Settles with { ok: true } when the host took it, or { ok: false, code }
+    // (`stale`, `too_large`, `not_allowed`, `not_empty`, `not_literal`) when it refused.
+    insert(text: string): Promise<{ ok: boolean; code?: string }>
+    resize(size: { width: number; height: number }): void
+    close(): void
+    error(message: string): void
+  }): void | string | Promise<void | string>  // returning text is the same as call.insert(text)
+  theme?(theme: 'dark' | 'light'): void
+  dispose?(): void
+}
+```
+
+- **One result.** The host takes one `insert` per click. A later one, one after the
+  popover closed, or one over 32,000 characters is refused (`insert` settles with `ok: false`
+  and `stale` or `too_large`).
+- **Time.** The frame must load and report ready within 5 seconds. The click then
+  has 2 minutes, restarted by each `resize`; at the deadline `signal` aborts and
+  the popover says the app took too long.
+- **Only into an empty composer, only text with nothing to resolve.** The host puts
+  your text in only when the composer is empty (no text, no collapsed paste), so
+  your text is the whole draft. If the user clicks with a draft already there, the
+  popover says the draft must be cleared first and your frame is not loaded. If the
+  user types while your frame is open, your `insert` settles `not_empty`. If
+  another tab takes the composer's typing lock, your frame is closed and a late
+  `insert` settles `stale`. Text that
+  would itself be read as more than text is refused and nothing is inserted
+  (`not_literal`): a line whose first non-blank character is `/` or `!` (a
+  terminal command), an `@` that does
+  not follow a letter or digit, a `$` before a letter or digit, the composer's
+  `[ Paste #N · M lines ]`, `[attached_file N]` or `[attached_dir N]` syntax however
+  it is spaced, markdown image syntax `![…](…)`, any raw HTML tag such as `<img>` (the transcript fetches a local image,
+  audio or video destination, decoded), or a path separator followed on the same
+  line by an image suffix. The popover shows the
+  reason and stays open, so you can offer other text. Accepted text is cleaned of
+  control characters (but tab and newline), bidirectional override characters and
+  characters that draw nothing (zero-width, tag characters, variation selectors)
+  and goes in as ordinary text the user can read and edit. Nothing marks it:
+  whatever the user types after it is their own and resolves normally.
+- **Limits.** The frame cannot write the clipboard. Links open through the
+  dashboard's link bridge, and a frame that navigates itself away is closed. A
+  message over 64 KB as JSON, or past a burst of 120 messages refilled at 60 a
+  second, closes the frame.
+
 ### `backend` — App Backend Process
 
 ```json

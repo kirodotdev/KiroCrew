@@ -6658,7 +6658,18 @@
       "attachment_removed": "{{file}} अनुलग्नकों से हटाया गया",
       "attachment_restored": "{{file}} संलग्न किया गया",
       "trusted_command_until": "«{{cmd}}» पर {{time}} तक भरोसा, उसके बाद फिर से पूछा जाएगा",
-      "trusted_base_until": "किसी भी «{{base}}» कमांड पर {{time}} तक भरोसा, उसके बाद फिर से पूछा जाएगा"
+      "trusted_base_until": "किसी भी «{{base}}» कमांड पर {{time}} तक भरोसा, उसके बाद फिर से पूछा जाएगा",
+      "composer_action_dialog": "{{title}}, {{app}} से",
+      "composer_action_close": "बंद करो",
+      "composer_action_timed_out": "{{app}} ने बहुत समय लिया, इसलिए उसे रोक दिया गया। कुछ भी नहीं डाला गया।",
+      "composer_action_app_error": "{{app}} में त्रुटि हुई। कुछ भी नहीं डाला गया।",
+      "composer_action_revoked": "{{app}} बंद कर दिया गया। कुछ भी नहीं डाला गया।",
+      "composer_action_failed": "{{app}} ने जवाब नहीं दिया। कुछ भी नहीं डाला गया।",
+      "composer_action_from": "{{app}} ऐप द्वारा",
+      "composer_action_footer_host": "{{productName}} ने ड्राफ़्ट जाँचा। {{app}} अब भी उसे नहीं देख सकता।",
+      "composer_action_needs_empty": "{{app}} केवल खाली संदेश में डाल सकता है। पहले ड्राफ़्ट खाली करो।",
+      "composer_action_would_resolve": "{{app}} का टेक्स्ट /, ! या @ से शुरू होता है, या उसमें $skill, फ़ाइल या इमेज है, इसलिए वह टेक्स्ट की तरह भेजे जाने के बजाय चलता। उसे नहीं डाला गया।",
+      "composer_action_footer": "{{app}} तुम्हारा ड्राफ़्ट नहीं देख सकता। उसका टेक्स्ट जैसा है वैसा डाला जाता है, और भेजना तुम तय करते हो।"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",
@@ -11069,7 +11080,8 @@
         "keeps_builtin_until": "तब तक यह अंतर्निहित ऐप ही रहेगा।",
         "keeps_builtin": "यह अंतर्निहित ऐप ही रहेगा।",
         "installed_needs_newer_host": "{{name}} के इंस्टॉल किए गए संस्करण को नया {{productName}} चाहिए। {{productName}} अपडेट करो; तुम्हारा डेटा नहीं बदला है।"
-      }
+      },
+      "grants_reconsent_composer_actions": "कंपोज़र बटन: ऐप को कंपोज़र के + मेनू में ये बटन जोड़ने देता है। क्लिक करने पर ऐप का टेक्स्ट तुम्हारे ड्राफ़्ट में डलता है; ऐप ड्राफ़्ट को देख या भेज नहीं सकता।"
     },
     "appPage": {
       "loading_app": "ऐप लोड हो रहा है…",

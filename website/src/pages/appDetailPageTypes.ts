@@ -10,6 +10,7 @@
  */
 import type {
   AppAdoptionRow,
+  ComposerActionGrantRow,
   LinkOpenGrantRow,
   LinkPreviewGrantRow,
   MessageActionGrantRow,
@@ -69,6 +70,7 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   linkPreviewGrant?: LinkPreviewGrantRow
   messageActionGrant?: MessageActionGrantRow
   linkOpenGrant?: LinkOpenGrantRow
+  composerActionGrant?: ComposerActionGrantRow
   managed?: string
   source?: string
   installedAt?: string

@@ -6509,7 +6509,18 @@
       "attachment_removed": "{{file}} 첨부에서 제거됨",
       "attachment_restored": "{{file}} 첨부됨",
       "trusted_command_until": "‘{{cmd}}’을(를) {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
-      "trusted_base_until": "모든 ‘{{base}}’ 명령을 {{time}}까지 신뢰하며, 이후에는 다시 확인합니다"
+      "trusted_base_until": "모든 ‘{{base}}’ 명령을 {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
+      "composer_action_dialog": "{{title}}, {{app}}",
+      "composer_action_close": "닫기",
+      "composer_action_timed_out": "{{app}}이(가) 너무 오래 걸려 중지되었습니다. 아무것도 넣지 않았습니다.",
+      "composer_action_app_error": "{{app}}에서 오류가 발생했습니다. 아무것도 넣지 않았습니다.",
+      "composer_action_revoked": "{{app}}이(가) 꺼졌습니다. 아무것도 넣지 않았습니다.",
+      "composer_action_failed": "{{app}}이(가) 응답하지 않았습니다. 아무것도 넣지 않았습니다.",
+      "composer_action_from": "{{app}} 앱에서 제공",
+      "composer_action_footer_host": "{{productName}}이(가) 초안을 확인했습니다. {{app}}은(는) 여전히 초안을 볼 수 없습니다.",
+      "composer_action_needs_empty": "{{app}}은(는) 빈 메시지에만 넣을 수 있습니다. 먼저 초안을 비우세요.",
+      "composer_action_would_resolve": "{{app}}의 텍스트가 /, ! 또는 @로 시작하거나 $skill, 파일, 이미지를 포함해 텍스트로 보내지지 않고 실행됩니다. 넣지 않았습니다.",
+      "composer_action_footer": "{{app}}은(는) 초안을 볼 수 없습니다. 텍스트는 그대로 들어가며, 보낼지는 직접 정합니다."
     },
     "chatPane": {
       "agent_list": "에이전트 목록",
@@ -10873,7 +10884,8 @@
         "keeps_builtin_until": "그때까지는 기본 제공 앱으로 유지됩니다.",
         "keeps_builtin": "기본 제공 앱으로 유지됩니다.",
         "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
-      }
+      },
+      "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",

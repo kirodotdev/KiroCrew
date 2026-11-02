@@ -1031,6 +1031,121 @@ class LinkOpenConfig:
         return errors
 
 
+#: Composer actions per app. Each is a row in the composer's "+" menu, a menu every
+#: enabled app shares, so the cap keeps one app from crowding the others out.
+MAX_COMPOSER_ACTIONS_PER_APP = 2
+#: A row's label: short, because it shares the "+" menu with the host's own rows.
+MAX_COMPOSER_ACTION_TITLE = 40
+_COMPOSER_ACTION_ICON_RE = re.compile(r"^[A-Z][A-Za-z0-9]{0,39}$")
+_COMPOSER_ACTION_POPOVER = {"width": (200, 480), "maxHeight": (120, 600)}
+_COMPOSER_ACTION_KEYS = frozenset({"id", "title", "icon", "entry", "popover"})
+#: The longest string an action field may hold, in characters. Checked before the
+#: value is kept: path normalization would accept a padded ``entry`` such as
+#: ``"./" * 500000 + "a.mjs"`` and then serve all of it.
+MAX_COMPOSER_ACTION_STRING = 512
+
+
+@dataclass
+class ComposerActionConfig:
+    """A button in the composer's "+" menu: the app returns text, the person sends it.
+
+    On a click the host opens a sandboxed, opaque-origin frame (the shared frame model,
+    ``apps/app_frame.py``) that imports ``entry`` and calls the module's
+    ``invoke`` once. The app is handed nothing from the composer: not the draft, not
+    the selection, not the session. It offers text; the host inserts it only into
+    an empty composer, and only text that would resolve nothing (no command,
+    mention, skill or path), and never sends it.
+    """
+
+    id: str = ""
+    title: str = ""
+    icon: str = ""
+    # ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
+    entry: str = ""
+    #: The frame popover's width and greatest height, in CSS pixels.
+    popover: dict[str, int] = field(default_factory=dict)
+    #: Field names present with the wrong JSON type, or unknown. Not serialized.
+    bad_fields: list[str] = field(default_factory=list)
+    #: String fields longer than ``MAX_COMPOSER_ACTION_STRING``; never kept. Not serialized.
+    long_fields: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.title:
+            d["title"] = self.title
+        if self.icon:
+            d["icon"] = self.icon
+        if self.entry:
+            d["entry"] = self.entry
+        if self.popover:
+            d["popover"] = dict(self.popover)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ComposerActionConfig:
+        bad = sorted(k for k in data if k not in _COMPOSER_ACTION_KEYS)
+        strings: dict[str, str] = {}
+        long: list[str] = []
+        for key in ("id", "title", "icon", "entry"):
+            value = data.get(key, "")
+            if isinstance(value, str) and len(value) > MAX_COMPOSER_ACTION_STRING:
+                long.append(key)
+                strings[key] = ""
+            elif isinstance(value, str):
+                strings[key] = value
+            else:
+                # Refused, never coerced: ``str(5)`` would install as a working id.
+                bad.append(key)
+                strings[key] = ""
+        popover_raw = data.get("popover", {})
+        popover: dict[str, int] = {}
+        if not isinstance(popover_raw, dict) or set(popover_raw) - set(_COMPOSER_ACTION_POPOVER):
+            bad.append("popover")
+        else:
+            for key, value in popover_raw.items():
+                if isinstance(value, bool) or not isinstance(value, int):
+                    bad.append("popover")
+                    break
+                popover[key] = value
+        return cls(
+            id=strings["id"],
+            title=strings["title"],
+            icon=strings["icon"],
+            entry=strings["entry"],
+            popover=popover,
+            bad_fields=bad,
+            long_fields=long,
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.composerActions[{self.id or '?'}]"
+        for name in self.bad_fields:
+            errors.append(f"{where}: {name} is not a known field of the right type")
+        for name in self.long_fields:
+            errors.append(f"{where}: {name} exceeds {MAX_COMPOSER_ACTION_STRING} characters")
+        if not self.id:
+            errors.append("contributes.composerActions: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        if not self.title:
+            errors.append(f"{where}: missing title")
+        elif _mirrored_len(self.title) > MAX_COMPOSER_ACTION_TITLE:
+            got = _mirrored_len(self.title)
+            errors.append(f"{where}: title exceeds {MAX_COMPOSER_ACTION_TITLE} characters ({got})")
+        if self.icon and not _COMPOSER_ACTION_ICON_RE.fullmatch(self.icon):
+            errors.append(f"{where}: icon must be a glyph name ({self.icon!r})")
+        if not self.entry:
+            errors.append(f"{where}: missing entry")
+        for key, (lo, hi) in _COMPOSER_ACTION_POPOVER.items():
+            if key in self.popover and not lo <= self.popover[key] <= hi:
+                errors.append(f"{where}: popover.{key} must be between {lo} and {hi}")
+        # `entry` traversal is checked in `AppManifest.validate` (needs the app root).
+        return errors
+
+
 @dataclass
 class FileMenuWhen:
     """Declarative visibility predicate for a contributed file-menu row.
@@ -1254,6 +1369,11 @@ class Contributes:
     #: Same reasoning as the flags above. Not serialized.
     bad_message_actions: bool = False
     dropped_message_actions: int = 0
+    composerActions: list[ComposerActionConfig] = field(default_factory=list)  # noqa: N815
+    #: ``composerActions`` present but not a list / entries that were not objects.
+    #: Same reasoning as the flags above. Not serialized.
+    bad_composer_actions: bool = False
+    dropped_composer_actions: int = 0
     linkOpen: list[LinkOpenConfig] = field(default_factory=list)  # noqa: N815
     #: ``linkOpen`` present but not a list / entries that were not objects. Not
     #: serialized.
@@ -1285,6 +1405,9 @@ class Contributes:
             d["linkPreviews"] = kept_previews
         if self.messageActions:
             d["messageActions"] = [a.to_dict() for a in self.messageActions]
+        if self.composerActions:
+            # Serialized, so signed: an entry is an ESM module the frame imports.
+            d["composerActions"] = [a.to_dict() for a in self.composerActions]
         opens = [o.to_dict() for o in self.linkOpen]
         kept_opens = [o for o in opens if o]
         if kept_opens:
@@ -1324,6 +1447,8 @@ class Contributes:
         preview_entries = previews_raw if isinstance(previews_raw, list) else []
         actions_raw = data.get("messageActions", [])
         action_entries = actions_raw if isinstance(actions_raw, list) else []
+        composer_raw = data.get("composerActions", [])
+        composer_entries = composer_raw if isinstance(composer_raw, list) else []
         opens_raw = data.get("linkOpen", [])
         open_entries = opens_raw if isinstance(opens_raw, list) else []
         return cls(
@@ -1332,6 +1457,11 @@ class Contributes:
             ],
             bad_message_actions="messageActions" in data and not isinstance(actions_raw, list),
             dropped_message_actions=sum(1 for a in action_entries if not isinstance(a, dict)),
+            composerActions=[
+                ComposerActionConfig.from_dict(a) for a in composer_entries if isinstance(a, dict)
+            ],
+            bad_composer_actions="composerActions" in data and not isinstance(composer_raw, list),
+            dropped_composer_actions=sum(1 for a in composer_entries if not isinstance(a, dict)),
             linkOpen=[LinkOpenConfig.from_dict(o) for o in open_entries if isinstance(o, dict)],
             bad_link_open="linkOpen" in data and not isinstance(opens_raw, list),
             dropped_link_open=sum(1 for o in open_entries if not isinstance(o, dict)),
@@ -1503,6 +1633,31 @@ class Contributes:
                     # The id keys the grant and the frame's point: two would share both.
                     errors.append(f"contributes.messageActions: duplicate id {action.id!r}")
                 action_ids.add(action.id)
+        if self.bad_composer_actions:
+            errors.append(
+                "contributes.composerActions must be an array -- a non-array value passes "
+                "as empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor any row"
+            )
+        if self.dropped_composer_actions:
+            errors.append(
+                f"contributes.composerActions: {self.dropped_composer_actions} entr"
+                f"{'y' if self.dropped_composer_actions == 1 else 'ies'} must be an object"
+            )
+        if len(self.composerActions) > MAX_COMPOSER_ACTIONS_PER_APP:
+            errors.append(
+                f"contributes.composerActions: {len(self.composerActions)} actions exceeds "
+                f"the limit of {MAX_COMPOSER_ACTIONS_PER_APP}"
+            )
+        composer_ids: set[str] = set()
+        for composer in self.composerActions:
+            errors.extend(composer.validate())
+            if composer.id:
+                if composer.id in composer_ids:
+                    # One id is one grant entry and one frame route: the second would
+                    # answer for the first.
+                    errors.append(f"contributes.composerActions: duplicate id {composer.id!r}")
+                composer_ids.add(composer.id)
         if self.bad_link_open:
             errors.append(
                 "contributes.linkOpen must be an array -- a non-array value passes as "
