@@ -6025,7 +6025,9 @@
       "files_could_not_be_read": "फ़ाइलें पढ़ी नहीं जा सकीं",
       "your_existing_kirocrew_setup_will_not_be_affecte": "आपके मौजूदा {{productName}} सेटअप पर कोई असर नहीं पड़ेगा।",
       "your_selected_setup_is_ready_in_kiro_crew": "चुना हुआ सेटअप {{productName}} में तैयार है।",
-      "import_setup_stage": "सेटअप इंपोर्ट करो · {{stages}} में से {{stage}}"
+      "import_setup_stage": "सेटअप इंपोर्ट करो · {{stages}} में से {{stage}}",
+      "source_item_count_one": "{{name}}, {{count}} आइटम",
+      "source_item_count_other": "{{name}}, {{count}} आइटम"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "सहेजा गया, लेकिन यह {{productName}} एजेंट कॉन्फ़िगरेशन अपडेट नहीं कर सका, इसलिए नई चैट पुरानी सेटिंग ही रखेंगी। कारण जानने के लिए 'लॉग' पेज खोलें।"
@@ -7771,7 +7773,8 @@
       "knowledge_status_failed": "ज्ञान लाइब्रेरी की जाँच नहीं की जा सकी।",
       "artifact_status_failed": "यह जाँच नहीं की जा सकी कि यह फ़ाइल आर्टिफ़ैक्ट है या नहीं।",
       "diff_status_failed": "इस फ़ाइल के git परिवर्तनों की जाँच नहीं की जा सकी।",
-      "open_in_app": "{{app}} में खोलो"
+      "open_in_app": "{{app}} में खोलो",
+      "match_position": "{{total}} में से {{current}}"
     },
     "markdownRenderer": {
       "download_failed": "आरेख डाउनलोड नहीं हो सका। फिर से कोशिश करें।",
@@ -8562,7 +8565,9 @@
       "previous": "पिछला ({{mod}})",
       "previous_match": "पिछला मिलान",
       "no_results_loaded_only": "लोड किए गए इतिहास में कोई परिणाम नहीं",
-      "results_loaded_only": "लोड किए गए इतिहास में {{current}}/{{total}} परिणाम"
+      "results_loaded_only": "लोड किए गए इतिहास में {{current}}/{{total}} परिणाम",
+      "result_position_one": "{{count}} नतीजे में से {{current}}",
+      "result_position_other": "{{count}} नतीजों में से {{current}}"
     },
     "searchResultsList": {
       "assistant": "असिस्टेंट",
@@ -8799,7 +8804,9 @@
       "provider_did_not_answer": "{{provider}} ने जवाब नहीं दिया।",
       "select_a_skill_to_preview": "पूर्वावलोकन के लिए कोई स्किल चुनें",
       "skill_search_results": "स्किल खोज परिणाम",
-      "source": "स्रोत"
+      "source": "स्रोत",
+      "installed_files_one": "{{count}} फ़ाइल इंस्टॉल हुई",
+      "installed_files_other": "{{count}} फ़ाइलें इंस्टॉल हुईं"
     },
     "skillDirectoryBrowser": {
       "description": "विवरण",
@@ -14639,7 +14646,9 @@
         "bulk_archive_failed": "चयनित आइटम संग्रहित नहीं हो सके",
         "bulk_delete_failed": "चयनित आइटम हटाए नहीं जा सके",
         "entity_items_load_failed": "इस एंटिटी के आइटम लोड नहीं हो सके",
-        "error_no_reason": "अनुरोध बिना किसी कारण के विफल हुआ।"
+        "error_no_reason": "अनुरोध बिना किसी कारण के विफल हुआ।",
+        "delete_items_permanently_one": "{{count}} आइटम हमेशा के लिए हटाओ?",
+        "delete_items_permanently_other": "{{count}} आइटम हमेशा के लिए हटाओ?"
       },
       "itemCard": {
         "copied": "कॉपी हो गया!",

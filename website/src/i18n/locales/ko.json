@@ -5882,7 +5882,8 @@
       "files_could_not_be_read": "파일을 읽을 수 없습니다",
       "your_existing_kirocrew_setup_will_not_be_affecte": "기존 {{productName}} 설정은 영향을 받지 않습니다.",
       "your_selected_setup_is_ready_in_kiro_crew": "선택한 설정이 {{productName}}에 준비되었습니다.",
-      "import_setup_stage": "설정 가져오기 · {{stages}}단계 중 {{stage}}단계"
+      "import_setup_stage": "설정 가져오기 · {{stages}}단계 중 {{stage}}단계",
+      "source_item_count_other": "{{name}}, 항목 {{count}}개"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "저장했지만 이 {{productName}}에서 에이전트 구성을 업데이트하지 못해 새 채팅은 이전 설정을 사용합니다. 이유는 '로그' 페이지에서 확인하세요."
@@ -7638,7 +7639,8 @@
       "knowledge_status_failed": "지식 라이브러리를 확인할 수 없습니다.",
       "artifact_status_failed": "이 파일이 아티팩트인지 확인할 수 없습니다.",
       "diff_status_failed": "이 파일의 git 변경 사항을 확인할 수 없습니다.",
-      "open_in_app": "{{app}}에서 열기"
+      "open_in_app": "{{app}}에서 열기",
+      "match_position": "{{total}}개 중 {{current}}번째"
     },
     "markdownRenderer": {
       "download_failed": "다이어그램을 다운로드하지 못했습니다. 다시 시도하세요.",
@@ -8418,7 +8420,8 @@
       "previous": "이전 ({{mod}})",
       "previous_match": "이전 일치",
       "no_results_loaded_only": "불러온 기록에 결과 없음",
-      "results_loaded_only": "불러온 기록에서 결과 {{current}}/{{total}}"
+      "results_loaded_only": "불러온 기록에서 결과 {{current}}/{{total}}",
+      "result_position_other": "결과 {{count}}개 중 {{current}}번째"
     },
     "searchResultsList": {
       "assistant": "어시스턴트",
@@ -8653,7 +8656,8 @@
       "provider_did_not_answer": "{{provider}}이(가) 응답하지 않았습니다.",
       "select_a_skill_to_preview": "미리 볼 스킬을 선택하세요",
       "skill_search_results": "스킬 검색 결과",
-      "source": "출처"
+      "source": "출처",
+      "installed_files_other": "파일 {{count}}개 설치됨"
     },
     "skillDirectoryBrowser": {
       "description": "설명",
@@ -14369,7 +14373,8 @@
         "bulk_archive_failed": "선택한 항목을 보관할 수 없습니다",
         "bulk_delete_failed": "선택한 항목을 삭제할 수 없습니다",
         "entity_items_load_failed": "이 엔터티의 항목을 불러올 수 없습니다",
-        "error_no_reason": "이유 없이 요청이 실패했습니다."
+        "error_no_reason": "이유 없이 요청이 실패했습니다.",
+        "delete_items_permanently_other": "항목 {{count}}개를 영구 삭제하시겠습니까?"
       },
       "itemCard": {
         "copied": "복사했습니다!",

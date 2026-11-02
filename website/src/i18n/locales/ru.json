@@ -6245,7 +6245,11 @@
       "files_could_not_be_read": "Не удалось прочитать файлы",
       "your_existing_kirocrew_setup_will_not_be_affecte": "Ваша существующая конфигурация {{productName}} не будет затронута.",
       "your_selected_setup_is_ready_in_kiro_crew": "Выбранная конфигурация готова в {{productName}}.",
-      "import_setup_stage": "Импортировать конфигурацию · {{stage}} из {{stages}}"
+      "import_setup_stage": "Импортировать конфигурацию · {{stage}} из {{stages}}",
+      "source_item_count_one": "{{name}}, {{count}} элемент",
+      "source_item_count_few": "{{name}}, {{count}} элемента",
+      "source_item_count_many": "{{name}}, {{count}} элементов",
+      "source_item_count_other": "{{name}}, {{count}} элемента"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Сохранено, но эта копия {{productName}} не смогла обновить конфигурацию агента, поэтому новые чаты используют прежние настройки. Причину смотри на странице «Логи»."
@@ -8037,7 +8041,8 @@
       "knowledge_status_failed": "Не удалось проверить библиотеку знаний.",
       "artifact_status_failed": "Не удалось проверить, является ли этот файл артефактом.",
       "diff_status_failed": "Не удалось проверить изменения git для этого файла.",
-      "open_in_app": "Открыть в {{app}}"
+      "open_in_app": "Открыть в {{app}}",
+      "match_position": "{{current}} из {{total}}"
     },
     "markdownRenderer": {
       "download_failed": "Не удалось скачать диаграмму. Попробуйте ещё раз.",
@@ -8850,7 +8855,11 @@
       "previous": "Предыдущее ({{mod}})",
       "previous_match": "Предыдущее совпадение",
       "no_results_loaded_only": "В загруженной истории ничего не найдено",
-      "results_loaded_only": "{{current}}/{{total}} результатов в загруженной истории"
+      "results_loaded_only": "{{current}}/{{total}} результатов в загруженной истории",
+      "result_position_one": "{{current}} из {{count}} результата",
+      "result_position_few": "{{current}} из {{count}} результатов",
+      "result_position_many": "{{current}} из {{count}} результатов",
+      "result_position_other": "{{current}} из {{count}} результата"
     },
     "searchResultsList": {
       "assistant": "Ассистент",
@@ -9091,7 +9100,11 @@
       "provider_did_not_answer": "{{provider}} не ответил.",
       "select_a_skill_to_preview": "Выберите навык для предпросмотра",
       "skill_search_results": "Результаты поиска навыков",
-      "source": "Источник"
+      "source": "Источник",
+      "installed_files_one": "Установлен {{count}} файл",
+      "installed_files_few": "Установлено {{count}} файла",
+      "installed_files_many": "Установлено {{count}} файлов",
+      "installed_files_other": "Установлено {{count}} файла"
     },
     "skillDirectoryBrowser": {
       "description": "Описание",
@@ -15179,7 +15192,11 @@
         "bulk_archive_failed": "Не удалось архивировать выбранные элементы",
         "bulk_delete_failed": "Не удалось удалить выбранные элементы",
         "entity_items_load_failed": "Не удалось загрузить элементы этой сущности",
-        "error_no_reason": "Запрос не выполнен, причина не указана."
+        "error_no_reason": "Запрос не выполнен, причина не указана.",
+        "delete_items_permanently_one": "Удалить {{count}} элемент навсегда?",
+        "delete_items_permanently_few": "Удалить {{count}} элемента навсегда?",
+        "delete_items_permanently_many": "Удалить {{count}} элементов навсегда?",
+        "delete_items_permanently_other": "Удалить {{count}} элемента навсегда?"
       },
       "itemCard": {
         "copied": "Скопировано!",

@@ -5915,7 +5915,8 @@
       "files_could_not_be_read": "无法读取文件",
       "your_existing_kirocrew_setup_will_not_be_affecte": "你已有的 {{productName}} 设置不会受到影响。",
       "your_selected_setup_is_ready_in_kiro_crew": "你所选的配置已在 {{productName}} 中就绪。",
-      "import_setup_stage": "导入配置 · 第 {{stage}} 步，共 {{stages}} 步"
+      "import_setup_stage": "导入配置 · 第 {{stage}} 步，共 {{stages}} 步",
+      "source_item_count_other": "{{name}}，{{count}} 项"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "已保存，但此 {{productName}} 无法更新智能体配置，新聊天会继续使用之前的设置。请打开“日志”页面查看原因。"
@@ -7638,7 +7639,8 @@
       "knowledge_status_failed": "无法检查知识库。",
       "artifact_status_failed": "无法检查此文件是否为工件。",
       "diff_status_failed": "无法检查此文件的 git 更改。",
-      "open_in_app": "在 {{app}} 中打开"
+      "open_in_app": "在 {{app}} 中打开",
+      "match_position": "第 {{current}}/{{total}} 处"
     },
     "markdownRenderer": {
       "download_failed": "无法下载图表。请重试。",
@@ -8418,7 +8420,8 @@
       "previous": "上一个（{{mod}}）",
       "previous_match": "上一个匹配",
       "no_results_loaded_only": "已加载的历史记录中无结果",
-      "results_loaded_only": "已加载的历史记录中第 {{current}}/{{total}} 条结果"
+      "results_loaded_only": "已加载的历史记录中第 {{current}}/{{total}} 条结果",
+      "result_position_other": "第 {{current}}/{{count}} 条结果"
     },
     "searchResultsList": {
       "assistant": "助手",
@@ -8653,7 +8656,8 @@
       "provider_did_not_answer": "{{provider}} 没有响应。",
       "select_a_skill_to_preview": "选择技能以预览",
       "skill_search_results": "技能搜索结果",
-      "source": "来源"
+      "source": "来源",
+      "installed_files_other": "已安装 {{count}} 个文件"
     },
     "skillDirectoryBrowser": {
       "description": "描述",
@@ -14369,7 +14373,8 @@
         "bulk_archive_failed": "无法归档所选条目",
         "bulk_delete_failed": "无法删除所选条目",
         "entity_items_load_failed": "无法加载此实体的条目",
-        "error_no_reason": "请求失败，未给出原因。"
+        "error_no_reason": "请求失败，未给出原因。",
+        "delete_items_permanently_other": "永久删除 {{count}} 个条目？"
       },
       "itemCard": {
         "copied": "已复制！",

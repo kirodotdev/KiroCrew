@@ -374,7 +374,7 @@ function InstallStatus({
     return (
       <span className="flex items-center gap-1 text-xs text-ok" role="status">
         <Check size={iconSize} aria-hidden="true" />
-        {phase.fileCount > 1 ? `Installed ${phase.fileCount} files` : i18nT('components.skillBrowserModal.installed')}
+        {phase.fileCount > 1 ? i18nT('components.skillBrowserModal.installed_files', { count: phase.fileCount }) : i18nT('components.skillBrowserModal.installed')}
       </span>
     )
   }

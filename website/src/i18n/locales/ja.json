@@ -5882,7 +5882,8 @@
       "files_could_not_be_read": "ファイルを読み取れませんでした",
       "your_existing_kirocrew_setup_will_not_be_affecte": "既存の {{productName}} セットアップは影響を受けません。",
       "your_selected_setup_is_ready_in_kiro_crew": "選択されたセットアップは {{productName}} で準備ができています。",
-      "import_setup_stage": "セットアップをインポート · {{stages}} 中 {{stage}}"
+      "import_setup_stage": "セットアップをインポート · {{stages}} 中 {{stage}}",
+      "source_item_count_other": "{{name}}、{{count}} 件"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "保存しましたが、この {{productName}} ではエージェント設定を更新できなかったため、新しいチャットでは以前の設定が使われます。理由は「ログ」ページで確認してください。"
@@ -7638,7 +7639,8 @@
       "knowledge_status_failed": "ナレッジライブラリを確認できませんでした。",
       "artifact_status_failed": "このファイルがアーティファクトかどうかを確認できませんでした。",
       "diff_status_failed": "このファイルの git の変更を確認できませんでした。",
-      "open_in_app": "{{app}} で開く"
+      "open_in_app": "{{app}} で開く",
+      "match_position": "{{total}} 件中 {{current}} 件目"
     },
     "markdownRenderer": {
       "download_failed": "図をダウンロードできませんでした。もう一度お試しください。",
@@ -8418,7 +8420,8 @@
       "previous": "前へ（{{mod}}）",
       "previous_match": "前の一致",
       "no_results_loaded_only": "読み込み済みの履歴に結果がありません",
-      "results_loaded_only": "読み込み済みの履歴で {{current}}/{{total}} 件"
+      "results_loaded_only": "読み込み済みの履歴で {{current}}/{{total}} 件",
+      "result_position_other": "{{count}} 件中 {{current}} 件目"
     },
     "searchResultsList": {
       "assistant": "アシスタント",
@@ -8653,7 +8656,8 @@
       "provider_did_not_answer": "{{provider}} から応答がありませんでした。",
       "select_a_skill_to_preview": "プレビュー対象のスキルを選択してください",
       "skill_search_results": "スキル検索結果",
-      "source": "ソース"
+      "source": "ソース",
+      "installed_files_other": "{{count}} 個のファイルをインストールしました"
     },
     "skillDirectoryBrowser": {
       "description": "説明",
@@ -14369,7 +14373,8 @@
         "bulk_archive_failed": "選択したアイテムをアーカイブできませんでした",
         "bulk_delete_failed": "選択したアイテムを削除できませんでした",
         "entity_items_load_failed": "このエンティティのアイテムを読み込めませんでした",
-        "error_no_reason": "理由が示されないままリクエストが失敗しました。"
+        "error_no_reason": "理由が示されないままリクエストが失敗しました。",
+        "delete_items_permanently_other": "{{count}} 件の項目を完全に削除しますか？"
       },
       "itemCard": {
         "copied": "コピーしました！",

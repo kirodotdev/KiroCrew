@@ -6135,7 +6135,10 @@
       "files_could_not_be_read": "Non è stato possibile leggere i file",
       "your_existing_kirocrew_setup_will_not_be_affecte": "La tua configurazione esistente di {{productName}} non verrà modificata.",
       "your_selected_setup_is_ready_in_kiro_crew": "La configurazione selezionata è pronta in {{productName}}.",
-      "import_setup_stage": "Importa la configurazione · {{stage}} di {{stages}}"
+      "import_setup_stage": "Importa la configurazione · {{stage}} di {{stages}}",
+      "source_item_count_one": "{{name}}, {{count}} elemento",
+      "source_item_count_many": "{{name}}, {{count}} elementi",
+      "source_item_count_other": "{{name}}, {{count}} elementi"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Salvato, ma questa copia di {{productName}} non è riuscita ad aggiornare la configurazione dell’agente, quindi le nuove chat mantengono la configurazione precedente. Apri la pagina «Log» per vedere il motivo."
@@ -7904,7 +7907,8 @@
       "knowledge_status_failed": "Impossibile controllare la libreria della conoscenza.",
       "artifact_status_failed": "Impossibile verificare se questo file è un artefatto.",
       "diff_status_failed": "Impossibile controllare le modifiche git di questo file.",
-      "open_in_app": "Apri in {{app}}"
+      "open_in_app": "Apri in {{app}}",
+      "match_position": "{{current}} di {{total}}"
     },
     "markdownRenderer": {
       "download_failed": "Impossibile scaricare il diagramma. Riprova.",
@@ -8706,7 +8710,10 @@
       "previous": "Precedente ({{mod}})",
       "previous_match": "Corrispondenza precedente",
       "no_results_loaded_only": "Nessun risultato nella cronologia caricata",
-      "results_loaded_only": "{{current}}/{{total}} risultati nella cronologia caricata"
+      "results_loaded_only": "{{current}}/{{total}} risultati nella cronologia caricata",
+      "result_position_one": "{{current}} di {{count}} risultato",
+      "result_position_many": "{{current}} di {{count}} risultati",
+      "result_position_other": "{{current}} di {{count}} risultati"
     },
     "searchResultsList": {
       "assistant": "Assistente",
@@ -8945,7 +8952,10 @@
       "provider_did_not_answer": "{{provider}} non ha risposto.",
       "select_a_skill_to_preview": "Seleziona una skill di cui vedere l'anteprima",
       "skill_search_results": "Risultati della ricerca delle skill",
-      "source": "Origine"
+      "source": "Origine",
+      "installed_files_one": "{{count}} file installato",
+      "installed_files_many": "{{count}} file installati",
+      "installed_files_other": "{{count}} file installati"
     },
     "skillDirectoryBrowser": {
       "description": "Descrizione",
@@ -14909,7 +14919,10 @@
         "bulk_archive_failed": "Impossibile archiviare gli elementi selezionati",
         "bulk_delete_failed": "Impossibile eliminare gli elementi selezionati",
         "entity_items_load_failed": "Impossibile caricare gli elementi di questa entità",
-        "error_no_reason": "La richiesta non è riuscita senza indicare un motivo."
+        "error_no_reason": "La richiesta non è riuscita senza indicare un motivo.",
+        "delete_items_permanently_one": "Eliminare definitivamente {{count}} elemento?",
+        "delete_items_permanently_many": "Eliminare definitivamente {{count}} elementi?",
+        "delete_items_permanently_other": "Eliminare definitivamente {{count}} elementi?"
       },
       "itemCard": {
         "copied": "Copiato!",

@@ -6025,7 +6025,9 @@
       "files_could_not_be_read": "Dateien konnten nicht gelesen werden",
       "your_existing_kirocrew_setup_will_not_be_affecte": "Ihre bestehende {{productName}}-Einrichtung bleibt unberührt.",
       "your_selected_setup_is_ready_in_kiro_crew": "Deine ausgewählte Konfiguration ist in {{productName}} bereit.",
-      "import_setup_stage": "Einrichtung importieren · {{stage}} von {{stages}}"
+      "import_setup_stage": "Einrichtung importieren · {{stage}} von {{stages}}",
+      "source_item_count_one": "{{name}}, {{count}} Element",
+      "source_item_count_other": "{{name}}, {{count}} Elemente"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Gespeichert, aber diese {{productName}}-Instanz konnte die Agent-Konfiguration nicht aktualisieren, daher behalten neue Chats die alte Einrichtung. Den Grund findest du auf der Seite „Protokolle“."
@@ -7771,7 +7773,8 @@
       "knowledge_status_failed": "Die Wissensbibliothek konnte nicht geprüft werden.",
       "artifact_status_failed": "Es konnte nicht geprüft werden, ob diese Datei ein Artefakt ist.",
       "diff_status_failed": "Die git-Änderungen dieser Datei konnten nicht geprüft werden.",
-      "open_in_app": "In {{app}} öffnen"
+      "open_in_app": "In {{app}} öffnen",
+      "match_position": "{{current}} von {{total}}"
     },
     "markdownRenderer": {
       "download_failed": "Das Diagramm konnte nicht heruntergeladen werden. Versuche es erneut.",
@@ -8562,7 +8565,9 @@
       "previous": "Zurück ({{mod}})",
       "previous_match": "Vorheriger Treffer",
       "no_results_loaded_only": "Keine Ergebnisse im geladenen Verlauf",
-      "results_loaded_only": "{{current}}/{{total}} Ergebnisse im geladenen Verlauf"
+      "results_loaded_only": "{{current}}/{{total}} Ergebnisse im geladenen Verlauf",
+      "result_position_one": "{{current}} von {{count}} Ergebnis",
+      "result_position_other": "{{current}} von {{count}} Ergebnissen"
     },
     "searchResultsList": {
       "assistant": "Assistent",
@@ -8799,7 +8804,9 @@
       "provider_did_not_answer": "{{provider}} hat nicht geantwortet.",
       "select_a_skill_to_preview": "Wählen Sie einen Skill für die Vorschau",
       "skill_search_results": "Skill-Suchergebnisse",
-      "source": "Quelle"
+      "source": "Quelle",
+      "installed_files_one": "{{count}} Datei installiert",
+      "installed_files_other": "{{count}} Dateien installiert"
     },
     "skillDirectoryBrowser": {
       "description": "Beschreibung",
@@ -14639,7 +14646,9 @@
         "bulk_archive_failed": "Ausgewählte Elemente konnten nicht archiviert werden",
         "bulk_delete_failed": "Ausgewählte Elemente konnten nicht gelöscht werden",
         "entity_items_load_failed": "Elemente dieser Entität konnten nicht geladen werden",
-        "error_no_reason": "Die Anfrage ist ohne Angabe eines Grundes fehlgeschlagen."
+        "error_no_reason": "Die Anfrage ist ohne Angabe eines Grundes fehlgeschlagen.",
+        "delete_items_permanently_one": "{{count}} Element endgültig löschen?",
+        "delete_items_permanently_other": "{{count}} Elemente endgültig löschen?"
       },
       "itemCard": {
         "copied": "Kopiert!",
