@@ -48,7 +48,6 @@
   "src/test/ExportSessionItem.test.tsx",
   "src/test/FolderConfigModal.test.tsx",
   "src/test/FollowUpCard.test.tsx",
-  "src/test/KiroCrewAgentsPage.schedDraftGuard.test.tsx",
   "src/test/LexicalComposerInput.test.tsx",
   "src/test/MarkdownPanelCoverage.test.tsx",
   "src/test/McpAppFrame.test.tsx",

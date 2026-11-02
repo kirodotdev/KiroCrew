@@ -8,8 +8,9 @@
  * toggle both confirm before discarding.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
 
 globalThis.ResizeObserver = class {
@@ -54,10 +55,17 @@ const EDITOR_OPEN_TIMEOUT_MS = 5000
  *  screen. The guard keys on typed work, not on the form being open, so the
  *  helper types into Name — a pristine form must never arm the guard. */
 async function openDraft() {
-  renderWithProviders(<KiroCrewAgentsPage />)
+  const { queryClient } = renderWithProviders(<KiroCrewAgentsPage />)
   fireEvent.click(await screen.findByTestId('crew-card'))
   fireEvent.click(await screen.findByTestId('next-rail-schedules', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS }))
   fireEvent.click(await screen.findByTestId('crew-wake-add'))
+  // The opened form starts its own reads (models, chat folders, config). Under the hung-create test's fake timers
+  // their answers re-render the form after a plain findBy has ended, so wait here for them. ThemeProvider's catalog
+  // read has no mock in this file and retries on a timer, so it is left out.
+  await waitFor(
+    () => expect(queryClient.isFetching({ predicate: (q) => q.queryKey[0] !== 'custom-themes-catalog' })).toBe(0),
+    namedCeiling('JOB_FORM_READS_SETTLED', 5000),
+  )
   await screen.findByTestId('crew-wake-create')
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'draft' } })
 }
@@ -214,7 +222,7 @@ describe('crew editor — schedule-draft discard guard', () => {
       // Before the grace elapses, the note names the lock, not the caveat.
       expect(screen.getByTestId('next-sched-discard-saving-note').textContent)
         .not.toMatch(/may still be created/i)
-      await vi.advanceTimersByTimeAsync(8000)
+      await act(async () => { await vi.advanceTimersByTimeAsync(8000) })
       // The escape: Discard unlocks and the visible note switches to the
       // honest caveat — the request is not cancelled, so the schedule may
       // still be created.
