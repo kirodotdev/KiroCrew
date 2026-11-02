@@ -22,6 +22,7 @@ from kiro_crew.messaging.display_safety import (
     strip_ansi,
 )
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
+from kiro_crew.messaging.tables import _code_spans
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security.exfil import redact_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials
@@ -979,6 +980,38 @@ _HR_RE = re.compile(r"^[\s]*([-*_])\1{2,}\s*$")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 
 
+#: Stands in for one inline code span while the emphasis passes run.
+_CODE_TOKEN_RE = re.compile(r"\x00(\d+)\x00")
+
+
+def _hide_inline_code(line: str) -> tuple[str, list[str]]:
+    """Swap each inline code span in *line* for a ``\\x00<n>\\x00`` token.
+
+    Spans are found by :func:`kiro_crew.messaging.tables._code_spans`, the
+    CommonMark backtick pairing the table renderer uses. A line that already
+    holds a NUL is returned as-is, so input text can never pose as a token.
+    """
+    if "\x00" in line or "`" not in line:
+        return line, []
+    spans: list[str] = []
+    out: list[str] = []
+    pos = 0
+    for start, end in _code_spans(line):
+        out.append(line[pos:start])
+        out.append(f"\x00{len(spans)}\x00")
+        spans.append(line[start:end])
+        pos = end
+    out.append(line[pos:])
+    return "".join(out), spans
+
+
+def _restore_inline_code(line: str, spans: list[str]) -> str:
+    """Put back the code spans :func:`_hide_inline_code` took out."""
+    if not spans:
+        return line
+    return _CODE_TOKEN_RE.sub(lambda m: spans[int(m.group(1))], line)
+
+
 def _convert_inline(line: str) -> str:
     """Convert a single non-code line from markdown to Slack mrkdwn."""
     # Headings → bold
@@ -990,11 +1023,17 @@ def _convert_inline(line: str) -> str:
     if _HR_RE.match(line):
         return "─" * 30
 
+    # Inline code is shown as written, so its markers sit out the emphasis
+    # passes: ``**kwargs`` and ``a~~b~~c`` inside backticks keep both chars.
+    line, spans = _hide_inline_code(line)
+
     # **bold** → *bold*
     line = line.replace("**", "*")
 
     # ~~strike~~ → ~strike~
     line = _STRIKE_RE.sub(r"~\1~", line)
+
+    line = _restore_inline_code(line, spans)
 
     # [text](url) → <url|text>
     line = _LINK_RE.sub(r"<\2|\1>", line)
