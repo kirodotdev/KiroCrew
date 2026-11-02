@@ -1558,6 +1558,17 @@ unbounded value. With neither argument the default title and unfiled placement
 are unchanged. A live originating session is never titled or filed by these
 arguments, and incognito/temporary runs still get no fallback slot.
 
+A new fallback slot is a slot allocation, so it tests the same live-session
+ceiling as every other allocator (`live_slot_count() >= MAX_LIVE_SLOTS`, 500).
+At the ceiling both delivery paths (`inject_workflow_result` and
+`inject_bound_workflow_result`, the latter before it binds the run's identity)
+create nothing, log one warning naming the run id, and return `False`; the result
+stays on the run record (`workflow_status`, the Runs view). Without the test, a
+workflow whose origin is gone on every run added one slot per run until the
+person's own new chat answered 429 `slot_cap_reached` (#27877). A re-fire into an
+existing `workflow-<run_id>` slot and delivery into a live originating chat
+allocate nothing and are not tested.
+
 Live progress reaches the browser as a `workflow_run_event` WS broadcast carrying
 the redacted event plus the run's `session_key`, and the frontend
 (`website/src/apps/workflows/runModel.ts`) folds the stream into a phase tree and a
