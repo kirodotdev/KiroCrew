@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,7 +29,19 @@ from session_usage_helpers import (
 )
 
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import finished
+
+
+def _park_scrape_for_an_hour(monkeypatch) -> None:
+    """Park the usage scrape an hour ahead of the product's monotonic clock.
+
+    The product compares ``time.monotonic()`` with the backoff deadline, so the
+    deadline is read from the same ManualClock the product reads, not the host clock.
+    """
+    clock = ManualClock()
+    clock.install(monkeypatch, sessions_mod)
+    sessions_mod._usage_scrape_backoff_until = clock.monotonic() + 3600
 
 
 class TestScrapeIsTheAutomaticFallback:
@@ -66,9 +77,8 @@ class TestScrapeIsTheAutomaticFallback:
     def _spawn_mock(self, stdout: bytes = b""):
         return AsyncMock(return_value=_mock_proc(stdout))
 
-    def _park(self):
-        # flake-ok: pre-existing real-clock read parking the scrape an hour ahead of the product's own monotonic clock, moved verbatim; tracked for a de-flake pass
-        sessions_mod._usage_scrape_backoff_until = time.monotonic() + 3600
+    def _park(self, monkeypatch):
+        _park_scrape_for_an_hour(monkeypatch)
 
     @pytest.mark.asyncio
     async def test_no_plan_from_the_api_runs_the_scrape_with_no_config_key(self):
@@ -94,8 +104,8 @@ class TestScrapeIsTheAutomaticFallback:
         assert sessions_mod._usage_cache == {"available": False}
 
     @pytest.mark.asyncio
-    async def test_a_parked_scrape_is_not_spawned(self):
-        self._park()
+    async def test_a_parked_scrape_is_not_spawned(self, monkeypatch):
+        self._park(monkeypatch)
         spawn = self._spawn_mock(SAMPLE_USAGE.encode())
         with patch("asyncio.create_subprocess_exec", spawn):
             outcome = await sessions_mod._fetch_usage_bg()
@@ -114,7 +124,7 @@ class TestScrapeIsTheAutomaticFallback:
     async def test_parked_keeps_partial_api_fields(self, monkeypatch):
         # The API answered but carried no plan (e.g. plan name + reset date only).
         # Keep what it gave alongside the unavailable marker instead of discarding it.
-        self._park()
+        self._park(monkeypatch)
         monkeypatch.setattr(
             sessions_mod.kiro_usage_api,
             "fetch_usage_limits",
@@ -137,7 +147,7 @@ class TestScrapeIsTheAutomaticFallback:
     @pytest.mark.asyncio
     async def test_parked_preserves_a_prior_good_value_as_stale(self, monkeypatch):
         # An earlier good reading for THIS SAME account is dimmed, not blanked.
-        self._park()
+        self._park(monkeypatch)
         monkeypatch.setattr(
             sessions_mod,
             "_fetch_whoami",
@@ -163,7 +173,7 @@ class TestScrapeIsTheAutomaticFallback:
         # Account A's reading is cached; the user switches to account B, whose API
         # returns no plan. While the scrape is parked that answer recurs for hours,
         # so preserving A would pin A's balance and email on screen under B's session.
-        self._park()
+        self._park(monkeypatch)
         monkeypatch.setattr(
             sessions_mod,
             "_fetch_whoami",
@@ -189,7 +199,7 @@ class TestScrapeIsTheAutomaticFallback:
     async def test_parked_never_preserves_an_unproven_identity(self, monkeypatch):
         # The cached reading carries no identity, so it cannot be proven to belong
         # to whoever is signed in now. Unproven means unavailable.
-        self._park()
+        self._park(monkeypatch)
         monkeypatch.setattr(
             sessions_mod,
             "_fetch_whoami",
@@ -421,8 +431,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
 
     @pytest.mark.asyncio
     async def test_a_parked_scrape_carries_the_api_verdict(self, monkeypatch):
-        # flake-ok: pre-existing real-clock read parking the scrape an hour ahead of the product's own monotonic clock, moved verbatim; tracked for a de-flake pass
-        sessions_mod._usage_scrape_backoff_until = time.monotonic() + 3600
+        _park_scrape_for_an_hour(monkeypatch)
         self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_NO_CREDENTIAL)
         with self._scrape(SAMPLE_USAGE.encode()) as spawn:
             await sessions_mod._fetch_usage_bg()
@@ -437,8 +446,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
         # "no plan" the user is on B, and the scrape is parked. The parked path
         # must judge A's cached reading against a whoami resolved THEN, or A's
         # balance and email stay on screen under B's session.
-        # flake-ok: pre-existing real-clock read parking the scrape an hour ahead of the product's own monotonic clock, moved verbatim; tracked for a de-flake pass
-        sessions_mod._usage_scrape_backoff_until = time.monotonic() + 3600
+        _park_scrape_for_an_hour(monkeypatch)
         self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_OTHER)
         monkeypatch.setattr(
             sessions_mod, "_fetch_whoami", AsyncMock(side_effect=[_IDENTITY_A, _IDENTITY_B])
@@ -454,8 +462,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
     @pytest.mark.asyncio
     async def test_a_parked_scrape_keeps_the_same_accounts_reading_stale(self, monkeypatch):
         # Control: the adjacent whoami still says A, so A's reading is dimmed, not dropped.
-        # flake-ok: pre-existing real-clock read parking the scrape an hour ahead of the product's own monotonic clock, moved verbatim; tracked for a de-flake pass
-        sessions_mod._usage_scrape_backoff_until = time.monotonic() + 3600
+        _park_scrape_for_an_hour(monkeypatch)
         self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_OTHER)
         monkeypatch.setattr(sessions_mod, "_fetch_whoami", AsyncMock(return_value=_IDENTITY_A))
         sessions_mod._usage_cache = dict(_CACHED_A)
@@ -466,8 +473,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
 
     @pytest.mark.asyncio
     async def test_partial_api_fields_are_still_kept_when_parked(self, monkeypatch):
-        # flake-ok: pre-existing real-clock read parking the scrape an hour ahead of the product's own monotonic clock, moved verbatim; tracked for a de-flake pass
-        sessions_mod._usage_scrape_backoff_until = time.monotonic() + 3600
+        _park_scrape_for_an_hour(monkeypatch)
         self._api(
             monkeypatch,
             {"plan": "KIRO POWER", "resets": "2026-09-01"},
