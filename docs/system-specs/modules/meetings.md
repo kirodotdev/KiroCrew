@@ -181,6 +181,15 @@ existence check and sidecar write/delete are one unit, so a stale PUT cannot rec
 an orphan `edits/` directory. Deletion also waits for task filing's
 provider-to-local-record transaction.
 
+`tasks.json` is agent-written, so a malformed file is expected. Reads for display
+(`store.read_tasks`) accept one leading UTF-8 byte-order mark and show any other
+unparseable file as an empty list. Every task route that writes the list back
+(add, edit, delete, review, the filing record) reads through
+`store.read_tasks_for_update` instead: a present file that does not parse as a task
+document is moved to `tasks.json.corrupt-<utc>` with a warning before the save, and
+a read or move that fails answers `500 tasks_unreadable` and leaves the file as it
+is. One edit therefore never saves a single task over the tasks still in the file.
+
 `ensure_data_dirs()` creates the subtree and seeds `dictionary.toml` +
 `config.json` at app startup (an `on_startup` hook, run on the executor). It
 never overwrites, so user edits survive every restart. A second `on_startup`
