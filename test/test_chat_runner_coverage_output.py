@@ -21,6 +21,7 @@ from chat_runner_coverage_helpers import _slot, _state
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.metrics import turns as turns_mod
 from kiro_crew.security import oauth_url_contains_credential
+from kiro_crew.testing.wait import async_wait_until
 
 # ── turn metric ───────────────────────────────────────────────────────────
 
@@ -851,8 +852,11 @@ class TestScheduleWidgetRegistration:
             chat_runner._schedule_widget_registration(
                 state, slot, "<mcwidget>x</mcwidget> ![a](/tmp/a.png)", "1"
             )
-            # flake-ok: pre-existing zero-length yield that lets a task the call scheduled run, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+            # Wait on the two registrations the call scheduled, not on a loop turn.
+            await async_wait_until(
+                lambda: widgets.await_count == 1 and images.await_count == 1,
+                describe=lambda: f"widgets={widgets.await_count} images={images.await_count}",
+            )
 
             assert widgets.await_count == 1
             assert images.await_count == 1
