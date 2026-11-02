@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -749,11 +750,18 @@ def temp_headroom(root: str) -> TempHeadroom | None:
 
     A filesystem without inode accounting (``f_files == 0``: btrfs, some FUSE
     mounts) cannot run out of inodes, so it reads as fully free on that axis
-    and never trips the absolute floor.
+    and never trips the absolute floor. A host without ``os.statvfs`` (native
+    Windows) still measures free space through ``shutil.disk_usage`` and reads
+    the same way, since NTFS keeps no inode limit to report.
     """
     statvfs = getattr(os, "statvfs", None)
     if statvfs is None:
-        return None
+        try:
+            usage = shutil.disk_usage(root)
+        except OSError:
+            return None
+        free_pct = 100.0 * usage.free / usage.total if usage.total else 100.0
+        return TempHeadroom(root, free_pct, 100.0, TEMP_FREE_INODES_FLOOR, counts_inodes=False)
     try:
         st = statvfs(root)
     except OSError:
@@ -771,8 +779,8 @@ def temp_headroom(root: str) -> TempHeadroom | None:
 def temp_headroom_lines() -> list[str]:
     """The pull tool's temp-space block, plus a guidance line when one is low.
 
-    Empty when no root can be measured, so a host without ``statvfs`` prints
-    nothing rather than an "unknown" line on every call.
+    Empty when no root can be measured, so an unreadable root prints nothing
+    rather than an "unknown" line on every call.
     """
     readings = [r for r in (temp_headroom(root) for root in temp_roots()) if r is not None]
     if not readings:

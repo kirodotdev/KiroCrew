@@ -421,7 +421,8 @@ and prints "ceiling unreadable", so a teardown is never published as an absent l
 Temp-directory headroom is the third figure the pull tool reports, and like the task figure
 it is reported, never gated. `resource_status.temp_headroom_lines()` measures `/tmp`, the
 first existing `TMPDIR`/`TEMP`/`TMP` directory, and the calling process's
-`tempfile.gettempdir()`. An agent's `$TMPDIR` is its own scratch dir, so `/tmp` is listed
+`tempfile.gettempdir()`. A host without `os.statvfs` (native Windows) measures free space
+through `shutil.disk_usage` and reports no inode limit. An agent's `$TMPDIR` is its own scratch dir, so `/tmp` is listed
 explicitly, and the configured directory is read from the environment because
 `gettempdir()` skips one that is full. The tool keeps a second root only when it sits on a different device,
 and flags a root below 10% free space, below 10% free inodes, or under 1,000 free inodes.

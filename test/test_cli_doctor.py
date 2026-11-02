@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -1488,10 +1489,16 @@ class TestRuntimeTmpfs:
         monkeypatch.setattr(cli_doctor.os, "statvfs", _boom, raising=False)
         assert cli_doctor._tmpfs_usage("/nope") is None
 
-    def test_usage_is_none_without_statvfs(self, monkeypatch, tmp_path) -> None:
-        # The Windows shape: ``os`` has no ``statvfs`` at all.
+    def test_usage_without_statvfs_reads_space_only(self, monkeypatch, tmp_path) -> None:
+        # The Windows shape: ``os`` has no ``statvfs`` at all, so free space
+        # comes from ``shutil.disk_usage`` and inodes read as unconstrained.
         monkeypatch.delattr(cli_doctor.os, "statvfs", raising=False)
-        assert cli_doctor._tmpfs_usage(str(tmp_path)) is None
+        usage = SimpleNamespace(total=1000, used=600, free=400)
+        monkeypatch.setattr(shutil, "disk_usage", lambda root: usage)
+        free_space_pct, free_inode_pct, _free_inodes, _entries = cli_doctor._tmpfs_usage(
+            str(tmp_path)
+        )
+        assert (free_space_pct, free_inode_pct) == (40.0, 100.0)
 
 
 class TestTempDirectories:
