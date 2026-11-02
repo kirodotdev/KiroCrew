@@ -22,12 +22,11 @@ def _public(_host: str, _port: int) -> List[str]:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the link-preview modules' autouse isolation (fresh cache, feature on, public DNS stub), moved verbatim; tracked for a de-flake pass
-def _isolate(monkeypatch):
+def _isolate(_floor_monkeypatch):
     """Fresh cache per test, feature ON, DNS stubbed to one public address."""
     lm.reset_link_meta_cache()
-    monkeypatch.setattr(lu, "_default_resolve", _public)
-    _set_enabled(monkeypatch, True)
+    _floor_monkeypatch.setattr(lu, "_default_resolve", _public)
+    _set_enabled(_floor_monkeypatch, True)
     yield
     lm.reset_link_meta_cache()
 
