@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { parseCronSlots } from '../components/WeekGrid'
-import { convertCronTime, tzOffsetMinutes, hourFractionInTz, formatTzOffset } from '../utils/tz'
+import { convertCronTime, tzOffsetMinutes, hourFractionInTz, formatTzOffset, isLocalZone, jobSourceZone, jobZoneCaption } from '../utils/tz'
 import type { CronJob } from '../types'
 
 /** Smallest CronJob that satisfies the type, with sensible defaults. */
@@ -159,5 +159,49 @@ describe('WeekGrid.parseCronSlots — timezone-aware', () => {
     const slots = parseCronSlots(job, 'America/New_York')
     expect(slots).toHaveLength(7)
     expect(new Set(slots.map(s => s.day)).size).toBe(7)
+  })
+})
+
+describe('a job that follows the computer', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ now: new Date('2026-05-12T17:00:00Z') })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('is placed by the zone the server resolved, not by the word "local"', () => {
+    // 09:00 in Tokyo (UTC+9) is 00:00 UTC, the same weekday.
+    const job = baseJob({ cron_expr: '0 9 * * 2', timezone: 'local', effective_tz: 'Asia/Tokyo' })
+    expect(parseCronSlots(job, 'UTC').map(({ day, hour, minute }) => ({ day, hour, minute }))).toEqual([{ day: 1, hour: 0, minute: 0 }])
+  })
+
+  it('a job with no zone is placed by its resolved zone too', () => {
+    const job = baseJob({ cron_expr: '0 9 * * 2', timezone: null, effective_tz: 'Asia/Tokyo' })
+    expect(parseCronSlots(job, 'UTC').map(({ day, hour, minute }) => ({ day, hour, minute }))).toEqual([{ day: 1, hour: 0, minute: 0 }])
+  })
+})
+
+describe('tz.jobSourceZone and jobZoneCaption', () => {
+  it('prefers the resolved zone, then a named one, then UTC', () => {
+    expect(jobSourceZone({ timezone: 'local', effective_tz: 'Asia/Shanghai' })).toBe('Asia/Shanghai')
+    expect(jobSourceZone({ timezone: 'Europe/Paris' })).toBe('Europe/Paris')
+    expect(jobSourceZone({ timezone: 'local' })).toBe('UTC')
+    expect(jobSourceZone({})).toBe('UTC')
+  })
+
+  it('captions a local job with where the computer is now', () => {
+    expect(jobZoneCaption({ timezone: 'local', effective_tz: 'Asia/Shanghai' })).toBe('Local · Asia/Shanghai')
+    expect(jobZoneCaption({ timezone: 'America/Los_Angeles' })).toBe('America/Los Angeles')
+    expect(jobZoneCaption({ timezone: null, effective_tz: 'Asia/Shanghai' })).toBe('')
+    expect(isLocalZone('Local')).toBe(true)
+    expect(isLocalZone('localtime')).toBe(false)
+  })
+})
+
+describe('tz.jobSourceZone with a zone the browser refuses', () => {
+  it('falls back to UTC rather than hand Intl a name it throws on', () => {
+    expect(jobSourceZone({ timezone: null, effective_tz: 'America/NewYork' })).toBe('UTC')
+    expect(jobSourceZone({ timezone: 'America/NewYork' })).toBe('UTC')
   })
 })

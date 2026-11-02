@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from contextlib import contextmanager
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Iterator
@@ -37,6 +38,10 @@ from kiro_crew.cron_service.store import (
     cron_store_lock,
     decode_store,
     encode_store,
+)
+from kiro_crew.cron_service.zone_default_migration import (
+    DEFERRED_STORE_VERSION,
+    store_extra_for_save,
 )
 
 if TYPE_CHECKING:
@@ -395,6 +400,38 @@ def _sync(self: CronService) -> None:
         self._load(_preread=raw)
 
 
+def _keep_unzoned_jobs_on_utc(jobs: list[CronJob], extra: Mapping[str, Any]) -> bool:
+    """Stamp UTC on an older store's unzoned jobs that fired in UTC (``zone_default_migration``).
+
+    ``False`` when the config cannot be read: the zone those jobs inherited is
+    unknown, so nothing is stamped, they run in UTC in memory meanwhile, and the
+    caller keeps the store's older version for the next load to settle. A job an
+    earlier such save listed as following the default (*extra*) is never one of
+    them. It never makes the store unreadable.
+    """
+    from kiro_crew.cron_service.zone_default_migration import (
+        configured_default_zone,
+        follows_default_ids,
+        hold_jobs_on_utc_in_memory,
+        pin_jobs_read_in_utc,
+    )
+
+    follows_default = follows_default_ids(extra)
+
+    try:
+        zone = configured_default_zone()
+    except Exception:
+        logger.warning(
+            "Cron store upgrade deferred: config unreadable, jobs with no zone are not "
+            "stamped until it can be read",
+            exc_info=True,
+        )
+        hold_jobs_on_utc_in_memory(jobs, follows_default)
+        return False
+    pin_jobs_read_in_utc(jobs, zone, follows_default)
+    return True
+
+
 def _load(self: CronService, _preread: bytes | None = None) -> None:
     """Deserialize jobs from crons.json and record the fingerprint.
 
@@ -430,6 +467,9 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
             self._reset_fingerprint()
             self._load_failed = True
             return
+        settled = not document.predates_local_default or _keep_unzoned_jobs_on_utc(
+            document.jobs, document.extra
+        )
         # One malformed or legacy record is warned about and skipped by
         # decode_jobs; every well-formed job survives, and the whole-store
         # reset below is reserved for a file that yields nothing parseable
@@ -453,6 +493,10 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
             self._apply_held_run_records_to(document.jobs)
             self._jobs = document.jobs
         self._keep_store_document(document)
+        if not settled:
+            # Saves keep the older version, so a load that can read the config
+            # still settles these jobs (zone_default_migration).
+            self._store_version = DEFERRED_STORE_VERSION
     except (OSError, ValueError, TypeError, RecursionError) as exc:
         # Same class set as _read_job_records' json.loads guard, kept
         # spelled identically so the two cannot drift. A decode-error-only
@@ -610,10 +654,13 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
     if self._load_failed:
         raise self._unreadable_error()
     self._dir.mkdir(parents=True, exist_ok=True)
+    written = self._jobs if jobs is None else jobs
     document = encode_store(
-        self._jobs if jobs is None else jobs,
+        written,
         version=self._store_version,
-        extra=self._store_extra,
+        extra=store_extra_for_save(
+            self._store_extra, written, deferred=self._store_version == DEFERRED_STORE_VERSION
+        ),
         unknown_fields=self._unknown_fields,
     )
     # Atomic write: unique tmp → fsync → rename, then sync the directory so

@@ -1634,4 +1634,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.format import ForwardedMessage  # noqa: F401
     from kiro_crew.slack.format import count_forwarded_files  # noqa: F401
     from kiro_crew.slack.format import forwarded_files_from_slack  # noqa: F401
+    from kiro_crew.cron import job_zone_name  # noqa: F401
 # isort: on

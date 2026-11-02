@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useState } from 'react'
 import type { CronJob } from '../types'
-import { browserTimeZone, convertCronTime, hourFractionInTz, todayCronDowInTz } from '../utils/tz'
+import { browserTimeZone, convertCronTime, hourFractionInTz, jobSourceZone, todayCronDowInTz } from '../utils/tz'
 import { fmtDateFields, fmtWeekday } from '../i18n/format'
 
 /** Grid columns, Monday-first. `DAY_COUNT` carries the index contract that
@@ -26,7 +26,7 @@ function parseEveryFromSchedule(s: string): number | null {
 /** Parse a cron schedule string into grid slots (day index 0-6, hour, minute).
  *
  *  Each job stores its cron `hour`/`minute` fields in the job's own
- *  IANA timezone (falling back to UTC for legacy jobs). This function
+ *  zone (`effective_tz`, see `jobSourceZone`). This function
  *  converts those fields from the job's TZ to `renderTz` so the grid
  *  positions match the user's chosen render timezone. */
 export function parseCronSlots(job: CronJob, renderTz: string): Slot[] {
@@ -91,9 +91,9 @@ export function parseCronSlots(job: CronJob, renderTz: string): Slot[] {
   const rawDows = parseField(dowF, 0, 7)
   const dows = [...new Set(rawDows.map(d => d === 7 ? 0 : d))]
 
-  // Source TZ: each job's stored timezone. Legacy jobs without a TZ are
-  // treated as UTC (the default when no timezone is set).
-  const srcTz = job.timezone || 'UTC'
+  // Source TZ: the zone the server reads the job's wall clock in right now,
+  // which resolves 'local' and a job with no zone of its own.
+  const srcTz = jobSourceZone(job)
 
   const slots: Slot[] = []
   for (const dow of dows) {

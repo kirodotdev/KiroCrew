@@ -41,8 +41,10 @@ from kiro_crew.cron import (
     get_local_tz,
     is_valid_skip_date,
     is_valid_timezone,
+    job_zone_name,
     never_fires_warning,
     parse_time_string,
+    resolve_timezone_name,
 )
 from kiro_crew.cron_script import (
     compute_secret_env_pin,
@@ -889,7 +891,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if at_ts is not None and at_ts < time.time():
             # Rendered in the zone the job keeps its wall clocks in, so a refused
             # at_time echoes the clock the caller typed rather than the process's.
-            shown_tz = ZoneInfo(tz) if tz else get_local_tz()[1]
+            shown_tz = ZoneInfo(resolve_timezone_name(tz) or "UTC") if tz else get_local_tz()[1]
             local = datetime.fromtimestamp(at_ts, shown_tz)
             return f"Error: resolved time {local.strftime('%I:%M %p %Z')} is in the past"
         channel = (args.get("channel") or "").strip() or None
@@ -1034,7 +1036,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {exc}"
         except ValueError as e:
             return f"Error: {e}"
-        sched_str = format_schedule(job.schedule, tz_name=job.timezone or "")
+        sched_str = format_schedule(job.schedule, tz_name=job_zone_name(job))
         sel().log_api_access(
             caller="mcp",
             operation="cron.create",
@@ -1190,7 +1192,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             source="mcp",
             resources=f"job_id={jid}",
         )
-        sched_str = format_schedule(updated.schedule, tz_name=updated.timezone or "")
+        sched_str = format_schedule(updated.schedule, tz_name=job_zone_name(updated))
         # Read from the SAVED row, not from ``args``: an update that leaves
         # persistent_session alone must still warn if the job is already in that
         # state and this call turned it into an agent job, and the flag is writable

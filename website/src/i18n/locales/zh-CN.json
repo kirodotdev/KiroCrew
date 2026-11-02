@@ -7321,7 +7321,11 @@
       "runs_as_custom_agent_hint": "在它自己的聊天中运行，使用共享记忆。",
       "runs_as_crewmate_hint": "在 {{name}} 的聊天中运行，使用 {{name}} 自己的记忆和文件。也会显示在它的队友页面上。",
       "runs_as_fixed": "任务创建后不能在自定义代理和队友之间切换。",
-      "runs_as_no_crewmates": "还没有队友。请在队友页面添加。"
+      "runs_as_no_crewmates": "还没有队友。请在队友页面添加。",
+      "timezone_local": "本地（跟随这台电脑，当前 {{zone}}）",
+      "timezone_local_undetected": "本地（未检测到时区，按 UTC 运行）",
+      "timezone_default": "默认时区",
+      "timezone_default_unavailable": "无法加载默认时区。保留“默认时区”的任务仍会使用它。"
     },
     "jobLogsView": {
       "cancel": "取消",
@@ -20199,6 +20203,9 @@
       "too_many_pixels": "{{name}} 为 {{width}} × {{height}} 像素，超过了此处转换 HEIC 照片的 {{max}} 百万像素上限。请导出较小的 JPEG，然后改为附加该文件。",
       "convert_failed": "此浏览器无法将 {{name}} 转换为 JPEG。请重新加载页面后重试，或将其导出为 JPEG，然后改为附加该文件。",
       "cannot_fit": "无法将 {{name}} 作为 JPEG 压缩到 {{max}} 以下。请导出较小的 JPEG，然后改为附加该文件。"
+    },
+    "tz": {
+      "local_zone_caption": "本地 · {{zone}}"
     }
   },
   "memoryV2": {

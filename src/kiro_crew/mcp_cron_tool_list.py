@@ -120,7 +120,7 @@ def _list_tools() -> list[dict[str, Any]]:
                         '(e.g. "0 9 * * 1-5" for weekdays at 9AM, '
                         '"30 15 * * 2,4" for Tue/Thu at 3:30PM), evaluated in '
                         "the job's timezone (default: the global config "
-                        "timezone, then UTC)",
+                        "timezone, then 'local')",
                     },
                     "at": {
                         "type": "number",
@@ -137,7 +137,7 @@ def _list_tools() -> list[dict[str, Any]]:
                         "Examples: '5pm', '17:00', 'tomorrow 9:30am', 'in 2 hours', "
                         "'in 3 days', '2026-03-28 14:00'. A clock time, and a relative "
                         "day or week count, is read in 'timezone' when given, "
-                        "else the global config timezone, then UTC. "
+                        "else the global config timezone, then 'local'. "
                         "Prefer this over 'at' for absolute times.",
                     },
                     "channel": {
@@ -195,9 +195,10 @@ def _list_tools() -> list[dict[str, Any]]:
                     "timezone": {
                         "type": "string",
                         "description": "IANA timezone for cron expression evaluation, an at_time "
-                        "clock time, and skip_dates (e.g. 'America/New_York'). Cron hour/minute "
-                        "fields and an at_time such as '9am' are interpreted in this timezone. "
-                        "Falls back to global config timezone, then UTC.",
+                        "clock time, and skip_dates (e.g. 'America/New_York'), or 'local' to follow "
+                        "the time zone of the computer Kiro Crew runs on, wherever it travels. Cron "
+                        "hour/minute fields and an at_time such as '9am' are interpreted in this "
+                        "timezone. Falls back to the global config timezone, then to 'local'.",
                     },
                     "folder": {
                         "type": "string",
@@ -352,7 +353,8 @@ def _list_tools() -> list[dict[str, Any]]:
                     "timezone": {
                         "type": "string",
                         "description": "IANA timezone for cron expression evaluation and "
-                        "skip_dates. Falls back to global config timezone, then UTC.",
+                        "skip_dates, or 'local' to follow the computer's time zone. Falls back to "
+                        "the global config timezone, then to 'local'.",
                     },
                     "strict_schedule": {
                         "type": "boolean",
