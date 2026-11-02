@@ -160,7 +160,7 @@ class TestTheDashboardRowCarriesTheKind:
         assert _terminal_error_meta(err) == {"kind": AUTH_REQUIRED_KIND}
 
 
-# The model service's byte cap, relayed by kiro-cli (#26993). Which JSON-RPC
+# The model service's byte cap, relayed by kiro-cli. Which JSON-RPC
 # field carries the sentence is not captured, so both shapes are pinned.
 _SIZE_SENTENCE = (
     "Request exceeds the maximum allowed size (Request ID: 0f8e2b7c-1d4a-4e55-9a31-"
@@ -245,8 +245,8 @@ class TestTheRequestSizeCapReadsOnlyItsOwnSentence:
     @pytest.mark.parametrize(
         "frame",
         [
-            # #26109's KAS shape: a GenericValidation/ValidationException about
-            # something else entirely.
+            # The KAS route's missing-profile refusal: a
+            # GenericValidation/ValidationException about something else entirely.
             {
                 "code": -32603,
                 "message": "Internal error",
