@@ -79,15 +79,17 @@ NESTED = "nested"
 #: shell ``export``/``set``/``declare``, or a YAML list dash.
 _LINE_LEAD_RE = re.compile(r"[ \t]{0,64}(?:(?:export|set|setx|declare)[ \t]{1,8}|-[ \t]{1,8})?")
 _LEAD_MAX = 80
-#: A template placeholder (``${VAR}``, ``{{ var }}``) is read whole, so the
-#: table's allow entries see it as written instead of cut at its brace.
+#: A template placeholder (``${VAR}``, ``{{ var }}``), or a run of up to eight
+#: back to back (``${A}${B}``), is read whole, so the table's allow entries see
+#: it as written instead of cut at a brace.
 _TEMPLATE_RE = re.compile(
-    r"(?:\$\{[^{}\r\n]{1,200}\}|\{\{[^}\r\n]{0,200}\}\})(?=[\s\"'`,;&)\]}]|$)"
+    r"(?:\$\{[^{}\r\n]{1,200}\}|\{\{[^}\r\n]{0,200}\}\}){1,8}(?=[\s\"'`,;&)\]}]|$)"
 )
-#: A template with text glued after it (``{{ x }}hunter2``) is a value, read
+#: A template run with text glued after it (``{{ x }}hunter2``) is a value, read
 #: through the trailing text, so the allow list does not keep it as a template.
 _GLUED_TEMPLATE_RE = re.compile(
-    rf"(?:\$\{{[^{{}}\r\n]{{1,200}}\}}|\{{\{{[^}}\r\n]{{0,200}}\}}\}})[^\s\"'`,;&)\]}}]{{1,{_N}}}"
+    rf"(?:\$\{{[^{{}}\r\n]{{1,200}}\}}|\{{\{{[^}}\r\n]{{0,200}}\}}\}}){{1,8}}"
+    rf"[^\s\"'`,;&)\]}}]{{1,{_N}}}"
 )
 _LINE_RE = re.compile(rf"[^\r\n]{{0,{_N}}}")
 #: ``<password>value</password>``: the tag name is the key, the text up to the

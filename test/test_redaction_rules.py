@@ -967,3 +967,33 @@ class TestPlaceholderHeadRedaction:
         result = redact(text)
         assert result.text == text
         assert result.records == ()
+
+
+class TestBackToBackTemplates:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "mytool --password ${A}${B} --v",
+            'curl -H "Authorization: Bearer ${A}${B}" u',
+            "mytool --token {{a}}{{b}} x",
+            "password=${A}${B}",
+            "api_key: {{a}}{{b}}",
+        ],
+    )
+    def test_run_of_templates_is_kept(self, text: str) -> None:
+        result = redact(text)
+        assert result.text == text
+        assert result.records == ()
+        assert redact(result.text).text == text
+
+    @pytest.mark.parametrize(
+        "head, run",
+        [("password=", "${A}${B}"), ("mytool --token ", "{{a}}{{b}}")],
+    )
+    def test_run_with_glued_text_is_redacted_whole(self, head: str, run: str) -> None:
+        secret = "hunter2" + synth(3, ALNUM, 93)
+        result = redact(head + run + secret)
+        assert secret not in result.text
+        assert result.records
+        assert result.text == head + rr.PLACEHOLDER
+        assert redact(result.text).text == result.text
