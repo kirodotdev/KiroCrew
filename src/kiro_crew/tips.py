@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.context import ContextBuilder, ui_language_tag
@@ -40,6 +40,7 @@ from kiro_crew.tips_pool import (
     TipsPool,
 )
 from kiro_crew.tips_text import first_prose_paragraph, strip_decoration, truncate_summary
+from kiro_crew.user_json import loads_user_json
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -208,6 +209,13 @@ class TipsState:
     # stable doc identity and doc-level dismissal would silently fail.
     # Bounded: pruned to the most recent 32 entries.
     shown_docs: dict[str, str] = field(default_factory=dict)
+    # In memory only, never saved. ``load_failed``: tips_state.json exists but
+    # could not be read, so these are defaults that must never replace it
+    # (_save_state skips the write, get_tips_cache does not keep it).
+    # ``unparseable``: it was read but did not parse, so the first save keeps
+    # its bytes aside as ``tips_state.json.corrupt-<UTC stamp>`` first.
+    load_failed: bool = field(default=False, compare=False)
+    unparseable: bool = field(default=False, compare=False)
 
 
 def _state_path() -> Path:
@@ -223,13 +231,26 @@ def _load_state() -> TipsState:
     if not path.exists():
         return TipsState()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = read_bytes_with_retry(path)
+    except FileNotFoundError:
+        return TipsState()
+    except OSError as exc:
+        # Present but unreadable (a sharing violation, EACCES, EIO): the
+        # defaults serve this request, and load_failed keeps them off disk.
+        logger.warning(
+            "%s could not be read (%s); using defaults without saving them",
+            path,
+            type(exc).__name__,
+        )
+        return TipsState(load_failed=True)
+    try:
+        data = loads_user_json(raw.decode("utf-8"))
         # Structural validation: a syntactically valid but
         # non-dict/mistyped state file must degrade to defaults, not raise and
         # 500 every tips endpoint until the file is repaired by hand.
         if not isinstance(data, dict):
             logger.warning("tips_state.json has non-dict root; using defaults")
-            return TipsState()
+            return TipsState(unparseable=True)
 
         def _typed(key: str, expected: type, default):  # type: ignore[no-untyped-def]
             v = data.get(key, default)
@@ -297,9 +318,11 @@ def _load_state() -> TipsState:
             ],
             offered=_sanitize_persisted_tip(data.get("offered")),
         )
-    except (OSError, ValueError, TypeError, OverflowError):
-        # ValueError covers json.JSONDecodeError; OverflowError defense-in-depth.
-        return TipsState()
+    except (ValueError, TypeError, OverflowError):
+        # ValueError covers json.JSONDecodeError and UnicodeDecodeError;
+        # OverflowError defense-in-depth.
+        logger.warning("%s could not be parsed; using defaults", path)
+        return TipsState(unparseable=True)
     # Outside the try: a migration bug must surface as an error, not silently
     # degrade to "discard all user state" via the except above.
     _migrate_relinked_curated_state(st)
@@ -356,9 +379,36 @@ def _migrate_relinked_curated_state(st: TipsState) -> None:
     st.relink_migrated = True
 
 
+def _keep_unparseable_aside(path: Path) -> None:
+    """Rename *path* to ``<name>.corrupt-<UTC stamp>`` so a save never destroys it.
+
+    The file is renamed, never rewritten, so the copy holds the exact bytes. A
+    rename that fails raises ``OSError``, the same error a failed save raises.
+    """
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    suffix = 1
+    while target.exists() or target.is_symlink():
+        target = path.with_name(f"{path.name}.corrupt-{stamp}-{suffix}")
+        suffix += 1
+    try:
+        path.rename(target)
+    except FileNotFoundError:
+        return
+    logger.warning("%s could not be parsed; kept its contents at %s", path, target.name)
+
+
 def _save_state(st: TipsState) -> None:
     path = _state_path()
+    if st.load_failed:
+        # Defaults standing in for a file that could not be read: writing them
+        # would replace dismissals, snoozes and the opt-out the file holds.
+        logger.debug("tips state not saved: %s could not be read at load", path)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
+    if st.unparseable:
+        _keep_unparseable_aside(path)
+        st.unparseable = False
     atomic_write(
         path,
         json.dumps(
@@ -706,6 +756,10 @@ async def get_tips_cache(state: DashboardState) -> TipsCache:
                 cache.catalog = catalog
                 cache.curated = curated
                 cache.state = st
+                if st.load_failed:
+                    # Serve this request from defaults, but keep nothing: the
+                    # next request reads the file again.
+                    return cache
                 state._tips_cache = cache  # type: ignore[attr-defined]
     return state._tips_cache  # type: ignore[attr-defined]
 
@@ -1209,7 +1263,10 @@ async def api_tips_next(request: web.Request) -> web.Response:
     cache = await get_tips_cache(state)
     st = cache.state
 
-    if st.opted_out:
+    if st.opted_out or st.load_failed:
+        # load_failed: the saved state (an opt-out, the cadence, a running
+        # generation) is unknown, so serve nothing and start no generation
+        # until a read succeeds.
         return web.Response(status=204)
 
     # Trigger background refresh if stale
@@ -1387,6 +1444,15 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
     valid_actions = ("shown", "ack", "dismiss", "snooze", "helpful", "optout", "optin")
     if action not in valid_actions:
         return web.json_response({"error": "invalid action", "code": "invalid_action"}, status=400)
+
+    if st.load_failed:
+        # The saved state could not be read, so this action cannot be saved
+        # without replacing it. Say so rather than answer ok for a dropped
+        # dismissal or opt-out; the next request reads the file again.
+        return web.json_response(
+            {"error": "tips state could not be read; try again", "code": "tips_state_unreadable"},
+            status=503,
+        )
 
     now = time.time()
 
