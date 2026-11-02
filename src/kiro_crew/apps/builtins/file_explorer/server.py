@@ -160,6 +160,24 @@ SENSITIVE_DIRS = {
 # KiroCrew data-home subdirectories that are safe for the file explorer to
 # access. Everything else under the data home is blocked (keys, tokens, DB,
 # sessions).
+#
+# ``members`` holds one directory per crewmate, each carrying only that
+# crewmate's non-secret working files: its activity log, first-welcome marker,
+# the self-briefing it keeps for its future self, its Dynamic Dashboard page
+# state, and the notes and drafts it writes for the user. The chat file preview
+# already opens these (its read gate
+# is the sensitive-path list, which does not name anything under ``members/``),
+# so the file explorer refusing the same files was a gap: this set predates
+# member spaces and was never updated when they arrived. Listing ``members``
+# here lets the explorer read exactly what the preview already reads -- no
+# write-access change.
+#
+# The secret-holding member data is NOT under ``members/`` and stays refused on
+# both read paths by name: per-crewmate rules, goals and DM bindings live in the
+# sibling ``member-records/`` leaf, memory in ``memory_stores/``, and retained V1
+# bindings in ``member-memory-bindings/`` -- each denied by the shared
+# sensitive-path list and masked by the OS sandbox. Those are siblings of
+# ``members/``, not children of it, so admitting ``members`` does not reach them.
 _KIROCREW_SAFE_SUBDIRS = {
     "workspace",
     "uploads",
@@ -171,6 +189,7 @@ _KIROCREW_SAFE_SUBDIRS = {
     "pods",
     "logs",
     "crons",
+    "members",
 }
 
 _SENSITIVE_DIRS_CF = frozenset(d.casefold() for d in SENSITIVE_DIRS)

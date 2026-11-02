@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.apps.builtins.file_explorer import server
 from kiro_crew.sandbox import SandboxUnavailableError
 
@@ -116,6 +117,105 @@ class TestIsSensitive:
         # The fix must not over-block: a genuine safe subdir stays accessible.
         assert server._is_sensitive(tmp_tree / ".kiro" / "crew" / "workspace" / "a.txt") is False
 
+    # A synthetic absolute base whose own parts contain no crew-home marker, so
+    # the crew-home policy keys on the ``.kiro/crew`` (or ``.kirocrew``) segment
+    # written into each case rather than on an incidental marker in the prefix.
+    # (``tmp_path`` can itself live under the real data home, which would make the
+    # FIRST marker match win on the prefix -- the same reason the crew-home cases
+    # above build from it only when the prefix is marker-free.)
+    _CREW_BASE = Path("/synthetic-home")
+
+    @pytest.mark.parametrize(
+        "relpath",
+        (
+            ".kiro/crew/members/atlas/drafts/note.md",
+            ".kiro/crew/members/atlas/briefing.md",
+            ".kiro/crew/members/atlas/activity.jsonl",
+            ".kiro/crew/members/atlas/welcome_owed.json",
+            ".kirocrew/members/atlas/drafts/note.md",
+        ),
+    )
+    def test_member_space_files_are_accessible(self, relpath):
+        """A crewmate's own non-secret working files open in the file explorer.
+
+        The chat file preview already opens these (its gate is the sensitive-path
+        list, which names nothing under ``members/``); before ``members`` was in
+        ``_KIROCREW_SAFE_SUBDIRS`` the explorer refused the same file as a
+        sensitive path. These are the only kinds of file a member space holds: an
+        activity log, a first-welcome marker, the self-briefing, and agent-written
+        notes/drafts -- no credential, token, session or database.
+        """
+        assert server._is_sensitive(self._CREW_BASE / relpath) is False, relpath
+
+    @pytest.mark.parametrize(
+        "relpath",
+        (
+            # Per-crewmate rules, goals and DM bindings -- a SIBLING of members/.
+            "member-records/atlas/rules.json",
+            "member-records/atlas/goals.json",
+            # Retained V1 member-memory bindings (hold a raw session key).
+            "member-memory-bindings/sessions/abc/binding.json",
+            # Managed memory stores.
+            "memory_stores/atlas/memory.db",
+            # The data-home root and an unlisted leaf stay refused as before.
+            "config.json",
+            "sessions.db",
+        ),
+    )
+    def test_secret_siblings_of_members_stay_refused(self, relpath):
+        """Admitting ``members`` must not reach the secret-holding leaves beside it.
+
+        The member secrets live in SIBLING directories of ``members/`` under the
+        data home, each a name the deny-by-default crew-home policy never lists in
+        ``_KIROCREW_SAFE_SUBDIRS`` (and the shared sensitive-path list denies them
+        by name too). They are children of the data home, not of ``members/``, so
+        the new allow-list entry does not reach them.
+        """
+        assert server._is_sensitive(self._CREW_BASE / ".kiro" / "crew" / relpath) is True, relpath
+        assert server._is_sensitive(self._CREW_BASE / ".kirocrew" / relpath) is True, relpath
+
+    def test_members_allowlist_does_not_fold_case(self):
+        """``members`` is on the allow-list, which is deliberately case-SENSITIVE.
+
+        Same direction-of-failure reasoning as the other safe subdirs: on a
+        case-sensitive volume ``crew/Members`` is a different directory from the
+        safe ``crew/members``, so the capitalised spelling stays refused.
+        """
+        assert server._is_safe_crew_subdir("members") is True
+        assert server._is_safe_crew_subdir("Members") is False
+        assert (
+            server._is_sensitive(self._CREW_BASE / ".kiro" / "crew" / "Members" / "atlas" / "x.md")
+            is True
+        )
+
+    def test_member_path_traversal_and_escape_still_refused(self):
+        """A path that climbs out of members/ or whose root is NOT the crew home
+        gets no pass from the new allow-list entry.
+
+        ``_is_sensitive`` walks resolved path parts, so a ``..`` that lands on a
+        secret sibling resolves to that sibling and is refused; a ``members``
+        directory outside the crew home is not matched by the crew-home policy at
+        all (and _safe_path's ALLOWED_ROOTS + resolve() is the traversal boundary).
+        """
+        # ../ out of a member space onto the fenced member-records sibling.
+        escaped = (
+            self._CREW_BASE
+            / ".kiro"
+            / "crew"
+            / "members"
+            / "atlas"
+            / ".."
+            / ".."
+            / "member-records"
+            / "x.json"
+        )
+        # os.path.normpath-style collapse without touching the filesystem.
+        collapsed = Path(os.path.normpath(escaped))
+        assert server._is_sensitive(collapsed) is True
+        # A 'members' directory that is NOT under the crew home is not blessed by
+        # the crew-home allow-list (it is just an ordinary directory here).
+        assert server._is_sensitive(self._CREW_BASE / "members" / "atlas" / "note.md") is False
+
     @pytest.mark.parametrize(
         "relpath",
         (
@@ -184,6 +284,77 @@ class TestIsSensitive:
 
     def test_subdir_not_sensitive(self, tmp_tree):
         assert server._is_sensitive(tmp_tree / "subdir" / "nested.md") is False
+
+
+class TestMemberSpaceReadGateResolvesLinksAndTraversal:
+    """The REAL read gate (`_safe_path`, which resolve()s before `_is_sensitive`)
+    refuses a `..` climb or a symlink that lands on a fenced member sibling.
+
+    Admitting ``members`` to the explorer's allow-list opens member working
+    files; it must not become a hop to the secret-holding siblings beside them
+    (``member-records/``, ``config.json``, ``sessions.db``). These assertions go
+    through ``_safe_path`` -- the entry the HTTP read/list handlers use -- so the
+    resolve() that collapses ``..`` and follows symlinks is the real one, not a
+    lexical normpath in the test. They lock in refusal that already holds on main,
+    so they are NOT red without the ``members`` change.
+
+    The crew home is built under the autouse fixture's allowed root (``tmp_tree``)
+    as ``.kirocrew/`` so the layout does not depend on where ``tmp_path`` lives,
+    and ``ALLOWED_ROOTS``/``_HOME`` are already pointed at it by that fixture's
+    monkeypatch (no bare ``monkeypatch.undo``).
+    """
+
+    @pytest.fixture
+    def crew_layout(self, tmp_tree):
+        """A real on-disk crew home: members/atlas/ beside a fenced member-records/."""
+        crew = tmp_tree / ".kirocrew"
+        member = crew / "members" / "atlas"
+        member.mkdir(parents=True)
+        (member / "note.md").write_text("a draft\n")
+        records = crew / "member-records"
+        records.mkdir(parents=True)
+        (records / "x.json").write_text("{}")
+        (crew / "config.json").write_text("{}")
+        (crew / "sessions.db").write_bytes(b"\x00")
+        return crew
+
+    def test_member_file_opens_through_the_real_gate(self, crew_layout):
+        # Baseline: the member working file itself opens via _safe_path (what the
+        # ``members`` allow-list entry is for), so the refusals below are the gate
+        # drawing a boundary, not refusing everything. Built under the allowed
+        # root exactly as ``TestKirocrewGranularSensitive`` builds its safe-subdir
+        # assertions (``tmp_tree / ".kirocrew"``), so no skip is needed.
+        note = crew_layout / "members" / "atlas" / "note.md"
+        p = server._safe_path(str(note))
+        assert p == note
+
+    def test_dotdot_climb_onto_member_records_is_refused(self, crew_layout):
+        # resolve() inside _safe_path collapses the ``..`` to the fenced sibling.
+        traversed = crew_layout / "members" / "atlas" / ".." / ".." / "member-records" / "x.json"
+        with pytest.raises(server.PathError) as exc:
+            server._safe_path(str(traversed))
+        assert exc.value.status == 403
+
+    @requires_symlinks
+    def test_symlink_out_of_member_space_to_records_dir_is_refused(self, crew_layout):
+        # members/atlas/link -> <crew>/member-records ; reading link/x.json must
+        # resolve to the fenced sibling and be refused.
+        link = crew_layout / "members" / "atlas" / "link"
+        os.symlink(crew_layout / "member-records", link, target_is_directory=True)
+        with pytest.raises(server.PathError) as exc:
+            server._safe_path(str(link / "x.json"))
+        assert exc.value.status == 403
+
+    @requires_symlinks
+    @pytest.mark.parametrize("secret", ("config.json", "sessions.db"))
+    def test_file_symlink_to_crew_home_secret_is_refused(self, crew_layout, secret):
+        # members/atlas/<secret>-link -> <crew>/<secret> ; following it must land
+        # on the deny-by-default crew-home leaf and be refused.
+        link = crew_layout / "members" / "atlas" / f"{secret}-link"
+        os.symlink(crew_layout / secret, link)
+        with pytest.raises(server.PathError) as exc:
+            server._safe_path(str(link))
+        assert exc.value.status == 403
 
 
 class TestListDir:
