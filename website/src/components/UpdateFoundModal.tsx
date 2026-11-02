@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Trans } from 'react-i18next'
@@ -19,6 +19,7 @@ import { settingsPath } from './settingsPath'
 import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord } from '../utils/updateNudge'
 import { foldStableStamp } from '../utils/displayVersion'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
+import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 
 /**
  * Proactive "update found" modal — the one interruption between an update
@@ -82,7 +83,6 @@ type Candidate = {
 export default function UpdateFoundModal({ held = false }: { held?: boolean } = {}) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const dialogRef = useRef<HTMLDivElement | null>(null)
   const { data: desktop } = useQuery<UpdateState | null>({
     queryKey: ['update-state'],
     queryFn: () => null,
@@ -343,13 +343,6 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, required, candidate?.version, restarting])
 
-  // Move focus INTO the dialog when it opens: aria-modal hides the background
-  // from assistive tech, so focus stranded out there points at content the
-  // screen reader was just told does not exist.
-  useEffect(() => {
-    if (open) dialogRef.current?.focus()
-  }, [open])
-
   // Surface a background apply failure in the same slot a synchronous
   // rejection uses, and drop the restarting latch so the buttons come back:
   // the user can read the reason, retry, or dismiss. Only during this modal's
@@ -451,13 +444,8 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
       role="presentation"
       onClick={e => { if (e.target === e.currentTarget && !required) dismiss() }}
     >
-      <div
-        ref={dialogRef}
-        tabIndex={-1}
-        className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden outline-hidden"
-        role="dialog"
-        aria-modal="true"
-        aria-label={required
+      <UpdateFoundDialog
+        label={required
           ? i18nT('components.updateFoundModal.update_required')
           : i18nT('components.updateFoundModal.update_available')}
       >
@@ -636,7 +624,50 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
               </button>
             )}
         </div>
-      </div>
+      </UpdateFoundDialog>
+    </div>
+  )
+}
+
+// Escape stays on this modal's own window listener, which a required update
+// never arms, so the trap is wired with Escape off and a stable no-op in its place.
+const NO_ESCAPE = () => {}
+
+/**
+ * Keep keystrokes inside the dialog away from the page's global shortcuts, as
+ * `Modal` does: one of those would open a second overlay whose own trap then
+ * fights this one for focus. Escape is left to travel to the window listener.
+ */
+function isolateKeys(e: ReactKeyboardEvent) {
+  if (e.key !== 'Escape') e.stopPropagation()
+}
+
+/**
+ * The "update found" dialog node. Mounted only while the dialog is open, so the
+ * focus trap's focus-in and focus-restore run on the dialog's own open and close.
+ */
+function UpdateFoundDialog({ label, children }: { label: string; children: ReactNode }) {
+  // Tab stays inside and focus returns on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
+  // Focus lands on the dialog node rather than its first control, so opening
+  // it puts no focus ring on a button. Declared after the trap, so it runs
+  // after the trap's focus-in and the trap still holds the element to restore.
+  useEffect(() => {
+    dialogRef.current?.focus()
+  }, [])
+  return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts; it performs no action, so there is nothing for a keyboard user to reach
+    <div
+      ref={dialogRef}
+      tabIndex={-1}
+      className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden outline-hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      onKeyDown={isolateKeys}
+    >
+      {children}
     </div>
   )
 }

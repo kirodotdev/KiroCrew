@@ -1,5 +1,5 @@
 import { savePrefExplicitly } from '../lib/uiPrefs'
-import { Fragment, useEffect, useState, useMemo } from 'react'
+import { Fragment, useEffect, useRef, useState, useMemo } from 'react'
 import { X, Keyboard } from 'lucide-react'
 import { DEFAULT_SHORTCUTS, formatShortcut, formatChordCaps, resolveShortcutDef, SHORTCUT_GROUPS, shortcutGroupLabel, shortcutLabel, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY, type ShortcutDef } from '../hooks/useKeyboardShortcuts'
 import { useQuickSearchShortcut } from '../hooks/useQuickSearchShortcut'
@@ -12,8 +12,15 @@ import { isElectron } from '../lib/electron'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
 import { Toggle, SearchInput, FilteredEmpty } from './ui'
 import ErrorNotice from './ErrorNotice'
+import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+import { shortcutPlatform, useShortcutBindings } from '../hooks/useKeyboardShortcuts'
+import { matchShortcutEvent } from '../lib/shortcutRegistry'
 
 import { i18nT } from '../i18n/t'
+
+// Escape stays on the modal's own document listener, which clears the search
+// before it closes, so the trap is wired with Escape off and a no-op in its place.
+const NO_ESCAPE = () => {}
 /**
  * Shortcut group ids + heading resolver, re-exported from the hook that owns
  * them.
@@ -362,6 +369,28 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     return () => document.removeEventListener('keydown', handler)
   }, [onClose, searchQuery])
 
+  // Tab stays inside the dialog and focus returns to the opener on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
+  // The search box takes the first focus, not the trap's first control (the
+  // close button). Declared after the trap, so it runs after the trap's
+  // focus-in, which has already captured the opener to restore.
+  useEffect(() => {
+    dialogRef.current?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true })
+  }, [])
+
+  // Keep keystrokes inside the dialog away from the page's global shortcuts,
+  // as `Modal` does: one of those (the command palette) would open a second
+  // trapped overlay that fights this one for Tab. Two keys still travel:
+  // Escape, for the listener above, and the chord that opened this dialog,
+  // which closes it again.
+  const bindings = useShortcutBindings()
+  const isolateKeys = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') return
+    if (matchShortcutEvent(e.nativeEvent, bindings, shortcutPlatform()) === 'shortcuts-modal') return
+    e.stopPropagation()
+  }
+
   const filteredGroups = useMemo(() => {
     return SHORTCUT_GROUPS.map(group => {
       const entries = groupShortcuts(group, macCtrl)
@@ -438,8 +467,8 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     // Backdrop click-to-dismiss is a supplementary mouse affordance; keyboard
     // users close via Escape, already wired through the document keydown
     // listener above, so the dialog role stays keyboard-accessible.
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('components.shortcutsModal.keyboard_shortcuts')} onClick={onClose}>
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
+    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('components.shortcutsModal.keyboard_shortcuts')} onClick={onClose} onKeyDown={isolateKeys}>
       {/* onClick only stops propagation so inner clicks don't hit the backdrop
           dismiss handler; it is event plumbing, not an interactive control. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
@@ -454,7 +483,6 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder={i18nT('components.shortcutsModal.search')}
-            autoFocus
             aria-label={i18nT('components.shortcutsModal.search')}
             className="[&>input]:pr-8"
           />
