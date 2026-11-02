@@ -13862,7 +13862,9 @@
         "crewmate_harness": "按队友设置代理运行框架",
         "crewmate_harness_desc": "在每个队友的资料中添加“代理运行框架”设置，让某个队友使用另一种 AI 编程工具（例如 Claude Code）及其模型，其他队友保持默认。",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "让一个对话把任务交给一个团队，并在看板里跟踪它们。"
+        "crew_mode_desc": "让一个对话把任务交给一个团队，并在看板里跟踪它们。",
+        "explore": "探索",
+        "explore_desc": "在顶栏加入探索：可试用功能、你的进度，以及新聊天里的“今天试试”卡片。"
       },
       "kasBundleCard": {
         "toggle_label": "用 {{productName}} 自带的引擎运行 KAS",
