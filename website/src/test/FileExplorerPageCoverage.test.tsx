@@ -1024,3 +1024,57 @@ describe('FileExplorerPage backend banner', () => {
     expect(screen.getByText(/Go to parent folder/)).toBeInTheDocument()
   })
 })
+
+// ─── Windows gateway parents (#27791) ───────────────────────────────────────
+
+describe('FileExplorerPage parent navigation on a Windows gateway', () => {
+  const WIN_ROOT = 'C:\\Users\\me'
+  const WIN_ENTRIES: TreeEntry[] = [
+    { name: 'src', path: 'C:\\Users\\me\\src', type: 'dir', children: [
+      { name: 'index.ts', path: 'C:\\Users\\me\\src\\index.ts', type: 'file' },
+    ] },
+    { name: 'notes.txt', path: 'C:\\Users\\me\\notes.txt', type: 'file', size: 12, mtime: 1700000000 },
+  ]
+
+  beforeEach(() => {
+    vi.mocked(fileExplorerApi.health).mockResolvedValue({ allowedRoots: [WIN_ROOT], home: WIN_ROOT })
+    vi.mocked(fileExplorerApi.tree).mockResolvedValue({ entries: WIN_ENTRIES })
+  })
+
+  it('"Reveal parent" re-roots to the Windows parent, not /', async () => {
+    renderPage()
+    await ready()
+    await userEvent.click(treeBox().getByText('src'))
+    await waitFor(() => expect(treeBox().getByText('index.ts')).toBeInTheDocument())
+    await openMenuOn('index.ts')
+    await clickMenuItem('Reveal parent')
+    await waitFor(() => expect(fileExplorerApi.tree).toHaveBeenCalledWith('C:\\Users\\me\\src', 2))
+    expect(fileExplorerApi.tree).not.toHaveBeenCalledWith('/', 2)
+  })
+
+  it('"Go to parent folder" re-roots an unavailable folder to its Windows parent', async () => {
+    const gone = 'C:\\Users\\me\\gone'
+    vi.mocked(fileExplorerApi.tree).mockImplementation((p: string) =>
+      p === gone ? Promise.reject(new Error('path not allowed')) : Promise.resolve({ entries: WIN_ENTRIES }))
+    seedSaved({ folderTabs: [{ id: 'ft-w', rootPath: gone, label: '', expanded: { [gone]: true } }] })
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/This folder is unavailable/)).toBeInTheDocument())
+    await userEvent.click(screen.getByText(/Go to parent folder/))
+    await waitFor(() => expect(fileExplorerApi.tree).toHaveBeenCalledWith(WIN_ROOT, 2))
+    expect(fileExplorerApi.tree).not.toHaveBeenCalledWith('/', 2)
+  })
+
+  it('opening a file by path keeps the root when the file sits in it', async () => {
+    renderPage()
+    await ready()
+    vi.mocked(fileExplorerApi.resolve).mockResolvedValue({ exists: true, type: 'file' })
+    const calls = vi.mocked(fileExplorerApi.tree).mock.calls.length
+    await userEvent.click(screen.getByTitle('Click to edit path'))
+    const input = screen.getByLabelText('Folder path')
+    await userEvent.clear(input)
+    await userEvent.type(input, 'C:\\Users\\me\\notes.txt{Enter}')
+    await waitFor(() => expect(viewerName()).toBe('notes.txt'))
+    expect(vi.mocked(fileExplorerApi.tree).mock.calls.length).toBe(calls)
+    expect(fileExplorerApi.tree).not.toHaveBeenCalledWith('/', 2)
+  })
+})
