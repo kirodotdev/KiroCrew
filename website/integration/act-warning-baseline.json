@@ -20,7 +20,6 @@
   "src/test/App.topbarAndShortcuts.test.tsx",
   "src/test/AppDetailPageCoverage.test.tsx",
   "src/test/AppRootCoverage.test.tsx",
-  "src/test/ArtifactDetailPage.test.tsx",
   "src/test/ArtifactPanelCoverage.test.tsx",
   "src/test/ArtifactsPageCoverage.test.tsx",
   "src/test/BottomTerminalPanel.popout.test.tsx",
