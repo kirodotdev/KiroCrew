@@ -3,8 +3,8 @@ title: Inline paste pills — the Lexical composer becomes the default chat edit
 status: in-progress
 author: qh2244
 created: 2026-09-21
-last-audited: 2026-10-28
-audited-at: e9f5e64d3
+last-audited: 2026-11-02
+audited-at: e858e5b378
 doc-pr: null
 implementation-prs: [11100]
 tracking-issues: [8309, 8513, 11122, 11337]
@@ -75,7 +75,8 @@ sidecar it already speaks. The positions this RFC takes, one line each:
 ### Current state
 
 Verified at `0140fdd57`; re-audited against `334335182` on 2026-10-06 and
-against `6204f7d82` on 2026-10-19, and against `e9f5e64d3` on 2026-10-28.
+against `6204f7d82` on 2026-10-19, against `e9f5e64d3` on 2026-10-28, and
+against `e858e5b378` on 2026-11-02.
 
 - `website/src/components/ChatInput.tsx` declares the optional `lexicalComposer`
   prop and defaults it to `false`; the prop's own comment says it "Defaults off
