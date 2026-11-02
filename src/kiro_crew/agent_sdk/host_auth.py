@@ -380,12 +380,13 @@ UNKNOWN_AGENT_AUTH = AgentAuthDeclaration(
     adapter_own_leaves=(),
     sign_in_remedy=(
         "No sign-in instruction is recorded for this agent backend. Complete the "
-        "harness's own sign-in, then start a new chat."
+        "harness's own sign-in, then send your message again, or start a new chat "
+        "if it still fails."
     ),
     signed_out_message=(
         "This agent backend is not signed in, and Kiro Crew has no sign-in "
         "instruction recorded for it. Complete the harness's own sign-in, then "
-        "start a new chat."
+        "send your message again, or start a new chat if it still fails."
     ),
     host_logout_retires_children=False,
     entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
@@ -393,17 +394,17 @@ UNKNOWN_AGENT_AUTH = AgentAuthDeclaration(
 
 
 #: kiro-cli's action, and its signed-out statement, kept separate for the reason on
-#: the two fields. The statement is the string the auth-required path raises: that
-#: path reaches it on the harness's own stderr evidence.
+#: the two fields. Both end at re-sending, not at a new chat: re-authenticating
+#: does not retire the session, so the next message in the SAME chat succeeds.
 #:
 #: Each names :data:`KIRO_CLI_LOGIN_COMMAND`, the form that works for a kiro-cli
 #: on the user's ``PATH``. :func:`sign_in_remedy` and :func:`signed_out_message`
 #: swap it for the absolute-path form when the spawn runs a copy the user's shell
 #: does not find, such as the desktop app's bundled one.
-_KIRO_REMEDY = f"Run {KIRO_CLI_LOGIN_COMMAND} in your terminal, then start a new chat."
+_KIRO_REMEDY = f"Run {KIRO_CLI_LOGIN_COMMAND} in your terminal, then send your message again."
 _KIRO_SIGNED_OUT = (
     f"kiro-cli is not logged in. Run `{KIRO_CLI_LOGIN_COMMAND}` in your terminal, then "
-    "start a new chat."
+    "send your message again."
 )
 # KAS can run under either auth owner -- Crew's own vault (the dashboard's Kiro
 # sign-in card) or kiro-cli's store -- and the formatter cannot see which one a
@@ -411,12 +412,12 @@ _KIRO_SIGNED_OUT = (
 # "--") in the remedy: the panel renders it as text.
 _KAS_REMEDY = (
     f"Sign in from Settings → Agent Harness → Kiro sign-in, or run {KIRO_CLI_LOGIN_COMMAND} "
-    "in your terminal if kiro-cli owns the sign-in, then start a new chat."
+    "in your terminal if kiro-cli owns the sign-in, then send your message again."
 )
 _KAS_SIGNED_OUT = (
     "Not signed in to Kiro. Sign in again from Settings → Agent Harness → Kiro sign-in, "
     f"or run `{KIRO_CLI_LOGIN_COMMAND}` in your terminal if kiro-cli owns the sign-in, "
-    "then start a new chat."
+    "then send your message again."
 )
 
 
