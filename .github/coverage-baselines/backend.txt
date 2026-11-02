@@ -28,4 +28,3 @@ src/kiro_crew/dashboard/_types.py 0.0   # 0/3
 src/kiro_crew/emoji_list.py 0.0   # 0/1
 src/kiro_crew/instances/ssm_token_mint.py 21.5   # 17/79
 src/kiro_crew/mcp_gateway/transport.py 73.1   # 163/223
-src/kiro_crew/webex/client.py 64.1   # 173/270
