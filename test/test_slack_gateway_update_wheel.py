@@ -414,12 +414,12 @@ class TestWheelAutoApplyUsesTheShadowEngine:
                     raise ImportError("the install tree is gone")
                 return None
 
-        # flake-ok: pre-existing sys.modules eviction that monkeypatch restores, moved verbatim; tracked for a de-flake pass
+        # monkeypatch restores sys.modules at teardown; the refusing finder below fails any import.
         monkeypatch.delitem(sys.modules, "kiro_crew.platform.wheel_apply", raising=False)
         monkeypatch.setattr(sys, "meta_path", [_RefuseApplyModule(), *sys.meta_path])
         orch = _make_orchestrator()
-        # flake-ok: pre-existing parked stand-in task the test cancels, moved verbatim; tracked for a de-flake pass
-        task = asyncio.create_task(asyncio.sleep(10))
+        # The stand-in parks on an event nothing sets, and the test cancels it below.
+        task = asyncio.create_task(asyncio.Event().wait())
         task.cancel()
 
         await orch._settle_update_work(task)
