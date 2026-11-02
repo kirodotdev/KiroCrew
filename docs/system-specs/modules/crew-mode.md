@@ -4001,9 +4001,10 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   action=bind`, `session_send`, binding before the seed. It also teaches the
   patrol: a self-armed `monitor_start` with `watch="work-ledger"`, `gate` left at
   its default (never `gate:false`), `interval_secs` within 300..900, and
-  `patrol_budget.py renew` when the budget line ends `10% or less left`. The
-  band and renew wording are copied from the conductor's `## Patrol`
-  (`agent_parts/spec_prompts.py`). A spec that does not mount and grant the
+  `patrol_budget.py renew` when the budget line ends `10% or less left`. Those
+  rules, and the verdict and close rules beside them, are not the crewmate's
+  own text: each is a placeholder filled from the root conductor's shared rules
+  (see "The two conductors stay in step" below). A spec that does not mount and grant the
   ledger keeps the text above unchanged, and no loop is taught. The mate
   conductor maps the `goal-conductor` skill (so `patrol_budget.py` is in its
   skill scope) and the `dashboard` skill its prompt names only when its spec
@@ -4151,6 +4152,27 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   KAS honours the limits as the worker spec's `excludedTools`, so only claude
   refuses them). The worker's model pin is judged against the same backend
   (`mate_worker.crewmate_worker_backend`).
+
+**The two conductors stay in step.** `kirocrew-conductor` (Crew Mode, Ultra
+chats) and `kirocrew-mate-conductor` both conduct work through a work ledger, from
+different installers and different prompt files. A conductor change lands on
+both, or it lands on the parity allowlist with a reason. The rules both need
+(dispatch and bind before the seed, the `watch="work-ledger"` patrol, the
+interval band and `patrol_budget.py renew`, acceptance by `accept_eval.py`, close,
+and reading the `goal-conductor` skill before acting on a goal) are written once,
+in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
+assembled from them (`_CONDUCTOR_PROMPT_SECTIONS`) and `conductor.patrol` names
+each as a placeholder (`context_assembly.member.ledger_rules_block`).
+`test/test_mate_conductor_parity.py` compares the effective agents, not the spec
+files alone: both installed specs put through the per-session projection
+(`acp.kas_agents.to_client_custom_agent`), which for a crewmate's thread adds the
+session-level `kirocrew-dashboard` and `kirocrew-panel` with their grants. It fails on any root charter section,
+MCP server, tool, auto-approve grant or mapped skill the crewmate's conductor
+lacks unless its `ALLOWLIST` names it with a one-line reason; on a crewmate piece
+that copies root charter text instead of naming the rule; and on an allowlist
+entry that no longer names a difference. The check runs one way: what only the
+crewmate's conductor has (cron, guide and mate servers, the default built-ins, its
+front-desk wording) is not drift.
 
 **A stale worker is released, not capped.** A crewmate opens as many workers as
 its work needs; memory is bounded by the cgroup `max_memory_mb`. A worker idle
@@ -4965,6 +4987,7 @@ Parent-change and impact previews use the server's redacted projection.
 | `test/test_members.py`, `test/test_members_dm_thread.py`, `test/test_members_dm_thread_activity_and_briefing.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads, briefing endpoint |
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |
 | `test/test_cron_conductor_scripted.py` | A scripted `cron_add` from a crewmate's conductor is dispatched like any caller's |
+| `test/test_mate_conductor_parity.py` | Every section of the root conductor's charter is a shared rule the crewmate's conductor is told, a heading, or allowlisted with a reason; no crewmate piece copies charter text; every MCP server, tool, auto-approve grant and mapped skill of `kirocrew-conductor` is on `kirocrew-mate-conductor`, both read through the per-session projection, or allowlisted; no allowlist entry is stale; a planted root-only section, server, tool, grant or skill is caught |
 | `test/test_mate_config_migration.py` | The upgrade migration carries a shared template's or a `crew-<hex>` copy's kit and nothing the worker base has, gives a default-template crewmate a file that adds nothing, gives the conductor-bound first crewmate what a default-template crewmate gets, leaves a binding without a `member_id` alone without a log line above DEBUG, records the kit's source, skips and logs a crewmate whose worker would differ (binding and disk untouched), changes nothing on a second run, leaves a hand-made rollback alone, and the carried capabilities read as already there |
 | `test/test_mate_thread_wakes.py` | A worker's turn end wakes its crewmate once; no wake for a session the crewmate did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; every top-level turn end reaches the wake path |
 | `test/test_mate_upgrade_notice.py` | A moved crewmate's notice is posted once and never on a later start, never by a crewmate created after the upgrade or on a thread whose binding names another member, reaches a thread not open at startup at its next turn end, and is owed only by crewmates the migration moved |
