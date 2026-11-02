@@ -34,6 +34,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
     runtime,
     worktree_ops,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 # ==========================================================================
 # Untracked-discard contract: _dirty_split classification, the refusal
@@ -495,11 +496,11 @@ async def test_prune_run_discard_only_name_reaches_remove_and_skips_recheck(monk
     ):
         r = await worktree_ops._prune_run([], discard_paths={"wt-scratch": ["note.txt"]})
         assert r == {"ok": True, "total": 1}
-        for _ in range(500):
-            if not worktree_ops._PRUNE_STATE["running"]:
-                break
-            # flake-ok: pre-existing yield-poll, bounded at 500 turns, for the background prune to finish, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+        await async_wait_until(
+            lambda: not worktree_ops._PRUNE_STATE["running"],
+            timeout=30,
+            describe=lambda: "the background prune to finish",
+        )
 
     assert worktree_ops._PRUNE_STATE["running"] is False
     # _prunable IS now consulted for a discard-only name...
@@ -663,11 +664,11 @@ async def test_discard_override_respects_overridable_codes(monkeypatch, code, sh
     ):
         r = await worktree_ops._prune_run([], discard_paths={"wt-x": ["note.txt"]})
         assert r == {"ok": True, "total": 1}
-        for _ in range(500):
-            if not worktree_ops._PRUNE_STATE["running"]:
-                break
-            # flake-ok: pre-existing yield-poll, bounded at 500 turns, for the background prune to finish, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+        await async_wait_until(
+            lambda: not worktree_ops._PRUNE_STATE["running"],
+            timeout=30,
+            describe=lambda: "the background prune to finish",
+        )
 
     if should_reach_remove:
         assert remove_kwargs == [{"name": "wt-x", "force": False, "discard": ["note.txt"]}]
