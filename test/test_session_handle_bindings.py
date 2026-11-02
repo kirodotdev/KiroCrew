@@ -231,7 +231,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "b60c5fea256e",
         "session_handle_permissions",
     ),
-    "approve_tool": ("function", True, "1241f87a8dc0", "session_handle_permissions"),
+    "approve_tool": ("function", True, "adc58eafd8e0", "session_handle_permissions"),
     "available_models": ("property", False, "92d6193dbe19", "session_handle_class"),
     "awaiting_permission": ("property", False, "a6632a57e602", "session_handle_class"),
     "bind_session_key": ("function", False, "57eca86d38c3", "session_handle_lifecycle"),

@@ -640,7 +640,22 @@ def _url_payload_command(n: int) -> str:
 #: shape regex, the operator-listed lookup that reads the file only for that shape,
 #: its once-per-endpoint audit, and the second counterfactual keyword that keeps
 #: MCP discovery from assuming an operator entry. No check was relaxed elsewhere.
-_PACKAGE_LINE_BUDGET = 33_735
+#: Raised by 217 more, from 33,735, for a person's in-session override of one deny rule
+#: (``docs/request-for-change/rfc-deny-session-override.md``): 137 are
+#: ``deny_waiver`` (reading a refusal's key, the governance-pin and overlay checks
+#: that keep a key unwaivable, and the check against the per-transport backend
+#: sets that ``agent_sdk`` owns), and the other 80 are ``deny_gate``'s new lines
+#: (``_DenyWaiver`` plus one skip at each return site, which has to sit in
+#: ``is_denied`` beside the refusal it steps aside, and keeping a waived push out
+#: of ``push_allowed``); main left no headroom. ``deny_waiver``
+#: stays in this package, not beside its dashboard reader, so the sensitive-change,
+#: security-scope and denial-differential lanes keep reviewing it. No rule was
+#: dropped and no check relaxed: an empty ``waived`` judges every call as before.
+#: Raised by 7 more, to 33,959, for ``deny_waiver.deny_key_is_self_guard`` and its
+#: use in ``_DenyWaiver``: it keeps every self-protection floor, the unverifiable
+#: push key and every self-protection or credential-exfil rule out of the override
+#: entirely, so the change only narrows what can be waived.
+_PACKAGE_LINE_BUDGET = 33_959
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

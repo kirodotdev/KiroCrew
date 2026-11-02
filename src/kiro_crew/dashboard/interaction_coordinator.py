@@ -282,6 +282,15 @@ class ApprovalCoordinator:
             return False
         if expected_future is not None and future is not expected_future:
             return False
+        if approved:
+            from kiro_crew.dashboard.deny_override import is_deny_override_card
+
+            if is_deny_override_card(slot.messages, approval_id):
+                # Only the owner's own override click on the slot route answers
+                # a security-rule override card; a plain approve from any other
+                # route would be recorded as approved and then refused, so it
+                # settles nothing and the card stays open.
+                return False
         decision = _slot_decision(approved, rejected_once)
         future.set_result(decision)
         if permission_marker(slot.messages, approval_id, decision):

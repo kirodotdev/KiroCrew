@@ -10979,6 +10979,45 @@
       "grant_entry_copy": "{{title}}: fino a {{max}} caratteri del testo che selezioni nelle risposte della chat, e un pulsante Copia",
       "grant_entry_open": "{{title}}: fino a {{max}} caratteri del testo che selezioni nelle risposte della chat, e un pulsante per aprire un link",
       "grant_entry_copy_open": "{{title}}: fino a {{max}} caratteri del testo che selezioni nelle risposte della chat, e i pulsanti Copia e Apri"
+    },
+    "denyOverride": {
+      "family": {
+        "git_publish": "Questa regola di sicurezza ferma i push che potrebbero finire direttamente sul tuo branch principale.",
+        "self_protection": "Questa regola di sicurezza ferma i comandi che potrebbero prendere il controllo di {{productName}} stesso, per esempio arrestarlo, riavviarlo o aggiornarlo.",
+        "sandbox_escape": "Questa regola di sicurezza ferma i comandi che potrebbero aggirare i limiti entro cui funziona {{productName}}.",
+        "credentials": "Questa regola di sicurezza ferma i comandi che potrebbero leggere o inviare le tue password e chiavi di accesso.",
+        "file_upload": "Questa regola di sicurezza ferma i comandi che potrebbero inviare i tuoi file fuori da questo computer.",
+        "remote_control": "Questa regola di sicurezza ferma i comandi che potrebbero far controllare questo computer da un altro.",
+        "cloud": "Questa regola di sicurezza ferma i comandi che potrebbero eliminare o modificare le tue risorse cloud.",
+        "wipe": "Questa regola di sicurezza ferma i comandi che potrebbero cancellare file o interi dischi su questo computer.",
+        "permissions": "Questa regola di sicurezza ferma i comandi che cambiano chi può aprire o modificare i file di sistema.",
+        "discard_changes": "Questa regola di sicurezza ferma i comandi che scartano modifiche al codice che non hai ancora fatto commit.",
+        "download_run": "Questa regola di sicurezza ferma i comandi che scaricano uno script e lo eseguono subito.",
+        "database": "Questa regola di sicurezza ferma i comandi che eliminano tabelle del database o tutte le loro righe.",
+        "generic": "Una regola di sicurezza ha fermato questo comando."
+      },
+      "not_run": "Non è stato eseguito.",
+      "command_label": "Comando in attesa della tua scelta",
+      "details": "Dettagli tecnici",
+      "rule_label": "Regola: {{rule}}",
+      "override": "Scegli come consentire",
+      "allow_once": "Consenti una volta — esegui questo comando una sola volta",
+      "session": {
+        "git_publish": "Consenti in questa sessione: questa regola smette di bloccare i push che potrebbero finire direttamente sul tuo branch principale, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "self_protection": "Consenti in questa sessione: questa regola smette di bloccare i comandi che potrebbero prendere il controllo di {{productName}} stesso, per esempio arrestarlo, riavviarlo o aggiornarlo, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "sandbox_escape": "Consenti in questa sessione: questa regola smette di bloccare i comandi che potrebbero aggirare i limiti entro cui funziona {{productName}}, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "credentials": "Consenti in questa sessione: questa regola smette di bloccare i comandi che potrebbero leggere o inviare le tue password e chiavi di accesso, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "file_upload": "Consenti in questa sessione: questa regola smette di bloccare i comandi che potrebbero inviare i tuoi file fuori da questo computer, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "remote_control": "Consenti in questa sessione: questa regola smette di bloccare i comandi che potrebbero far controllare questo computer da un altro, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "cloud": "Consenti in questa sessione: questa regola smette di bloccare i comandi che potrebbero eliminare o modificare le tue risorse cloud, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "wipe": "Consenti in questa sessione: questa regola smette di bloccare i comandi che potrebbero cancellare file o interi dischi su questo computer, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "permissions": "Consenti in questa sessione: questa regola smette di bloccare i comandi che cambiano chi può aprire o modificare i file di sistema, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "discard_changes": "Consenti in questa sessione: questa regola smette di bloccare i comandi che scartano modifiche al codice che non hai ancora fatto commit, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "download_run": "Consenti in questa sessione: questa regola smette di bloccare i comandi che scaricano uno script e lo eseguono subito, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "database": "Consenti in questa sessione: questa regola smette di bloccare i comandi che eliminano tabelle del database o tutte le loro righe, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia",
+        "generic": "Consenti in questa sessione: questa regola smette di bloccare qualsiasi comando, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia"
+      },
+      "pill_blocked": "In attesa di approvazione: {{command}}"
     }
   },
   "hooks": {

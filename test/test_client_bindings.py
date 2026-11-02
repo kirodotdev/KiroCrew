@@ -320,7 +320,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "agent_version": ("property", False, "bb418bb7ece8", "client_class"),
     "initialize_result": ("property", False, "44dc9acb7120", "client_class"),
     "answer_elicitation": ("function", True, "2fcb1ac189fa", "client_elicitation"),
-    "approve_tool": ("function", True, "d9f85d56922f", "client_permissions"),
+    "approve_tool": ("function", True, "dedeacb52f8f", "client_permissions"),
     "authored_spec_declares_zero_tools": ("function", False, "a6632a57e602", "client_mcp_array"),
     "available_models": ("function", False, "92d6193dbe19", "client_model_selection"),
     "backend": ("property", False, "bb418bb7ece8", "client_class"),

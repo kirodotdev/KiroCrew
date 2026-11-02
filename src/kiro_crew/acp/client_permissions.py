@@ -60,10 +60,12 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     session_config_drift_issue,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.deny_waiver import child_calls_marked
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard
 
 if TYPE_CHECKING:
@@ -265,6 +267,7 @@ async def approve_tool(
     always: bool = False,
     deadline: GrantDeadline | None = None,
     withdraw_if: Callable[[], bool] | None = None,
+    deny_waivers: frozenset[str] = frozenset(),
 ) -> bool:
     """Approve a pending session/request_permission.
 
@@ -290,6 +293,10 @@ async def approve_tool(
     written, the request's records are put back, and
     :class:`~kiro_crew.permission_floor.ApprovalWithdrawn` is raised. Under
     the lock it is read before ``deadline``.
+
+    ``deny_waivers`` reach the floor's gate unchanged: the deny-rule keys a
+    person overrode on the dashboard card for this call
+    (:func:`~kiro_crew.permission_floor.refusal_for`).
     """
     # An instance allocated without ``__init__`` may keep no event map until
     # the builder creates it; read it as empty, so it is judged like any
@@ -306,7 +313,14 @@ async def approve_tool(
     if gate_event is None:
         reason: str | None = permission_floor.REASON_NO_EVENT
     else:
-        reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
+        # The keyword travels only when a person overrode a rule, so every other
+        # approval asks the floor exactly as before.
+        if deny_waivers:
+            reason = await asyncio.to_thread(
+                permission_floor.refusal_for, gate_event, deny_waivers=deny_waivers
+            )
+        else:
+            reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
     if reason is not None:
         # A refusal drops any mediated-secret grant an earlier approval minted for
         # this call id, now: ``reject_tool`` below pops the gate event again, finds
@@ -1304,6 +1318,27 @@ def _note_pi_gate_asked(self: AcpClient, msg: JsonRpcMessage) -> None:
         self._pi_gate_request_tool[str(msg.id)] = tool_call_id
 
 
+def _is_child_permission_frame(msg: JsonRpcMessage, own_sid: str) -> bool:
+    """Whether permission frame *msg* is a native sub-agent's, as far as it says.
+
+    A frame naming a session other than *own_sid* (the client's own session), a
+    tracked child's, or one whose tool call is stamped with the Agent call it
+    serves (``parentToolUseId``). A plain function, not a client member: it
+    reads nothing from the instance but that one id.
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    frame_sid = params.get("sessionId")
+    if isinstance(frame_sid, str) and frame_sid and own_sid and frame_sid != own_sid:
+        return True
+    tool_call = params.get("toolCall")
+    if not isinstance(tool_call, dict):
+        return False
+    meta = tool_call.get("_meta")
+    claude_meta = meta.get("claudeCode") if isinstance(meta, dict) else None
+    parent = claude_meta.get("parentToolUseId") if isinstance(claude_meta, dict) else None
+    return isinstance(parent, str) and bool(parent)
+
+
 def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None:
     """Build one permission event through the transport-shared parser.
 
@@ -1363,6 +1398,15 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
             self._restore_copilot_edit_seed(restore)
     if event is None:
         return None
+    if _is_child_permission_frame(msg, getattr(self, "_session_id", "") or ""):
+        # A native sub-agent's request: the dashboard keeps the parent's deny
+        # overrides away from it (``dashboard.deny_override.slot_may_override``).
+        event.native_child_call = True
+    # Whether the mark above can be trusted for this backend. ``None`` when the
+    # attribute is unset, never ``""``: that is Kiro CLI's id.
+    event.child_calls_marked = child_calls_marked(
+        getattr(self, "backend", None), ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED
+    )
     if recorded is not None:
         self._permission_options[event.request_id] = recorded
     # Created here when absent, so a client allocated without ``__init__``

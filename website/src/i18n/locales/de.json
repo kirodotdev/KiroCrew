@@ -10762,6 +10762,45 @@
       "grant_entry_copy": "{{title}}: bis zu {{max}} Zeichen Text, den du in Chat-Antworten auswählst, und eine Kopieren-Schaltfläche",
       "grant_entry_open": "{{title}}: bis zu {{max}} Zeichen Text, den du in Chat-Antworten auswählst, und eine Schaltfläche zum Öffnen eines Links",
       "grant_entry_copy_open": "{{title}}: bis zu {{max}} Zeichen Text, den du in Chat-Antworten auswählst, und Schaltflächen zum Kopieren und Öffnen"
+    },
+    "denyOverride": {
+      "family": {
+        "git_publish": "Diese Sicherheitsregel stoppt Pushes, die direkt auf deinem Hauptbranch landen könnten.",
+        "self_protection": "Diese Sicherheitsregel stoppt Befehle, die {{productName}} selbst steuern könnten, etwa es beenden, neu starten oder aktualisieren.",
+        "sandbox_escape": "Diese Sicherheitsregel stoppt Befehle, die die Grenzen umgehen könnten, unter denen {{productName}} läuft.",
+        "credentials": "Diese Sicherheitsregel stoppt Befehle, die deine Passwörter und Zugriffsschlüssel lesen oder senden könnten.",
+        "file_upload": "Diese Sicherheitsregel stoppt Befehle, die deine Dateien von diesem Computer wegschicken könnten.",
+        "remote_control": "Diese Sicherheitsregel stoppt Befehle, mit denen ein anderer Computer diesen steuern könnte.",
+        "cloud": "Diese Sicherheitsregel stoppt Befehle, die deine Cloud-Ressourcen löschen oder ändern könnten.",
+        "wipe": "Diese Sicherheitsregel stoppt Befehle, die Dateien oder ganze Laufwerke auf diesem Computer löschen könnten.",
+        "permissions": "Diese Sicherheitsregel stoppt Befehle, die ändern, wer Systemdateien öffnen oder ändern darf.",
+        "discard_changes": "Diese Sicherheitsregel stoppt Befehle, die Codeänderungen verwerfen, die du noch nicht committet hast.",
+        "download_run": "Diese Sicherheitsregel stoppt Befehle, die ein Skript herunterladen und sofort ausführen.",
+        "database": "Diese Sicherheitsregel stoppt Befehle, die Datenbanktabellen oder alle ihre Zeilen löschen.",
+        "generic": "Eine Sicherheitsregel hat diesen Befehl gestoppt."
+      },
+      "not_run": "Er wurde nicht ausgeführt.",
+      "command_label": "Befehl wartet auf deine Entscheidung",
+      "details": "Technische Details",
+      "rule_label": "Regel: {{rule}}",
+      "override": "Art der Freigabe wählen",
+      "allow_once": "Einmal erlauben — diesen Befehl ein Mal ausführen",
+      "session": {
+        "git_publish": "In dieser Sitzung erlauben: Diese Regel blockiert keine Pushes mehr, die direkt auf deinem Hauptbranch landen könnten, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "self_protection": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, die {{productName}} selbst steuern könnten, etwa es beenden, neu starten oder aktualisieren, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "sandbox_escape": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, die die Grenzen umgehen könnten, unter denen {{productName}} läuft, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "credentials": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, die deine Passwörter und Zugriffsschlüssel lesen oder senden könnten, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "file_upload": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, die deine Dateien von diesem Computer wegschicken könnten, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "remote_control": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, mit denen ein anderer Computer diesen steuern könnte, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "cloud": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, die deine Cloud-Ressourcen löschen oder ändern könnten, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "wipe": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, die Dateien oder ganze Laufwerke auf diesem Computer löschen könnten, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "permissions": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, die ändern, wer Systemdateien öffnen oder ändern darf, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "discard_changes": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, die Codeänderungen verwerfen, die du noch nicht committet hast, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "download_run": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, die ein Skript herunterladen und sofort ausführen, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "database": "In dieser Sitzung erlauben: Diese Regel blockiert keine Befehle mehr, die Datenbanktabellen oder alle ihre Zeilen löschen, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet",
+        "generic": "In dieser Sitzung erlauben: Diese Regel blockiert keinen Befehl mehr, bis du diesen Chat schließt (Sitzungsoptionen → Sitzung schließen) oder {{productName}} neu startet"
+      },
+      "pill_blocked": "Warten auf Genehmigung: {{command}}"
     }
   },
   "hooks": {

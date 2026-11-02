@@ -233,6 +233,11 @@ with no row here.
    * - ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
      - driver-internal (whether a kindless permission frame takes the preceding
        tool_call's ``kind``; read per frame by the session handle's wire accessor)
+   * - ``ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED``,
+       ``ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED``
+     - driver-internal (whether that transport's permission events say
+       ``child_calls_marked``, which a deny-rule override card and a session
+       waiver require; read per frame by each transport's permission builder)
    * - ``ACP_BACKENDS_HOOKS_LIST``
      - driver-internal (whether this harness's agent asks its client for the hooks
        matching a trigger and to run one, read by the session dispatch loop that
@@ -1134,11 +1139,13 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
     ACP_BACKEND_ROUTING,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+    ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_HOOKS_LIST,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_META_IDENTITY,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
+    ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
     ACP_BACKENDS_SIDE_READONLY,
     Readback,
     Routing,

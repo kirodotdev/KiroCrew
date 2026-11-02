@@ -633,6 +633,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_trust_scope": ("value", "''"),
     "_trusted_pattern_deadlines": ("value", "{}"),
     "_trusted_patterns": ("value", "set()"),
+    "_deny_waivers": ("value", "set()"),
     "_turn_admission_reserved": ("value", "False"),
     "_turn_channel_narrowed": ("value", "False"),
     "_turn_channel_origin": ("value", "False"),
