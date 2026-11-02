@@ -1164,10 +1164,10 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     """Whether a spec's ``toolsSettings.shell.allowedCommands`` grants this call.
 
     Only a shell call (kiro-cli's ``execute_bash`` among its names) with its
-    command recovered by the host, holding none of
-    :data:`kiro_crew.platform.allowed_commands.UNGRANTABLE_COMMAND_CHARS`, that one of ``spec_granted_commands``
+    command recovered by the host and plain
+    (:func:`kiro_crew.platform.allowed_commands.plain_command`), that one of ``spec_granted_commands``
     matches whole, as kiro-cli anchors each entry at both ends. Each entry is read
-    by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the subset
+    by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the syntax
     both engines read alike and matches it in linear time; any other grants nothing.
     """
     if not call.spec_granted_commands or "execute_bash" not in names or not call.is_shell:
@@ -1176,19 +1176,17 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
 
 
 def _command_matches_any(command: str | None, patterns: Sequence[str]) -> bool:
-    """Whether *command* is plain (no character of
-    :data:`kiro_crew.platform.allowed_commands.UNGRANTABLE_COMMAND_CHARS`) and one
-    of *patterns*, each read by :mod:`kiro_crew.platform.allowed_commands`, matches
-    it whole. ``None`` (no recovered command) matches nothing."""
+    """Whether *command* is plain
+    (:func:`kiro_crew.platform.allowed_commands.plain_command`: no chaining, pipe,
+    redirect or substitution character anywhere, no ``( ) { }`` outside a quoted
+    argument) and one of *patterns*, each read by
+    :mod:`kiro_crew.platform.allowed_commands`, matches it whole. ``None`` (no
+    recovered command) matches nothing."""
     from kiro_crew.platform import allowed_commands
 
     if not isinstance(command, str) or not allowed_commands.plain_command(command):
         return False
-    for pattern in patterns:
-        segments = allowed_commands.parse(pattern)
-        if segments is not None and allowed_commands.matches(segments, command):
-            return True
-    return False
+    return allowed_commands.matches_any(tuple(patterns), command)
 
 
 def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
