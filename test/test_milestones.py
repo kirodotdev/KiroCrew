@@ -189,6 +189,15 @@ class TestCounting:
         m.record("widgets")
         assert m.load()["counters"]["widgets"]["count"] == 1
 
+    def test_a_file_saved_with_a_utf8_bom_reads_and_keeps_counting(self) -> None:
+        # Windows editors save UTF-8 "with BOM"; the mark is not content.
+        doc = {"counters": {"widgets": {"count": 3, "first_seen": 1.0}}}
+        m._path().write_bytes(b"\xef\xbb\xbf" + json.dumps(doc).encode("utf-8"))
+        assert m.load()["counters"] == {"widgets": {"count": 3, "first_seen": 1.0}}
+        m.record("widgets")
+        assert m.load(strict=True)["counters"].get("widgets", {}).get("count") == 4
+        assert not m._path().read_bytes().startswith(b"\xef\xbb\xbf")
+
 
 class TestReadFailures:
     @pytest.mark.parametrize(

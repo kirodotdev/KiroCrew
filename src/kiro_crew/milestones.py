@@ -47,6 +47,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics.events import emit_counter
 from kiro_crew.platform_lock_compat import file_lock, open_lock_file
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +319,7 @@ def load(*, strict: bool = False) -> dict[str, Any]:
     """
     st = _empty()
     try:
-        raw = json.loads(_path().read_text(encoding="utf-8"))
+        raw = loads_user_json(_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
         return st
     except (OSError, ValueError, RecursionError):
