@@ -48,6 +48,7 @@ from kiro_crew.atomic_write import (
     pinned_parent_replace_supported,
 )
 from kiro_crew.context import steering_target_admissible
+from kiro_crew.dashboard.handlers.prompts_paths import _is_path_too_long_error
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields, split_frontmatter
@@ -141,9 +142,17 @@ _NAME_ALLOWED = re.compile(r"[^A-Za-z0-9._/ -]")
 #: (260) -- surfaced there as a bare ``FileNotFoundError`` from ``CreateFileW``,
 #: an uncoded 500 indistinguishable from a real write failure. Bounding the whole
 #: name before the write (nesting ``a/b/c`` blows the limit on short segments
-#: too) turns that into a coded 400 on every host, with no dependence on which
-#: errno or winerror a given platform happens to raise.
+#: too) turns a long NAME into a coded 400 on every host. A name inside the bound
+#: can still make a joined path the host refuses -- a deep project folder on a
+#: Windows host without long paths -- and :func:`_create_path_too_long` maps that
+#: refusal onto the same coded 400 after the write is tried.
 MAX_STEERING_NAME_BYTES = 200
+
+#: Module-level so a test can take the Windows by-name branch on any host.
+_IS_WINDOWS = os.name == "nt"
+#: ``ERROR_PATH_NOT_FOUND``: what ``CreateDirectoryW`` answers for a directory
+#: path past ``MAX_PATH`` on a host without long-path support.
+_WINERROR_PATH_NOT_FOUND = 3
 
 
 def _sel():
@@ -746,6 +755,32 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
     return data.decode("utf-8", errors="replace"), display, None
 
 
+def _create_path_too_long(exc: OSError) -> bool:
+    """True when a create's *exc* is the host refusing the joined path for its length.
+
+    The shared :func:`_is_path_too_long_error` covers ``ENAMETOOLONG`` and the
+    Windows codes that name the length. On Windows the by-name create also sees a
+    too-long path as a plain ``FileNotFoundError``: ``os.open`` is the CRT
+    ``_wopen``, which sets no ``winerror``, and ``mkdir`` answers
+    ``ERROR_PATH_NOT_FOUND``. ``Path.mkdir(parents=True)`` has already made every
+    parent it could, and ``os.open`` runs after that mkdir, so when the failing
+    path's parent is a directory a missing parent is not the cause and the length
+    is. Any other code keeps the generic ``writefailed`` answer.
+    """
+    if _is_path_too_long_error(exc):
+        return True
+    if not _IS_WINDOWS or not isinstance(exc, FileNotFoundError):
+        return False
+    if getattr(exc, "winerror", None) not in (None, _WINERROR_PATH_NOT_FOUND):
+        return False
+    if not exc.filename:
+        return False
+    try:
+        return Path(os.fsdecode(exc.filename)).parent.is_dir()
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
     """Create *target* with *content*; return ``(error token or None, display path)``."""
     display = _redact_meta(_display_path(target))
@@ -765,6 +800,8 @@ def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
         except FileExistsError:
             return "exists", display
         except OSError as exc:
+            if _create_path_too_long(exc):
+                return "pathtoolong", display
             logger.warning("steering create failed: %s", type(exc).__name__)
             return "writefailed", display
         return None, display
@@ -793,6 +830,8 @@ def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
         # rather than distinguishing a linked-root token here.
         return "writefailed", display
     except OSError as exc:
+        if _create_path_too_long(exc):
+            return "pathtoolong", display
         logger.warning("steering create failed: %s", type(exc).__name__)
         return "writefailed", display
     try:
@@ -807,6 +846,8 @@ def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
     except FileExistsError:
         return "exists", display
     except OSError as exc:
+        if _create_path_too_long(exc):
+            return "pathtoolong", display
         logger.warning("steering create failed: %s", type(exc).__name__)
         return "writefailed", display
     finally:
@@ -1139,10 +1180,10 @@ async def api_steering_create(request: web.Request) -> web.Response:
     if not rel:
         return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     if len(rel.encode("utf-8")) > MAX_STEERING_NAME_BYTES:
-        # Bound the name before the write: the host would otherwise refuse the
-        # joined path for its length and the blanket OSError handling below would
-        # answer an uncoded 500. A coded 400 lets the dashboard tell the user to
-        # shorten the name.
+        # Bound the name before the write: the host would otherwise refuse a
+        # long name, and a coded 400 lets the dashboard tell the user to shorten
+        # it. A shorter name the host still refuses for the joined path's length
+        # is mapped onto the same 400 after the create below.
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="steering.create",
@@ -1171,6 +1212,24 @@ async def api_steering_create(request: web.Request) -> web.Response:
     if err == "exists":
         return web.json_response(
             {"error": f"'{rel}' already exists", "code": "steering_exists"}, status=409
+        )
+    if err == "pathtoolong":
+        # The name passed its own bound, but joined onto this project's folder the
+        # host refused the path for its length. Same coded 400 and audit as the
+        # bound above, so the dashboard can tell the user to shorten the name.
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="steering.create",
+            outcome="denied",
+            source="dashboard",
+            resources=key,
+        )
+        return web.json_response(
+            {
+                "error": "steering name is too long for its destination path",
+                "code": "name_too_long",
+            },
+            status=400,
         )
     if err is not None:
         return web.json_response({"error": "write failed", "code": "write_failed"}, status=500)
