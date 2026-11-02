@@ -257,30 +257,33 @@ def due_reminders(reminders: Iterable[Reminder], now: datetime) -> list[Reminder
     return [r for r in reminders if not r.done and parse_iso(r.fire_at) <= now]
 
 
-#: Ceiling on the roll-forward loop in :func:`advance`, guarding a pathological
-#: interval from spinning forever.
-_MAX_ADVANCE_STEPS = 100_000
+def _first_slot_after(slot: datetime, step: timedelta, now: datetime) -> datetime:
+    """The earliest ``slot + k * step`` (``k >= 0``) that is STRICTLY after ``now``.
+
+    The number of whole steps is one division, not a loop. A loop needed a
+    ceiling against a pathological interval, and a reminder stale by more than
+    the ceiling stopped short of ``now``: still due, so it fired again on the
+    next scheduler tick, once per tick until it caught up.
+    """
+    if slot > now:
+        return slot
+    return slot + ((now - slot) // step + 1) * step
 
 
 def advance(reminder: Reminder, now: datetime) -> Reminder:
     """Advance a reminder past ``now`` after it has fired.
 
     One-time reminders are marked done. Recurring ones roll forward to the next
-    occurrence STRICTLY after now — rolling in a loop rather than adding a single
-    interval, so a reminder that came due while the machine was asleep does not
-    then fire repeatedly to "catch up" on every missed slot. That loop is the
-    behaviour, not an optimisation: replacing it with one addition reintroduces
-    the catch-up storm.
+    occurrence STRICTLY after now — by as many whole intervals as that takes,
+    rather than by a single interval, so a reminder that came due while the
+    machine was asleep does not then fire repeatedly to "catch up" on every
+    missed slot. Adding one interval would reintroduce that catch-up storm.
     """
     if reminder.recurrence is None:
         return replace(reminder, done=True)
 
     step = timedelta(minutes=max(1, reminder.recurrence.every_minutes))
-    next_at = parse_iso(reminder.fire_at)
-    steps = 0
-    while next_at <= now and steps < _MAX_ADVANCE_STEPS:
-        next_at += step
-        steps += 1
+    next_at = _first_slot_after(parse_iso(reminder.fire_at), step, now)
     return replace(reminder, fire_at=to_iso(next_at))
 
 
@@ -292,7 +295,7 @@ def skip_once(reminder: Reminder, now: datetime) -> Reminder:
     One-time reminders have nothing to skip TO, so they come back unchanged and
     the caller should not offer the action for them.
 
-    The loop runs at least once and lands STRICTLY in the future — a reminder
+    It moves at least one interval and lands STRICTLY in the future — a reminder
     whose slot already passed would otherwise be "skipped" to another past time
     and fire immediately.
     """
@@ -300,13 +303,7 @@ def skip_once(reminder: Reminder, now: datetime) -> Reminder:
         return reminder
 
     step = timedelta(minutes=max(1, reminder.recurrence.every_minutes))
-    next_at = parse_iso(reminder.fire_at)
-    steps = 0
-    while True:
-        next_at += step
-        steps += 1
-        if next_at > now or steps >= _MAX_ADVANCE_STEPS:
-            break
+    next_at = _first_slot_after(parse_iso(reminder.fire_at) + step, step, now)
     return replace(reminder, fire_at=to_iso(next_at))
 
 
