@@ -1301,16 +1301,19 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.chat_folders_icons import (  # noqa: F401
         _CHAT_FOLDER_ICON_EPOCHS,
+        _CHAT_FOLDER_ICON_PREVIEWS,
         _CHAT_FOLDER_ICON_TASKS,
         _CHAT_FOLDER_PENDING_ICON_TASKS,
         _FOLDER_COLOR_PALETTE,
         _FOLDER_ICON_MODEL,
+        MAX_ICON_PREVIEW_AVOID,
         _bump_icon_epoch,
         _folder_icon_lock,
         _is_single_emoji,
         _is_valid_folder_color,
         _spawn_chat_folder_icon_task,
         generate_emoji_for_name,
+        icon_preview_avoid,
     )
     from kiro_crew.dashboard.chat_folders_paths import (  # noqa: F401
         MAX_FOLDER_STEERING_DIR_LEN,
@@ -1350,11 +1353,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         live_slot_names_in_folders,
     )
     from kiro_crew.dashboard.chat_folders_routes import (  # noqa: F401
+        _ICON_PREVIEW_ATTEMPTS,
         _MAX_REORDER_BODY_BYTES,
         _MAX_REORDER_ENTRIES,
         _mate_home_locked,
         api_chat_folder_create,
         api_chat_folder_delete,
+        api_chat_folder_icon_preview,
         api_chat_folder_reorder,
         api_chat_folder_update,
         api_chat_folders,

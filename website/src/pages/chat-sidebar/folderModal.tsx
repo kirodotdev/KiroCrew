@@ -51,6 +51,11 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
           availableTagsFailed={tagsQueryFailed}
           onRetryTags={() => { void refetchTags() }}
           onClose={() => setFolderModal(null)}
+          // Auto-generate shows the emoji before Save. Nothing is
+          // stored until Save sends it as the folder's `icon`.
+          onPreviewIcon={folderModal.mode === 'edit'
+            ? async (name, avoid) => (await api.previewChatFolderIcon(folderModal.folderId, name, avoid)).icon
+            : undefined}
           onSubmit={async draft => {
             // AWAIT the mutation and only close on success. The backend rejects a
             // free-typed project_dir (not absolute / not an existing directory /
@@ -102,6 +107,7 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
               // regenerate_icon and a manual icon are mutually exclusive on the
               // backend; the modal keeps them exclusive in the draft, and this
               // branch keeps them exclusive on the wire.
+              // A previewed icon arrives here as a plain `icon` edit.
               if (draft.regenerateIcon) {
                 body.regenerate_icon = true
               } else if (touched.has('icon')) {

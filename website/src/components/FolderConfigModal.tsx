@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { Zap, FolderOpen, ChevronRight, Check, Plus, Send, X } from 'lucide-react'
+import { Zap, FolderOpen, ChevronRight, Check, Plus, Send, X, Loader2 } from 'lucide-react'
 import Modal from './Modal'
 import ErrorNotice from './ErrorNotice'
 import { Input, Btn } from './ui'
@@ -89,6 +89,12 @@ interface Props {
   /** Resolves on a persisted save; REJECTS on failure so the modal can stay
    *  open with the draft intact and surface the reason. */
   onSubmit: (draft: FolderConfigDraft) => Promise<void>
+  /** edit: picks an emoji for the folder WITHOUT saving it. When given,
+   *  Auto-generate puts the result straight into the Icon field, so the person
+   *  sees it before Save; Save then stores it as an ordinary icon. `avoid` is
+   *  every icon shown so far, so another click picks a different one. Absent,
+   *  Auto-generate arms `regenerateIcon` and the icon is picked after Save. */
+  onPreviewIcon?: (name: string, avoid: string[]) => Promise<string>
 }
 
 /** Ancestor chain for `id`, outermost first. Cycle-guarded like the sidebar's
@@ -137,7 +143,7 @@ function sameDirs(a: string[], b: string[]): boolean {
  */
 export default function FolderConfigModal({
   open, onClose, mode, parentId, folder, folders, installedAgents, globalDefaultAgent, availableTags, availableTagsFailed, onRetryTags, onSubmit, destinationCrews, globalDestinationCrew,
-  destinationCrewsFailed, onRetryDestinationCrews,
+  destinationCrewsFailed, onRetryDestinationCrews, onPreviewIcon,
 }: Props) {
   const [draft, setDraft] = useState<FolderConfigDraft>(EMPTY)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -157,6 +163,18 @@ export default function FolderConfigModal({
   // server message in the modal's top alert, which names no field. Only the
   // icon codes route here; every other failure keeps the top alert.
   const [iconErr, setIconErr] = useState(false)
+  // Auto-generate preview: `generating` is a pick the person still wants
+  // (spinner, hint, Save held), `genInflight` any request not yet settled
+  // (button held: the server takes one preview per folder at a time), and
+  // `genErr` the inline failure line. `genSeq` drops a result the person no
+  // longer wants — they typed an icon, renamed the folder, or the modal
+  // re-seeded — while it ran. `shownIcons` is every icon shown in this open,
+  // sent as `avoid`.
+  const [generating, setGenerating] = useState(false)
+  const [genInflight, setGenInflight] = useState(false)
+  const [genErr, setGenErr] = useState(false)
+  const genSeq = useRef(0)
+  const shownIcons = useRef<string[]>([])
   // What the draft looked like when the modal opened — the baseline for
   // "has the user actually typed something worth protecting?".
   const seedRef = useRef<FolderConfigDraft>(EMPTY)
@@ -218,7 +236,13 @@ export default function FolderConfigModal({
     setPickerOpen(false)
     setPickerTarget('project')
     setSaving(false); setSaveErr(''); setIconErr(false)
+    genSeq.current += 1
+    shownIcons.current = seeded.icon ? [seeded.icon] : []
+    setGenerating(false); setGenErr(false)
   }, [open, mode, seedKey])
+
+  /** Drop a running preview's result: the person changed what it was for. */
+  const dropPreview = () => { genSeq.current += 1; setGenerating(false); setGenErr(false) }
 
   // Focus the name field on open. rAF + preventScroll for the same reason the
   // sidebar's inline inputs need it: these open from a Radix menu, whose teardown
@@ -272,7 +296,8 @@ export default function FolderConfigModal({
   }, [folders, mode, folder?.parent_id, folder?.owner_app, parentId])
 
   const trimmedName = draft.name.trim()
-  const canSubmit = trimmedName.length > 0
+  // Save waits for a live preview, so it never closes before the pick lands.
+  const canSubmit = trimmedName.length > 0 && !generating
 
   // A folder can reference an agent that is no longer installed (uninstalled or
   // renamed). Without an option for it the select falls back to showing the
@@ -366,6 +391,25 @@ export default function FolderConfigModal({
     }
   }, [canSubmit, saving, draft, trimmedName, onSubmit])
 
+  const previewIcon = useCallback(async () => {
+    if (!onPreviewIcon || genInflight) return
+    const seq = ++genSeq.current
+    setIconErr(false); setGenErr(false); setGenerating(true); setGenInflight(true)
+    try {
+      // The last 8, the most the server puts in the prompt.
+      const icon = await onPreviewIcon(trimmedName, shownIcons.current.slice(-8))
+      if (seq !== genSeq.current) return
+      if (!icon) throw new Error('no icon')
+      if (!shownIcons.current.includes(icon)) shownIcons.current.push(icon)
+      setDraft(d => ({ ...d, icon, regenerateIcon: false }))
+    } catch {
+      if (seq === genSeq.current) setGenErr(true)
+    } finally {
+      setGenInflight(false)
+      if (seq === genSeq.current) setGenerating(false)
+    }
+  }, [onPreviewIcon, genInflight, trimmedName])
+
 
   // The inline input this replaced held ONE field; the modal holds four, so an
   // accidental backdrop graze now costs real work. Guard the accidental paths
@@ -435,7 +479,7 @@ export default function FolderConfigModal({
               data-testid="folder-config-name"
               placeholder={i18nT('components.folderConfigModal.name_placeholder')}
               value={draft.name}
-              onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+              onChange={e => { if (generating) dropPreview(); setDraft(d => ({ ...d, name: e.target.value })) }}
               {...ime.bindComposition()}
               onKeyDown={e => { if (e.key === 'Enter' && ime.claimEnter(e)) submit() }}
             />
@@ -480,8 +524,10 @@ export default function FolderConfigModal({
           {/* Icon — an emoji replacing the default folder glyph. Left empty,
            *  the folder keeps the default glyph — generation never runs
            *  implicitly; in edit mode "Auto-generate" asks for a fresh pick
-           *  (regenerate_icon) while clearing the field falls back to the
-           *  default glyph. Typing
+           *  while clearing the field falls back to the default glyph. With
+           *  `onPreviewIcon` the pick lands in the field at once and Save
+           *  stores it like a typed emoji; without it the pick is armed
+           *  (regenerate_icon) and runs after Save. Typing
            *  clears a pending regenerate and vice versa: the backend rejects
            *  icon + regenerate_icon in one request, so the two stay exclusive
            *  here. No client-side emoji validation — the server 400s on
@@ -503,18 +549,36 @@ export default function FolderConfigModal({
                 placeholder={i18nT('components.folderConfigModal.icon_placeholder')}
                 maxLength={16}
                 value={draft.regenerateIcon ? '' : draft.icon}
-                onChange={e => { setIconErr(false); setDraft(d => ({ ...d, icon: e.target.value, regenerateIcon: false })) }}
+                onChange={e => {
+                  // A typed icon wins over a preview still running.
+                  dropPreview(); setIconErr(false)
+                  setDraft(d => ({ ...d, icon: e.target.value, regenerateIcon: false }))
+                }}
               />
               {mode === 'edit' && (
                 <Btn
                   data-testid="folder-config-icon-regenerate"
-                  onClick={() => { setIconErr(false); setDraft(d => ({ ...d, icon: seedRef.current.icon, regenerateIcon: true })) }}
+                  disabled={genInflight}
+                  aria-busy={genInflight || undefined}
+                  onClick={onPreviewIcon
+                    ? () => { void previewIcon() }
+                    : () => { setIconErr(false); setDraft(d => ({ ...d, icon: seedRef.current.icon, regenerateIcon: true })) }}
                 >
+                  {genInflight && <Loader2 size={13} aria-hidden className="animate-spin motion-reduce:animate-none" data-testid="folder-config-icon-generating" />}
                   {i18nT('components.folderConfigModal.icon_regenerate')}
                 </Btn>
               )}
             </div>
-            {iconErr ? (
+            {genErr ? (
+              /* No hand-off, for the same reason as the icon error below: the
+                 fix is right here (click again, or type an emoji). */
+              <ErrorNotice
+                variant="inline"
+                className="text-[11px]"
+                message={i18nT('components.folderConfigModal.icon_generate_failed')}
+                testId="folder-config-icon-generate-error"
+              />
+            ) : iconErr ? (
               /* No hand-off: the rejected icon sits inside the same unsaved
                  folder form — navigating away would discard the whole draft
                  the keep-open-on-error path exists to preserve. The fix is a
@@ -529,6 +593,10 @@ export default function FolderConfigModal({
               <span className="text-[11px] text-muted-strong">
                 {draft.regenerateIcon
                   ? i18nT('components.folderConfigModal.icon_regenerate_pending')
+                  : generating
+                    ? i18nT('components.folderConfigModal.icon_generating')
+                  : mode === 'edit' && draft.icon && draft.icon !== seedRef.current.icon && shownIcons.current.includes(draft.icon)
+                    ? i18nT('components.folderConfigModal.icon_preview_hint')
                   : mode === 'create'
                     ? draft.icon
                       ? ''
