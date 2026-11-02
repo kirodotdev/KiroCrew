@@ -5,6 +5,7 @@ import Clickable from '../../components/Clickable'
 import { typeBadgeVariant, formatDate, useCopy } from './helpers'
 import type { KnowledgeItem } from './types'
 import { i18nT } from '../../i18n/t'
+import { pathBasename } from '../../utils/pathBasename'
 
 export function ItemCard({ item, onClick, selected, onSelect }: {
   item: KnowledgeItem
@@ -45,7 +46,7 @@ export function FileSubGroup({ filePath, items, onItemClick, selectedItems, onSe
   onSelect: (id: string, checked: boolean) => void
 }) {
   const [open, setOpen] = useState(true)
-  const fileName = filePath === '__ungrouped__' ? i18nT('pages.knowledge.itemCard.other') : filePath.split('/').pop() || filePath
+  const fileName = filePath === '__ungrouped__' ? i18nT('pages.knowledge.itemCard.other') : pathBasename(filePath) || filePath
 
   return (
     <div className="ml-2 border-l-2 border-border pl-2">
