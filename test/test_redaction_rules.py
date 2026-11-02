@@ -625,10 +625,10 @@ class TestLabelledSecretField:
         calls = 0
         real = detectors.labelled_value
 
-        def counting(text: str, i: int, shape: str = detectors.NESTED) -> tuple[int, int] | None:
+        def counting(text: str, i: int, *args: object) -> tuple[int, int] | None:
             nonlocal calls
             calls += 1
-            return real(text, i, shape)
+            return real(text, i, *args)  # type: ignore[arg-type]
 
         monkeypatch.setattr(detectors, "labelled_value", counting)
         redact("k=" * 5000 + " password=" + synth(20, ALNUM, 25))
@@ -718,8 +718,8 @@ def _vendor_samples() -> list[tuple[str, str]]:
 class TestFullTable:
     def test_every_row_is_present_once(self) -> None:
         ids = [rule.id for rule in rr.load_table().rules]
-        assert len(ids) == 29
-        assert len(set(ids)) == 29
+        assert len(ids) == 30
+        assert len(set(ids)) == 30
 
     def test_every_vendor_rule_has_a_sample(self) -> None:
         table = rr.load_table()
@@ -859,8 +859,84 @@ class TestSessionCookie:
         value = synth(32, ALNUM, 80)
         result = redact(template.format(v=value))
         assert result.text == template.format(v=rr.PLACEHOLDER)
-        assert rule_ids(result) == ["labelled.session_cookie"]
+        assert rule_ids(result) in (["labelled.session_cookie"], ["labelled.session_generic"])
 
     def test_short_or_placeholder_session_is_kept(self) -> None:
         for text in ("session=abc", "sessionid=<session-id>", "session: ${SESSION}"):
             assert redact(text).text == text
+
+
+class TestNonCredentialValuesUnderCredentialNames:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "session=chat-1830",
+            "tmux_session: main-work",
+            "password=required",
+            '"access_token": "expired"',
+            '{"password": {"type": "string", "required": true}}',
+            "password=${DB_PASSWORD} api_key=<your-api-key>",
+            "DB_PASSWORD=$DB_PASSWORD API_KEY=${API_KEY}",
+        ],
+    )
+    def test_is_kept(self, text: str) -> None:
+        assert redact(text).text == text
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "password=Required1",
+            "password=hunter2",
+            '"access_token": "{v}"',
+            "session={v}",
+            "password=${{X}} hunter2-tail",
+        ],
+    )
+    def test_real_value_is_still_redacted(self, template: str) -> None:
+        value = synth(24, ALNUM, 90)
+        text = template.format(v=value)
+        result = redact(text)
+        assert result.text != text
+        assert value not in result.text
+        assert "hunter2" not in result.text
+
+    @pytest.mark.parametrize(
+        "text, secret",
+        [
+            ("password=sunflower", "sunflower"),
+            ("password=password", "=password"),
+            ("Authorization: Bearer abcdefghijklmnopqrstuvwx", "abcdefghijklmnopqrstuvwx"),
+            ("Cookie: PHPSESSID=01234567890123456789012345678901", "0123456789012345"),
+            ("Cookie: ASP.NET_SessionId=abcdefghijklmnopqrstuvwx", "abcdefghijklmnop"),
+            ("Cookie: JSESSIONID=AABBCCDDEEFFAABBCCDDEEFFAABBCCDD", "AABBCCDDEEFF"),
+            ("Cookie: session=abcdefghijklmnopqrstuvwx", "abcdefghijklmnop"),
+            ("password: ${PREFIX} note=MySecret7!", "MySecret7!"),
+            ("password = ${PREFIX} note=MySecret7!", "MySecret7!"),
+            ("password=sunshine", "sunshine"),
+            ("DB_PASSWORD=postgres", "postgres"),
+            ('"password": "admin"', "admin"),
+            ("MYSQL_ROOT_PASSWORD=root", "=root"),
+            ("secret=letmein", "letmein"),
+            ("Authorization: Basic hunter", "hunter"),
+            ("api_key=abcdefghijklmnopqrstuvwx", "abcdefghijklmnop"),
+            ("PHPSESSID=abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnop"),
+            ("session=ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ABCDEFGHIJKLMNOP"),
+            ("JSESSIONID=0123456789012345678901234567", "0123456789012345"),
+            ("password=${{ a }}REALPASS}} next=1", "REALPASS"),
+            ("password={{ a }}REALPASS}} next=1", "REALPASS"),
+            ("password=$ABC9 user=bob", "$ABC9"),
+            ("password=<s3cr3t> user=bob", "s3cr3t"),
+            ('{"password": {{ x }}hunter2}', "hunter2"),
+            ("cfg(password={{ x }}hunter2)", "hunter2"),
+            ("mytool --password {{x}}hunter2 --verbose", "hunter2"),
+        ],
+    )
+    def test_single_class_and_lowercase_credentials_are_redacted(
+        self, text: str, secret: str
+    ) -> None:
+        assert secret not in redact(text).text
+
+    def test_placeholder_then_real_pair_redacts_only_the_real_pair(self) -> None:
+        value = synth(24, ALNUM, 91)
+        result = redact(f"password=${{DB_PASSWORD}} api_key={value}")
+        assert result.text == f"password=${{DB_PASSWORD}} api_key={rr.PLACEHOLDER}"

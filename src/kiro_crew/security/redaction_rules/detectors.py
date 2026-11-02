@@ -79,9 +79,33 @@ NESTED = "nested"
 #: shell ``export``/``set``/``declare``, or a YAML list dash.
 _LINE_LEAD_RE = re.compile(r"[ \t]{0,64}(?:(?:export|set|setx|declare)[ \t]{1,8}|-[ \t]{1,8})?")
 _LEAD_MAX = 80
+#: A shell-style assignment (``KEY=value`` with no blank around ``=``) at the
+#: start of a line. A shell ends such a value at the first blank, so a
+#: placeholder followed by another ``KEY=value`` word is the whole value.
+SHELL = "shell"
+#: A placeholder that is the whole value of a shell-style assignment: another
+#: credential assignment with no blank around ``=`` follows it
+#: (``password=${PW} api_key=<key>``). The value is then the placeholder alone,
+#: so the allow list judges it as written rather than as the rest of the line.
+#: The next key must itself be a credential label, so a bracketed or all-caps
+#: password followed by an ordinary pair (``password=<s3cr3t> user=bob``) is
+#: still read to the end of the line and redacted, as is every other shape
+#: (YAML, INI, ``key = value``) and a placeholder followed by other text.
+_PLACEHOLDER_HEAD_RE = re.compile(
+    r"(?:\$\{\{[^}\r\n]{0,200}\}\}|\$\{[^{}\r\n]{1,200}\}|\{\{[^}\r\n]{0,200}\}\}"
+    r"|<[^<>\r\n]{1,200}>|\$[A-Z_][A-Z0-9_]{0,127}|%[A-Za-z_][A-Za-z0-9_]{0,127}%)"
+    r"(?=[ \t]{1,8}(?P<next>[A-Za-z_][A-Za-z0-9_.\-]{0,63})=)"
+)
 #: A template placeholder (``${VAR}``, ``{{ var }}``) is read whole, so the
 #: table's allow entries see it as written instead of cut at its brace.
-_TEMPLATE_RE = re.compile(r"\$\{[^{}\r\n]{1,200}\}|\{\{[^\r\n]{0,200}?\}\}")
+_TEMPLATE_RE = re.compile(
+    r"(?:\$\{[^{}\r\n]{1,200}\}|\{\{[^}\r\n]{0,200}\}\})(?=[\s\"'`,;&)\]}]|$)"
+)
+#: A template with text glued after it (``{{ x }}hunter2``) is a value, read
+#: through the trailing text, so the allow list does not keep it as a template.
+_GLUED_TEMPLATE_RE = re.compile(
+    rf"(?:\$\{{[^{{}}\r\n]{{1,200}}\}}|\{{\{{[^}}\r\n]{{0,200}}\}}\}})[^\s\"'`,;&)\]}}]{{1,{_N}}}"
+)
 _LINE_RE = re.compile(rf"[^\r\n]{{0,{_N}}}")
 #: ``<password>value</password>``: the tag name is the key, the text up to the
 #: matching close tag is the value.
@@ -149,12 +173,17 @@ def _value_region(text: str, i: int) -> tuple[int, int, bool] | None:
         if m:
             return m.start(1), m.end(1), True
         return i + 1, _line_end(text, i + 1), True
-    if text[i] in _NOT_A_VALUE_START:
+    if text[i] in _NOT_A_VALUE_START and not text.startswith("{{", i):
         return None
     return i, _line_end(text, i), False
 
 
-def labelled_value(text: str, i: int, shape: str = NESTED) -> tuple[int, int] | None:
+def labelled_value(
+    text: str,
+    i: int,
+    shape: str = NESTED,
+    wanted: Callable[[str], bool] = lambda name: False,
+) -> tuple[int, int] | None:
     """The span of the value after a separator ending at ``i``, auth scheme stripped.
 
     ``shape`` decides where an unquoted value ends. A ``LINE`` assignment (env,
@@ -178,11 +207,20 @@ def labelled_value(text: str, i: int, shape: str = NESTED) -> tuple[int, int] | 
         start = scheme.end()
         if start < hi and text[start] in _NOT_A_VALUE_START:
             return None
-    if quoted or shape == LINE:
+    head = _PLACEHOLDER_HEAD_RE.match(text, start, hi) if shape == SHELL and not quoted else None
+    if head is not None and not wanted(normalise_name(head.group("next"))):
+        head = None
+    if head is not None:
+        end = head.end()
+    elif quoted or shape in (LINE, SHELL):
         end = len(text[start:hi].rstrip()) + start
     else:
         value_re = _FLAG_VALUE_RE if shape == FLAG else _UNQUOTED_RE
-        m = _TEMPLATE_RE.match(text, start, hi) or value_re.match(text, start, hi)
+        m = (
+            _TEMPLATE_RE.match(text, start, hi)
+            or _GLUED_TEMPLATE_RE.match(text, start, hi)
+            or value_re.match(text, start, hi)
+        )
         if m is None:
             return None
         end = m.end()
@@ -229,7 +267,9 @@ def label_candidates(
         if not wanted(name) or urls.contains(m.start()):
             continue
         shape = _key_shape(text, m.start(), bool(m.group("dash")))
-        span = labelled_value(text, sep.end(), shape)
+        if shape == LINE and sep.group(0) == "=":
+            shape = SHELL
+        span = labelled_value(text, sep.end(), shape, wanted)
         if span is not None:
             found.append(_Named(name, *span))
     found.extend(_xml_elements(text, urls, wanted))
@@ -300,7 +340,10 @@ def _named_hits(
     for pair in pairs:
         if not _name_matches(pair.name, rule.labels, table.label_exclude, suffix):
             continue
-        if _allowed(table, rule, text[pair.start : pair.end]):
+        value = text[pair.start : pair.end]
+        if rule.validate is not None and not rule.validate(value):
+            continue
+        if _allowed(table, rule, value):
             continue
         yield Hit(rule.id, rule.tier, rule.detector, pair.start, pair.end)
 

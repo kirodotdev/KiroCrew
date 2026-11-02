@@ -133,10 +133,25 @@ def _jwt_structure(value: str) -> bool:
     return isinstance(alg, str) and bool(alg) and alg.lower() != "none"
 
 
+_SESSION_ID_MIN_LEN = 16
+
+
+def _long_session_value(value: str) -> bool:
+    """At least 16 characters: the length of any server-issued session ID.
+
+    Only the generic ``session`` label uses this. Under that name a short value
+    (``chat-1830``, ``main``) is an application's own session name, while every
+    session token a server issues is longer. Named cookies (``PHPSESSID``,
+    ``JSESSIONID``) have their own row and no length check.
+    """
+    return len(value) >= _SESSION_ID_MIN_LEN
+
+
 VALIDATORS: Mapping[str, Callable[[str], bool]] = {
     "github_crc32": _github_crc32,
     "aws_secret_shape": _aws_secret_shape,
     "jwt_structure": _jwt_structure,
+    "long_session_value": _long_session_value,
 }
 
 
@@ -319,9 +334,13 @@ def _build_rule(index: int, data: Any) -> Rule:
                 raise _fail(where, f"unknown validator {name!r}")
             validate = VALIDATORS[name]
     elif detector in NAME_DETECTORS:
-        for field in ("pattern", "validate"):
-            if field in data:
-                raise _fail(where, f"{field} does not apply to detector {detector.value}")
+        if "pattern" in data:
+            raise _fail(where, f"pattern does not apply to detector {detector.value}")
+        name = data.get("validate")
+        if name is not None:
+            if name not in VALIDATORS:
+                raise _fail(where, f"unknown validator {name!r}")
+            validate = VALIDATORS[name]
         if replace != "value":
             raise _fail(where, f"detector {detector.value} replaces the value only")
         if "labels" not in data:

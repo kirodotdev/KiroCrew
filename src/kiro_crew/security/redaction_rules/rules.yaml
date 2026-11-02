@@ -26,12 +26,12 @@ allow:
   values: [changeme, placeholder, example, 'true', 'false', 'null', none]
   patterns:
     - '\$\{[^{}\r\n]{1,200}\}'
-    - '\$\{\{[^\r\n]{0,200}?\}\}'
+    - '\$\{\{[^}\r\n]{0,200}\}\}'
     # An environment-variable reference. Upper case only, so a password that
     # starts with `$` is not mistaken for one.
     - '\$[A-Z_][A-Z0-9_]{0,127}'
     - '<[^<>\r\n]{1,200}>'
-    - '\{\{[^\r\n]{0,200}\}\}'
+    - '\{\{[^}\r\n]{0,200}\}\}'
     - '%[A-Za-z_][A-Za-z0-9_]{0,127}%'
     - '\*{3,200}'
     - '(?i:x{3,200})'
@@ -251,6 +251,9 @@ rules:
       - credential
       - credentials
     allow:
+      # Status and schema words a credential field holds in place of a value.
+      values: [required, optional, expired, revoked, invalid, missing, disabled,
+               enabled, hidden, redacted, unset, empty, string]
       suffixes: [EXAMPLEKEY]
     corpus: rules/labelled.secret_field
 
@@ -258,7 +261,6 @@ rules:
     tier: secret
     detector: labelled
     labels:
-      - session
       - sessionid
       - phpsessid
       - jsessionid
@@ -266,6 +268,16 @@ rules:
       - aspnetsessionid
       - authcookie
     corpus: rules/labelled.session_cookie
+
+  # A bare `session` key also names an application's own sessions
+  # (`session=chat-1830`), so only a value as long as a server-issued ID counts.
+  - id: labelled.session_generic
+    tier: secret
+    detector: labelled
+    labels:
+      - session
+    validate: long_session_value
+    corpus: rules/labelled.session_generic
 
   # ── key_id_pair ──
   - id: aws.secret_access_key

@@ -858,8 +858,14 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   resumes after every separator so nested pairs (`-H "X-Api-Key: …"`) match. An
   unquoted value in a line-oriented assignment (env, INI, YAML, a header) runs to the
   end of its line, a CLI flag's to the next blank, and a nested pair's to its
-  container's delimiter. It judges a key's name before reading its value, so text full
-  of unrelated pairs stays linear. `redact.hits` resolves overlaps by tier, then
+  container's delimiter. In a shell-style `KEY=value` line, a placeholder followed by
+  another `KEY=value` word is read alone (`password=${PW} api_key=<key>`). A
+  name-keyed row may name a validator, and its allow list holds status words
+  (`required`, `expired`) a credential field carries in place of a value. A key
+  ending in `session` is its own row, `labelled.session_generic`, which needs a value
+  of 16 or more characters, so an app's own session name (`session=chat-1830`) stays while
+  named cookies (`PHPSESSID`, `JSESSIONID`) are redacted at any length. It judges a key's name before reading its
+  value, so text full of unrelated pairs stays linear. `redact.hits` resolves overlaps by tier, then
   detector certainty, then length, then position, then rule id; it drops a hit inside
   or cutting across an existing `[REDACTED…]` placeholder but keeps one that encloses a
   whole placeholder only for a `structural` hit, and a pattern hit inside a name-keyed
