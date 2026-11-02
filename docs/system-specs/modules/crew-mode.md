@@ -3927,8 +3927,39 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   member working protocol (`context_assembly.member._MEMBER_HOW_YOU_WORK_COMMON`)
   hand research and long work to a worker session for the same reason, and
   they, the operating-mode block (`operating_mode_block`) and the heartbeat
-  prompt all dispatch and END the turn rather than waiting, polling or arming a
-  monitor loop: the worker's report wakes the thread.
+  prompt all dispatch and END the turn rather than waiting or polling: for a
+  quick single task the worker's report wakes the thread, and no monitor loop is
+  armed. **Ledger-tracked work is the one exception**, and only where the
+  conductor's chat spec mounts `kirocrew-work` and grants `work_ledger_record`
+  after the governance ceiling
+  (`member_mate_tools.binding_has_ledger_tools`). There the tracking sentence
+  names `work_ledger_record` / `work_ledger_read` (`conductor.tracking_ledger`
+  in place of `conductor.tracking`), and the operating-mode block appends
+  `conductor.patrol`. That piece teaches the dispatch for work with more than one
+  item, or work the user asked to track. It opens by sending the crewmate to the
+  `goal-conductor` skill before planning such work, and to follow it for
+  dispatch, patrol, verdicts and worker debate, as the conductor's own charter
+  does. Then: record the goal, then per item
+  `work_ledger_record action=create`, `session_create`, `work_ledger_record
+  action=bind`, `session_send`, binding before the seed. It also teaches the
+  patrol: a self-armed `monitor_start` with `watch="work-ledger"`, `gate` left at
+  its default (never `gate:false`), `interval_secs` within 300..900, and
+  `patrol_budget.py renew` when the budget line ends `10% or less left`. The
+  band and renew wording are copied from the conductor's `## Patrol`
+  (`agent_parts/spec_prompts.py`). A spec that does not mount and grant the
+  ledger keeps the text above unchanged, and no loop is taught. The mate
+  conductor maps the `goal-conductor` skill (so `patrol_budget.py` is in its
+  skill scope) and the `dashboard` skill its prompt names only when its spec
+  passes the same check after the governance ceiling. That mapping is ADDED
+  to the trees the conductor inherits (`~/.kiro/skills` and a trusted
+  workspace `.kiro/skills`), never put in their place. The rule lives in one
+  function, `skill_scope.mate_conductor_scope`: `agent_skill_globs` returns
+  through it on every path whatever `inherit_defaults` its caller passes (the
+  session scope, the injection plan, the per-turn triggered-skill filter), and
+  KAS's `deny skill` rule (`acp/kas_skill_scope._spec_globs`) calls it too, so
+  the user's own skills stay offered on both harnesses; without it the spec
+  maps no skill and keeps the skills it inherits (`test_crewmate_prompts.py`,
+  `test_mate_conductor_agent.py`).
 - **The worker**, `kirocrew-mate-worker`, is what the conductor hands work to:
   its `session_create` opens the worker template on the crewmate's own
   workspace, store and member identity whatever `agent` it names, because the

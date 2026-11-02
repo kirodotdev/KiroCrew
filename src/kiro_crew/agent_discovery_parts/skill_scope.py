@@ -101,6 +101,29 @@ def can_inherit_skills(spec: dict[str, Any]) -> bool:
     return isinstance(tools, list) and "*" not in tools
 
 
+def mate_conductor_scope(
+    agent: str, spec: dict[str, Any], globs: list[str], project_dir: str | Path | None
+) -> list[str]:
+    """*globs* for *agent*, with the inherited trees added for the crewmate conductor.
+
+    THE one place the rule lives, so no caller can skip it: ``agent_skill_globs``
+    returns through it on every path (whatever ``inherit_defaults`` a caller
+    passes), and KAS's ``kas_skill_scope._spec_globs`` calls it too. The
+    crewmate's conductor maps only the skills its own prompt names
+    (``service_agents._install_mate_conductor_agent``); that mapping ADDS to the
+    user's ``~/.kiro/skills`` and workspace ``.kiro/skills``, never replaces them.
+    Any other agent, an unmapped conductor (which inherits on its own rule) and a
+    spec that may not inherit get *globs* unchanged. The crewmate worker's mapping
+    is the crewmate's own Abilities choice, so it keeps the rule every mapped
+    agent follows.
+    """
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if agent != MATE_CONDUCTOR_AGENT or not globs or not can_inherit_skills(spec):
+        return globs
+    return list(dict.fromkeys([*globs, *inherited_skill_globs(project_dir)]))
+
+
 def inherited_skill_globs(
     project_dir: str | Path | None, *, kiro_home_dir: Path | None = None
 ) -> list[str]:
@@ -177,7 +200,10 @@ def agent_skill_globs(
         ]
         if not globs and inherit_defaults and can_inherit_skills(data):
             return inherited_skill_globs(project_dir)
-        return globs
+        # Whatever *inherit_defaults* says: every caller (the session scope, the
+        # injection plan, the triggered-skill filter, KAS's deny rule) reads the
+        # crewmate conductor's mapping through this one rule.
+        return mate_conductor_scope(agent, data, globs, project_dir)
     if project_dir:
         rows = list_agents(agents_dir=agents_dir, project_dir=str(project_dir))
         winner = next((row for row in rows if row.name == agent), None)
@@ -208,7 +234,7 @@ def agent_skill_globs(
             and can_inherit_skills(data)
         ):
             return inherited_skill_globs(project_dir)
-        return globs
+        return mate_conductor_scope(agent, data or {}, globs, project_dir)
     # ``f`` is the ORIGINAL path: ``f.stem`` and ``expand_skill_uri`` below
     # must see it so a symlinked spec's relative globs stay anchored where
     # the symlink lives.
@@ -223,7 +249,7 @@ def agent_skill_globs(
             and can_inherit_skills(data)
         ):
             return inherited_skill_globs(project_dir)
-        return globs
+        return mate_conductor_scope(agent, data, globs, project_dir)
     if strict and agent not in WHOLE_CATALOG_TEMPLATES:
         raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
     return []
