@@ -11,13 +11,14 @@
  * - in useNativeNotification alone, it kills the effect that watches the feed.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useNativeNotification } from '../hooks/useNativeNotification'
+import { api } from '../api/client'
 import { addNotification } from '../store/notificationsSlice'
 import type { Notification as AppNotification } from '../types'
 
@@ -85,7 +86,7 @@ describe('page-context Notification construction is best-effort', () => {
     delete (document as { hidden?: boolean }).hidden
   })
 
-  function mountWs(store: ReturnType<typeof createTestStore>) {
+  async function mountWs(store: ReturnType<typeof createTestStore>) {
     function wrapper({ children }: { children: React.ReactNode }) {
       return createElement(Provider, { store },
         createElement(QueryClientProvider, { client: queryClient }, children))
@@ -96,12 +97,15 @@ describe('page-context Notification construction is best-effort', () => {
     }, { wrapper })
     const ws = WS_INSTANCES[0]
     act(() => { ws.simulateOpen() })
+    // The open handler starts reads whose results land in state after this
+    // point; wait for the read they make before the test ends.
+    await waitFor(() => expect(api.approvals).toHaveBeenCalled())
     return { hook, ws }
   }
 
-  it('an approval frame still reaches the notification feed when the toast constructor throws', () => {
+  it('an approval frame still reaches the notification feed when the toast constructor throws', async () => {
     const store = createTestStore()
-    const { ws } = mountWs(store)
+    const { ws } = await mountWs(store)
 
     act(() => {
       ws.simulateMessage({

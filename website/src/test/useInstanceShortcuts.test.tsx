@@ -201,8 +201,11 @@ describe('useInstanceShortcuts — top-level (Electron)', () => {
     expect(store.getState().instances.activeId).toBeNull()
     expect(ev.defaultPrevented).toBe(false)
     // ...while the last advertised digit still works.
+    vi.mocked(api.connectInstance).mockResolvedValue({ instance_id: 'cd-5', state: 'connected', local_port: 7778, token: 't5' })
     pressDigit(6)
     expect(store.getState().instances.activeId).toBe('cd-5')
+    // The cold tab reconnects; wait for the warm entry it writes before the test ends.
+    await waitFor(() => expect(store.getState().instances.warm['cd-5']).toEqual({ port: 7778, token: 't5' }))
   })
 
   it('does nothing when shortcuts are globally disabled', async () => {

@@ -106,9 +106,12 @@ describe('DesignTweak overlay message bridge', () => {
    */
   async function renderAndSettle() {
     const result = renderWithProviders(<DesignTweak />)
-    // Wait for useQuery data to populate — the projects query drives the UI.
+    // Wait for useQuery data to populate — the projects query drives the UI. The call alone is
+    // not enough: the response lands on a later timer tick and sets the previewed project, so
+    // wait for the preview iframe that update mounts.
     await waitFor(() => {
       expect(mockedFetchProjects).toHaveBeenCalled()
+      expect(document.querySelector('iframe')).not.toBeNull()
     })
     // Flush the timer-driven effects (React Query uses setTimeout internally).
     await act(async () => { vi.advanceTimersByTime(100) })
