@@ -8,10 +8,12 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from kiro_crew.constants import reflow_and_label_glued_option_marker
 from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, chunk_generation, slot_history_key
 from kiro_crew.dashboard.state import row_mid
+from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
@@ -675,3 +677,98 @@ def _turn_reply_segments(turn: "_ChatTurn") -> list[str]:
         if row_mid(row) in wanted and row.get("role") == "assistant"
     ]
     return [p for p in parts if p]
+
+
+#: Channel for the bell entry a dying turn raises (notifications/bus.py).
+_TURN_DIED_CHANNEL = "system.turn"
+#: Legacy ``kind`` on the note. NOT "turn": the frontend's per-kind sound
+#: selector reads ``kind`` (``presetForKind``), and "turn" is the
+#: conversation-ready chime category, so a dead-turn alert would play the
+#: hand-back sound (or none, if that category is muted) rather than being
+#: controlled by its own ``system.turn`` channel. "agent" is the neutral kind
+#: ``system.monitor`` and ``system.member`` notes use for the same reason; the
+#: mute/priority that actually govern this note travel on the channel.
+_TURN_DIED_KIND = "agent"
+
+
+def _notify_turn_died(turn, body: str) -> None:
+    """Raise a notification-bell entry for a turn that DIED and needs the user.
+
+    When a turn ends in an error the user must
+    act on -- a provider 5xx / throttle, a content-filter refusal, or a
+    terminal transport death -- the transcript shows the inline error card with
+    its Resume/Continue control, but nothing reaches the bell, so an operator
+    working in another session learns work has stopped only by opening it. This
+    reuses the one notification-bus publish path (``state.notify`` ->
+    ``payload_from_legacy`` -> ``NotificationBus.push``, the same path
+    ``send_notification`` uses) rather than adding a new surface.
+
+    Called ONLY from the TERMINAL arms (never a ``will_retry`` recovery, which
+    needs nothing from the user): the turn is over and the next move is the
+    operator's. Minimal by design -- a default-priority bell entry on
+    ``system.turn`` with a deep link to the session. "When/how loud" the issue
+    left open, so there is no new sound category or settings beyond the channel
+    itself; a user who wants it louder (or muted) raises (or mutes) the channel
+    in Settings -> Notifications.
+
+    Two scopings keep it from firing where it is not wanted:
+
+    * An APP-owned chat (``slot._app``) is skipped -- an app owns its chat's
+      continuation, so a dead turn there is the app's to handle, not an
+      operator's to be alerted to.
+    * ``group_key`` is one entry per session, so a session that dies, is
+      resumed, and dies again stacks into a single bell row instead of a pile;
+      ``publisher_session`` attributes the note to the session so THAT session's
+      own mute applies -- a session the user has muted is silenced, which is the
+      honest answer to "only when it is not the session in focus" without the
+      backend inventing per-client focus tracking the bell has never had.
+
+    Best-effort: ``state.notify`` already swallows a validation error, and the
+    whole call is guarded so a notification failure never disturbs the dying
+    turn's teardown, which owns the recoverable work.
+    """
+    slot = turn.slot
+    state = turn.state
+    # An app owns its chat's continuation; a human-created session has _app "".
+    if getattr(slot, "_app", ""):
+        return
+    session_key = turn.session_key
+    try:
+        # A dashboard-internal path (NotificationBus validates: leading "/",
+        # no scheme, no protocol-relative "//"). ``sid`` keys on the slot, the
+        # shape the SPA reads (chat_backfill.session_deep_link); quoted because
+        # a channel/cron session key is not guaranteed URL-safe.
+        url = f"/chat?sid={quote(slot.key, safe='')}" if slot.key else None
+        # Build the payload and set group_key on it, the way every other legacy
+        # producer stacks a note (member_message_notes._publish,
+        # terminal_lifecycle, member_goals): group_key is a schema field the bus
+        # drops from meta, and threading a second way to pass it through the
+        # adapter layers would be a duplicate mechanism.
+        payload = payload_from_legacy(
+            _TURN_DIED_KIND,
+            "⚠️ A chat stopped",
+            body,
+            # Name the dying slot so the banner gate scopes to it: a banner is
+            # suppressed only while the operator is viewing THAT slot
+            # (targetsCurrentView's n.slot === activeSlot branch), not whenever
+            # they are on any /chat page -- which is the whole "in another
+            # session" case this exists for. Same key member_message_notes uses.
+            {"slot": slot.key} if slot.key else None,
+            url=url,
+            channel=_TURN_DIED_CHANNEL,
+            # The session's own mute applies to its dead-turn alert. Keyed on
+            # slot.key, NOT session_key: session_is_muted resolves the publisher
+            # through caller_slot_key, which matches a slot's key / history key /
+            # stem -- never an unbound channel-born slot's effective session key
+            # (`dashboard:slack_<ts>`), which would read as unmuted. Same key
+            # member_message_notes publishes under.
+            publisher_session=slot.key or None,
+        )
+        # One stacked bell row per session, not one per death.
+        if session_key:
+            payload.group_key = f"turn-died:{session_key}"
+        state.notification_bus.push(payload)
+    except NotificationValidationError:
+        logger.debug("Dead-turn notification dropped for slot %s", slot.key, exc_info=True)
+    except Exception:
+        logger.debug("Dead-turn notification failed for slot %s", slot.key, exc_info=True)
