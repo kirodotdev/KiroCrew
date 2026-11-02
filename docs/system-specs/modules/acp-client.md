@@ -2502,6 +2502,8 @@ When kiro-cli needs OAuth authentication for an MCP server, `AcpClient` surfaces
 
 **URL validation**: `_is_safe_oauth_url()` rejects non-http(s) schemes before dedupe — an unsafe URL doesn't consume the dedupe slot.
 
+**Google offline access**: each place a consent URL is read off the wire (`_drain_notifications()`'s capture, the `mcp_oauth_request` arm of `_dispatch_events()`, and `session_handle_mcp._accept_oauth_request`, which also receives a KAS `_kiro/openExternalUrl` link as its queued `oauth_request` frame) first passes it through `acp/oauth_offline.py:with_google_offline_access`. That sets `access_type=offline` and `prompt=consent` on a URL whose scheme is `https`, netloc exactly `accounts.google.com` and path exactly `/o/oauth2/v2/auth`, replacing any existing value and keeping every other query segment byte for byte; any other URL is returned unchanged. Neither engine sends these parameters, and without them Google issues no refresh token. See `connections.md`, *Pre-registered OAuth clients*.
+
 **Persistence**: Role-aware redaction (`_redact_meta_for_role`) preserves `oauth_url` for `mcp_oauth` messages so the Authorize link survives history rehydrate, while still scrubbing unsafe schemes on the read path.
 
 **API**: `pop_pending_oauth_requests()` drains requests captured during init on
