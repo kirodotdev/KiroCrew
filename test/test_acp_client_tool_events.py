@@ -746,8 +746,7 @@ class TestApproveTool:
     """Tests for approve_tool always= and recorded-option dispatch."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _recorded_requests(self, monkeypatch):
+    def _recorded_requests(self, _floor_monkeypatch):
         """Every id approved here stands for a request the client built an event for."""
         from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
 
@@ -761,7 +760,7 @@ class TestApproveTool:
             original(self, *args, **kwargs)
             self._permission_gate_events = _Recorded()
 
-        monkeypatch.setattr(AcpClient, "__init__", _init)
+        _floor_monkeypatch.setattr(AcpClient, "__init__", _init)
 
     @pytest.mark.asyncio
     async def test_always_uses_recorded_optionid(self, tmp_path):
@@ -932,10 +931,9 @@ class TestReadNewToolResultsSync:
     """Tests for _read_new_tool_results_sync."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _isolate_home(self, tmp_path, monkeypatch):
+    def _isolate_home(self, tmp_path, _floor_monkeypatch):
         """Redirect Path.home to tmp_path so JSONL writes are isolated."""
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        _floor_monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
     @pytest.mark.parametrize(
         "session_id",
