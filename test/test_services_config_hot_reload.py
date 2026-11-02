@@ -149,9 +149,9 @@ class TestVectorMemoryStore:
     @pytest.mark.asyncio
     async def test_an_unrelated_write_does_not_reach_the_store(self, tmp_path: Path) -> None:
         store = _memory_store(tmp_path)
-        with patch.object(store, "reconfigure") as reconfigure:
-            await _dispatch(KiroCrewConfig(), "session.timeout_secs")
-        reconfigure.assert_not_called()
+        before = store._confidence_threshold
+        await _dispatch(_memory_cfg(confidence=0.11), "session.timeout_secs")
+        assert store._confidence_threshold == before != 0.11
 
     @pytest.mark.asyncio
     async def test_a_memory_write_reaches_the_store_through_the_dispatcher(
@@ -334,9 +334,9 @@ class TestHistoryConsolidator:
     @pytest.mark.asyncio
     async def test_an_unrelated_memory_leaf_does_not_reach_it(self) -> None:
         c = _consolidator()
-        with patch.object(c, "reconfigure") as reconfigure:
-            await _dispatch(KiroCrewConfig(), "memory.episodic_max_results")
-        reconfigure.assert_not_called()
+        before = c._judge_model
+        await _dispatch(_skills_cfg(judge_model="live-judge"), "memory.episodic_max_results")
+        assert c._judge_model == before != "live-judge"
 
     @pytest.mark.asyncio
     async def test_a_skills_write_reaches_it_through_the_dispatcher(self) -> None:
@@ -495,9 +495,10 @@ class TestHookManagerWatchConfig:
 
         manager = HookManager()
         manager.watch_config()
-        with patch.object(manager, "reload") as reload:
-            await _dispatch(KiroCrewConfig(), "session.timeout_secs")
-        reload.assert_not_called()
+        cfg = KiroCrewConfig()
+        cfg.hooks = _hooks_flat_section()  # type: ignore[assignment]
+        await _dispatch(cfg, "session.timeout_secs")
+        assert manager._config.auto_replies == []
 
     def test_a_widened_auto_approve_set_is_sel_audited_by_count(self) -> None:
         """config.json is agent-writable, so a reload that widens what runs without a
@@ -595,9 +596,9 @@ class TestCronHistoryStore:
     @pytest.mark.asyncio
     async def test_an_unrelated_cron_write_does_not_reach_it(self, tmp_path: Path) -> None:
         store = _cron_history_store(tmp_path)
-        with patch.object(store, "reconfigure") as reconfigure:
-            await _dispatch(KiroCrewConfig(), "cron.max_jobs")
-        reconfigure.assert_not_called()
+        before = store._trace_cap
+        await _dispatch(_cron_history_cfg(trace_kb=8), "cron.max_jobs")
+        assert store._trace_cap == before != 8 * 1024
 
 
 # ==================================================================
@@ -642,12 +643,18 @@ class TestTelemetryRecorderRebuild:
         from kiro_crew.metrics import provider as provider_mod
 
         provider_mod.watch_config()
-        with patch.object(provider_mod, "shutdown") as shutdown:
+        provider_mod.reset_for_testing()
+        try:
+            provider_mod._recorder = object()  # type: ignore[assignment]
+            generation = provider_mod._build_generation
             await _dispatch(
                 KiroCrewConfig(), "telemetry.retention_days", "telemetry.export_interval_seconds"
             )
-        # One rebuild for the whole section, not one per changed field.
-        shutdown.assert_called_once_with()
+            assert provider_mod._recorder is None
+            # One rebuild for the whole section, not one per changed field.
+            assert provider_mod._build_generation == generation + 1
+        finally:
+            provider_mod.reset_for_testing()
 
     @pytest.mark.asyncio
     async def test_the_rebuild_runs_off_the_event_loop(self) -> None:
@@ -667,9 +674,16 @@ class TestTelemetryRecorderRebuild:
         from kiro_crew.metrics import provider as provider_mod
 
         provider_mod.watch_config()
-        with patch.object(provider_mod, "shutdown") as shutdown:
+        provider_mod.reset_for_testing()
+        try:
+            recorder = object()
+            provider_mod._recorder = recorder  # type: ignore[assignment]
+            generation = provider_mod._build_generation
             await _dispatch(KiroCrewConfig(), "dashboard.bot_name")
-        shutdown.assert_not_called()
+            assert provider_mod._recorder is recorder
+            assert provider_mod._build_generation == generation
+        finally:
+            provider_mod.reset_for_testing()
 
 
 # ==================================================================
@@ -869,10 +883,13 @@ class TestSkillsLoader:
 
     @pytest.mark.asyncio
     async def test_a_max_triggered_write_does_not_reach_the_loader(self, tmp_path: Path) -> None:
+        added = tmp_path / "later"
+        added.mkdir()
         loader = _skills_loader(tmp_path)
-        with patch.object(loader, "reconfigure") as reconfigure:
-            await _dispatch(KiroCrewConfig(), "skills.max_triggered")
-        reconfigure.assert_not_called()
+        cfg = KiroCrewConfig()
+        cfg.skills.extra_paths = [str(added)]
+        await _dispatch(cfg, "skills.max_triggered")
+        assert added.resolve() not in loader._extra_paths
 
     @pytest.mark.asyncio
     async def test_an_extra_paths_write_reaches_the_loader(self, tmp_path: Path) -> None:
@@ -979,9 +996,9 @@ class TestSshTunnelManagerApplyConfig:
     @pytest.mark.asyncio
     async def test_an_unrelated_write_does_not_reach_the_manager(self) -> None:
         manager = _tunnel_manager()
-        with patch.object(manager, "apply_config") as apply_config:
-            await _dispatch(KiroCrewConfig(), "dashboard.bot_name")
-        apply_config.assert_not_called()
+        before = manager._probe_fails
+        await _dispatch(_instances_cfg(probe_fails=before + 4), "dashboard.bot_name")
+        assert manager._probe_fails == before
 
 
 # ==================================================================
@@ -1217,9 +1234,11 @@ class TestLLMPoolReconfigure:
     @pytest.mark.asyncio
     async def test_an_unrelated_knowledge_leaf_does_not_reach_the_pool(self) -> None:
         pool = _pool()
-        with patch.object(pool, "reconfigure", new=AsyncMock()) as reconfigure:
-            await _dispatch(KiroCrewConfig(), "knowledge.auto_ingest_artifacts")
-        reconfigure.assert_not_awaited()
+        before = pool._idle_ttl
+        cfg = KiroCrewConfig()
+        cfg.knowledge.pool_idle_ttl_secs = before + 45
+        await _dispatch(cfg, "knowledge.auto_ingest_artifacts")
+        assert pool._idle_ttl == before
 
 
 class TestKnowledgeRoutesApplier:
@@ -1268,26 +1287,35 @@ class TestKnowledgeRoutesApplier:
         app: dict = {"artifact_knowledge_sync": object()}
         cfg = KiroCrewConfig()
         cfg.knowledge.auto_ingest_artifacts = False
-        with patch.object(knowledge_mod, "_stop_artifact_ingest", new=AsyncMock()) as stop:
+        with patch.object(knowledge_mod, "get_default_store", return_value=MagicMock()):
             await knowledge_mod._apply_knowledge_config(
                 app,  # type: ignore[arg-type]
                 _change(cfg, "knowledge.auto_ingest_artifacts"),
             )
-        stop.assert_awaited_once()
+        assert "artifact_knowledge_sync" not in app
 
     @pytest.mark.asyncio
     async def test_turning_auto_ingest_on_registers_the_listener(self) -> None:
         from kiro_crew.dashboard.handlers import knowledge as knowledge_mod
+        from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
 
-        app: dict = {"artifact_knowledge_sync": None}
+        pipeline = SimpleNamespace()
+        app: dict = {"artifact_knowledge_sync": None, "knowledge_pipeline": pipeline}
         cfg = KiroCrewConfig()
         cfg.knowledge.auto_ingest_artifacts = True
-        with patch.object(knowledge_mod, "_start_artifact_ingest_async", new=AsyncMock()) as start:
+        cfg.knowledge.auto_ingest_artifact_kinds = ["widget", "html"]
+        with (
+            patch.object(knowledge_mod, "get_default_store", return_value=MagicMock()),
+            patch.object(ArtifactKnowledgeSync, "start", new=AsyncMock()),
+        ):
             await knowledge_mod._apply_knowledge_config(
                 app,  # type: ignore[arg-type]
                 _change(cfg, "knowledge.auto_ingest_artifacts"),
             )
-        start.assert_awaited_once()
+        sync = app["artifact_knowledge_sync"]
+        assert isinstance(sync, ArtifactKnowledgeSync)
+        assert sync.pipeline is pipeline
+        assert sync.kinds == {"widget", "html"}
 
     @pytest.mark.asyncio
     async def test_the_kinds_set_is_swapped_on_the_live_listener(self) -> None:
