@@ -272,7 +272,10 @@ def _dispositions(backend: str) -> Mapping[str, str] | None:
     """Card id -> disposition value for every concern *backend*'s mirror rules on.
 
     Empty for every kind but ``mirror``: a mirror is what performs the projection, so
-    it is the only kind that can answer per concern.
+    it is the only kind that can answer per concern. One exception, a ``broker-only``
+    harness Crew does not fire spec hooks for (pi): no mirror hands it the spec, and
+    Crew's turn loop does not run the ``hooks`` field there, so that one concern is
+    ruled ``withheld`` (:func:`_broker_only_dispositions`).
 
     ``None`` is the third answer and it is not the same as ``{}``: the rulings could
     not be READ. An empty map says this harness withholds nothing, which is a claim;
@@ -286,13 +289,34 @@ def _dispositions(backend: str) -> Mapping[str, str] | None:
 
         mirror = mirror_for(backend)
         if mirror is None:
-            return {}
+            return _broker_only_dispositions(backend)
         return {
             concern_id(concern): str(ruling.disposition.value)
             for concern, ruling in mirror.rulings().items()
         }
     except Exception:
         return None
+
+
+def _broker_only_dispositions(backend: str) -> Dict[str, str]:
+    """The rulings an unmirrored *backend* still has: ``hooks`` on a broker-only one.
+
+    A ``broker-only`` projection is handed no agent spec, so the spec's ``hooks``
+    field reaches the harness by no route. Unless Crew fires that field itself
+    (``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``), nothing runs it, and an empty map would
+    tell the card and the session-start notice the opposite. Every other kind keeps
+    its ``{}``, as before this ruling: this answers the broker-only kind alone.
+    """
+    # circular import -- see :func:`_declaration`.
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    from kiro_crew.providers.mirrors import Concern, Disposition, ProjectionKind
+
+    declared = _declaration(backend)
+    if declared is None or declared.kind is not ProjectionKind.BROKER_ONLY:
+        return {}
+    if backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS:
+        return {}
+    return {concern_id(Concern.HOOKS): str(Disposition.WITHHELD.value)}
 
 
 def _on_card_ids() -> Tuple[str, ...]:
