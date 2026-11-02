@@ -340,6 +340,8 @@ _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "frontend-lint"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "lockfile-engines-floor"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "cfn-lint"): _CANONICAL_CONSUMER_EXPR,
+    # Needs the Rust toolchain step it carries: the fleet image has no `cargo`.
+    ("ci.yml", "native-redaction-gate"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "electron-test"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "electron-test-windows"): _CANONICAL_WINDOWS_CONSUMER_EXPR,
     ("ci.yml", "frontend-test"): _CANONICAL_CONSUMER_EXPR_LARGE,

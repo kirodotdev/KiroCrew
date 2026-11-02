@@ -1016,10 +1016,11 @@ jobs:
     name: Native Redaction Gate (kc_native)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}
-    # Hosted, off the enterprise-shared standard pool: the `kirocrew-runners`
-    # group is the same Ubuntu image on a cap this organization owns. A fork
-    # cannot reach an organization group, so its own copy stays hosted-standard.
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    # Default fleet compute, through the shared resolver, so the fleet's actor
+    # and event admission is not restated here. A run the fleet does not admit
+    # takes the `kirocrew-runners` group in this repository and the hosted
+    # image in a fork, the destination this lane had before.
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1029,6 +1030,15 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+
+      # The fleet image (`aws/codebuild/standard:7.0`) carries no `cargo`, so
+      # both `cargo test` and `maturin build` below need this step there; it
+      # installs rustup first when the image has none. On the hosted image it
+      # updates the preinstalled toolchain to the current `stable`, so both
+      # images build with the same release.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # default-branch tip 2026-10-16
+        with:
+          toolchain: stable
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
