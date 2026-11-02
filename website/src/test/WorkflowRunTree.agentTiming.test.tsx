@@ -6,14 +6,17 @@
  * the row, that a still-running agent shows none, and that the reading is
  * localized rather than hardcoded English.
  */
-import { screen, within } from '@testing-library/react'
+import { act, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import WorkflowRunTree from '../apps/workflows/WorkflowRunTree'
 import { i18next, initI18n } from '../i18n/all'
 import { renderWithProviders } from './helpers'
 
 afterEach(async () => {
-  await i18next.changeLanguage('en')
+  // The switch re-renders any still-mounted tree, so it is an action the test causes.
+  await act(async () => {
+    await i18next.changeLanguage('en')
+  })
 })
 
 /** One event with a real `ts`, so a span is measurable. */
