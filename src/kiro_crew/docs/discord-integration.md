@@ -86,8 +86,9 @@ Both values are long numeric snowflakes, for example `284102345871466496`.
 
 ### 5. Configure Kiro Crew
 
-In **Settings → Discord**, enable the channel, paste the bot token, add every
-user who may run the agent, and optionally add approved server thread IDs.
+In **Settings → Messaging Channels → Discord**, enable the channel, paste the
+bot token, add every user who may run the agent, and optionally add approved
+server thread IDs.
 
 Or edit the local configuration directly:
 
