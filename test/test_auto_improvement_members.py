@@ -74,6 +74,28 @@ def test_enable_creates_two_private_members_and_preserves_edits():
     )
 
 
+def test_read_team_accepts_a_utf8_bom_crew_json():
+    """A ``crew.json`` re-saved by a Windows tool after the manual's recovery steps."""
+    team = {"discovery": "member-id-1"}
+    path = crew._team_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(team).encode("utf-8"))
+    assert crew._read_team() == team
+
+
+def test_read_team_names_a_utf16_crew_json_and_still_refuses_bad_json():
+    path = crew._team_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(json.dumps({"discovery": "member-id-1"}).encode("utf-16"))
+    with pytest.raises(ValueError, match="crew.json is not UTF-8 text"):
+        crew._read_team()
+    path.write_bytes(b"\xef\xbb\xbf{not json")
+    with pytest.raises(json.JSONDecodeError):
+        crew._read_team()
+    path.unlink()
+    assert crew._read_team() == {}
+
+
 def test_rename_retains_role_and_identity():
     identities = crew.ensure_team()
 

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         _KNOWN_MODELS,
         atomic_write,
         learning,
+        loads_user_json,
         logger,
         model_registry,
         read_bytes_with_retry,
@@ -97,12 +98,12 @@ def _write_review_section(patch: dict) -> dict:
     # recovery re-read did not, so the PUT answered 500. This runs off
     # the loop (``asyncio.to_thread``), where the retry engages.
     try:
-        cfg = json.loads(read_bytes_with_retry(cfg_path).decode("utf-8"))
+        cfg = loads_user_json(read_bytes_with_retry(cfg_path).decode("utf-8"))
         if not isinstance(cfg, dict):
             cfg = {}
     except (json.JSONDecodeError, OSError, FileNotFoundError):
         store.ensure_layout()
-        cfg = json.loads(read_bytes_with_retry(cfg_path).decode("utf-8"))
+        cfg = loads_user_json(read_bytes_with_retry(cfg_path).decode("utf-8"))
     review = cfg.get("review")
     if not isinstance(review, dict):
         review = {}
