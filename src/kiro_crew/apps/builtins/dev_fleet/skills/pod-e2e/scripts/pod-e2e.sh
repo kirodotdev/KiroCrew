@@ -107,7 +107,7 @@ import os, sys
 
 default = int(os.environ["KIROCREW_POD_E2E_LIVE_PORT_DEFAULT"])
 raw = os.environ.get("KIROCREW_POD_LIVE_PORT")
-if raw is None:
+if not raw:
     print(default)
     raise SystemExit(0)
 port = None
@@ -116,7 +116,7 @@ if raw.strip().lstrip("-").isdigit():
         port = int(raw.strip())
     except ValueError:
         # `isdigit()` is true for characters `int()` refuses, such as a superscript.
-        # The gateway raises on those, so no plane is listening there.
+        # The gateway falls back to its default on those, and so does this.
         port = None
 if port is None or not 1 <= port <= 65535:
     sys.stderr.write(

@@ -148,6 +148,53 @@ class TestConfig:
         assert c.live_port == 9999
         assert rt.pod_unit(c, "foo") == "kirocrew-podtest@foo.service"
 
+    # U+00B2 SUPERSCRIPT TWO passes isdigit but int() refuses it.
+    @pytest.mark.parametrize(
+        "raw",
+        ["-1", "0", "70000", "\u00b2", "7a", "9" * 5000],
+        ids=["neg", "zero", "high", "sup2", "alnum", "long"],
+    )
+    def test_an_unusable_port_env_falls_back_with_a_warning(
+        self, raw: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_BASE_PORT", raw)
+        monkeypatch.setenv("KIROCREW_POD_LIVE_PORT", raw)
+        with caplog.at_level("WARNING", logger="kiro_crew.pod.config"):
+            c = PodConfig.load()
+        assert c.base_port == DEFAULT_BASE_PORT
+        assert c.live_port == DEFAULT_LIVE_PORT
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert "KIROCREW_POD_BASE_PORT" in logged
+        assert "KIROCREW_POD_LIVE_PORT" in logged
+
+    @pytest.mark.parametrize("raw", ["", "   "])
+    def test_a_blank_port_env_reads_as_unset(
+        self, raw: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_BASE_PORT", raw)
+        assert PodConfig.load().base_port == DEFAULT_BASE_PORT
+
+    @pytest.mark.parametrize("raw,want", [("1", 1), (" 7300 ", 7300), ("65535", 65535)])
+    def test_a_live_port_env_in_range_still_wins(
+        self, raw: str, want: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_LIVE_PORT", raw)
+        assert PodConfig.load().live_port == want
+
+    @pytest.mark.parametrize("raw,want", [("1", 1), (" 7300 ", 7300), ("65336", 65336)])
+    def test_a_base_port_env_whose_band_fits_still_wins(
+        self, raw: str, want: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_BASE_PORT", raw)
+        assert PodConfig.load().base_port == want
+
+    def test_a_base_port_whose_band_overflows_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 65337 + 199 is 65536: the band's top port would not bind.
+        monkeypatch.setenv("KIROCREW_POD_BASE_PORT", "65337")
+        assert PodConfig.load().base_port == DEFAULT_BASE_PORT
+
 
 class TestPathOverridesAreAnchoredNotCwdRelative:
     """A relative override must name ONE directory, whoever reads it.
