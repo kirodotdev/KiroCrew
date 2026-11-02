@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from crew_log_drain import assert_drained
 
 from kiro_crew.acp.types import (
     EVENT_CLEAR_STATUS,
@@ -127,7 +128,7 @@ async def test_text_the_model_spoke_before_a_tool_call_lands_before_it(tmp_path)
     )
 
     await _run_chat(state, slot, "look at the config")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     entries = _entries()
     types = [e["type"] for e in entries]
@@ -209,7 +210,7 @@ async def test_a_stream_that_dies_mid_turn_still_closes_the_turn(tmp_path):
     )
 
     await _run_chat(state, slot, "do the thing")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     entries = _entries()
     types = [e["type"] for e in entries]
@@ -250,7 +251,7 @@ async def test_a_recovery_path_records_the_partial_reply_it_persists(tmp_path, e
     )
 
     await _run_chat(state, slot, "do the thing")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     entries = _entries()
     sent = [e for e in entries if e["type"] == "message/sent"]
@@ -300,7 +301,7 @@ async def test_a_failed_turn_closer_follows_the_text_it_closes_over(tmp_path):
     )
 
     await _run_chat(state, slot, "explain it")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     entries = _entries()
     if "message/sent" in [e["type"] for e in entries]:
@@ -363,7 +364,7 @@ async def test_the_input_is_recorded_before_what_was_derived_from_it(tmp_path):
     state, slot = _state_and_slot(tmp_path, [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")])
 
     await _run_chat(state, slot, "do the thing")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     entries = _entries()
     assert _seq_of(entries, "message/received") < _seq_of(
@@ -384,7 +385,7 @@ async def test_message_received_records_entry_text_before_prompt_expansion(tmp_p
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(chat_runner, "_expand_prompt_mention_off_loop", _expand)
         await _run_chat(state, slot, "@daily explain this")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     received = [e for e in _entries() if e["type"] == "message/received"]
     assert len(received) == 1
@@ -444,7 +445,7 @@ async def test_an_accepted_attachment_is_named_in_the_message_entry(tmp_path):
         "summarize the attached report",
         _attachments=["/tmp/report one.pdf", "/tmp/notes"],
     )
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     received = [e for e in _entries() if e["type"] == "message/received"]
     assert len(received) == 1
@@ -457,7 +458,7 @@ async def test_a_turn_with_no_attachment_says_nothing_about_attachments(tmp_path
     state, slot = _state_and_slot(tmp_path, [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")])
 
     await _run_chat(state, slot, "just text")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     received = [e for e in _entries() if e["type"] == "message/received"]
     assert len(received) == 1
@@ -550,7 +551,7 @@ async def test_the_turn_ordinal_keeps_rising_past_the_message_cap(tmp_path, monk
     assert len(slot.messages) <= 8, "the cap was not patched low enough to trim"
 
     await _run_chat(state, slot, "first")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     first = [e for e in _entries() if e["type"] == "turn/started"][-1]["data"]["turn"]
 
     for n in range(20):
@@ -558,7 +559,7 @@ async def test_the_turn_ordinal_keeps_rising_past_the_message_cap(tmp_path, monk
     assert len(slot.messages) <= 8
 
     await _run_chat(state, slot, "second")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     starts = [e for e in _entries() if e["type"] == "turn/started"]
     assert len(starts) == 2, f"expected two turn/started entries, got {len(starts)}"
     second = starts[-1]["data"]["turn"]
@@ -594,7 +595,7 @@ async def test_the_turn_ordinal_continues_from_a_restored_window_base(tmp_path):
     slot._disk_older_durable_count = 4096
 
     await _run_chat(state, slot, "after the resume")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     starts = [e for e in _entries() if e["type"] == "turn/started"]
     assert starts, "no turn/started was written"
@@ -622,7 +623,7 @@ async def test_a_rerun_after_the_window_is_truncated_keeps_the_same_ordinal(tmp_
     """
     state, slot = _state_and_slot(tmp_path, [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")])
     await _run_chat(state, slot, "first ask")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     first = [e for e in _entries() if e["type"] == "turn/started"][-1]["data"]
     window_before = list(slot.messages)
 
@@ -630,7 +631,7 @@ async def test_a_rerun_after_the_window_is_truncated_keeps_the_same_ordinal(tmp_
     # the state it had at the start of the turn being re-run.
     del slot.messages[len(window_before) - 2 :]
     await _run_chat(state, slot, "first ask")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     starts = [e for e in _entries() if e["type"] == "turn/started"]
     assert len(starts) == 2, f"expected two turn/started entries, got {len(starts)}"
@@ -672,21 +673,21 @@ async def test_the_turn_ordinal_keeps_rising_across_a_native_clear(tmp_path):
         slot.append("assistant", f"earlier reply {n}", "msg msg-a")
 
     await _run_chat(state, slot, "before the clear")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     before = [e for e in _entries() if e["type"] == "turn/started"][-1]["data"]["turn"]
 
     # The clear turn: the backend confirms the native clear, the runner empties
     # the window and appends only its confirmation row.
     events[:] = [AcpEvent(kind=EVENT_CLEAR_STATUS)]
     await _run_chat(state, slot, "/clear")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     cleared = [e for e in _entries() if e["type"] == "turn/started"][-1]["data"]["turn"]
     assert cleared > before, "the clear turn itself is numbered before the window empties"
     assert len(slot.messages) <= 2, "the native clear did not empty the window"
 
     events[:] = [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")]
     await _run_chat(state, slot, "after the clear")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     starts = [e for e in _entries() if e["type"] == "turn/started"]
     assert len(starts) == 3, f"expected three turn/started entries, got {len(starts)}"
@@ -720,7 +721,7 @@ async def test_a_process_death_closer_names_the_exception_it_caught(tmp_path):
     )
 
     await _run_chat(state, slot, "do the thing")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     closer = [e for e in _entries() if e["type"] == "turn/completed"]
     assert len(closer) == 1, "the turn was left open, so this proves nothing"
@@ -767,7 +768,7 @@ async def test_a_status_only_result_keeps_the_output_an_earlier_frame_persisted(
     )
 
     await _run_chat(state, slot, "read the config")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     rows = [m for m in slot.messages if m.get("role") == "tool"]
     assert rows, "no tool row was persisted, so this proves nothing"
