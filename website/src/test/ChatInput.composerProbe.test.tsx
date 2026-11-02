@@ -16,7 +16,7 @@
  * order.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import ChatInput from '../components/ChatInput'
 import { queryComposer } from '../pages/chat/composerFocus'
 import { renderWithProviders } from './helpers'
@@ -29,25 +29,27 @@ describe('composer focus probe', () => {
     expect(queryComposer()).toBe(textarea)
   })
 
-  it('with two panes mounted, resolves the composer of the pane holding focus', () => {
-    renderWithProviders(
-      <>
-        <div data-chat-pane="">
-          <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} />
-        </div>
-        <div data-chat-pane="">
-          <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} />
-        </div>
-      </>,
-    )
+  it('with two panes mounted, resolves the composer of the pane holding focus', async () => {
+    await act(async () => {
+      renderWithProviders(
+        <>
+          <div data-chat-pane="">
+            <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} />
+          </div>
+          <div data-chat-pane="">
+            <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} />
+          </div>
+        </>,
+      )
+    })
     const composers = screen.getAllByLabelText('Message input')
     expect(composers).toHaveLength(2)
     // Focus in the SECOND pane: the document-global first match would be
     // composers[0]; the pane-scoped lookup must return composers[1].
-    composers[1].focus()
+    act(() => composers[1].focus())
     expect(queryComposer()).toBe(composers[1])
     // And in single-pane terms: focus in the first pane resolves the first.
-    composers[0].focus()
+    act(() => composers[0].focus())
     expect(queryComposer()).toBe(composers[0])
   })
 })
