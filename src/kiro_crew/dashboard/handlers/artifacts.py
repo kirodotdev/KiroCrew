@@ -274,6 +274,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.chat_folders import chat_folder_subtree_ids  # noqa: F401
     from kiro_crew.dashboard.chat_folders import generate_emoji_for_name  # noqa: F401
     from kiro_crew.dashboard.chat_folders import live_slot_names_in_folders  # noqa: F401
+    from kiro_crew.dashboard.fork_lineage import descends_from  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _is_restricted_session  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import bounded_json_error_as_exception  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import bounded_json_error_code  # noqa: F401

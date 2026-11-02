@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         _CREATABLE_MODES,
         _DEFERRED_PLAIN_CREATE_KNOWN_KEYS,
         ARTIFACT_SLUG_RE,
+        MAX_SLOT_NAME_CHARS,
         DashboardState,
         KiroCrewConfig,
         MemoryStartupUnavailable,
@@ -265,6 +266,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # `get_or_create_slot` normalizes the key with string operations, so a
         # non-string name would surface there as an unhandled 500.
         name = str(name)
+    if name and len(name) > MAX_SLOT_NAME_CHARS:
+        # The slot key becomes the owner of everything the session registers
+        # (image copies, lineage); the store records that owner whole up to this
+        # bound and compares it whole, so a longer name is refused at admission
+        # rather than truncated somewhere downstream.
+        return web.json_response(
+            {"error": "session name too long", "code": "name_too_long"}, status=400
+        )
     agent = body.get("agent", "")
     # The selection NAMESPACE, when the caller states one. "member" names a
     # configured crew, "template" a shared provider template; an omitted kind

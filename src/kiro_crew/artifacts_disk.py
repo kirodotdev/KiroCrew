@@ -21,10 +21,12 @@ Instance fields written: none.
 from __future__ import annotations
 
 import errno as _errno
+import hashlib
 import json
 import logging
 import os
 import re
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
@@ -40,13 +42,14 @@ from kiro_crew.artifact_store.model import (
     ArtifactValidationError,
 )
 from kiro_crew.artifact_store.rules import _validate_slug, slugify
-from kiro_crew.constants import ARTIFACT_MAX_CONTENT_BYTES
+from kiro_crew.constants import ARTIFACT_MAX_CONTENT_BYTES, SESSION_KEY_MAX_CHARS
 from kiro_crew.owner_only_files import GROUP_OTHER_BITS as _GROUP_OTHER_BITS
 from kiro_crew.owner_only_files import mkdirs_owner_only as _mkdirs_owner_only
 from kiro_crew.owner_only_files import owner_only_opener as _owner_only_opener
 from kiro_crew.security import (
     canonical_path_refusal,
     is_sensitive_canonical_path,
+    is_sensitive_path,
     is_unverifiable_path_refusal,
 )
 
@@ -99,6 +102,33 @@ MAX_COMMENTS_PER_ARTIFACT = 500
 MAX_EVENTS_PER_ARTIFACT = 500
 
 _VERSION_FILE_RE = re.compile(r"^v(\d+)\.html$")
+
+#: Longest session key the store records as an artifact's owner. ONE bound,
+#: shared with slot admission (``api_chat_slot_create``), fork lineage
+#: (``fork_lineage.MAX_ANCESTOR_KEY_CHARS``) and the transcript directory's
+#: stem bound (``history.MAX_TRANSCRIPT_STEM_CHARS``), all re-exports of the
+#: leaf ``constants.SESSION_KEY_MAX_CHARS``: a key that is stored truncated
+#: here but compared whole there could never match its own owner check, so an
+#: image copy is REFUSED for an over-long owner rather than stored under a
+#: truncated one.
+MAX_SESSION_KEY_CHARS = SESSION_KEY_MAX_CHARS
+
+#: Longest ``meta.json`` the store will DECODE. The store directory is
+#: agent-writable and every meta reader goes through ``_read_meta_file``, so the
+#: file is read through a bounded descriptor and refused past this many bytes
+#: BEFORE the JSON decoder materializes it; the per-field caps (name,
+#: description, tags, the FIFO-capped event log) bound what the store itself
+#: writes well inside it. A conforming store never trips this.
+MAX_META_BYTES = 4 * 1024 * 1024
+
+#: What pins an image sidecar between the locked metadata read and the unlocked
+#: byte read: ``(st_dev, st_ino, st_size, st_mtime_ns)``. See
+#: :func:`_sidecar_identity`.
+_SidecarIdentity = tuple[int, int, int, int]
+
+
+def _stat_identity(st: os.stat_result) -> _SidecarIdentity:
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -480,23 +510,36 @@ def _load_meta(self: ArtifactStore, slug: str) -> Artifact:
 
 
 def _read_meta_file(self: ArtifactStore, path: Path) -> Artifact:
-    return _records.decode_meta(json.loads(self._read_text(path)), path)
+    # Bounded BEFORE the decode: ``meta.json`` sits in an agent-writable
+    # directory, so the decoder never sees more than MAX_META_BYTES of it.
+    return _records.decode_meta(json.loads(self._read_text(path, max_bytes=MAX_META_BYTES)), path)
 
 
-def _read_text(self: ArtifactStore, path: Path) -> str:
+def _read_text(self: ArtifactStore, path: Path, *, max_bytes: int | None = None) -> str:
     """Read a store-internal text file through a pinned descriptor.
 
     The fence is asked with the ``realpath`` computed on the line above (see
     :func:`_fence_refuses` for which gate answers, and why). The opened
     descriptor is checked again so a replacement at the final name cannot
     redirect the read after that first decision.
+
+    With ``max_bytes`` the read itself is bounded: at most ``max_bytes + 1``
+    bytes leave the descriptor, and a file past the bound raises
+    :class:`ArtifactError` instead of being returned, so a caller that
+    decodes the text never materializes more than the bound.
     """
     resolved = Path(os.path.realpath(path))
     if reason := _fence_refusal(resolved, "read"):
         raise ArtifactError(reason)
     fd = _open_pinned_for_read(resolved)
-    with os.fdopen(fd, "r", encoding="utf-8") as fh:
-        return fh.read()
+    if max_bytes is None:
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            return fh.read()
+    with os.fdopen(fd, "rb") as raw:
+        data = raw.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ArtifactError(f"{path.name} exceeds {max_bytes} bytes; refusing to decode it")
+    return data.decode("utf-8")
 
 
 def _write_text(self: ArtifactStore, path: Path, text: str) -> None:
@@ -535,7 +578,13 @@ def _read_bytes(self: ArtifactStore, path: Path) -> bytes:
         return fh.read()
 
 
-def _read_image_asset_bytes(self: ArtifactStore, path: Path) -> bytes:
+def _read_image_asset_bytes(
+    self: ArtifactStore,
+    path: Path,
+    *,
+    identity: _SidecarIdentity | None = None,
+    sha256: str | None = None,
+) -> bytes:
     """Read an image sidecar with the open descriptor as the unit of trust.
 
     :meth:`_read_bytes` resolves the path, checks it, then opens it by name —
@@ -545,6 +594,15 @@ def _read_image_asset_bytes(self: ArtifactStore, path: Path) -> bytes:
     the open is ``O_NOFOLLOW`` and the inode it actually opened is validated
     (regular file, not hardlinked), so a swapped sidecar is refused rather
     than followed.
+
+    With ``identity`` — the inode identity a caller captured while it
+    held the metadata lock — the descriptor is additionally required to BE
+    that inode, so a sidecar replaced after the lock was released (a slug
+    deleted and recreated) is refused rather than served under the earlier
+    record's owner. With ``sha256`` — the digest the record carried under
+    that same lock — the bytes read must hash to it, so an in-place
+    overwrite of the pinned inode is refused as well: what is served is the
+    picture the authorized record describes, or nothing.
 
     ``within_root`` is deliberately NOT passed to the helper: its containment
     check reads the descriptor's real path via ``/proc/self/fd`` or
@@ -560,12 +618,93 @@ def _read_image_asset_bytes(self: ArtifactStore, path: Path) -> bytes:
     resolved = Path(os.path.realpath(path))
     if resolved != root and root not in resolved.parents:
         raise ArtifactNotFoundError(f"image asset escapes the store root: {path.name}")
-    data = hooks.safe_read_file_bytes_nolink(str(resolved), max_bytes=MAX_CONTENT_BYTES)
+    if identity is not None:
+        data = _read_pinned_sidecar(resolved, identity)
+    else:
+        data = hooks.safe_read_file_bytes_nolink(str(resolved), max_bytes=MAX_CONTENT_BYTES)
     if data is None:
-        # Refused: not a regular file, hardlinked, or unreadable.
+        # Refused: not a regular file, hardlinked, unreadable, or (with an
+        # identity) not the inode the caller pinned under the lock.
         # Indistinguishable from "gone" to the caller by design.
         raise ArtifactNotFoundError(f"image asset is not readable: {path.name}")
+    if sha256 and hashlib.sha256(data).hexdigest() != sha256:
+        # The bytes are bound to the RECORD the caller authorized against,
+        # not only to the inode: an in-place overwrite of the pinned inode
+        # (the store never does one, but the directory is agent-writable)
+        # can leave size and a coarse mtime unchanged, so the digest the
+        # record carries is the check that catches it.
+        raise ArtifactNotFoundError(f"image asset does not match its record: {path.name}")
     return data
+
+
+def _sidecar_identity(asset: Path) -> _SidecarIdentity | None:
+    """Identity of the sidecar as it is NOW, for pinning under the lock.
+
+    ``(st_dev, st_ino)`` alone is not enough: a file deleted and rewritten a
+    moment later commonly gets the same inode number back, so size and
+    ``mtime_ns`` are part of the identity too. ``None`` when the path is
+    refused or unstattable.
+    """
+    if is_sensitive_path(str(asset)):
+        return None
+    try:
+        return _stat_identity(os.stat(asset, follow_symlinks=False))
+    except OSError:
+        return None
+
+
+def _read_pinned_sidecar(resolved: Path, identity: _SidecarIdentity) -> bytes | None:
+    """Read ``resolved`` only if the descriptor opened IS the pinned inode.
+
+    Every check runs on the one ``fstat`` of the descriptor that is read —
+    the same set :func:`hooks.safe_read_file_bytes_nolink` applies (regular
+    file, not hardlinked, under ``MAX_CONTENT_BYTES``) PLUS the ``(st_dev,
+    st_ino, size, mtime_ns)`` captured under the metadata lock — so neither
+    a hardlinked alias nor a sidecar swapped in after the lock was released
+    can be served. The identity is re-read on the same descriptor AFTER the
+    bytes are, and the byte count must equal the pinned size, so an
+    in-place write that lands between the check and the read is refused
+    too: what is served is wholly the pinned inode's content or nothing.
+    ``None`` means refused, for any reason.
+    """
+    if is_sensitive_path(str(resolved)):
+        return None
+    try:
+        # Non-blocking, as ``safe_read_file_bytes_nolink`` opens: a FIFO
+        # planted at the sidecar path would otherwise block the ``open``
+        # itself, before the ``S_ISREG`` check below could ever run, and
+        # every repeat would pin another thread of the shared executor.
+        fd = platform_compat.open_file_no_reparse(resolved, nonblocking=True)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if _stat_identity(st) != identity:
+            return None
+        if st.st_nlink > 1 or not stat.S_ISREG(st.st_mode):
+            return None
+        if st.st_size > MAX_CONTENT_BYTES:
+            return None
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1  # consumed by fdopen
+            data = fh.read(MAX_CONTENT_BYTES + 1)
+            # The identity is checked AGAIN on the same descriptor after the
+            # read: an in-place write landing between the first ``fstat`` and
+            # the ``read`` (the store never writes in place, but the directory
+            # is agent-writable) changes ``mtime_ns`` and usually the size, so
+            # bytes that are not wholly the pinned inode's are refused rather
+            # than served. The byte count must also be the pinned size, so a
+            # file truncated or grown mid-read is caught even when the clock
+            # did not move.
+            if _stat_identity(os.fstat(fh.fileno())) != identity:
+                return None
+    except OSError:
+        return None
+    finally:
+        if fd != -1:
+            os.close(fd)
+    # Exactly the pinned size (the size bound was checked on it above).
+    return data if len(data) == identity[2] else None
 
 
 def _refuse_write_outside_root(self: ArtifactStore, asked: Path, resolved: Path) -> None:

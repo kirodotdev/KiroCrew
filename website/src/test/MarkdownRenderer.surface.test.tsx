@@ -33,12 +33,16 @@ describe('MarkdownRenderer public surface', () => {
       'COPIED_FLASH_MS',
       'COPY_FAILED_FLASH_MS',
       'CompactImagesCtx',
+      'ImageOrdinalsCtx',
+      'ImageSessionCtx',
       'ImageVersionCtx',
       'Lightbox',
       'LinkOverrideCtx',
       'LinkUnfurlCtx',
       'MERMAID_FONTS_READY_CAP_MS',
       'MdSourceCtx',
+      'RawBlockSpanCtx',
+      'RawMessageCtx',
       'artifactSlugFromHref',
       'default',
       'dispatchLightbox',
@@ -79,6 +83,10 @@ describe('MarkdownRenderer public surface', () => {
       seen.source = useContext(facade.MdSourceCtx)
       seen.override = useContext(facade.LinkOverrideCtx)
       seen.unfurl = useContext(facade.LinkUnfurlCtx)
+      seen.imageOrdinals = useContext(facade.ImageOrdinalsCtx)
+      seen.rawMessage = useContext(facade.RawMessageCtx)
+      seen.rawBlockSpan = useContext(facade.RawBlockSpanCtx)
+      seen.imageSession = useContext(facade.ImageSessionCtx)
       return null
     }
     render(<Probe />)
@@ -89,6 +97,10 @@ describe('MarkdownRenderer public surface', () => {
       source: null,
       override: null,
       unfurl: { enabled: false, live: false },
+      imageOrdinals: null,
+      rawMessage: null,
+      rawBlockSpan: null,
+      imageSession: null,
     })
   })
 
@@ -96,6 +108,7 @@ describe('MarkdownRenderer public surface', () => {
     const owners: Record<string, Record<string, unknown>> = {
       BasePathCtx: contexts, CompactImagesCtx: contexts, ImageVersionCtx: contexts, MdSourceCtx: contexts,
       LinkOverrideCtx: contexts, LinkUnfurlCtx: contexts,
+      ImageOrdinalsCtx: contexts, RawMessageCtx: contexts, RawBlockSpanCtx: contexts, ImageSessionCtx: contexts,
       artifactSlugFromHref: linkTargets, soleLinkInParagraph: linkTargets, unfurlableHref: linkTargets,
       isPathCandidate: pathReferences, splitLineRef: pathReferences,
       MERMAID_FONTS_READY_CAP_MS: mermaidBlock,

@@ -80,9 +80,12 @@ def test_the_ratchet_can_actually_fail() -> None:
     `slot_ownership.slot_not_found`, the same response, so it is counted there
     too. The over-capacity corpus refusal (``fork_corpus_too_large``) adds one
     site, and so does the read-only remote-crew refusal (``relay_archive_read_only``).
+    The lineage walk adds two: ``fork_ancestry_unprovable`` for an ancestor whose
+    transcript exists but cannot be read, and ``fork_ancestry_over_bound`` for a
+    chain that cannot be recorded whole.
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
-    assert len(coded) == 26, f"scanner reached {len(coded)} coded sites, expected 26"
+    assert len(coded) == 28, f"scanner reached {len(coded)} coded sites, expected 28"
     assert all(f.code_value for f in coded)
 
 

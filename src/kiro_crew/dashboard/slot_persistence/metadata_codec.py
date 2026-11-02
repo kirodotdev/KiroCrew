@@ -53,6 +53,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from kiro_crew.dashboard import fork_lineage
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_transcript_key,
@@ -718,6 +719,18 @@ def _read_forked_from(r: _Read) -> None:
         r.slot.forked_from = r.meta["forked_from"]
 
 
+def _fork_chain(slot: Any, folds: SaveFolds) -> object:
+    record = fork_lineage.chain_record_for_save(
+        getattr(slot, "fork_ancestors", []), getattr(slot, "fork_ancestors_unprovable", False)
+    )
+    return OMIT if record is None else record
+
+
+def _read_fork_ancestors(r: _Read) -> None:
+    r.slot.fork_ancestors = fork_lineage.admitted_chain(r.meta)
+    r.slot.fork_ancestors_unprovable = fork_lineage.chain_unprovable(r.meta)
+
+
 def _read_linked_session_key(r: _Read) -> None:
     # Rebinds the slot to the session its conversation runs on; skipped, the
     # slot would answer from a dashboard-only session and the channel thread
@@ -1218,6 +1231,17 @@ FIELDS: tuple[Field, ...] = (
         merge=lambda s, f: s.forked_from if s.forked_from is not None else OMIT,
         read=_read_forked_from,
     ),
+    # The fork's materialized chain travels with ``forked_from``: a save that
+    # skipped it would rewrite the line without it and the fork would lose its
+    # ancestry (and with it access to the parent's chat images).
+    Field(
+        "fork_ancestors",
+        _ALL,
+        attr="fork_ancestors",
+        line=_fork_chain,
+        merge=_fork_chain,
+        read=_read_fork_ancestors,
+    ),
     # Nothing re-creates a channel slot's binding on restart (no injection
     # re-fires), so without it the slot comes back unbound, as a dashboard-only
     # copy of the thread.
@@ -1331,6 +1355,7 @@ LINE_ORDER: tuple[str, ...] = (
     "deferred_notes",
     "queued_prompts",
     "forked_from",
+    "fork_ancestors",
     "linked_session_key",
     "channel_origin",
     "tab_id",
@@ -1374,6 +1399,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "linked_session_key",
     "channel_origin",
     "forked_from",
+    "fork_ancestors",
     "turn_in_flight_generation",
     "turn_in_flight_prompt",
     "executor",

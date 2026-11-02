@@ -452,6 +452,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 from kiro_crew.dashboard.default_session_folder import (  # noqa: F401
     resolve_default_session_folder,
 )
+from kiro_crew.dashboard.fork_lineage import MAX_SLOT_NAME_CHARS  # noqa: F401
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _SLOT_SCOPED_TRUST_MODES,
     _owner_denial_response,

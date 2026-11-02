@@ -47,6 +47,11 @@ from kiro_crew.dashboard.handlers.sessions_parts.history_reads import (
     _is_user_listed_row,
     _open_slot_transcript_keys,
 )
+from kiro_crew.dashboard.handlers.sessions_parts.image_reap import (
+    _fork_lineage,
+    _live_session_keys,
+    _reap_session_images,
+)
 from kiro_crew.dashboard.handlers.sessions_parts.slot_teardown import _remove_slot_for_history_key
 from kiro_crew.dashboard.state import DashboardState
 
@@ -109,6 +114,9 @@ async def _delete_claimed_session(
         swept = await _owner_keys_bound_to_transcript(crons, (key,))
     except (CronStoreBusy, CronStoreUnreadable) as exc:
         return _cron_store_refusal(exc)
+    # Fork lineage must be read BEFORE the unlink (the deleted transcript's own
+    # `forked_from` goes with it); one metadata pass, off the loop.
+    lineage = await asyncio.to_thread(_fork_lineage, state.conversation_log)
 
     # The ledger exclusion is written BEFORE the unlink, and a failure REFUSES the
     # delete with the row intact. It has to be this side of the unlink to be a
@@ -187,10 +195,19 @@ async def _delete_claimed_session(
             delete_claim,
             cron_owner_keys=(delete_claim.cron_owner_keys | frozenset(after.get(key, ()))),
         )
+        # Quiesce FIRST: removing the slot kills its kiro-cli session, so no
+        # further turn can finalize and schedule a registration behind the
+        # drain below. Only then wait for what is already in flight and reap.
         try:
             await _remove_slot_for_history_key(state, key, delete_claim=delete_claim)
         except Exception:
             logger.warning("cleanup failed for session %s", key, exc_info=True)
+        # Auto-registered image artifacts are chat-owned durable copies. Keep
+        # them across agent/runtime cleanup, but reap untouched copies when the
+        # transcript itself is permanently deleted.
+        await _reap_session_images(
+            state.conversation_log, lineage, {key}, live=lambda: _live_session_keys(state)
+        )
         state.release_deleted_slot_keys(_history_delete_candidate_keys(key))
         state.push_slots_update()
         state.push_refresh("history")
@@ -245,6 +262,8 @@ async def _clear_history_rows(
     """The per-row body of :func:`api_sessions_clear`, inside the rows' windows."""
     from kiro_crew import session_ledger
 
+    # Fork lineage snapshot BEFORE any unlink — see api_session_delete.
+    lineage = await asyncio.to_thread(_fork_lineage, log)
     count = 0
     failed = 0
     cleanup_claims: list[tuple[str, _HistoryDeleteClaim]] = []
@@ -337,6 +356,15 @@ async def _clear_history_rows(
             for cleanup_key, delete_claim in cleanup_claims
         ]
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+        # Same lifetime rule as the single delete: a transcript that is gone for
+        # good takes its untouched image copies with it. One store pass for the
+        # whole batch rather than one per session.
+        await _reap_session_images(
+            log,
+            lineage,
+            {cleanup_key for cleanup_key, _claim in cleanup_claims},
+            live=lambda: _live_session_keys(state),
+        )
         state.release_deleted_slot_keys(
             candidate
             for cleanup_key, _claim in cleanup_claims

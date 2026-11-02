@@ -44,6 +44,7 @@ from kiro_crew.artifact_store.rules import (
 from kiro_crew.artifacts_disk import (
     _TOKEN_RE,
     MAX_CONTENT_BYTES,
+    MAX_SESSION_KEY_CHARS,
     MAX_VERSIONS,
     _now_iso,
     _validate_content,
@@ -244,6 +245,12 @@ def create_image(
             f"image_bytes must be bytes, got {type(image_bytes).__name__}"
         )
     data = bytes(image_bytes)
+    if session_key and len(session_key) > MAX_SESSION_KEY_CHARS:
+        # Reject, never truncate: the owner recorded here is what the asset
+        # route's `?session=` check and the reap compare against, whole.
+        raise ArtifactValidationError(
+            f"session_key over {MAX_SESSION_KEY_CHARS} chars cannot own an image artifact"
+        )
     norm_mime = (mime or "").strip().lower()
     if norm_mime not in _IMAGE_MIME_EXT:
         raise ArtifactValidationError(
@@ -286,7 +293,7 @@ def create_image(
             updated_at=now,
             content="",  # image body lives in the asset sidecar, not here
             folder_id=folder_id or "",
-            session_key=session_key[:256] if session_key else "",
+            session_key=session_key or "",
             auto_registered=bool(auto_registered),
             version_kinds={"1": "image"},
             image=image_meta,

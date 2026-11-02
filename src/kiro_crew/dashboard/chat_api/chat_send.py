@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         _CREATABLE_MODES,
         _SSE_WRITE_DEADLINE_SECS,
         HUMAN_TURN_META_KEY,
+        MAX_SLOT_NAME_CHARS,
         RESERVED_ROW_META_KEYS,
         STEER_AUTO,
         STEER_REQUEUED,
@@ -571,6 +572,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         color_theme = ""
     if not isinstance(slot_name, str) and slot_name is not None:
         slot_name = None  # coerce non-string slot to auto-generate
+    if slot_name and len(slot_name) > MAX_SLOT_NAME_CHARS:
+        # Same bound as `api_chat_slot_create`: a chat message to a slot that does
+        # not exist yet MINTS it, and the slot key becomes the owner of every
+        # image copy the session registers. The store records an owner whole
+        # only up to this bound and refuses one past it, so a longer name is
+        # refused here rather than minted into a session whose pictures could
+        # never be made durable.
+        return web.json_response(
+            {"error": "session name too long", "code": "name_too_long"}, status=400
+        )
     _requested_key = _normalize_slot_key(slot_name) if slot_name else ""
     # Which of the owner's tabs is talking in this slot, so a live guide
     # observation asks that tab and no other (``guide_observe``), and which

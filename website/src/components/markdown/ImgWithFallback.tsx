@@ -9,7 +9,8 @@ import { mediaKindOf } from '../../utils/mediaExts'
 import { WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../../utils/urlTransform'
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../ErrorNotice'
-import { BasePathCtx, CompactImagesCtx, ImageVersionCtx, MdBlockStartCtx, MdSourceCtx } from './contexts'
+import { deriveImageArtifactSlug, imageOrdinalCandidates } from '../../lib/imageArtifactSlug'
+import { BasePathCtx, CompactImagesCtx, ImageOrdinalsCtx, ImageSessionCtx, ImageVersionCtx, MdBlockStartCtx, MdSourceCtx, RawBlockSpanCtx, RawMessageCtx } from './contexts'
 import { useTitleCuedCopy } from './copyFeedback'
 import { basenameOf } from './pathReferences'
 import {
@@ -281,6 +282,8 @@ export function ImgWithFallback({
 }: React.ImgHTMLAttributes<HTMLImageElement> & ExtraProps) {
   const [errored, setErrored] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  // -1 = the original file; otherwise the index into `artifactCandidates` being tried.
+  const [artifactAttempt, setArtifactAttempt] = useState(-1)
   // A remote image the user explicitly chose to load.
   // Per-src like the outcome flags: a reused instance handed a different src
   // must not inherit the previous image's approval.
@@ -305,6 +308,7 @@ export function ImgWithFallback({
     setLoaded(false)
     setRemoteApproved(false)
     setAttempt(0)
+    setArtifactAttempt(-1)
   }
   const basePath = useContext(BasePathCtx)
   // The candidate list is derived from the previewed file too, so neither an
@@ -320,6 +324,32 @@ export function ImgWithFallback({
   const [attemptKey, setAttemptKey] = useState<string | null>(null)
   const compact = useContext(CompactImagesCtx)
   const version = useContext(ImageVersionCtx)
+  // The component can be reused for a different image without remounting:
+  // React reuses an instance whenever the element at a key keeps its type, so
+  // variant browsing swaps the message ts and an edit swaps `src`. Every flag
+  // here describes the outcome of loading THAT identity, so none may outlive
+  // it — without this a good image inherits a previous one's failure and
+  // renders as broken, with nothing to clear it short of a full remount.
+  // Adjusted during render rather than in an effect, per React's guidance for
+  // resetting state on a prop change (an effect runs after paint and would show
+  // one frame of the previous outcome); setState bails out when unchanged.
+  // The owning session is part of that identity too: a slot switch can reuse
+  // the instance for a message with the same ts and src in ANOTHER session,
+  // and the fallback candidates it exhausted (or the copy it resolved) were
+  // that other session's, checked against that other session's ownership.
+  // Not user-facing text: a composite key of (message version, session, src).
+  const imageOrdinals = useContext(ImageOrdinalsCtx)
+  const rawMessage = useContext(RawMessageCtx)
+  const rawBlockSpan = useContext(RawBlockSpanCtx)
+  const imageSession = useContext(ImageSessionCtx)
+  const identity = [version ?? '', imageSession ?? '', src ?? ''].join('\u0000')
+  const [seenIdentity, setSeenIdentity] = useState(identity)
+  if (seenIdentity !== identity) {
+    setSeenIdentity(identity)
+    setErrored(false)
+    setLoaded(false)
+    setArtifactAttempt(-1)
+  }
   const source = useContext(MdSourceCtx)
   // Present only where the host collects box comments on images (the file
   // viewer); everywhere else the image renders with no overlay.
@@ -405,6 +435,7 @@ export function ImgWithFallback({
         const shownPath = previous[Math.min(attempt, previous.length - 1)]
         if (shownPath !== candidatePaths[0]) setLoaded(false)
         setAttempt(0)
+        setArtifactAttempt(-1)
         setErrored(false)
         effectiveAttempt = 0
       }
@@ -415,6 +446,35 @@ export function ImgWithFallback({
   } else {
     url = src
   }
+  const nodeOffset = node?.position?.start?.offset
+  // The backend registers only DIRECT `![alt](dest)` images, keyed by their
+  // ordinal in the raw message. Look this node up by the destination written at
+  // its own source position: a reference-style `![alt][ref]` has no direct
+  // opener there and gets no fallback, and nothing depends on how much of the
+  // block's text was stripped or repaired before rendering. Same-destination
+  // duplicates yield the ordinal for THIS occurrence first, then the others.
+  //
+  // Only with an OWNER. The slug is `(message ts, ordinal)` alone, and two slots
+  // can stamp a row in the same clock tick, so the asset endpoint's `?session=`
+  // check is what keeps one conversation's picture out of another's transcript.
+  // A surface that renders a message without its slot key (completion cards,
+  // the plain transcript view) cannot make that claim, so it gets no fallback
+  // rather than an ownerless request the backend cannot bind to anyone.
+  const artifactCandidates = isLocal && version && imageSession && source != null && nodeOffset != null
+    ? imageOrdinalCandidates(
+      source,
+      nodeOffset,
+      imageOrdinals,
+      rawMessage != null && rawBlockSpan
+        ? { message: rawMessage, blockStart: rawBlockSpan.start, blockEnd: rawBlockSpan.end }
+        : undefined,
+    )
+    : []
+  const artifactUrl = artifactAttempt >= 0 && artifactAttempt < artifactCandidates.length
+    ? `/api/artifacts/${deriveImageArtifactSlug(version as string, artifactCandidates[artifactAttempt])}/asset`
+      + `?session=${encodeURIComponent(imageSession as string)}`
+    : null
+  const resolvedUrl = artifactUrl ?? url
   if (isGatewayRouteMediaUrl(url)) return <GatewayMediaRefused />
   // Markdown has no video syntax, so `![clip](demo.mp4)` is how a message
   // references a recording. An <img> cannot play it (and /api/file-raw refuses
@@ -506,7 +566,7 @@ export function ImgWithFallback({
   // first successful load (keyed by resolved URL, same mechanism as the
   // artifact gallery's thumbnails) lets every later mount reserve the real
   // aspect box before any bytes arrive.
-  const learned = !isSvg ? getImageDims(url) : undefined
+  const learned = !isSvg ? getImageDims(resolvedUrl) : undefined
   // The reserved box must resolve to EXACTLY the size the loaded image will
   // take, or the difference shows as a border wrapping empty space with the
   // image floated centered inside (object-contain letterboxing). The loaded
@@ -561,7 +621,7 @@ export function ImgWithFallback({
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
       <img
         ref={commentImgRef}
-        src={url} alt={alt || ''} loading="lazy"
+        src={resolvedUrl} alt={alt || ''} loading="lazy"
         // A remote image the user approved is fetched with NO referrer. The
         // approval binds the request this renderer initiates, but a server can
         // still 302 it onward, and a redirect target that receives the
@@ -596,12 +656,21 @@ export function ImgWithFallback({
         title={alt || src}
         onLoad={(e) => {
           const el = e.currentTarget
-          if (el.naturalWidth > 0 && el.naturalHeight > 0) rememberImageDims(url, el.naturalWidth, el.naturalHeight)
+          if (el.naturalWidth > 0 && el.naturalHeight > 0) rememberImageDims(resolvedUrl, el.naturalWidth, el.naturalHeight)
           setLoaded(true)
         }}
         onError={() => {
-          if (attempt + 1 < candidateUrls.length) setAttempt(attempt + 1)
-          else setErrored(true)
+          // The file as written first (and, in a previewed file, the
+          // directories above it); only once every on-disk candidate failed
+          // does the durable copy registered at finalize time get a turn.
+          if (artifactAttempt < 0 && attempt + 1 < candidateUrls.length) {
+            setAttempt(attempt + 1)
+          } else if (artifactAttempt + 1 < artifactCandidates.length) {
+            setLoaded(false)
+            setArtifactAttempt(artifactAttempt + 1)
+          } else {
+            setErrored(true)
+          }
         }}
         {...props}
         // Where boxes can be drawn, a press-and-drag on the image draws one, so

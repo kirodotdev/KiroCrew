@@ -625,6 +625,11 @@ export interface ContentBlock {
   complete: boolean
   /** 1-based line in the original raw source where this block starts. */
   startLine?: number
+  /** 0-based character offset in the original raw source where this block's
+   * text begins (markdown blocks only). Exact, including a block that starts
+   * mid-line after a same-line `</mcwidget>`; lets the renderer count
+   * `![…](` openers over the raw text the same way the backend does. */
+  startOffset?: number
   /** Set on a finalized fence whose closing delimiter never appeared. Its
    * content may include the rest of the reply, so it must stay visible. */
   unclosed?: boolean

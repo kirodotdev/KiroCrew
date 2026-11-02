@@ -1,25 +1,35 @@
 """Lookups and sweeps over every ``meta.json`` of an ``ArtifactStore``.
 
 The lookups by upstream artifact id (one and the batch index) and by source path, the
-kind migration, and the retention sweep of auto-registered widgets.
+kind migration, the retention sweep of auto-registered widgets, and the reap of
+auto-registered chat-image copies owned by permanently deleted sessions.
 
 Each function here is an ``ArtifactStore`` method: the class binds it by name, so it
 reads the store's own state on the instance, and a patch of the method on the class or
 on an instance reaches every caller.
 
-Instance fields read: ``_lock``.
+Instance fields read: ``_lock`` and ``_root``.
 Instance fields written: none.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterable, Iterator
 from typing import List as _List
 
-from kiro_crew.artifact_store.model import Artifact, ArtifactError, ArtifactNotFoundError
-from kiro_crew.artifact_store.rules import _markdown_misclassification_reason
-from kiro_crew.artifacts_disk import MAX_AUTO_WIDGET_ARTIFACTS
+from kiro_crew.artifact_store.model import (
+    Artifact,
+    ArtifactError,
+    ArtifactNotFoundError,
+    ArtifactValidationError,
+)
+from kiro_crew.artifact_store.rules import _markdown_misclassification_reason, _validate_slug
+from kiro_crew.artifacts_disk import (
+    MAX_AUTO_WIDGET_ARTIFACTS,
+    MAX_META_BYTES,
+    MAX_SESSION_KEY_CHARS,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.artifacts import ArtifactStore
@@ -27,6 +37,26 @@ if TYPE_CHECKING:
 #: The store's own logger, shared with :mod:`kiro_crew.artifacts`, so a log filter or
 #: capture keyed on that name sees this code's records.
 logger = logging.getLogger("kiro_crew.artifacts")
+
+#: Longest slug ``_SLUG_RE`` admits (its ``{0,78}`` body plus the two anchoring
+#: characters). Every slug the store WRITES passes ``_SLUG_RE``; this names the
+#: same bound for the one reader that retains slugs decoded straight from an
+#: agent-writable ``meta.json`` without re-validating them (``_iter_auto_images``).
+MAX_SLUG_CHARS = 80
+
+#: Bound on the artifact directories one session-image reap walks. The reap runs
+#: as a side effect of deleting a session, so it must not be the thing that
+#: takes the gateway down on a huge store: past this many entries the walk
+#: raises and the reap is skipped fail-closed (a leak, logged; never a crash).
+MAX_REAP_SCAN_ENTRIES = 200_000
+
+
+def _slug_well_formed(slug: str) -> bool:
+    try:
+        _validate_slug(slug)
+    except ArtifactValidationError:
+        return False
+    return True
 
 
 def _is_sweepable_auto_widget(self: ArtifactStore, art: Artifact) -> bool:
@@ -62,6 +92,21 @@ def _is_sweepable_auto_widget(self: ArtifactStore, art: Artifact) -> bool:
 
     A widget that is merely *rendered* is not claimed; a widget that was
     touched in any of the above ways is.
+    """
+    # Chat images are durable transcript assets, not rolling widget previews.
+    # Their lifecycle is the owning session; count-based pruning must never
+    # make a still-existing chat render a broken image.
+    if art.kind == "image":
+        return False
+    return self._is_unclaimed_auto_artifact(art)
+
+
+def _is_unclaimed_auto_artifact(self: ArtifactStore, art: Artifact) -> bool:
+    """True when ``art`` is auto-registered and carries NO investment signal.
+
+    The single spelling of the "nobody has claimed this" test, shared by the
+    widget sweep and the per-session image reap so the two can never drift.
+    The signals are documented on :func:`_is_sweepable_auto_widget`.
     """
     if not art.auto_registered or art.pinned:
         return False
@@ -364,3 +409,144 @@ def find_by_source_path(self: ArtifactStore, source_path: str) -> Artifact | Non
         if art.source_path == source_path:
             return art
     return None
+
+
+def auto_image_slugs(self: ArtifactStore) -> dict[str, str]:
+    """Every auto-registered image copy in the store right now: ``{slug: owner}``.
+
+    A reap snapshots this BEFORE it decides which sessions are live, then
+    deletes only slugs from the snapshot (``delete_auto_images_for_sessions(
+    only_slugs=...)``): a session recreated under a deleted key after the
+    snapshot registers copies whose slugs are not in it, so they are not that
+    reap's to take, with no clock involved.
+    """
+    return {art.slug: art.session_key for art in self._iter_auto_images() if art.session_key}
+
+
+def _iter_auto_images(self: ArtifactStore) -> Iterator[Artifact]:
+    """Walk the store incrementally, yielding auto-registered image copies.
+
+    Nothing is materialized store-wide: the directory listing is consumed
+    lazily and each ``meta.json`` is read and either yielded or dropped. The
+    walk is bounded by :data:`MAX_REAP_SCAN_ENTRIES` directory entries and
+    raises :class:`ArtifactError` past it, so the reap that drives it aborts
+    instead of growing without bound; an unreadable meta is skipped. The two
+    fields a caller retains per entry, ``slug`` and ``session_key``, are
+    bounded HERE as well, at the point of retention, and so is the record
+    they are decoded from: the store directory is agent-writable, so a
+    ``meta.json`` over :data:`MAX_META_BYTES` (sized before it is read,
+    and read through a bounded descriptor in any case) or a record carrying
+    an over-long slug or owner aborts the walk the same way an over-long
+    listing does. The write door (``create_image``) refuses such owners,
+    so a conforming store never trips this.
+    """
+    if not self._root.exists():
+        return
+    seen = 0
+    for child in self._root.iterdir():
+        seen += 1
+        if seen > MAX_REAP_SCAN_ENTRIES:
+            raise ArtifactError(
+                f"artifact store holds more than {MAX_REAP_SCAN_ENTRIES} entries; "
+                "session image reap aborted"
+            )
+        meta = child / "meta.json"
+        try:
+            if not child.is_dir() or not meta.exists():
+                continue
+            oversized = meta.stat().st_size > MAX_META_BYTES
+        except OSError:
+            continue
+        if oversized:
+            raise ArtifactError(
+                f"artifact store holds a meta.json over {MAX_META_BYTES} bytes; "
+                "session image reap aborted"
+            )
+        try:
+            art = self._read_meta_file(meta)
+        except (ArtifactError, OSError, ValueError):
+            continue
+        if art.kind == "image" and art.auto_registered:
+            if len(art.slug) > MAX_SLUG_CHARS or len(art.session_key or "") > MAX_SESSION_KEY_CHARS:
+                raise ArtifactError(
+                    f"artifact store holds an auto-image record with a slug over "
+                    f"{MAX_SLUG_CHARS} chars or an owner over {MAX_SESSION_KEY_CHARS} "
+                    "chars; session image reap aborted"
+                )
+            # The slug is agent-writable too, and the reap turns it into a
+            # directory to remove: a record whose slug is not a well-formed
+            # slug, or does not name the directory it was read from (".",
+            # a sibling's slug), is never retained.
+            if not _slug_well_formed(art.slug) or art.slug != child.name:
+                continue
+            yield art
+
+
+def delete_auto_images_for_sessions(
+    self: ArtifactStore, session_keys: set[str], *, only_slugs: set[str] | None = None
+) -> int:
+    """Delete untouched chat-image copies owned by permanently deleted sessions.
+
+    Saved/invested images survive: pinning, filing, publishing, editing,
+    describing, tagging, forking, or commenting turns an automatic transcript
+    copy into a user-owned artifact. The eligibility re-check and removal share
+    one lock acquisition so a concurrent pin cannot be overwritten.
+
+    ``only_slugs`` bounds the GENERATION being reaped to an exact set of slugs
+    the caller snapshotted (:func:`auto_image_slugs`) before it decided who is
+    live; a copy outside that set was registered after the decision and is
+    kept whatever its owner says.
+    """
+    keys = {key for key in session_keys if key}
+    if not keys:
+        return 0
+
+    def eligible(art: Artifact) -> bool:
+        if only_slugs is not None and art.slug not in only_slugs:
+            return False
+        if not _slug_well_formed(art.slug):
+            return False
+        return (
+            art.kind == "image"
+            and art.session_key in keys
+            and self._is_unclaimed_auto_artifact(art)
+        )
+
+    # With a snapshot the candidates are exactly its slugs, loaded one by
+    # one. Without one the store is walked incrementally under the reap
+    # bound and the walk completes BEFORE the first delete, so an overflow
+    # aborts with nothing reaped rather than half a generation gone. Only
+    # eligible copies are retained from the walk, never the whole store.
+    candidates: Iterable[Artifact]
+    if only_slugs is not None:
+        candidates = self._load_each(sorted(only_slugs))
+    else:
+        candidates = [art for art in self._iter_auto_images() if eligible(art)]
+
+    deleted = 0
+    for art in candidates:
+        if not eligible(art):
+            continue
+        try:
+            with self._lock:
+                fresh = self._load_meta(art.slug)
+                if not eligible(fresh):
+                    continue
+                adir = self._artifact_dir(art.slug)
+                if not adir.exists():
+                    continue
+                self._rmtree(adir)
+        except (ArtifactNotFoundError, ArtifactError, OSError) as exc:
+            logger.warning("session image cleanup skipped %s: %s", art.slug, exc)
+            continue
+        self._fire_change("delete", art.slug)
+        deleted += 1
+    return deleted
+
+
+def _load_each(self: ArtifactStore, slugs: Iterable[str]) -> Iterator[Artifact]:
+    for slug in slugs:
+        try:
+            yield self._load_meta(slug)
+        except (ArtifactError, OSError, ValueError):
+            continue

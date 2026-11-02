@@ -366,7 +366,7 @@ from kiro_crew.hooks import (  # noqa: F401
     safe_read_file,
     validate_file_path,
 )
-from kiro_crew.image_artifacts import register_images_off_loop
+from kiro_crew.image_artifacts import register_images_off_loop, track_registration
 from kiro_crew.llm_helpers import (  # noqa: F401
     TRANSIENT_RETRIES,
     PromptBusyExhaustedError,

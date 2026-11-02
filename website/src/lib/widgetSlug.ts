@@ -50,6 +50,19 @@ export function deriveWidgetBodySlug(messageTs: string, body: string): string {
 }
 
 /**
+ * Derive the ORDINAL-keyed slug: `${messageTs}#${index}` through the same hash.
+ *
+ * Widgets are keyed on their body (above). This form exists for chat image
+ * artifacts, whose identity is the image's 0-based ordinal in the message
+ * (see `imageArtifactSlug.ts`), and must match the backend's
+ * `kiro_crew.widget_slug.derive_widget_slug`.
+ */
+export function deriveIndexSlug(messageTs: string, index: number): string {
+  const [h1, h2] = fnvPair(`${messageTs}#${index}`)
+  return hexFromUint32(h1) + hexFromUint32(h2)
+}
+
+/**
  * Pick the effective slug for a widget impression — explicit attribute wins;
  * otherwise derive from message timestamp and body. A derived-slug hit implies
  * content equality. Identical bodies in one message deliberately share a slug.

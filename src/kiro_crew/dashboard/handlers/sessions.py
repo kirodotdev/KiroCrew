@@ -126,6 +126,22 @@ if TYPE_CHECKING:
         _remove_session_crew_logs,
         _remove_slot_for_history_key,
     )
+    from kiro_crew.dashboard.handlers.sessions_parts.image_reap import (  # noqa: F401
+        _DEFERRED_REAP_WAIT_SECS,
+        _DEFERRED_REAPS,
+        _ancestors,
+        _fork_lineage,
+        _ForkLineage,
+        _image_artifact_session_keys,
+        _image_reap_set,
+        _live_session_keys,
+        _metadata_line_within_bound,
+        _reap_session_images,
+        _staged_fork_lineage,
+        _staged_transcript_lineage,
+        _transcript_stems_on_disk,
+        with_staged_lineage,
+    )
     from kiro_crew.dashboard.handlers.sessions_parts.delete_routes import (  # noqa: F401
         _claim_history_delete,
         _clear_history_rows,
@@ -187,7 +203,9 @@ if TYPE_CHECKING:
     from kiro_crew.cron import CronStoreBusy  # noqa: F401
     from kiro_crew.cron import CronStoreUnreadable  # noqa: F401
     from kiro_crew.cron import cron_owner_matches  # noqa: F401
+    from kiro_crew.artifacts import get_default_store  # noqa: F401
     from kiro_crew.dashboard import directive_queue  # noqa: F401
+    from kiro_crew.dashboard import fork_lineage  # noqa: F401
     from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
     from kiro_crew.dashboard.chat_utils import effective_session_key  # noqa: F401
     from kiro_crew.dashboard.chat_utils import slot_history_key  # noqa: F401
@@ -207,6 +225,8 @@ if TYPE_CHECKING:
     from kiro_crew.history import transcript_lock_stems  # noqa: F401
     from kiro_crew.history import transcript_stem  # noqa: F401
     from kiro_crew.history import transcript_stems  # noqa: F401
+    from kiro_crew.image_artifacts import drain_registrations  # noqa: F401
+    from kiro_crew.session_storage import staged_transcript_lineage  # noqa: F401
     from kiro_crew.history import transcript_withholds_derivation  # noqa: F401
     from kiro_crew.kiro_cli import chat_agent_engines_at  # noqa: F401
     from kiro_crew.kiro_cli import pin_kiro_cli  # noqa: F401
@@ -1708,6 +1728,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.sessions_parts.summaries",
     "kiro_crew.dashboard.handlers.sessions_parts.delete_claim",
     "kiro_crew.dashboard.handlers.sessions_parts.slot_teardown",
+    "kiro_crew.dashboard.handlers.sessions_parts.image_reap",
     "kiro_crew.dashboard.handlers.sessions_parts.delete_routes",
     "kiro_crew.dashboard.handlers.sessions_parts.live_turn",
     "kiro_crew.dashboard.handlers.sessions_parts.tool_policy",

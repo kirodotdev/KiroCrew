@@ -668,14 +668,14 @@ class TestAssetReadHardening:
         seen: dict[str, bool] = {}
         original = store._read_image_asset_bytes
 
-        def _spy(path: Path) -> bytes:
+        def _spy(path: Path, **kw: object) -> bytes:
             # The lock must be free at read time: acquiring it here would
             # deadlock if it were still held by the caller.
             acquired = store._lock.acquire(blocking=False)
             seen["lock_free"] = acquired
             if acquired:
                 store._lock.release()
-            return original(path)
+            return original(path, **kw)
 
         store._read_image_asset_bytes = _spy  # type: ignore[method-assign]
         try:

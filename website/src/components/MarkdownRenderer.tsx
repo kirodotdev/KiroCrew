@@ -30,6 +30,7 @@ import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
 import SegmentedControl from './SegmentedControl'
 import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
+import { buildImageOrdinalMap } from '../lib/imageArtifactSlug'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
 import { parseSourceLinkUrl, forgeChipLabel, type PullRequestLink } from '../utils/pullRequestLinks'
@@ -68,6 +69,8 @@ import { i18nT } from '../i18n/t'
 import { toDate } from '../i18n/format'
 import {
   CompactImagesCtx,
+  ImageOrdinalsCtx,
+  ImageSessionCtx,
   ImageVersionCtx,
   InsideLinkCtx,
   LinkOverrideCtx,
@@ -77,6 +80,8 @@ import {
   ParagraphNoticeSlotCtx,
   PathActionCtx,
   PathProbeCtx,
+  RawBlockSpanCtx,
+  RawMessageCtx,
   ReadOnlyCodeCtx,
   SessionActionCtx,
   type InsideLink,
@@ -104,7 +109,7 @@ import { guideUntrusted } from '../guide/guideMarkers'
 
 export { artifactSlugFromHref, soleLinkInParagraph, unfurlableHref } from './markdown/linkTargets'
 export { isPathCandidate, splitLineRef } from './markdown/pathReferences'
-export { BasePathCtx, CompactImagesCtx, ImageVersionCtx, LinkOverrideCtx, LinkUnfurlCtx, MdSourceCtx } from './markdown/contexts'
+export { BasePathCtx, CompactImagesCtx, ImageOrdinalsCtx, ImageSessionCtx, ImageVersionCtx, LinkOverrideCtx, LinkUnfurlCtx, MdSourceCtx, RawBlockSpanCtx, RawMessageCtx } from './markdown/contexts'
 export type { LinkOverride, LinkUnfurl } from './markdown/contexts'
 export { MERMAID_FONTS_READY_CAP_MS } from './markdown/MermaidBlock'
 export { COPIED_FLASH_MS, COPY_FAILED_FLASH_MS } from './markdown/copyFeedback'
@@ -835,7 +840,7 @@ function deferIncompleteStreamingTable(content: string): string {
 
 const noSubscribe = () => () => {}
 
-const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, unfurl, markers }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; markers?: RedactionMarkers }) {
+const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, unfurl, markers, rawStart }: { content: string; sourcePos?: boolean; startLine?: number; rawStart?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; markers?: RedactionMarkers }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const textPreviews = useContext(TextPreviewsCtx) > 0 && !sourcePos
   // Declared before the early return below — Rules of Hooks.
@@ -849,6 +854,12 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   const unfurlCtx = useMemo<LinkUnfurl>(
     () => ({ enabled: !!unfurl && !sourcePos, live: !!live }),
     [unfurl, sourcePos, live],
+  )
+  // This block's span in the raw message (block content is a verbatim slice of
+  // the raw text, so its length is the span length). See RawBlockSpanCtx.
+  const rawSpan = useMemo(
+    () => (rawStart != null ? { start: rawStart, end: rawStart + content.length } : null),
+    [rawStart, content],
   )
   // Strip any <mcwidget> or <tool_use> tags that leak through during
   // streaming transitions or when the agent emits protocol markup as text.
@@ -916,11 +927,13 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   // sourcePos mode together.
   const prepared = sourcePos ? fenced : fixCjkAutolinkBoundaries(fixUnencodedLinkDestinations(fenced))
   const md = (
+    <RawBlockSpanCtx.Provider value={rawSpan}>
     <MdSourceCtx.Provider value={prepared}>
       <ReactMarkdown remarkPlugins={textPreviews ? (softBreaks ? REMARK_PLUGINS_WITH_BREAKS_TEXT_PREVIEWS : REMARK_PLUGINS_TEXT_PREVIEWS) : (softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS)} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
         {prepared}
       </ReactMarkdown>
     </MdSourceCtx.Provider>
+    </RawBlockSpanCtx.Provider>
   )
   const body = sourcePos
     ? <div data-block-start={startLine ?? 1}><MdBlockStartCtx.Provider value={startLine ?? 1}>{md}</MdBlockStartCtx.Provider></div>
@@ -1130,11 +1143,11 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       // `live` = this block is the streaming tail (see MarkdownRenderer). ORed
       // with the block's own `complete` flag so a provisional block is treated
       // as live too, whatever produced it.
-      return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} live={!block.complete || !!live} unfurl={unfurl} markers={markers} />
+      return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} live={!block.complete || !!live} unfurl={unfurl} markers={markers} rawStart={block.startOffset} />
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, textPreviews = false, textPreviewsPaused = false, collapseDiffs = false, mdCardToggle = false, runYourselfCards, readOnlyCode = false, blockedLinks, redactions, redactionCoach = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: wrap text an enabled app's `contributes.linkPreviews[].textPatterns` match in a hoverable span. */ textPreviews?: boolean; /** With `textPreviews`: keep the chat scope but scan nothing yet. A streaming reply passes it so each frame's growing tail is not queued as new text (the scan cache is bounded); the final text is scanned once. */ textPreviewsPaused?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean; /** Assistant chat turns only: draw a closed ```run-yourself fence as the run-it-yourself card (RunYourselfCard). Off everywhere else, so text from outside the agent (an issue, a PR, a skill description) cannot pass as the agent's own hand-over; there the fence is a plain code block. */ runYourselfCards?: boolean; /** Render fenced code with the plain CodeBlock (copy only) instead of EditableCodeBlock. For content the reader must not be able to alter in place -- an approval's command beside its Approve control. */ readOnlyCode?: boolean; /** Raw `meta.blocked_links` off the assistant message — the step-3 suspicious-URL records this message's redaction placeholders render from. Validated here; absent/malformed leaves every placeholder as plain text. */ blockedLinks?: unknown; /** Raw `meta.redactions` off the assistant message: one record per credential placeholder, validated here. */ redactions?: unknown; /** This reply is the session's first with removed values: show the one-time coach after its first such block. */ redactionCoach?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, imageSource, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, textPreviews = false, textPreviewsPaused = false, collapseDiffs = false, mdCardToggle = false, runYourselfCards, readOnlyCode = false, blockedLinks, redactions, redactionCoach = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; /** The message text EXACTLY as the transcript stores it, when `content` is a derived rendering of it (protocol markers stripped, a streaming prefix). The durable-image fallback numbers images the way the backend numbered them over this string; without it `content` is assumed to be the stored text. */ imageSource?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: wrap text an enabled app's `contributes.linkPreviews[].textPatterns` match in a hoverable span. */ textPreviews?: boolean; /** With `textPreviews`: keep the chat scope but scan nothing yet. A streaming reply passes it so each frame's growing tail is not queued as new text (the scan cache is bounded); the final text is scanned once. */ textPreviewsPaused?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean; /** Assistant chat turns only: draw a closed ```run-yourself fence as the run-it-yourself card (RunYourselfCard). Off everywhere else, so text from outside the agent (an issue, a PR, a skill description) cannot pass as the agent's own hand-over; there the fence is a plain code block. */ runYourselfCards?: boolean; /** Render fenced code with the plain CodeBlock (copy only) instead of EditableCodeBlock. For content the reader must not be able to alter in place -- an approval's command beside its Approve control. */ readOnlyCode?: boolean; /** Raw `meta.blocked_links` off the assistant message — the step-3 suspicious-URL records this message's redaction placeholders render from. Validated here; absent/malformed leaves every placeholder as plain text. */ blockedLinks?: unknown; /** Raw `meta.redactions` off the assistant message: one record per credential placeholder, validated here. */ redactions?: unknown; /** This reply is the session's first with removed values: show the one-time coach after its first such block. */ redactionCoach?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // One message = one config-rule scan pool. The blocks below each mount their
   // OWN remark tree, so the rearm cannot live at the plugin's tree entry — a
@@ -1272,6 +1285,25 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     [onSessionOpen, sessions, activeSession, messageTs],
   )
 
+  // Destination -> ordinal for every direct image in the RAW message: the same
+  // string the backend's IMAGE_MD_RE scans when it registers image artifacts,
+  // numbered the same way. That string is `imageSource` when the caller renders
+  // a DERIVED text (AssistantMessage strips option and steering markers and
+  // smooths a streaming prefix, and a stripper can eat an `![alt]` opener, which
+  // would shift every later ordinal by one and resolve the neighbouring image's
+  // copy). Built once per message and read by ImgWithFallback. Must run before
+  // any conditional return (Rules of Hooks).
+  const imageOrdinalSource = imageSource ?? content
+  const imageOrdinals = useMemo(
+    () => (messageTs ? buildImageOrdinalMap(imageOrdinalSource) : null),
+    [imageOrdinalSource, messageTs],
+  )
+  // The same-destination cross-check compares block offsets in `content` against
+  // opener offsets in the stored text, so it is only meaningful when the two are
+  // the same string; a derived rendering gets no raw message, and a destination
+  // that appears more than once then gets no fallback rather than a guess.
+  const imageRawMessage = imageOrdinals && imageOrdinalSource === content ? content : null
+
   // Index of the last markdown block — the streaming tail that gets the glow
   // (only when `glow` is set). -1 if the message ends in a non-markdown block.
   const lastMarkdownIdx = useMemo(() => {
@@ -1408,6 +1440,9 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
           the scoping on the wrapper div above is unaffected. */}
       <TextPreviewsCtx.Provider value={scanText ? textPatternGen + 1 : 0}>
       <RedactionProvider credentials={credentialRecords} blockedLinks={blockedRecords} slotKey={slotKey} replyKey={replyKey} messageTs={messageTs} coached={redactionCoach && credentialRecords.length > 0}>
+      <ImageOrdinalsCtx.Provider value={imageOrdinals}>
+      <RawMessageCtx.Provider value={imageRawMessage}>
+      <ImageSessionCtx.Provider value={slotKey ?? null}>
         {blocks.map((block, i) => (
           // Key on startLine (stable across streaming) instead of block.type, so
           // a code -> diff reclassification mid-stream doesn't unmount the
@@ -1439,6 +1474,9 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             markers={blockMarkers[i]}
           />
         ))}
+      </ImageSessionCtx.Provider>
+      </RawMessageCtx.Provider>
+      </ImageOrdinalsCtx.Provider>
       </RedactionProvider>
       </TextPreviewsCtx.Provider>
       </ImageVersionCtx.Provider>

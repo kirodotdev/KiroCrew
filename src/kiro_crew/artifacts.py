@@ -148,6 +148,8 @@ from kiro_crew.artifacts_disk import (  # noqa: F401 - facade surface
     MAX_COMMENTS_PER_ARTIFACT,
     MAX_CONTENT_BYTES,
     MAX_EVENTS_PER_ARTIFACT,
+    MAX_META_BYTES,
+    MAX_SESSION_KEY_CHARS,
     MAX_VERSIONS,
     _fence_refusal,
     _fence_refuses,
@@ -156,9 +158,15 @@ from kiro_crew.artifacts_disk import (  # noqa: F401 - facade surface
     _open_pinned_for_read,
     _owner_only_tmp_opener,
     _prepare_store_write,
+    _SidecarIdentity,
+    _stat_identity,
     _sync_before_publish,
     _validate_content,
     _write_tmp_then_publish,
+)
+from kiro_crew.artifacts_scans import (  # noqa: F401 - facade surface
+    MAX_REAP_SCAN_ENTRIES,
+    MAX_SLUG_CHARS,
 )
 from kiro_crew.config.loader import KiroCrewConfig, config_dir  # noqa: F401 - facade surface
 from kiro_crew.constants import ARTIFACT_MAX_CONTENT_BYTES  # noqa: F401 - facade surface
@@ -391,6 +399,8 @@ class ArtifactStore:
     _write_text = _artifacts_disk._write_text
     _read_bytes = _artifacts_disk._read_bytes
     _read_image_asset_bytes = _artifacts_disk._read_image_asset_bytes
+    _sidecar_identity = staticmethod(_artifacts_disk._sidecar_identity)
+    _read_pinned_sidecar = staticmethod(_artifacts_disk._read_pinned_sidecar)
     _refuse_write_outside_root = _artifacts_disk._refuse_write_outside_root
     _write_bytes = _artifacts_disk._write_bytes
     _prune_versions = _artifacts_disk._prune_versions
@@ -442,6 +452,17 @@ class ArtifactStore:
         routed through the gated :meth:`_read_bytes` so the sensitive-path
         denylist fires here as on every other store read.
         """
+        data, mime, _owner = self.read_image_bytes_with_owner(slug)
+        return data, mime
+
+    def read_image_bytes_with_owner(self, slug: str) -> tuple[bytes, str, str]:
+        """``(bytes, mime, session_key)`` from ONE metadata snapshot.
+
+        The owner is read under the same lock that resolves the asset path, so a
+        caller authorizing by session compares against the record whose bytes it
+        then serves — a delete/recreate of the slug between two separate reads
+        cannot pair one record's owner with another record's bytes.
+        """
         slug = _validate_slug(slug)
         with self._lock:
             meta = self._load_meta(slug)
@@ -463,11 +484,26 @@ class ArtifactStore:
             if not asset.exists():
                 raise ArtifactNotFoundError(f"image asset missing for {slug!r}")
             mime = norm_mime
+            owner = meta.session_key or ""
+            # The record's digest, captured with the owner: the bytes served
+            # must be the ones this record describes (see
+            # ``_read_image_asset_bytes``), not merely the pinned inode's.
+            digest = (meta.image.sha256 or "").strip().lower()
+            # Pin the sidecar's inode WHILE the metadata is locked: the bytes are
+            # read after the lock is released (an asset can be tens of MiB), and a
+            # delete + recreate of this slug in that window would otherwise pair
+            # the owner captured here with another record's bytes. The read below
+            # authorizes the descriptor it actually opened against this identity.
+            identity = self._sidecar_identity(asset)
+            if identity is None:
+                raise ArtifactNotFoundError(f"image asset is not readable: {asset.name}")
         # Read OUTSIDE the lock: an asset can be tens of MiB, and holding the
         # store-wide lock across it would block every concurrent artifact
         # operation for the duration of the read. The path was resolved under
-        # the lock and an image artifact's bytes are never rewritten in place.
-        return self._read_image_asset_bytes(asset), mime
+        # the lock and an image artifact's bytes are never rewritten in place;
+        # the identity check refuses a sidecar swapped in since.
+        data = self._read_image_asset_bytes(asset, identity=identity, sha256=digest)
+        return data, mime, owner
 
     def get(self, slug: str, *, version: int | None = None, assign_token: bool = False) -> Artifact:
         """Return an artifact (with content) by slug, optionally a specific version.
@@ -637,6 +673,11 @@ class ArtifactStore:
 
     # Lookups and sweeps over every ``meta.json``: ``kiro_crew.artifacts_scans``.
     _is_sweepable_auto_widget = _artifacts_scans._is_sweepable_auto_widget
+    _is_unclaimed_auto_artifact = _artifacts_scans._is_unclaimed_auto_artifact
+    auto_image_slugs = _artifacts_scans.auto_image_slugs
+    _iter_auto_images = _artifacts_scans._iter_auto_images
+    delete_auto_images_for_sessions = _artifacts_scans.delete_auto_images_for_sessions
+    _load_each = _artifacts_scans._load_each
     prune_auto_widgets = _artifacts_scans.prune_auto_widgets
     migrate_kinds = _artifacts_scans.migrate_kinds
     find_by_artifact_id = _artifacts_scans.find_by_artifact_id

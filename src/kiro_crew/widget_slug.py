@@ -72,12 +72,13 @@ def derive_widget_slug(message_ts: str, widget_index: int) -> str:
     ``message_ts`` is the parent message's timestamp (any stable string id);
     ``widget_index`` is the 0-based ordinal within that message.
 
-    This ordinal form is backend-only: its sole consumer is
+    This ordinal form is used by image artifacts only: its backend consumer is
     ``image_artifacts._derive_image_slug``, which seeds ``message_ts`` with a
-    ``"<ts>#image"`` namespace. It has no counterpart in
-    ``website/src/lib/widgetSlug.ts``. Widget identity is keyed on the body via
-    :func:`derive_widget_body_slug`, which must match ``deriveWidgetBodySlug``
-    on the TS side.
+    ``"<ts>#image"`` namespace, and its counterpart is ``deriveIndexSlug`` in
+    ``website/src/lib/widgetSlug.ts`` (consumed by ``imageArtifactSlug.ts`` so
+    the transcript can name the same copy). Widget identity is keyed on the
+    body via :func:`derive_widget_body_slug`, which must match
+    ``deriveWidgetBodySlug`` on the TS side.
     """
     h1, h2 = _fnv_pair(f"{message_ts}#{widget_index}")
     return f"{h1:08x}{h2:08x}"

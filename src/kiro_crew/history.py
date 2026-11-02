@@ -125,6 +125,8 @@ from kiro_crew.history_files import (  # noqa: F401 - facade re-exports
     ARCHIVE_DIR_NAME,
     ARCHIVE_RETENTION_DAYS,
     ARCHIVE_SEGMENT_DELIMITER,
+    MAX_TRANSCRIPT_DIRECTORY_ENTRIES,
+    MAX_TRANSCRIPT_STEM_CHARS,
     SESSIONS_DIR_NAME,
     CacheIdentity,
     _archive_dir,
@@ -142,6 +144,7 @@ from kiro_crew.history_files import (  # noqa: F401 - facade re-exports
     transcript_lock_stems,
     transcript_stem,
     transcript_stems,
+    transcript_stems_on_disk,
 )
 from kiro_crew.history_locks import (  # noqa: F401 - facade re-exports
     _FLOCK_ACQUIRE_TIMEOUT_S,
@@ -727,6 +730,11 @@ class ConversationLog:
 
     def newest_session_stems(self, max_entries: int) -> tuple[list[tuple[str, float]], bool]:
         return self._catalog_projection.newest_session_stems(max_entries)
+
+    def transcript_stems_on_disk(self) -> set[str]:
+        """Stems of every ``*.jsonl`` in the transcript directory, by name alone
+        (see :func:`kiro_crew.history_files.transcript_stems_on_disk`)."""
+        return transcript_stems_on_disk(self._dir)
 
     def agent_usage(self) -> dict[str, tuple[int, float]]:
         return self._catalog_projection.agent_usage()

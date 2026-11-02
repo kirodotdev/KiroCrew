@@ -10,8 +10,8 @@ import { OPTION_MARKER_PATTERN_SOURCE } from '../app-sdk/protocol/optionMarker'
 
 // Mock MarkdownRenderer to avoid complex markdown parsing in tests
 vi.mock('../components/MarkdownRenderer', () => ({
-  default: ({ content, blockedLinks }: { content: string; blockedLinks?: unknown }) => (
-    <div data-testid="md" data-blocked-links={JSON.stringify(blockedLinks ?? null)}>{content}</div>
+  default: ({ content, blockedLinks, messageTs, imageSource }: { content: string; blockedLinks?: unknown; messageTs?: string; imageSource?: string }) => (
+    <div data-testid="md" data-blocked-links={JSON.stringify(blockedLinks ?? null)} data-message-ts={messageTs} data-image-source={imageSource}>{content}</div>
   ),
 }))
 // Mock useSmoothStream to passthrough — its rAF loop conflicts with vi.useFakeTimers()
@@ -260,6 +260,34 @@ describe('AssistantMessage', () => {
     expect(screen.getByTestId('md').dataset.blockedLinks).toBe(JSON.stringify(rowRecords))
     fireEvent.click(screen.getByTitle('Previous version'))
     expect(screen.getByTestId('md').dataset.blockedLinks).toBe(JSON.stringify(v1Records))
+  })
+
+  it('hands the renderer the stored message text beside the stripped rendering', () => {
+    // Image ordinals are numbered by the backend over the STORED text; the
+    // rendered text has had its option marker stripped, so the two differ and
+    // the renderer must be told which one the numbering came from.
+    const stored = 'pick one\n\n![shot](/tmp/shot.png)\n\n[OPTIONS: a | b]'
+    render(<AssistantMessage content={stored} isStreaming={false} messageTs="ts-1" />)
+    const md = screen.getByTestId('md')
+    expect(md.textContent).not.toContain('[OPTIONS:')
+    expect(md.dataset.imageSource).toBe(stored)
+  })
+
+  it('keys the rendered markdown to the ts of the variant being shown', () => {
+    // Images are cache-busted and fall back to durable copies by message ts;
+    // a regenerated reply registers its own copies under its own ts, so an
+    // older variant must render with ITS ts, not the active variant's.
+    const variants = [{ content: 'v1', ts: 'ts-1' }, { content: 'v2', ts: 'ts-2' }]
+    render(<AssistantMessage content="v2" isStreaming={false} variants={variants} variantIdx={1} messageTs="ts-2" />)
+    expect(screen.getByTestId('md')).toHaveAttribute('data-message-ts', 'ts-2')
+    fireEvent.click(screen.getByTitle('Previous version'))
+    expect(screen.getByTestId('md')).toHaveTextContent('v1')
+    expect(screen.getByTestId('md')).toHaveAttribute('data-message-ts', 'ts-1')
+    // A variant without its own ts falls back to the message's.
+    cleanup()
+    render(<AssistantMessage content="v2" isStreaming={false} variants={[{ content: 'v1' }, { content: 'v2', ts: 'ts-2' }]} variantIdx={1} messageTs="ts-2" />)
+    fireEvent.click(screen.getByTitle('Previous version'))
+    expect(screen.getByTestId('md')).toHaveAttribute('data-message-ts', 'ts-2')
   })
 
   it('calls onSwitchVariant for last message but uses local state for older messages', () => {

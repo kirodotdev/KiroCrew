@@ -92,8 +92,10 @@ from kiro_crew.session_storage_parts.batch_manifest import (  # noqa: F401
     _read_manifest,
     _rels_digest,
     _rewrite_manifest,
+    _stream_manifest_entries,
     _summarize_manifest,
     _sync_batch,
+    _UnreadableManifest,
     _write_header,
 )
 from kiro_crew.session_storage_parts.batch_removal import (  # noqa: F401
@@ -161,6 +163,19 @@ from kiro_crew.session_storage_parts.pinned_delete import (  # noqa: F401
     _scan_tree,
     _stage_batch_by_name,
     _unlink_debris,
+)
+from kiro_crew.session_storage_parts.staged_lineage import (  # noqa: F401
+    _META_LINE_CAP,
+    _UNIT_ID_MAX_CHARS,
+    MAX_STAGED_LINEAGE_TRANSCRIPTS,
+    _entry_rels,
+    _read_lineage_meta,
+    _retain_staged_lineage,
+    _retain_stem,
+    _staged_transcript_stem,
+    batch_is_gone,
+    staged_transcript_lineage,
+    staged_transcript_stems,
 )
 from kiro_crew.session_storage_parts.store_inventory import (  # noqa: F401
     _SCAN_CACHE_TTL,
@@ -257,6 +272,7 @@ from kiro_crew.session_storage_parts.trash_restore import (  # noqa: F401
 #   ``batch_removal`` -- staged_targets, empty_trash, removing an emptied batch
 #   ``trash_reclaim`` -- move_to_trash
 #   ``trash_restore`` -- restore
+#   ``staged_lineage`` -- staged transcript stems and fork lineage, for the image reap
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.session_storage_parts.store_layout",
@@ -268,6 +284,7 @@ _OWNERS = (
     "kiro_crew.session_storage_parts.batch_removal",
     "kiro_crew.session_storage_parts.trash_reclaim",
     "kiro_crew.session_storage_parts.trash_restore",
+    "kiro_crew.session_storage_parts.staged_lineage",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -289,9 +306,17 @@ if TYPE_CHECKING:  # each kiro_crew name in _EXPORTS from its home, for type che
         kiro_sessions_dir,
         legacy_home,
     )
+    from kiro_crew.dashboard.fork_lineage import (  # noqa: F401
+        MAX_METADATA_LINE_BYTES,
+        UNPROVABLE,
+        parent_key,
+        recorded_chain,
+    )
     from kiro_crew.history import (  # noqa: F401
         ARCHIVE_DIR_NAME,
         ARCHIVE_SEGMENT_DELIMITER,
+        MAX_TRANSCRIPT_DIRECTORY_ENTRIES,
+        MAX_TRANSCRIPT_STEM_CHARS,
         SESSIONS_DIR_NAME,
         THREADS_DIR_NAME,
         THREADS_SIDECAR_SUFFIX,

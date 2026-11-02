@@ -30,6 +30,11 @@ from kiro_crew.dashboard.chat_utils import (
     history_corpus_unreadable,
     slot_history_key,
 )
+from kiro_crew.dashboard.fork_lineage import (
+    MAX_FORK_ANCESTORS,
+    ancestry_chain,
+    materialize_ancestors,
+)
 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.mate_folders import inherited_folder
@@ -555,6 +560,7 @@ def _shape_fork_child(
     jev_route_allowed: bool,
     folders: list[dict[str, Any]],
     folder_principal: str,
+    fork_ancestors: list[str] | None = None,
 ) -> None:
     """Copy onto the just-minted *new_slot* what it inherits from its parent *slot*.
 
@@ -567,6 +573,7 @@ def _shape_fork_child(
     ``slots`` frame already shows the folder, tags and fork title set here.
     """
     new_slot.forked_from = effective_session_key(slot)
+    new_slot.fork_ancestors = list(fork_ancestors or [])
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
@@ -1177,6 +1184,75 @@ async def fork_slot(
             str(getattr(slot, "agent_kind", "") or ""),
         )
 
+    forked_from_key = effective_session_key(slot)
+    # The FULL chain, so lineage stays provable after an intermediate fork is
+    # deleted (its own metadata goes with it). A source forked before the chain
+    # was recorded carries only `forked_from`; walk the catalog once from that
+    # parent so the new fork records every ancestor, not one link. The walk
+    # starts at the PARENT, not the source, because the source's live slot is
+    # authoritative for its own edge (it may never have been saved). A deleted
+    # ancestor ends the walk like a root, so a pre-upgrade fork whose source was
+    # deleted forks as it did before chains existed. See dashboard/fork_lineage.py.
+    # The walk suspends, so it runs BEFORE the child is minted: nothing is
+    # half-born while it is in flight, a refusal here has no slot to withdraw,
+    # and `get_or_create_slot` never schedules a user-session count for a fork
+    # that is then refused. Containment and the frozen source identity are
+    # re-asserted below, adjacent to the mint, as for every other suspension.
+    source_chain: list[str] | None = list(getattr(slot, "fork_ancestors", None) or [])
+    legacy_parent = getattr(slot, "forked_from", None)
+    if not source_chain and legacy_parent:
+        parent_chain: list[str] | None = []
+        if isinstance(legacy_parent, str) and state.conversation_log:
+            try:
+                parent_chain = await asyncio.to_thread(
+                    ancestry_chain, state.conversation_log, legacy_parent
+                )
+                # The walk suspended; re-assert the caller's containment answers
+                # and the frozen source identity before the chain is judged, so a
+                # source that moved meanwhile is refused with ITS code rather
+                # than as an unprovable ancestry.
+                if recheck is not None:
+                    recheck()
+                if not _source_identity_unchanged():
+                    raise UnknownMemoryStore(
+                        "The fork source changed before its history was copied"
+                    )
+            except (OSError, ValueError) as exc:
+                return _store_unavailable_response(source_memory_identity[2], exc)
+        source_chain = None if parent_chain is None else [legacy_parent, *parent_chain]
+        if source_chain is None:
+            # An ancestor's transcript EXISTS but cannot be read completely (an
+            # unreadable line, a record over the shared bounds): persisting the
+            # readable prefix would claim a complete ancestry the fork does not
+            # have, and every lineage reader would then trust it. Refuse instead.
+            # A DELETED ancestor is not this case: it ended the walk above.
+            return web.json_response(
+                {
+                    "error": "the source's fork ancestry cannot be read completely",
+                    "code": "fork_ancestry_unprovable",
+                },
+                status=422,
+            )
+    # `source_slot_key`: image copies are owned by the source TAB's `slot.key`,
+    # which differs from the effective session key for a linked session; the
+    # chain records both so the fork can still reach those copies.
+    materialized = materialize_ancestors(forked_from_key, source_chain, source_slot_key=slot.key)
+    if materialized is None or len(materialized) >= MAX_FORK_ANCESTORS:
+        # The chain could not be recorded whole (an entry — the source key
+        # included — over the shared bounds, or the whole chain over its
+        # serialized budget, so it could not fit the metadata line it is written
+        # into) or sits at the count bound, which `recorded_chain` reads back as
+        # UNPROVABLE: persisting it would mint a fork whose ancestry no reader
+        # can admit (asset owner check refused, images never reaped as its
+        # source's descendant). Refuse the fork instead, before it exists.
+        return web.json_response(
+            {
+                "error": "fork ancestry is at its bound; fork the root session instead",
+                "code": "fork_ancestry_over_bound",
+            },
+            status=422,
+        )
+
     try:
         inherited_store = inherited_execution.store.legacy_name
         inherited_memory_mode = inherited_execution.memory_mode
@@ -1252,6 +1328,7 @@ async def fork_slot(
                 jev_route_allowed=jev_route_allowed,
                 folders=_safe_folder_tree(state._folders),
                 folder_principal=folder_principal,
+                fork_ancestors=materialized,
             )
             if stamp is not None:
                 stamp(new_slot)

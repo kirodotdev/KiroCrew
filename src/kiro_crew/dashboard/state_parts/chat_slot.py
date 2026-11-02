@@ -272,6 +272,8 @@ class _ChatSlot:
         "_window_swap_applying",
         "_lock",
         "forked_from",
+        "fork_ancestors",
+        "fork_ancestors_unprovable",
         "_fork_lock",
         "_model_pick_lock",
         "_tab_id",
@@ -452,6 +454,8 @@ class _ChatSlot:
     _human_seen: bool
     _origin: str
     forked_from: str | None
+    fork_ancestors: list[str]
+    fork_ancestors_unprovable: bool
     _fork_lock: asyncio.Lock
     _model_pick_lock: asyncio.Lock
     _tab_id: str

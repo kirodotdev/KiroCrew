@@ -68,6 +68,7 @@ if TYPE_CHECKING:
         sel,
         sel_is_warm,
         telemetry_channel_of,
+        track_registration,
     )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _decisions_strip_meta
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
@@ -1006,6 +1007,8 @@ def _schedule_widget_registration(
         image_task = asyncio.create_task(register_images_off_loop(text, message_ts, slot.key))
         state._background_tasks.add(image_task)
         image_task.add_done_callback(state._background_tasks.discard)
+        # A permanent delete of this session drains this before reaping copies.
+        track_registration(slot.key, image_task)
 
 
 async def _turn_settle_answer(turn: _ChatTurn) -> None:

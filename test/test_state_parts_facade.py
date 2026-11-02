@@ -669,6 +669,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "executor": ("value", "'local'"),
     "folder_id": ("value", "''"),
     "forked_from": ("value", "None"),
+    "fork_ancestors": ("value", "[]"),
+    "fork_ancestors_unprovable": ("value", "False"),
     "instance_id": ("value", "''"),
     "jev_route": ("value", "False"),
     "key": ("value", "'k'"),

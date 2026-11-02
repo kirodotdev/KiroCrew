@@ -1,11 +1,65 @@
 import { describe, it, expect } from 'vitest'
-import { parseBlocks } from '../hooks/useBlockAssembler'
+import { parseBlocks, splitMarkdownBlocks } from '../hooks/useBlockAssembler'
 
 describe('parseBlocks', () => {
   it('parses plain markdown', () => {
     const blocks = parseBlocks('Hello **world**', false)
     expect(blocks).toHaveLength(1)
-    expect(blocks[0]).toEqual({ type: 'markdown', content: 'Hello **world**', complete: true, startLine: 1 })
+    expect(blocks[0]).toEqual({ type: 'markdown', content: 'Hello **world**', complete: true, startLine: 1, startOffset: 0 })
+  })
+
+  it('records the exact raw offset where each markdown block begins', () => {
+    const raw = [
+      'intro',                                        // 0..5
+      '```md',                                        // 6..11
+      'fenced',                                       // 12..18
+      '```',                                          // 19..22
+      '<mcwidget title="t"></mcwidget> tail-a',       // 23..
+      'plain',
+      '<mcwidget title="t">',
+      'body',
+      '</mcwidget>tail-b',
+    ].join('\n')
+    const md = parseBlocks(raw, false).filter(b => b.type === 'markdown')
+    expect(md.map(b => b.content)).toEqual(['intro', ' tail-a\nplain', 'tail-b'])
+    for (const b of md) {
+      // The offset points at the block's own first character in the raw text,
+      // including a block that starts mid-line after a same-line close tag.
+      expect(raw.slice(b.startOffset!, b.startOffset! + b.content.length)).toBe(b.content)
+    }
+    expect(md[0].startOffset).toBe(0)
+    expect(md[1].startOffset).toBe(raw.indexOf(' tail-a'))
+    expect(md[2].startOffset).toBe(raw.lastIndexOf('tail-b'))
+  })
+
+  it('keeps raw offsets exact after a closing fence glued to prose', () => {
+    // The glued text is re-read as its own line; only the closing run is
+    // consumed, so it and every later block keep their true offsets.
+    const raw = [
+      '```js',
+      'x',
+      '```![x](/tmp/a.png)',
+      '<mcwidget title="t">',
+      '```html',
+      'y',
+      '```![y](/tmp/b.png)',
+      '</mcwidget>',
+      'later ![x](/tmp/a.png)',
+    ].join('\n')
+    const md = parseBlocks(raw, false).filter(b => b.type === 'markdown')
+    expect(md.map(b => b.content)).toEqual(['![x](/tmp/a.png)', 'later ![x](/tmp/a.png)'])
+    for (const b of md) {
+      expect(raw.slice(b.startOffset!, b.startOffset! + b.content.length)).toBe(b.content)
+    }
+  })
+
+  it('gives each split paragraph piece its own raw offset', () => {
+    const raw = 'intro\n```\nc\n```\n![x](/tmp/a.png)\n\nSee again ![x](/tmp/a.png)\n\n\ntail'
+    const pieces = splitMarkdownBlocks(parseBlocks(raw, true)).filter(b => b.type === 'markdown')
+    expect(pieces.map(b => b.content)).toEqual(['intro', '![x](/tmp/a.png)', 'See again ![x](/tmp/a.png)', 'tail'])
+    for (const b of pieces) {
+      expect(raw.slice(b.startOffset!, b.startOffset! + b.content.length)).toBe(b.content)
+    }
   })
 
   it('parses a fenced code block', () => {

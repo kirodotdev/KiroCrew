@@ -196,13 +196,19 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
   let widgetFenceTick = ''
   let widgetFenceLen = 0  // raw backtick count of the widget's inner fence
   let mdStart = 1
+  let mdStartOffset = 0
   let codeStart = 1
   let widgetStart = 1
+  // Raw character offset of the start of line `i` — lines are split on '\n',
+  // so each line contributes its length plus the separator.
+  let lineOffset = 0
 
   const flushMd = () => {
     if (mdBuf.length === 0) return
     const text = mdBuf.join('\n')
-    if (text.trim()) blocks.push({ type: 'markdown', content: text, complete: true, startLine: mdStart })
+    if (text.trim()) {
+      blocks.push({ type: 'markdown', content: text, complete: true, startLine: mdStart, startOffset: mdStartOffset })
+    }
     mdBuf = []
   }
 
@@ -247,8 +253,13 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
     widgetFenceLen = 0
   }
 
-  const pushMd = (text: string, lineIdx: number) => {
-    if (mdBuf.length === 0) mdStart = lineIdx + 1
+  // `column` is where `text` begins within line `lineIdx` (0 for a whole line
+  // or a line prefix; the suffix start for text after a same-line close tag).
+  const pushMd = (text: string, lineIdx: number, column = 0) => {
+    if (mdBuf.length === 0) {
+      mdStart = lineIdx + 1
+      mdStartOffset = lineOffset + column
+    }
     mdBuf.push(text)
   }
 
@@ -281,7 +292,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
             widgetBuf.push(afterTag.slice(0, wClose.index))
             flushWidget(true)
             const afterClose = afterTag.slice(wClose.index + wClose[0].length)
-            if (afterClose) pushMd(afterClose, i)
+            if (afterClose) pushMd(afterClose, i, line.length - afterClose.length)
           } else {
             if (afterTag) widgetBuf.push(afterTag)
             state = 'widget'
@@ -346,7 +357,10 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
           state = 'outside'
           lines[i] = glued[2]
           i--
-          break
+          // Only the closing run was consumed; the re-read accounts for the
+          // glued text and its '\n'.
+          lineOffset += line.length - glued[2].length
+          continue
         }
         codeBuf.push(line)
         break
@@ -360,7 +374,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
           if (before) widgetBuf.push(before)
           flushWidget(true)
           const afterClose = line.slice(wClose.index + wClose[0].length)
-          if (afterClose) pushMd(afterClose, i)
+          if (afterClose) pushMd(afterClose, i, line.length - afterClose.length)
           state = 'outside'
           break
         }
@@ -391,12 +405,16 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
           state = 'widget'
           lines[i] = glued[2]
           i--
-          break
+          lineOffset += line.length - glued[2].length
+          continue
         }
         widgetBuf.push(line)
         break
       }
     }
+    // Every `break` above lands here: account for this line and its '\n'.
+    // (A glued-close re-read `continue`s past this after adding its prefix.)
+    lineOffset += line.length + 1
   }
 
   // End of input: flush any open state.
@@ -488,6 +506,16 @@ function splitParagraphs(last: ContentBlock): ContentBlock[] {
   const lines = text.split('\n')
   const from = last.startLine
   const pieces: ContentBlock[] = []
+  // Raw offset of each piece's first line: the parent's offset plus every
+  // line before it and its '\n'. A piece that kept the parent's offset would
+  // claim the parent's start while holding only its own text, so its raw
+  // span would cover the wrong lines (see RawBlockSpanCtx).
+  const pieceOffset = (lineIdx: number): number | undefined => {
+    if (last.startOffset == null) return undefined
+    let off = last.startOffset
+    for (let k = 0; k < lineIdx; k++) off += lines[k].length + 1
+    return off
+  }
   let start = 0 // first line of the current piece
   // Inside a list that a later item may still join. An item line indented up
   // to three spaces opens it. Only an unindented non-item line ends it, and
@@ -520,6 +548,7 @@ function splitParagraphs(last: ContentBlock): ContentBlock[] {
         content: lines.slice(start, i).join('\n'),
         complete: true,
         startLine: from + start,
+        startOffset: pieceOffset(start),
         split: { from, part: pieces.length },
       })
       start = j
@@ -531,6 +560,7 @@ function splitParagraphs(last: ContentBlock): ContentBlock[] {
     ...last,
     content: lines.slice(start).join('\n'),
     startLine: from + start,
+    startOffset: pieceOffset(start),
     split: { from, part: pieces.length },
   })
   return pieces

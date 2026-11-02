@@ -195,6 +195,49 @@ def _read_manifest(
     return header, entries
 
 
+class _UnreadableManifest(Exception):
+    """A streamed manifest could not be read to the end (absent, unopenable, no
+    valid header, or a record over the cap): whatever was yielded before is NOT a
+    complete listing, and the caller must not act on it."""
+
+
+def _stream_manifest_entries(batch: Path, *, dir_fd: int | None = None) -> Iterator[dict[str, Any]]:
+    """Yield a manifest's session entries one at a time, never holding the list.
+
+    The streamed counterpart of :func:`_read_manifest` for readers that retain a
+    BOUNDED structure of their own from an O(sessions) manifest (the staged
+    lineage and staged-stem readers): the manifest lives in an agent-writable
+    tree, so the entries list :func:`_read_manifest` builds is an allocation
+    the tree's author sizes, and bounding the retained structure after that list
+    exists bounds nothing. Guards match :func:`_read_manifest` exactly, raised
+    as :class:`_UnreadableManifest` instead of returning ``None``: the same
+    skipped-line tolerance, the same schema rejection, the same treatment of an
+    unopenable file or an over-cap record. A caller that has already consumed
+    entries when it is raised holds a PARTIAL listing and must discard it.
+    """
+    header: dict[str, Any] | None = None
+    try:
+        with _open_manifest(batch, dir_fd) as handle:
+            for record in _manifest_records(handle, batch):
+                if header is None:
+                    header = record
+                    if header.get("schema") != MANIFEST_SCHEMA:
+                        raise _UnreadableManifest(batch.name)
+                    continue
+                yield record
+    except OSError as exc:
+        raise _UnreadableManifest(batch.name) from exc
+    except _OversizedManifestRecord as exc:
+        logger.warning(
+            "trash manifest in %r has a record over %d chars; treating it as unreadable",
+            batch.name,
+            _MANIFEST_RECORD_CAP,
+        )
+        raise _UnreadableManifest(batch.name) from exc
+    if header is None:
+        raise _UnreadableManifest(batch.name)
+
+
 def _open_manifest(batch: Path, dir_fd: int | None) -> IO[str]:
     """Open *batch*'s manifest, by path or relative to an already-pinned descriptor.
 

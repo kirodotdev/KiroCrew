@@ -17,6 +17,7 @@ from pathlib import Path
 
 from kiro_crew.atomic_write import fsync_dir
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.constants import SESSION_KEY_MAX_CHARS
 from kiro_crew.messaging.link import canonical_key, is_legacy_slack_key, legacy_key
 from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
 
@@ -306,6 +307,58 @@ def can_hold_tab_id_index_entry(key: str) -> bool:
     one rather than an invalidation.
     """
     return transcript_stem(key).startswith(_TAB_ID_INDEX_STEM_PREFIX)
+
+
+#: Bounds every reader of the transcript directory and of anything derived from
+#: it (the lineage catalog snapshot, the staged-trash stem readers) applies at the
+#: point of retention: at most this many entries, none named longer than this.
+#: One population, one policy; a listing past either bound is unprovable and the
+#: reader fails closed. The stem bound IS the session-key bound
+#: (``constants.SESSION_KEY_MAX_CHARS``, the one ``artifacts.MAX_SESSION_KEY_CHARS``
+#: and ``fork_lineage.MAX_ANCESTOR_KEY_CHARS`` re-export): a stem is a folded
+#: session key, so a key admitted by slot creation must list here, or the
+#: lineage snapshot would read as unreadable for an admitted session.
+MAX_TRANSCRIPT_DIRECTORY_ENTRIES = 200_000
+MAX_TRANSCRIPT_STEM_CHARS = SESSION_KEY_MAX_CHARS
+
+
+def transcript_stems_on_disk(directory: Path) -> set[str]:
+    """Stems of every ``*.jsonl`` in *directory*, by name alone.
+
+    ``ConversationLog.list_sessions`` needs a ``stat`` per file and DROPS a file
+    whose ``stat`` fails, so a caller that must know the catalog is complete
+    compares against this list, which needs no per-file call: a directory
+    listing is one syscall and ``d_type`` answers the symlink question without
+    touching the file. A symlink (handoff alias) is skipped only when that
+    answer is certain; anything unsure is reported, since the caller uses a
+    surplus stem to fail closed.
+    """
+    out: set[str] = set()
+    try:
+        with os.scandir(directory) as it:
+            for entry in it:
+                if not entry.name.endswith(".jsonl"):
+                    continue
+                try:
+                    if entry.is_symlink():
+                        continue
+                except OSError:
+                    pass
+                stem = entry.name[: -len(".jsonl")]
+                # Bounded at retention: the directory is agent-writable, so the
+                # count and each name are checked before anything is kept. Past
+                # either bound nothing about the listing is provable, and the
+                # error is what the caller fails closed on.
+                if len(stem) > MAX_TRANSCRIPT_STEM_CHARS:
+                    raise OSError(f"transcript name over {MAX_TRANSCRIPT_STEM_CHARS} chars")
+                if len(out) >= MAX_TRANSCRIPT_DIRECTORY_ENTRIES:
+                    raise OSError(
+                        f"transcript directory over {MAX_TRANSCRIPT_DIRECTORY_ENTRIES} entries"
+                    )
+                out.add(stem)
+    except FileNotFoundError:
+        return out
+    return out
 
 
 def transcript_stems(key: str) -> tuple[str, ...]:
