@@ -210,6 +210,7 @@ _URL_PREFIXES = (
     "https://github.com/",
     "http://github.com/",
     "https://www.github.com/",
+    "http://www.github.com/",
     "www.github.com/",
     "github.com/",
 )
@@ -361,6 +362,12 @@ def parse_repo_spec(raw: Any) -> RepoSpec | None:
     for prefix in _URL_PREFIXES:
         if lowered.startswith(prefix):
             text = text[len(prefix) :]
+            # A pasted URL may carry a fragment (``#readme``) or a query
+            # (``?tab=readme-ov-file``); neither names a ref or a path, so both are
+            # dropped. Only for a URL: no part of an address may hold ``?`` or
+            # ``#``, so a bare address keeps refusing them. Cut BEFORE the
+            # percent-decode below, so an encoded ``%3F`` still meets the path rules.
+            text = text.partition("#")[0].partition("?")[0]
             break
     text = text.strip("/")
     if not text:
