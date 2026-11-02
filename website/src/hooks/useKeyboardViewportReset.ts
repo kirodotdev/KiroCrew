@@ -6,6 +6,14 @@ import { useEffect } from 'react'
  *  shortcut bar plus any docked keyboard. */
 const KEYBOARD_THRESHOLD_PX = 120
 
+/** With a hardware keyboard, iPadOS shows ONLY its shortcut bar (well under
+ *  KEYBOARD_THRESHOLD_PX) while a text field has focus, and still pans the
+ *  page to keep the caret above it. A text line low enough to sit behind the
+ *  bar (the one-row crewmate composer) is panned on every keystroke; undoing
+ *  that pan each time would make the page jump up and down while typing. So while a
+ *  text field has focus, any reduction this large counts as a keyboard. */
+const FOCUSED_BAR_THRESHOLD_PX = 24
+
 /** iOS animates the keyboard away; the scroll offset is only final after it. */
 const SETTLE_DELAYS_MS = [0, 120, 350, 700]
 
@@ -70,7 +78,9 @@ export function useKeyboardViewportReset(): void {
       restHeight = Math.max(restHeight, vv.height)
       if (restartedWhileTyping && !textFieldFocused()) restartedWhileTyping = false
       if (restartedWhileTyping) return true
-      return Math.max(window.innerHeight, restHeight) - vv.height > KEYBOARD_THRESHOLD_PX
+      const reduced = Math.max(window.innerHeight, restHeight) - vv.height
+      if (reduced > KEYBOARD_THRESHOLD_PX) return true
+      return textFieldFocused() && reduced > FOCUSED_BAR_THRESHOLD_PX
     }
 
     const reset = () => {

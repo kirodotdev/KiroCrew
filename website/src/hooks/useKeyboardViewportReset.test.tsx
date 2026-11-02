@@ -185,6 +185,49 @@ describe('useKeyboardViewportReset', () => {
     expect(scrollTo).toHaveBeenCalledWith(0, 0)
   })
 
+  it('keeps the caret pan behind the hardware-keyboard shortcut bar while typing', () => {
+    // An iPad with a hardware keyboard shows only the shortcut bar, far less
+    // than the on-screen keyboard threshold, and pans the page on each
+    // keystroke to keep a low caret above it. Undoing each pan made the
+    // one-row crewmate composer jump up and down while typing.
+    const { vv, fire } = installVisualViewport(800)
+    const composer = document.createElement('textarea')
+    document.body.append(composer)
+    renderHook(() => useKeyboardViewportReset())
+    composer.focus()
+    vv.height = 745 // the shortcut bar appears: 55px, under the 120px threshold
+    fire('resize')
+    for (let i = 0; i < 5; i++) {
+      window.dispatchEvent(new Event('scroll')) // a keystroke's caret pan
+      vv.offsetTop = 30
+      fire('scroll')
+      vi.advanceTimersByTime(200)
+    }
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).not.toHaveBeenCalled()
+
+    composer.blur() // typing ends and the bar goes away: the pan is undone
+    document.dispatchEvent(new Event('focusout'))
+    vv.height = 800
+    vv.offsetTop = 0
+    fire('resize')
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).toHaveBeenCalledWith(0, 0)
+  })
+
+  it('still undoes a small stale pan when no text field has focus', () => {
+    // The focused-field allowance must not keep a stale pan once typing ends:
+    // a viewport a little short of its rest height, with nothing focused, is
+    // not a keyboard.
+    const { vv, fire } = installVisualViewport(800)
+    renderHook(() => useKeyboardViewportReset())
+    vv.height = 745
+    fire('resize')
+    window.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(1000)
+    expect(scrollTo).toHaveBeenCalledWith(0, 0)
+  })
+
   it('leaves document scroll alone on routes without the dashboard shell', () => {
     const { vv, fire } = installVisualViewport(500)
     document.body.replaceChildren()
