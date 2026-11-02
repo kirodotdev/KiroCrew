@@ -925,8 +925,11 @@ export function includeStepCount(node: Pick<KasRunNode, 'children'>): number {
 }
 
 /** A step turn's `send_message` is Kiro Agent's step-completion signal AND the
- *  step's note to the run's parent chat; the step pane draws it as its own card. */
-const PARENT_MESSAGE_RE = /(^|[._/@])send_message$/i
+ *  step's note to the run's parent chat; the step pane draws it as its own card.
+ *  Only Kiro Agent's own tool counts, which its session files name bare. An MCP
+ *  server's tool of that name carries the server in its name (Crew's
+ *  `@kirocrew-core/send_message` is a dashboard notification) and stays a tool row. */
+const PARENT_MESSAGE_RE = /^send_message$/
 
 export function isParentMessageTool(entry: KasStepEntry): entry is Extract<KasStepEntry, { kind: 'tool' }> {
   return entry.kind === 'tool' && PARENT_MESSAGE_RE.test(entry.name)

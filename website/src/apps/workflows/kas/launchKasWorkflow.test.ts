@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { AcceptedBodyUnreadable } from '../../../api/apiError'
 import { cleanInputs, kasChatTitle, launchKasWorkflow, type KasLaunchSteps } from './launchKasWorkflow'
 
 /** Steps that record every call, in order, into one shared log. */
@@ -56,6 +57,13 @@ describe('launchKasWorkflow', () => {
     const { steps, calls } = recordingSteps({ launch: vi.fn(async () => { throw refusal }) })
     await expect(launchKasWorkflow(steps, { recipe: RECIPE, project: '/p' })).rejects.toBe(refusal)
     expect(calls.at(-1)).toEqual(['discardChat', 'chat-new'])
+  })
+
+  it('keeps the chat when the server accepted the launch but its reply could not be read', async () => {
+    const unreadable = new AcceptedBodyUnreadable(new SyntaxError('Unexpected end of JSON input'))
+    const { steps } = recordingSteps({ launch: vi.fn(async () => { throw unreadable }) })
+    await expect(launchKasWorkflow(steps, { recipe: RECIPE, project: '/p' })).rejects.toBe(unreadable)
+    expect(steps.discardChat).not.toHaveBeenCalled()
   })
 
   it('still surfaces the refusal when cleaning up the chat fails too', async () => {
