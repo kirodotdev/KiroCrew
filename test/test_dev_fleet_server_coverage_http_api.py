@@ -20,7 +20,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -43,6 +42,8 @@ from kiro_crew.apps.builtins.dev_fleet import (
     runtime,
     worktree_ops,
 )
+from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import await_until
 
 
 def _raw_request(raw: bytes, *, json_error: Exception | None = None) -> MagicMock:
@@ -82,14 +83,15 @@ def test_drop_worktrees_copies_without_named_rows():
 
 @pytest.mark.asyncio
 async def test_log_fleet_rebuild_failure_ignores_cancellation():
+    started = asyncio.Event()
+
     async def _never():
-        # flake-ok: pre-existing placeholder coroutine that never finishes on its own; the test cancels it, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(30)
+        # Never finishes on its own; the test cancels it once it has started.
+        started.set()
+        await asyncio.Event().wait()
 
     task = asyncio.create_task(_never())
-    # flake-ok: pre-existing one-turn yield so the task starts before the cancel, moved verbatim; tracked for a de-flake pass
-    await asyncio.sleep(0)
+    await await_until(started, what="placeholder rebuild task started before the cancel")
     task.cancel()
     try:
         await task
@@ -704,8 +706,9 @@ async def test_hmac_non_ascii_signature_is_a_clean_denial(monkeypatch, codepoint
     async def handler(request):  # pragma: no cover - must never run
         raise AssertionError("handler must not be reached")
 
-    # flake-ok: pre-existing real-clock read for the signed timestamp, moved verbatim; tracked for a de-flake pass
-    headers = {"X-KiroCrew-Proxy": f"{int(time.time())}:{chr(codepoint)}"}
+    clock = ManualClock()
+    clock.install(monkeypatch, http_api)
+    headers = {"X-KiroCrew-Proxy": f"{int(clock.time())}:{chr(codepoint)}"}
     request = make_mocked_request("GET", "/api/fleet", headers=headers)
     resp = await http_api.hmac_proxy_middleware(request, handler)
     assert resp.status == 401
@@ -737,8 +740,9 @@ async def test_hmac_a_valid_signature_suffixed_with_a_lone_surrogate_is_refused(
     async def handler(request):
         return web.json_response({"ok": True})
 
-    # flake-ok: pre-existing real-clock read for the signed timestamp, moved verbatim; tracked for a de-flake pass
-    ts = int(time.time())
+    clock = ManualClock()
+    clock.install(monkeypatch, http_api)
+    ts = int(clock.time())
     msg = f"{ts}:GET:/api/fleet:{hashlib.sha256(b'').hexdigest()}"
     sig = hmac.new(b"s3cr3t", msg.encode(), hashlib.sha256).hexdigest()
 
