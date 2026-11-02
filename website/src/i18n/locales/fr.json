@@ -17930,7 +17930,18 @@
         "theme_experience_persona": "Persona",
         "milestones_hint": "Affiche Explorer dans la barre du haut et une carte « À essayer aujourd'hui » dans une nouvelle discussion.",
         "milestones": "Explorer",
-        "milestones_save_failed": "Impossible d'enregistrer le réglage Explorer. Réessaie."
+        "milestones_save_failed": "Impossible d'enregistrer le réglage Explorer. Réessaie.",
+        "interface_chat": "Chat",
+        "theme_mode_auto": "Auto",
+        "theme_mode_light": "Clair",
+        "theme_mode_dark": "Sombre",
+        "color_mode_solid_tint": "Teinte unie",
+        "color_mode_gradient": "Dégradé",
+        "intensity_soft": "Douce",
+        "intensity_clear": "Nette",
+        "intensity_vivid": "Vive",
+        "intensity_bold": "Marquée",
+        "intensity_intense": "Intense"
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

@@ -17266,7 +17266,18 @@
         "theme_experience_persona": "페르소나",
         "milestones_hint": "상단 바에 탐색을, 새 채팅에 오늘 해 보기 카드를 표시합니다.",
         "milestones_save_failed": "탐색 설정을 저장하지 못했습니다. 다시 시도하세요.",
-        "milestones": "탐색"
+        "milestones": "탐색",
+        "interface_chat": "채팅",
+        "theme_mode_auto": "자동",
+        "theme_mode_light": "라이트",
+        "theme_mode_dark": "다크",
+        "color_mode_solid_tint": "단색",
+        "color_mode_gradient": "그라데이션",
+        "intensity_soft": "부드러움",
+        "intensity_clear": "선명함",
+        "intensity_vivid": "생생함",
+        "intensity_bold": "진함",
+        "intensity_intense": "강렬함"
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",
