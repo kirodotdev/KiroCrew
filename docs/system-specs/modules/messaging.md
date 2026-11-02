@@ -5663,7 +5663,11 @@ conversation, recorded only AFTER authorization) to
 `$KIROCREW_HOME/routing/teams_service_urls.json`. Loading is lazy and off-loop —
 never on the gateway boot path — every failure degrades to the in-memory map because
 a lost routing hint must not stop delivery, a non-Connector row does not survive a
-reload, and the map is bounded by count with least-recently-seen eviction.
+reload, and the map is bounded by count with least-recently-seen eviction. A file
+that exists but cannot be read is never replaced by a smaller map: `flush` reads it
+again first and writes nothing while that read fails. A file that does not parse is
+renamed to `teams_service_urls.json.corrupt-<UTC stamp>` before the write, and a
+UTF-8 BOM file reads (`test_teams_service_urls_unreadable.py`).
 
 It lives in its own `routing/` directory because that directory is a keystone leaf,
 so the agent can neither read nor write it: the identity map is what an explicit
