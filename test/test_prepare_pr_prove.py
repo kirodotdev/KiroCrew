@@ -84,7 +84,9 @@ EXIT_ENV = 2
 
 
 def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", *args], cwd=str(repo), check=True, capture_output=True, text=True, encoding="utf-8"
+    )
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -106,10 +108,11 @@ def _repo(tmp_path: Path) -> Path:
 
 def _run(repo: Path, *extra: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, PROVE, "--base", "main", *extra],
+        [sys.executable, "-X", "utf8", PROVE, "--base", "main", *extra],
         cwd=str(repo),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 
