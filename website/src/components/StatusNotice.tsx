@@ -1,6 +1,7 @@
 import { Info, TriangleAlert, X } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 /**
  * The non-error sibling of `ErrorNotice`'s block variant: the same boxed shape,
@@ -15,6 +16,7 @@ export default function StatusNotice({
   onDismiss,
   className = '',
   testId,
+  action,
 }: {
   /** Human notice text. Falsy renders nothing. */
   message?: string | null
@@ -22,7 +24,13 @@ export default function StatusNotice({
   onDismiss?: () => void
   className?: string
   testId?: string
+  /** The one remedy for the state this notice reports, drawn INSIDE the box
+   *  under the message so it stays next to what it fixes. */
+  action?: { label: string; onClick: () => void; testId?: string }
 }) {
+  // Rendered by React-Compiler files (ChatPaneNotices), whose cached elements
+  // are a memo boundary: subscribe so the dismiss label follows a language switch.
+  useLanguageGeneration()
   if (!message) return null
   const dismissName = i18nT('components.errorNotice.dismiss')
   const Icon = tone === 'warn' ? TriangleAlert : Info
@@ -36,7 +44,19 @@ export default function StatusNotice({
       } ${className}`}
     >
       <Icon size={14} className={`mt-[2px] shrink-0 ${tone === 'warn' ? 'text-warn' : 'text-muted'}`} aria-hidden="true" />
-      <span className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>{message}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>{message}</span>
+        {action && (
+          <button
+            type="button"
+            className="mt-1 font-medium text-accent hover:text-accent-hover bg-transparent border-none p-0 cursor-pointer underline decoration-accent/30 hover:decoration-accent underline-offset-2 text-left"
+            data-testid={action.testId}
+            onClick={action.onClick}
+          >
+            {action.label}
+          </button>
+        )}
+      </span>
       {onDismiss && (
         <button
           type="button"

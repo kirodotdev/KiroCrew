@@ -65,7 +65,7 @@ interface ChatTitleOverlayProps {
   sidebarOnScreen: boolean
   sidebarOpen: boolean
   sidePanelWantsMount: boolean
-  mobileNewSessionItem: { label: string; disabled: boolean; onSelect: () => void; }
+  mobileNewSessionItem: { label: string; disabled: boolean; onSelect: () => void; localInstead?: { label: string; onSelect: () => void } }
   mobileSessionsToggle: JSX.Element
   popOutTip: ReturnType<typeof useLabelTip>
   activityTip: ReturnType<typeof useLabelTip>

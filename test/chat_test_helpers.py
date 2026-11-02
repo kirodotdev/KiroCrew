@@ -478,8 +478,13 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
     return app
 
 
-def _make_folder_app(state: DashboardState) -> web.Application:
-    """Minimal aiohttp app with folder endpoints."""
+def _make_folder_app(state: DashboardState, *, authenticate_owner: bool = False) -> web.Application:
+    """Minimal aiohttp app with folder endpoints.
+
+    ``authenticate_owner`` publishes the dashboard owner's claims the way
+    ``token_auth_middleware`` does (``app=""``, ``user="local-app"``), for a
+    route that admits only the owner (a folder's ``default_crew`` pin).
+    """
     from kiro_crew.dashboard.chat import api_chat_slots
     from kiro_crew.dashboard.chat_folders import (
         api_chat_folder_create,
@@ -490,7 +495,13 @@ def _make_folder_app(state: DashboardState) -> web.Application:
         api_chat_slot_pin,
     )
 
-    app = web.Application()
+    @web.middleware
+    async def _owner_claims(request: web.Request, handler):
+        request.setdefault("app", "")
+        request.setdefault("user", "local-app")
+        return await handler(request)
+
+    app = web.Application(middlewares=[_owner_claims] if authenticate_owner else [])
     app["state"] = state
     app.router.add_get("/api/chat/folders", api_chat_folders)
     app.router.add_post("/api/chat/folders", api_chat_folder_create)
