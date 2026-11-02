@@ -689,23 +689,14 @@ async def _consolidate(
                 MODE_ENFORCE,
                 MODE_OFF,
                 configured_kind_routing_mode,
+                kind_rules_for,
             )
 
             routing_mode = configured_kind_routing_mode()
             # Under off (the default) the prompt is today's, word for word.
             kind_field = '"kind": "fact" | "event" | "state", ' if routing_mode != MODE_OFF else ""
-            kind_rules = (
-                "Tag every item with kind. Ask two questions: Will this still be true in a month? "
-                "Can this be looked up somewhere else? "
-                'kind "fact" = still true in a month and not looked up elsewhere '
-                "(a decision, a root cause, how something works). "
-                'kind "event" = something that happened, worth a dated record. '
-                'kind "state" = the current status of a PR, issue, CI run, branch, round or SHA, '
-                "which GitHub, git or the work ledger already holds. "
-                "pref.* and user.* items are always facts. "
-                if routing_mode != MODE_OFF
-                else ""
-            )
+            # Shadow trials candidate rules; enforce asks only the adopted ones.
+            kind_rules = kind_rules_for(routing_mode)
             # Only under enforce: in shadow the keys the model writes must stay
             # what they are today, or the shadow log would not measure today.
             key_naming = (
