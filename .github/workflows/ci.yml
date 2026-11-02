@@ -3669,7 +3669,12 @@ jobs:
     runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Per-shard budget. The whole suite was ~23 min on one runner; split four
     # ways each shard is well under this, and a hung shard fails fast.
-    timeout-minutes: 25
+    #
+    # Route-aware for the same reason backend-test is: off the CodeBuild fleet
+    # the shards run on `kirocrew-linux-4-core`, where the slowest of five
+    # observed fork shards took 18.3 minutes, leaving under 7 of the 25. The
+    # fleet keeps 25, so this costs the fast path nothing.
+    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 25 || 35 }}
     strategy:
       max-parallel: 4
       # Don't cancel sibling shards when one fails -- we want the full failure
@@ -4128,7 +4133,13 @@ jobs:
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
     runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
-    timeout-minutes: 25
+    # Route-aware, for the same reason backend-test is. Off the CodeBuild fleet
+    # this job runs on `kirocrew-linux-4-core`, where the slowest of six
+    # observed fork runs took 23.9 of the 25 minutes -- 66 seconds of margin, so
+    # a green run is one slow dependency install away from a cancellation with
+    # no failing test. The fleet keeps 25; only the slower route gets room, and
+    # a genuinely hung job is still bounded.
+    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 25 || 40 }}
     defaults:
       run:
         shell: /usr/local/bin/ci-shell {0}
