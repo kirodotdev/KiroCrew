@@ -1129,3 +1129,54 @@ async def test_append_trim_replaces_through_the_retrying_helper(
     # so neither replace can raise a bare Windows sharing violation.
     assert "job1.jsonl" in replaced
     assert "_index.jsonl" in replaced
+
+
+# ── _lock fd on acquire failure ────────────────────────────────────────────
+
+
+def test_lock_closes_fd_when_acquire_raises(store: CronHistoryStore) -> None:
+    """A lock-acquire timeout must not leak the ``.history.lock`` fd.
+
+    ``_lock`` opens the lock file and then acquires it. When the acquire raises
+    (an ``OSError`` on timeout), no fd has been returned for the caller to
+    close, so ``_lock`` closes it itself before re-raising. A leaked handle on
+    Windows blocks deleting the lock file or the history folder.
+    """
+    from kiro_crew import platform_compat
+
+    store._dir.mkdir(parents=True, exist_ok=True)
+
+    opened: dict[str, int] = {}
+    real_open = platform_compat.open_create_or_existing
+
+    def _spy_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened["fd"] = fd
+        return fd
+
+    closed: list[int] = []
+    real_close = os.close
+
+    def _spy_close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    with patch.object(platform_compat, "open_create_or_existing", _spy_open), patch.object(
+        platform_compat, "acquire_lock", side_effect=OSError(errno.EAGAIN, "timeout")
+    ), patch("os.close", _spy_close):
+        with pytest.raises(OSError):
+            store._lock()
+        fd = opened["fd"]
+        assert fd in closed, "the opened lock fd was not closed on acquire failure"
+        with pytest.raises(OSError):
+            os.fstat(fd)  # a closed fd raises EBADF
+
+
+def test_lock_returns_open_fd_on_success(store: CronHistoryStore) -> None:
+    """The normal acquire path still hands back a usable, open fd."""
+    store._dir.mkdir(parents=True, exist_ok=True)
+    fd = store._lock()
+    try:
+        os.fstat(fd)  # open fd: no raise
+    finally:
+        store._unlock(fd)
