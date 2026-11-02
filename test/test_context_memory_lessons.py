@@ -12,15 +12,30 @@ lives in ``test_context.py`` and the prompt-text blocks in
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
 
+import kiro_crew.memory as memory_module
 from conftest import plant_day_link
 from kiro_crew.context import ContextBuilder
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.clock import ManualClock
+
+# A fixed instant near midday UTC. The history reader computes "today" from the process's
+# zone, so the test derives yesterday from the same frozen instant, in that zone.
+_FROZEN_START = 1_767_268_800.0
+
+
+def _pin_history_clock(monkeypatch) -> date:
+    """Freeze the memory module's clock and return the history day before its today."""
+    clock = ManualClock(start=_FROZEN_START, tz=timezone.utc)
+    clock.install(monkeypatch, memory_module, datetime=True)
+    return clock.now().astimezone().date() - timedelta(days=1)
+
 
 # One xdist worker for the whole module. The ``build_message`` call-site ratchet below
 # walks the package through the shared ``source_corpus`` (one memoised file list per
@@ -425,19 +440,16 @@ class TestUnreadableActivityAtSessionStart:
             lessons=LessonStore(base_dir=tmp_path),
         )
 
-    def test_history_day_replaced_by_a_directory_keeps_preferences(self, tmp_path):
-        from datetime import date, timedelta
-
+    def test_history_day_replaced_by_a_directory_keeps_preferences(self, tmp_path, monkeypatch):
+        # Pin the clock before any write, so the entries and the read share one "today".
+        yesterday = _pin_history_clock(monkeypatch)
         builder = self._builder(tmp_path)
         store = builder.get_memory_for(None)
         store.init()
         store.write_preferences("# User Preferences\n\n- PREF_SENTINEL\n")
         store.write_projects("PROJECT_SENTINEL")
         store.append_history("VALID_HISTORY_SENTINEL")
-        # flake-ok: pre-existing local-date read for the history window, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing local-date read for the history window, moved verbatim; tracked for a de-flake pass
-        unreadable_day = (date.today() - timedelta(days=1)).isoformat()
-        (store._history_dir / f"{unreadable_day}.md").mkdir()
+        (store._history_dir / f"{yesterday.isoformat()}.md").mkdir()
 
         ctx = builder.build_session_context()
 
@@ -447,10 +459,9 @@ class TestUnreadableActivityAtSessionStart:
         assert "## Recent History" in ctx
         assert "VALID_HISTORY_SENTINEL" in ctx
 
-    def test_history_day_link_keeps_preferences_without_target(self, tmp_path):
+    def test_history_day_link_keeps_preferences_without_target(self, tmp_path, monkeypatch):
         """Session startup skips a linked history day without exposing its target."""
-        from datetime import date, timedelta
-
+        yesterday = _pin_history_clock(monkeypatch)
         builder = self._builder(tmp_path)
         store = builder.get_memory_for(None)
         store.init()
@@ -459,10 +470,7 @@ class TestUnreadableActivityAtSessionStart:
         outside.mkdir()
         secret = outside / "secret.txt"
         secret.write_text("SECRET_SENTINEL", encoding="utf-8")
-        # flake-ok: pre-existing local-date read for the history window, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing local-date read for the history window, moved verbatim; tracked for a de-flake pass
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
-        plant_day_link(store._history_dir / f"{yesterday}.md", secret)
+        plant_day_link(store._history_dir / f"{yesterday.isoformat()}.md", secret)
         store.append_history("VALID_HISTORY_SENTINEL")
 
         ctx = builder.build_session_context()
