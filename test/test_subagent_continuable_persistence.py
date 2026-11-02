@@ -1263,6 +1263,47 @@ class TestContinuationMemoryMode:
         sessions.get_or_create.assert_not_awaited()
 
 
+class _ThrownInto:
+    """Awaits ``coro`` and counts the exceptions the loop throws into it.
+
+    ``Task.cancel()`` only requests a cancellation. The loop throws it into the
+    coroutine on a later turn, and two requests made before that turn arrive as
+    one, so ``count`` is the number of cancellations the coroutine has taken.
+    """
+
+    def __init__(self, coro):
+        self._steps = coro.__await__()
+        self.count = 0
+
+    def __await__(self):
+        return self
+
+    def __next__(self):
+        return self._steps.send(None)
+
+    def send(self, value):
+        return self._steps.send(value)
+
+    def throw(self, *error):
+        self.count += 1
+        return self._steps.throw(*error)
+
+    def close(self):
+        self._steps.close()
+
+
+async def _until_thrown(resume, task, count):
+    """Wait until ``count`` cancellations have reached the resume.
+
+    A task that ended counts as reached, so a cancellation that escaped fails the
+    caller's assertion instead of running this wait to its lost-run bound.
+    """
+    await async_wait_until(
+        lambda: resume.count >= count or task.done(),
+        describe=lambda: f"{resume.count} of {count} cancellations thrown into {task!r}",
+    )
+
+
 @pytest.mark.asyncio
 async def test_cancelled_resume_drains_mode_publication_before_returning(monkeypatch):
     from kiro_crew import subagent_persistence as persistence
@@ -1287,15 +1328,20 @@ async def test_cancelled_resume_drains_mode_publication_before_returning(monkeyp
         memory_mode="temporary",
     )
     info._memory_mode_ready = False
-    task = asyncio.create_task(manager._run_inner(info, info.conversation_key))
+    resume = _ThrownInto(manager._run_inner(info, info.conversation_key))
+
+    async def run_resume():
+        return await resume
+
+    task = asyncio.create_task(run_resume())
     try:
         await async_wait_until(entered.is_set)
+        # Each cancel is waited on until the resume has taken it, so the second
+        # is a separate delivery while the writer still holds.
         task.cancel()
-        # flake-ok: zero-delay yield lets the first cancel land while the writer holds
-        await asyncio.sleep(0)
+        await _until_thrown(resume, task, 1)
         task.cancel()
-        # flake-ok: zero-delay yield lets the second cancel land; moved verbatim
-        await asyncio.sleep(0)
+        await _until_thrown(resume, task, 2)
         assert not task.done(), "cancellation escaped while the protected writer was active"
         release.set()
         with pytest.raises(asyncio.CancelledError):
