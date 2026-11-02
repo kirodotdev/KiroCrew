@@ -1,0 +1,44 @@
+{
+  "schema": "market.plan/1",
+  "request": { "ref": "team-a/pdf-tools", "range": null },
+  "installable": true,
+  "refusal": null,
+  "items": [
+    {
+      "ref": "team-a/pdf-tools",
+      "listingId": "L-team-a/pdf-tools",
+      "kind": "skill",
+      "version": 1,
+      "semver": "1.0.0",
+      "sha256": "6b965199054aebf3f9f394d2e58df5742e46bcb69e9e18a69cec52b839b34717",
+      "publisher": { "kind": "person", "display": "alice (internal)" },
+      "reason": "REQUESTED",
+      "requiredBy": [],
+      "target": "$HOME/.kiro/skills/pdf-tools",
+      "mcpJson": null,
+      "action": "new"
+    },
+    {
+      "ref": "team-a/docs-mcp",
+      "listingId": "L-team-a/docs-mcp",
+      "kind": "mcp",
+      "version": 1,
+      "semver": "1.0.0",
+      "sha256": "e8ff2390a98e70453b008d855ce38c2597362fd89d42335c38097c5c624b462c",
+      "publisher": { "kind": "person", "display": "alice (internal)" },
+      "reason": "DEPENDENCY",
+      "requiredBy": ["team-a/pdf-tools"],
+      "target": "mcpServers.docs-mcp",
+      "mcpJson": "$HOME/.kiro/settings/mcp.json",
+      "action": "new"
+    }
+  ],
+  "permissions": {
+    "commands": [["uvx", "docs-mcp-server==1.2.3"]],
+    "network": ["docs.example"],
+    "files": [],
+    "secrets": ["DOCS_TOKEN"]
+  },
+  "conflicts": [],
+  "planDigest": "5016ee2afad0fa54c71fa8cf4dbb57afb85ea238cb68911db0e4f5875b99156c"
+}
