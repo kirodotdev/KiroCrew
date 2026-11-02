@@ -8091,7 +8091,6 @@
         "include_subdirectories_recursive": "Include subdirectories (recursive)",
         "ingest_status_done": "done",
         "ingest_status_uploading": "uploading",
-        "items": "items",
         "manual": "○ manual",
         "name_optional": "Name (optional)",
         "namespace": "Namespace:",
@@ -8124,7 +8123,9 @@
         "web_page_hosts_allowed": "Fetches one page over HTTPS. Allowed sites: {{hosts}}.",
         "web_page_hosts_unavailable": "Couldn't load the allowed sites. Close and reopen this form to try again.",
         "web_page_no_hosts_allowed": "No sites are allowed yet, so nothing can be fetched. To allow a site, type it below, run the command in a terminal, then close and reopen this form.",
-        "web_page_site_not_allowed": "{{site}} isn't an allowed site yet. Allowed sites: {{hosts}}. To allow it, run the command below in a terminal, then close and reopen this form."
+        "web_page_site_not_allowed": "{{site}} isn't an allowed site yet. Allowed sites: {{hosts}}. To allow it, run the command below in a terminal, then close and reopen this form.",
+        "items_count_one": "{{n}} item",
+        "items_count_other": "{{n}} items"
       }
     },
     "localStorageDebug": {
@@ -8792,11 +8793,12 @@
         "status": "Status",
         "tool_list_read_from_the_package_s_declaration_th": "Tool list read from the package's declaration; the server was not spawned to verify it starts.",
         "tools": "Tools",
-        "tools_2": "tools",
         "undo": "Undo",
         "uninstall": "Uninstall",
         "declared": "Declared",
-        "mcp_deny_spared": "This is one of {{productName}}'s own servers, so on {{name}} turning off one tool here stops only that tool."
+        "mcp_deny_spared": "This is one of {{productName}}'s own servers, so on {{name}} turning off one tool here stops only that tool.",
+        "tools_count_one": "{{n}} tool",
+        "tools_count_other": "{{n}} tools"
       },
       "memoryGraphTab": {
         "loading_graph_data": "Loading graph data…",
@@ -10129,7 +10131,6 @@
         "and_cannot_be_changed_here": "and cannot be changed here.",
         "and_per_surface": "and per-surface",
         "cancel": "Cancel",
-        "categories": "categories ·",
         "click_any_control_to_see_exactly_what_it_covers": "Click any control to see exactly what it covers.",
         "collapse_all": "Collapse all",
         "custom_deny_note": "Custom deny note",
@@ -10162,7 +10163,6 @@
         "profile": "Profile:",
         "profiles_json": "profiles/*.json",
         "resolved_as_your_organization_s_policy_intersect": ", resolved as your organization's policy intersected with the host profile. Narrower profiles bound to a specific surface, app, or task (cron, Slack, subagents) can tighten a scope further at runtime. Read-only — the ceiling is authored in",
-        "rules": "rules",
         "security_policy_json": "security_policy.json",
         "security_posture_detail_is_temporarily_unavailab": "Security posture detail is temporarily unavailable. Enforcement is unaffected — this view could not resolve the control list for display.",
         "the_strictest_boundary_in_effect_for_each_govern": "The strictest boundary in effect for each governed scope on the",
@@ -10175,7 +10175,13 @@
         "redaction_revoke_failed": "Couldn't revoke that host. It is still allowed.",
         "redaction_no_allowed_hosts": "No hosts are allowed. Every link goes through every check.",
         "redaction_workspace": "Workspace: {{workspace}}",
-        "redaction_revoke": "Revoke"
+        "redaction_revoke": "Revoke",
+        "rules_matched_one": "{{matched}} / {{n}} rule",
+        "rules_matched_other": "{{matched}} / {{n}} rules",
+        "categories_count_one": "{{n}} category ·",
+        "categories_count_other": "{{n}} categories ·",
+        "rules_count_one": "{{n}} rule",
+        "rules_count_other": "{{n}} rules"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Bind chat-tab switching to Ctrl+digit instead of Option+digit. Option+digit does not switch chats while a text field has focus.",
@@ -11002,17 +11008,17 @@
       "written_by_the": "Written by the"
     },
     "worldsPage": {
-      "active": "active,",
-      "agent_one": "{{count}} agent",
-      "agent_other": "{{count}} agents",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "Focus popout",
-      "open": "open",
       "playing_in_popout_window": "Playing in popout window",
       "pop_out_to_separate_window": "Pop out to separate window",
-      "present": "present,",
-      "slot_one": "{{count}} slot",
-      "slot_other": "{{count}} slots"
+      "agents_present_one": "{{n}} agent present",
+      "agents_present_other": "{{n}} agents present",
+      "agents_active_one": "{{n}} active",
+      "agents_active_other": "{{n}} active",
+      "slots_open_one": "{{n}} slot open",
+      "slots_open_other": "{{n}} slots open",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "layoutEditorHarness": {
       "title": "Layout editor harness",

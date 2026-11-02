@@ -303,7 +303,7 @@ export function FolderProgress({ sourceId }: { sourceId: string }) {
         <div key={f.file_path} className="flex items-center gap-1.5 text-[12px]">
           <CheckCircle size={11} className="text-ok" />
           <span className="text-muted truncate">{pathBasename(f.file_path)}</span>
-          <span className="text-[10px] text-muted ml-auto">{f.item_count} {i18nT('pages.knowledge.sourcesList.items')}</span>
+          <span className="text-[10px] text-muted ml-auto">{i18nT('pages.knowledge.sourcesList.items_count', { count: f.item_count, n: fmtNumber(f.item_count) })}</span>
         </div>
       ))}
       {/* Failed files */}
@@ -1048,7 +1048,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               ) : (
                 <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : syncStatusLabel(s.sync_status, i18nT)}</Badge>
               )}
-              {!isLiveSource && <span className="text-[11px] text-muted whitespace-nowrap">{s.item_count ?? 0} {i18nT('pages.knowledge.sourcesList.items')}</span>}
+              {!isLiveSource && <span className="text-[11px] text-muted whitespace-nowrap">{i18nT('pages.knowledge.sourcesList.items_count', { count: s.item_count ?? 0, n: fmtNumber(s.item_count ?? 0) })}</span>}
               {/* The failed count renders on the identity meta line (the parent owns
                   it for every row type) — this stats group shares its visual group
                   with the row's action buttons, where a third button breaks the

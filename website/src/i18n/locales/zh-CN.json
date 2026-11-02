@@ -14499,7 +14499,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "忽略规则（每行一条，例如 .trash/*）\nTemplates/*",
         "include_subdirectories_recursive": "包含子目录（递归）",
         "indexing_uses_kiro_requests_each_source_costs_mo": "索引会按来源大小成比例消耗 Kiro 请求，受监视的文件夹会随文件新增持续消耗，费用随时间逐步产生而非一次性收取。",
-        "items": "个条目",
         "kb_ids_comma_separated_id_or_arn": "逗号分隔，例如 KXABC12345 或 arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "完成还需约 {{calls}} 次 Kiro 请求",
         "knowledge_base_ids": "知识库 ID",
@@ -14569,7 +14568,8 @@
         "enter_region_to_add": "输入 AWS 区域后即可添加此来源。",
         "profile_blank_uses_default_chain": "留空则使用默认的 AWS 凭证。",
         "remove_this_live_source": "移除此知识库来源？本地未存储任何内容；知识库本身不受影响。",
-        "region_example_placeholder": "例如 us-east-1"
+        "region_example_placeholder": "例如 us-east-1",
+        "items_count_other": "{{n}} 个条目"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15078,7 +15078,6 @@
         "status": "状态",
         "tool_list_read_from_the_package_s_declaration_th": "工具列表读取自软件包自身的声明；未实际启动服务器验证其可运行。",
         "tools": "工具",
-        "tools_2": "个工具",
         "undo": "撤销",
         "uninstall": "卸载",
         "unknown": "未知",
@@ -15126,7 +15125,8 @@
         "temp_refusal_sealed": "已忽略声明的 {{key}}={{path}}，原因：它位于只读的运行时文件夹内。探测改用了托管的临时文件夹。",
         "temp_refusal_unclassifiable": "已忽略声明的 {{key}}={{path}}，原因：无法确认它的实际位置。探测改用了托管的临时文件夹。",
         "temp_refusal_check_failed": "已忽略声明的 {{key}}={{path}}，原因：位置检查失败。探测改用了托管的临时文件夹。",
-        "mcp_deny_spared": "这是 {{productName}} 自己的服务器，因此在 {{name}} 上关闭这里的一个工具只会停止该工具。"
+        "mcp_deny_spared": "这是 {{productName}} 自己的服务器，因此在 {{name}} 上关闭这里的一个工具只会停止该工具。",
+        "tools_count_other": "{{n}} 个工具"
       },
       "memoryGraphTab": {
         "all_count": "全部（{{count}}）",
@@ -17747,7 +17747,6 @@
         "block_list_rules": "拒绝列表 · {{rules}}",
         "built_in_rules_enforced_note": "在你的退出选项和任何策略固定之后，当前有 {{total}} 条内置规则中的 {{enabled}} 条正在生效。",
         "cancel": "取消",
-        "categories": "个类别 ·",
         "click_any_control_to_see_exactly_what_it_covers": "点击任一控制项可查看它具体涵盖的范围。",
         "collapse_all": "全部折叠",
         "collapse_category_rules": "折叠 {{category}} 规则",
@@ -17883,7 +17882,6 @@
         "rail_until_restart": "至重启",
         "rail_until_time": "至 {{time}}",
         "resolved_as_your_organization_s_policy_intersect": "，由你所在组织的策略与主机配置文件求交集得出。绑定到特定接入面、应用或任务（cron、Slack、子代理）的更严格配置文件可在运行时进一步收紧某个作用域。只读 — 上限的定义位于",
-        "rules": "条规则",
         "search_rules_placeholder": "搜索规则、模式或分类…",
         "section_group_enforced": "强制生效",
         "section_group_reference": "参考",
@@ -18020,7 +18018,10 @@
         "redaction_revoke_failed": "无法撤销该主机。它仍处于允许状态。",
         "redaction_no_allowed_hosts": "没有被允许的主机。每个链接都会经过全部检查。",
         "redaction_workspace": "工作区：{{workspace}}",
-        "redaction_revoke": "撤销"
+        "redaction_revoke": "撤销",
+        "rules_matched_other": "{{matched}} / {{n}} 条规则",
+        "categories_count_other": "{{n}} 个类别 ·",
+        "rules_count_other": "{{n}} 条规则"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "将聊天标签切换绑定到 Ctrl+数字，而不是 Option+数字。文本框获得焦点时，Option+数字不会切换聊天。",
@@ -19197,17 +19198,16 @@
       "written_by_the": "由"
     },
     "worldsPage": {
-      "active": "个活动，",
-      "agent_other": "{{count}} 个代理",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "聚焦弹出窗口",
       "hide_controls": "隐藏控制项",
-      "open": "打开",
       "playing_in_popout_window": "正在弹出窗口中播放",
       "pop_out_to_separate_window": "弹出到独立窗口",
-      "present": "个在场，",
       "show_controls": "展开控制项",
-      "slot_other": "{{count}} 个槽位"
+      "agents_present_other": "{{n}} 个代理在场",
+      "agents_active_other": "{{n}} 个活动",
+      "slots_open_other": "{{n}} 个空闲槽位",
+      "summary": "{{present}}，{{active}}，{{open}}"
     },
     "worldsPopout": {
       "hide_controls": "隐藏控制项",
