@@ -143,8 +143,11 @@ picker, with the detail in its info tip (`pages/settings/SttRetentionNote.tsx`).
   streams an upload to a temp file that its `finally` unlinks on every exit path,
   and a remuxed temp is unlinked the same way (`transcribe_aws._transcribe_aws`).
 - **Browser.** The only audio copy is the failed batch capture
-  `hooks/voiceTranscriptInbox.ts` holds in memory for Retry or Save, until the
-  tab unloads.
+  `hooks/voiceTranscriptInbox.ts` holds in memory, until the tab unloads. A
+  composer offers it for Retry or Save. A comment box offers neither: a failed
+  comment capture is discarded once its box shows the error, and one whose box
+  closed first stays held, unreachable, until the tab unloads or the next
+  recording starts ([Comment-box dictation](#comment-box-dictation)).
 - **`transcribe`.** Both paths call `StartStreamTranscription`. Nothing calls
   `StartTranscriptionJob` or writes to S3, so the user's account gets no
   transcription job, audio file or transcript, and the Transcribe console's job
@@ -225,11 +228,63 @@ Either one releases the microphone and ends the start.
 | Worklet | `website/public/pcm-worklet.js` | Float32-to-16 kHz mono Int16 PCM downsampler |
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
 | Voice hook | `website/src/hooks/useVoiceInput.ts` | Owns mic and device selection, and picks streaming or batch for the NEXT utterance. `stop`, `cancel` and `recording` route on the transport of the utterance in flight (`ownTransportRef ?? startupTransport`), never on the preference, so flipping the mode mid-utterance cannot send a commit or discard down the other transport. While a streaming session drains after the mode was switched off, `drainCancellable` exposes the "Discard dictation" control, which cancels the session and rolls the dictated region out of the composer (`cancelVoiceRollback.test.tsx`) |
-| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, owns the one-mic mutex and the frozen-prefix snapshot; `ComposerDockView.tsx`, `ChatPane.tsx` and `CrewChatWindow.tsx` mount the root and supply only host options. A crew window's transcript that settles after the window closed goes to that session's crew draft (`deliverCrewWindowTranscript`, `composerHost.crewWindowTranscript.test.tsx`), and its send ends live dictation first (`CrewChatWindow.test.tsx`) |
+| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, holds the one-mic mutex (`setMicOwner`, `readMicOwner`, `subscribeMic`, exported so the comment boxes' mic takes the same lock) and the frozen-prefix snapshot; `ComposerDockView.tsx`, `ChatPane.tsx` and `CrewChatWindow.tsx` mount the root and supply only host options. A crew window's transcript that settles after the window closed goes to that session's crew draft (`deliverCrewWindowTranscript`, `composerHost.crewWindowTranscript.test.tsx`), and its send ends live dictation first (`CrewChatWindow.test.tsx`) |
 | Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, and the thin bar it falls back to |
 | Composer dictation | `website/src/components/chat-input/voice.ts` | The composer's side of the Voice atom: the caret a transcript splices in at, the dictation-panel gate, Escape to discard, and on touch the hold-to-talk mode and the labels its controls carry |
 | Composer voice controls | `website/src/components/chat-input/VoiceControls.tsx` | Renders that state: the hold gesture's cancel cue, the dictation panel or status bar, the hold target, and the mic |
+| Comment dictation | `website/src/components/CommentVoiceButton.tsx` | The mic in the document comment boxes: press to record, press again to stop, and the words are added to the box's draft. Props `onText(text)`, `onError(message \| null)`, `disabled`, `className`. See [Comment-box dictation](#comment-box-dictation) |
 | Settings UI | `website/src/pages/settings/SttSettings.tsx` | Enable, provider, model, language, and the streaming knobs |
+
+### Comment-box dictation
+
+The document comment boxes are a second dictation surface beside the chat
+composer. `CommentVoiceButton` renders the mic in three boxes:
+
+| Box | Host | Keyed by |
+|---|---|---|
+| Selection comment | `ComposerBox` in `components/SelectionToolbar.tsx` | `voiceTarget`, the toolbar's `composerOpenSeq`, bumped on every open |
+| Image-box comment | `components/ImageCommentComposer.tsx`, which renders `ComposerBox` | its own mount: no `voiceTarget` |
+| Thread reply | `components/CommentThreadPopover.tsx` | the thread's `rootId` |
+
+A new key is a new button, so a dictation started for one passage or thread
+never lands in the box after it moved to another.
+
+- **Words are added, never sent.** `onText` splices the transcript into the
+  draft with `spliceDictationText`; the person still presses the box's own
+  button to post. The selection box drops a transcript that settles while its
+  post is in flight, and the button is disabled for that time.
+- **Its own session.** Each mount dictates as `comment-voice:<useId()>` through
+  `useVoiceInput` directly, with `ownsSession` matching only that id and
+  `acceptsUnowned: false`, so its text reaches only its own box and never a chat
+  draft.
+- **One mic.** A press takes the composer's lock (`setMicOwner`); the button is
+  disabled and labelled "Microphone in use elsewhere" while another owner holds it or another
+  transcription is in flight. The lock is let go once this button's capture and
+  transcription are over, and on unmount.
+- **Hidden when it cannot work.** No button outside a `QueryClient`, while
+  `GET /api/config/stt` loads, or when voice is off, unavailable or unsupported.
+  A failed settings read hides it and reports once through `onError`.
+- **Closing discards.** Unmounting or re-keying the box cancels a dictation that
+  is starting, recording or still streaming its final.
+- **No transcript polish.** `stt.polish` lives in `useComposerVoice`, which the
+  button does not use, so comment dictation always lands unpolished.
+- **Failures stay in the box.** `onError` hands the host the message, shown with
+  `ErrorNotice` beside the box, with no Retry, no Save and no agent hand-off
+  (the hand-off navigates to Chat and would discard the unsaved comment).
+  Pressing the mic again is the retry. Showing the error also calls `clearError`,
+  which lets the held failed capture go.
+
+A module-level `subscribeTranscripts` sink in `CommentVoiceButton.tsx` owns
+every `comment-voice:` session, so a transcript that settles after its button
+unmounted is dropped instead of handed to Chat. It sets
+`TranscriptSink.exclusive` (`hooks/voiceTranscriptInbox.ts`): a failure of a
+session an exclusive sink owns reaches only that session's owners, and its held
+audio is replayed only to a newly subscribing owner, so a chat composer never
+shows a Retry notice for a comment. A failed comment capture whose button is
+gone has no owner left to discard it: the inbox holds it until the tab unloads
+or the next recording starts capturing. Tests: `CommentVoiceButton.test.tsx`,
+`SelectionToolbar.voice.test.tsx`, `CommentThreadPopover.voice.test.tsx` and
+`hooks/voiceTranscriptInbox.test.ts`.
 
 ## WebSocket protocol
 
@@ -990,6 +1045,8 @@ provider that sends anything off the machine: the TEXT leaves, the audio never d
 The switch is the consent, so `POST /api/stt/polish` refuses with 403
 `stt_polish_disabled` when it is off rather than quietly passing the transcript
 through -- a setting that is honoured only sometimes is a decoration.
+Polish runs only in the chat composer (`useComposerVoice.polishDictation`):
+comment-box dictation skips it ([Comment-box dictation](#comment-box-dictation)).
 
 Why it is an endpoint and not a frame on the speech websocket, which is the design
 decision worth recording: that socket closes shortly after the final (the server has
