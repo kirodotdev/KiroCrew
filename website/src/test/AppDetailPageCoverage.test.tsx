@@ -725,10 +725,16 @@ describe('AppDetailPage — uncovered surfaces', () => {
   it('lists a held selection action alone and approves it on click', async () => {
     const entry = 'save:chat:1-8000:copy'
     // Only a selection action is held: the notice must still show and approve it.
-    getApp.mockResolvedValue(installedApp({ selectionActionGrant: { approved: [], staged: [entry] } }))
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', contributes: { selectionActions: [{ id: 'save', title: 'Save to notes', entry: 'dist/s.mjs' }] } },
+      selectionActionGrant: { approved: [], staged: [entry] },
+    }))
     renderDetail()
     await loaded()
-    expect(screen.getByText(entry)).toBeInTheDocument()
+    // The owner reads the item, its reach and its buttons, never the raw entry.
+    const row = within(screen.getByTestId('staged-selection-actions')).getByText(/Save to notes/)
+    expect(row.textContent).toBe('Save to notes: up to 8,000 characters of text you select in chat replies, and a Copy button')
+    expect(screen.queryByText(entry)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ selectionActions: [entry] })))
   })

@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { createElement } from 'react'
-import { render, waitFor, act, fireEvent, renderHook, screen } from '@testing-library/react'
+import { cleanup, render, waitFor, act, fireEvent, renderHook, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { APP_FRAME_TAG as FRAME_TAG, MAX_OFFER_CHARS as MAX_COPY_CHARS, displaySafe as showableText } from '../appFrame/frameProtocol'
 import { FRAME_SANDBOX } from '../appFrame/sandboxFrame'
 import { installFrameWindows, postFrom, sentTo, type Sent } from '../test/LinkPreviewFramesTestUtils'
-import { resolveSelectionActions, selectionGrantEntry, type ResolvedSelectionAction } from './selectionActionRegistry'
+import { resolveSelectionActions, selectionActionGrantLabel, selectionGrantEntry, type ResolvedSelectionAction } from './selectionActionRegistry'
 import { selectedTextFor } from './selectionSources'
 import { closeSelectionLayer, openSelectionItem, openSelectionMenu, setSelectionActionsAvailable } from './selectionActionStore'
 import { READY_TIMEOUT_MS, SELECTION_DEADLINE_MS as INVOCATION_DEADLINE_MS, SelectionInvocation, type InvocationView } from './selectionInvocation'
@@ -79,6 +79,8 @@ beforeEach(() => {
   touch = false
 })
 afterEach(() => {
+  // Unmount every layer a test rendered: each one publishes to the shared store.
+  cleanup()
   act(() => closeSelectionLayer())
   act(() => setSelectionActionsAvailable(false))
   listApps.mockReset()
@@ -105,6 +107,19 @@ describe('selection actions: discovery', () => {
   })
 })
 
+describe('selection actions: a held grant entry in words', () => {
+  const declared = [{ id: 'save', title: 'Save to notes' }]
+  it('names the item, its text limit and its buttons', () => {
+    expect(selectionActionGrantLabel('save:chat:1-4000:', declared)).toBe('Save to notes: up to 4,000 characters of text you select in chat replies')
+    expect(selectionActionGrantLabel('save:chat:1-4000:open', declared)).toBe('Save to notes: up to 4,000 characters of text you select in chat replies, and an Open link button')
+    expect(selectionActionGrantLabel('save:chat:1-8000:copy,open', declared)).toBe('Save to notes: up to 8,000 characters of text you select in chat replies, and Copy and Open buttons')
+    expect(selectionActionGrantLabel('other:chat:1-10:copy', declared)).toContain('other: ')
+  })
+  it('shows an entry it cannot read as it is', () => {
+    for (const raw of ['save:files:1-10:copy', 'save:chat:1-10:insert', 'garbage']) expect(selectionActionGrantLabel(raw, declared)).toBe(raw)
+  })
+})
+
 describe('selection actions: the typed chat source', () => {
   it('hands at most maxLength, never splits a surrogate pair, and refuses short or foreign selections', () => {
     const it2 = item({ minLength: 3, maxLength: 4 })
@@ -122,7 +137,9 @@ describe('selection actions: one invocation', () => {
     expect(inv.el.hasAttribute('credentialless')).toBe(true)
     expect(inv.el.getAttribute('referrerpolicy')).toBe('no-referrer')
     expect(box.contains(inv.el)).toBe(true)
-    expect(mint).toHaveBeenCalledWith('notes-app', 'selectionActions', 'save')
+    // The mint names the grant entry the item was resolved at.
+    expect(mint).toHaveBeenCalledWith('notes-app', 'selectionActions', 'save', undefined, { grant: item().grant })
+    expect(item().grant).toBe(selectionGrantEntry({ id: 'save', sources: [...item().sources], minLength: item().minLength, maxLength: item().maxLength, effects: [...item().effects] }))
     expect(Object.keys(invoke).sort()).toEqual([FRAME_TAG, 'deadlineMs', 'invocationId', 'source', 'text', 'theme', 'truncated', 'type'].sort())
     expect(invoke.text).toBe('the selected words')
     expect(typeof invoke.invocationId).toBe('string')
@@ -208,6 +225,42 @@ describe('selection actions: one invocation', () => {
     postFrom({ [FRAME_TAG]: 1, type: 'result.offer', invocationId: id, seq: 1, kind: 'copy', value: 'x' }, window)
     expect(views.length).toBe(before)
     expect(inv.current().copy).toBeNull()
+  })
+
+  it('a renewal the gateway refuses (403/404) cancels the live invocation as revoked', async () => {
+    for (const status of [403, 404]) {
+      const { inv, sent, id, views } = await opened()
+      mint.mockRejectedValueOnce(new Error(`app frame mint failed: ${status}`))
+      from(inv.el, 'capabilityExpired')
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(sent.find((m) => m.type === 'invoke.cancel')).toMatchObject({ invocationId: id, reason: 'revoked' })
+      expect(views.at(-1)).toMatchObject({ phase: 'failed', notice: { kind: 'revoked' }, copy: null, open: null })
+      expect(inv.el.isConnected).toBe(false)
+    }
+  })
+
+  it('a renewal names the same grant entry, and a refused first mint says the item was revoked', async () => {
+    const { inv } = await opened()
+    from(inv.el, 'capabilityExpired')
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(mint).toHaveBeenLastCalledWith('notes-app', 'selectionActions', 'save', 'f'.repeat(16), { grant: item().grant })
+    mint.mockRejectedValueOnce(new Error('app frame mint failed: 403'))
+    const h = invocation()
+    h.inv.start()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(h.views.at(-1)).toMatchObject({ phase: 'failed', notice: { kind: 'revoked' } })
+  })
+
+  it('a transient renewal failure keeps the invocation open', async () => {
+    const { inv, sent, views } = await opened()
+    for (const err of [new Error('app frame mint failed: 502'), new TypeError('Failed to fetch')]) {
+      mint.mockRejectedValueOnce(err)
+      from(inv.el, 'capabilityExpired')
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    }
+    expect(types(sent)).not.toContain('invoke.cancel')
+    expect(views.at(-1)?.phase).toBe('open')
+    expect(inv.el.isConnected).toBe(true)
   })
 
   it('an app error is shown as plain text without controls or direction overrides', async () => {
@@ -352,9 +405,11 @@ describe('selection actions: every chat shell mounts the layer', () => {
     const { join } = await import('node:path')
     const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8')
     const at = (marker: string) => src.indexOf(marker)
-    const mounts = [...src.matchAll(/<SelectionActionLayer \/>/g)].map((m) => m.index ?? -1)
+    const mounts = [...src.matchAll(/<SelectionActionLayer( readApps=\{false\})? \/>/g)].map((m) => m.index ?? -1)
     // One in each branch: popout, embed, and the dashboard shell after them.
+    // Only the dashboard shell's is passive: its own nav read owns the app list.
     expect(mounts).toHaveLength(3)
+    expect([...src.matchAll(/<SelectionActionLayer readApps=\{false\} \/>/g)].map((m) => m.index)).toEqual([mounts[2]])
     expect(mounts[0]).toBeGreaterThan(at('isPopout ? ('))
     expect(mounts[0]).toBeLessThan(at('isEmbed ? ('))
     expect(mounts[1]).toBeGreaterThan(at('isEmbed ? ('))
@@ -380,9 +435,70 @@ describe('selection actions: the Apps button and its menu', () => {
     await waitFor(() => expect(r.result.current.map((a) => a.id)).toEqual(['app-items']))
   })
 
-  it('a failed shared read shows no Apps button', async () => {
+  it('a failed shared read still shows the Apps button, and its menu shows the error row with Retry', async () => {
     const { useAppSelectionActions } = await import('./useAppSelectionActions')
+    const r = renderHook(() => useAppSelectionActions('chat'))
     listApps.mockRejectedValue(new Error('down'))
+    await mountMenuLayer()
+    // Visibility fails open, so the failure is never silent.
+    await waitFor(() => expect(r.result.current.map((a) => a.id)).toEqual(['app-items']))
+    act(() => r.result.current[0].onClick('words', at))
+    const menu = await screen.findByTestId('selection-apps-menu')
+    await waitFor(() => expect(menu.textContent).toContain("Couldn't load the apps"))
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+    // Grants are unchanged: nothing is listed without a successful fresh read.
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(0)
+  })
+
+  it('in the dashboard shell it never fetches the list, and shows the button until the shell read says there is none', async () => {
+    const { useAppSelectionActions } = await import('./useAppSelectionActions')
+    const mod = await import('./SelectionActionLayer')
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const r = renderHook(() => useAppSelectionActions('chat'))
+    render(createElement(QueryClientProvider, { client: qc }, createElement(mod.default, { readApps: false })))
+    // The shell's read has not landed (or failed): fail open on visibility.
+    await waitFor(() => expect(r.result.current.map((a) => a.id)).toEqual(['app-items']))
+    act(() => { qc.setQueryData(['apps'], []) })
+    await waitFor(() => expect(r.result.current).toEqual([]))
+    act(() => { qc.setQueryData(['apps'], [app()]) })
+    await waitFor(() => expect(r.result.current.map((a) => a.id)).toEqual(['app-items']))
+    expect(listApps).not.toHaveBeenCalled()
+  })
+
+  it('a failed refresh after an empty list shows the Apps button', async () => {
+    const { useAppSelectionActions } = await import('./useAppSelectionActions')
+    const mod = await import('./SelectionActionLayer')
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    listApps.mockResolvedValue([])
+    const r = renderHook(() => useAppSelectionActions('chat'))
+    render(createElement(QueryClientProvider, { client: qc }, createElement(mod.default)))
+    await waitFor(() => expect(listApps).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(r.result.current).toEqual([]))
+    // The cached [] stays as data while the refetch fails.
+    listApps.mockRejectedValue(new Error('down'))
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['apps'] }) })
+    await waitFor(() => expect(r.result.current.map((a) => a.id)).toEqual(['app-items']))
+  })
+
+  it('in the dashboard shell, a list the shell invalidated shows the button until its read lands', async () => {
+    const { useAppSelectionActions } = await import('./useAppSelectionActions')
+    const mod = await import('./SelectionActionLayer')
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    qc.setQueryData(['apps'], [])
+    const r = renderHook(() => useAppSelectionActions('chat'))
+    render(createElement(QueryClientProvider, { client: qc }, createElement(mod.default, { readApps: false })))
+    await waitFor(() => expect(r.result.current).toEqual([]))
+    // What `mc:apps-changed` does before the shell's own read, which may fail.
+    act(() => { void qc.invalidateQueries({ queryKey: ['apps'], refetchType: 'none' }) })
+    await waitFor(() => expect(r.result.current.map((a) => a.id)).toEqual(['app-items']))
+    act(() => { qc.setQueryData(['apps'], []) })
+    await waitFor(() => expect(r.result.current).toEqual([]))
+    expect(listApps).not.toHaveBeenCalled()
+  })
+
+  it('a successful shared read with no approved item shows no Apps button', async () => {
+    const { useAppSelectionActions } = await import('./useAppSelectionActions')
+    listApps.mockResolvedValue([])
     await mountMenuLayer()
     const r = renderHook(() => useAppSelectionActions('chat'))
     await waitFor(() => expect(listApps).toHaveBeenCalled())

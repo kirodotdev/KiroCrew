@@ -561,6 +561,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   // visibility effect never call a stale closure.
   const composerRef = useRef(composer)
   useEffect(() => { composerRef.current = composer }, [composer])
+  const hasAppRow = !!appActions && appActions.length > 0
   // `onClose` fires exactly once per open. Starts "closed" so the mount-time
   // run of the visibility effect below does not fire it for a composer that
   // was never open. A submit sets it before hiding, so the host is told about
@@ -686,7 +687,10 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // (above), but a copy that silently drops the other ranges of a Firefox
     // ctrl+drag selection is a copy the user has to redo.
     rawSelectedTextRef.current = sel.toString()
-    appTextRef.current = textFromRange(measureRange).trim()
+    // App items get the characters the user selected in range 0, as shown: no
+    // link-card URL substitution, which would hand over address parts the user
+    // never selected.
+    appTextRef.current = measureRange.toString().trim()
 
     const rect = measureRange.getBoundingClientRect()
     selectionRectRef.current = rect
@@ -827,7 +831,9 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // `suspended` likewise: a hidden tab does not render the box, so a resize
     // while hidden leaves `pos` untouched, and resuming must re-clamp against
     // the viewport it comes back to rather than the one it left.
-  }, [visible, pos, composerGrowTick, composer, copyFailed, submitFailed, suspended, containerRef, dock])
+    // `hasAppRow` likewise: the app row can appear while the toolbar is open
+    // (the app list read lands), and a docked toolbar must move up for it.
+  }, [visible, pos, composerGrowTick, composer, copyFailed, submitFailed, suspended, containerRef, dock, hasAppRow])
 
   // A docked row hangs off the composer, not the selection, so it re-measures
   // when the viewport changes under it (rotation, the address bar collapsing).
@@ -1392,7 +1398,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
                 {action.hint && <span id={`${hintIdBase}-${action.id}`} className="sr-only">{action.hint}</span>}
               </Fragment>
             ))}
-            {appActions && appActions.length > 0 && (
+            {hasAppRow && appActions && (
               <div data-testid="selection-app-row" className="basis-full min-w-0 max-w-full flex flex-wrap items-center gap-0.5 border-t border-border pt-0.5">
                 {appActions.map(action => (
                   <Fragment key={action.id}>

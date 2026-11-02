@@ -54,7 +54,13 @@ export interface InvocationView {
   /** An Open URL the frame offered and the host accepted. */
   open: URL | null
   /** Shown in host chrome: the frame never responded, or the app reported a failure. */
-  notice: { kind: 'no_response' } | { kind: 'error'; message: string } | null
+  notice: { kind: 'no_response' } | { kind: 'revoked' } | { kind: 'error'; message: string } | null
+}
+
+/** A mint the gateway refused for this item (`404 no_app_frame`, `403 not_granted`),
+ *  as `mintAppFrame` reports it. A network error or a 5xx is not one. */
+export function isRevocation(err: unknown): boolean {
+  return err instanceof Error && /^app frame mint failed: (403|404)$/.test(err.message)
 }
 
 export interface InvocationOptions {
@@ -62,7 +68,7 @@ export interface InvocationOptions {
   selected: SelectedText
   /** Where the frame is attached; the popover body. */
   box: HTMLElement
-  mint(appName: string, point: string, pointId: string, frameId?: string): Promise<Minted>
+  mint(appName: string, point: string, pointId: string, frameId?: string, request?: Readonly<Record<string, string>>): Promise<Minted>
   theme(): 'dark' | 'light'
   onView(view: InvocationView): void
   /** The invocation ended and its surface should close. */
@@ -123,7 +129,9 @@ export class SelectionInvocation {
     window.addEventListener('message', this.onMessage)
     this.readyTimer = window.setTimeout(() => this.fail({ kind: 'no_response' }), READY_TIMEOUT_MS)
     const { item } = this.opts
-    this.opts.mint(item.appName, SELECTION_POINT, item.id).then(
+    // The mint names the grant entry the item was resolved at: the gateway refuses
+    // it when the owner has since changed the item, so no text goes out on a stale grant.
+    this.opts.mint(item.appName, SELECTION_POINT, item.id, undefined, { grant: item.grant }).then(
       (minted) => {
         if (this.view.phase !== 'loading') return
         this.frameId = minted.frameId
@@ -131,7 +139,7 @@ export class SelectionInvocation {
         loadMintedFrame(this.el, this.opts.box, minted, { theme: this.opts.theme, onNavigatedAway: () => this.fail({ kind: 'no_response' }) })
         this.renewTimer = window.setInterval(() => { void this.renew() }, renewIntervalMs(minted.ttl))
       },
-      () => this.fail({ kind: 'no_response' }),
+      (err) => this.fail(isRevocation(err) ? { kind: 'revoked' } : { kind: 'no_response' }),
     )
   }
 
@@ -165,19 +173,23 @@ export class SelectionInvocation {
     this.opts.onView(this.view)
   }
 
-  private fail(notice: NonNullable<InvocationView['notice']>): void {
+  private fail(notice: NonNullable<InvocationView['notice']>, reason = 'closed'): void {
     if (this.view.phase !== 'loading' && this.view.phase !== 'open') return
-    this.contract.cancel('closed')
+    this.contract.cancel(reason)
     this.update({ phase: 'failed', notice, copy: null, open: null })
     this.teardown()
   }
 
   private async renew(): Promise<void> {
     try {
-      const minted = await this.opts.mint(this.opts.item.appName, SELECTION_POINT, this.opts.item.id, this.frameId)
+      const minted = await this.opts.mint(this.opts.item.appName, SELECTION_POINT, this.opts.item.id, this.frameId, { grant: this.opts.item.grant })
       if (this.el.isConnected) postToFrame(this.el, { type: 'capability', capability: minted.capability })
-    } catch {
-      // The frame retries on its next refusal; nothing to show here.
+    } catch (err) {
+      // The gateway refused the renewal for this item: the app was disabled or
+      // removed, or the owner took the item's grant back. End the invocation now,
+      // with `cancel('revoked')`, rather than leave the frame live. Any other
+      // failure (network, 5xx) is transient: the frame retries on its next refusal.
+      if (isRevocation(err)) this.fail({ kind: 'revoked' }, 'revoked')
     }
   }
 

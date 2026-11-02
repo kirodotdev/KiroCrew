@@ -4657,13 +4657,18 @@
       "copied": "Copied",
       "open": "Open {{host}}",
       "no_response": "{{app}} didn't respond.",
+      "revoked": "{{app}} can no longer use this item. It was turned off or its approval was taken back.",
       "failed": "{{app}} ran into a problem: {{message}}",
       "too_short": "{{title}} needs at least {{min}} characters. You selected {{count}}.",
       "copy_failed": "Couldn't copy to the clipboard.",
       "load_failed": "Couldn't load the apps for selected text.",
       "loading": "Loading apps…",
       "none": "No app has an item for this text.",
-      "retry": "Retry"
+      "retry": "Retry",
+      "grant_entry": "{{title}}: up to {{max}} characters of text you select in chat replies",
+      "grant_entry_copy": "{{title}}: up to {{max}} characters of text you select in chat replies, and a Copy button",
+      "grant_entry_open": "{{title}}: up to {{max}} characters of text you select in chat replies, and an Open link button",
+      "grant_entry_copy_open": "{{title}}: up to {{max}} characters of text you select in chat replies, and Copy and Open buttons"
     }
   },
   "hooks": {

@@ -10886,13 +10886,18 @@
       "copied": "Copié",
       "open": "Ouvrir {{host}}",
       "no_response": "{{app}} n'a pas répondu.",
+      "revoked": "{{app}} ne peut plus utiliser cet élément. Il a été désactivé ou son approbation a été retirée.",
       "failed": "{{app}} a rencontré un problème : {{message}}",
       "too_short": "{{title}} demande au moins {{min}} caractères. Tu en as sélectionné {{count}}.",
       "copy_failed": "Impossible de copier dans le presse-papiers.",
       "load_failed": "Impossible de charger les apps pour le texte sélectionné.",
       "loading": "Chargement des apps…",
       "none": "Aucune app ne propose d’action pour ce texte.",
-      "retry": "Réessayer"
+      "retry": "Réessayer",
+      "grant_entry": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat",
+      "grant_entry_copy": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et un bouton Copier",
+      "grant_entry_open": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et un bouton pour ouvrir un lien",
+      "grant_entry_copy_open": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et des boutons Copier et Ouvrir"
     }
   },
   "hooks": {

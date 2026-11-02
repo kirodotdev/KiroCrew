@@ -10886,13 +10886,18 @@
       "copied": "Copiato",
       "open": "Apri {{host}}",
       "no_response": "{{app}} non ha risposto.",
+      "revoked": "{{app}} non può più usare questo elemento. È stato disattivato o la sua approvazione è stata revocata.",
       "failed": "{{app}} ha avuto un problema: {{message}}",
       "too_short": "{{title}} richiede almeno {{min}} caratteri. Ne hai selezionati {{count}}.",
       "copy_failed": "Impossibile copiare negli appunti.",
       "load_failed": "Impossibile caricare le app per il testo selezionato.",
       "loading": "Caricamento app…",
       "none": "Nessuna app ha un’azione per questo testo.",
-      "retry": "Riprova"
+      "retry": "Riprova",
+      "grant_entry": "{{title}}: fino a {{max}} caratteri del testo che selezioni nelle risposte della chat",
+      "grant_entry_copy": "{{title}}: fino a {{max}} caratteri del testo che selezioni nelle risposte della chat, e un pulsante Copia",
+      "grant_entry_open": "{{title}}: fino a {{max}} caratteri del testo che selezioni nelle risposte della chat, e un pulsante per aprire un link",
+      "grant_entry_copy_open": "{{title}}: fino a {{max}} caratteri del testo che selezioni nelle risposte della chat, e i pulsanti Copia e Apri"
     }
   },
   "hooks": {

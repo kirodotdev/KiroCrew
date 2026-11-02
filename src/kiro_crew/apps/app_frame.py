@@ -887,10 +887,16 @@ register_frame_point(
 from kiro_crew.apps.selection_action_frame import (  # noqa: E402
     SELECTION_ACTION_SCRIPT,
     SELECTION_ACTIONS_POINT,
+    admit_selection_action,
     resolve_selection_action,
 )
 
-register_frame_point(SELECTION_ACTIONS_POINT, resolve_selection_action, SELECTION_ACTION_SCRIPT)
+register_frame_point(
+    SELECTION_ACTIONS_POINT,
+    resolve_selection_action,
+    SELECTION_ACTION_SCRIPT,
+    admit_selection_action,
+)
 
 
 __all__: list[str] = [

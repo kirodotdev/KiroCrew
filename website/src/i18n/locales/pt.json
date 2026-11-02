@@ -10886,13 +10886,18 @@
       "copied": "Copiado",
       "open": "Abrir {{host}}",
       "no_response": "{{app}} não respondeu.",
+      "revoked": "{{app}} não pode mais usar este item. Ele foi desativado ou a aprovação foi retirada.",
       "failed": "{{app}} teve um problema: {{message}}",
       "too_short": "{{title}} precisa de pelo menos {{min}} caracteres. Você selecionou {{count}}.",
       "copy_failed": "Não foi possível copiar para a área de transferência.",
       "load_failed": "Não foi possível carregar os apps para o texto selecionado.",
       "loading": "Carregando apps…",
       "none": "Nenhum app tem uma ação para este texto.",
-      "retry": "Tentar de novo"
+      "retry": "Tentar de novo",
+      "grant_entry": "{{title}}: até {{max}} caracteres do texto que você seleciona nas respostas do chat",
+      "grant_entry_copy": "{{title}}: até {{max}} caracteres do texto que você seleciona nas respostas do chat, e um botão Copiar",
+      "grant_entry_open": "{{title}}: até {{max}} caracteres do texto que você seleciona nas respostas do chat, e um botão para abrir um link",
+      "grant_entry_copy_open": "{{title}}: até {{max}} caracteres do texto que você seleciona nas respostas do chat, e botões Copiar e Abrir"
     }
   },
   "hooks": {

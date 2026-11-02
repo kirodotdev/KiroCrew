@@ -858,7 +858,8 @@ export default function App() {
           <Suspense fallback={null}><LinkPreviewLayer /></Suspense>
           <Suspense fallback={null}><MessageActionLayer /></Suspense>
           <Suspense fallback={null}><LinkOpenLayer /></Suspense>
-          <Suspense fallback={null}><SelectionActionLayer /></Suspense>
+          {/* The shell's own nav read owns the shared app list here. */}
+          <Suspense fallback={null}><SelectionActionLayer readApps={false} /></Suspense>
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />

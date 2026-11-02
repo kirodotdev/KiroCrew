@@ -4568,7 +4568,11 @@ is handed that text and nothing else.
 - **Frame point** (`apps/selection_action_frame.py`, registered in `app_frame.py`):
   `resolve_selection_action` serves an item only for an enabled app whose current
   entry is approved (`approved_selection_action`), so a revoked or changed item
-  stops its mint, frame and fetch. Its script answers `selection.invoke` by calling
+  stops its mint, frame and fetch. Every mint and renewal names the grant entry the
+  dashboard resolved the item at (`?grant=`), and `admit_selection_action` refuses
+  it (`403 not_granted`) unless it is the item's current approved entry, so a pick
+  made from a menu read before the owner changed the item sends no text, and a
+  live frame's next renewal is refused. Its script answers `selection.invoke` by calling
   the handler's `invoke(selection, invocationControls(invocationId))`, where
   `selection` is `{ text, truncated, source }`; `ctx` is `{ appName, theme, fetch }`.
 - **Source.** The app never reads the document selection. A host surface offers
@@ -4577,12 +4581,23 @@ is handed that text and nothing else.
   `AssistantMessage`, trimmed and cut to `maxLength` without splitting a surrogate
   pair. App items get only the selection's one range inside that reply
   (`appTextRef`), never the other ranges of a multi-range selection, which host
-  Copy keeps. The layer is mounted in the dashboard, popped-out and embedded chat
+  Copy keeps. That text is the selected characters as shown: a link card's hidden
+  address is never substituted for selected words of its title. The layer is mounted in the dashboard, popped-out and embedded chat
   shells. A new source is a new `sources` value, which widens every item's grant.
 - **Trigger and touch.** One **Apps** button sits in its own row under the host's
   (`SelectionToolbar`'s `appActions`), so the host row never grows. It shows only
   while the dashboard's shared `['apps']` list holds an enabled app with an approved
-  item; that list decides the button's presence and nothing else.
+  item; that list decides the button's presence and nothing else. The button
+  hides only while a read of that list is in flight or after a successful read
+  with no approved item, and no failure since. If the shared read failed (even
+  with an earlier list still cached), the list was invalidated and no read has
+  landed since, or the dashboard shell's own
+  nav read (`shell/appShell.tsx`, which owns the list there, so the layer does
+  not fetch it a second time) has not landed, the button shows (fail open on
+  visibility only), so a failure is never silent: opening the menu runs its own
+  read, which shows the error row with **Retry**. Grants are unchanged: items
+  come only from a successful fresh read. The popped-out and embedded chats have
+  no shell read, so their layer fetches the list itself.
 - **The menu reads fresh (rule).** The Apps menu reads the app list itself every
   time it opens and lists items only from that read. It never lists cached or stale
   items, and no state carries over between opens. If the read fails, it shows the
@@ -4598,7 +4613,11 @@ is handed that text and nothing else.
   `result.error { code: not_allowed }`; a frame `invocation.close` settles the
   invocation (`settle()`, no cancel); a resize is clamped to 48 and `popover.maxHeight`, and the
   host cancels with `closed` when the popover closes (Escape, Close, a click
-  outside, another pick, or the item no longer approved). Accepted offers fill the
+  outside, another pick). A capability renewal the gateway refuses with `403` or
+  `404` (the app disabled or removed, or the item's grant taken back) cancels the
+  live invocation with `revoked`, removes the frame and says the app can no longer
+  use the item; a network error or a 5xx leaves it for the frame's next retry.
+  Accepted offers fill the
   host's **Copy** and **Open \<host\>** buttons only. Selection frames are not
   registered with the link bridge, so a link clicked in one goes nowhere.
 - **Bounds.** No `ready` within 10 seconds, a message over `MAX_HOST_MESSAGE_BYTES`

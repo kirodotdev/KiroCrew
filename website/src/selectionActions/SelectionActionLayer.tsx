@@ -15,8 +15,8 @@
  *
  * @module selectionActions/SelectionActionLayer
  */
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { Check, ExternalLink, X } from 'lucide-react'
 import { api } from '../api/client'
 import { currentTheme, mintAppFrame } from '../appFrame/sandboxFrame'
@@ -261,7 +261,9 @@ function ItemPopover({ item, source, text, anchor }: { item: ResolvedSelectionAc
           className="mx-3 my-3"
           message={view.notice.kind === 'no_response'
             ? i18nT('components.selectionActions.no_response', { app: item.appLabel })
-            : i18nT('components.selectionActions.failed', { app: item.appLabel, message: view.notice.message })}
+            : view.notice.kind === 'revoked'
+              ? i18nT('components.selectionActions.revoked', { app: item.appLabel })
+              : i18nT('components.selectionActions.failed', { app: item.appLabel, message: view.notice.message })}
         />
       )}
       {copyFailed && (
@@ -293,17 +295,46 @@ function selectItems(d: unknown): ResolvedSelectionAction[] {
   return resolveSelectionActions((apps as never[]) || [])
 }
 
-export default function SelectionActionLayer() {
+/**
+ * `readApps`: whether this layer fetches the shared app list itself. The dashboard
+ * shell passes `false`: its own nav read (`shell/appShell.tsx`) owns that list and
+ * seeds the cache, so a second fetch here would duplicate the boot read. The
+ * popped-out and embedded chats have no such read and keep the default.
+ */
+/** Whether the shared ['apps'] list is invalidated and no read has landed since.
+ *  Read from the query cache, since a disabled observer never reports staleness. */
+function useAppsInvalidated(queryClient: QueryClient): boolean {
+  const cache = queryClient.getQueryCache()
+  return useSyncExternalStore(
+    (onChange) => cache.subscribe(onChange),
+    () => queryClient.getQueryState(['apps'])?.isInvalidated === true,
+    () => false,
+  )
+}
+
+export default function SelectionActionLayer({ readApps = true }: { readApps?: boolean } = {}) {
   // The app list the link-preview layer reads too (one query, one cache entry).
   // The dashboard's shared app list decides one thing: whether any enabled app
   // has an approved item, so the toolbar shows the Apps button. The menu never
-  // lists from it.
-  const { data } = useQuery({
+  // lists from it. The button hides only while a read of that list is in flight
+  // or after a successful read with no approved item. When the read failed, or
+  // the shell's own read has not landed, it shows (visibility only): the menu's
+  // fresh read then lists the items or shows the error row with Retry, so a
+  // failure is never silent. Items still come only from a successful fresh read.
+  const queryClient = useQueryClient()
+  const { data, isError, fetchStatus } = useQuery({
     queryKey: ['apps'],
     queryFn: () => (typeof api?.listApps === 'function' ? api.listApps() : []),
     select: selectItems,
+    enabled: readApps,
   })
-  useEffect(() => { setSelectionActionsAvailable(!!data && data.length > 0) }, [data])
+  // A failed refresh keeps the last list (often an empty one) as `data`, so the
+  // failure is checked first. The shell's own read reports a failure only by
+  // leaving the list invalidated (`mc:apps-changed`): that counts as failed until
+  // a read lands.
+  const invalidated = useAppsInvalidated(queryClient)
+  const available = isError || invalidated || (data ? data.length > 0 : fetchStatus === 'idle')
+  useEffect(() => { setSelectionActionsAvailable(available) }, [available])
   const state = useSelectionLayerState()
   // Behind a remote Crew the menu or popover closes, so its keys cannot reach it.
   useCloseWhenCrewHidden(state.kind !== 'none', closeSelectionLayer)

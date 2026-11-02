@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 from aiohttp import web
@@ -25,6 +26,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.apps import app_frame as af
 from kiro_crew.apps import selection_action_frame as saf
+from kiro_crew.apps import selection_action_grants as sag
 from kiro_crew.apps.manager_records import (
     STAGED_GRANT_FAMILIES,
     _approved_grants_after_manifest_change,
@@ -172,7 +174,6 @@ def test_the_row_and_the_frame_resolver_read_the_same_approved_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An item is offered and served only while its CURRENT entry is approved."""
-    from kiro_crew.apps import selection_action_grants as sag
 
     approved: list[str] = ["save:chat:1-8000:"]
     monkeypatch.setattr(
@@ -201,6 +202,23 @@ def test_the_point_is_registered_on_the_shared_frame() -> None:
     assert "selectionActions" in af.registered_frame_points()
     point = af._POINTS["selectionActions"]
     assert point.script is saf.SELECTION_ACTION_SCRIPT
+    assert point.admit is saf.admit_selection_action
+
+
+def _served(max_length: int = 8000) -> dict[str, Any]:
+    """The serialized ``save`` item the fake resolver approves."""
+    return {
+        "id": "save",
+        "entry": "./dist/sel.mjs",
+        "sources": ["chat"],
+        "minLength": 1,
+        "maxLength": max_length,
+        "effects": ["copy"],
+    }
+
+
+#: The mint query naming the grant entry the dashboard resolved ``save`` at.
+_SAVE = "/frames/selectionActions/save?grant=" + quote(sag.selection_action_entry(_served()))
 
 
 @asynccontextmanager
@@ -216,7 +234,7 @@ async def _frames(
 
     def item(name: str, item_id: str) -> dict[str, Any] | None:
         return (
-            {"id": "save", "entry": "./dist/sel.mjs"}
+            _served(state.get("maxLength", 8000))
             if name == APP and item_id == "save" and state.get("granted", True)
             else None
         )
@@ -255,7 +273,7 @@ async def test_an_approved_item_gets_a_frame_with_its_entry_and_the_invoke_scrip
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with _frames(monkeypatch, {}) as (client, calls):
-        resp = await client.post(f"/api/apps/{APP}/frames/selectionActions/save")
+        resp = await client.post(f"/api/apps/{APP}{_SAVE}")
         assert resp.status == 200
         minted = await resp.json()
         page = await client.get(minted["frame"])
@@ -269,7 +287,9 @@ async def test_an_approved_item_gets_a_frame_with_its_entry_and_the_invoke_scrip
         )
         assert fetched.status == 200 and calls == ["notes"]
         # Another item of the same app has no frame.
-        assert (await client.post(f"/api/apps/{APP}/frames/selectionActions/other")).status == 404
+        assert (
+            await client.post(f"/api/apps/{APP}/frames/selectionActions/other?grant=x")
+        ).status == 404
 
 
 @pytest.mark.asyncio
@@ -278,14 +298,35 @@ async def test_a_revoked_item_stops_its_mint_frame_and_fetch(
 ) -> None:
     state: dict[str, Any] = {}
     async with _frames(monkeypatch, state) as (client, calls):
-        minted = await (await client.post(f"/api/apps/{APP}/frames/selectionActions/save")).json()
+        minted = await (await client.post(f"/api/apps/{APP}{_SAVE}")).json()
         state["granted"] = False
-        assert (await client.post(f"/api/apps/{APP}/frames/selectionActions/save")).status == 404
+        assert (await client.post(f"/api/apps/{APP}{_SAVE}")).status == 404
         assert (await client.get(minted["frame"])).status == 404
         resp = await client.get(
             f"{af.FETCH_PREFIX}{APP}/notes", headers={af.CAPABILITY_HEADER: minted["capability"]}
         )
         assert resp.status == 401 and calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_mint_must_name_the_items_current_grant_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state: dict[str, Any] = {}
+    async with _frames(monkeypatch, state) as (client, calls):
+        bare = f"/api/apps/{APP}/frames/selectionActions/save"
+        # No grant, or one the item never had: refused before any text is sent.
+        assert (await client.post(bare)).status == 403
+        assert (await client.post(bare + "?grant=save%3Achat%3A1-9999%3Acopy")).status == 403
+        minted = await (await client.post(f"/api/apps/{APP}{_SAVE}")).json()
+        # The owner approves a narrower item in another tab: a pick or a renewal made
+        # against the old item is refused, and so is its capability's next renewal.
+        state["maxLength"] = 100
+        assert (await client.post(f"/api/apps/{APP}{_SAVE}")).status == 403
+        renew = f"/api/apps/{APP}{_SAVE}&frame={minted['frameId']}"
+        assert (await client.post(renew)).status == 403
+        fresh = "?grant=" + quote(sag.selection_action_entry(_served(100)))
+        assert (await client.post(bare + fresh)).status == 200
 
 
 def test_the_resolver_refuses_a_disabled_app_and_an_entry_leaving_ui(

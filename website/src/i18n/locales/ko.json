@@ -10498,13 +10498,18 @@
       "copied": "복사됨",
       "open": "{{host}} 열기",
       "no_response": "{{app}}이(가) 응답하지 않았습니다.",
+      "revoked": "{{app}}에서 더 이상 이 항목을 사용할 수 없습니다. 꺼졌거나 승인이 철회되었습니다.",
       "failed": "{{app}}에 문제가 발생했습니다: {{message}}",
       "too_short": "{{title}}에는 최소 {{min}}자가 필요합니다. {{count}}자를 선택했습니다.",
       "copy_failed": "클립보드에 복사할 수 없습니다.",
       "load_failed": "선택한 텍스트용 앱을 불러올 수 없습니다.",
       "loading": "앱을 불러오는 중…",
       "none": "이 텍스트에 쓸 수 있는 앱이 없습니다.",
-      "retry": "다시 시도"
+      "retry": "다시 시도",
+      "grant_entry": "{{title}}: 채팅 답변에서 선택한 텍스트(최대 {{max}}자)",
+      "grant_entry_copy": "{{title}}: 채팅 답변에서 선택한 텍스트(최대 {{max}}자)와 복사 버튼",
+      "grant_entry_open": "{{title}}: 채팅 답변에서 선택한 텍스트(최대 {{max}}자)와 링크 열기 버튼",
+      "grant_entry_copy_open": "{{title}}: 채팅 답변에서 선택한 텍스트(최대 {{max}}자)와 복사 및 열기 버튼"
     }
   },
   "hooks": {

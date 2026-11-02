@@ -12,8 +12,13 @@ Registered at the bottom of ``app_frame.py``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
-from kiro_crew.apps.selection_action_grants import approved_selection_action
+from kiro_crew.apps.selection_action_grants import (
+    approved_selection_action,
+    selection_action_entry,
+)
 
 #: The point's manifest key under ``contributes`` and its frame-point name.
 SELECTION_ACTIONS_POINT = "selectionActions"
@@ -38,6 +43,25 @@ def resolve_selection_action(name: str, item_id: str) -> tuple[str, bool, str] |
     return entry, process_backed(manifest), manifest.name
 
 
+def admit_selection_action(name: str, item_id: str, query: Mapping[str, str]) -> bool:
+    """Whether the mint's ``grant`` is the item's current approved grant entry.
+
+    The dashboard resolves an item from one read of the app list and truncates the
+    selection to that item's ``maxLength``. Every mint and renewal names the entry it
+    was resolved at, so a pick made against an item the owner has since changed (a
+    lower ``maxLength``, a dropped effect) is refused before any text is sent, and a
+    live frame's renewal is refused once the item changes.
+    """
+    grant = query.get("grant")
+    if not grant:
+        return False
+    manifest = get_app_manifest(name)
+    if manifest is None or manifest.name != name:
+        return False
+    item = approved_selection_action(name, manifest, item_id)
+    return item is not None and selection_action_entry(item) == grant
+
+
 # The handler gets the selection and that invocation's controls; `ctx` carries no
 # selection, no session and no DOM. `cancel(invocationId, reason)` comes from the
 # shared runtime's `invoke.cancel`.
@@ -60,4 +84,9 @@ const POINT = {
 """
 
 
-__all__ = ["SELECTION_ACTIONS_POINT", "SELECTION_ACTION_SCRIPT", "resolve_selection_action"]
+__all__ = [
+    "SELECTION_ACTIONS_POINT",
+    "SELECTION_ACTION_SCRIPT",
+    "admit_selection_action",
+    "resolve_selection_action",
+]

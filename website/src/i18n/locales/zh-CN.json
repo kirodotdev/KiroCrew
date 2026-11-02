@@ -10498,13 +10498,18 @@
       "copied": "已复制",
       "open": "打开 {{host}}",
       "no_response": "{{app}} 没有响应。",
+      "revoked": "{{app}} 已不能再使用此项。它已被关闭，或其批准已被收回。",
       "failed": "{{app}} 出错了：{{message}}",
       "too_short": "“{{title}}”至少需要 {{min}} 个字符，你选了 {{count}} 个。",
       "copy_failed": "无法复制到剪贴板。",
       "load_failed": "无法加载处理选中文字的应用。",
       "loading": "正在加载应用…",
       "none": "没有应用可处理这段文字。",
-      "retry": "重试"
+      "retry": "重试",
+      "grant_entry": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符",
+      "grant_entry_copy": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符，以及一个复制按钮",
+      "grant_entry_open": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符，以及一个打开链接的按钮",
+      "grant_entry_copy_open": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符，以及复制和打开按钮"
     }
   },
   "hooks": {

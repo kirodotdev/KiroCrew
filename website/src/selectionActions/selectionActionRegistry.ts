@@ -10,7 +10,8 @@
  * @module selectionActions/selectionActionRegistry
  */
 import type { OfferKind } from '../appFrame/frameProtocol'
-import { compareText } from '../i18n/format'
+import { compareText, fmtNumber } from '../i18n/format'
+import { i18nT } from '../i18n/t'
 import type { SelectionSourceKind } from './selectionSources'
 
 /** Mirrors `_PANEL_TAB_ID_RE` and the caps in `apps/manifest_contributes.py`. */
@@ -38,6 +39,9 @@ export interface ResolvedSelectionAction {
   maxHeight: number
   /** Which install of the module this is; a frame for another revision is not reused. */
   revision: string
+  /** The grant entry this item was resolved at. Every mint names it, so the gateway
+   *  refuses a pick made against an item the owner has since changed. */
+  grant: string
 }
 
 interface AppLike {
@@ -55,6 +59,32 @@ interface AppLike {
 export function selectionGrantEntry(item: { id: string; sources: readonly string[]; minLength: number; maxLength: number; effects: readonly string[] }): string {
   const sorted = (xs: readonly string[]) => [...new Set(xs)].sort().join(',')
   return `${item.id}:${sorted(item.sources)}:${item.minLength}-${item.maxLength}:${sorted(item.effects)}`
+}
+
+/**
+ * One held-back grant entry (`<id>:<sources>:<min>-<max>:<effects>`) in the
+ * owner's words: the item's title from the manifest, how much selected text it
+ * gets and which host buttons it may fill. An entry this reader cannot parse is
+ * shown as it is, so the owner never approves something the label hides.
+ */
+export function selectionActionGrantLabel(entry: string, declared: unknown): string {
+  const m = /^([^:]+):([^:]*):(\d+)-(\d+):([^:]*)$/.exec(entry)
+  if (!m) return entry
+  const [, id, sources, , max, effects] = m
+  if (sources !== 'chat') return entry
+  const fx = effects ? effects.split(',') : []
+  if (!fx.every((e) => e === 'copy' || e === 'open')) return entry
+  const decl = Array.isArray(declared)
+    ? (declared.find((d) => d && typeof d === 'object' && (d as Record<string, unknown>).id === id) as Record<string, unknown> | undefined)
+    : undefined
+  const title = typeof decl?.title === 'string' && decl.title ? decl.title : id
+  const vars = { title, max: fmtNumber(Number(max)) }
+  const copy = fx.includes('copy')
+  const open = fx.includes('open')
+  if (copy && open) return i18nT('components.selectionActions.grant_entry_copy_open', vars)
+  if (copy) return i18nT('components.selectionActions.grant_entry_copy', vars)
+  if (open) return i18nT('components.selectionActions.grant_entry_open', vars)
+  return i18nT('components.selectionActions.grant_entry', vars)
 }
 
 const intIn = (v: unknown, lo: number, hi: number, dflt: number): number | null => {
@@ -107,6 +137,7 @@ export function resolveSelectionActions(apps: readonly AppLike[]): ResolvedSelec
         width,
         maxHeight,
         revision: JSON.stringify([entry, app.version ?? '', app.installedAt ?? '', app.updatedAt ?? '']),
+        grant: selectionGrantEntry({ id, sources, minLength, maxLength, effects }),
       })
     }
   }

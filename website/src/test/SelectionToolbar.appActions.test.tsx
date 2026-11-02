@@ -87,6 +87,74 @@ describe('SelectionToolbar app row', () => {
     }
   })
 
+  it('hands an app the selected words of a link card title, not the hidden link address', async () => {
+    const onApp = vi.fn()
+    function LinkHarness() {
+      const ref = useRef<HTMLDivElement>(null)
+      return (
+        <div>
+          <div ref={ref} data-testid="container"><p><a href="https://example.com/a?b=secret" data-unfurl-url="https://example.com/a?b=secret">Quarterly report title</a></p></div>
+          <SelectionToolbar containerRef={ref} actions={[host('copy')]} appActions={[{ id: 'app:x', icon: null, label: 'Save', onClick: onApp }]} />
+        </div>
+      )
+    }
+    render(<LinkHarness />)
+    const container = screen.getByTestId('container')
+    const textNode = container.querySelector('a')!.firstChild!
+    const range = document.createRange()
+    range.setStart(textNode, 0)
+    range.setEnd(textNode, 'Quarterly'.length)
+    range.getBoundingClientRect = () => new DOMRect(10, 10, 100, 20)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+    fireEvent.mouseDown(container)
+    fireEvent.mouseUp(container)
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onApp).toHaveBeenCalledWith('Quarterly', expect.anything())
+  })
+
+  it('a docked toolbar moves up when the app row appears while it is open', async () => {
+    const composer = document.createElement('div')
+    composer.className = 'input-area'
+    composer.getBoundingClientRect = () => new DOMRect(0, 800, 600, 100)
+    document.body.append(composer)
+    const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+    // A toolbar with the app row is taller: 40px per row.
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) { return this.querySelector('[data-testid="selection-app-row"]') ? 80 : 40 },
+    })
+    function DockHarness({ appActions }: { appActions: SelectionAction[] }) {
+      const ref = useRef<HTMLDivElement>(null)
+      return (
+        <div>
+          <div ref={ref} data-testid="container"><p>Selectable text in here</p></div>
+          <SelectionToolbar containerRef={ref} actions={[host('quote')]} appActions={appActions} dock />
+        </div>
+      )
+    }
+    try {
+      const r = render(<DockHarness appActions={[]} />)
+      const container = screen.getByTestId('container')
+      selectAllIn(container)
+      fireEvent.mouseDown(container)
+      fireEvent.mouseUp(container)
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+      const bar = () => screen.getByRole('button', { name: 'quote' }).closest('[style*="top"]') as HTMLElement
+      expect(bar().style.top).toBe('752px')
+      // The app list read lands: the Apps row joins the open toolbar.
+      r.rerender(<DockHarness appActions={[{ id: 'app-items', icon: null, label: 'Apps', onClick: vi.fn() }]} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(screen.getByTestId('selection-app-row')).toBeTruthy()
+      expect(bar().style.top).toBe('712px')
+    } finally {
+      if (offsetHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight)
+      composer.remove()
+    }
+  })
+
   it('draws no app row when there are no app items', async () => {
     render(<Harness actions={[host('copy')]} appActions={[]} />)
     const container = screen.getByTestId('container')
