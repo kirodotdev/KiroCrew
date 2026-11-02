@@ -315,3 +315,209 @@ def test_the_worker_hands_a_blocked_command_back_for_the_user() -> None:
     assert "exact command in a code block" in text
     assert "what it installs or does, and from where" in text
     assert "no persuasion" in text
+
+
+# -- ledger tracking and the gated patrol, only where the ledger is mounted ---- #
+
+#: What the patrol text must name, and what a render without the ledger must not.
+_PATROL_MARKS = ('watch="work-ledger"', "300..900", "patrol_budget.py renew")
+#: The ledger verbs the tracking sentence names only where they are mounted.
+_LEDGER_TOOLS = ("work_ledger_record", "work_ledger_read", "work_ledger_rebuild")
+
+
+def test_the_patrol_piece_names_the_gated_ledger_watch_band_and_renewal() -> None:
+    text = crewmate_prompts.text("conductor.patrol")
+    for mark in _PATROL_MARKS:
+        assert mark in text, mark
+    assert "Never pass gate:false on a patrol." in text
+    # Bind before seed: create, then session_create, then bind, then the seed.
+    order = [
+        text.index("action=create"),
+        text.index("2. session_create"),
+        text.index("action=bind"),
+        text.index("4. session_send"),
+    ]
+    assert order == sorted(order)
+    # A quick single task keeps the report flow.
+    assert "[Worker report] stays your patrol" in text
+
+
+def test_the_patrol_band_and_renew_wording_is_the_conductors_own() -> None:
+    """Copied from the conductor charter, not rewritten (``_about`` says so)."""
+    from kiro_crew.agent_parts.spec_prompts import _CONDUCTOR_SYSTEM_PROMPT
+
+    def flat(s: str) -> str:
+        return " ".join(s.split())
+
+    text = crewmate_prompts.text("conductor.patrol")
+    band = text[
+        text.index("Keep `interval_secs`") : text.index("a spent loop cannot be renewed later")
+    ]
+    assert flat(band) in flat(_CONDUCTOR_SYSTEM_PROMPT)
+
+
+def test_the_tracking_sentence_without_the_ledger_names_no_ledger_tool() -> None:
+    plain = crewmate_prompts.text("conductor.tracking")
+    assert not any(tool in plain for tool in _LEDGER_TOOLS)
+    mounted = crewmate_prompts.text("conductor.tracking_ledger")
+    assert "work_ledger_record" in mounted and "work_ledger_read" in mounted
+
+
+def _render(monkeypatch: pytest.MonkeyPatch, *, ledger: bool) -> str:
+    """``build_member_section`` plus ``operating_mode_block``, as the session start
+    joins them, with the ledger answer forced either way."""
+    from types import SimpleNamespace
+
+    from kiro_crew import context as ctx
+    from kiro_crew import member_mate_tools
+    from kiro_crew.context_assembly import member
+
+    binding = SimpleNamespace(
+        description="", triggers="", kiro_agent="", workspace="", member_id=""
+    )
+    cfg = ctx.KiroCrewConfig()
+    cfg.agents["Atlas"] = binding
+    monkeypatch.setattr(ctx.KiroCrewConfig, "load", staticmethod(lambda *a, **k: cfg))
+    monkeypatch.setattr(member_mate_tools, "binding_has_ledger_tools", lambda _b: ledger)
+    section = member.build_member_section("Atlas", include_briefing=False)
+    return section + member.operating_mode_block("Atlas", ledger=ledger)
+
+
+def test_a_render_with_the_ledger_teaches_tracking_and_the_gated_patrol(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    text = _render(monkeypatch, ledger=True)
+    for mark in _PATROL_MARKS:
+        assert mark in text, mark
+    assert crewmate_prompts.text("conductor.tracking_ledger") in text
+    assert crewmate_prompts.text("conductor.patrol") in text
+    assert _READ_THE_SKILL in text
+
+
+#: The line that sends the crewmate to the skill's operating procedure.
+_READ_THE_SKILL = "Read it before planning work with more than one item"
+
+
+def test_the_skill_line_points_at_goal_conductor_for_the_whole_procedure() -> None:
+    text = crewmate_prompts.text("conductor.patrol")
+    line = next(s for s in text.splitlines() if _READ_THE_SKILL in s)
+    assert "goal-conductor skill" in line
+    assert "follow it for dispatch, patrol, verdicts and worker debate" in line
+
+
+def test_a_render_without_the_ledger_never_sends_the_crewmate_to_the_skill(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    text = _render(monkeypatch, ledger=False)
+    assert _READ_THE_SKILL not in text
+    assert "goal-conductor" not in text
+
+
+def test_a_render_without_the_ledger_is_the_text_every_crewmate_had(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from kiro_crew.context_assembly import member
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    text = _render(monkeypatch, ledger=False)
+    for mark in _PATROL_MARKS:
+        assert mark not in text, mark
+    assert "monitor_start" not in text
+    assert crewmate_prompts.text("conductor.tracking") in text
+    assert crewmate_prompts.text("conductor.tracking_ledger") not in text
+    assert member.operating_mode_block("Atlas") == crewmate_prompts.fill(
+        "conductor.operating_mode", agent_label="Atlas"
+    )
+
+
+# -- which spec counts as having the ledger ---------------------------------- #
+
+
+def _conductor_spec(**over: object) -> dict:
+    spec: dict = {
+        "mcpServers": {"kirocrew-work": {"command": "kirocrew", "args": ["mcp-work"]}},
+        "tools": ["fs_read", "@kirocrew-work"],
+        "allowedTools": [
+            "@kirocrew-work/work_ledger_read",
+            "@kirocrew-work/work_ledger_record",
+        ],
+    }
+    spec.update(over)
+    return spec
+
+
+def test_a_spec_that_mounts_and_grants_the_ledger_has_it() -> None:
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
+    assert spec_has_ledger_tools(_conductor_spec())
+    assert spec_has_ledger_tools(_conductor_spec(tools="*"))
+    assert spec_has_ledger_tools(_conductor_spec(allowedTools=["@kirocrew-work"]))
+    assert spec_has_ledger_tools(_conductor_spec(tools=["@kirocrew-work/work_ledger_record"]))
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        pytest.param({"mcpServers": {}}, id="not-mounted"),
+        pytest.param({"tools": ["fs_read"]}, id="server-not-in-tools"),
+        pytest.param({"tools": ["@kirocrew-work/work_ledger_read"]}, id="only-read-selected"),
+        pytest.param(
+            {"mcpServers": {"kirocrew-work": {"command": "k", "disabled": True}}},
+            id="muted",
+        ),
+        pytest.param(
+            {"excludedTools": ["@kirocrew-work/work_ledger_record"]},
+            id="record-excluded",
+        ),
+        # What ``auto_approve._apply_allowed_tools_ceiling`` leaves when the ceiling
+        # withholds the verb: mounted, but not granted.
+        pytest.param(
+            {"allowedTools": ["@kirocrew-work/work_ledger_read"]},
+            id="ceiling-withholds-record",
+        ),
+        pytest.param({"allowedTools": []}, id="nothing-granted"),
+    ],
+)
+def test_a_spec_without_the_mounted_granted_ledger_has_none(over: dict) -> None:
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
+    assert not spec_has_ledger_tools(_conductor_spec(**over))
+
+
+def test_a_binding_whose_chat_spec_cannot_be_read_has_no_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew import member_mate_tools
+
+    def boom(_b: object) -> dict:
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(member_mate_tools, "_chat_spec", boom)
+    assert member_mate_tools.binding_has_ledger_tools(object()) is False
+    assert member_mate_tools.binding_has_ledger_tools(None) is False
+
+
+def test_the_ledger_preview_fixture_renders_the_patrol_cleanly() -> None:
+    """The operating mode only: the conductor section varies by platform (briefing
+    reads), so the golden beside the fixture is a reading aid, not compared here."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            str(ROOT / "scripts" / "crewmate_prompt_preview.py"),
+            "--fixture",
+            "ledger",
+            "--piece",
+            "operating_mode",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=_PREVIEW_TIMEOUT_SECONDS,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    for mark in (*_PATROL_MARKS, _READ_THE_SKILL):
+        assert mark in proc.stdout, mark

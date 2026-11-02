@@ -171,6 +171,25 @@ def _install_mate_conductor_agent() -> None:
         if isinstance(listed, list):
             config[key] = [t for t in listed if _kept(t)]
     _exclude(config, MATE_CONDUCTOR_EXCLUDED_TOOLS)
+    # The patrol text (``crewmate_prompts.json`` ``conductor.patrol``) names the
+    # goal-conductor skill's ``patrol_budget.py``, and is rendered only where this
+    # spec mounts the work ledger (``member_mate_tools.binding_has_ledger_tools``).
+    # The mapping follows the text: a spec without the ledger names no skill, and a
+    # mapping there would only narrow the skills an unmapped spec inherits.
+    # Judged as the prompt check judges the written spec: after the governance
+    # ceiling has filtered ``allowedTools`` (on a copy, so the write's own pass
+    # still runs and audits once).
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
+    governed = {**config, "allowedTools": list(config.get("allowedTools") or [])}
+    auto_approve._apply_allowed_tools_ceiling(
+        governed, source="_install_mate_conductor_agent", audit=False
+    )
+    if spec_has_ledger_tools(governed):
+        # ``dashboard`` rides along because the crewmate prompt names that skill
+        # (``conductor.crew_log_section``); a mapping of goal-conductor alone would
+        # scope the chat's skills to it and leave the dashboard skill out of reach.
+        skill_resources.map_prompt_skills(config, "goal-conductor", "dashboard")
     _write_mate_service_spec(
         _MATE_CONDUCTOR_AGENT_FILENAME, config, "_install_mate_conductor_agent"
     )
