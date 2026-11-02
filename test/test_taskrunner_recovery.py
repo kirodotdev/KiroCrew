@@ -187,14 +187,17 @@ class TestResourceManagement:
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         # Simulate a long-running task that blocks until cancelled
+        started = asyncio.Event()
         blocked = asyncio.Event()
 
         async def mock_execute(run, task, hk="", session_key=""):
             # Register the session so cleanup can find it
             sessions._sessions[session_key] = MagicMock()
             try:
-                # flake-ok: pre-existing unbounded Event.wait in the block-until-cancelled stub, moved verbatim; tracked for a de-flake pass
-                await blocked.wait()  # blocks forever until cancelled
+                started.set()
+                # Parked until the cancel reaches it; the cleanup below sets it too, so a
+                # cancel that was lost cannot leave the stub waiting past the test.
+                await blocked.wait()
             except asyncio.CancelledError:
                 raise
             return True
@@ -222,16 +225,17 @@ class TestResourceManagement:
         task = asyncio.create_task(_bg())
         runner._tasks["cancel1"] = task
 
-        # Let the task start and block
-        # flake-ok: pre-existing 50 ms wait for the background run to block before the cancel, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms wait for the background run to block before the cancel, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.05)
+        try:
+            # Let the task start and block
+            await await_until(started, what="the step to start and block")
 
-        # Cancel it
-        runner.cancel("cancel1")
+            # Cancel it
+            runner.cancel("cancel1")
 
-        # Wait for the task to fully complete (cancel + finally block)
-        await await_until(task)
+            # Wait for the task to fully complete (cancel + finally block)
+            await await_until(task)
+        finally:
+            blocked.set()
 
         # Verify: task is cancelled, sessions were cleaned up
         assert run.status == "cancelled"
@@ -248,14 +252,15 @@ class TestResourceManagement:
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         started = asyncio.Event()
+        blocked = asyncio.Event()
 
         async def mock_execute(run, task, hk="", session_key=""):
             sessions._sessions[session_key] = MagicMock()
             if task.index == 1:
                 started.set()
-                # flake-ok: pre-existing block-until-cancelled stub sleep, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing block-until-cancelled stub sleep, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(10)  # block until cancelled
+                # Parked until the cancel reaches it; the cleanup below sets it too, so a
+                # cancel that was lost cannot leave the stub waiting past the test.
+                await blocked.wait()
             task.status = StepStatus.PASSED
             return True
 
@@ -283,14 +288,16 @@ class TestResourceManagement:
         task = asyncio.create_task(_bg())
         runner._tasks["cancel2"] = task
 
-        # flake-ok: pre-existing unbounded Event.wait on a stub step the run starts itself, moved verbatim; tracked for a de-flake pass
-        await started.wait()
-        runner.cancel("cancel2")
-        # Allow cancellation to fully propagate — CI machines may be slower
-        await async_wait_until(
-            lambda: run.status == "cancelled",
-            describe=lambda: f"cancellation did not propagate; status={run.status}",
-        )
+        try:
+            await await_until(started, what="the first step of the group to start")
+            runner.cancel("cancel2")
+            # Allow cancellation to fully propagate — CI machines may be slower
+            await async_wait_until(
+                lambda: run.status == "cancelled",
+                describe=lambda: f"cancellation did not propagate; status={run.status}",
+            )
+        finally:
+            blocked.set()
 
         assert run.status == "cancelled"
         # All 3 sessions should have been targeted by cleanup
@@ -306,25 +313,29 @@ class TestResourceManagement:
         sessions = _make_mock_sessions()
         sessions.cancel_current = AsyncMock()
         reset_completed = []
+        reset_entered = []
+        reset_gate = asyncio.Event()
 
         async def slow_reset(key: str) -> None:
-            # flake-ok: pre-existing 100 ms slow-reset stub, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 100 ms slow-reset stub, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.1)  # simulates provider.shutdown()
+            reset_entered.append(key)
+            # Simulates provider.shutdown(): it finishes when the test lets it, so the cancel
+            # is certain to land while a reset is in flight. The cleanup below sets it too.
+            await reset_gate.wait()
             reset_completed.append(key)
 
         sessions.reset = slow_reset
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         started = asyncio.Event()
+        blocked = asyncio.Event()
 
         async def mock_execute(run, task, hk="", session_key=""):
             sessions._sessions[session_key] = MagicMock()
             if task.index == 1:
                 started.set()
-                # flake-ok: pre-existing block-until-cancelled stub sleep, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing block-until-cancelled stub sleep, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(10)
+                # Parked until the cancel reaches it; the cleanup below sets it too, so a
+                # cancel that was lost cannot leave the stub waiting past the test.
+                await blocked.wait()
             task.status = StepStatus.PASSED
             return True
 
@@ -351,18 +362,26 @@ class TestResourceManagement:
         task = asyncio.create_task(_bg())
         runner._tasks["shield1"] = task
 
-        # flake-ok: pre-existing unbounded Event.wait on a stub step the run starts itself, moved verbatim; tracked for a de-flake pass
-        await started.wait()
-        runner.cancel("shield1")
-        # Wait for the cancel to actually settle (status reaches 'cancelled' and the
-        # shielded resets finish) instead of guessing a fixed sleep. The old
-        # `await asyncio.sleep(1.5)` was a timing guess that the slower aarch64
-        # CPython 3.10 build worker exceeded under parallel xdist load, leaving the
-        # state at 'cancelling' when asserted -- a flaky, worker-speed-dependent
-        # failure. Polling the observable end-state is order/speed-independent.
-        await async_wait_until(
-            lambda: run.status == "cancelled" and len(reset_completed) >= 3,
-        )
+        try:
+            await await_until(started, what="the first step of the group to start")
+            runner.cancel("shield1")
+            # The cancel has reached the group's resets once one is parked in flight.
+            await async_wait_until(
+                lambda: reset_entered, describe=lambda: "no reset began after the cancel"
+            )
+            reset_gate.set()
+            # Wait for the cancel to actually settle (status reaches 'cancelled' and the
+            # shielded resets finish) instead of guessing a fixed sleep. The old
+            # `await asyncio.sleep(1.5)` was a timing guess that the slower aarch64
+            # CPython 3.10 build worker exceeded under parallel xdist load, leaving the
+            # state at 'cancelling' when asserted -- a flaky, worker-speed-dependent
+            # failure. Polling the observable end-state is order/speed-independent.
+            await async_wait_until(
+                lambda: run.status == "cancelled" and len(reset_completed) >= 3,
+            )
+        finally:
+            blocked.set()
+            reset_gate.set()
 
         assert run.status == "cancelled"
         # Without shield, slow_reset would be interrupted and reset_completed would be empty
