@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from crew_log_drain import assert_drained
 from session_control_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     _busy,
     _enabled_fixture,
@@ -408,7 +409,7 @@ async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monke
     sid = "sess-steer-requeue"
     crew_log_emit.on_session_opened(sid, agent="kirocrew", slot="chat-1")
     crew_log_emit.on_turn_started(sid, 1, "user")
-    assert crew_log_emit.flush()
+    assert_drained()
 
     state = _make_state(tmp_path)
     slot = _busy(_slot(state, "chat-1"))
@@ -429,7 +430,7 @@ async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monke
     outcome = await cd.steer_into_running_turn(state, slot, "run this instead")
 
     assert outcome == cd.STEER_REQUEUED
-    assert crew_log_emit.flush()
+    assert_drained()
     body = [
         json.loads(line)
         for line in lg.crew_log_path("session", sid).read_text(encoding="utf-8").splitlines()[1:]
