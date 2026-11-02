@@ -84,7 +84,6 @@ def _state(**kw: Any) -> Any:
     state.slack_client = None
     state._native_cards = {}
     state._notification_log = []
-    state._unread_count = 0
     state.ws_client_count.return_value = 0
     for key, val in kw.items():
         setattr(state, key, val)

@@ -5,7 +5,7 @@
  * muting a channel leaves the note in history but stamps it `silenced: true` and
  * forces `priority: "passive"`, "so every attention surface (badge count, sound,
  * native banner, feed styling) skips it". The coordinator holds itself to that —
- * `notification_coordinator.deliver()` only does `state._unread_count += 1` when
+ * `notification_coordinator.unread_count()` counts a note only when
  * `note.get("priority") != "passive"`.
  *
  * `selectUnacknowledgedNotificationCount` (`surfaces/builtins.tsx`) is the
@@ -71,7 +71,7 @@ describe('notification attention count skips silenced / passive notes', () => {
   it('ignores a passive-priority note that was never muted', () => {
     // A channel default or a producer-requested `passive` — e.g. a subagent
     // completion. `silenced` is absent, so a check on that flag alone misses it,
-    // while the backend's own `_unread_count` already skips it on priority.
+    // while the backend's own `unread_count` already skips it on priority.
     const store = createTestStore()
     push(store, note({ title: 'Subagent finished', channel: 'chat.subagent', priority: 'passive' }))
 

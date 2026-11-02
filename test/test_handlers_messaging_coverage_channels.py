@@ -39,9 +39,10 @@ from kiro_crew.secrets import SecretVault
 
 class TestNotificationRoutes:
     def test_list_returns_log_and_unread(self) -> None:
-        state = _state(_notification_log=[{"ts": "1"}], _unread_count=3)
+        notes = [{"ts": "1"}, {"ts": "2", "acked": True}, {"ts": "3", "priority": "passive"}]
+        state = _state(_notification_log=notes)
         resp = _run(mod.api_notifications, _Req(state))
-        assert _payload(resp) == {"notifications": [{"ts": "1"}], "unread": 3}
+        assert _payload(resp) == {"notifications": notes, "unread": 1}
 
     @pytest.mark.parametrize(
         "handler",

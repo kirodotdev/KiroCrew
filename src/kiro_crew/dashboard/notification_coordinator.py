@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import Executor
 from typing import Any
 
@@ -88,6 +88,22 @@ def session_is_muted(state: Any, session_key: str) -> bool:
         seen.add(key)
         key = creator._created_by
     return False
+
+
+def unread_count(notes: Iterable[dict[str, Any]]) -> int:
+    """How many of *notes* still need the user: not read, and not passive.
+
+    Counted from the notes themselves on every read, so acknowledging a note,
+    deleting one, an expiry sweep and a gateway restart all agree with it. The
+    rule is the bell badge's (``shell/topbar/shellHeader.tsx``): a passive note
+    and a silenced one (a muted channel or session, which delivery also forces
+    to passive) are history, not attention.
+    """
+    return sum(
+        1
+        for note in notes
+        if not note.get("acked") and note.get("priority") != "passive" and not note.get("silenced")
+    )
 
 
 class NotificationCoordinator:
@@ -180,13 +196,11 @@ class NotificationCoordinator:
         state._notification_log.append(note)
         if len(state._notification_log) > self._max_persisted:
             del state._notification_log[: len(state._notification_log) - self._max_persisted]
-        if note.get("priority") != "passive":
-            state._unread_count += 1
         state._broadcast(note)
 
         # Secondary sink: fan out to browser Web Push. A silenced (muted) note
-        # or one forced to passive priority is history-only — the same gate the
-        # unread badge uses above — so it must not raise an OS banner on a
+        # or one forced to passive priority is history-only — the same gate
+        # ``unread_count`` applies — so it must not raise an OS banner on a
         # closed device either. Best-effort: the fan-out schedules its own
         # async delivery and never blocks or fails local delivery.
         if self._web_push_fanout is not None and not note.get("silenced"):
@@ -280,6 +294,5 @@ class NotificationCoordinator:
     async def clear(state: Any) -> None:
         """Clear clients before awaiting disk so a concurrent delivery survives."""
         state._notification_log.clear()
-        state._unread_count = 0
         state.broadcast_ws("notifications_clear", {})
         await state._rewrite_notifications_async()

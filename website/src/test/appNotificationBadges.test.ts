@@ -191,7 +191,7 @@ describe('isAppNavId', () => {
 
 describe('appNotificationBadges: passive notes are not attention', () => {
   it('excludes a passive note, matching the host unread definition', () => {
-    // notification_coordinator.py increments _unread_count only when
+    // notification_coordinator.unread_count() counts a note only when
     // priority != "passive", and the feed dims a passive note as non-attention.
     // Counting one here would contradict the subsystem this derives from.
     const notes: BadgeNote[] = [
@@ -221,7 +221,7 @@ describe('appNotificationBadges: passive notes are not attention', () => {
 describe('appNotificationBadges: muted channels are not attention', () => {
   it('excludes a silenced note, completing the host three-clause definition', () => {
     // The host's own predicate is `!acked && priority !== 'passive' && !silenced`
-    // (App.tsx, "mirroring the backend's _unread_count semantics"; the same
+    // (App.tsx, "mirroring the backend's unread_count semantics"; the same
     // expression again in useWebSocket.ts, and an existing test pins it).
     // Omitting any one clause invents a second definition of unread.
     const notes: BadgeNote[] = [

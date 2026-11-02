@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         logger,
         notification_source_app,
         refuse_relayed,
+        unread_count,
     )
 
 
@@ -29,16 +30,17 @@ async def api_notifications(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if is_relay_teammate(request):
         # A relayed teammate has no app surface, so an app's push notifications are
-        # withheld, as the live WebSocket and SSE feeds withhold them. Unread is the
-        # delivery counter capped at what this view still counts.
+        # withheld, as the live WebSocket and SSE feeds withhold them. Unread is
+        # counted over the notes this view returns.
         notes = [note for note in state._notification_log if not _is_app_note(note)]
         if len(notes) != len(state._notification_log):
             audit_teammate_withheld("notification")
-        counted = sum(1 for note in notes if note.get("priority") != "passive")
-        unread = min(state._unread_count, counted)
-        return web.json_response({"notifications": notes, "unread": unread})
+        return web.json_response({"notifications": notes, "unread": unread_count(notes)})
     return web.json_response(
-        {"notifications": state._notification_log, "unread": state._unread_count}
+        {
+            "notifications": state._notification_log,
+            "unread": unread_count(state._notification_log),
+        }
     )
 
 
@@ -91,8 +93,6 @@ async def api_notifications_clear(request: web.Request) -> web.Response:
             # Clear what the teammate sees and keep what they are withheld: no
             # whole-feed clear, and no clear broadcast that would empty the owner's.
             state._notification_log = hidden
-            still_counted = sum(1 for note in hidden if note.get("priority") != "passive")
-            state._unread_count = min(state._unread_count, still_counted)
             await state._rewrite_notifications_async()
             audit_teammate_withheld("notifications_clear")
             return web.json_response({"ok": True})

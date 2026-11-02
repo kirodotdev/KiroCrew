@@ -47,8 +47,8 @@ const capped = (items: Notification[]): Notification[] =>
  *  `kiro_crew/notifications/settings.py`: muting a channel keeps the note in
  *  history but sets `silenced: true` and forces `priority: "passive"`, "so every
  *  attention surface (badge count, sound, native banner, feed styling) skips
- *  it". `notification_coordinator.deliver()` holds its own `_unread_count` to
- *  the priority half of that rule.
+ *  it". `notification_coordinator.unread_count()` applies both halves to the
+ *  `unread` number `GET /api/notifications` returns.
  *
  *  Both halves are checked, not just `silenced`: a channel default or a
  *  producer-requested `passive` (a subagent completion, say) is never muted and
