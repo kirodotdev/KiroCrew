@@ -46,6 +46,7 @@ if __name__ == "__main__":
 # imported while it is still pre-isolation, so no post-isolation code touches the
 # filesystem for stdlib.
 import ctypes  # noqa: E402
+import fnmatch  # noqa: E402
 import os  # noqa: E402
 import platform as _plat  # noqa: E402
 import stat  # noqa: E402
@@ -466,7 +467,10 @@ if __name__ == "__main__":
 # ``kiro_crew.sandbox_launcher_parts``. The renderer drops these lines.
 from kiro_crew._facade_compose import compose as _facade_compose  # noqa: E402
 from kiro_crew.sandbox_launcher_parts.exec_lockdown import (  # noqa: E402
+    _git_ssh_config_file,
     _git_ssh_identity_opts,
+    _ssh_config_loadable,
+    _ssh_config_words,
     drop_privileges,
     enter_exec_cwd,
     exec_agent,
