@@ -40,10 +40,9 @@ class TestResolveClientPortExFallThrough:
     """A non-numeric port env var degrades to the next source, never ValueError."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class-scoped autouse fixture moved verbatim and no test in the cli_server coverage files calls monkeypatch.undo()
-    def _no_other_sources(self, monkeypatch):
-        monkeypatch.setattr(cli_server, "_config_url_port", lambda: None)
-        monkeypatch.setattr(cli_server, "_marker_port", lambda: None)
+    def _no_other_sources(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(cli_server, "_config_url_port", lambda: None)
+        _floor_monkeypatch.setattr(cli_server, "_marker_port", lambda: None)
 
     def test_garbage_kirocrew_port_falls_to_default(self, monkeypatch) -> None:
         monkeypatch.setenv("KIROCREW_PORT", "not-a-number")
