@@ -49,6 +49,7 @@ from kiro_crew.acp.client_timeouts import (
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.transport_framing import write_notification_best_effort
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
@@ -163,14 +164,23 @@ def steer_version_issue(backend: str, agent_version: str) -> str:
 GOOSE_TESTED_VERSION = "1.50.1"
 GOOSE_TESTED_RANGE = ((1, 50, 0), (1, 51, 0))
 
+#: The codex-acp major the Real Adapter lane measures: ``test/real_adapters/package.json``
+#: pins a release of it, and a test holds this to that pin.
+CODEX_ACP_TESTED_MAJOR = 2
+CODEX_ACP_TESTED_RANGE = ((CODEX_ACP_TESTED_MAJOR, 0, 0), (CODEX_ACP_TESTED_MAJOR + 1, 0, 0))
+
 #: Per backend: the tested range and the command that installs the tested release.
-#: Opt-in by membership, as :data:`_STEER_MIN_VERSIONS`; goose is the only member.
+#: Opt-in by membership, as :data:`_STEER_MIN_VERSIONS`.
 _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, int, int]], str]] = {
     ACP_BACKEND_GOOSE: (
         GOOSE_TESTED_RANGE,
         ACP_BACKEND_LAUNCH[ACP_BACKEND_GOOSE].install_command.replace(
             "| bash", f"| GOOSE_VERSION={GOOSE_TESTED_VERSION} bash"
         ),
+    ),
+    ACP_BACKEND_CODEX: (
+        CODEX_ACP_TESTED_RANGE,
+        f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CODEX]}@{CODEX_ACP_TESTED_MAJOR}",
     ),
 }
 
@@ -190,7 +200,9 @@ def untested_version_issue(backend: str, agent_version: str) -> str:
         agent_version, high
     ):
         return ""
-    tested = ".".join(str(part) for part in low[:2]) + ".x"
+    # A whole-major range (codex 2.0.0 up to 3.0.0) reads "2.x", a minor one "1.50.x".
+    whole_major = high == (low[0] + 1, 0, 0) and low[1:] == (0, 0)
+    tested = ".".join(str(part) for part in low[: 1 if whole_major else 2]) + ".x"
     return (
         f"{backend} {agent_version} is outside the tested range {tested}, so parts of "
         f"it may behave in ways Crew has not checked. To install the tested release, "
