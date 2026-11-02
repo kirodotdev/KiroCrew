@@ -539,7 +539,9 @@ class TestFleetProbeDeliveryCounters(FleetProbeHarness):
         self._session(sessions, "s-fine", "WORKING: healthy")
         out = self._run(mod, cfg, capsys)
         assert "deliver init-timeout 1, watchdog 1" in out
-        assert "| foreign 0 |" in out  # 2d's counter sits before deliver
+        # 2d's counter sits before deliver; the helper's proc root is absent, so
+        # the counter reads as unmeasured.
+        assert "| foreign n/a |" in out
 
     def test_delivery_patterns_are_configurable(self, tmp_path, capsys, monkeypatch):
         mod = self._mod()
@@ -1014,7 +1016,7 @@ class TestFleetProbeCompatibility(FleetProbeHarness):
         self._session(tmp_path / "sessions", "s-1", "WORKING: fine")
         out = self._run(mod, cfg, capsys)
         assert re.search(
-            r"OK 1 watched, 0 fired \| .*\| banned 0 \| foreign 0 \| "
+            r"OK 1 watched, 0 fired \| .*\| banned n/a \| foreign n/a \| "
             r"deliver init-timeout 0, watchdog 0",
             out,
         ), out
