@@ -46,6 +46,7 @@ from remote_crew_chaining_helpers import (
 )
 
 from kiro_crew.instances.ssh_tunnel_manager import _Mint
+from kiro_crew.testing.wait import await_until
 
 
 class TestHopRetiredDetection:
@@ -73,8 +74,10 @@ class TestHopRetiredDetection:
         async def run():
             out = await mgr._refresh_token_once("c")
             if mgr._retirements:
-                # flake-ok: pre-existing unbounded await on the retirement tasks the manager scheduled; each ends in-process, moved verbatim
-                await asyncio.gather(*list(mgr._retirements))
+                await await_until(
+                    asyncio.gather(*list(mgr._retirements)),
+                    what="the retirement the refresh scheduled",
+                )
             return out
 
         return asyncio.run(run())
@@ -659,8 +662,10 @@ class TestChainedRepairPaths:
             # park forever. Drained here so the assertion is deterministic rather
             # than a race with the loop closing.
             if mgr._retirements:
-                # flake-ok: pre-existing unbounded await on the retirement tasks the manager scheduled; each ends in-process, moved verbatim
-                await asyncio.gather(*list(mgr._retirements))
+                await await_until(
+                    asyncio.gather(*list(mgr._retirements)),
+                    what="the retirement the refresh scheduled",
+                )
             return refreshed
 
         assert (
@@ -712,8 +717,10 @@ class TestChainedRepairPaths:
                 binds_forward=False,
             )
             if mgr._retirements:
-                # flake-ok: pre-existing unbounded await on the retirement tasks the manager scheduled; each ends in-process, moved verbatim
-                await asyncio.gather(*list(mgr._retirements))
+                await await_until(
+                    asyncio.gather(*list(mgr._retirements)),
+                    what="the retirement the stale store scheduled",
+                )
             return stored
 
         assert asyncio.run(store_stale()) is False, "stored a credential for a dead generation"
@@ -912,27 +919,32 @@ class TestTheRefreshScheduleFollowsTheLifetimeItStored:
     def _intervals(mgr, monkeypatch, *, cycles: int, on_cycle=None) -> list[float]:
         """Run the REAL loop and return the interval it asked to sleep each cycle.
 
-        Sleeps are recorded and skipped rather than waited out, and the loop is
-        stopped by cancelling it once it has asked ``cycles`` times — the same way
-        disconnect stops it in production.
+        The loop sleeps whatever ``_refresh_delay`` answers, so that answer is what is
+        recorded. It is then replaced by 0, so the loop re-mints at once instead of
+        waiting the hours out, and it still asks for the next interval after every
+        re-mint, which is what these cases measure. The loop is stopped by cancelling
+        it as it asks for its ``cycles``-th interval, the same way disconnect stops it
+        in production.
         """
         seen: list[float] = []
-        real_sleep = asyncio.sleep
+        real_delay = mgr._refresh_delay
 
-        async def record(delay, *args, **kwargs):
-            seen.append(delay)
+        def record_then_skip(instance_id):
+            seen.append(real_delay(instance_id))
             if len(seen) >= cycles:
-                raise asyncio.CancelledError
-            if on_cycle is not None:
+                asyncio.current_task().cancel()
+            elif on_cycle is not None:
                 on_cycle(len(seen))
-            await real_sleep(0)
+            return 0.0
 
-        # flake-ok: pre-existing worker-wide asyncio.sleep rebind that records each interval the refresh loop asks for, scoped by monkeypatch, moved verbatim
-        monkeypatch.setattr(asyncio, "sleep", record)
+        monkeypatch.setattr(mgr, "_refresh_delay", record_then_skip)
 
         async def run():
+            refresh_loop = asyncio.ensure_future(mgr._token_refresh_loop("c"))
             with contextlib.suppress(asyncio.CancelledError):
-                await mgr._token_refresh_loop("c")
+                await await_until(
+                    refresh_loop, what=f"the refresh loop asking for interval {cycles}"
+                )
 
         asyncio.run(run())
         return seen
