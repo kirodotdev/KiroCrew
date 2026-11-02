@@ -2147,6 +2147,95 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   dashboard. An archived channel's turns fire no hooks. A second click finds the channel archived
   and archives nothing. SEL: `slack.code_channel.wrap_up`,
   `slack.code_channel.archive`.
+- **Approval cards.** A code channel's own session posts its tool-approval card
+  top-level in the channel, where its replies go: `_run_chat` takes the card's
+  thread from `binding.mirror_post_thread`, the mirror's own rule, so every other
+  linked thread keeps threading. Such a card adds a secondary **Trust this
+  channel** button (Approve stays the one primary). A click is routed by
+  `interactions.dispatch` after its owner check and the `channels` inbound
+  ceiling to `approval_picker.handle_trust_call`, which accepts only a card the
+  channel's own session posted, applies the code-channel command gates (bound
+  workspace, owner, channel and origin admit the bot, not archived), then puts
+  the session on Trust through `apply_approval_mode` -- the dashboard picker's
+  mutation, its sweep approving the waiting call and its `mode_change:trust` row
+  naming `slack-code-channels:<user>` -- and posts one warning line in the
+  channel. No approval store of its own. SEL: `slack.code_channel.approval_mode`.
+- **Approval mode from the channel.** `agent_picker.kickoff_blocks` draws an
+  **Approval mode** `static_select` (Normal / Reads / Trust, the dashboard's names) below the agent picker,
+  preselected with `approval_picker.current_mode` of the session (the configured
+  starting mode at bind; the kickoff is re-drawn when the session did not take it),
+  with a context line (`approval_picker.MODES_NOTE`) saying what each mode does. The
+  select carries no `confirm` (Block Kit confirms a select as a whole and could not
+  name the pick): a pick of Reads or Trust that changes the mode only posts the owner
+  an ephemeral (`approval_picker.confirm_blocks`) whose button names the mode; its
+  value pins the mode, the channel's session and the time asked
+  (`CONFIRM_TTL_SECS`), and `approval_picker.handle_confirm` refuses a stale one.
+  Normal applies straight from the select.
+  A pick (`approval_picker.handle_select`, then `handle_confirm`, both routed through
+  `worker_approvals.dispatch_card_click`) and `/kirocrew trust [normal|reads|all]` (a
+  `commands.handle_slash` sub-command beside `agent`; `ask` is an alias for `normal`; bare shows the mode; outside a
+  code channel it is not a sub-command and falls to the help text) both pass `agent_picker.authorize` and run
+  `approval_picker.set_channel_mode`, i.e. `apply_approval_mode`; the kickoff is
+  re-drawn with who set it and Trust posts the warning line. While the YOLO override is
+  on, a pick is never answered as unchanged (Normal must reach `apply_approval_mode` to end
+  it), the reply says when it ended, and the kickoff carries a YOLO line.
+- **Worker approvals.** A prompt raised in a session the channel's CURRENT session
+  created (`_created_by`, resolved back through `surface.binding_for_slot`; not
+  Slack-linked itself; feature on; channel not archived) is relayed by
+  `worker_approvals.relay` from `_run_chat`, top-level in the channel, headed with
+  the worker's redacted, mrkdwn-escaped title; the tool and arguments take the same
+  outbound redaction as every card. Approve / Reject / Trust this channel are its own
+  action ids, routed by `interactions.dispatch` after its owner check and the
+  `channels` inbound ceiling and the per-channel policy (`allowed_channel_ids`, via
+  `worker_approvals.dispatch_card_click`) to `worker_approvals.handle_click`, which
+  re-checks the lineage live, applies the code-channel gates and resolves the
+  worker's own future with `state.resolve_slot_approval` pinned to the future the
+  card was posted for (never a state-wide id lookup). A raise reaches workers only
+  through the channel session's own grant: `apply_approval_mode`'s creator-mode
+  cascade (`approval_inheritance`) decides which inheriting workers follow and sweeps
+  their prompts; `set_channel_mode` raises no worker itself. A channel mode change
+  (from either card, the kickoff select or the command) then only LOWERS: each of
+  `worker_approvals.live_workers` (the same `_created_by` lineage, direct children
+  only, not Slack-linked) still above the new mode, audited per worker
+  (`result=worker_set`), and every deeper session in the `_created_by` tree
+  (`worker_approvals.descendants`, linked ones included, audited `depth=deeper`),
+  which inherited the grant at creation; the reply names any worker it could not
+  change (the kickoff select says so ephemerally). Known limit: the walk follows live
+  `_created_by` links, so a session whose creator already closed is orphaned from the
+  tree and keeps its mode. Every Slack control applies the per-channel policy
+  (`allowed_channel_ids`): at dispatch, in `agent_picker.authorize` (refused
+  silently, so nothing is written into a refused channel) and again at each commit in
+  `agent_picker._sync_gates`. Any change but to Normal needs the channel open
+  (`_channel_open`: feature on, not fenced, no stored archive stamp) and re-runs
+  `agent_picker`'s owner gates (`_still_admitted` after the lock, `_sync_gates` at
+  each grant's commit), Trust to Reads included, since a slot put on Reads cascades
+  Reads onto inheriting sessions on Normal; only Normal never waits on them. Every
+  slot's transcript window is loaded off the loop (`agent_picker._load_window`)
+  before its grant, as the agent switch does, and a raise whose descendant window
+  cannot be loaded changes nothing. Each grant is fenced right before the mutation: the
+  channel not archived here, the feature on, the same channel session, the same
+  worker object; a worker card is relayed only where the channel's own prompt would
+  post (mirror not paused, channel and origin admit the bot, no Slack Stop); a raise to Trust answers their pending prompts and the
+  channel's own through that call's slot-scoped sweep, and the cards are re-written in
+  place ("Ran under Trust"; the channel's own are kept from `_run_chat`'s delete via
+  `approval_picker.keep_card`). Only a card whose exact future (captured before any
+  await) was still waiting at the grant's last fence, and is approved after it, says
+  it ran under Trust, and only those are kept from the runner's delete (added after
+  the sweep, never before the await); a channel card answered another way meanwhile
+  is deleted as usual. A claimed worker card answered elsewhere says only what
+  happened (`worker_approvals.CLAIMED_ENDED`), and one its own click answered keeps
+  that click's line. Every
+  rewrite sends replacement blocks (`approval_picker.settled_blocks`), since
+  `chat.update` keeps a message's buttons when no blocks are sent. `ask_question` cards wait in `_question_futures`,
+  which no sweep reads, so they are never answered. A Trust click on either card changes no mode unless the
+  card's prompt is still waiting right before the mutation. `_run_chat` starts the
+  relay as a task (no await between the future's registration and its `try`) and its
+  `finally` calls `worker_approvals.finish`, which updates the card in place
+  (approved / declined in the dashboard, timed out, or ended by the host) unless a
+  click already did. Code-channel cards escape mrkdwn entities in the footer and the
+  tool arguments, and show a JSON input's `command` once (its own code block, the
+  other arguments as JSON only when there are any, and no command in the lock line).
+  SEL: `slack.code_channel.worker_approval`.
 
 ## Dependencies
 

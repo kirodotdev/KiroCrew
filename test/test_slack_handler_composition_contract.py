@@ -232,8 +232,9 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: ``user_meta`` on ``maybe_route_linked_thread`` (the user row's meta a code
 #: channel passes), ``turn_context`` on it too (a pinned action answer's payload),
 #: and ``post_linked_approval``'s ``thread_ts`` widened to ``str | None`` (a code
-#: channel's own session posts its approval card top-level).
-_BASE_SHAPE_DIGEST = "9c2096ea9679a75df7a69af2454821e3afa1d412ec754742dcaa93f3e311cfea"
+#: channel's own session posts its approval card top-level); re-pinned when the
+#: approval card gained ``channel_trust``.
+_BASE_SHAPE_DIGEST = "6b9073736b1ae53523efc75cdbc45dc6dcc4b25f61ed49171e7c9079d991af78"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

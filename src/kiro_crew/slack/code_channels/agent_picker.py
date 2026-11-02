@@ -81,6 +81,9 @@ STALE_PICKER_TEXT = (
 )
 CURRENT_TEXT = "This channel runs `{agent}`. Agents you can pick: {names}\nSwitch with `/{command} agent <name>`."
 NOT_ALLOWED_TEXT = "⛔ You can't change this channel's agent."
+#: The refusal for someone who is not Kiro Crew's owner (the only person Slack
+#: controls answer); the other gates keep :data:`NOT_ALLOWED_TEXT`.
+OWNER_ONLY_TEXT = "⛔ Only Kiro Crew's owner can change this channel's agent."
 
 #: The code from ``switch_slot_agent`` that means "a turn holds the session right
 #: now": the pick is refused with :data:`BUSY_TEXT`, for the person to retry.
@@ -128,20 +131,46 @@ def _option(name: str) -> dict[str, Any]:
 
 
 def kickoff_blocks(
-    text: str, agents: list[str] | None, selected: str, note: str = ""
+    text: str,
+    agents: list[str] | None,
+    selected: str,
+    note: str = "",
+    *,
+    approval_mode: str | None = None,
 ) -> list[dict[str, Any]]:
-    """The kickoff message: its text, then the agent picker (when agents listed).
+    """The kickoff message: its text, the agent picker (when agents listed), then
+    the Approval mode select (when *approval_mode* is given), then *note*.
 
     *selected* is the agent the session runs; it is the select's initial option
     when it is one of *agents*. Past Slack's option cap the list is cut, keeping
-    *selected* in it.
+    *selected* in it. *approval_mode* is the mode the session holds
+    (:mod:`.approval_picker`).
     """
     blocks: list[dict[str, Any]] = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
-    if not agents:
-        return blocks
-    names = [n for n in dict.fromkeys(agents) if 0 < len(n) <= _OPTION_VALUE_MAX]
-    if not names:
-        return blocks
+    names = [n for n in dict.fromkeys(agents or ()) if 0 < len(n) <= _OPTION_VALUE_MAX]
+    if names:
+        blocks.append(_agent_block(names, selected))
+    if approval_mode is not None:
+        from kiro_crew.slack.code_channels.approval_picker import (
+            MODES_NOTE,
+            approval_block,
+            yolo_note,
+        )
+
+        blocks.append(approval_block(approval_mode))
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": MODES_NOTE}]})
+        if yolo_note():
+            # The select has no YOLO state: say so, or it reads Normal under YOLO.
+            blocks.append(
+                {"type": "context", "elements": [{"type": "mrkdwn", "text": yolo_note()}]}
+            )
+    if note and len(blocks) > 1:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": note}]})
+    return blocks
+
+
+def _agent_block(names: list[str], selected: str) -> dict[str, Any]:
+    """The kickoff's agent ``static_select`` section."""
     if len(names) > MAX_OPTIONS:
         head = names[:MAX_OPTIONS]
         if selected in names and selected not in head:
@@ -155,21 +184,17 @@ def kickoff_blocks(
     }
     if selected in names:
         select["initial_option"] = _option(selected)
-    blocks.append(
-        {
-            "type": "section",
-            "block_id": f"{AGENT_BLOCK_PREFIX}{time.time_ns()}",
-            "text": {"type": "mrkdwn", "text": PICKER_LABEL},
-            "accessory": select,
-        }
-    )
-    if note:
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": note}]})
-    return blocks
+    return {
+        "type": "section",
+        "block_id": f"{AGENT_BLOCK_PREFIX}{time.time_ns()}",
+        "text": {"type": "mrkdwn", "text": PICKER_LABEL},
+        "accessory": select,
+    }
 
 
 async def refresh_kickoff(binding: Binding, *, note: str = "") -> None:
-    """Re-draw *binding*'s kickoff from the session's real agent (never raises)."""
+    """Re-draw *binding*'s kickoff from the session's real agent and approval
+    mode (never raises)."""
     try:
         slack = surface.slack()
         state = surface.dashboard_state()
@@ -182,7 +207,15 @@ async def refresh_kickoff(binding: Binding, *, note: str = "") -> None:
 
         text = _kickoff_text(binding.title, state, str(getattr(slot, "folder_id", "") or ""))
         agents = await agent_choices(getattr(slot, "project", None) or binding.project_dir or None)
-        blocks = kickoff_blocks(text, agents, str(getattr(slot, "agent", "") or ""), note)
+        from kiro_crew.slack.code_channels.approval_picker import current_mode
+
+        blocks = kickoff_blocks(
+            text,
+            agents,
+            str(getattr(slot, "agent", "") or ""),
+            note,
+            approval_mode=current_mode(slot),
+        )
         await slack.update_message(binding.channel_id, binding.anchor_ts, text=text, blocks=blocks)
     except Exception:
         logger.info("code channel %s: kickoff not updated", binding.channel_id, exc_info=True)
@@ -248,14 +281,15 @@ async def _announce(state: Any, slot: Any, agent: str, warning: str) -> None:
     load omits the row, never the committed switch.
     """
     from kiro_crew.agent_switch_command import switch_announcement
-    from kiro_crew.security import redact
 
     if not await _load_window(slot):
         return
     try:
         append = getattr(slot, "append", None)
         if callable(append):
-            append("assistant", redact(switch_announcement(agent, warning)), "msg msg-a")
+            # A transcript row, never parsed as a Slack message: no mention defang.
+            row = surface.display_text(switch_announcement(agent, warning), mentions=False)
+            append("assistant", row, "msg msg-a")
         broadcast = getattr(state, "broadcast_ws", None)
         if callable(broadcast):
             broadcast("slot_agent_switch", {"slot": slot.key, "agent": str(slot.agent)})
@@ -306,19 +340,36 @@ NO_LONGER_ADMITTED = "the code channel no longer admits the bot"
 
 def _sync_gates(orch: Any, binding: Binding, user: str, team: str) -> bool:
     """The synchronous code-channel gates: workspace, owner, archive fence,
-    feature, the channel and its origin. No await, no disk read, so it can run
-    inside the switch transaction's commit section (``still_permitted``)."""
+    feature, the channel and its origin, and the per-channel governance
+    ceiling. No await, no disk read, so it can run inside the switch
+    transaction's commit section (``still_permitted``)."""
     from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
     from kiro_crew.slack.handler import is_allowed_user
 
     cfg = live_config(orch)
+    try:
+        # The stored binding too: still this session's (not dropped or rebound)
+        # and not archived, since a finished archive lifts the in-process fence
+        # (wrapup unfences once the stamp is stored). The store reads from its
+        # loaded snapshot, so this does not block.
+        current = store().get_binding(binding.channel_id)
+    except Exception:
+        return False
+    if current is None or current.session_key != binding.session_key:
+        return False
     return bool(
         surface.workspace_admitted(team)
         and is_allowed_user(user)
         and binding.channel_id not in surface._archived_here
+        and not current.archived_at
         and code_channels_on(cfg)
         and channel_and_origin_permit(
             cfg, binding.channel_id, _origin_of(binding.channel_id, binding, None)
+        )
+        # The per-channel governance ceiling, re-read at the commit: an operator
+        # can narrow ``allowed_channel_ids`` while a pick or a Trust awaits.
+        and not surface.channel_policy_refusal(
+            binding.channel_id, operation="slack.code_channel.control", caller=user
         )
     )
 
@@ -335,11 +386,18 @@ async def _still_admitted(orch: Any, binding: Binding, user: str, team: str) -> 
     (:func:`_sync_gates` as ``still_permitted``), past every await of its own.
     """
     from kiro_crew.messaging.identity import channel_inbound_permitted
+    from kiro_crew.slack.channel_policy import channel_refusal
 
-    current = await asyncio.to_thread(store().get_binding, binding.channel_id)
+    channel = binding.channel_id
+    current = await asyncio.to_thread(store().get_binding, channel)
     if current is None or current.session_key != binding.session_key:
         return REBOUND
-    if current.archived_at or not await channel_inbound_permitted("slack"):
+    # The Slack channels policy and the per-channel ceiling, paired as at every
+    # Slack inbound gate.
+    if current.archived_at or not (
+        await channel_inbound_permitted("slack")
+        and not channel_refusal(channel, operation="slack.code_channel.control", caller=user)
+    ):
         return NO_LONGER_ADMITTED
     return None if _sync_gates(orch, binding, user, team) else NO_LONGER_ADMITTED
 
@@ -432,18 +490,23 @@ async def switch_channel_agent(
         await _announce(state, slot, agent, str(body.get("warning") or ""))
         await refresh_kickoff(binding, note=SWITCHED_NOTE.format(agent=agent, user=user))
         return SwitchResult("switched", SWITCHED_TEXT.format(agent=agent))
-    from kiro_crew.security import redact
-
     code = str(body.get("code") or "")
     if code == CALLER_NOT_PERMITTED:
         # A gate closed during the transaction's own awaits (_sync_gates).
         _audit("denied", f"{resources} result=refused code={code}", NO_LONGER_ADMITTED)
         await refresh_kickoff(binding)
         return SwitchResult("refused", NOT_ALLOWED_TEXT)
-    # The dashboard's error text can carry raw exception text: redact it before
-    # it leaves the host for Slack (as _announce does).
-    reason = redact(str(body.get("error") or "the switch was refused"))
-    _audit("error", f"{resources} result=refused code={code}", reason)
+    # The dashboard's error text can carry raw exception text: through the
+    # shared display sink before it leaves the host for Slack (as _announce).
+    raw = str(body.get("error") or "the switch was refused")
+    try:
+        reason = surface.display_text(raw)
+        audited = surface.display_text(raw, mentions=False)  # the SEL row keeps plain text
+    except Exception:
+        # A host whose redaction could not compose: say nothing of the error.
+        logger.warning("code channel agent switch: refusal reason not shown", exc_info=True)
+        reason = audited = SWITCH_FAILED_REASON
+    _audit("error", f"{resources} result=refused code={code}", audited)
     await refresh_kickoff(binding)
     if code == TURN_IN_FLIGHT:
         return SwitchResult("busy", BUSY_TEXT.format(agent=agent))
@@ -456,33 +519,56 @@ async def switch_channel_agent(
 
 
 async def authorize(
-    orch: Any, binding: Binding, user: str, team: str, resources: str
+    orch: Any,
+    binding: Binding,
+    user: str,
+    team: str,
+    resources: str,
+    *,
+    audit: Callable[[str, str, str], None] | None = None,
+    not_allowed: str = NOT_ALLOWED_TEXT,
+    owner_only: str = OWNER_ONLY_TEXT,
 ) -> str | None:
-    """None when *user* may change *binding*'s agent; else the refusal to show.
+    """None when *user* may change *binding*'s settings; else the refusal to show.
 
     The gates every code-channel command applies, in its order, each refusal
     SEL-audited: the workspace, the owner, the code channel and its origin both
-    still admitting the bot, an archived channel.
+    still admitting the bot, the per-channel policy, an archived channel. ``""``
+    refuses silently (a foreign workspace, a channel the policy refuses). The
+    channel's other owner-only
+    controls (:mod:`.approval_picker`, :mod:`.worker_approvals`) share these
+    gates, passing their own *audit* row writer, *not_allowed* text and
+    *owner_only* text (said to someone who is not Kiro Crew's owner).
     """
+    write = audit or _audit
     from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
     from kiro_crew.slack.handler import is_allowed_user
 
     if not surface.workspace_admitted(team):
-        _audit("denied", f"{resources} team_id={team}", "enterprise_origin_mismatch")
+        write("denied", f"{resources} team_id={team}", "enterprise_origin_mismatch")
         return ""
     if not is_allowed_user(user):
-        _audit("denied", resources, "unauthorized user")
-        return NOT_ALLOWED_TEXT
+        write("denied", resources, "unauthorized user")
+        return owner_only
     origin = _origin_of(binding.channel_id, binding, None)
     if not channel_and_origin_permit(live_config(orch), binding.channel_id, origin):
-        _audit(
+        write(
             "denied",
             f"{resources} origin={origin}",
             "the code channel or its origin does not admit the bot",
         )
-        return NOT_ALLOWED_TEXT
+        return not_allowed
+    # The per-channel governance ceiling (``allowed_channel_ids``), which the
+    # message path and every other Slack control apply too. Refused silently:
+    # nothing, not even the refusal, is written into a channel the policy refuses.
+    refused = surface.channel_policy_refusal(
+        binding.channel_id, operation="slack.code_channel.control", caller=user
+    )
+    if refused:
+        write("denied", resources, "channels governance policy")
+        return ""
     if await surface.is_archived(binding):
-        _audit("denied", resources, "archived")
+        write("denied", resources, "archived")
         from kiro_crew.slack.code_channels.commands import ARCHIVED_TEXT
 
         return ARCHIVED_TEXT
@@ -523,7 +609,11 @@ def audit_refused_pick(payload: dict[str, Any], reason: str) -> None:
 
 
 def _command_name(orch: Any) -> str:
-    return str(getattr(orch, "slack_command", "") or "kirocrew")
+    """The slash command as the person types it, validated (one helper for both
+    pickers: a hand-edited value is never echoed into a channel)."""
+    from kiro_crew.slack.code_channels.approval_picker import _command
+
+    return _command(orch)
 
 
 async def handle_select(orch: Any, payload: dict[str, Any]) -> bool:

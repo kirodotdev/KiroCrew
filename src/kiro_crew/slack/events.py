@@ -1106,7 +1106,9 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             return
-        note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
+        note_user_stop(
+            orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key
+        )
         has_session = orch.sessions.has_session(session_key)
         # READ, not popped: the task is removed only once the cancel is known
         # to have gone through, below.
@@ -1298,6 +1300,7 @@ async def _route_message(
     #    (_handle_restart) which owns owner-check + supervisor guard, keeping
     #    a single source of truth for the restart logic. ──
     if clean_text.strip().lower() == "!restart":
+
         async def _restart_respond(text: str, **_kw: Any) -> None:
             if orch.slack:
                 await orch.slack.post_message(channel, text, thread_ts or msg_ts)
@@ -1610,6 +1613,7 @@ async def _route_message(
 
     orch._handler_tasks.add(t)
     t.add_done_callback(_on_done)
+
 
 # The Socket Mode wiring (``init_socket_mode``) and the message router
 # (``_route_message``) stay here; the rest lives in the ``events_*`` owner modules beside

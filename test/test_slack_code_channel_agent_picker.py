@@ -232,10 +232,15 @@ def test_a_folder_default_agent_preselects_when_no_explicit_one(env: Env) -> Non
     assert _initial(asyncio.run(_open(env))) == "builder"
 
 
-def test_agents_that_cannot_be_listed_leave_a_plain_kickoff(env: Env) -> None:
+def test_agents_that_cannot_be_listed_leave_the_kickoff_without_a_picker(env: Env) -> None:
     env.agents = None
-    assert asyncio.run(_open(env)) == []
-    assert env.slack.posts[0][0] == CH  # the channel still opened, text only
+    blocks = asyncio.run(_open(env))
+    assert _select(blocks) is None  # no agent picker ...
+    from kiro_crew.slack.code_channels import approval_picker
+
+    ids = [(b.get("accessory") or {}).get("action_id") for b in blocks]
+    assert approval_picker.APPROVAL_SELECT_ACTION_ID in ids  # ... but the mode select stays
+    assert env.store.get_binding(CH) is not None  # the channel still opened
 
 
 def test_a_refused_block_kit_post_falls_back_to_text(env: Env) -> None:
@@ -284,7 +289,7 @@ def test_someone_elses_pick_is_refused_ephemerally_and_changes_nothing(env: Env)
     slot = _bind(env)
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder", user=STRANGER)))
     assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
-    assert env.slack.ephemerals == [(CH, STRANGER, agent_picker.NOT_ALLOWED_TEXT)]
+    assert env.slack.ephemerals == [(CH, STRANGER, agent_picker.OWNER_ONLY_TEXT)]
     # The select is put back on the agent the session runs.
     assert _initial(env.slack.edits[-1][3]) == "kirocrew-conductor"
     [row] = _rows(env, "denied")
@@ -300,7 +305,7 @@ def test_the_dispatcher_refuses_a_non_owner_before_the_picker(
     monkeypatch.setattr(interactions, "sel", lambda: env.sel)
     asyncio.run(interactions.dispatch(_pick("builder", user=STRANGER)))
     assert env.switches.calls == []
-    assert [e[1] for e in env.slack.ephemerals] == [STRANGER]
+    assert env.slack.ephemerals == [(CH, STRANGER, agent_picker.OWNER_ONLY_TEXT)]
     [row] = env.sel.ops("slack.interactive")
     assert row["outcome"] == "denied"
     [picker_row] = _rows(env, "denied")
@@ -381,15 +386,24 @@ def test_a_refusal_reason_is_redacted_before_it_reaches_slack(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _bind(env)
-    monkeypatch.setattr(
-        "kiro_crew.security.redact", lambda text: text.replace("SECRET", "[REDACTED]")
+    key = "AKIA" + "QWERTYUIOPASDFGH"
+    url = (
+        "https://attacker.example/collect?data="
+        + "c2VjcmV0LXRva2VuLXZhbHVlLWhlcmUtMTIzNDU2Nzg5MA=="
     )
+    # Split by markup: only the display sink's display-form scan finds it.
+    split = "AKIA**" + "ZXCVBNMASDFGHJKL**"
     env.switches.answers.append(
-        (503, {"error": "memory store unavailable: SECRET", "code": "store_unavailable"})
+        (503, {"error": f"unavailable: {key} {split} {url}", "code": "store_unavailable"})
     )
     assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
     [(_, _, text)] = env.slack.ephemerals
-    assert "SECRET" not in text and "[REDACTED]" in text
+    for secret in (key, "ZXCVBNMASDFGHJKL", "attacker.example/collect"):
+        assert secret not in text
+    assert "[REDACTED" in text
+    # The audit row carries the same redacted reason.
+    [row] = [r for r in _rows(env) if "store_unavailable" in r["resources"]]
+    assert "[REDACTED" in row["error"] and "ZXCVBNMASDFGHJKL" not in row["error"]
 
 
 def test_a_pick_during_a_turn_is_refused_with_try_again(env: Env) -> None:
@@ -457,7 +471,7 @@ def test_kirocrew_agent_refuses_an_unknown_agent_with_the_list(env: Env) -> None
 def test_kirocrew_agent_from_someone_else_is_refused(env: Env) -> None:
     slot = _bind(env)
     handled, replies = _command(env, "agent builder", user=STRANGER)
-    assert handled and replies == [agent_picker.NOT_ALLOWED_TEXT]
+    assert handled and replies == [agent_picker.OWNER_ONLY_TEXT]
     assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
     assert _rows(env, "denied")[0]["error"] == "unauthorized user"
     assert env.sel.ops("slack.code_channel.command")[-1]["outcome"] == "denied"
@@ -759,7 +773,17 @@ def test_an_agent_name_with_an_underscore_is_audited_by_name(env: Env) -> None:
 
 
 @pytest.mark.parametrize(
-    "change", ["activation_off", "archived", "feature_off", "owner_removed", "workspace_denied"]
+    "change",
+    [
+        "activation_off",
+        "archived",
+        "archive_finished",
+        "dropped",
+        "rebound",
+        "feature_off",
+        "owner_removed",
+        "workspace_denied",
+    ],
 )
 def test_a_gate_that_closes_inside_the_switch_refuses_its_commit(
     env: Env, monkeypatch: pytest.MonkeyPatch, change: str
@@ -774,6 +798,16 @@ def test_a_gate_that_closes_inside_the_switch_refuses_its_commit(
             env.activation[CH] = ACTIVATION_OFF
         elif change == "archived":
             surface._archived_here.add(CH)
+        elif change == "archive_finished":
+            # wrapup stores the stamp, then lifts the in-process fence.
+            env.store.update_binding(CH, archived_at=1.0)
+            surface._archived_here.discard(CH)
+        elif change == "dropped":
+            env.store.drop_binding(CH)
+        elif change == "rebound":
+            current = env.store.get_binding(CH)
+            assert current is not None
+            env.store.replace_binding(replace(current, session_key="chat-other-1"))
         elif change == "feature_off":
             env.on = False
         elif change == "owner_removed":
@@ -788,3 +822,152 @@ def test_a_gate_that_closes_inside_the_switch_refuses_its_commit(
     row = _rows(env, "denied")[-1]
     assert "code=caller_not_permitted" in row["resources"]
     assert _initial(env.slack.edits[-1][3]) == "kirocrew-conductor"
+
+
+def _refuse_channel(monkeypatch: pytest.MonkeyPatch, *, after: list[bool] | None = None) -> None:
+    from kiro_crew.slack import channel_policy
+
+    def verdict(channel: str) -> str:
+        if channel == CH and (after is None or after[0]):
+            return "slack channel refused by the security policy"
+        return ""
+
+    monkeypatch.setattr(channel_policy, "_verdict", verdict)
+
+
+def test_a_refused_channels_agent_pick_switches_nothing(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-channel ceiling (allowed_channel_ids), in the dispatcher and in authorize."""
+    from kiro_crew.slack import interactions
+
+    slot = _bind(env)
+    _refuse_channel(monkeypatch)
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    handled, replies = _command(env, "agent builder")
+    assert handled and replies == []  # dropped without a reply at the inbound gate
+    assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
+    monkeypatch.setattr(interactions, "_orch", env.orch)
+    monkeypatch.setattr(interactions, "is_allowed_user", lambda u: u in env.allowed)
+    asyncio.run(interactions.dispatch(_pick("builder")))
+    assert env.switches.calls == []
+
+
+def test_a_channel_refused_mid_switch_is_not_switched(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The policy narrows inside the switch: still_permitted refuses at the commit."""
+    slot = _bind(env)
+    flag = [False]
+    _refuse_channel(monkeypatch, after=flag)
+    env.switches.before_commit = lambda: flag.__setitem__(0, True)
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert slot.agent == "kirocrew-conductor"
+    assert "code=caller_not_permitted" in _rows(env, "denied")[-1]["resources"]
+
+
+# ── Each per-channel policy guard, alone ──────────────────────────────────
+
+
+def test_authorize_refuses_a_policy_refused_channel_silently(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """authorize's own guard: refused, audited, and "" so nothing is posted."""
+    _bind(env)
+    binding = env.store.get_binding(CH)
+    assert asyncio.run(agent_picker.authorize(env.orch, binding, OWNER, "T1", "r")) is None
+    _refuse_channel(monkeypatch)
+    assert asyncio.run(agent_picker.authorize(env.orch, binding, OWNER, "T1", "r")) == ""
+    assert _rows(env, "denied")[-1]["error"] == "channels governance policy"
+
+
+def test_the_commit_gates_close_on_a_policy_refused_channel(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_sync_gates' own guard: the synchronous commit fence answers False."""
+    _bind(env)
+    binding = env.store.get_binding(CH)
+    assert agent_picker._sync_gates(env.orch, binding, OWNER, "T1") is True
+    _refuse_channel(monkeypatch)
+    assert agent_picker._sync_gates(env.orch, binding, OWNER, "T1") is False
+
+
+def test_the_dispatcher_drops_a_refused_channels_pick_before_the_picker(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dispatcher's agent-select guard, alone: the picker is never called."""
+    _bind(env)
+    called: list[Any] = []
+
+    async def record(*a: Any, **_k: Any) -> bool:
+        called.append(a)
+        return True
+
+    async def permitted(_channel: str) -> bool:
+        return True
+
+    monkeypatch.setattr(interactions, "_orch", env.orch)
+    monkeypatch.setattr(interactions, "is_allowed_user", lambda u: u in env.allowed)
+    monkeypatch.setattr(interactions, "channel_inbound_permitted", permitted)
+    monkeypatch.setattr(agent_picker, "handle_select", record)
+    _refuse_channel(monkeypatch)
+    asyncio.run(interactions.dispatch(_pick("builder")))
+    assert called == []
+
+
+def test_a_refused_channels_pick_posts_nothing_in_the_channel(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past the dispatcher, a policy refusal writes nothing into the channel."""
+    slot = _bind(env)
+    _refuse_channel(monkeypatch)
+    assert asyncio.run(agent_picker.handle_select(env.orch, _pick("builder")))
+    assert slot.agent == "kirocrew-conductor"
+    assert env.slack.ephemerals == [] and env.slack.edits == []
+
+
+def test_kirocrew_agent_on_a_refused_channel_switches_nothing(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot = _bind(env)
+    _refuse_channel(monkeypatch)
+    _command(env, "agent builder")
+    assert env.switches.calls == [] and slot.agent == "kirocrew-conductor"
+
+
+def test_kirocrew_agent_refused_mid_switch_is_not_switched(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The command's switch commits through the same fence as the select."""
+    slot = _bind(env)
+    flag = [False]
+    _refuse_channel(monkeypatch, after=flag)
+    env.switches.before_commit = lambda: flag.__setitem__(0, True)
+    _command(env, "agent builder")
+    assert slot.agent == "kirocrew-conductor"
+    assert "code=caller_not_permitted" in _rows(env, "denied")[-1]["resources"]
+
+
+def test_the_switch_row_goes_through_the_display_sink(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dashboard row a switch writes passes the shared display sink: a
+    secret-shaped string in it is redacted, with no Slack mention defang."""
+    from kiro_crew import agent_switch_command
+
+    slot = _bind(env)
+    key = "AKIA" + "QWERTYUIOPASDFGH"
+
+    async def loaded(_slot: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(agent_picker, "_load_window", loaded)
+    monkeypatch.setattr(
+        agent_switch_command,
+        "switch_announcement",
+        lambda a, w: f"@{a} switched {key} AKIA**ZXCVBNMASDFGHJKL** {w}",
+    )
+    asyncio.run(agent_picker._announce(env.state, slot, "builder", ""))
+    [row] = env.transcript
+    assert key not in row and "ZXCVBNMASDFGHJKL" not in row and "[REDACTED" in row
+    assert "@builder" in row  # a transcript row: no Slack mention defang

@@ -57,6 +57,8 @@ class FakeSlack:
         self.removed_reactions: list[tuple[str, str, str]] = []
         self.blocks: dict[str, list[dict[str, Any]]] = {}
         self.edits: list[tuple[str, str, str, list[dict[str, Any]] | None]] = []
+        #: Each ephemeral's blocks (None for a text-only one), in post order.
+        self.ephemeral_blocks: list[list[dict[str, Any]] | None] = []
         self._n = 0
 
     async def add_reaction(self, channel: str, ts: str, emoji: str) -> None:
@@ -91,6 +93,7 @@ class FakeSlack:
 
     async def post_ephemeral(self, channel: str, user: str, text: str, **_k: Any) -> None:
         self.ephemerals.append((channel, user, text))
+        self.ephemeral_blocks.append(_k.get("blocks"))
 
     async def fetch_thread_replies(self, channel: str, ts: str, **_k: Any) -> list[dict[str, Any]]:
         return list(self.thread)

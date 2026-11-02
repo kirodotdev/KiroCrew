@@ -168,35 +168,17 @@ def _fact_lines(facts: Facts) -> list[str]:
 
 
 def _redact(text: str) -> str:
-    """Agent-authored text for Slack, through the shared outbound display sink.
-
-    ``display_safe_for`` with Slack's capabilities: control comments stripped,
-    display-form credential and exfiltration redaction through the active platform
-    context (so an installation's own patterns apply), and every mention grammar
-    defanged. One spelling for every agent-surface post, the same one the
-    dashboard's channel delivery uses, so this text is never sanitized two ways.
-    """
-    from kiro_crew.messaging.renderer import display_safe_for
-    from kiro_crew.platform.context import redact_via_context
-    from kiro_crew.slack.transport import SLACK_CAPABILITIES
-
-    return display_safe_for(text, SLACK_CAPABILITIES, redactor=redact_via_context)
+    """Agent-authored text for Slack, through the shared outbound display sink
+    (:func:`.surface.display_text`, the one place a code channel calls it)."""
+    return surface.display_text(text)
 
 
 def _redact_payload(text: str) -> str:
     """:func:`_redact` for text Slack never parses as a message: an HTML view's
-    document, a context-bar url or key.
-
-    The same shared sink, read with no mention grammar, so the redaction passes
-    are identical and only the defang is skipped: on these surfaces it would only
-    break ``@media`` rules, ``<!DOCTYPE>`` and ``/@scope/`` package links.
-    """
-    from kiro_crew.messaging.renderer import display_safe_for
-    from kiro_crew.platform.context import redact_via_context
-    from kiro_crew.slack.transport import SLACK_CAPABILITIES
-
-    unparsed = replace(SLACK_CAPABILITIES, mention_grammars=False)
-    return display_safe_for(text, unparsed, redactor=redact_via_context)
+    document, a context-bar url or key. The same sink with no mention defang,
+    which on these surfaces would only break ``@media`` rules, ``<!DOCTYPE>`` and
+    ``/@scope/`` package links."""
+    return surface.display_text(text, mentions=False)
 
 
 def wrap_up_blocks(summary: str, facts: Facts, channel_id: str) -> list[dict[str, Any]]:
