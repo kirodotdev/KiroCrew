@@ -38,6 +38,7 @@ def _clean(_floor_monkeypatch, tmp_path):
     _floor_monkeypatch.setattr(_mig, "_failed", {})
     _floor_monkeypatch.setattr(_mig, "_lock", None)
     _floor_monkeypatch.setattr(_mig, "_usable", lambda name: "")
+    _floor_monkeypatch.setattr(_mig, "_unreadable_logged", False, raising=False)
     yield
 
 
@@ -500,3 +501,78 @@ async def test_E13_the_reconcile_defers_while_the_restore_runs_and_on_a_headless
     out = await switch.mig.reconcile(still)
     assert out == {"moved": ["r"], "pending": []}
     assert switch.mig.read_applied() == "better-conductor"
+
+
+# ── E14: an unreadable state file is not a first start ──
+
+
+@pytest.mark.asyncio
+async def test_E14_a_state_file_with_a_utf8_bom_still_migrates(switch, monkeypatch):
+    """A hand edit saved with a byte-order mark names the same conductor."""
+    path = switch.mig._state_path()
+    path.write_bytes(b'\xef\xbb\xbf{"applied": "kirocrew-conductor"}\n')
+    _target(monkeypatch)
+    root = _slot("r")
+    out = await switch.mig.reconcile(_State(root))
+    assert out == {"moved": ["r"], "pending": []}
+    assert root.agent == "better-conductor"
+    assert switch.mig.read_applied() == "better-conductor"
+
+
+@pytest.mark.asyncio
+async def test_E14_a_failed_read_records_nothing_and_a_later_pass_migrates(switch, monkeypatch):
+    switch.mig.write_applied("kirocrew-conductor")
+    path = switch.mig._state_path()
+    before = path.read_bytes()
+    _target(monkeypatch)
+    root = _slot("r")
+    state = _State(root)
+    real_read_text = type(path).read_text
+
+    def held(self, *a, **k):
+        if self == path:
+            raise PermissionError(13, "being used by another process")
+        return real_read_text(self, *a, **k)
+
+    with patch.object(type(path), "read_text", held):
+        assert await switch.mig.reconcile(state) is None
+    assert path.read_bytes() == before
+    assert switch.calls == [] and root.agent == "kirocrew-conductor"
+    # The handle is gone by the retry loop's next pass.
+    out = await switch.mig.reconcile(state, retry_failed=False)
+    assert out == {"moved": ["r"], "pending": []}
+    assert switch.mig.read_applied() == "better-conductor"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", [b"{not json", b"{}\n", b'{"applied": ""}\n', b"[]\n"])
+async def test_E14_an_unparseable_state_file_stays_unmoved_with_one_warning(
+    switch, monkeypatch, caplog, content
+):
+    path = switch.mig._state_path()
+    path.write_bytes(content)
+    _target(monkeypatch)
+    root = _slot("r")
+    state = _State(root)
+    with caplog.at_level("WARNING", logger=switch.mig.__name__):
+        assert await switch.mig.reconcile(state) is None
+        assert await switch.mig.reconcile(state, retry_failed=False) is None
+    assert path.read_bytes() == content
+    assert switch.calls == [] and root.agent == "kirocrew-conductor"
+    warned = [r for r in caplog.records if switch.mig.STATE_FILENAME in r.getMessage()]
+    assert len(warned) == 1
+
+
+@pytest.mark.asyncio
+async def test_E14_a_dangling_state_symlink_is_not_a_first_start(switch, monkeypatch, tmp_path):
+    import os
+
+    # Listed in ``test/requires-real-symlinks.txt``: the root conftest skips it
+    # only on a host without symlink support.
+    path = switch.mig._state_path()
+    os.symlink(tmp_path / "gone.json", path)
+    _target(monkeypatch)
+    root = _slot("r")
+    assert await switch.mig.reconcile(_State(root)) is None
+    assert path.is_symlink() and not path.exists()
+    assert switch.calls == [] and root.agent == "kirocrew-conductor"
