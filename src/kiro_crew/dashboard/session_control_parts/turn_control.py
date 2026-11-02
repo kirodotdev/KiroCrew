@@ -38,6 +38,19 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = logging.getLogger("kiro_crew.dashboard.session_control")
 
 
+def _conflict_unless_self(slot: Any, caller_session_key: str) -> None:
+    """Stop *slot*'s session using a person's MCP grant vault when another session drives it.
+
+    Retry, continue and reload here are an agent's request, not the person's, so
+    the turn or respawn they cause must not run on the person's persisted sign-ins.
+    """
+    from kiro_crew import mcp_grant_principals
+
+    key = effective_session_key(slot)
+    if key != caller_session_key:
+        mcp_grant_principals.conflict(key, record_unbound=True)
+
+
 async def stop_target(
     state: "DashboardState",
     *,
@@ -286,6 +299,7 @@ async def _continue_turn_of_target(
         # this machine.
         if is_relay_archive(slot):
             raise SessionControlError(RELAY_ARCHIVE_ERROR, code=RELAY_ARCHIVE_CODE, status=409)
+        _conflict_unless_self(slot, caller_session_key)
         try:
             body = await continue_slot_turn(
                 state,
@@ -539,6 +553,7 @@ async def reload_target(
             return False
 
     notice = f"{_SESSION_RELOAD_NOTICE} Requested by session `{caller_key}`."
+    _conflict_unless_self(slot, caller_session_key)
     try:
         response = await reload_slot_session(
             state,

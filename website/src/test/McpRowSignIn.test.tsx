@@ -100,7 +100,8 @@ describe('McpRowSignIn', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
     await flush()
-    expect(mockApi.connectionsMint).toHaveBeenCalledWith('notion')
+    // Named as the Settings table, so on KAS the sign-in is kept in the KAS vault.
+    expect(mockApi.connectionsMint).toHaveBeenCalledWith('notion', 'settings')
     // Preparing state while polling.
     expect(screen.getByRole('status')).toHaveTextContent(/Preparing/)
 
@@ -158,6 +159,33 @@ describe('McpRowSignIn', () => {
     expect(setData).toHaveBeenCalledWith(['mcp-servers'], probed)
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     // Back to idle — the repainted row (source of truth) decides what renders.
+    expect(screen.getByRole('button', { name: /Sign in/ })).toBeInTheDocument()
+  })
+
+  it('says the sign-in was kept when a KAS grant is invisible to the probe', async () => {
+    mockApi.connectionsMintServer.mockResolvedValue({ ok: true, slug: 'docsServer', state: 'minting', token: 't1' })
+    mockApi.connectionsMintServerState.mockResolvedValue({ slug: 'docsServer', state: 'granted', store: 'kas' })
+    // The probe reads kiro-cli's cache, which a KAS vault grant never reaches.
+    mockApi.mcpProbe.mockResolvedValue([{ name: 'docsServer', status: 'ok', tools: [], authGrantPresent: false }])
+
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" />)
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
+    await tickPolls(1)
+
+    expect(mockApi.mcpProbe).toHaveBeenCalled()
+    expect(screen.getByRole('status')).toHaveTextContent(/New Kiro Agent chats use this sign-in/)
+    expect(screen.queryByRole('button', { name: /Sign in/ })).not.toBeInTheDocument()
+  })
+
+  it('returns to the row badge when a KAS grant is also visible to the probe', async () => {
+    mockApi.connectionsMintServer.mockResolvedValue({ ok: true, slug: 'docsServer', state: 'minting', token: 't1' })
+    mockApi.connectionsMintServerState.mockResolvedValue({ slug: 'docsServer', state: 'granted', store: 'kas' })
+    mockApi.mcpProbe.mockResolvedValue([{ name: 'docsServer', status: 'ok', tools: [], authGrantPresent: true }])
+
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" />)
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
+    await tickPolls(1)
+
     expect(screen.getByRole('button', { name: /Sign in/ })).toBeInTheDocument()
   })
 

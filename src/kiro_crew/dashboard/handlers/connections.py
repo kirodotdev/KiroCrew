@@ -441,9 +441,17 @@ async def _configured_mint_request(
 
 
 async def _start_cold_mint(
-    slug: str, mcp_url: str, resource: str, pinned: dict[str, Any] | None = None
+    slug: str,
+    mcp_url: str,
+    resource: str,
+    pinned: dict[str, Any] | None = None,
+    *,
+    kas: bool = False,
 ) -> web.Response:
     """Reserve ``slug``'s mint row, schedule the mint, and answer with its token.
+
+    ``kas`` runs the sign-in through a KAS engine bound to the owner
+    (``connections/mint_kas.py``), so the grant lands where a KAS chat reads it.
 
     The one cold-start path for both mint forms. The row is reserved BEFORE
     responding: the response names a row the caller polls immediately, so the
@@ -455,13 +463,15 @@ async def _start_cold_mint(
     path never loads it.
     """
     from kiro_crew.connections.mint import _dispose_mint, reserve_mint_row, start_oauth_mint
+    from kiro_crew.connections.mint_kas import start_kas_mint
 
+    start = start_kas_mint if kas else start_oauth_mint
     token, prior = await reserve_mint_row(slug)
     try:
         task = asyncio.create_task(
-            start_oauth_mint(slug, mcp_url, token, prior)
+            start(slug, mcp_url, token, prior)
             if pinned is None
-            else start_oauth_mint(slug, mcp_url, token, prior, pinned)
+            else start(slug, mcp_url, token, prior, pinned)
         )
     except BaseException:
         # The flow owns the displaced row once it starts; if it never starts,
@@ -501,14 +511,22 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     if configured is not None:
         # An owner-configured server has no pre-registered OAuth app to check
         # and no premint row to adopt, so it goes straight to the cold path.
+        # Only the Settings MCP table signs in to an owner-added server, so on KAS
+        # it always takes the KAS path.
+        from kiro_crew.connections.mint_kas import kas_mint_applies
+
         name = configured["slug"]
         return await _start_cold_mint(
-            name, configured["mcp_url"], f"server:{name}", configured["entry"]
+            name,
+            configured["mcp_url"],
+            f"server:{name}",
+            configured["entry"],
+            kas=await asyncio.to_thread(kas_mint_applies),
         )
     parsed = await _mint_request(request)
     if isinstance(parsed, web.Response):
         return parsed
-    _body, provider = parsed
+    body, provider = parsed
     slug = str(provider["slug"])
 
     # A pre-registered provider (registry ``auth.mode``) has nothing to mint
@@ -529,7 +547,15 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     # a subsystem most requests never touch, and
     # test_the_handlers_package_does_not_import_the_mint_engine (and its warm twin)
     # enforce it in a subprocess -- hoisting either to module scope turns them red.
+    from kiro_crew.connections.mint_kas import kas_mint_applies
     from kiro_crew.connections.warm import adopt_shared_mint
+
+    if body.get("surface") == "settings" and await asyncio.to_thread(kas_mint_applies):
+        # The Settings MCP table asked, on KAS: the grant has to land in the KAS
+        # vault. A Connections card keeps the kiro-cli mint below, because its
+        # status and Disconnect read only kiro-cli's grant cache. ``surface``
+        # picks the store only; the route is owner-only either way.
+        return await _start_cold_mint(slug, str(provider["mcp_url"]), f"provider:{slug}", kas=True)
 
     # ADOPTION FIRST, because the alternative is throwing the answer away. The premint
     # sweep may already hold this provider's approval URL, and ``reserve_mint_row``
@@ -592,6 +618,10 @@ async def api_connections_mint_state(request: web.Request) -> web.Response:
         payload["oauth_url"] = view["oauth_url"]
     if view.get("reason"):
         payload["reason"] = view["reason"]
+    if view.get("store"):
+        # ``kas``: the grant is kept in the owner's KAS vault, which the row's
+        # kiro-cli grant probe does not read (connections/mint_kas.py).
+        payload["store"] = view["store"]
     if view.get("rejected_endpoint"):
         # Rides only beside reason == "mint_url_rejected". Already reduced to a
         # copy-ready host+path by security.sanitized_oauth_endpoint_display

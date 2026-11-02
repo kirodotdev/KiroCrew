@@ -170,6 +170,35 @@ The status endpoint is **additive** and never mints: it observes the mint table
 to distinguish `awaiting_consent` from `not_connected`, and that is the whole of
 its relationship to minting.
 
+### On KAS the mint runs through a KAS engine
+
+When owner chats run on KAS (`agent.acp_backend` resolves to `kas`) and
+`agent.kas_persist_mcp_sign_in` is on (`mint_kas.kas_mint_applies`; with it off a
+KAS grant would die with the mint process, so today's kiro-cli mint stays), the
+Settings MCP table's sign-ins take `connections/mint_kas.py` instead of the
+kiro-cli mint: every `{server}` POST, and a `{slug}` POST that carries
+`surface: "settings"` (which also skips premint adoption, a premint being a
+kiro-cli process). A Connections card sends no `surface` and keeps the kiro-cli
+mint, because its status and Disconnect read only kiro-cli's grant cache. The
+flow writes the same single-server spec, binds the reserved key
+`connections-mint-kas-<slug>` to the principal `owner`
+(`mcp_grant_principals.bind`, before the spawn), spawns one KAS `AcpRuntime` with
+that key as `mcp_grant_key`, opens one promptless session, and asks the engine
+for the sign-in (`AcpRuntime.begin_mcp_sign_in`). The consent URL is the
+session's OAuth request and takes the same credential gate; there is no second
+attempt. Completion is the engine reporting the server `connected`, and it is
+`granted` only while the process's `SecretStorageServer` is still bound
+(`still_bound`), so the engine's tokens are in the owner's grant vault that every
+later owner KAS chat reads ([acp-client](acp-client.md)). Rows carry
+`store: "kas"`, which the GET returns; the MCP table uses it to say the sign-in
+was kept, because its grant probe reads only kiro-cli's cache. Refusals, each a
+`failed` row: `kas_sign_in_not_kept` (`agent.kas_persist_mcp_sign_in` turned
+off after the route chose this path; nothing spawned), `kas_vault_unavailable` (no storage declared, or the binding
+lapsed), `mint_server_absent`, `mint_sign_in_busy`, `mint_url_rejected`. TTL,
+Cancel, supersede and the dead-holder expiry are the kiro-cli mint's own; the
+row's `client` is a holder whose `shutdown` kills the runtime. Design record:
+[rfc-kas-settings-mcp-sign-in](../../request-for-change/rfc-kas-settings-mcp-sign-in.md).
+
 ### connectedSince is source-backed
 
 The timestamp is stamped when a provider is **first observed to hold a grant**,

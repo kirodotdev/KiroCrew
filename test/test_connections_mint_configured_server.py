@@ -21,7 +21,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 
-from kiro_crew.connections import mint
+from kiro_crew.connections import mint, mint_kas
 from kiro_crew.dashboard.handlers import connections
 
 _DOCS_URL = "https://docs.example.com/mcp"
@@ -67,6 +67,9 @@ def agents_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     # recorded: plain-http and local-tool would be refused on shape alone, and
     # notion is a registry name.
     _write_owner_record(home, {"docsServer": {"url": _DOCS_URL}})
+    # The kiro-cli mint is what this suite pins; a data home with no backend
+    # choice runs KAS (test_connections_mint_kas.py).
+    monkeypatch.setattr(mint_kas, "kas_mint_applies", lambda: False)
     monkeypatch.setattr(mint, "_mints", {})
     monkeypatch.setattr(mint, "_mints_lock", asyncio.Lock())
     return directory
@@ -118,6 +121,28 @@ async def test_a_configured_remote_server_mints_against_the_url_in_the_owner_spe
     finally:
         await client.close()
     assert started == [("docsServer", _DOCS_URL)]
+
+
+@pytest.mark.asyncio
+async def test_on_kas_a_configured_server_signs_in_through_kas(
+    agents_dir: Path, started: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+):
+    kas_calls: list[tuple[str, Any]] = []
+
+    async def _fake_kas(slug: str, mcp_url: str, token: Any, prior: Any, pinned: Any) -> None:
+        kas_calls.append((slug, pinned))
+
+    monkeypatch.setattr(mint_kas, "kas_mint_applies", lambda: True)
+    monkeypatch.setattr(mint_kas, "start_kas_mint", _fake_kas)
+    client = await _client()
+    try:
+        resp = await client.post("/api/connections/mint", json={"server": "docsServer"})
+        assert resp.status == 200
+        await _drain_mint_tasks()
+    finally:
+        await client.close()
+    assert started == []
+    assert kas_calls == [("docsServer", {"url": _DOCS_URL})]
 
 
 @pytest.mark.asyncio

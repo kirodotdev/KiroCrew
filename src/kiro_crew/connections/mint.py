@@ -139,6 +139,10 @@ class MintState(TypedDict, total=False):
     shared: bool
     generation: int  # the shared process that holds this row's PKCE verifier
     activation: int  # the session that owns this row's loopback listener
+    # Where a completed grant is kept, set only by the KAS mint
+    # (:mod:`kiro_crew.connections.mint_kas`): ``"kas"`` is the owner's KAS grant
+    # vault, which the row's kiro-cli grant probe cannot see.
+    store: str
 
 
 _mints: dict[str, MintState] = {}
@@ -1309,6 +1313,8 @@ def pending_mint_for(slug: str) -> MintState | None:
         view["oauth_url"] = entry["oauth_url"]
     if entry.get("reason"):
         view["reason"] = entry["reason"]
+    if entry.get("store"):
+        view["store"] = entry["store"]
     if entry.get("rejected_endpoint"):
         # Rides only beside reason == "mint_url_rejected"; see the field's note
         # on MintState for why this channel and not the logger.

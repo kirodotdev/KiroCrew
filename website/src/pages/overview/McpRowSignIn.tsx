@@ -39,7 +39,9 @@ const MAX_POLLS = 30
  *  ConnectionsPage's post-authorize mint reconciliation. */
 const MAX_AUTHORIZE_POLLS = 150
 
-type Phase = 'idle' | 'minting' | 'authorize' | 'error'
+/** `kept`: the sign-in completed into the owner's KAS grant vault, which the
+ *  table's grant probe does not read, so the row's own badge cannot show it. */
+type Phase = 'idle' | 'minting' | 'authorize' | 'kept' | 'error'
 
 /** The relay strings this table reuses from the chat banner's catalog, so the
  *  shared affordance carries one set of copy across both surfaces. */
@@ -82,7 +84,7 @@ function relayStrings(): RelayStrings {
 export type McpSignInTarget = { slug: string } | { server: string }
 
 function mintFor(target: McpSignInTarget) {
-  return 'slug' in target ? api.connectionsMint(target.slug) : api.connectionsMintServer(target.server)
+  return 'slug' in target ? api.connectionsMint(target.slug, 'settings') : api.connectionsMintServer(target.server)
 }
 
 function mintStateFor(target: McpSignInTarget) {
@@ -93,12 +95,16 @@ export default function McpRowSignIn({
   target,
   serverName,
   again = false,
+  onKept,
 }: {
   target: McpSignInTarget
   serverName: string
   /** The row already holds a grant: the control reads "Sign in again". The mint
    *  checks the held grant first and asks for consent only when it does not work. */
   again?: boolean
+  /** Called once a sign-in is kept in the KAS vault, so the table's status
+   *  badge can stop reading "Sign-in required" for this row. */
+  onKept?: () => void
 }) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [oauthUrl, setOauthUrl] = useState('')
@@ -149,9 +155,7 @@ export default function McpRowSignIn({
         // concurrent flow (another tab, a chat session) finished first. Probe
         // so the repainted row shows the grant; without it the loop would run
         // out and report a false timeout on an already-signed-in server.
-        await probeShowsSignedIn(serverName)
-        if (attemptRef.current !== attempt) return
-        setPhase('idle')
+        await settleGranted(attempt, state.store)
         return
       }
       if (state.state === 'failed' || state.state === 'expired') {
@@ -162,6 +166,17 @@ export default function McpRowSignIn({
     }
     setPhase('error')
     setError(i18nT('pages.overview.mcpTab.sign_in_timeout'))
+  }
+
+  /** A `granted` mint: repaint the row from a fresh probe. A grant kept in the
+   *  KAS vault is invisible to that probe, so instead of falling back to the
+   *  Sign in button the row says the sign-in was kept. */
+  const settleGranted = async (attempt: number, store?: string) => {
+    const shown = await probeShowsSignedIn(serverName)
+    if (attemptRef.current !== attempt) return
+    const kept = !shown && store === 'kas'
+    setPhase(kept ? 'kept' : 'idle')
+    if (kept) onKept?.()
   }
 
   /** After the approval URL is shown, keep polling the mint feed so a completed
@@ -180,9 +195,7 @@ export default function McpRowSignIn({
       }
       if (attemptRef.current !== attempt) return
       if (state.state === 'granted') {
-        await probeShowsSignedIn(serverName)
-        if (attemptRef.current !== attempt) return
-        setPhase('idle')
+        await settleGranted(attempt, state.store)
         return
       }
       if (state.state === 'failed' || state.state === 'expired') {
@@ -225,6 +238,14 @@ export default function McpRowSignIn({
       <span className="inline-flex items-center gap-1.5 text-[12px] text-warn">
         <Loader2 className="lucide-inline animate-spin motion-reduce:animate-none" size={13} aria-hidden="true" />
         <span role="status">{i18nT('pages.overview.mcpTab.sign_in_preparing')}</span>
+      </span>
+    )
+  }
+
+  if (phase === 'kept') {
+    return (
+      <span className="text-[12px] leading-4 text-ok" role="status">
+        {i18nT('pages.overview.mcpTab.sign_in_kept_for_kas')}
       </span>
     )
   }

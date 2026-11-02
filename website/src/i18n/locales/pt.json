@@ -15584,6 +15584,7 @@
         "disabled_count_other": "{{count}} desativados",
         "sign_in": "Entrar",
         "sign_in_authorize": "Autorizar {{name}}",
+        "sign_in_kept_for_kas": "Sessão iniciada. Os novos chats do Kiro Agent usam este login.",
         "sign_in_mint_failed": "Não foi possível iniciar o login. Tente novamente.",
         "sign_in_preparing": "Preparando o login…",
         "sign_in_retry": "Tentar novamente",
