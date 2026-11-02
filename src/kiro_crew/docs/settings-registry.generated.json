@@ -23,6 +23,13 @@
       "configKey": "auto_update"
     },
     {
+      "id": "agent.kiro-sign-in",
+      "label": "Sign out or switch Kiro account",
+      "tab": "agent",
+      "route": "/settings/agent?highlight=agent.kiro-sign-in",
+      "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
+    },
+    {
       "id": "browser.attach-token",
       "label": "Extension token (optional)",
       "tab": "browser",

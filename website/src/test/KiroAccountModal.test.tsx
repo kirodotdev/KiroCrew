@@ -34,6 +34,10 @@ vi.mock('../api/client', async importOriginal => {
       ...mod.api,
       sessionsUsageRefresh: vi.fn(),
       kiroUsage: vi.fn(async () => KIRO_USAGE_EMPTY),
+      // The sign-out link's harness read; its own cases live in
+      // KiroAccountModal.signOutLink.test.tsx.
+      kirocrewConfig: vi.fn(async () => ({ agent: { acp_backend: 'kas' } })),
+      kasLoginStatus: vi.fn(async () => ({ authenticated: true, provider: 'Google', identity: 'social' })),
     },
   }
 })

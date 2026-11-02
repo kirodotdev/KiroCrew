@@ -6140,7 +6140,10 @@
       "remaining_credit_balance": "残りのクレジット残高: {{count}}",
       "show_email": "メールアドレスを表示",
       "usage_scope": "kiro-cli /usage による、チャット、エージェント、MCP、サブエージェント全体の月間 Kiro クレジット使用量。",
-      "used_credits": "使用済み: {{used}} / {{total}}"
+      "used_credits": "使用済み: {{used}} / {{total}}",
+      "sign_out_or_switch": "設定でサインアウト・アカウント切り替え",
+      "sign_out_link_config_unreadable": "設定を読み込めなかったため、サインアウトのリンクを表示できません。",
+      "switch_in_settings": "設定でアカウント切り替え"
     },
     "artifactChatPanel": {
       "agent_chat": "エージェントチャット",
@@ -13934,7 +13937,9 @@
         "takes_effect_next_process": "今後起動するエージェントプロセスに適用されます。実行中のセッションは次のターンで切り替わります。",
         "could_not_sign_out": "サインアウトできませんでした",
         "keep_current_sign_in": "現在のサインインを維持",
-        "signed_in_body_no_refresh": "エージェントはこの Kiro アカウントとして動作します。このサインインにはリフレッシュトークンがなく自動更新できません。期限切れになる前に再度サインインしてください。"
+        "signed_in_body_no_refresh": "エージェントはこの Kiro アカウントとして動作します。このサインインにはリフレッシュトークンがなく自動更新できません。期限切れになる前に再度サインインしてください。",
+        "search_label": "サインアウト・Kiro アカウント切り替え",
+        "search_description": "エージェントが使う Kiro サインインからサインアウトするか、別のアカウントでサインインします。"
       },
       "strandsSetup": {
         "cancel": "キャンセル",

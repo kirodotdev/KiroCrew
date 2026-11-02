@@ -6053,7 +6053,10 @@
       "remaining_credit_balance": "Solde de crédits restant : {{count}}",
       "show_email": "Afficher l’adresse e-mail",
       "usage_scope": "Utilisation mensuelle des crédits Kiro selon kiro-cli /usage dans les chats, agents, MCP et sous-agents.",
-      "used_credits": "Utilisés : {{used}} / {{total}}"
+      "used_credits": "Utilisés : {{used}} / {{total}}",
+      "sign_out_or_switch": "Se déconnecter ou changer de compte dans les Paramètres",
+      "sign_out_link_config_unreadable": "Impossible de charger les paramètres, donc le lien de déconnexion ne peut pas s’afficher.",
+      "switch_in_settings": "Changer de compte dans les Paramètres"
     },
     "agentDropdownList": {
       "active_in_this_session": "Actif dans cette session",
@@ -14464,7 +14467,9 @@
         "takes_effect_next_process": "S’applique aux processus d’agent démarrés à partir de maintenant ; les sessions en cours l’adoptent à leur prochain tour.",
         "could_not_sign_out": "Déconnexion impossible",
         "keep_current_sign_in": "Conserver la connexion actuelle",
-        "signed_in_body_no_refresh": "Les agents s’exécutent avec ce compte Kiro. Cette connexion n’a pas de jeton de rafraîchissement et ne peut pas se renouveler seule — reconnectez-vous avant son expiration."
+        "signed_in_body_no_refresh": "Les agents s’exécutent avec ce compte Kiro. Cette connexion n’a pas de jeton de rafraîchissement et ne peut pas se renouveler seule — reconnectez-vous avant son expiration.",
+        "search_label": "Se déconnecter ou changer de compte Kiro",
+        "search_description": "Déconnecte-toi de la connexion Kiro qu’utilisent tes agents, ou connecte-toi avec un autre compte."
       },
       "strandsSetup": {
         "cancel": "Annuler",

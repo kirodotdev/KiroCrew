@@ -6053,7 +6053,10 @@
       "remaining_credit_balance": "Saldo de créditos restante: {{count}}",
       "show_email": "Mostrar correo electrónico",
       "usage_scope": "Uso mensual de créditos de Kiro según kiro-cli /usage en chats, agentes, MCP y subagentes.",
-      "used_credits": "Usados: {{used}} / {{total}}"
+      "used_credits": "Usados: {{used}} / {{total}}",
+      "sign_out_or_switch": "Cerrar sesión o cambiar de cuenta en Configuración",
+      "sign_out_link_config_unreadable": "No se pudo cargar la configuración, así que no se puede mostrar el enlace para cerrar sesión.",
+      "switch_in_settings": "Cambiar de cuenta en Configuración"
     },
     "agentDropdownList": {
       "active_in_this_session": "Activo en esta sesión",
@@ -14464,7 +14467,9 @@
         "takes_effect_next_process": "Se aplica a los procesos de agente que se inicien a partir de ahora; las sesiones en curso lo adoptan en su siguiente turno.",
         "could_not_sign_out": "No se pudo cerrar la sesión",
         "keep_current_sign_in": "Mantener el inicio de sesión actual",
-        "signed_in_body_no_refresh": "Los agentes se ejecutan con esta cuenta de Kiro. Este inicio de sesión no tiene token de actualización y no puede renovarse solo: vuelve a iniciar sesión antes de que caduque."
+        "signed_in_body_no_refresh": "Los agentes se ejecutan con esta cuenta de Kiro. Este inicio de sesión no tiene token de actualización y no puede renovarse solo: vuelve a iniciar sesión antes de que caduque.",
+        "search_label": "Cerrar sesión o cambiar de cuenta de Kiro",
+        "search_description": "Cierra la sesión de Kiro que usan tus agentes o inicia sesión con otra cuenta."
       },
       "strandsSetup": {
         "cancel": "Cancelar",

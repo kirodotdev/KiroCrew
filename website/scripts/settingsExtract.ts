@@ -226,6 +226,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // The built-in KAS engine card, which FeaturePreviewsSection mounts from
   // pages/developer: its `agent.kas_bundle` switch is a Developer-tab row.
   'KasBundleCard.tsx': DEVELOPER_PREVIEWS,
+  // The Kiro sign-in card, which AgentBackendTab mounts from pages/developer.
+  // It has no extractable primitive; mapped so its hand-written search entry
+  // (`agent.kiro-sign-in` in settingsManual.ts) stays anchored to its source.
+  'KiroSignInCard.tsx': 'agent',
   // The per-app model rows ChatPanel's Model page mounts. Each row is labelled
   // with the app's own name, a dynamic label the extractor skips, so the file
   // yields no entry today; mapped so a static control added to it lands on the
@@ -487,6 +491,7 @@ export function panelRoots(srcDir: string): ExtractRoot[] {
     { dir: path.join(srcDir, 'pages', 'settings') },
     { dir: path.join(srcDir, 'pages', 'overview'), file: 'PortabilityTab.tsx' },
     { dir: path.join(srcDir, 'pages', 'developer'), file: 'KasBundleCard.tsx' },
+    { dir: path.join(srcDir, 'pages', 'developer'), file: 'KiroSignInCard.tsx' },
     { dir: path.join(srcDir, 'pages', 'chat', 'command-center'), file: 'AutomaticCardSetting.tsx' },
   ]
 }

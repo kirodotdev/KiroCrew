@@ -342,6 +342,20 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     type: 'input',
     occurrence: 1,
   },
+  // The Kiro sign-in card on Agent Harness, where Sign out and Switch account
+  // live. It is built from raw markup inside the KAS row's detail, so the
+  // extractor never sees it. `settingId` is the card's `data-setting-id`: the
+  // highlight waits for it while AgentBackendTab opens the KAS row for this id
+  // (`KIRO_SIGN_IN_SETTING_ID` in pages/developer/kiroSignInLink.ts).
+  {
+    id: 'agent.kiro-sign-in',
+    labelKey: 'pages.developer.kiroSignInCard.search_label',
+    descriptionKey: 'pages.developer.kiroSignInCard.search_description',
+    tab: 'agent',
+    type: 'buttonGroup',
+    occurrence: 1,
+    settingId: 'kiro-sign-in',
+  },
   // Settings → OAuth Apps renders one card per PRE-REGISTERED registry
   // provider, so the cards are data, not JSX the extractor can see. Derive an
   // entry per provider from the registry itself: the gallery's "Configure OAuth

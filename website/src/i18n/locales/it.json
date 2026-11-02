@@ -6053,7 +6053,10 @@
       "remaining_credit_balance": "Saldo crediti rimanente: {{count}}",
       "show_email": "Mostra indirizzo e-mail",
       "usage_scope": "Utilizzo mensile dei crediti Kiro secondo kiro-cli /usage in chat, agenti, MCP e sottoagenti.",
-      "used_credits": "Utilizzati: {{used}} / {{total}}"
+      "used_credits": "Utilizzati: {{used}} / {{total}}",
+      "sign_out_or_switch": "Esci o cambia account nelle Impostazioni",
+      "sign_out_link_config_unreadable": "Impossibile caricare le impostazioni, quindi il link per uscire non può essere mostrato.",
+      "switch_in_settings": "Cambia account nelle Impostazioni"
     },
     "agentDropdownList": {
       "active_in_this_session": "Attivo in questa sessione",
@@ -14464,7 +14467,9 @@
         "takes_effect_next_process": "Si applica ai processi agente avviati da ora in avanti; le sessioni in corso lo adottano al turno successivo.",
         "could_not_sign_out": "Impossibile uscire",
         "keep_current_sign_in": "Mantieni l’accesso attuale",
-        "signed_in_body_no_refresh": "Gli agenti vengono eseguiti con questo account Kiro. Questo accesso non ha un token di aggiornamento e non può rinnovarsi da solo: accedi di nuovo prima che scada."
+        "signed_in_body_no_refresh": "Gli agenti vengono eseguiti con questo account Kiro. Questo accesso non ha un token di aggiornamento e non può rinnovarsi da solo: accedi di nuovo prima che scada.",
+        "search_label": "Esci o cambia account Kiro",
+        "search_description": "Esci dall’accesso a Kiro usato dai tuoi agenti, oppure accedi con un altro account."
       },
       "strandsSetup": {
         "cancel": "Annulla",

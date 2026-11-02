@@ -36,6 +36,7 @@
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
 import { PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
+import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import { SETTINGS_KEYWORDS } from './settingsKeywords'
 import { settingsTabLabel } from './settingsTabLabel'
 import { settingHelpText, type SettingEntry } from './settingsTypes'
@@ -140,6 +141,12 @@ export interface SettingsSearchGovernance {
    * a tab with nothing there to flash.
    */
   updateSwitches: { app: boolean; gateway: boolean }
+  /**
+   * Whether the Kiro sign-in entry may be offered. False only once the config
+   * read SUCCEEDED and names a harness other than KAS: the card signs out Crew's
+   * own Kiro sign-in, which agents run as only on KAS. Omitted means offered.
+   */
+  kiroSignInOffered?: boolean
 }
 
 /**
@@ -170,6 +177,7 @@ export function settingEntryOffered(
   if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
   if (entry.id === GATEWAY_AUTO_UPDATE_SETTING_ID) return governance.updateSwitches.gateway
   if (entry.id === APP_AUTO_DOWNLOAD_SETTING_ID) return governance.updateSwitches.app
+  if (entry.id === KIRO_SIGN_IN_SETTING_ID) return governance.kiroSignInOffered !== false
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled
 }
