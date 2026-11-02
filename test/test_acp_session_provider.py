@@ -600,6 +600,19 @@ class TestAcpSessionProviderClientCompat:
         assert result == "ok"
 
     @pytest.mark.asyncio
+    async def test_command_result_with_args(self):
+        """command_result passes args to the shared-runtime handle."""
+        handle = _make_handle()
+        handle.command_result = AsyncMock(return_value={"success": True})
+        runtime = _make_runtime()
+        provider = AcpSessionProvider(handle, runtime)
+
+        result = await provider.command_result("/effort", {"level": "high"})
+
+        handle.command_result.assert_awaited_once_with("/effort", {"level": "high"})
+        assert result == {"success": True}
+
+    @pytest.mark.asyncio
     async def test_set_config_option(self):
         """set_config_option delegates to handle."""
         handle = _make_handle()

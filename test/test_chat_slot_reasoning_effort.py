@@ -8,38 +8,12 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from chat_slot_reasoning_effort_helpers import _make_app, _mock_state
 
 from kiro_crew.dashboard import chat_handlers, chat_persistence
-from kiro_crew.dashboard.chat import api_chat_slot_reasoning_effort
-from kiro_crew.dashboard.chat_handlers import api_chat_slot_selection_capabilities
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.providers.acp import AcpProvider
-
-
-def _make_app(state: DashboardState) -> web.Application:
-    app = web.Application()
-    app["state"] = state
-    app.router.add_post("/api/chat/slots/{slot}/reasoning-effort", api_chat_slot_reasoning_effort)
-    app.router.add_get(
-        "/api/chat/slots/{slot}/selection-capabilities", api_chat_slot_selection_capabilities
-    )
-    return app
-
-
-def _mock_state(slot: _ChatSlot | None = None, provider: object = None) -> DashboardState:
-    state = MagicMock(spec=DashboardState)
-    state._slots = {}
-    if slot:
-        state._slots[slot.key] = slot
-    state.push_slots_update = MagicMock()
-    state.sessions = MagicMock()
-    state.sessions.reset = AsyncMock()
-    # No live AcpProvider by default → handler falls back to session reset
-    # (matches prior behaviour for the "no session yet" path).
-    state.sessions.get_provider = MagicMock(return_value=provider)
-    return state
 
 
 class TestSlotSelectionCapabilities:
@@ -783,7 +757,11 @@ class TestChatSlotReasoningEffortLiveProvider:
                 json={"reasoning_effort": ""},
             )
             assert resp.status == 409
-            assert (await resp.json())["code"] == "effort_overlay_busy"
+            response = await resp.json()
+            assert response["code"] == "effort_overlay_busy"
+            assert "1 MiB" in response["error"]
+            assert "fenced by a spawning session" in response["error"]
+            assert "a link or in a folder outside the work dir" in response["error"]
             assert slot.reasoning_effort == "high", "the cleared value was committed anyway"
             state.sessions.reset.assert_not_called()
 
@@ -806,7 +784,11 @@ class TestChatSlotReasoningEffortLiveProvider:
                 json={"reasoning_effort": ""},
             )
             assert resp.status == 200
-            provider.clear_effort.assert_awaited_once()
+            # The rewrite runs inside the warm pool's fence, so no runtime queued
+            # before it is claimed after it.
+            provider.clear_effort.assert_awaited_once_with(
+                owned_only=False, fence_rewrite=state.sessions.fence_effort_overlay_rewrite
+            )
             state.sessions.reset.assert_not_called()
             # Cleared live: the record is dropped, so a successor starts on the default.
             state.sessions.record_effort_override.assert_called_once_with(
@@ -833,7 +815,11 @@ class TestChatSlotReasoningEffortLiveProvider:
                 json={"reasoning_effort": ""},
             )
             assert resp.status == 200
-            provider.clear_effort.assert_awaited_once()
+            # The reset's next start may claim a warm runtime, and the fence the
+            # rewrite ran inside keeps one queued before it from being claimed.
+            provider.clear_effort.assert_awaited_once_with(
+                owned_only=False, fence_rewrite=state.sessions.fence_effort_overlay_rewrite
+            )
             state.sessions.reset.assert_awaited_once()
             state.sessions.record_effort_override.assert_not_called()
 
@@ -857,6 +843,28 @@ class TestChatSlotReasoningEffortLiveProvider:
             assert slot.reasoning_effort == "high"
             provider.change_effort.assert_not_awaited()
             state.sessions.reset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_live_persistence_fence_timeout_falls_back_to_reset_and_commits_slot(self):
+        provider = MagicMock(spec=AcpProvider)
+        provider.supports_effort = MagicMock(return_value=True)
+        provider.has_active_turn = MagicMock(return_value=False)
+        provider.change_effort = AsyncMock(
+            side_effect=RuntimeError(
+                "could not persist effort 'max' for 'claude-opus-4.7': the workspace overlay is locked"
+            )
+        )
+        slot = _ChatSlot("test")
+        state = _mock_state(slot, provider=provider)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/test/reasoning-effort", json={"reasoning_effort": "max"}
+            )
+
+        assert response.status == 200
+        assert slot.reasoning_effort == "max"
+        state.sessions.reset.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_live_change_failure_falls_back_to_reset(self):
@@ -915,6 +923,7 @@ class TestChatSlotReasoningEffortLiveProvider:
         provider.change_effort = AsyncMock(return_value=True)
         provider.clear_effort = AsyncMock(return_value=True)
         slot = _ChatSlot("test")
+        slot._effort_intent_owed = True
         state = _mock_state(slot, provider=provider)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
@@ -926,6 +935,7 @@ class TestChatSlotReasoningEffortLiveProvider:
             assert data == {"ok": True, "reasoning_effort": "xhigh", "deferred": True}
             # Persisted on the slot for the next turn.
             assert slot.reasoning_effort == "xhigh"
+            assert slot._effort_intent_owed is False
             # No live push and no reset while the turn is active.
             provider.change_effort.assert_not_awaited()
             provider.clear_effort.assert_not_awaited()

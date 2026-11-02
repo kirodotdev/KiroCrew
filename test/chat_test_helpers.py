@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 import os
@@ -219,6 +220,13 @@ def _make_state(tmp_path, **kwargs):
     # awaited for the second. Tests that want a live provider set it explicitly.
     sessions.get_provider = MagicMock(return_value=None)
     sessions.destroy = AsyncMock()
+    # No cold start in flight and no pending explicit Default: a bare MagicMock
+    # answers truthy to ``effort_basis_locked``, which the effort route reads as
+    # a start in flight and refuses with a 409.
+    sessions.effort_basis_locked = MagicMock(return_value=False)
+    sessions.explicit_effort_default_pending = MagicMock(return_value=False)
+    sessions.set_explicit_effort_default = MagicMock(return_value=True)
+    sessions.effort_intent_write = MagicMock(side_effect=lambda _key: contextlib.nullcontext())
     # Real in-memory Slack-link store rather than bare MagicMocks. The unlink
     # path unpacks get_slack_link into (thread_ts, channel_id) and branches on
     # whether a link is PRESENT, and a MagicMock satisfies neither: it iterates
