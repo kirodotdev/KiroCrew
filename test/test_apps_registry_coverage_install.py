@@ -286,8 +286,7 @@ class TestPreexistingCheckoutProbe:
 
 class TestInstallFromRegistryRefusals:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's own no-side-effect guard, moved verbatim; no test in the class calls monkeypatch.undo()
-    def _no_side_effects(self, monkeypatch, tmp_path):
+    def _no_side_effects(self, _floor_monkeypatch, tmp_path):
         """Every test here must return before any clone/build/registration.
 
         ``app-sources`` is redirected at *tmp_path* as a belt-and-braces guard:
@@ -295,13 +294,13 @@ class TestInstallFromRegistryRefusals:
         a future regression fail loudly in the sandbox instead of quietly
         touching the real Kiro Crew home.
         """
-        monkeypatch.setattr(registry, "sel", lambda: MagicMock())
-        monkeypatch.setattr(registry, "_app_sources_dir", lambda: tmp_path / "app-sources")
+        _floor_monkeypatch.setattr(registry, "sel", lambda: MagicMock())
+        _floor_monkeypatch.setattr(registry, "_app_sources_dir", lambda: tmp_path / "app-sources")
 
         async def _never_clone(*a, **k):
             raise AssertionError("install must refuse before cloning")
 
-        monkeypatch.setattr(registry, "_clone_build_app", _never_clone)
+        _floor_monkeypatch.setattr(registry, "_clone_build_app", _never_clone)
 
     @pytest.mark.asyncio
     async def test_provenance_mismatch_is_refused_and_audited(self, monkeypatch):
