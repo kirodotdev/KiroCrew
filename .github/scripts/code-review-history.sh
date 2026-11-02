@@ -10,9 +10,12 @@
 #
 # This script adds the two things the jobs read beyond those three commits:
 #
-#   1. The commit history of BASE_TIP and HEAD_SHA, with no trees or blobs
-#      (`--filter=tree:0`). `git merge-base` and `git rev-list` read commits
-#      only, so they see the same graph a full clone has.
+#   1. The commit history of BASE_TIP and HEAD_SHA, with their trees but no
+#      blobs (`--filter=blob:none`). `git merge-base` and `git rev-list` read
+#      commits only, so they see the same graph a full clone has. The filter
+#      is not `tree:0`: on git 2.56, deepening a shallow clone with `tree:0`
+#      aborts in index-pack ("BUG: builtin/pack-objects.c: should_include_obj
+#      should only be called on existing objects").
 #   2. The tree and blobs of the merge-base. The diffs below read them, and
 #      git fetches each missing object on demand while they run.
 #
@@ -61,7 +64,7 @@ fetch_history() {
   else
     set --
   fi
-  git fetch --no-tags --no-recurse-submodules --quiet --filter=tree:0 "$@" \
+  git fetch --no-tags --no-recurse-submodules --quiet --filter=blob:none "$@" \
     origin "$BASE_TIP" "$HEAD_SHA"
 }
 
