@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.atomic_write import (
+    TRANSCRIPT_REPLACE_BUDGET_SECONDS,
     atomic_write,
     discard_replacement,
     fsync_dir,
@@ -45,8 +46,21 @@ def rewrite_transcript(path: Path, content: str | bytes) -> None:
     The mode is owner-only on every root, as the transcript's first write sets
     it: a transcript can live outside the data home (an eval workspace), where
     the default would follow the umask and widen the rewritten file.
+
+    The publishing rename carries ``TRANSCRIPT_REPLACE_BUDGET_SECONDS`` so a
+    Windows reader holding the transcript open does not defeat the rename inside
+    the count-based retry's sub-half-second window. The budget is spent only when
+    this rewrite runs OFF the event loop (the consolidation pass and the slot
+    save both offload it); on the loop ``replace_with_retry`` re-raises at once
+    regardless, so the loop never sleeps for the budget.
     """
-    atomic_write(path, content, fsync=True, mode=OWNER_ONLY_FILE_MODE)
+    atomic_write(
+        path,
+        content,
+        fsync=True,
+        mode=OWNER_ONLY_FILE_MODE,
+        replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
+    )
 
 
 #: Marks a snapshot the unlocked pass could not take, so it never matches.
@@ -154,7 +168,7 @@ def rewrite_metadata_line(
             if staged is not None and current_path == path and current == seen:
                 prev_mtime = facade._safe_mtime(path)
                 published = True  # publish_replacement owns the file from here
-                publish_replacement(staged, path)
+                publish_replacement(staged, path, budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS)
             else:
                 # Free the stale staged copy before writing a new one, so the
                 # fallback never needs room for two whole-transcript copies.

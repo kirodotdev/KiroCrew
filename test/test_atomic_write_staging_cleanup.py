@@ -154,7 +154,7 @@ def test_an_interrupt_before_the_publish_starts_removes_the_temp_file(
     target.write_bytes(b"original\n")
     entered: list[str] = []
 
-    def interrupted_publish(staged: str, path: Any) -> None:
+    def interrupted_publish(staged: str, path: Any, *, budget_s: float | None = None) -> None:
         entered.append(staged)
         raise KeyboardInterrupt
 

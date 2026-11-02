@@ -52,7 +52,7 @@ from typing import Any
 from kiro_crew import mcp_apps_render, model_registry  # noqa: F401
 from kiro_crew.agent import kiro_agents_dir_path  # noqa: F401
 from kiro_crew.agent_discovery import agent_model_map  # noqa: F401
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import TRANSCRIPT_REPLACE_BUDGET_SECONDS, atomic_write
 from kiro_crew.chat_attachments import (  # noqa: F401
     ImageBudget,
     persist_inline_images,

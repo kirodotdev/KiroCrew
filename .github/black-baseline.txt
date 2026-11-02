@@ -607,7 +607,6 @@ test/test_pending_skill_notification_content.py
 test/test_perf_memory_quickwins.py
 test/test_perf_sampler.py
 test/test_persist_off_loop.py
-test/test_persistence_probe.py
 test/test_personal_shopper_no_purchase_capability.py
 test/test_playwright_e2e.py
 test/test_pod_e2e_video_guard.py

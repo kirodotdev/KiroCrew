@@ -747,9 +747,9 @@ class TestManifestPersistenceFailure:
             events.append("fsync")
             real_fsync(fd)
 
-        def tracking_replace(src: str | Path, dst: str | Path) -> None:
+        def tracking_replace(src: str | Path, dst: str | Path, **kwargs: object) -> None:
             events.append("replace")
-            real_replace(src, dst)
+            real_replace(src, dst, **kwargs)
 
         monkeypatch.setattr(atomic_write_module.os, "fsync", tracking_fsync)
         monkeypatch.setattr(atomic_write_module, "replace_with_retry", tracking_replace)
