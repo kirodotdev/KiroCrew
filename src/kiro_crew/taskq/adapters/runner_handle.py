@@ -13,6 +13,7 @@ that facade for type checkers only, and it logs under the facade's logger.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -162,13 +163,25 @@ class Admitted:
         NOT for an ``except CancelledError`` arm -- an ``await`` there can be
         interrupted before the write is submitted, and a dropped terminal write
         leaves the row active for the next boot's reconciler to re-dispatch.
+
+        A cancel can still land on a normal path while this awaits. A write still
+        queued behind other writer jobs is cancelled with the await, and either
+        way the slot release below never runs, so the lane stays one slot short.
+        The cancel is therefore answered with the synchronous :meth:`settle`
+        before it propagates: ``finish`` is generation-fenced, so a write that
+        already committed only refuses the repeat, and the slot goes back
+        either way.
         """
         if self._settled:
             return False
         store = self._store()
         if store is None:
             return self._settle_apply(state, True)
-        ok = bool(await store.run(self._finish_db, state, result_ref, error))
+        try:
+            ok = bool(await store.run(self._finish_db, state, result_ref, error))
+        except asyncio.CancelledError:
+            self.settle(state, result_ref=result_ref, error=error)
+            raise
         return self._settle_apply(state, ok)
 
     def _finish_db(self, state: str, result_ref: str | None, error: str | None) -> bool:
