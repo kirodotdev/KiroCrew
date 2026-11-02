@@ -23,7 +23,7 @@ from session_helpers import (  # noqa: F401 -- the fixture is requested by name
 from conftest import requires_symlinks
 from kiro_crew.acp.types import AcpPromptStats
 from kiro_crew.session import SessionEndingError, SessionManager
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import async_wait_until, await_until, finished, until_parked
 
 
 class TestCancelRaceCondition:
@@ -421,8 +421,7 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
 
             async def _gated_start(*_args, **_kwargs):
                 started.set()
-                # flake-ok: pre-existing unbounded Event.wait in the gated start double; each test using it sets the gate; moved verbatim; tracked for a de-flake pass
-                await gate.wait()
+                await finished(gate.wait(), "the test releasing the gated start")
 
             provider.start = AsyncMock(side_effect=_gated_start)
             return provider
@@ -441,11 +440,20 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
         await async_wait_until(condition, describe=lambda: what)
 
     @staticmethod
-    async def _settle() -> None:
-        """Give a task every chance to run: enough loop turns for a door that does not wait."""
-        for _ in range(20):
-            # flake-ok: pre-existing 20-yield budget so a held or waiting get_or_create task reaches its door before the asserts; moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+    async def _until_held_at_the_door(mgr: SessionManager, key: str, call: asyncio.Task) -> None:
+        """*call* is parked on *key*'s fence, waiting for the lift: the door holds it, nothing has answered it."""
+        lifted = mgr._allocation_boundary().state.ending_lifted[key]
+        await until_parked(
+            lifted, describe=lambda: f"the call under {key!r} never parked on the fence: {call!r}"
+        )
+
+    @staticmethod
+    async def _until_waiting_on_the_turn(mgr: SessionManager, key: str, call: asyncio.Task) -> None:
+        """*call* is parked on *key*'s busy turn permit: it reached the wait it is asserted to be in."""
+        permit = mgr._sessions[key].semaphore
+        await until_parked(
+            permit, describe=lambda: f"the claim under {key!r} never parked on the permit: {call!r}"
+        )
 
     @staticmethod
     def _fenced(mgr: SessionManager, key: str) -> bool:
@@ -463,7 +471,7 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
         with mgr.ending_key("k1"):
             assert self._fenced(mgr, "k1")
             held = asyncio.create_task(mgr.get_or_create("k1"))
-            await self._settle()
+            await self._until_held_at_the_door(mgr, "k1", held)
             assert not held.done(), (
                 "a cold start racing the fence was answered while the fence was up: "
                 f"{held.exception() if held.done() and held.exception() else 'it landed'}"
@@ -488,7 +496,7 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
 
         with mgr.ending_key("k1"):
             held = asyncio.create_task(mgr.get_or_create("k1"))
-            await self._settle()
+            await self._until_held_at_the_door(mgr, "k1", held)
             assert not held.done(), "a claim racing the fence was answered while the fence was up"
 
         again, is_new, _ = await await_until(held, what="the held claim landing")
@@ -522,7 +530,7 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
                     lambda: hard_kill.call_count == 1,
                     "the start returned under the fence and its provider was not hard-killed",
                 )
-                await self._settle()
+                await self._until_held_at_the_door(mgr, "k1", cold_start)
                 assert not cold_start.done(), (
                     "the call whose start the fence caught was answered while the fence was up: "
                     f"{cold_start.exception() if cold_start.exception() else 'it landed'}"
@@ -610,7 +618,7 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
                     lambda: not mgr._has_allocation_reservation("k1"),
                     "the fenced allocation was not refused at its first door",
                 )
-                await self._settle()
+                await self._until_held_at_the_door(mgr, "k1", cold_start)
                 assert not cold_start.done(), (
                     "an allocation the fence caught before it started anything was answered "
                     "while the fence was up"
@@ -733,8 +741,7 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
 
         async def _gated_claim(agent):
             claimed.set()
-            # flake-ok: pre-existing unbounded Event.wait in the gated claim double; the test sets the gate once the claim enters; moved verbatim; tracked for a de-flake pass
-            await claim_gate.wait()
+            await finished(claim_gate.wait(), "the test releasing the gated claim")
             return await real_drain(agent)
 
         mgr._warm_pool.put_nowait((pooled, time.monotonic()))
@@ -782,7 +789,7 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
         provider, _, _ = await mgr.get_or_create("k1")  # the turn: permit held
 
         waiter = asyncio.create_task(mgr.get_or_create("k1"))
-        await self._settle()
+        await self._until_waiting_on_the_turn(mgr, "k1", waiter)
         assert not waiter.done(), "the claim did not wait on the busy turn"
         assert mgr._has_allocation_reservation("k1"), "the waiting claim holds a reservation"
         assert not mgr._spawn_in_flight(
@@ -819,7 +826,7 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
         provider, _, _ = await mgr.get_or_create("k1")  # the turn: permit held
 
         waiter = asyncio.create_task(mgr.get_or_create("k1"))
-        await self._settle()
+        await self._until_waiting_on_the_turn(mgr, "k1", waiter)
         assert not waiter.done(), "the claim did not wait on the busy turn"
 
         with mgr.ending_key("k1"):
@@ -875,8 +882,7 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
         await self._until_inside_start(started)
         gate.set()
 
-        # flake-ok: pre-existing unbounded await of the cold start the test releases by setting its gate just above; moved verbatim; tracked for a de-flake pass
-        provider, is_new, _ = await cold_start
+        provider, is_new, _ = await await_until(cold_start, what="the cold start landing")
         assert is_new and mgr.has_session("k1")
         provider.start.assert_awaited_once()
         mgr.release("k1")
@@ -1238,11 +1244,13 @@ class TestConcurrentAccess:
     async def test_concurrent_different_keys(self, cfg):
         """Different keys should create independent sessions."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        # flake-ok: pre-existing unbounded gather of three cold starts on mock providers that complete on their own; moved verbatim
-        results = await asyncio.gather(  # noqa: F841
-            mgr.get_or_create("a"),
-            mgr.get_or_create("b"),
-            mgr.get_or_create("c"),
+        await finished(
+            asyncio.gather(
+                mgr.get_or_create("a"),
+                mgr.get_or_create("b"),
+                mgr.get_or_create("c"),
+            ),
+            "the three cold starts landing",
         )
         assert mgr.count == 3
         for key in ("a", "b", "c"):
@@ -1263,15 +1271,19 @@ class TestSessionState:
         await mgr.close_all()
 
     @pytest.mark.asyncio
-    async def test_release_updates_last_used(self, cfg):
+    async def test_release_updates_last_used(self, cfg, manual_clock, monkeypatch):
+        from kiro_crew import session_allocation
+
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.get_or_create("t1")
+        # The clock the allocation reads is moved after the claim stamped its own reading,
+        # so only the release can have written the clock's reading into last_used.
+        manual_clock.install(monkeypatch, session_allocation)
+        manual_clock.advance(30.0)
         mgr.release("t1")
         async with mgr._lock:
             sess = mgr._sessions["t1"]
-        # last_used should be recent (within last second)
-        # flake-ok: pre-existing real-clock check that release stamped last_used within 1 s; a worker stall over 1 s reds it; moved verbatim; tracked for a de-flake pass
-        assert time.monotonic() - sess.last_used < 1.0
+        assert sess.last_used == manual_clock.monotonic()
         await mgr.close_all()
 
 
