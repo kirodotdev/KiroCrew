@@ -1585,8 +1585,24 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    too, because on a pinned revision "could not read" is the one way left for
    that stranded state to be re-admitted. The same gate guards `POST
    /api/update` and the gateway's unattended auto-apply.
-2. Rebuilds the dashboard via `build_frontend_sync()` (npm; non-fatal on failure).
-   Non-fatal also means non-destructive: `npm ci` deletes `node_modules` before it
+2. Rebuilds the dashboard via `build_frontend_sync()` (npm), which returns a
+   `FrontendBuildResult`: `built`, `skipped` (no `website/`, no `npm`, or edition
+   sources absent -- non-fatal, the shipped bundle stays) or `failed` (a build was
+   attempted and `static/dist` still serves the previous bundle: the install
+   failed or timed out, `npm run build` failed or timed out, it published no new
+   `index.html`, staging failed, or the staging lock could not be taken). The
+   install and build output goes to `<data home>/logs/frontend-build.log`
+   (`0600`, overwritten per run; a file, not a pipe, so a timed-out build's
+   survivors cannot block the reap). A `failed` result does not skip the install:
+   the tree has already moved and nothing retries the update, so its
+   dependencies must still land or any later restart dies at import. After the
+   install the update prints the failure, the log path and the log's last lines
+   (redacted), and exits 1 without the restart hint, because a restart would pair
+   the new backend with the stale bundle. `POST /api/update` and the gateway's
+   auto-apply take `build_frontend_async()` and do the same: install, then refuse
+   the restart (`update_ownership.refuse_restart(..., import_probe_clears=False)`,
+   an `error` progress card).
+   A failed install is also non-destructive: `npm ci` deletes `node_modules` before it
    installs, so the tree is moved aside and restored unless the install succeeds
    (`node_modules_txn.NodeModulesBackup`). A failed install therefore costs the
    rebuild, not the dependency tree -- which matters because the registry needed

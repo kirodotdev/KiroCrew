@@ -19,7 +19,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -48,6 +48,9 @@ from kiro_crew.security import (  # noqa: F401 - pinned by test_updates_handlers
     redact_credentials,
     redact_exfiltration_urls,
 )
+
+if TYPE_CHECKING:
+    from kiro_crew.frontend import FrontendBuildResult
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.updates")
 
@@ -94,7 +97,7 @@ async def _run_tracked_policy_apply(
         raise
 
 
-async def _build_frontend(proj: str, state: DashboardState) -> None:
+async def _build_frontend(proj: str, state: DashboardState) -> FrontendBuildResult:
     """Build the in-tree ``website/`` frontend and stage it into ``static/dist``.
 
     Delegates to the shared :func:`kiro_crew.frontend.build_frontend_async`
@@ -108,7 +111,8 @@ async def _build_frontend(proj: str, state: DashboardState) -> None:
     Graceful no-op when there is no ``website/`` directory or ``npm`` is not
     installed (a packaged checkout may ship prebuilt assets). Build warnings
     are surfaced via ``state.push_update_progress`` after credential/URL
-    redaction.
+    redaction. Returns the helper's result, so the caller can refuse the
+    restart when the build failed.
     """
     from kiro_crew import frontend
 
@@ -120,7 +124,7 @@ async def _build_frontend(proj: str, state: DashboardState) -> None:
         state.push_update_progress("building", msg)
 
     state.push_update_progress("building", "Building frontend (npm)…")
-    await frontend.build_frontend_async(proj, push_progress=_push)
+    return await frontend.build_frontend_async(proj, push_progress=_push)
 
 
 async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
@@ -824,7 +828,10 @@ async def api_update_apply(request: web.Request) -> web.Response:
             # served static/dist (graceful no-op if no website/ or npm).
             # Done before pip install so the served bundle is refreshed even
             # if the package reinstall later hiccups.
-            await _build_frontend(proj, state)
+            build = await _build_frontend(proj, state)
+            # A failed build does NOT skip the reinstall: the tree has already
+            # moved, so its dependencies must still land or any later restart
+            # dies at import. Only the restart is refused, after the install.
 
             # Reinstall the package so any new Python deps / entry points land.
             if not await _venv_pip_install(proj, state):
@@ -839,6 +846,19 @@ async def api_update_apply(request: web.Request) -> web.Response:
             # attempt recorded does not describe the install.
             tree_moved = False
             update_ownership.clear_restart_refusal()
+            if build.outcome == "failed":
+                # The install is importable, but static/dist still holds the
+                # previous bundle and a restart would pair it with the new
+                # backend. Stay up, and keep the watchdog's import probe from
+                # clearing the refusal.
+                from kiro_crew.security import redact
+
+                update_ownership.refuse_restart(
+                    "the frontend build after the dashboard update did not complete",
+                    import_probe_clears=False,
+                )
+                state.push_update_progress("error", redact(build.failure_message()))
+                return
 
             # Restart: save history + clean up sessions then exec the same process.
             logger.info("Update complete — saving history and cleaning up before restart")

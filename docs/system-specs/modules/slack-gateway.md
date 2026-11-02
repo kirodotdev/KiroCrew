@@ -883,13 +883,19 @@ command it can read, and nothing is refused.
 
 An update that chose to stay up rather than restart records why
 (`update_ownership.refuse_restart`): once it has moved the tree and its
-dependency sync failed, or it raised after the move. The move counts from the
+frontend build failed (`build_frontend_async` returned `failed`: a restart would
+pair the new backend with the previous bundle; the error names
+`logs/frontend-build.log`), its dependency sync failed, or it raised after the
+move. The move counts from the
 moment its `git merge` / `git reset` child started: a spawn that raised wrote
 nothing, so it records nothing. A later update that synced the dependencies of
 the tree it moved clears it, so an attempt that fails before replacing anything
 keeps it. So does a re-entry check whose import probe of the supervisor's
 command succeeded (an install repaired out of band), but only for a
-refusal recorded before that check began (`update_ownership.refusal_generation`).
+refusal recorded before that check began (`update_ownership.refusal_generation`),
+and never for a failed frontend build (`refuse_restart(..., import_probe_clears=False)`):
+the probe checks imports, not the bundle, so only a later update that completes
+clears that one.
 Under a managed launch the watchdog reads it with no await before the signal and
 refuses on it as well; without a service manager it is not applied, so that exit
 behaves as before.
