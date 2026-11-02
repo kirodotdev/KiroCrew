@@ -62,7 +62,7 @@ PROVIDERS: tuple[tuple[str, str, str], ...] = (
     ("sprites", "sprites_profiles", "Sprites"),
     ("boxd", "boxd_profiles", "boxd"),
     # No VM of Kiro Crew's own and no registry: KAS creates the sandbox.
-    ("kiro_cloud", "kiro_cloud_profiles", "Kiro Cloud"),
+    ("kiro_cloud", "kiro_cloud_profiles", "Kiro Cloud Sessions"),
 )
 PROVIDER_IDS: tuple[str, ...] = tuple(p[0] for p in PROVIDERS)
 #: Each VM provider's session registry, relative to the data home. Kept here, not

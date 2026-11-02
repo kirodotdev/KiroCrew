@@ -598,13 +598,15 @@ async def test_terminal_remote_slot_never_falls_back_to_a_local_shell(tmp_path, 
     assert argv is None and "not available" in why and code == "terminal_placement_unavailable"
 
     async def cloud(key):
-        raise session_browse.CloudSandboxOnly("this session runs in a Kiro cloud sandbox")
+        raise session_browse.CloudSandboxOnly("this session runs in a Kiro Cloud Sessions sandbox")
 
     # A Kiro Cloud chat has no shell Kiro Crew can reach, and never will: the tab
     # parks instead of redialing an outage that is not one.
     monkeypatch.setattr(session_browse, "remote_terminal_argv", cloud)
     argv, why, code = await terminal._remote_terminal_argv(request, "main")
-    assert argv is None and "Kiro cloud sandbox" in why and code == "terminal_wrong_machine"
+    assert (
+        argv is None and "Kiro Cloud Sessions sandbox" in why and code == "terminal_wrong_machine"
+    )
 
     async def remote(key):
         return ["coder", "ssh", "--disable-autostart", "crewenv-x"]
@@ -1069,7 +1071,7 @@ async def test_health_of_a_cloud_sandbox_is_a_409_not_a_failure(tmp_path, monkey
     async with _client(tmp_path, monkeypatch) as client:
 
         async def cloud(_key):
-            raise session_browse.CloudSandboxOnly("runs in a Kiro cloud sandbox")
+            raise session_browse.CloudSandboxOnly("runs in a Kiro Cloud Sessions sandbox")
 
         monkeypatch.setattr(session_browse, "session_health", cloud)
         resp = await client.get("/h/main")
