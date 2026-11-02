@@ -89,17 +89,43 @@ function mintStateFor(target: McpSignInTarget) {
   return 'slug' in target ? api.connectionsMintState(target.slug) : api.connectionsMintServerState(target.server)
 }
 
-export default function McpRowSignIn({
-  target,
-  serverName,
-  again = false,
-}: {
+type McpRowSignInProps = {
   target: McpSignInTarget
   serverName: string
   /** The row already holds a grant: the control reads "Sign in again". The mint
    *  checks the held grant first and asks for consent only when it does not work. */
   again?: boolean
-}) {
+  /** Chats run on KAS (`kasChatOwnsMcpSignIn` over the MCP tab's config read),
+   *  so a sign-in made here never reaches them (#24693): the row says so. */
+  kasChatNote?: boolean
+}
+
+/**
+ * The row's sign-in control, plus one line when chats run on KAS. That sign-in
+ * lands in kiro-cli's cache, which a KAS chat never reads: the chat asks with its
+ * own Authorize card. The control itself is unchanged; the line only says where
+ * the sign-in a KAS chat uses happens.
+ */
+export default function McpRowSignIn({ kasChatNote = false, ...props }: McpRowSignInProps) {
+  // One wrapper, with the control always its first child, so a config refetch
+  // that flips the line never remounts the control mid-sign-in.
+  return (
+    <span className="flex flex-col items-start gap-1">
+      <McpRowSignInControl {...props} />
+      {kasChatNote && (
+        <span className="text-warn text-[12px]" data-testid="mcp-sign-in-kas-chat-note">
+          {i18nT('pages.overview.mcpTab.sign_in_kas_chat_note')}
+        </span>
+      )}
+    </span>
+  )
+}
+
+function McpRowSignInControl({
+  target,
+  serverName,
+  again = false,
+}: Omit<McpRowSignInProps, 'kasChatNote'>) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [oauthUrl, setOauthUrl] = useState('')
   const [error, setError] = useState('')
