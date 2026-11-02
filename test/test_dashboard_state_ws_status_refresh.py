@@ -130,8 +130,7 @@ class TestPeriodicCheckStatusRefresh:
             async def __anext__(self):
                 # Hold the connection open until the periodic loop has fired
                 # once, then end the handler (which cancels the loop task).
-                # flake-ok: pre-existing unbounded wait that holds the fake socket open, moved verbatim; the await_until around api_ws bounds the test
-                await refreshed.wait()
+                await await_until(refreshed, what="the periodic loop to fire once")
                 raise StopAsyncIteration
 
         fake_ws = FakeWebSocket()
@@ -218,8 +217,7 @@ class TestPeriodicCheckStatusRefresh:
                 return self
 
             async def __anext__(self):
-                # flake-ok: pre-existing unbounded wait that holds the fake socket open, moved verbatim; the await_until around api_ws bounds the test
-                await pushed.wait()
+                await await_until(pushed, what="the allowlist-change push")
                 raise StopAsyncIteration
 
         monkeypatch.setattr(source_providers, "_gitlab_hosts_snapshot", frozenset())
@@ -401,11 +399,12 @@ class TestPeriodicCheckStatusRefresh:
                 return self
 
             async def __anext__(self):
-                # flake-ok: pre-existing 50 ms window for a wrongly started refresh loop to fire, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms window before the negative assertion, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                handler_entered.set()
+                await await_until(hold, what="the socket handler to end")
                 raise StopAsyncIteration
 
+        handler_entered = asyncio.Event()
+        hold = asyncio.Event()
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(ws_event_scope, "is_app_enabled", lambda _name: True)
         monkeypatch.setattr(ws_event_scope, "get_app_manifest", lambda _name: None)
@@ -416,7 +415,15 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
 
-        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
+        task = asyncio.ensure_future(dashboard_ws.api_ws(Request()))  # type: ignore[arg-type]
+        try:
+            await await_until(handler_entered, what="the handler to reach its connection loop")
+            # The negative window: a wrongly started refresh loop would fire within these 50 ms.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(hold.wait(), timeout=0.05)
+        finally:
+            hold.set()
+        await await_until(task, what="api_ws to end")
 
         refresh.assert_not_called()
         state.source_link_urls.assert_not_called()
@@ -477,11 +484,12 @@ class TestPeriodicCheckStatusRefresh:
                 return self
 
             async def __anext__(self):
-                # flake-ok: pre-existing 50 ms window for a wrongly started refresh loop to fire, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms window before the negative assertion, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                handler_entered.set()
+                await await_until(hold, what="the socket handler to end")
                 raise StopAsyncIteration
 
+        handler_entered = asyncio.Event()
+        hold = asyncio.Event()
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
         monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
@@ -489,7 +497,15 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "schedule_check_refresh", check_refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", vis_refresh)
 
-        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
+        task = asyncio.ensure_future(dashboard_ws.api_ws(Request()))  # type: ignore[arg-type]
+        try:
+            await await_until(handler_entered, what="the handler to reach its connection loop")
+            # The negative window: a wrongly started refresh loop would fire within these 50 ms.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(hold.wait(), timeout=0.05)
+        finally:
+            hold.set()
+        await await_until(task, what="api_ws to end")
         # Non-owner: the driver never starts, so neither refresh is ever called
         # and source_link_urls is never polled by a refresh round.
         assert not check_refresh.called
@@ -563,8 +579,7 @@ class TestPeriodicCheckStatusRefresh:
                 return self
 
             async def __anext__(self):
-                # flake-ok: pre-existing unbounded wait that holds the fake socket open, moved verbatim; the await_until around api_ws bounds the test
-                await done.wait()
+                await await_until(done, what="the refresh rounds to finish")
                 raise StopAsyncIteration
 
         fake_ws = FakeWebSocket()
@@ -645,8 +660,7 @@ class TestPeriodicCheckStatusRefresh:
                 return self
 
             async def __anext__(self):
-                # flake-ok: pre-existing unbounded wait that holds the fake socket open, moved verbatim; the await_until around api_ws bounds the test
-                await recovered.wait()
+                await await_until(recovered, what="the loop to recover after the exception")
                 raise StopAsyncIteration
 
         fake_ws = FakeWebSocket()
