@@ -56,19 +56,60 @@ def _cleanup_identities_path(agent_id: str) -> Path:
     )
 
 
+def _lock_down_cleanup_dir(protected_dir: Path) -> None:
+    platform_compat.make_owner_only_dir(protected_dir)
+    # ``make_owner_only_dir`` is best-effort by contract. Cleanup identity
+    # authorizes transcript deletion, so failure here must abort the read or
+    # write on Windows as well as POSIX instead of trusting a permissive ACL.
+    platform_compat.restrict_dir_to_owner(protected_dir)
+
+
+def _lock_down_cleanup_file(path: Path) -> None:
+    if path.exists():
+        # Tightening a parent does not retrofit an existing Windows file DACL.
+        platform_compat.restrict_to_owner(path)
+
+
 def _protect_cleanup_identities_path(agent_id: str) -> Path:
     """Return the cleanup record only after fail-loud owner-only lockdown."""
     path = _cleanup_identities_path(agent_id)
     for protected_dir in (path.parents[2], path.parents[1], path.parent):
-        platform_compat.make_owner_only_dir(protected_dir)
-        # ``make_owner_only_dir`` is best-effort by contract. Cleanup identity
-        # authorizes transcript deletion, so failure here must abort the read or
-        # write on Windows as well as POSIX instead of trusting a permissive ACL.
-        platform_compat.restrict_dir_to_owner(protected_dir)
-    if path.exists():
-        # Tightening a parent does not retrofit an existing Windows file DACL.
-        platform_compat.restrict_to_owner(path)
+        _lock_down_cleanup_dir(protected_dir)
+    _lock_down_cleanup_file(path)
     return path
+
+
+class _CleanupIdentitySweepReader:
+    """Reads protected cleanup records for ONE prune sweep over *subagents_root*.
+
+    The trust root and the shared trust parents are resolved and locked down once,
+    on the first read that succeeds in locking them, instead of once per read.
+    Each agent's own record directory and file are still locked down on every
+    read, and every invalid payload still raises. A failed shared lockdown is
+    retried on the next read, so no record is read until it has succeeded.
+    Nothing is cached between reads: build a new reader for every sweep.
+    """
+
+    def __init__(self, subagents_root: Path) -> None:
+        self._subagents_root = subagents_root
+        self._subagents_root_resolved = subagents_root.resolve()
+        self._records_root = subagents_root.parent / "trust" / _CLEANUP_IDENTITIES_TRUST_DIR
+        self._shared_locked = False
+
+    def agent_dir(self, agent_id: str) -> Path:
+        """:func:`_agent_dir` against this sweep's registry root."""
+        return _agent_dir_under(self._subagents_root, self._subagents_root_resolved, agent_id)
+
+    def read(self, agent_id: str) -> list[dict[str, object]]:
+        self.agent_dir(agent_id)
+        if not self._shared_locked:
+            for protected_dir in (self._records_root.parent, self._records_root):
+                _lock_down_cleanup_dir(protected_dir)
+            self._shared_locked = True
+        path = self._records_root / agent_id / _CLEANUP_IDENTITIES_FILE
+        _lock_down_cleanup_dir(path.parent)
+        _lock_down_cleanup_file(path)
+        return _parse_cleanup_identities_file(path)
 
 
 def _delete_cleanup_identities_file(agent_id: str) -> None:
@@ -77,7 +118,10 @@ def _delete_cleanup_identities_file(agent_id: str) -> None:
 
 
 def _read_cleanup_identities_file(agent_id: str) -> list[dict[str, object]]:
-    path = _protect_cleanup_identities_path(agent_id)
+    return _parse_cleanup_identities_file(_protect_cleanup_identities_path(agent_id))
+
+
+def _parse_cleanup_identities_file(path: Path) -> list[dict[str, object]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -296,6 +340,12 @@ def _subagents_dir() -> Path:
 
 
 def _agent_dir(agent_id: str) -> Path:
+    base = _subagents_dir()
+    return _agent_dir_under(base, base.resolve(), agent_id)
+
+
+def _agent_dir_under(base: Path, parent: Path, agent_id: str) -> Path:
+    """Validate *agent_id* against registry root *base*, already resolved as *parent*."""
     if (
         not agent_id
         or agent_id == "."
@@ -305,9 +355,7 @@ def _agent_dir(agent_id: str) -> Path:
         or "\0" in agent_id
     ):
         raise ValueError(f"Invalid agent_id: {agent_id!r}")
-    base = _subagents_dir()
     resolved = (base / agent_id).resolve()
-    parent = base.resolve()
     if resolved == parent or not resolved.is_relative_to(parent):
         raise ValueError(f"Path traversal blocked for agent_id: {agent_id!r}")
     return resolved
