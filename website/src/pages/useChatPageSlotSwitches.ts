@@ -162,7 +162,7 @@ export function useSignedLinkAnchor({
     if (!token) { tokenConsumingRef.current = false; return }
     const prompt = extractPromptFromToken(token)
     if (!prompt) { tokenConsumingRef.current = false; return }
-    const { sessionKey, channel, threadTs } = extractSlackContextFromToken(token)
+    const { sessionKey, channel, threadTs, msgTs } = extractSlackContextFromToken(token)
     // Backend session keys are history keys (dashboard:chat-…); the frontend
     // slot key is the bare form.
     const targetSlot = sessionKey ? sessionKey.replace(/^dashboard:/, '') : null
@@ -195,8 +195,12 @@ export function useSignedLinkAnchor({
         // responses flow into Slack. Best-effort; failure just leaves it
         // unlinked.
         if (slotKey && channel && threadTs) {
+          // msgTs lets the server tell a thread reply from a new top-level
+          // message and read the thread's first message for the first turn.
+          // Without msgTs the call is the same three-argument one as before.
           try {
-            await api.slackLink(slotKey, channel, threadTs)
+            if (msgTs) await api.slackLink(slotKey, channel, threadTs, msgTs)
+            else await api.slackLink(slotKey, channel, threadTs)
           } catch (err) {
             // The channel is served by a different agent than this new
             // session: the server refused the link. Do not run the prompt
