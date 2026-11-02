@@ -197,12 +197,24 @@
     return !!(el && el.hasAttribute && el.hasAttribute("data-kc-asked"));
   }
 
-  // While the page holds a quick-ask field, an agent selector may not test a value
-  // attribute (React mirrors the live value into it) in any way: `body:has(...)`,
-  // a sibling combinator or a region would answer yes/no about the value one probe
-  // at a time. Escapes could spell "value", so a backslash is refused too.
+  // While the page holds a filled secret field (a quick-ask field, or a password or
+  // secret-named one the person typed into during a takeover), an agent selector
+  // may not test a value attribute (React mirrors the live value into it) in any
+  // way: `body:has(...)`, a sibling combinator, a region or a `count` would answer
+  // yes/no about the value one probe at a time. Escapes could spell "value", so a
+  // backslash is refused too.
+  function holdsSecretValue() {
+    if (document.querySelector("[data-kc-asked]")) return true;
+    var fields = document.querySelectorAll("input, textarea");
+    for (var i = 0; i < fields.length; i++) {
+      var el = fields[i];
+      if (secretish(el) && (!!el.value || !!el.getAttribute("value"))) return true;
+    }
+    return false;
+  }
+
   function probeSelectorBlocked(sel) {
-    if (!document.querySelector("[data-kc-asked]")) return false;
+    if (!holdsSecretValue()) return false;
     var s = String(sel).toLowerCase();
     return s.indexOf("value") !== -1 || s.indexOf("\\") !== -1;
   }
