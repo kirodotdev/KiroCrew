@@ -115,6 +115,8 @@ BASELINE_UNGATED: Dict[str, str] = {
     + "local UI only; the user still opts in through Feature Preview and settings",
     "capabilities.decisions_local": _OPEN
     + "a local model; it stays inert while `capabilities.decisions` is off",
+    "external_access.registry_hosts": _OPEN
+    + "Discover queries every registry unless a policy names the key",
 }
 
 # LTS minimal values for the policy-only fields outside ``controls``, filled
