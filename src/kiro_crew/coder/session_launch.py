@@ -27,6 +27,7 @@ from kiro_crew.coder.remote_worker import (
     RemoteWorkerLaunch,
 )
 from kiro_crew.config.session_environments import PROVIDER_IDS
+from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener_for
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.session_environment import (
     SessionEnvironmentUnavailable,
@@ -73,7 +74,7 @@ class SessionEnvironmentChoices:
         return self.bound_dir / digest
 
     def _mark_bound(self, session_key: str) -> None:
-        self.bound_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        mkdirs_owner_only(self.bound_dir)
         self._marker(session_key).touch(mode=0o600, exist_ok=True)
 
     def may_be_bound(self, session_key: str) -> bool:
@@ -171,7 +172,7 @@ class SessionEnvironmentChoices:
         if self.resolve(parent_key) is None and not self._may_be_bound(child_key):
             return None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.lock_path, "a+b") as lock_fd:
+        with open(self.lock_path, "a+b", opener=owner_only_opener_for(self.lock_path)) as lock_fd:
             with file_lock(lock_fd.fileno(), exclusive=True, required=True):
                 sessions = self._read()
                 before = set(sessions)
@@ -205,7 +206,7 @@ class SessionEnvironmentChoices:
         if not child_key or len(child_key) > _MAX_SESSION_KEY:
             raise ValueError("session key is invalid")
         try:
-            lock_fd = open(self.lock_path, "a+b")
+            lock_fd = open(self.lock_path, "a+b", opener=owner_only_opener_for(self.lock_path))
         except FileNotFoundError:
             return False
         with lock_fd:
@@ -248,7 +249,7 @@ class SessionEnvironmentChoices:
         if provider not in CHOICE_PROVIDERS:
             raise ValueError("provider is invalid")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.lock_path, "a+b") as lock_fd:
+        with open(self.lock_path, "a+b", opener=owner_only_opener_for(self.lock_path)) as lock_fd:
             with file_lock(lock_fd.fileno(), exclusive=True, required=True):
                 sessions = self._read()
                 before = set(sessions)

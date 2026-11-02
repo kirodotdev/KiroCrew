@@ -55,6 +55,7 @@ from opentelemetry.sdk.metrics.export import (
 from kiro_crew import platform_compat
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 from kiro_crew.metrics.temporality import delta_preference
+from kiro_crew.owner_only_files import owner_only_opener_for
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +223,7 @@ class JsonlMetricExporter(MetricExporter):
         # stays empty: a byte-range lock covers byte 0 of a zero-length file, and
         # writing one here would fail with EACCES against a sibling that already
         # holds that byte. The sidecar is private and excluded from shard scans.
-        with lock_path.open("a+b") as lock_fd:
+        with open(lock_path, "a+b", opener=owner_only_opener_for(lock_path)) as lock_fd:
             self._restrict_file(lock_path)
             acquired = platform_compat.try_acquire_lock(lock_fd.fileno(), exclusive=True)
             if not acquired:

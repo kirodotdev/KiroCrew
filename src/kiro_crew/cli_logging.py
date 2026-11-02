@@ -82,8 +82,10 @@ def _rotate_boot_logs(log_file: Path, live_size: int) -> tuple[OSError | None, l
     if os.path.lexists(prev):
         archive_dir = boot_log_dir(log_file)
         archived = archive_dir / f"{log_file.name}.{kept[0][0] + 1 if kept else 1}"
+        from kiro_crew.owner_only_files import mkdirs_owner_only
+
         try:
-            archive_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            mkdirs_owner_only(archive_dir)
             prev.rename(archived)
         except OSError as exc:
             return exc, []

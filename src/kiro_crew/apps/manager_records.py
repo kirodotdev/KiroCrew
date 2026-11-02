@@ -726,7 +726,7 @@ class _UpdateMarker:
         for _attempt in range(8):
             root.mkdir(parents=True, exist_ok=True)
             try:
-                token.touch(exist_ok=False)
+                token.touch(mode=0o600, exist_ok=False)
             except FileNotFoundError:
                 # Another update's cleanup removed the directory in between.
                 continue

@@ -51,7 +51,7 @@ from kiro_crew.metrics.turns import (
     turn_outcome,
 )
 from kiro_crew.metrics.usage_attrs import TRIGGER_OTHER
-from kiro_crew.owner_only_files import owner_only_opener_for
+from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener_for
 from kiro_crew.wrapper_chain import wrapper_chain
 
 logger = logging.getLogger(__name__)
@@ -382,7 +382,7 @@ def _write_token_record(record: dict[str, Any], now: datetime) -> None:
     parent = shard_path.parent
     # mkdir only when missing — the dir is created once per day, not per turn.
     if not parent.exists():
-        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        mkdirs_owner_only(parent)
     # allow_nan=False turns a non-finite value into a raised ValueError instead
     # of an invalid-JSON row. Sanitizing only on that failure keeps the hot path
     # free of a per-turn scan of every field.

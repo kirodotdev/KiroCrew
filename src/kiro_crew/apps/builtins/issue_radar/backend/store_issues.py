@@ -57,7 +57,7 @@ def issues_cache_lock(owner: str, repo: str, root: Path | None = None, state: st
     path = issues_cache_path(owner, repo, root, state)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(".json.lock")
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
@@ -77,7 +77,7 @@ def issue_write_lock(owner: str, repo: str, number: int, root: Path | None = Non
     the network call, which is the point: ordering the writes is what matters."""
     path = repo_data_dir(owner, repo, root) / f"issue-{int(number)}.write.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(exist_ok=True)
+    path.touch(mode=0o600, exist_ok=True)
     with open(path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
