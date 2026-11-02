@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from .exfil_oauth import (  # noqa: F401
+    _OAUTH_CLIENT_ID_RE,
     _OAUTH_EXTENSION_HOST_RE,
     _OAUTH_QUERY_PARAMS,
     OAuthUrlCredentialDiagnostic,
@@ -48,6 +49,7 @@ from .exfil_oauth import (  # noqa: F401
     _log_operator_list_use,
     _oauth_diagnostic,
     _oauth_query_diagnostic,
+    _oauth_table_entropy_params,
     _oauth_url_payload_diagnostic,
     _valid_oauth_extension_path,
 )
@@ -1143,7 +1145,9 @@ _OAUTH_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 
 def _oauth_entropy_form_is_protocol_shaped(key: str, form: str) -> bool:
     """Return True when ONE decoded form of a value keeps a protocol shape."""
-    if key in {"client_id", "code_challenge"}:
+    if key == "client_id":
+        return bool(_OAUTH_CLIENT_ID_RE.fullmatch(form))
+    if key == "code_challenge":
         return bool(_OAUTH_S256_CHALLENGE_RE.fullmatch(form))
     return "+" not in form and "/" not in form
 
@@ -1183,21 +1187,22 @@ def _oauth_credential_scan_target(
 
     Fixed credential signatures are checked against the raw and decoded URL
     before this target is built. At an exact approved endpoint, only the
-    code-owned state, nonce, PKCE challenge and client_id fields are omitted from the
-    markerless bare-secret heuristic, and only when the value carries a shape
-    the protocol can emit (see
+    state, nonce, PKCE challenge and client_id fields the rule table classifies as
+    public identifiers are omitted from the markerless bare-secret heuristic, and
+    only when the value carries a shape the protocol can emit (see
     :func:`_oauth_entropy_value_is_protocol_shaped`). Other recognized values,
     parameter names, unknown parameters, and every non-query URL component
-    remain in the scan target.
+    remain in the scan target. A table that cannot answer exempts nothing.
     """
     if not approved_endpoint or not query:
         return url
+    exempt = _oauth_table_entropy_params(_OAUTH_ENTROPY_QUERY_PARAMS) or frozenset()
 
     sanitized_segments: list[str] = []
     for key, separator, value in (segment.partition("=") for segment in query.split("&")):
         approved_value = (
             bool(separator)
-            and key in _OAUTH_ENTROPY_QUERY_PARAMS
+            and key in exempt
             and _oauth_entropy_value_is_protocol_shaped(key, value)
         )
         sanitized_segments.append(
