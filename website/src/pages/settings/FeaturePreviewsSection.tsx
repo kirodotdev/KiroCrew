@@ -12,7 +12,7 @@ import { Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_CREWMATE_HARNESS, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -120,6 +120,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_ARTIFACT_DEPLOY: return i18nT('pages.developer.featurePreviewsTab.artifact_deploy')
     case PREVIEW_WEBHOOKS: return i18nT('pages.developer.featurePreviewsTab.webhooks')
     case PREVIEW_CREW_MODE: return i18nT('pages.developer.featurePreviewsTab.crew_mode')
+    case PREVIEW_EXPLORE: return i18nT('pages.developer.featurePreviewsTab.explore')
     case PREVIEW_REMOTE_CREW_CHAT: return i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')
     case PREVIEW_LAYOUT_HARNESS: return i18nT('pages.developer.featurePreviewsTab.layout_harness')
     case PREVIEW_FOLDER_CONDUCTOR: return i18nT('pages.developer.featurePreviewsTab.folder_conductor')
@@ -154,6 +155,7 @@ export function FeaturePreviewsSection() {
   const crewmateHarness = usePreviewFlag(PREVIEW_CREWMATE_HARNESS)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
+  const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const writeError = usePreviewFlagWriteError()
   const [gatewayRestarting, setGatewayRestarting] = useState(false)
   const [restartFailed, setRestartFailed] = useState(false)
@@ -308,6 +310,18 @@ export function FeaturePreviewsSection() {
           description={i18nT('pages.developer.featurePreviewsTab.crew_mode_desc')}
           checked={crewMode}
           onChange={v => setPreviewFlag(PREVIEW_CREW_MODE, v)}
+        />
+      </SettingsCard>
+      {/* Explore (flag key `mc-preview-explore`): the top-bar pill, its sheet,
+          the milestone notice, the Try today card and Display > Explore. A
+          plain switch, like Ultra Mode's; on, Display > Explore is the inner
+          switch. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.explore')}
+          description={i18nT('pages.developer.featurePreviewsTab.explore_desc')}
+          checked={explore}
+          onChange={v => setPreviewFlag(PREVIEW_EXPLORE, v)}
         />
       </SettingsCard>
       {/* Shared Crew (People, invites, shared sessions). Unlike the flags above, the

@@ -1,11 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { PREVIEW_EXPLORE, setPreviewFlag } from '../utils/previewFlags'
 
 /**
  * Settings → Display → View: the Explore toggle (RFC "Milestones for New-User
- * Feature Discovery" 4.9). Shown only when the gateway's config carries the
- * key, since an older gateway refuses the write; default ON.
+ * Feature Discovery" 4.9). Shown only while the Explore Feature Preview is on
+ * and the gateway's config carries the key, since an older gateway refuses the
+ * write; default ON.
  */
 
 const { patchConfigMock, kirocrewConfigMock } = vi.hoisted(() => ({
@@ -95,12 +97,23 @@ const main = () => screen.queryByRole('switch', { name: 'Explore' })
 
 describe('DisplayPanel → View Explore toggle', () => {
   beforeEach(() => {
+    setPreviewFlag(PREVIEW_EXPLORE, true)
     patchConfigMock.mockReset()
     patchConfigMock.mockImplementation(() => Promise.resolve({}))
   })
+  afterEach(() => { setPreviewFlag(PREVIEW_EXPLORE, false) })
 
   it('hides the toggle on a gateway whose config has no milestones key', async () => {
     kirocrewConfigMock.mockImplementation(() => Promise.resolve({ dashboard: { show_unread_dot: true } }))
+    renderWithProviders(<DisplayPanel />, { route: ROUTE })
+    await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalled())
+    await screen.findByRole('switch', { name: 'Translucent panels' })
+    expect(main()).toBeNull()
+  })
+
+  it('hides the toggle while the Explore preview is off', async () => {
+    setPreviewFlag(PREVIEW_EXPLORE, false)
+    kirocrewConfigMock.mockImplementation(() => Promise.resolve({ dashboard: { milestones_enabled: true } }))
     renderWithProviders(<DisplayPanel />, { route: ROUTE })
     await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalled())
     await screen.findByRole('switch', { name: 'Translucent panels' })

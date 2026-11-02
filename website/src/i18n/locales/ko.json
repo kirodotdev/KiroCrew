@@ -13862,7 +13862,9 @@
         "crewmate_harness": "크루메이트별 에이전트 하네스",
         "crewmate_harness_desc": "각 크루메이트의 프로필에 에이전트 하네스 설정을 추가해, 한 크루메이트는 Claude Code 같은 다른 AI 코딩 도구와 그 모델로 실행하고 나머지는 기본값을 유지할 수 있게 합니다.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "채팅이 작업을 크루에게 맡기고 보드에서 추적할 수 있게 합니다."
+        "crew_mode_desc": "채팅이 작업을 크루에게 맡기고 보드에서 추적할 수 있게 합니다.",
+        "explore": "탐색",
+        "explore_desc": "상단 바에 탐색을 추가합니다. 해 볼 기능, 진행 상황, 새 채팅의 오늘 해 보기 카드가 표시됩니다."
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 자체 엔진으로 KAS 실행",

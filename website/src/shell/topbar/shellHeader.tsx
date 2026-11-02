@@ -26,6 +26,8 @@ import { hiddenChromeProps } from '../focus/focusChrome'
 import { setAgentSwitchNotice } from '../../store/chatSlice'
 import MilestonesIndicator, { MilestonesPill } from '../../components/milestones/MilestonesIndicator'
 import MilestonesSheet from '../../components/milestones/MilestonesSheet'
+import { useExplorePreviewSwitch } from '../../components/milestones/useMilestones'
+import { useExplorePreview } from '../../hooks/usePreviewFlag'
 
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
@@ -153,11 +155,15 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
     requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen,
   } = shell
+  // Every Explore surface below mounts only while its Feature Preview is on.
+  // Turning it off closes an open sheet; turning it on reads milestones once.
+  const explore = useExplorePreview()
+  useExplorePreviewSwitch(explore)
   return (
     <>
       {/* The one Milestones panel; the top-bar indicator, the phone menu row
           and the milestone notice all open it. */}
-      <MilestonesSheet />
+      {explore && <MilestonesSheet />}
       {/* Topbar */}
       {/* stable theming hook — see website/docs/theming-contract.md */}
       <header
@@ -599,7 +605,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               metrics notice), not a capsule segment, so the capsule's row of
               buttons does not grow. Renders nothing until the milestones read
               says it is on. */}
-          {!isMobile && <MilestonesPill />}
+          {explore && !isMobile && <MilestonesPill />}
           {/* Extension slot: downstream-registered top-bar widgets (e.g. a
               credential-TTL capsule or spend pill). Empty in the stock build.
               Each widget is isolated in its own ErrorBoundary (fallback=null) so
@@ -639,7 +645,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               no readout capsule, the Explore ring sits just before it; with the
               update pill up the group would hold three controls, so it stands
               down (the chat page's ⋯ menu carries an Explore row). */}
-          {isMobile && !updateAvailable && <MilestonesIndicator compact />}
+          {explore && isMobile && !updateAvailable && <MilestonesIndicator compact />}
           <NotificationsBellButton />
           </div>
         </div>

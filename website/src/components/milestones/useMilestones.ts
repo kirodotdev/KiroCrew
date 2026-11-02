@@ -3,7 +3,7 @@
  * read of `GET /api/milestones`, the panel's open state, the marking actions,
  * and the starter-task runner the empty-state cards and the panel share.
  */
-import { useCallback, useEffect, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { keepPreviousData, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../../api/client'
@@ -38,7 +38,7 @@ function currentSessionKey(): string | undefined {
  * from a gateway without milestones is an answer, and every surface then shows
  * nothing.
  */
-export function useMilestones() {
+export function useMilestones({ enabled = true }: { enabled?: boolean } = {}) {
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
   const sessionKey = activeSlot ? `dashboard:${activeSlot}` : undefined
   return useQuery<Milestones>({
@@ -52,7 +52,7 @@ export function useMilestones() {
     // A gateway without the route answers 404 once; reading it again at every
     // turn end and page mount would only add the same 404 to the error journal.
     // A reload (which an upgraded gateway brings anyway) reads again.
-    enabled: !routeMissing,
+    enabled: enabled && !routeMissing,
     staleTime: 60_000,
     retry: false,
     refetchOnWindowFocus: false,
@@ -132,13 +132,14 @@ export function inFrame(): boolean {
 /**
  * "Try today" for the new-chat page's entry card. Reads again each time the
  * page mounts. Empty until the read answers, when the switch is off, and in an
- * embed or popout frame, where opening Explore cannot work.
+ * embed or popout frame, where opening Explore cannot work. With *enabled*
+ * false (the Explore preview off) it reads nothing and counts 0.
  */
-export function useTryTodayCount(): number {
+export function useTryTodayCount(enabled = true): number {
   const queryClient = useQueryClient()
-  useEffect(() => { refreshMilestonesOnMount(queryClient) }, [queryClient])
-  const { data } = useMilestones()
-  if (inFrame()) return 0
+  useEffect(() => { if (enabled) refreshMilestonesOnMount(queryClient) }, [queryClient, enabled])
+  const { data } = useMilestones({ enabled })
+  if (!enabled || inFrame()) return 0
   // The number the card shows is the rows Try today lists, so the two agree;
   // only when Getting started holds the last untried rows does it count those.
   return tryToday(data).length || untriedNow(data).length
@@ -252,6 +253,21 @@ export function openMilestonesPanel(focusId: string | null = null): void {
 }
 export function closeMilestonesPanel(): void {
   if (panelState.open) setPanel({ open: false, focusId: null })
+}
+/**
+ * Follow the Explore Feature Preview switch from the shell. Off closes an open
+ * sheet, so turning it back on does not reopen it. Off to on reads milestones
+ * once: while it was off no reader was mounted, so a turn that ended then left
+ * the cached answer stale, and the read does not re-fetch on mount.
+ */
+export function useExplorePreviewSwitch(explore: boolean): void {
+  const queryClient = useQueryClient()
+  const was = useRef(explore)
+  useEffect(() => {
+    if (!explore) closeMilestonesPanel()
+    else if (!was.current) refreshMilestones(queryClient)
+    was.current = explore
+  }, [explore, queryClient])
 }
 export function toggleMilestonesPanel(): void {
   if (panelState.open) closeMilestonesPanel()

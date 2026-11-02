@@ -400,9 +400,10 @@ export function buildUiIndex(inputs) {
       setting_id: e.id,
       placements: [{
         surface_id: 'settings', route: agent.route,
-        // A setting on a preview-gated tab is reachable only once that preview is on.
+        // A setting on a preview-gated tab, or one its panel draws only while a
+        // preview is on, is reachable only once that preview is on.
         parent_ids: ['page.settings', tabId, ...(subId ? [subId] : [])], entry_kind: 'tab',
-        requires: previewRequires(inputs.settingsTabPreview[tab], `setting '${e.id}'`),
+        requires: previewRequires(inputs.settingPreview?.[e.id] ?? inputs.settingsTabPreview[tab], `setting '${e.id}'`),
       }],
     }, 'setting')
   }

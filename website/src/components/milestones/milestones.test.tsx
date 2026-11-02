@@ -11,7 +11,7 @@ import { render, screen, fireEvent, act, waitFor, cleanup, within } from '@testi
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { MilestoneFeatureItem, Milestones } from '../../api/client/featureDiscovery'
 
 vi.mock('../../store/chatSlice', async (importOriginal) => {
@@ -60,7 +60,7 @@ import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { store } from '../../store'
 import { setActiveSlot, setPendingInput } from '../../store/chatSlice'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW_MODE, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 import enManual from '../../i18n/locales/en.manual.json'
 import WelcomeView from '../WelcomeView'
 import { NavigationLeaveGuardProvider, usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../NavigationLeaveGuard'
@@ -68,7 +68,7 @@ import MilestonesIndicator, { MilestonesPill } from './MilestonesIndicator'
 import MilestonesMenuItem from './MilestonesMenuItem'
 import MilestonesSheet from './MilestonesSheet'
 import MilestoneNoticeToast, { __resetMilestoneNotices } from './MilestoneNoticeToast'
-import { __resetMilestonesRouteMissing, closeMilestonesPanel, earnedBadges, gettingStarted, openMilestonesPanel, tryToday } from './useMilestones'
+import { __resetMilestonesRouteMissing, closeMilestonesPanel, earnedBadges, gettingStarted, openMilestonesPanel, tryToday, useExplorePreviewSwitch } from './useMilestones'
 import { INTRO_VIDEO_ID, INTRO_VIDEO_POSTER, INTRO_VIDEO_SRC } from './ExploreIntroVideo'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
@@ -148,6 +148,8 @@ const prefillNow = () => JSON.parse(sessionStorage.getItem('kirocrew_prefill') ?
 let videoVerdicts: Record<string, { status: 'seen' | 'dismissed'; ts: number }> = {}
 
 beforeEach(() => {
+  // The surfaces under test here are the ones the Explore preview turns on.
+  setPreviewFlag(PREVIEW_EXPLORE, true)
   sessionStorage.removeItem('kirocrew_prefill')
   store.dispatch(setPendingInput(null))
   store.dispatch(setActiveSlot(null))
@@ -166,6 +168,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   setPreviewFlag(PREVIEW_CREW_MODE, false)
+  setPreviewFlag(PREVIEW_EXPLORE, false)
   act(() => closeMilestonesPanel())
   cleanup()
   vi.restoreAllMocks()
@@ -337,6 +340,26 @@ describe('new-chat page', () => {
     } finally {
       window.history.pushState({}, '', '/')
     }
+  })
+})
+
+describe('Explore preview', () => {
+  it('off: the new-chat page keeps all six suggestions and reads no milestones', async () => {
+    setPreviewFlag(PREVIEW_EXPLORE, false)
+    suggestions()
+    const read = vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<WelcomeView setInput={vi.fn()} />)
+    await screen.findByText('six')
+    await act(async () => {})
+    expect(screen.queryByTestId('try-today-entry')).toBeNull()
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('on: the same page gives its last card to Try today', async () => {
+    suggestions()
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<WelcomeView setInput={vi.fn()} />)
+    expect(await screen.findByTestId('try-today-entry')).toBeTruthy()
   })
 })
 
@@ -775,6 +798,39 @@ describe('Crew Mode preview', () => {
     renderWith(<MilestonesIndicator />)
     await screen.findByTestId('milestones-indicator')
     expect(screen.getByTestId('milestones-ring').getAttribute('data-ratio')).toBe((1 / 6).toFixed(3))
+  })
+})
+
+describe('Explore preview switch', () => {
+  function Shell() {
+    const [explore, setExplore] = useState(true)
+    useExplorePreviewSwitch(explore)
+    return (
+      <>
+        <button type="button" onClick={() => setExplore(v => !v)}>flip</button>
+        {explore && <MilestonesPill />}
+        {explore && <MilestonesSheet />}
+      </>
+    )
+  }
+
+  it('reads milestones again when the preview turns back on, and closes the sheet when it turns off', async () => {
+    const read = vi.spyOn(api, 'milestones').mockResolvedValue(payload({ features: { done: 0, total: 7 } }, ALL_OPEN()))
+    renderWith(<Shell />)
+    await screen.findByTestId('milestones-indicator')
+    expect(read).toHaveBeenCalledTimes(1)
+    act(() => { openMilestonesPanel() })
+    fireEvent.click(screen.getByText('flip'))
+    expect(screen.queryByTestId('milestones-indicator')).toBeNull()
+    // Opening the sheet read again; settle that before counting.
+    await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(1))
+    const before = read.mock.calls.length
+    fireEvent.click(screen.getByText('flip'))
+    await screen.findByTestId('milestones-indicator')
+    // The cached answer is fresh and the read does not re-fetch on mount, so
+    // only the switch can bring in what changed while Explore was hidden.
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(before + 1))
+    expect(screen.queryByTestId('milestones-sheet')).toBeNull()
   })
 })
 

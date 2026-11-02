@@ -29,6 +29,7 @@ import { updateInfoQuery } from '../../api/updateInfoQuery'
 import { useUpdateSubscription } from '../../hooks/useUpdateSubscription'
 import { sseStatus } from '../../store/dashboardSlice'
 import type { ResourceProvider } from './types'
+import { PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 
 import { createSettingsProvider, useSettingsProvider } from './providers/settingsProvider'
 import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
@@ -125,6 +126,20 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(app, only({ app: false, gateway: true }))).toBe(false)
     expect(settingEntryOffered(gateway, only({ app: false, gateway: true }))).toBe(true)
     expect(settingEntryOffered(otherEntry(), only({ app: false, gateway: false }))).toBe(true)
+  })
+
+  it('offers Display > Explore only while the Explore preview is on', () => {
+    const explore = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.milestones_enabled')!
+    expect(explore).toBeDefined()
+    try {
+      setPreviewFlag(PREVIEW_EXPLORE, false)
+      expect(settingEntryOffered(explore, ON)).toBe(false)
+      expect(settingEntryOffered(otherEntry(), ON)).toBe(true)
+      setPreviewFlag(PREVIEW_EXPLORE, true)
+      expect(settingEntryOffered(explore, ON)).toBe(true)
+    } finally {
+      setPreviewFlag(PREVIEW_EXPLORE, false)
+    }
   })
 })
 
