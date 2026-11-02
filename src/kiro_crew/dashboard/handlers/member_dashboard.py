@@ -602,6 +602,7 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
                 locale,
                 slot=slot,
                 last_user_at=_person_last_spoke(state, slug, _member, slot),
+                state=state,
             )
         )
         if rendered is not None:
@@ -653,6 +654,7 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
                 locale,
                 slot=slot,
                 last_user_at=_person_last_spoke(state, slug, _member, slot),
+                state=state,
             )
         )
         if rendered is not None:
@@ -767,6 +769,13 @@ def _page_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_page_safe(item) for item in value]
     return value
+
+
+def page_safe_for(state: Any) -> Callable[[Any], Any]:
+    """:func:`_page_safe` for one gateway: work items get their worker facts first."""
+    from kiro_crew.dashboard.handlers.work_ledger_board import with_worker_facts
+
+    return lambda value: _page_safe(with_worker_facts(value, state))
 
 
 def package_declared_name_spots(package: Mapping[str, Any]) -> list[str]:
@@ -1855,7 +1864,7 @@ async def _serve_package(
         # THE SAME masking and redaction pass the template path applies, handed in
         # rather than re-implemented: this is the one place a package's values are
         # produced, so a value that did not cross it cannot reach a browser.
-        redact=_page_safe,
+        redact=page_safe_for(state),
     )
     read = await _run(page.arm)
     # RE-CHECKED AFTER ARMING, because arming awaits: two GETs for one crewmate (two
