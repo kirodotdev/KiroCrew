@@ -2,10 +2,10 @@
  * The notice the MCP servers list shows when a server config asks to share is
  * not shared, because the gateway refused its launch until it is approved.
  *
- * The approval itself stays on Settings > Developer > MCP Management: that page
- * reads the exact launch and the approve write is checked against it. This
- * notice only makes the refusal visible where people look, and links to that
- * page.
+ * The approval itself stays on Customize → Connections' MCP Management: that page reads
+ * the exact launch and the approve write is checked against it. This notice only
+ * makes the refusal visible where people look, and links to that page, which the
+ * router serves for anyone, with or without Developer Mode.
  */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
@@ -15,8 +15,11 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import type { GatewayStatus } from '../settings/mcpManagementModel'
 
-/** Developer > MCP Management, where a refused launch is approved. */
-export const MCP_MANAGEMENT_PATH = '/settings/developer/mcp-pool'
+/** Customize → Connections → MCP Servers, scrolled to the MCP Management section, where
+ *  a refused launch is approved. The `view=mcp-servers` keeps the servers list
+ *  (not the Services gallery) and the `#mcp-management` fragment lands the reader
+ *  on the section rather than the top of the list. */
+export const MCP_MANAGEMENT_PATH = '/capabilities?tab=mcp&view=mcp-servers#mcp-management'
 
 /** How often the open notice re-reads gateway status. */
 export const STATUS_POLL_MS = 30_000
@@ -39,7 +42,7 @@ export function refusedShares(status: GatewayStatus | undefined): string[] {
  * An expired session's 403 (`authRequired`) is not: the dashboard refreshes the
  * session, so retries and polling carry on.
  */
-function isPermanentRefusal(error: unknown): boolean {
+export function isPermanentRefusal(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false
   return error.status === 404 || (error.status === 403 && !error.authRequired)
 }

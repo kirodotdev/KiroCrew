@@ -6329,6 +6329,7 @@
       "connection_unreachable": "{{provider}} could not be reached to check this connection.",
       "connection_views": "Connection views",
       "connections": "Connections",
+      "mcp_management_heading": "MCP Management",
       "could_not_load_status": "Connection status could not be loaded. Cards may be out of date.",
       "disconnect": "Disconnect",
       "disconnect_census_incomplete": "The stored grant was kept because a configuration source could not be read to rule out another server using it. Check your server configuration and disconnect again.",
@@ -6596,9 +6597,6 @@
         },
         "logs": {
           "label": "Logs"
-        },
-        "mcpPool": {
-          "label": "MCP Management"
         },
         "memory": {
           "label": "Memory"
@@ -7020,6 +7018,7 @@
       "diff_env_removed": "Env removed: {{names}}",
       "remove_mark": "Remove",
       "footprint_failed": "Could not read how much memory MCP servers use.",
+      "footprint_owner_only": "Memory figures are visible to the crew owner only.",
       "review_what_approve_does": "Approve: one copy runs this for all chats, outside their sandbox. Skip: it keeps running inside each chat.",
       "share_risk": "Outside the sandbox, a shared server can read and change your files, like a program you start yourself.",
       "review_when_safe": "Approve a server if you added it yourself and the command shown is what you expect."

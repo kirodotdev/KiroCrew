@@ -54,11 +54,11 @@
       "id": "mcp-gateway",
       "feature": "MCP Gateway",
       "title": "Use less memory with the MCP gateway",
-      "body": "Route MCP tools through one shared broker instead of a copy per session to cut RAM. Enable the **Shared MCP gateway** toggle (Settings › Developer › MCP Management), or run `kirocrew config set mcp_gateway.enabled true`.",
+      "body": "Route MCP tools through one shared broker instead of a copy per session to cut RAM. Enable the **Shared MCP gateway** toggle (Customize › Connections → MCP Servers → MCP Management), or run `kirocrew config set mcp_gateway.enabled true`.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open MCP Gateway", "route": "/settings/developer/mcp-pool" }
+      "action": { "kind": "route", "label": "Open MCP Gateway", "route": "/capabilities?tab=mcp&view=mcp-servers#mcp-management" }
     },
     {
       "id": "subagent-parallelism",

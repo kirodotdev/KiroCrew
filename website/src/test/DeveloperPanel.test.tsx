@@ -3,8 +3,10 @@
  *
  * Contract under test:
  * - The tab is a SubNav: Feature Previews first, then the internals pages
- *   (Logs, System, Telemetry, Storage, MCP Pool, Memory, Config, Debug Tools,
- *   Archive), every one listed with no consent gate in front of it
+ *   (Logs, System, Telemetry, Storage, Memory, Config, Debug Tools, Archive),
+ *   every one listed with no consent gate in front of it
+ * - MCP Management is not one of them: its old page key redirects to
+ *   Customize → Connections → MCP Servers
  * - There is no Developer Mode toggle and no Updates section
  * - The Feature Previews page holds Developer Tools, Feature Previews and
  *   (desktop only) Gateway
@@ -18,7 +20,7 @@ import { api } from '../api/client'
 
 function LocationProbe() {
   const loc = useLocation()
-  return <div data-testid="loc">{loc.pathname}</div>
+  return <div data-testid="loc">{loc.pathname + loc.search + loc.hash}</div>
 }
 
 // The Feature Previews section this panel mounts carries one card whose switch is
@@ -36,7 +38,7 @@ function renderPanel(path = '/settings/developer/feature-previews') {
   )
 }
 
-const PAGES = ['Feature Previews', 'Logs', 'System', 'Telemetry', 'Storage', 'MCP Management', 'Memory', 'Config', 'Debug tools', 'Archive']
+const PAGES = ['Feature Previews', 'Logs', 'System', 'Telemetry', 'Storage', 'Memory', 'Config', 'Debug tools', 'Archive']
 
 describe('DeveloperPanel', () => {
   beforeEach(() => {
@@ -58,6 +60,13 @@ describe('DeveloperPanel', () => {
     const list = screen.getByRole('listbox', { name: 'Developer' })
     const names = within(list).getAllByRole('option').map(o => o.textContent?.trim())
     expect(names).toEqual(PAGES)
+  })
+
+  it('sends the old MCP Management page key to Customize → Connections → MCP Servers', async () => {
+    renderPanel('/settings/developer/mcp-pool')
+    await waitFor(() =>
+      expect(screen.getByTestId('loc').textContent).toBe('/capabilities?tab=mcp&view=mcp-servers#mcp-management'),
+    )
   })
 
   it('choosing a page navigates to its path segment', () => {

@@ -2,8 +2,9 @@
 //
 // Contract under test:
 // - a server on the share list whose launch the gateway refused is named, with
-//   the restart line and a link to Settings > Developer > MCP Management, where it is approved.
-// - the link lands on /settings/developer/mcp-pool.
+//   the restart line and a link to MCP Management in Customize → Connections → MCP Servers, where it is approved.
+// - the link lands on /capabilities?tab=mcp, a surface served for anyone (no
+//   dependence on Developer Mode).
 // - the list comes from the gateway's `share_refused`, which matches a refusal
 //   recorded under a slash-named server's alias.
 // - a failed status read renders an error notice; a 403 for a non-owner is silent;
@@ -58,11 +59,11 @@ function mount(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   lastClient = qc
   return render(
-    <MemoryRouter initialEntries={['/capabilities?tab=mcp']}>
+    <MemoryRouter initialEntries={['/']}>
       <QueryClientProvider client={qc}>
         <Routes>
-          <Route path="/capabilities" element={ui} />
-          <Route path="/settings/*" element={<Where />} />
+          <Route path="/" element={ui} />
+          <Route path="/capabilities" element={<Where />} />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
@@ -94,7 +95,7 @@ describe('McpShareRefusedNotice', () => {
     const link = screen.getByRole('link', { name: 'Review in MCP Management' })
     expect(link).toHaveAttribute('href', MCP_MANAGEMENT_PATH)
     fireEvent.click(link)
-    expect(await screen.findByTestId('where')).toHaveTextContent('/settings/developer/mcp-pool')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/capabilities?tab=mcp')
   })
 
   it('opens MCP Management in a new tab while the page holds staged edits', async () => {

@@ -13725,6 +13725,7 @@
       "connection_unreachable": "Impossible de joindre {{provider}} pour vérifier cette connexion.",
       "connection_views": "Vues des connexions",
       "connections": "Connexions",
+      "mcp_management_heading": "Gestion MCP",
       "could_not_load_status": "Impossible de charger l’état des connexions. Les cartes peuvent être obsolètes.",
       "disconnect": "Déconnecter",
       "disconnect_census_incomplete": "L'autorisation stockée a été conservée car une source de configuration n'a pas pu être lue pour exclure qu'un autre serveur l'utilise. Vérifiez votre configuration de serveur, puis déconnectez à nouveau.",
@@ -14514,9 +14515,6 @@
         "logs": {
           "label": "Journaux"
         },
-        "mcpPool": {
-          "label": "Gestion MCP"
-        },
         "memory": {
           "label": "Mémoire"
         },
@@ -15268,6 +15266,7 @@
       "diff_env_removed": "Env retirée : {{names}}",
       "remove_mark": "Retirer",
       "footprint_failed": "Impossible de lire la mémoire utilisée par les serveurs MCP.",
+      "footprint_owner_only": "Seul le propriétaire de la crew voit les chiffres de mémoire.",
       "review_what_approve_does": "Approuver : une seule copie l’exécute pour tous les chats, hors de leur bac à sable. Ignorer : il continue de tourner dans chaque chat.",
       "share_risk": "Hors du bac à sable, un serveur partagé peut lire et modifier tes fichiers, comme un programme que tu lances toi-même.",
       "review_when_safe": "Approuve un serveur si tu l’as ajouté toi-même et si la commande affichée est celle que tu attends."

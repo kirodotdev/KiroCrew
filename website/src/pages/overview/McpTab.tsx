@@ -14,6 +14,7 @@ import AgentSpecNotRewrittenNotice from '../../components/AgentSpecNotRewrittenN
 import McpShareRefusedNotice from './McpShareRefusedNotice'
 import { useProvider } from '../../providers'
 import McpBrowserModal from '../../components/McpBrowserModal'
+import { useSetMcpStagedEdits } from '../connections/mcpStagedEditsContext'
 import McpCustomServerModal from '../../components/McpCustomServerModal'
 import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope, McpTempRefusal } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
@@ -540,6 +541,13 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     }, 0)
   }, [servers, pending, pendingTools])
 
+  // Publish whether edits are staged, so the sibling MCP Management section
+  // (#24920) withholds its "Ask the agent" hand-off while a /chat navigation
+  // would unmount this panel and drop `pending`/`pendingTools`. No-op outside
+  // the Customize → Connections panel's provider.
+  const setMcpStagedEdits = useSetMcpStagedEdits()
+  useEffect(() => { setMcpStagedEdits(pendingCount > 0) }, [pendingCount, setMcpStagedEdits])
+
   // Toggle a tool override.  If the new value matches the server's current
   // on-disk state (i.e. this is a revert), drop the override.  If all
   // overrides on a server are reverts, drop the server key.
@@ -646,6 +654,10 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       setPending({})
       setPendingTools({})
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
+      // MCP Management shares this panel (#24920) and reads ['mcpGatewayServers']
+      // under staleTime: Infinity. An applied uninstall or scope change alters
+      // which servers it lists and their stub eligibility, so refresh it too.
+      queryClient.invalidateQueries({ queryKey: ['mcpGatewayServers'] })
       clearTimeout(applyMsgTimer.current)
       applyMsgTimer.current = setTimeout(() => setApplyMsg(''), 5000)
     },

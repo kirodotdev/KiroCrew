@@ -27,6 +27,7 @@ import { fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { detailsWhyKey, DOCS_URL, gibNumber, type LaunchRefusal } from './mcpManagementModel'
 import { RefusalLaunch, SHARE_BUTTON_CLASS } from './McpManagementLaunchReview'
+import { useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 
 export const HERO_TITLE_ID = 'mcp-hero-title'
 const SWITCH_NOTE_ID = 'mcp-hero-switch-note'
@@ -84,6 +85,7 @@ export function SharingHero({
   onToggle,
   footprint,
   footprintFailed,
+  footprintRefused,
   staleCount,
   reloadBusy,
   reloadNote,
@@ -98,6 +100,10 @@ export function SharingHero({
   footprint?: McpGatewayFootprint
   /** The footprint read itself failed (a request error, not a null figure). */
   footprintFailed?: boolean
+  /** The read was refused for this viewer (a non-owner's 403). It is asked
+   *  once, with no retry or polling, and the error notice names the owner-only
+   *  reason instead of the generic read failure. */
+  footprintRefused?: boolean
   /** Open chats still running their own copy of a server shared now. */
   staleCount: number
   reloadBusy: boolean
@@ -107,6 +113,7 @@ export function SharingHero({
   reloadError?: string | null
   onReload: () => void
 }) {
+  const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
   const now = footprint?.using_now_bytes
   const withSharing = footprint?.with_sharing_bytes
   const showNumbers = typeof now === 'number' && typeof withSharing === 'number'
@@ -114,8 +121,8 @@ export function SharingHero({
   return (
     <section
       // What the footprint read is doing, for a test to wait on instead of a
-      // timer: pending, ready (answered, figures or not) or error.
-      data-footprint={footprintFailed ? 'error' : footprint ? 'ready' : 'pending'}
+      // timer: pending, ready (answered, figures or not), refused or error.
+      data-footprint={footprintRefused ? 'refused' : footprintFailed ? 'error' : footprint ? 'ready' : 'pending'}
       className="min-w-0 space-y-4 rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-4 md:px-5"
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
@@ -154,10 +161,19 @@ export function SharingHero({
         )}
       </div>
 
+      {/* A non-owner's 403 is still a rejected request, so it goes through
+          ErrorNotice (errors-use-error-notice), but says what happened: the
+          figures are owner-only, not "could not be read". */}
       <ErrorNotice
         variant="inline"
-        message={footprintFailed ? i18nT('pages.mcpManagement.footprint_failed') : null}
-        askAgent
+        message={
+          footprintRefused
+            ? i18nT('pages.mcpManagement.footprint_owner_only')
+            : footprintFailed
+              ? i18nT('pages.mcpManagement.footprint_failed')
+              : null
+        }
+        askAgent={!handoffWouldLoseEdits}
       />
 
       {showNumbers && (
@@ -196,7 +212,7 @@ export function SharingHero({
               </p>
             )}
             {reloadNote && <p className="m-0 text-[12.5px] text-[var(--muted)]">{reloadNote}</p>}
-            <ErrorNotice variant="inline" message={reloadError ?? null} askAgent />
+            <ErrorNotice variant="inline" message={reloadError ?? null} askAgent={!handoffWouldLoseEdits} />
           </div>
           {staleCount > 0 && (
             <Btn
@@ -300,6 +316,7 @@ export function ReviewApprovalsDialog({
   onApprove: (name: string, expectedLaunch: string) => Promise<string | null>
   onClose: () => void
 }) {
+  const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
   const narrow = useIsNarrowViewport()
   const [states, setStates] = useState<Record<string, ReviewState>>({})
   // A fresh list each time the dialog opens.
@@ -412,7 +429,7 @@ export function ReviewApprovalsDialog({
                     <p id={`mcp-review-means-${server.name}`} className="m-0 text-[12.5px] text-[var(--text)]">
                       {i18nT('pages.mcpManagement.review_what_approve_does')}
                     </p>
-                    <ErrorNotice variant="inline" message={st.error ?? null} askAgent />
+                    <ErrorNotice variant="inline" message={st.error ?? null} askAgent={!handoffWouldLoseEdits} />
                     <div className={['flex gap-2', narrow ? 'flex-col' : 'flex-wrap justify-end'].join(' ')}>
                       <Btn
                         type="button"

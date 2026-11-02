@@ -13217,6 +13217,7 @@
       "connection_unreachable": "无法访问 {{provider}} 以检查此连接。",
       "connection_views": "连接视图",
       "connections": "连接",
+      "mcp_management_heading": "MCP 管理",
       "could_not_load_status": "无法加载连接状态。卡片信息可能已过期。",
       "disconnect": "断开连接",
       "disconnect_census_incomplete": "由于无法读取某个配置源以排除其他服务器正在使用该授权，已保留存储的授权。请检查服务器配置后再次断开连接。",
@@ -13988,9 +13989,6 @@
         "logs": {
           "label": "日志"
         },
-        "mcpPool": {
-          "label": "MCP 管理"
-        },
         "memory": {
           "label": "记忆"
         },
@@ -14710,6 +14708,7 @@
       "diff_env_removed": "删除环境变量：{{names}}",
       "remove_mark": "移除",
       "footprint_failed": "无法读取 MCP 服务器的内存占用。",
+      "footprint_owner_only": "只有 crew 所有者可以查看内存数据。",
       "review_what_approve_does": "批准：为所有聊天只运行一份，在每个聊天的沙盒之外运行。跳过：它继续在每个聊天里各自运行。",
       "share_risk": "在沙盒之外，共享服务器可以像你自己启动的程序一样读取和修改你的文件。",
       "review_when_safe": "如果服务器是你自己添加的，且显示的命令符合预期，再批准它。"

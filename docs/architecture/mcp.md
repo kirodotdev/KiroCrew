@@ -1108,7 +1108,7 @@ file under the same prefix, and the same spelling in any other slot (the package
 directory as a `--plugin-root` value, or under another env key), hashes
 literally and is a changed launch. Every process that hashes a launch (the rewriter, gatewayd, the broker stub) computes the table from itself and they agree because they run from one install; the one spelling they can disagree on is Windows' 8.3 short name, which the stub is launched through when the install path holds a space (`rewriter._cmd_safe_command`), so on Windows each of the three also enters under its long name (`GetLongPathNameW` of the process's own path, never of a token; no link is followed). An approval whose digest was recorded without this encoding
 reads as `changed_needs_reapproval` and needs one re-approve in
-**Developer → MCP Management** (shown with developer mode on). No digest without
+**Customize → Connections → MCP Servers** (MCP Management, reachable without developer mode). No digest without
 the encoding is accepted. Two installs sharing one data home (the desktop app and a
 dev venv, say) therefore admit each other's approvals of a `python3`-pinned
 launch, since each reads the alias as its own interpreter; that widens nothing,
@@ -1118,7 +1118,7 @@ without a matching fingerprint stays on the session's unpooled, sandboxed launch
 path. A queued cold spawn reloads the store after admission and resolves the same
 command and environment identity again immediately before the fork, so revoking
 an approval while it waits prevents the process from starting. A stub with no
-recorded approval needs one tap in **Developer → MCP Management** before it pools. Cached recommendation
+recorded approval needs one in **Customize → Connections → MCP Servers** before it pools. Cached recommendation
 seeding may add a stub route, but it grants no launch approval; the seeded
 row stays on the session-sandboxed path until the operator approves it.
 

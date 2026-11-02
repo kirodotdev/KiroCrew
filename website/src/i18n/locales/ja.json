@@ -13217,6 +13217,7 @@
       "connection_unreachable": "{{provider}}に接続を確認するためのアクセスができませんでした。",
       "connection_views": "コネクションビュー",
       "connections": "コネクション",
+      "mcp_management_heading": "MCP 管理",
       "could_not_load_status": "コネクションステータスを読み込めませんでした。カードが古い可能性があります。",
       "disconnect": "切断",
       "disconnect_census_incomplete": "設定ソースを読み取れず、他のサーバーが使用していないことを確認できなかったため、保存された認可は保持されました。サーバー設定を確認してから、再度切断してください。",
@@ -13988,9 +13989,6 @@
         "logs": {
           "label": "ログ"
         },
-        "mcpPool": {
-          "label": "MCP 管理"
-        },
         "memory": {
           "label": "メモリ"
         },
@@ -14710,6 +14708,7 @@
       "diff_env_removed": "削除された環境変数: {{names}}",
       "remove_mark": "外す",
       "footprint_failed": "MCP サーバーのメモリ使用量を読み取れませんでした。",
+      "footprint_owner_only": "メモリの数値はクルーのオーナーだけが確認できます。",
       "review_what_approve_does": "承認: 1 つのコピーがすべてのチャットのためにこれを、各チャットのサンドボックスの外で実行します。スキップ: 各チャットの中で動き続けます。",
       "share_risk": "サンドボックスの外では、共有サーバーは自分で起動したプログラムと同じように、ファイルを読み書きできます。",
       "review_when_safe": "自分で追加したサーバーで、表示されたコマンドが想定どおりなら承認してください。"
