@@ -448,10 +448,13 @@ class TestPrewarmAdmission:
         shared_sessions.remove = AsyncMock()
         shared_sessions.remove_if_unclaimed = AsyncMock(return_value=True)
 
+        handshake_started = asyncio.Event()
+        release_handshake = asyncio.Event()
+
         async def _slow_get_or_create(key, **_kwargs):
-            # flake-ok: pre-existing 10 ms handshake inside the stubbed get_or_create, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing handshake inside the stubbed get_or_create, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.01)  # the handshake: the other signal runs meanwhile
+            # The handshake is held until the test releases it, after the other signal has run.
+            handshake_started.set()
+            await await_until(release_handshake, what="the handshake release")
             return (MagicMock(), True, False)
 
         shared_sessions.get_or_create = AsyncMock(side_effect=_slow_get_or_create)
@@ -465,7 +468,12 @@ class TestPrewarmAdmission:
             patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
             patch.object(chat_runner, "resolve_agent_bindings", return_value=self._bindings()),
         ):
-            await asyncio.gather(*(_eager_spawn(s, sl) for s, sl in zip(states, slots)))
+            first = asyncio.create_task(_eager_spawn(states[0], slots[0]))
+            await await_until(handshake_started, what="the first handshake to start")
+            second = asyncio.create_task(_eager_spawn(states[1], slots[1]))
+            await await_until(second, what="the second signal to finish during the handshake")
+            release_handshake.set()
+            await await_until(first, what="the first signal's spawn")
         shared_sessions.get_or_create.assert_awaited_once()
         spawned = shared_sessions.get_or_create.await_args.args[0]
         assert list(chat_runner._armed_prefetches) == [spawned]
@@ -550,11 +558,12 @@ class TestPrewarmAdmission:
         landing inside it must keep its registry entry — popping by key alone
         would erase the replacement's accounting."""
         gate = asyncio.Event()
+        removal_entered = asyncio.Event()
         sessions = MagicMock()
 
         async def _held_remove(key):
-            # flake-ok: pre-existing unbounded rendezvous inside the stubbed removal, moved verbatim; the test sets the gate before it awaits the admission
-            await gate.wait()
+            removal_entered.set()
+            await await_until(gate, what="the held removal's gate")
             return True
 
         sessions.remove_if_unclaimed = AsyncMock(side_effect=_held_remove)
@@ -564,15 +573,14 @@ class TestPrewarmAdmission:
                 sessions, "dashboard:b", 1, signal_generation=chat_runner._arm_generation
             )
         )
-        # flake-ok: pre-existing one-turn yield that parks the admission in the held removal, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)  # admit is parked inside the awaited removal
+        await await_until(removal_entered, what="the admission to park in the removal")
         registrar = MagicMock()
         registrar.remove_if_unclaimed = AsyncMock(return_value=True)
         await chat_runner._cap_armed_prefetches(registrar, "dashboard:old", cap=3)
         refreshed_value = chat_runner._armed_prefetches["dashboard:old"]
         gate.set()
-        # flake-ok: pre-existing task await with no timeout, moved verbatim; the gate.set() just before it releases it
-        assert await admit is False
+        admitted = await await_until(admit, what="the admission after the removal gate opens")
+        assert admitted is False
         assert chat_runner._armed_prefetches.get("dashboard:old") is refreshed_value
 
     @pytest.mark.asyncio
