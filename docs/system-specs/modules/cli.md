@@ -2722,8 +2722,10 @@ EFFECTIVE value read back after the merge, the `requested` one beside it, and
 `overlay_override`, the flag (and the best-effort read,
 `config.loader.overlay_pins`) the telemetry switches share. `GET /api/update/check` and the
 channel switch carry `overlay_override` too, since those are where the UI reads
-`auto_update`, and the POST sends a `refresh` frame so a second open tab stops
-showing the old position. A check that fails unexpectedly carries `can_arm`
+`auto_update`, and `GET /api/update/auto` returns it alone (one overlay read, no
+check), which the switch reads on every mount and window focus so a pinned
+install shows it held with its note before any click. The POST sends a
+`refresh` frame so a second open tab stops showing the old position. A check that fails unexpectedly carries `can_arm`
 the way the feed-failure paths do, so one transient raise cannot make a managed
 venv look notify-only. `test_every_unattended_apply_consults_the_effect_first`
 pins that every apply branch reads it before pausing admission.

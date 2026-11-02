@@ -51,6 +51,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/changelog", handlers.api_changelog)
     app.router.add_get("/api/releases", handlers.api_releases)
     app.router.add_post("/api/update", handlers.api_update_apply)
+    app.router.add_get("/api/update/auto", handlers.api_update_auto_pin)
     app.router.add_post("/api/update/auto", handlers.api_update_auto)
     app.router.add_post("/api/update/channel", handlers.api_update_channel)
     # A terminal `kirocrew update` on a git checkout pokes this so the running
