@@ -20,7 +20,6 @@ src/apps/issue-radar/views/SettingsView.tsx 0.0   # 0/3
 src/apps/meetings/MeetingView.tsx 0.0   # 0/32
 src/apps/mochi/mochiHelpers.ts 0.0   # 0/2
 src/apps/mochi/src/renderer/PetdexImporter.tsx 0.0   # 0/40
-src/apps/mochi/src/shared/utils.ts 0.0   # 0/44
 src/apps/spec-builder/components/ChatColumn.tsx 0.0   # 0/2
 src/components/AddJobSplitButton.tsx 66.7   # 2/3
 src/components/Strands.tsx 52.2   # 71/136
