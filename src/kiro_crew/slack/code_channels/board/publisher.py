@@ -158,6 +158,11 @@ async def publish(
         return links.get(key, "")
 
     record = await get_async(channel)
+    from kiro_crew.slack.code_channels.board import stops
+
+    # The last await before rendering: a worker that moved to a newer turn
+    # meanwhile is not shown as stopped.
+    snapshot = stops.reconcile(snapshot)
     ts = _unsaved_ts.get(channel) or (record.board_ts if record else "")
     pinned = bool(record.board_pinned) if record else False
     done = ""
