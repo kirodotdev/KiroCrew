@@ -500,14 +500,14 @@ class TestSubagentUsageRow:
             provider.last_prompt_stats = AcpPromptStats(credits=0.75)
             if interruption_site == "stream":
                 entered.set()
-                # flake-ok: pre-existing gate the test releases by cancelling the run moved verbatim; tracked for a de-flake pass
+                # Parked until the test cancels the run; the cleanup sets it too.
                 await blocked.wait()
             yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial")
 
         async def on_event(kind, info, extra):
             if kind == "subagent_chunk":
                 entered.set()
-                # flake-ok: pre-existing gate the test releases by cancelling the run moved verbatim; tracked for a de-flake pass
+                # Parked until the test cancels the run; the cleanup sets it too.
                 await blocked.wait()
 
         stream_iter = stream()
@@ -527,14 +527,17 @@ class TestSubagentUsageRow:
             try:
                 await await_until(entered)
                 task.cancel()
+                done, _ = await asyncio.wait({task}, timeout=30)
+                assert task in done, "cancelled subagent run did not finish within 30 s"
                 with pytest.raises(asyncio.CancelledError):
-                    # flake-ok: pre-existing await of the task this test cancelled moved verbatim; tracked for a de-flake pass
-                    await task
+                    task.result()
                 assert info.credits == pytest.approx(0.75)
             finally:
                 task.cancel()
-                # flake-ok: pre-existing cleanup await of the cancelled run moved verbatim; tracked for a de-flake pass
-                await asyncio.gather(task, return_exceptions=True)
+                # Release any stub still parked on its gate, then bound the wait.
+                blocked.set()
+                await asyncio.wait({task}, timeout=30)
+                assert task.done(), "cleanup: subagent run still running after 30 s"
                 await stream_iter.aclose()
 
     @pytest.mark.asyncio
