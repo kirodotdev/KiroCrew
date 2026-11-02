@@ -291,8 +291,58 @@ describe('ChatSidebar — Clean Up Sessions panel', () => {
     renderSidebar({ slots: SLOTS })
     await openHeaderPanel('Clean up sessions')
     fireEvent.click(await screen.findByText('Archive 1 session'))
-    expect(await screen.findByText('1 session(s) failed to archive')).toBeTruthy()
+    expect(await screen.findByText('1 session failed to archive')).toBeTruthy()
     expect(screen.getByText('Clean Up Sessions')).toBeTruthy()
+  })
+
+  it('words the partial-failure count through the catalog plural', async () => {
+    const two: TestSlot[] = [
+      ...SLOTS,
+      { key: 'k-stale-2', title: 'Stale two', running: false, messages: 2, last_ts: '2020-01-01T00:00:00Z' },
+    ]
+    mocks.cleanupSessions.mockImplementation((_days: number, _active: string, dry?: boolean) =>
+      Promise.resolve(dry
+        ? { ok: true, archived: 0, keys: ['k-stale', 'k-stale-2'], failed: [], active_is_stale: false }
+        : { ok: true, archived: 0, keys: [], failed: ['k-stale', 'k-stale-2'] }))
+    renderSidebar({ slots: two })
+    await openHeaderPanel('Clean up sessions')
+    fireEvent.click(await screen.findByText('Archive 2 sessions'))
+    expect(await screen.findByText('2 sessions failed to archive')).toBeTruthy()
+  })
+
+  it('marks only the chosen inactivity window as pressed', async () => {
+    mocks.cleanupSessions.mockResolvedValue({ ok: true, archived: 0, keys: [], failed: [], active_is_stale: false })
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Clean up sessions')
+    const chip = (label: string) => screen.getByRole('button', { name: label })
+    await screen.findByText('7 days')
+    // The panel opens on the 3-day window.
+    expect(chip('3 days').getAttribute('aria-pressed')).toBe('true')
+    for (const other of ['1 day', '7 days', '14 days', '30 days']) {
+      expect(chip(other).getAttribute('aria-pressed')).toBe('false')
+    }
+    fireEvent.click(chip('14 days'))
+    expect(chip('14 days').getAttribute('aria-pressed')).toBe('true')
+    expect(chip('3 days').getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('exposes the Show/Hide list toggle as an expandable control', async () => {
+    mocks.cleanupSessions.mockResolvedValue({ ok: true, archived: 0, keys: ['k-stale'], failed: [], active_is_stale: false })
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Clean up sessions')
+    const toggle = await screen.findByRole('button', { name: /^Show 1 session/ })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    const listId = toggle.getAttribute('aria-controls')
+    expect(listId).toBeTruthy()
+    fireEvent.click(toggle)
+    const open = screen.getByRole('button', { name: /^Hide 1 session/ })
+    expect(open.getAttribute('aria-expanded')).toBe('true')
+    const list = document.getElementById(listId!)
+    expect(list).toBeTruthy()
+    expect(within(list!).getByText('Stale one')).toBeTruthy()
+    fireEvent.click(open)
+    expect(screen.getByRole('button', { name: /^Show 1 session/ }).getAttribute('aria-expanded')).toBe('false')
+    expect(document.getElementById(listId!)).toBeNull()
   })
 
   it('closes the panel when every archive succeeds', async () => {
