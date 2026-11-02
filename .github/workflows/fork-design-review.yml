@@ -129,9 +129,10 @@ jobs:
           # that exists. Mirrors the gh_retry convention pr-readiness.yml adopted
           # for the same single-shot failure mode (#2753). stderr is deliberately
           # NOT discarded any more, so a failing query says why.
+          # 75s of backoff outlasts harden-runner refusing a dropped api.github.com IP for one DNS TTL.
           gh_read() {
             local attempt rc=1 out
-            for attempt in 1 2 3; do
+            for attempt in 1 2 3 4 5; do
               if out="$("$@")"; then
                 printf '%s' "$out"
                 return 0
@@ -141,9 +142,9 @@ jobs:
                 # else branch -- that would report a failed query as success.
                 rc=$?
               fi
-              if [ "$attempt" -lt 3 ]; then
+              if [ "$attempt" -lt 5 ]; then
                 echo "resolver query attempt $attempt failed; retrying" >&2
-                sleep $((attempt * 5))
+                sleep $((5 << (attempt - 1)))
               fi
             done
             return "$rc"
@@ -167,7 +168,7 @@ jobs:
                            and .head.ref == $ref
                            and .head.sha == $sha)]
               ')"; then
-            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
+            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 5 attempts; see the errors above"
             exit 1
           fi
           candidate_count="$(printf '%s' "$candidates" | jq -r 'length')"
@@ -196,7 +197,7 @@ jobs:
 
           # Authoritative base SHA straight from the PR (NOT from the artifact).
           if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then
-            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
+            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 5 attempts; see the errors above"
             exit 1
           fi
           if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
@@ -251,15 +252,20 @@ jobs:
           WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           set -uo pipefail
-          id="$(gh api --method POST "repos/$REPO/check-runs" \
-            -f name="Design Review" -f head_sha="$HEAD" -f status="in_progress" \
-            -f external_id="design-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT" \
-            -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
-            -f "output[title]=Design Review — in progress" \
-            -f "output[summary]=Fork review running for $HEAD." \
-            -f "output[text]=$(printf 'Lane run: %s/%s/actions/runs/%s\n\n<!-- ai-review-fork-lane run=%s -->' \
-              "${GITHUB_SERVER_URL:-}" "$REPO" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ID:-}")" \
-            --jq '.id')"
+          # 75s of backoff outlasts harden-runner refusing a dropped api.github.com IP for one DNS TTL.
+          for attempt in 1 2 3 4 5; do
+            id="$(gh api --method POST "repos/$REPO/check-runs" \
+              -f name="Design Review" -f head_sha="$HEAD" -f status="in_progress" \
+              -f external_id="design-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT" \
+              -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
+              -f "output[title]=Design Review — in progress" \
+              -f "output[summary]=Fork review running for $HEAD." \
+              -f "output[text]=$(printf 'Lane run: %s/%s/actions/runs/%s\n\n<!-- ai-review-fork-lane run=%s -->' \
+                "${GITHUB_SERVER_URL:-}" "$REPO" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ID:-}")" \
+              --jq '.id')" && break
+            if [ "$attempt" -eq 5 ]; then exit 1; fi
+            sleep $((5 << (attempt - 1)))
+          done
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
       # The writer's accepted `/ai-review override` record for THIS lane at THIS
@@ -392,9 +398,10 @@ jobs:
           # three-dot range from BASE_SHA gave on a full clone.
           compare_base() { gh api "repos/$REPO/compare/$1...$2?per_page=1" --jq '.merge_base_commit.sha'; }
           merge_base=""
-          for attempt in 1 2 3; do
+          # 75s of backoff outlasts harden-runner refusing a dropped api.github.com IP for one DNS TTL.
+          for attempt in 1 2 3 4 5; do
             merge_base="$(compare_base "$BASE_SHA" "$HEAD_SHA")" && break
-            sleep "$attempt"
+            if [ "$attempt" -lt 5 ]; then sleep $((5 << (attempt - 1))); fi
           done
           if ! [[ "$merge_base" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::could not read the merge-base of $BASE_SHA and $HEAD_SHA; failing closed."
@@ -1953,13 +1960,14 @@ jobs:
             conclusion="success"; title="human override accepted"
             summary="Human judgment by @${OVERRIDE_ACTOR:-} overrides this lane for $HEAD via \`/ai-review override\` (this commit only), so the model review was skipped."
           fi
-          # complete <check-run id> <conclusion> <title> — one retry, because a
+          # complete <check-run id> <conclusion> <title> — retried with backoff, because a
           # single transient 5xx here is what strands the run: the check-run stays
           # `in_progress` forever, and pr-readiness counts ANY non-completed run of
           # this name as pending — including after a successful re-run — so the PR
           # sits at `readiness: checking` with no event able to clear it.
+          # 75s of backoff outlasts harden-runner refusing a dropped api.github.com IP for one DNS TTL.
           complete() {
-            for attempt in 1 2; do
+            for attempt in 1 2 3 4 5; do
               if gh api --method PATCH "repos/$REPO/check-runs/$1" \
                 -f status="completed" -f conclusion="$2" \
                 -f "output[title]=Design Review — $3" \
@@ -1967,7 +1975,7 @@ jobs:
                 -f "output[text]=$lane_text" >/dev/null; then
                 return 0
               fi
-              sleep 5
+              if [ "$attempt" -lt 5 ]; then sleep $((5 << (attempt - 1))); fi
             done
             echo "::warning::could not complete check-run $1 for $HEAD"
             return 1
@@ -2008,7 +2016,7 @@ jobs:
               || echo "::warning::could not post the Design Review check-run for $HEAD"
           fi
           # Sweep any still-incomplete run of this name that THIS pull request
-          # created (ours, if the PATCH above lost both attempts, or one stranded
+          # created (ours, if the PATCH above lost every attempt, or one stranded
           # by a previous run). Scoped by `external_id`'s PR dimension (prefix
           # match, so it spans attempts): a check-run of this name on this head
           # can belong to another PR that shares the commit, and completing that
@@ -2018,7 +2026,7 @@ jobs:
           # different run+attempt suffix). The trailing hyphen keeps -pr-9 from
           # matching -pr-99.
           # Completed with THIS run's computed verdict, not a hardcoded neutral:
-          # a genuine BLOCK whose own PATCH lost both attempts must not be
+          # a genuine BLOCK whose own PATCH lost every attempt must not be
           # swept into a verdict pr-readiness no longer gates on. With no
           # verdict, $conclusion is already neutral/"review incomplete".
           #

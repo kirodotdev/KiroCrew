@@ -250,6 +250,35 @@ def _write_stub(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+DROPPED_IP_ERROR = "dial tcp 140.82.116.5:443: connect: connection refused"
+DROPPED_IP_WINDOW = 60  # one api.github.com DNS TTL, in seconds
+DROPPED_IP_OUTLASTS_RETRIES = 76  # one second past the 75s of backoff
+
+
+def _dropped_ip_stubs(
+    tmp_path: Path, answer: str, *, window: int = DROPPED_IP_WINDOW, bin_dir: Path | None = None
+) -> None:
+    """Stub `sleep` (records its argument) and `gh` (refuses until `window` seconds are slept).
+
+    Once the recorded sleeps total `window` (0 never refuses), `gh` runs the shell snippet
+    `answer`. The stubs go in `bin_dir`, default `tmp_path`.
+    """
+    log = tmp_path / "sleeps.log"
+    log.touch()
+    bin_dir = bin_dir or tmp_path
+    _write_stub(bin_dir / "sleep", f'echo "$1" >> "{log}"\n')
+    _write_stub(
+        bin_dir / "gh",
+        f"total=$(awk '{{s += $1}} END {{print s + 0}}' \"{log}\")\n"
+        f'if [ "$total" -lt {window} ]; then echo "{DROPPED_IP_ERROR}" >&2; exit 1; fi\n'
+        f"{answer}\n",
+    )
+
+
+def _slept(tmp_path: Path) -> list[int]:
+    return [int(n) for n in (tmp_path / "sleeps.log").read_text(encoding="utf-8").split()]
+
+
 # Both first-principles lanes carry byte-identical reasoning, so every
 # contract assertion runs against the pair.
 FP_LANES = ("first-principles-review.yml", "fork-first-principles-review.yml")

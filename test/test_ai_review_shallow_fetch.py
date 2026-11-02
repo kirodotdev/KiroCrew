@@ -26,6 +26,12 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ai_review_workflows_helpers import (
+    DROPPED_IP_OUTLASTS_RETRIES,
+    DROPPED_IP_WINDOW,
+    _dropped_ip_stubs,
+    _slept,
+)
 from git_maintenance_helpers import git_maintenance_off_entries
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -245,7 +251,9 @@ def _clone(o: _Origin, name: str, sha: str, depth: int) -> Path:
     return work
 
 
-def _run_step(o: _Origin, lane: str, name: str, work: Path, env: dict[str, str]) -> dict[str, str]:
+def _exec_step(
+    o: _Origin, lane: str, name: str, work: Path, env: dict[str, str]
+) -> tuple[subprocess.CompletedProcess[str], Path]:
     script = str(_step(lane, name)["run"])
     output = o.tmp / f"out-{lane}-{work.name}"
     output.write_text("", encoding="utf-8")
@@ -268,6 +276,11 @@ def _run_step(o: _Origin, lane: str, name: str, work: Path, env: dict[str, str])
         text=True,
         encoding="utf-8",
     )
+    return res, output
+
+
+def _run_step(o: _Origin, lane: str, name: str, work: Path, env: dict[str, str]) -> dict[str, str]:
+    res, output = _exec_step(o, lane, name, work, env)
     assert res.returncode == 0, f"{lane}:{name}\n{res.stdout}\n{res.stderr}"
     pairs = [
         line.split("=", 1)
@@ -372,6 +385,62 @@ def test_fork_lane_sees_the_full_clone_diff(world, lane: str) -> None:
                 case["name"],
                 form,
             )
+
+
+def _fetch_through_a_dropped_ip(
+    world, lane: str, tmp_path: Path, *, window: int
+) -> tuple[subprocess.CompletedProcess[str], Path, str]:
+    o, cases, _ = world
+    case = next(c for c in cases if c["base"] != c["head"])
+    step = next(
+        s["name"]
+        for job in yaml.safe_load((WORKFLOWS / lane).read_text(encoding="utf-8"))["jobs"].values()
+        for s in job.get("steps") or []
+        if str(s.get("name", "")).startswith("Fetch authentic diff")
+    )
+    _dropped_ip_stubs(tmp_path, f'exec "{o.tmp / "bin" / "gh"}" "$@"', window=window)
+    work = _clone(o, f"{lane}-dropped-ip-{window}", case["base"], depth=1)
+    res, output = _exec_step(
+        o,
+        lane,
+        step,
+        work,
+        {
+            "PR": str(case["pr"]),
+            "BASE_SHA": case["base"],
+            "HEAD_SHA": case["head"],
+            "PATCH": str(tmp_path / "out.patch"),
+            "PATH": f"{tmp_path}{os.pathsep}{o.tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        },
+    )
+    return res, output, o.git("merge-base", case["base"], case["head"])
+
+
+@pytest.mark.parametrize("lane", FORK_LANES)
+def test_fork_merge_base_read_outlasts_a_dropped_ip_for_one_dns_ttl(
+    world, lane: str, tmp_path: Path
+) -> None:
+    res, output, merge_base = _fetch_through_a_dropped_ip(
+        world, lane, tmp_path, window=DROPPED_IP_WINDOW
+    )
+
+    assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
+    assert f"merge_base={merge_base}" in output.read_text(encoding="utf-8")
+    assert _slept(tmp_path) == [5, 10, 20, 40]
+
+
+@pytest.mark.parametrize("lane", FORK_LANES)
+def test_fork_merge_base_read_that_never_recovers_fails_closed_after_the_same_waits(
+    world, lane: str, tmp_path: Path
+) -> None:
+    res, output, _ = _fetch_through_a_dropped_ip(
+        world, lane, tmp_path, window=DROPPED_IP_OUTLASTS_RETRIES
+    )
+
+    assert res.returncode != 0, f"{res.stdout}\n{res.stderr}"
+    assert "could not read the merge-base" in res.stdout
+    assert "merge_base=" not in output.read_text(encoding="utf-8")
+    assert _slept(tmp_path) == [5, 10, 20, 40]
 
 
 def _step_checkout(lane: str) -> dict:
