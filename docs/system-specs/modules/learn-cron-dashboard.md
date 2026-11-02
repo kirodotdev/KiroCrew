@@ -4920,6 +4920,7 @@ to a slot is a lifecycle change wider than this guard.
 **A context overflow swaps Resume for a fresh session.** A turn the provider
 refused because the conversation does not fit in one request (kiro-cli's
 "context window overflowed", the claude adapter's "Input is too long", the
+model service's "Request exceeds the maximum allowed size", the
 `context_overflow` tag `_raise_acp_error` sets) leaves an error row stamped
 `chat_utils.CONTEXT_OVERFLOW_KIND` (`context_overflow`) by
 `_terminal_error_meta`, ranked below the entitlement, sign-in and usage-limit
