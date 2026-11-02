@@ -35,7 +35,10 @@ from kiro_crew.dashboard.chat_utils import (
     is_synthetic_recovery_item,
     is_system_injection_item,
 )
-from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.chat_utils_injected_rows import (
+    AUTOMATION_STEER_META,
+    WORKFLOW_COMPLETION_KIND,
+)
 from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.session_directive_apply import (
@@ -85,6 +88,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.steer_queue import (
         _actor_for_queue_items,
         _drop_stale_admissions,
+        _person_paths_actor_for_queue_items,
     )
     from kiro_crew.dashboard.chat_turn.turn_marker import _gateway_shutdown_requested
 
@@ -814,6 +818,7 @@ async def _start_next_queued_turn(
             merge_enabled=merge
             and not required_queue_id
             and not any(item.get(RESTORED_QUEUE_KEY) for item in slot._queue),
+            coalesce_completions=not required_queue_id,
         )
     if next_msg is None:
         return False
@@ -919,6 +924,7 @@ async def _start_next_queued_turn(
     # own bubble. Never merges (a system-injection kind), so ``consumed`` holds
     # it alone.
     is_automation_notice = any(item.get("kind") == AUTOMATION_NOTICE_KIND for item in consumed)
+    is_workflow_completion = any(item.get("kind") == WORKFLOW_COMPLETION_KIND for item in consumed)
     # A requeued automation steer (a work-ledger wake the turn never took): its
     # entry names the `meta.nudge` its row carries, so it drains as the same
     # nudge row it was steered as, never as the person's `user` row. Never
@@ -939,6 +945,7 @@ async def _start_next_queued_turn(
         or is_app_message
         or is_automation_notice
         or is_automation_steer
+        or is_workflow_completion
     ):
         # A user message after the last completion takes over from the armed
         # synthesis and ends its batch, so its count starts over. Only the
@@ -986,6 +993,7 @@ async def _start_next_queued_turn(
             or is_app_message
             or is_automation_notice
             or is_automation_steer
+            or is_workflow_completion
             or responsive_chat.reusable_row(slot, consumed, next_msg) is not None,
         }
         # The client rebuilds the drained entry as a user row from this frame
@@ -1043,7 +1051,7 @@ async def _start_next_queued_turn(
         row_role = "nudge"
     elif is_subagent:
         row_role = "subagent"
-    elif is_cron or is_recovery or is_app_message or is_automation_notice:
+    elif is_cron or is_recovery or is_app_message or is_automation_notice or is_workflow_completion:
         row_role = "inject"
     else:
         row_role = "user"
@@ -1059,7 +1067,7 @@ async def _start_next_queued_turn(
         # `_prepare_messages` replace the stored meta on HTTP rebuild,
         # dropping `injectKind` and the row's collapse/fold exemptions.
         row_cls = app_inject_row(app_label or "app")[1]
-    elif is_recovery or is_automation_notice:
+    elif is_recovery or is_automation_notice or is_workflow_completion:
         row_cls = "msg msg-inject"
     else:
         row_cls = "msg msg-u"
@@ -1349,6 +1357,9 @@ async def _start_next_queued_turn(
     _queue_actor = _actor_for_queue_items(consumed)
     if _queue_actor:
         _run_kwargs["_turn_actor"] = _queue_actor
+    _paths_actor = _person_paths_actor_for_queue_items(consumed)
+    if _paths_actor:
+        _run_kwargs["_person_paths_actor"] = _paths_actor
     # Provenance this process did not establish. A restored entry has no actor by
     # construction (`sanitize_restored_queue` drops the stamp with the directive
     # flags), and an absent actor reads as `user` below -- so without this the one

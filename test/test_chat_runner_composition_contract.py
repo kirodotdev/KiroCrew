@@ -542,6 +542,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_recovery_echo_owed",
         "_turn_actor",
         "_agent_started",
+        "_person_paths_actor",
         "regenerate_hint",
         "_on_consumed",
         "_on_irreversibly_consumed",

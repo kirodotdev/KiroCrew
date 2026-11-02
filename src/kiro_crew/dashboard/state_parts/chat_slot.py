@@ -1032,6 +1032,7 @@ class _ChatSlot:
         *,
         extra_meta: dict[str, Any] | None = None,
         relay_meta: dict[str, Any] | None = None,
+        kind: str = "",
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -1051,6 +1052,11 @@ class _ChatSlot:
         immediately has no queue entry and no later drain to tell anything to. The
         containment keys win a collision, since the drain's own authorization
         decision must not be overwritable by a caller's extra fields.
+
+        *kind* is the queued entry's producer kind, for a producer whose prompt
+        is not the person's words, such as ``WORKFLOW_COMPLETION_KIND``. On the
+        run arm it writes the turn's row as an ``inject`` row rather than a
+        ``user`` row, as the drain does for the queued entry.
 
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
@@ -1081,7 +1087,7 @@ class _ChatSlot:
             if relay_meta:
                 _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
-            self.queue_append(prompt, meta=_meta)
+            self.queue_append(prompt, kind=kind, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
             # queue, and until the drain writes its transcript row the queue is the
             # prompt's only record -- so a restart inside the periodic flush
@@ -1096,11 +1102,17 @@ class _ChatSlot:
             # transcript rewrites.
             start_queue_persist(state, self)
             return False
-        # The run arm has no queue entry, so a cross-session sender stamp is
-        # applied directly to the user row it appends (``extra_meta`` is queue-only).
-        self.append(
-            "user", prompt, "msg msg-u", meta={"relay": dict(relay_meta)} if relay_meta else None
-        )
+        if kind:
+            self.append("inject", prompt, "msg msg-inject")
+        else:
+            # The run arm has no queue entry, so a cross-session sender stamp is
+            # applied directly to the user row it appends (``extra_meta`` is queue-only).
+            self.append(
+                "user",
+                prompt,
+                "msg msg-u",
+                meta={"relay": dict(relay_meta)} if relay_meta else None,
+            )
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
         self.task = task
         state._background_tasks.add(task)

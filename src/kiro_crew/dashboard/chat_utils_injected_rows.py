@@ -332,6 +332,24 @@ MCP_APP_MESSAGE_KIND = "mcp_app_message"
 #: break a user-message merge (folding it into a user turn would flip
 #: runner-authored text into user-authored, persisted history).
 AUTOMATION_NOTICE_KIND = "automation_notice"
+#: The prompt that asks the agent to answer a finished workflow run's request
+#: (``server_runtime.workflow_startup``). Gateway-authored, not the person's
+#: words: it drains as an ``inject`` row, and consecutive ones at the queue's
+#: head drain as one turn. Not a system-injection kind, because the sub-agent
+#: hold keeps it queued like the person's messages.
+WORKFLOW_COMPLETION_KIND = "workflow_completion"
+#: The instruction that closes every workflow-completion prompt, after the
+#: run's ``[Workflow `name` finished: status]`` header. Shared with the drain,
+#: which states it once when several completions drain as one turn.
+WORKFLOW_COMPLETION_INSTRUCTION = (
+    "The user is waiting on the answer to the request that prompted this workflow "
+    "— find that request earlier in this conversation and answer it directly. Your "
+    "final message is the only part of this turn the user is guaranteed to see, so "
+    "make it a standalone deliverable: lead with the answer, and keep run mechanics "
+    "(which agents ran, what was verified, what is still uncertain) to a short "
+    "closing note or a collapsed fold. If the workflow failed or came back "
+    "incomplete, say that plainly and state what is still unknown."
+)
 
 #: Provenance banner wrapped around every app-originated message. Structural
 #: classification is by the queue entry's ``kind`` tag (unforgeable, set at
@@ -553,7 +571,7 @@ def teardown_hold_active(state, slot) -> bool:
     return not _slot_has_pending_interaction(state, slot)
 
 
-def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
+def _dequeue_next_message(slot, merge_enabled: bool, *, coalesce_completions: bool = True) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one.
 
     A merge run stops at a system injection, at an attachment-bearing entry
@@ -564,13 +582,22 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     changes, so an app's queued send never folds into the user's own words, and
     where the stamped source channels change, so a turn admission refuses for one
     channel never carries another message with it; an entry that starts no run
-    pops alone.
+    pops alone. A run of workflow completions at the head drains as one turn
+    (:func:`_dequeue_workflow_completions`) unless *coalesce_completions* is
+    false, as it is when a card asked for one entry.
     """
+    if (
+        coalesce_completions
+        and slot._queue
+        and slot._queue[0].get("kind") == WORKFLOW_COMPLETION_KIND
+    ):
+        return _dequeue_workflow_completions(slot)
     if merge_enabled and len(slot._queue) > 1:
         to_merge: list[dict] = []
         for item in list(slot._queue):
             if (
                 is_system_injection_item(item)
+                or item.get("kind")
                 or carries_attachments(item)
                 # Its note speaks for one message; merged, it would vouch that
                 # messages never written to any pipe may already have run.
@@ -595,6 +622,29 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
             return f"[{len(to_merge)} queued messages merged]\n\n{merged}", to_merge
     item = slot.queue_pop(0)
     return item["content"], [item]
+
+
+def _dequeue_workflow_completions(slot) -> tuple:
+    """Pop the run of workflow completions at the queue's head as one turn.
+
+    Only the consecutive run is taken, so an entry queued between two
+    completions still runs between them. Each prompt is its run's header
+    followed by :data:`WORKFLOW_COMPLETION_INSTRUCTION`, so the merged prompt
+    lists the headers and states the instruction once.
+    """
+    run: list[dict] = []
+    for item in slot._queue:
+        if item.get("kind") != WORKFLOW_COMPLETION_KIND:
+            break
+        run.append(item)
+    del slot._queue[: len(run)]
+    if len(run) == 1:
+        return run[0]["content"], run
+    headers = [
+        item["content"].removesuffix(WORKFLOW_COMPLETION_INSTRUCTION).rstrip() for item in run
+    ]
+    merged = "\n".join(headers)
+    return f"[{len(run)} workflows finished]\n{merged}\n\n{WORKFLOW_COMPLETION_INSTRUCTION}", run
 
 
 def _dequeue_next_system_message(slot, *, system_only: bool = False) -> tuple:

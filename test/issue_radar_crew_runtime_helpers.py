@@ -84,12 +84,16 @@ class _FakeSlot:
         self.running = False
         self.prompts: list[str] = []
         self.runners: list[Any] = []
+        self.queue_metas: list[dict | None] = []
 
     def append(self, role: str, content: str, cls: str = "", **kw: Any) -> None:
         self.messages.append({"role": role, "content": content, "cls": cls})
 
-    def enqueue_or_run_prompt(self, prompt: str, run_chat_coro: Any, state: Any) -> bool:
+    def enqueue_or_run_prompt(
+        self, prompt: str, run_chat_coro: Any, state: Any, *, extra_meta: dict | None = None
+    ) -> bool:
         self.prompts.append(prompt)
+        self.queue_metas.append(extra_meta)
         self.runners.append(run_chat_coro)
         self.append("user", prompt)
         return not self.running

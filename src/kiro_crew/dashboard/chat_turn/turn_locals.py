@@ -94,6 +94,7 @@ class _ChatTurn:
     _commands_off: "bool"
     _recovery_echo_owed: "bool"
     _turn_actor: "str"
+    _person_paths_actor: "str"
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None"
@@ -357,6 +358,7 @@ class _ChatTurn:
         _commands_off: "bool",
         _recovery_echo_owed: "bool",
         _turn_actor: "str",
+        _person_paths_actor: "str",
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
         _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None",
@@ -391,6 +393,7 @@ class _ChatTurn:
         self._commands_off = _commands_off
         self._recovery_echo_owed = _recovery_echo_owed
         self._turn_actor = _turn_actor
+        self._person_paths_actor = _person_paths_actor
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed
         self._on_irreversibly_consumed = _on_irreversibly_consumed

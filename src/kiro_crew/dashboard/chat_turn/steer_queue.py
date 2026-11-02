@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_delivery import (
+    NON_INTERVENING_QUEUE_PRODUCERS,
+    PERSON_PATHS_ACTOR_META_KEY,
+    QUEUE_PRODUCER_META_KEY,
     STEER_STATE_CONSUMED,
     STEER_STATE_REQUEUED,
     attachment_meta,
@@ -26,7 +29,10 @@ from kiro_crew.dashboard.chat_utils import (
     is_synthetic_payload_item,
     is_system_injection_item,
 )
-from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.chat_utils_injected_rows import (
+    AUTOMATION_STEER_META,
+    WORKFLOW_COMPLETION_KIND,
+)
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 
 if TYPE_CHECKING:
@@ -490,8 +496,22 @@ def _queue_entry_is_orchestration(item: dict) -> bool:
     have their intervention silently ignored while the announced action dispatches
     anyway. A user message carries no enqueue tag, so it correctly counts as a
     user follow-up and aborts the pending recovery; real cron / sub-agent events
-    are tagged at their injection sites and stay excluded."""
-    return is_synthetic_payload_item(item) or is_system_injection_item(item)
+    are tagged at their injection sites and stay excluded.
+
+    Three machine producers that queue without a system kind are excluded too: a
+    workflow completion (``WORKFLOW_COMPLETION_KIND``), and an Issue Radar crew
+    wake or a heartbeat delivery (``QUEUE_PRODUCER_META_KEY``). A peer's
+    ``session_send`` and any other untagged entry still count as an
+    intervention."""
+    if is_synthetic_payload_item(item) or is_system_injection_item(item):
+        return True
+    if item.get("kind") == WORKFLOW_COMPLETION_KIND:
+        return True
+    meta = item.get("meta")
+    return (
+        isinstance(meta, dict)
+        and meta.get(QUEUE_PRODUCER_META_KEY) in NON_INTERVENING_QUEUE_PRODUCERS
+    )
 
 
 #: Which turn actor an enqueue-time queue ``kind`` names. The tag is stamped by
@@ -511,6 +531,8 @@ _QUEUE_KIND_ACTORS: dict[str, str] = {
     # A re-routed automation refusal is the monitor subsystem talking, so the
     # turn it rides is attributed to the autonudge actor, never the person.
     AUTOMATION_NOTICE_KIND: "autonudge",
+    # The gateway queues the prompt that answers a finished workflow run.
+    WORKFLOW_COMPLETION_KIND: "gateway",
 }
 
 
@@ -529,6 +551,33 @@ def _actor_for_queue_items(items: "list[dict]") -> str:
         stamped = _stamped_turn_actor(item)
         if isinstance(stamped, str) and stamped in crew_log_emit.ACTORS:
             return stamped
+    # A work-ledger wake that the turn never took comes back as an automation
+    # steer, which carries no actor stamp.
+    if any(isinstance((item.get("meta") or {}).get(AUTOMATION_STEER_META), dict) for item in items):
+        return "autonudge"
+    return ""
+
+
+def _person_paths_actor_for_queue_items(items: "list[dict]") -> str:
+    """``"user"`` when the consumed entries come from a producer whose turn keeps
+    the person-scoped paths, or ``""`` to read the turn's actor.
+
+    A workflow completion, an entry with a ``queueProducer`` mark and a requeued
+    work-ledger wake run as their own actors, and their turns take the
+    refusal-fallback retry, the per-turn ``model.route`` decision and the WakaTime
+    heartbeat as a ``user`` turn does. A recovery carries that choice from the
+    turn it retries in :data:`PERSON_PATHS_ACTOR_META_KEY`.
+    """
+    for item in items:
+        raw_meta = item.get("meta")
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
+        if (
+            item.get("kind") == WORKFLOW_COMPLETION_KIND
+            or meta.get(QUEUE_PRODUCER_META_KEY)
+            or isinstance(meta.get(AUTOMATION_STEER_META), dict)
+            or meta.get(PERSON_PATHS_ACTOR_META_KEY) == "user"
+        ):
+            return "user"
     return ""
 
 

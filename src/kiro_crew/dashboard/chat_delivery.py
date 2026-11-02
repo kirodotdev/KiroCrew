@@ -1206,6 +1206,26 @@ async def steer_into_running_turn(
 #: spelled in two places.
 TURN_ACTOR_META_KEY = "turnActor"
 
+#: Entry meta key that identifies a machine producer that queues without a
+#: ``kind``: an Issue Radar crew wake (``crew``), a heartbeat ``prompt:dashboard:``
+#: delivery (``heartbeat``) or a peer's ``session_send`` (``peer``). The recovery
+#: guards read it so that a crew or heartbeat entry does not count as the person
+#: intervening (``_queue_entry_is_orchestration``), and the drain reads it to keep
+#: the person-scoped paths of the turn (:data:`PERSON_PATHS_ACTOR_META_KEY`). It is
+#: separate from :data:`TURN_ACTOR_META_KEY` because a hub conductor's send also
+#: runs as actor ``crew`` and still counts as an intervention, and so does a peer's
+#: send. The restore strips the key with the other provenance keys, so a restored
+#: entry counts as an intervention.
+QUEUE_PRODUCER_META_KEY = "queueProducer"
+#: The :data:`QUEUE_PRODUCER_META_KEY` values whose entries do not cancel a
+#: pending recovery.
+NON_INTERVENING_QUEUE_PRODUCERS = frozenset(("crew", "heartbeat"))
+#: Recovery-entry meta key carrying the retried turn's person-paths actor (the
+#: ``_person_paths_actor`` of ``_run_chat``) when it differs from the turn's
+#: actor, so that the retry takes the same refusal fallback, ``model.route``
+#: decision and WakaTime heartbeat as the turn it retries.
+PERSON_PATHS_ACTOR_META_KEY = "personPathsActor"
+
 #: Entry meta key marking a queued payload as turn CONTENT: the drain hands it to
 #: the model as literal text and never reads its first word as a dashboard command.
 #: Stamped by the channel hand-off (``channel_handoff._queue_arm``, and the requeue

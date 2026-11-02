@@ -4334,7 +4334,10 @@ so absence clears it.
   queue front or dispatches unselected work. The running path leaves
   `queue_id` optional: a running-parent interrupt is a stop-and-preserve, and
   the `queue_id` there only promotes the matching card to the front, so a value
-  that matches no card is a no-op rather than a refusal.
+  that matches no card is a no-op rather than a refusal. On both paths a
+  restored card is marked chosen before it runs, so the drain counts the send
+  as the person's intervention; an idle start that does not happen removes the
+  mark again.
   This explicit action bypasses only the background-subagent user-message hold;
   an active stage, a stop in progress, or a relay archive still refuses it.
   Attached subagents keep running, and their later completion injections use the

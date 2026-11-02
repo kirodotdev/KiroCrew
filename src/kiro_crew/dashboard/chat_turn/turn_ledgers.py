@@ -7,7 +7,7 @@ import inspect
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.chat_delivery import attachment_meta
+from kiro_crew.dashboard.chat_delivery import PERSON_PATHS_ACTOR_META_KEY, attachment_meta
 from kiro_crew.dashboard.chat_utils import RecoveryPayload
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
@@ -181,6 +181,11 @@ def _queue_recovery(
             **_recovery_meta,
             TURN_ACTOR_META_KEY: _crew_log_actor,
             _RECOVERY_TURN_META_KEY: _recovery_turn_id,
+            **(
+                {PERSON_PATHS_ACTOR_META_KEY: turn._person_paths_actor}
+                if turn._person_paths_actor != _crew_log_actor
+                else {}
+            ),
         },
         on_consumed=_on_consumed if not turn._consumed_reported else None,
         on_irreversibly_consumed=(
@@ -300,10 +305,14 @@ def _wt_maybe_cadence(turn) -> None:
     coding calls yields one beat, giving WakaTime intra-turn timestamps to
     accrue duration without flooding its ~2-minute buckets.
     """
-    _crew_log_actor = turn._crew_log_actor
     _turn_provenance_restored = turn._turn_provenance_restored
     slot = turn.slot
-    if _crew_log_actor != "user" or _turn_provenance_restored or slot.is_restricted or slot._app:
+    if (
+        turn._person_paths_actor != "user"
+        or _turn_provenance_restored
+        or slot.is_restricted
+        or slot._app
+    ):
         return
     _wt_now = time.monotonic()
     if turn._wt_last_cadence == 0.0 or _wt_now - turn._wt_last_cadence >= CADENCE_MIN_INTERVAL_SECS:

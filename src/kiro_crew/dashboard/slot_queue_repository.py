@@ -154,7 +154,16 @@ def _is_durable_queue_entry(item: Any) -> bool:
     - an entry carrying a ``kind`` is an injection whose producer is gone: a
       cron notification, a subagent completion, a plan approval. Its content
       names an event, and a restart is not that event happening again.
+
+    A workflow completion (``WORKFLOW_COMPLETION_KIND``) is the exception: it
+    asks the agent to answer a request that the person is still waiting on, so
+    a restart hands it back. The writer saves no ``kind``, so the restore loads
+    it as a restored entry without the tag, with no more authority than any
+    restored prompt.
     """
+    # circular import: chat_utils_injected_rows imports dashboard.state, which imports this module.
+    from kiro_crew.dashboard.chat_utils_injected_rows import WORKFLOW_COMPLETION_KIND
+
     if not isinstance(item, dict):
         return False
     content = item.get("content")
@@ -164,7 +173,7 @@ def _is_durable_queue_entry(item: Any) -> bool:
         return False
     if item.get("payload"):
         return False
-    if item.get("kind"):
+    if item.get("kind") and item.get("kind") != WORKFLOW_COMPLETION_KIND:
         return False
     return True
 
@@ -399,7 +408,11 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
         return []
     # Local import: session_control reaches this module through state, so taking
     # the key at module level would close an import cycle.
-    from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
+    from kiro_crew.dashboard.chat_delivery import (
+        PERSON_PATHS_ACTOR_META_KEY,
+        QUEUE_PRODUCER_META_KEY,
+        TURN_ACTOR_META_KEY,
+    )
     from kiro_crew.dashboard.chat_utils_injected_rows import STEER_INTENT_META
     from kiro_crew.dashboard.session_control import (
         CHANNEL_RECIPIENT_META_KEY,
@@ -497,6 +510,13 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # sub-agent hold (``releases_past_subagent_hold``), a path that never
             # runs the drain's containment sweep. Restored, an act-now steer is
             # an ordinary card that waits for the user like every other one.
+            #
+            # The QUEUE PRODUCER mark goes too: it exempts the entry from
+            # counting as the person's intervention in a pending recovery, so
+            # an edited mark would let an announced action dispatch past a
+            # restored message. Without it the entry counts as an intervention.
+            # The PERSON PATHS actor goes with it, since a restored entry
+            # carries no actor for it to differ from.
             entry["meta"] = {
                 k: v
                 for k, v in meta.items()
@@ -507,6 +527,8 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                     SEND_ORIGIN_META_KEY,
                     CHANNEL_RECIPIENT_META_KEY,
                     STEER_INTENT_META,
+                    QUEUE_PRODUCER_META_KEY,
+                    PERSON_PATHS_ACTOR_META_KEY,
                 )
             }
         try:

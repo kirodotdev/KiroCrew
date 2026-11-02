@@ -395,7 +395,11 @@ def dispatch_crew_turn(state: Any, slot: Any, prompt: str) -> bool:
     session — so the cap covers all of them. A second copy of this call is how one
     of them ships uncapped again.
     """
-    return bool(slot.enqueue_or_run_prompt(prompt, _capped_run_chat, state))
+    from kiro_crew.dashboard.chat_delivery import QUEUE_PRODUCER_META_KEY, TURN_ACTOR_META_KEY
+
+    # A queued wake runs as the crew's turn, as an idle one does in `_capped_run_chat`.
+    queue_meta = {TURN_ACTOR_META_KEY: "crew", QUEUE_PRODUCER_META_KEY: "crew"}
+    return bool(slot.enqueue_or_run_prompt(prompt, _capped_run_chat, state, extra_meta=queue_meta))
 
 
 def _slot_key(crew: dict[str, Any]) -> str:

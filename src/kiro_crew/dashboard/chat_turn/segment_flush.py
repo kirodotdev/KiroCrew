@@ -1234,7 +1234,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                 )
                 if (
                     _prompt_depth == 0
-                    and turn._crew_log_actor == "user"
+                    and turn._person_paths_actor == "user"
                     and not slot._refusal_fallback_attempted
                     and _refusal_fallback_is_same_model(turn.client, _turn_refusal)
                 ):
@@ -1314,7 +1314,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             )
             if (
                 _prompt_depth == 0
-                and turn._crew_log_actor == "user"
+                and turn._person_paths_actor == "user"
                 and not slot._refusal_fallback_attempted
                 and _refusal_fallback_is_same_model(turn.client, _turn_refusal)
             ):

@@ -884,6 +884,17 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     )
 
 
+def _choose_restored_card(slot: _ChatSlot, queue_id: str) -> bool:
+    """Mark the restored card *queue_id* chosen; True when it was restored and newly marked."""
+    for item in getattr(slot, "_queue", None) or []:
+        if isinstance(item, dict) and item.get("id") == queue_id:
+            if item.get(RESTORED_QUEUE_KEY) and not item.get(RESTORED_SEND_CHOSEN_KEY):
+                item[RESTORED_SEND_CHOSEN_KEY] = True
+                return True
+            return False
+    return False
+
+
 def _unchoose_restored_card(slot: _ChatSlot, queue_id: str) -> None:
     """Undo a "run this next" mark on the restored card *queue_id*, if still queued."""
     for item in getattr(slot, "_queue", None) or []:
@@ -1053,12 +1064,23 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             )
             if denied is not None:
                 return denied
-            started = await _start_next_queued_turn(
-                state,
-                slot,
-                allow_user_during_subagents=True,
-                required_queue_id=queue_id,
-            )
+            # This click is the person sending the card, so a restored card is
+            # marked chosen as the interrupt path marks it: the drain's purge
+            # then counts it as their intervention.
+            chosen_restored = _choose_restored_card(slot, queue_id)
+            started = False
+            try:
+                started = await _start_next_queued_turn(
+                    state,
+                    slot,
+                    allow_user_during_subagents=True,
+                    required_queue_id=queue_id,
+                )
+            finally:
+                # A start that declines or raises leaves the card waiting, and a
+                # card the person did not get to run is not their intervention.
+                if chosen_restored and not started:
+                    _unchoose_restored_card(slot, queue_id)
         if not started:
             return web.json_response(
                 {

@@ -577,7 +577,7 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
         # misclassifying a gateway-restart replay as interactive.
         if (
             turn._wt_coded_this_turn
-            and turn._crew_log_actor == "user"
+            and turn._person_paths_actor == "user"
             and not _turn_provenance_restored
             and not slot.is_restricted
             and not slot._app
