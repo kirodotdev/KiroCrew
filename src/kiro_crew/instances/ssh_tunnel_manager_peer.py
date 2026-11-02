@@ -69,6 +69,26 @@ logger = logging.getLogger("kiro_crew.instances.ssh_tunnel_manager")
 _PEER_SIZE_REFUSALS = frozenset({"transfer_layer_b_too_large", "transfer_bundle_too_large"})
 #: Read size for streaming a serialised bundle up the tunnel.
 _UPLOAD_CHUNK_BYTES = 256 * 1024
+#: Methods ``proxy_request`` may redial once when the forward drops the
+#: connection before any response: none of them changes state on the peer.
+_REDIAL_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+#: Pause before that one redial, so it does not land in the same blip.
+_REDIAL_DELAY_SECS = 0.2
+
+
+def _dropped_before_response(exc: BaseException) -> bool:
+    """True when the forward took the connection and then lost it.
+
+    ``ServerDisconnectedError`` (closed before a byte) and a reset on an open
+    socket (``ClientOSError``) both mean the dial reached the forward. A
+    refused or unresolvable dial (``ClientConnectorError``, a ``ClientOSError``
+    subclass) means nothing is listening, and a second dial cannot help.
+    """
+    if isinstance(exc, aiohttp.ServerDisconnectedError):
+        return True
+    return isinstance(exc, aiohttp.ClientOSError) and not isinstance(
+        exc, aiohttp.ClientConnectorError
+    )
 
 
 async def _read_transfer_reply(resp: Any) -> Any:
@@ -555,6 +575,7 @@ async def proxy_request(
         sock_read=_PROXY_READ_IDLE_TIMEOUT,
     )
     reminted = False
+    redialled = False
     while True:
         try:
             headers = await self._peer_headers_for(instance_id, url, cookie_name, stamp)
@@ -578,6 +599,26 @@ async def proxy_request(
             )
         except Exception as e:  # timeout, connection refused, etc.
             await session.close()
+            # An SSM port-forward can accept the TCP connection and then drop
+            # the stream before the peer writes a byte: aiohttp reports that as
+            # ServerDisconnectedError on a brand-new connection, and the next
+            # dial over the same forward answers. A read-only method gets ONE
+            # fresh dial for that case; anything that can change state on the
+            # peer does not, because "no response" does not prove the peer
+            # never acted on it. A timeout is not redialled either: it already
+            # spent the connect or read budget.
+            if (
+                not redialled
+                and method.upper() in _REDIAL_SAFE_METHODS
+                and _dropped_before_response(e)
+            ):
+                redialled = True
+                logger.info(
+                    "proxy_request to %s dropped before a response; redialling once",
+                    instance_id,
+                )
+                await asyncio.sleep(_REDIAL_DELAY_SECS)
+                continue
             logger.info(
                 "proxy_request to %s failed before a response (%s)",
                 instance_id,
