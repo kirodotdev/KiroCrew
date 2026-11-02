@@ -933,11 +933,13 @@
           "pattern_many": "{{count}} motifs",
           "pattern_one": "{{count}} motif",
           "pattern_other": "{{count}} motifs",
-          "pending": "en attente",
           "read_namespace": "Lire le namespace {{name}}",
           "invalid_namespace_name": "Les noms de namespace servent de noms de dossier. Ils ne peuvent donc contenir que des lettres latines minuscules (a–z), des chiffres (0–9), des points, des traits d’union et des tirets bas, doivent commencer et finir par une lettre ou un chiffre et comporter de 2 à 64 caractères.",
           "invalid_namespace_name_char": "« {{char}} » ne peut pas être utilisé dans un nom de namespace. Utilise des minuscules a–z, 0–9, . -⁠ _",
-          "invalid_namespace_name_letter": "« {{char}} » ({{script}}, {{code}}) ne peut pas être utilisé dans un nom de namespace. Utilise des minuscules a–z, 0–9, . -⁠ _"
+          "invalid_namespace_name_letter": "« {{char}} » ({{script}}, {{code}}) ne peut pas être utilisé dans un nom de namespace. Utilise des minuscules a–z, 0–9, . -⁠ _",
+          "pending_count_one": "{{count}} en attente",
+          "pending_count_many": "{{count}} en attente",
+          "pending_count_other": "{{count}} en attente"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1091,7 +1093,6 @@
         },
         "reportView": {
           "blast_radius": "Portée de l'impact : {{scope}}",
-          "blocking": "bloquant",
           "changes_reviewed_many": "{{count}} changements revus",
           "changes_reviewed_one": "{{count}} changement revu",
           "changes_reviewed_other": "{{count}} changements revus",
@@ -1110,10 +1111,15 @@
           "open_the_pull_request": "Ouvrir la pull request",
           "share": "Partager",
           "sharing": "Partage…",
-          "should_fix": "à corriger",
           "step_problem": "Problème",
           "step_solution_fit": "Adéquation de la solution",
-          "step_why_it_matters": "Pourquoi c’est important"
+          "step_why_it_matters": "Pourquoi c’est important",
+          "blocking_count_one": "{{count}} bloquant",
+          "blocking_count_many": "{{count}} bloquants",
+          "blocking_count_other": "{{count}} bloquants",
+          "should_fix_count_one": "{{count}} à corriger",
+          "should_fix_count_many": "{{count}} à corriger",
+          "should_fix_count_other": "{{count}} à corriger"
         },
         "reviewChat": {
           "error_generic": "La session de suivi n'a pas pu être ouverte. Réessayez.",
@@ -1150,7 +1156,6 @@
           "delete_review_of": "Supprimer la revue de {{label}}",
           "delete_this_review": "Supprimer cette revue",
           "delete_this_review_2": "Supprimer cette revue ?",
-          "more": "de plus",
           "needs_review_count_many": "{{count}} à revoir",
           "needs_review_count_one": "{{count}} à revoir",
           "needs_review_count_other": "{{count}} à revoir",
@@ -1162,13 +1167,15 @@
           "review_of_with_more_other": "Revue de {{label}} et {{count}} de plus",
           "worth_a_glance_count_many": "{{count}} méritent un coup d’œil",
           "worth_a_glance_count_one": "{{count}} mérite un coup d’œil",
-          "worth_a_glance_count_other": "{{count}} méritent un coup d’œil"
+          "worth_a_glance_count_other": "{{count}} méritent un coup d’œil",
+          "more_count_one": "+{{count}} de plus",
+          "more_count_many": "+{{count}} de plus",
+          "more_count_other": "+{{count}} de plus"
         },
         "runDetail": {
           "cancelled_before_any_finished": "Elle a été annulée avant qu’aucune pull request ne se termine.",
           "finished": "terminée",
           "loading_report": "Chargement du rapport…",
-          "more": "de plus",
           "nothing_to_report": "Aucune pull request n’a terminé une revue, il n’y avait donc rien à rapporter.",
           "pull_request_many": "{{count}} pull requests",
           "pull_request_one": "{{count}} pull request",
@@ -1179,25 +1186,34 @@
           "skipped_inflight_other": "{{count}} pull requests ont été ignorées parce qu’une autre revue les avait déjà.",
           "started": "démarrée",
           "this_review_produced_no_report": "Cette revue n’a produit aucun rapport.",
-          "you_can_leave_this_page_a_notification_will_tell": "Tu peux quitter cette page — une notification te dira quand elle arrive."
+          "you_can_leave_this_page_a_notification_will_tell": "Tu peux quitter cette page — une notification te dira quand elle arrive.",
+          "more_count_one": "+{{count}} de plus",
+          "more_count_many": "+{{count}} de plus",
+          "more_count_other": "+{{count}} de plus"
         },
         "runList": {
           "new_review": "Nouvelle revue"
         },
         "runProgress": {
           "cancel_review": "Annuler la revue",
-          "cancelled": "annulée",
           "cancelling": "Annulation…",
           "elapsed_time": "Temps écoulé",
-          "failed": "en échec",
           "median_of_past_runs_of_this_size": "Médiane des exécutions passées de cette taille",
           "review_progress": "Progression de la revue",
-          "reviewed": "revues",
           "reviewers_busy": "{{busy}} relecteurs sur {{max}} occupés",
           "step": "· étape",
           "stops_queued_prs_one_already_being_reviewed_will": "Arrête les PR en file ; celle déjà en cours de revue se terminera.",
           "usually": "d’habitude ~",
-          "working": "Travaille"
+          "working": "Travaille",
+          "reviewed_of_one": "{{done}} / {{count}} revue",
+          "reviewed_of_many": "{{done}} / {{count}} revues",
+          "reviewed_of_other": "{{done}} / {{count}} revues",
+          "failed_count_one": "{{count}} en échec",
+          "failed_count_many": "{{count}} en échec",
+          "failed_count_other": "{{count}} en échec",
+          "cancelled_count_one": "{{count}} annulée",
+          "cancelled_count_many": "{{count}} annulées",
+          "cancelled_count_other": "{{count}} annulées"
         },
         "runStatusPill": {
           "cancelled": "Annulé",

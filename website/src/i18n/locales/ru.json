@@ -962,11 +962,14 @@
           "pattern_many": "{{count}} шаблонов",
           "pattern_one": "{{count}} шаблон",
           "pattern_other": "{{count}} шаблона",
-          "pending": "в ожидании",
           "read_namespace": "Прочитать namespace {{name}}",
           "invalid_namespace_name": "Имена namespace становятся именами папок, поэтому в них можно использовать только строчные латинские буквы (a–z), цифры (0–9), точки, дефисы и подчёркивания. Имя должно начинаться и заканчиваться буквой или цифрой и содержать от 2 до 64 символов.",
           "invalid_namespace_name_char": "«{{char}}» нельзя использовать в имени namespace. Используй строчные буквы a–z, 0–9, . -⁠ _",
-          "invalid_namespace_name_letter": "«{{char}}» ({{script}}, {{code}}) нельзя использовать в имени namespace. Используй строчные буквы a–z, 0–9, . -⁠ _"
+          "invalid_namespace_name_letter": "«{{char}}» ({{script}}, {{code}}) нельзя использовать в имени namespace. Используй строчные буквы a–z, 0–9, . -⁠ _",
+          "pending_count_one": "{{count}} в ожидании",
+          "pending_count_few": "{{count}} в ожидании",
+          "pending_count_many": "{{count}} в ожидании",
+          "pending_count_other": "{{count}} в ожидании"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1131,7 +1134,6 @@
         },
         "reportView": {
           "blast_radius": "Область влияния: {{scope}}",
-          "blocking": "блокирующих",
           "changes_reviewed_few": "{{count}} изменения отревьюено",
           "changes_reviewed_many": "{{count}} изменений отревьюено",
           "changes_reviewed_one": "{{count}} изменение отревьюено",
@@ -1152,10 +1154,17 @@
           "open_the_pull_request": "Открыть pull request",
           "share": "Поделиться",
           "sharing": "Делюсь…",
-          "should_fix": "стоит исправить",
           "step_problem": "Проблема",
           "step_solution_fit": "Соответствие решения",
-          "step_why_it_matters": "Почему это важно"
+          "step_why_it_matters": "Почему это важно",
+          "blocking_count_one": "{{count}} блокирующий",
+          "blocking_count_few": "{{count}} блокирующих",
+          "blocking_count_many": "{{count}} блокирующих",
+          "blocking_count_other": "{{count}} блокирующих",
+          "should_fix_count_one": "стоит исправить: {{count}}",
+          "should_fix_count_few": "стоит исправить: {{count}}",
+          "should_fix_count_many": "стоит исправить: {{count}}",
+          "should_fix_count_other": "стоит исправить: {{count}}"
         },
         "reviewChat": {
           "error_generic": "Не удалось открыть сеанс для уточнений. Попробуйте снова.",
@@ -1192,7 +1201,6 @@
           "delete_review_of": "Удалить ревью {{label}}",
           "delete_this_review": "Удалить это ревью",
           "delete_this_review_2": "Удалить это ревью?",
-          "more": "ещё",
           "needs_review_count_few": "{{count}} требуют ревью",
           "needs_review_count_many": "{{count}} требуют ревью",
           "needs_review_count_one": "{{count}} требует ревью",
@@ -1207,13 +1215,16 @@
           "worth_a_glance_count_few": "на {{count}} стоит взглянуть",
           "worth_a_glance_count_many": "на {{count}} стоит взглянуть",
           "worth_a_glance_count_one": "на {{count}} стоит взглянуть",
-          "worth_a_glance_count_other": "на {{count}} стоит взглянуть"
+          "worth_a_glance_count_other": "на {{count}} стоит взглянуть",
+          "more_count_one": "ещё +{{count}}",
+          "more_count_few": "ещё +{{count}}",
+          "more_count_many": "ещё +{{count}}",
+          "more_count_other": "ещё +{{count}}"
         },
         "runDetail": {
           "cancelled_before_any_finished": "Оно было отменено до того, как хоть один pull request успел закончиться.",
           "finished": "завершено",
           "loading_report": "Загружаю отчёт…",
-          "more": "ещё",
           "nothing_to_report": "Ни один pull request не завершил ревью, поэтому сообщать было нечего.",
           "pull_request_few": "{{count}} pull request’а",
           "pull_request_many": "{{count}} pull request’ов",
@@ -1226,25 +1237,38 @@
           "skipped_inflight_other": "{{count}} pull request’а пропущено, потому что они уже были в другом ревью.",
           "started": "начато",
           "this_review_produced_no_report": "Это ревью не создало отчёта.",
-          "you_can_leave_this_page_a_notification_will_tell": "Можешь уйти с этой страницы — уведомление сообщит, когда всё будет готово."
+          "you_can_leave_this_page_a_notification_will_tell": "Можешь уйти с этой страницы — уведомление сообщит, когда всё будет готово.",
+          "more_count_one": "ещё +{{count}}",
+          "more_count_few": "ещё +{{count}}",
+          "more_count_many": "ещё +{{count}}",
+          "more_count_other": "ещё +{{count}}"
         },
         "runList": {
           "new_review": "Новое ревью"
         },
         "runProgress": {
           "cancel_review": "Отменить ревью",
-          "cancelled": "отменено",
           "cancelling": "Отменяю…",
           "elapsed_time": "Прошло времени",
-          "failed": "с ошибкой",
           "median_of_past_runs_of_this_size": "Медиана прошлых запусков такого размера",
           "review_progress": "Прогресс ревью",
-          "reviewed": "отревьюено",
           "reviewers_busy": "{{busy}} из {{max}} ревьюеров заняты",
           "step": "· шаг",
           "stops_queued_prs_one_already_being_reviewed_will": "Останавливает PR в очереди; тот, что уже на ревью, будет доведён до конца.",
           "usually": "обычно ~",
-          "working": "Работаю"
+          "working": "Работаю",
+          "reviewed_of_one": "отревьюено: {{done}} / {{count}}",
+          "reviewed_of_few": "отревьюено: {{done}} / {{count}}",
+          "reviewed_of_many": "отревьюено: {{done}} / {{count}}",
+          "reviewed_of_other": "отревьюено: {{done}} / {{count}}",
+          "failed_count_one": "{{count}} с ошибкой",
+          "failed_count_few": "{{count}} с ошибками",
+          "failed_count_many": "{{count}} с ошибками",
+          "failed_count_other": "{{count}} с ошибками",
+          "cancelled_count_one": "отменено: {{count}}",
+          "cancelled_count_few": "отменено: {{count}}",
+          "cancelled_count_many": "отменено: {{count}}",
+          "cancelled_count_other": "отменено: {{count}}"
         },
         "runStatusPill": {
           "cancelled": "Отменено",

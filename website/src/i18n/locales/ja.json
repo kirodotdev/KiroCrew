@@ -875,11 +875,11 @@
           "new_namespace_2": "new-namespace",
           "new_namespace_name": "新しい名前空間の名前",
           "pattern_other": "{{count}} 件のパターン",
-          "pending": "保留中",
           "read_namespace": "名前空間 {{name}} を読む",
           "invalid_namespace_name": "名前空間の名前はフォルダー名になるため、使用できるのは小文字のラテン文字（a–z）、数字（0–9）、ピリオド、ハイフン、アンダースコアのみです。先頭と末尾は英字か数字にし、2 文字以上 64 文字以内にする必要があります。",
           "invalid_namespace_name_char": "「{{char}}」は名前空間の名前に使用できません。小文字の a–z、0–9、. -⁠ _ を使用してください。",
-          "invalid_namespace_name_letter": "「{{char}}」（{{script}}、{{code}}）は名前空間の名前に使用できません。小文字の a–z、0–9、. -⁠ _ を使用してください。"
+          "invalid_namespace_name_letter": "「{{char}}」（{{script}}、{{code}}）は名前空間の名前に使用できません。小文字の a–z、0–9、. -⁠ _ を使用してください。",
+          "pending_count_other": "{{count}} 件保留中"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1011,7 +1011,6 @@
         },
         "reportView": {
           "blast_radius": "影響範囲: {{scope}}",
-          "blocking": "ブロッカー",
           "changes_reviewed_other": "{{count}} 件の変更をレビュー済み",
           "clear": "クリア",
           "design_gate": "デザインゲート ·",
@@ -1024,12 +1023,13 @@
           "open_the_pull_request": "プルリクエストを開く",
           "share": "共有",
           "sharing": "共有しています…",
-          "should_fix": "修正推奨",
           "step_problem": "課題",
           "step_solution_fit": "解決策の妥当性",
           "step_why_it_matters": "なぜ重要か",
           "finding_dimension_in_file": "{{file}} の {{dimension}}",
-          "moved_to": "現在は{{band}}です。フィルターを変えるまで位置はそのままです。"
+          "moved_to": "現在は{{band}}です。フィルターを変えるまで位置はそのままです。",
+          "blocking_count_other": "ブロッカー {{count}} 件",
+          "should_fix_count_other": "修正推奨 {{count}} 件"
         },
         "reviewChat": {
           "error_generic": "フォローアップのセッションを開けませんでした。もう一度お試しください。",
@@ -1066,44 +1066,44 @@
           "delete_review_of": "{{label}} のレビューを削除",
           "delete_this_review": "このレビューを削除",
           "delete_this_review_2": "このレビューを削除しますか？",
-          "more": "他",
           "needs_review_count_other": "{{count}} 件が要レビュー",
           "pull_requests": "件のプルリクエスト",
           "review": "レビュー",
           "review_of": "{{label}} のレビュー",
           "review_of_with_more_other": "{{label}} ほか {{count}} 件のレビュー",
-          "worth_a_glance_count_other": "{{count}} 件が一見の価値あり"
+          "worth_a_glance_count_other": "{{count}} 件が一見の価値あり",
+          "more_count_other": "他 +{{count}} 件"
         },
         "runDetail": {
           "cancelled_before_any_finished": "どのプルリクエストも終わる前にキャンセルされました。",
           "finished": "完了",
           "loading_report": "レポートを読み込んでいます…",
-          "more": "他",
           "nothing_to_report": "レビューを完了したプルリクエストがないため、報告する内容はありませんでした。",
           "pull_request_other": "{{count}} 件のプルリクエスト",
           "report_appears_when_the_review_finishes": "レビューが終わり次第、レポートがここに表示されます。",
           "skipped_inflight_other": "{{count}} 件のプルリクエストは、別のレビューが既に処理していたためスキップされました。",
           "started": "開始",
           "this_review_produced_no_report": "このレビューはレポートを生成しませんでした。",
-          "you_can_leave_this_page_a_notification_will_tell": "このページを離れても構いません — 完了したら通知でお知らせします。"
+          "you_can_leave_this_page_a_notification_will_tell": "このページを離れても構いません — 完了したら通知でお知らせします。",
+          "more_count_other": "他 +{{count}} 件"
         },
         "runList": {
           "new_review": "新しいレビュー"
         },
         "runProgress": {
           "cancel_review": "レビューをキャンセル",
-          "cancelled": "キャンセル済み",
           "cancelling": "キャンセルしています…",
           "elapsed_time": "経過時間",
-          "failed": "失敗",
           "median_of_past_runs_of_this_size": "同程度の規模の過去の実行の中央値",
           "review_progress": "レビューの進捗",
-          "reviewed": "レビュー済み",
           "reviewers_busy": "{{max}} 人中 {{busy}} 人のレビュアーが稼働中",
           "step": "· ステップ",
           "stops_queued_prs_one_already_being_reviewed_will": "待機中のプルリクエストを停止します。既にレビュー中のものは完了します。",
           "usually": "通常 約",
-          "working": "処理中"
+          "working": "処理中",
+          "reviewed_of_other": "{{done}} / {{count}} レビュー済み",
+          "failed_count_other": "{{count}} 件失敗",
+          "cancelled_count_other": "{{count}} 件キャンセル済み"
         },
         "runStatusPill": {
           "cancelled": "キャンセル済み",

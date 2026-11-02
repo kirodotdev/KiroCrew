@@ -904,11 +904,12 @@
           "new_namespace_name": "नए namespace का नाम",
           "pattern_one": "{{count}} पैटर्न",
           "pattern_other": "{{count}} पैटर्न",
-          "pending": "बाकी",
           "read_namespace": "namespace {{name}} पढ़ो",
           "invalid_namespace_name": "namespace का नाम उसके फ़ोल्डर का नाम बनता है, इसलिए उसमें सिर्फ़ छोटे लैटिन अक्षर (a–z), अंक (0–9), बिंदु, हाइफ़न और अंडरस्कोर हो सकते हैं। नाम किसी अक्षर या अंक से शुरू और ख़त्म होना चाहिए और उसमें 2 से 64 वर्ण होने चाहिए।",
           "invalid_namespace_name_char": "“{{char}}” namespace के नाम में इस्तेमाल नहीं किया जा सकता। छोटे अक्षर a–z, 0–9, . -⁠ _ इस्तेमाल करो।",
-          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) namespace के नाम में इस्तेमाल नहीं किया जा सकता। छोटे अक्षर a–z, 0–9, . -⁠ _ इस्तेमाल करो।"
+          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) namespace के नाम में इस्तेमाल नहीं किया जा सकता। छोटे अक्षर a–z, 0–9, . -⁠ _ इस्तेमाल करो।",
+          "pending_count_one": "{{count}} बाकी",
+          "pending_count_other": "{{count}} बाकी"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1051,7 +1052,6 @@
         },
         "reportView": {
           "blast_radius": "प्रभाव क्षेत्र: {{scope}}",
-          "blocking": "अवरोधक",
           "changes_reviewed_one": "{{count}} बदलाव समीक्षित",
           "changes_reviewed_other": "{{count}} बदलाव समीक्षित",
           "clear": "साफ़ करो",
@@ -1068,10 +1068,13 @@
           "open_the_pull_request": "pull request खोलो",
           "share": "साझा करो",
           "sharing": "साझा हो रहा है…",
-          "should_fix": "ठीक करना चाहिए",
           "step_problem": "समस्या",
           "step_solution_fit": "समाधान का मेल",
-          "step_why_it_matters": "यह क्यों मायने रखता है"
+          "step_why_it_matters": "यह क्यों मायने रखता है",
+          "blocking_count_one": "{{count}} अवरोधक",
+          "blocking_count_other": "{{count}} अवरोधक",
+          "should_fix_count_one": "{{count}} ठीक करना चाहिए",
+          "should_fix_count_other": "{{count}} ठीक करना चाहिए"
         },
         "reviewChat": {
           "error_generic": "फ़ॉलो-अप सेशन नहीं खोला जा सका। पुनः प्रयास करें।",
@@ -1108,7 +1111,6 @@
           "delete_review_of": "{{label}} की समीक्षा मिटाओ",
           "delete_this_review": "यह समीक्षा मिटाओ",
           "delete_this_review_2": "यह समीक्षा मिटा दें?",
-          "more": "और",
           "needs_review_count_one": "{{count}} को समीक्षा चाहिए",
           "needs_review_count_other": "{{count}} को समीक्षा चाहिए",
           "pull_requests": "pull request",
@@ -1117,13 +1119,14 @@
           "review_of_with_more_one": "{{label}} और {{count}} और की समीक्षा",
           "review_of_with_more_other": "{{label}} और {{count}} और की समीक्षा",
           "worth_a_glance_count_one": "{{count}} पर नज़र डालने लायक",
-          "worth_a_glance_count_other": "{{count}} पर नज़र डालने लायक"
+          "worth_a_glance_count_other": "{{count}} पर नज़र डालने लायक",
+          "more_count_one": "+{{count}} और",
+          "more_count_other": "+{{count}} और"
         },
         "runDetail": {
           "cancelled_before_any_finished": "किसी भी pull request के पूरा होने से पहले उसे रद्द कर दिया गया।",
           "finished": "खत्म हुई",
           "loading_report": "रिपोर्ट लोड हो रही है…",
-          "more": "और",
           "nothing_to_report": "किसी pull request की समीक्षा पूरी नहीं हुई, इसलिए बताने को कुछ नहीं था।",
           "pull_request_one": "{{count}} pull request",
           "pull_request_other": "{{count}} pull request",
@@ -1132,25 +1135,30 @@
           "skipped_inflight_other": "{{count}} pull request छोड़े गए क्योंकि दूसरी समीक्षा उन्हें पहले ही ले चुकी थी।",
           "started": "शुरू हुई",
           "this_review_produced_no_report": "इस समीक्षा ने कोई रिपोर्ट नहीं बनाई।",
-          "you_can_leave_this_page_a_notification_will_tell": "तुम यह पेज छोड़ सकते हो — आने पर सूचना बता देगी।"
+          "you_can_leave_this_page_a_notification_will_tell": "तुम यह पेज छोड़ सकते हो — आने पर सूचना बता देगी।",
+          "more_count_one": "+{{count}} और",
+          "more_count_other": "+{{count}} और"
         },
         "runList": {
           "new_review": "नई समीक्षा"
         },
         "runProgress": {
           "cancel_review": "समीक्षा रद्द करो",
-          "cancelled": "रद्द",
           "cancelling": "रद्द हो रही है…",
           "elapsed_time": "बीता समय",
-          "failed": "विफल",
           "median_of_past_runs_of_this_size": "इस आकार के पिछले रनों का मध्यमान",
           "review_progress": "समीक्षा की प्रगति",
-          "reviewed": "समीक्षित",
           "reviewers_busy": "{{max}} में से {{busy}} समीक्षक व्यस्त",
           "step": "· चरण",
           "stops_queued_prs_one_already_being_reviewed_will": "कतार में लगे PR रुक जाएँगे; जिसकी समीक्षा चल रही है वह पूरी होगी।",
           "usually": "आम तौर पर ~",
-          "working": "काम चल रहा है"
+          "working": "काम चल रहा है",
+          "reviewed_of_one": "{{done}} / {{count}} समीक्षित",
+          "reviewed_of_other": "{{done}} / {{count}} समीक्षित",
+          "failed_count_one": "{{count}} विफल",
+          "failed_count_other": "{{count}} विफल",
+          "cancelled_count_one": "{{count}} रद्द",
+          "cancelled_count_other": "{{count}} रद्द"
         },
         "runStatusPill": {
           "cancelled": "रद्द",

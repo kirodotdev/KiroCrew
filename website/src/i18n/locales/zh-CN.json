@@ -875,11 +875,11 @@
           "new_namespace_2": "new-namespace",
           "new_namespace_name": "新 namespace 的名称",
           "pattern_other": "{{count}} 条模式",
-          "pending": "待处理",
           "read_namespace": "查看 namespace {{name}}",
           "invalid_namespace_name": "namespace 名称会用作文件夹名称，因此只能包含小写拉丁字母（a–z）、数字（0–9）、点、短横线或下划线，必须以字母或数字开头和结尾，长度为 2 到 64 个字符。",
           "invalid_namespace_name_char": "namespace 名称中不能使用“{{char}}”。只能使用小写 a–z、0–9、. -⁠ _。",
-          "invalid_namespace_name_letter": "namespace 名称中不能使用“{{char}}”（{{script}}，{{code}}）。只能使用小写 a–z、0–9、. -⁠ _。"
+          "invalid_namespace_name_letter": "namespace 名称中不能使用“{{char}}”（{{script}}，{{code}}）。只能使用小写 a–z、0–9、. -⁠ _。",
+          "pending_count_other": "{{count}} 个待处理"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1011,7 +1011,6 @@
         },
         "reportView": {
           "blast_radius": "影响范围：{{scope}}",
-          "blocking": "阻塞项",
           "changes_reviewed_other": "已评审 {{count}} 处改动",
           "clear": "清除",
           "design_gate": "设计闸门 ·",
@@ -1026,10 +1025,11 @@
           "open_the_pull_request": "打开这个 pull request",
           "share": "共享",
           "sharing": "正在共享……",
-          "should_fix": "建议修复",
           "step_problem": "问题",
           "step_solution_fit": "方案契合度",
-          "step_why_it_matters": "为什么重要"
+          "step_why_it_matters": "为什么重要",
+          "blocking_count_other": "{{count}} 个阻塞项",
+          "should_fix_count_other": "{{count}} 个建议修复"
         },
         "reviewChat": {
           "error_generic": "无法打开追问会话。请重试。",
@@ -1066,44 +1066,44 @@
           "delete_review_of": "删除 {{label}} 的评审",
           "delete_this_review": "删除这次评审",
           "delete_this_review_2": "删除这次评审？",
-          "more": "个",
           "needs_review_count_other": "{{count}} 项需要评审",
           "pull_requests": "pull request",
           "review": "评审",
           "review_of": "{{label}} 的评审",
           "review_of_with_more_other": "{{label}} 及另外 {{count}} 个的评审",
-          "worth_a_glance_count_other": "{{count}} 项值得一看"
+          "worth_a_glance_count_other": "{{count}} 项值得一看",
+          "more_count_other": "另外 +{{count}} 个"
         },
         "runDetail": {
           "cancelled_before_any_finished": "它在任何 pull request 完成之前就被取消了。",
           "finished": "完成于",
           "loading_report": "正在加载报告……",
-          "more": "个",
           "nothing_to_report": "没有任何 pull request 完成评审，所以没有可报告的内容。",
           "pull_request_other": "{{count}} 个 pull request",
           "report_appears_when_the_review_finishes": "评审一结束，报告就会出现在这里。",
           "skipped_inflight_other": "有 {{count}} 个 pull request 被跳过了，因为另一次评审已经在处理它们。",
           "started": "开始于",
           "this_review_produced_no_report": "这次评审没有生成报告。",
-          "you_can_leave_this_page_a_notification_will_tell": "你可以离开这个页面——完成时会有通知告诉你。"
+          "you_can_leave_this_page_a_notification_will_tell": "你可以离开这个页面——完成时会有通知告诉你。",
+          "more_count_other": "另外 +{{count}} 个"
         },
         "runList": {
           "new_review": "新建评审"
         },
         "runProgress": {
           "cancel_review": "取消评审",
-          "cancelled": "已取消",
           "cancelling": "正在取消……",
           "elapsed_time": "已用时间",
-          "failed": "失败",
           "median_of_past_runs_of_this_size": "过往同等规模运行的中位数",
           "review_progress": "评审进度",
-          "reviewed": "已评审",
           "reviewers_busy": "{{max}} 个评审器中有 {{busy}} 个在忙",
           "step": "· 第",
           "stops_queued_prs_one_already_being_reviewed_will": "会停下排队的 PR；已经在评审中的那个会跑完。",
           "usually": "通常约",
-          "working": "工作中"
+          "working": "工作中",
+          "reviewed_of_other": "已评审 {{done}} / {{count}}",
+          "failed_count_other": "{{count}} 个失败",
+          "cancelled_count_other": "{{count}} 个已取消"
         },
         "runStatusPill": {
           "cancelled": "已取消",

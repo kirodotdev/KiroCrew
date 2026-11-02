@@ -933,11 +933,13 @@
           "pattern_many": "{{count}} padrões",
           "pattern_one": "{{count}} padrão",
           "pattern_other": "{{count}} padrões",
-          "pending": "pendentes",
           "read_namespace": "Ler o namespace {{name}}",
           "invalid_namespace_name": "Os nomes dos namespaces viram nomes de pasta, então só podem conter letras latinas minúsculas (a–z), dígitos (0–9), pontos, hifens e sublinhados, precisam começar e terminar com uma letra ou um dígito e ter de 2 a 64 caracteres.",
           "invalid_namespace_name_char": "“{{char}}” não pode ser usado no nome de um namespace. Use letras minúsculas a–z, 0–9, . -⁠ _",
-          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) não pode ser usado no nome de um namespace. Use letras minúsculas a–z, 0–9, . -⁠ _"
+          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) não pode ser usado no nome de um namespace. Use letras minúsculas a–z, 0–9, . -⁠ _",
+          "pending_count_one": "{{count}} pendente",
+          "pending_count_many": "{{count}} pendentes",
+          "pending_count_other": "{{count}} pendentes"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1091,7 +1093,6 @@
         },
         "reportView": {
           "blast_radius": "Alcance do impacto: {{scope}}",
-          "blocking": "bloqueante",
           "changes_reviewed_many": "{{count}} mudanças revisadas",
           "changes_reviewed_one": "{{count}} mudança revisada",
           "changes_reviewed_other": "{{count}} mudanças revisadas",
@@ -1110,10 +1111,15 @@
           "open_the_pull_request": "Abrir a pull request",
           "share": "Compartilhar",
           "sharing": "Compartilhando…",
-          "should_fix": "deve ser corrigido",
           "step_problem": "Problema",
           "step_solution_fit": "Adequação da solução",
-          "step_why_it_matters": "Por que isso importa"
+          "step_why_it_matters": "Por que isso importa",
+          "blocking_count_one": "{{count}} bloqueante",
+          "blocking_count_many": "{{count}} bloqueantes",
+          "blocking_count_other": "{{count}} bloqueantes",
+          "should_fix_count_one": "{{count}} deve ser corrigido",
+          "should_fix_count_many": "{{count}} devem ser corrigidos",
+          "should_fix_count_other": "{{count}} devem ser corrigidos"
         },
         "reviewChat": {
           "error_generic": "Não foi possível abrir a sessão de acompanhamento. Tente novamente.",
@@ -1150,7 +1156,6 @@
           "delete_review_of": "Excluir a revisão de {{label}}",
           "delete_this_review": "Excluir esta revisão",
           "delete_this_review_2": "Excluir esta revisão?",
-          "more": "mais",
           "needs_review_count_many": "{{count}} precisam de revisão",
           "needs_review_count_one": "{{count}} precisa de revisão",
           "needs_review_count_other": "{{count}} precisam de revisão",
@@ -1162,13 +1167,15 @@
           "review_of_with_more_other": "Revisão de {{label}} e mais {{count}}",
           "worth_a_glance_count_many": "{{count}} valem uma olhada",
           "worth_a_glance_count_one": "{{count}} vale uma olhada",
-          "worth_a_glance_count_other": "{{count}} valem uma olhada"
+          "worth_a_glance_count_other": "{{count}} valem uma olhada",
+          "more_count_one": "+{{count}} mais",
+          "more_count_many": "+{{count}} mais",
+          "more_count_other": "+{{count}} mais"
         },
         "runDetail": {
           "cancelled_before_any_finished": "Ela foi cancelada antes de qualquer pull request terminar.",
           "finished": "terminou",
           "loading_report": "Carregando o relatório…",
-          "more": "mais",
           "nothing_to_report": "Nenhuma pull request completou uma revisão, então não havia nada a relatar.",
           "pull_request_many": "{{count}} pull requests",
           "pull_request_one": "{{count}} pull request",
@@ -1179,25 +1186,34 @@
           "skipped_inflight_other": "{{count}} pull requests foram ignoradas porque outra revisão já as tinha.",
           "started": "começou",
           "this_review_produced_no_report": "Esta revisão não gerou nenhum relatório.",
-          "you_can_leave_this_page_a_notification_will_tell": "Você pode sair desta página — uma notificação vai avisar quando ela chegar."
+          "you_can_leave_this_page_a_notification_will_tell": "Você pode sair desta página — uma notificação vai avisar quando ela chegar.",
+          "more_count_one": "+{{count}} mais",
+          "more_count_many": "+{{count}} mais",
+          "more_count_other": "+{{count}} mais"
         },
         "runList": {
           "new_review": "Nova revisão"
         },
         "runProgress": {
           "cancel_review": "Cancelar a revisão",
-          "cancelled": "cancelada",
           "cancelling": "Cancelando…",
           "elapsed_time": "Tempo decorrido",
-          "failed": "falharam",
           "median_of_past_runs_of_this_size": "Mediana das execuções anteriores deste tamanho",
           "review_progress": "Progresso da revisão",
-          "reviewed": "revisadas",
           "reviewers_busy": "{{busy}} de {{max}} revisores ocupados",
           "step": "· passo",
           "stops_queued_prs_one_already_being_reviewed_will": "Interrompe as PRs na fila; a que já está sendo revisada vai terminar.",
           "usually": "normalmente ~",
-          "working": "Trabalhando"
+          "working": "Trabalhando",
+          "reviewed_of_one": "{{done}} / {{count}} revisada",
+          "reviewed_of_many": "{{done}} / {{count}} revisadas",
+          "reviewed_of_other": "{{done}} / {{count}} revisadas",
+          "failed_count_one": "{{count}} falhou",
+          "failed_count_many": "{{count}} falharam",
+          "failed_count_other": "{{count}} falharam",
+          "cancelled_count_one": "{{count}} cancelada",
+          "cancelled_count_many": "{{count}} canceladas",
+          "cancelled_count_other": "{{count}} canceladas"
         },
         "runStatusPill": {
           "cancelled": "Cancelado",

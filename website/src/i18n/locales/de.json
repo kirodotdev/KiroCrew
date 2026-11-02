@@ -904,11 +904,12 @@
           "new_namespace_name": "Name des neuen Namespace",
           "pattern_one": "{{count}} Muster",
           "pattern_other": "{{count}} Muster",
-          "pending": "ausstehend",
           "read_namespace": "Namespace {{name}} lesen",
           "invalid_namespace_name": "Namespace-Namen werden zu Ordnernamen und dürfen daher nur Kleinbuchstaben des lateinischen Alphabets (a–z), Ziffern (0–9), Punkte, Bindestriche und Unterstriche enthalten, müssen mit einem Buchstaben oder einer Ziffer beginnen und enden und 2 bis 64 Zeichen lang sein.",
           "invalid_namespace_name_char": "„{{char}}“ kann in einem Namespace-Namen nicht verwendet werden. Nutze Kleinbuchstaben a–z, 0–9, . -⁠ _",
-          "invalid_namespace_name_letter": "„{{char}}“ ({{script}}, {{code}}) kann in einem Namespace-Namen nicht verwendet werden. Nutze Kleinbuchstaben a–z, 0–9, . -⁠ _"
+          "invalid_namespace_name_letter": "„{{char}}“ ({{script}}, {{code}}) kann in einem Namespace-Namen nicht verwendet werden. Nutze Kleinbuchstaben a–z, 0–9, . -⁠ _",
+          "pending_count_one": "{{count}} ausstehend",
+          "pending_count_other": "{{count}} ausstehend"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1051,7 +1052,6 @@
         },
         "reportView": {
           "blast_radius": "Auswirkungsbereich: {{scope}}",
-          "blocking": "blockierend",
           "changes_reviewed_one": "{{count}} Änderung reviewt",
           "changes_reviewed_other": "{{count}} Änderungen reviewt",
           "clear": "Zurücksetzen",
@@ -1068,10 +1068,13 @@
           "open_the_pull_request": "Den Pull-Request öffnen",
           "share": "Teilen",
           "sharing": "Wird geteilt…",
-          "should_fix": "sollte behoben werden",
           "step_problem": "Problem",
           "step_solution_fit": "Passung der Lösung",
-          "step_why_it_matters": "Warum das wichtig ist"
+          "step_why_it_matters": "Warum das wichtig ist",
+          "blocking_count_one": "{{count}} blockierend",
+          "blocking_count_other": "{{count}} blockierend",
+          "should_fix_count_one": "{{count}} sollte behoben werden",
+          "should_fix_count_other": "{{count}} sollten behoben werden"
         },
         "reviewChat": {
           "error_generic": "Die Folgesitzung konnte nicht geöffnet werden. Versuche es erneut.",
@@ -1108,7 +1111,6 @@
           "delete_review_of": "Review von {{label}} löschen",
           "delete_this_review": "Dieses Review löschen",
           "delete_this_review_2": "Dieses Review löschen?",
-          "more": "weitere",
           "needs_review_count_one": "{{count}} braucht ein Review",
           "needs_review_count_other": "{{count}} brauchen ein Review",
           "pull_requests": "Pull-Requests",
@@ -1117,13 +1119,14 @@
           "review_of_with_more_one": "Review von {{label}} und {{count}} weiteren",
           "review_of_with_more_other": "Review von {{label}} und {{count}} weiteren",
           "worth_a_glance_count_one": "{{count}} lohnt einen Blick",
-          "worth_a_glance_count_other": "{{count}} lohnen einen Blick"
+          "worth_a_glance_count_other": "{{count}} lohnen einen Blick",
+          "more_count_one": "+{{count}} weiterer",
+          "more_count_other": "+{{count}} weitere"
         },
         "runDetail": {
           "cancelled_before_any_finished": "Es wurde abgebrochen, bevor ein Pull-Request fertig war.",
           "finished": "fertig",
           "loading_report": "Bericht wird geladen…",
-          "more": "weitere",
           "nothing_to_report": "Kein Pull-Request hat ein Review abgeschlossen, daher gab es nichts zu berichten.",
           "pull_request_one": "{{count}} Pull-Request",
           "pull_request_other": "{{count}} Pull-Requests",
@@ -1132,25 +1135,30 @@
           "skipped_inflight_other": "{{count}} Pull-Requests wurden übersprungen, weil ein anderes Review sie schon hatte.",
           "started": "gestartet",
           "this_review_produced_no_report": "Dieses Review hat keinen Bericht erzeugt.",
-          "you_can_leave_this_page_a_notification_will_tell": "Du kannst diese Seite verlassen — eine Benachrichtigung sagt dir, wenn es eintrifft."
+          "you_can_leave_this_page_a_notification_will_tell": "Du kannst diese Seite verlassen — eine Benachrichtigung sagt dir, wenn es eintrifft.",
+          "more_count_one": "+{{count}} weiterer",
+          "more_count_other": "+{{count}} weitere"
         },
         "runList": {
           "new_review": "Neues Review"
         },
         "runProgress": {
           "cancel_review": "Review abbrechen",
-          "cancelled": "abgebrochen",
           "cancelling": "Wird abgebrochen…",
           "elapsed_time": "Vergangene Zeit",
-          "failed": "fehlgeschlagen",
           "median_of_past_runs_of_this_size": "Median früherer Läufe dieser Größe",
           "review_progress": "Review-Fortschritt",
-          "reviewed": "reviewt",
           "reviewers_busy": "{{busy}} von {{max}} Reviewern beschäftigt",
           "step": "· Schritt",
           "stops_queued_prs_one_already_being_reviewed_will": "Stoppt wartende PRs; ein bereits laufendes Review wird fertig.",
           "usually": "meist ~",
-          "working": "Arbeitet"
+          "working": "Arbeitet",
+          "reviewed_of_one": "{{done}} / {{count}} reviewt",
+          "reviewed_of_other": "{{done}} / {{count}} reviewt",
+          "failed_count_one": "{{count}} fehlgeschlagen",
+          "failed_count_other": "{{count}} fehlgeschlagen",
+          "cancelled_count_one": "{{count}} abgebrochen",
+          "cancelled_count_other": "{{count}} abgebrochen"
         },
         "runStatusPill": {
           "cancelled": "Abgebrochen",

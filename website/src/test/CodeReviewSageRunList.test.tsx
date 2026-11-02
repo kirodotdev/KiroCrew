@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import type { Run } from '../apps/code-review-sage/lib/types'
 
 import RunList from '../apps/code-review-sage/components/RunList'
@@ -62,6 +64,27 @@ describe('RunList / RunCard', () => {
     )
     expect(screen.getByText('acme/widgets#7')).toBeInTheDocument()
     expect(screen.getByText('+1 more')).toBeInTheDocument()
+  })
+
+  it('counts the extra pull requests in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      render(
+        <RunList
+          runs={[makeRun({
+            repo: undefined,
+            changes: ['https://github.com/acme/widgets/pull/7', 'https://github.com/acme/widgets/pull/8'],
+          })]}
+          loading={false}
+          selectedRunId={null}
+          onSelect={noop}
+          onNewReview={noop}
+        />,
+      )
+      expect(screen.getByText('+1 weiterer')).toBeInTheDocument()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('marks the selected card and fires onSelect with the run id', () => {
@@ -137,6 +160,25 @@ describe('RunList / RunCard', () => {
 })
 
 describe('RunProgress', () => {
+  it('states the review tally in the interface language', async () => {
+    const run = makeRun({
+      status: 'running',
+      finished_at: undefined,
+      changes: ['https://github.com/acme/widgets/pull/1', 'https://github.com/acme/widgets/pull/2', 'https://github.com/acme/widgets/pull/3'],
+      change_ids: ['c1', 'c2', 'c3'],
+      progress: { c1: { phase: 'done' }, c2: { phase: 'failed' }, c3: { phase: 'cancelled' } },
+    })
+    await i18next.changeLanguage('de')
+    try {
+      render(<RunProgress run={run} />)
+      expect(screen.getByText(/^1 \/ 3 reviewt/)).toBeInTheDocument()
+      expect(screen.getByText('· 1 fehlgeschlagen')).toBeInTheDocument()
+      expect(screen.getByText('· 1 abgebrochen')).toBeInTheDocument()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
   it('computes the run-level progress bar from terminal-phase changes', () => {
     const run = makeRun({
       status: 'running',

@@ -875,11 +875,11 @@
           "new_namespace_2": "new-namespace",
           "new_namespace_name": "새 네임스페이스 이름",
           "pattern_other": "패턴 {{count}}개",
-          "pending": "보류 중",
           "read_namespace": "네임스페이스 {{name}} 읽기",
           "invalid_namespace_name": "네임스페이스 이름은 폴더 이름이 되므로 소문자 라틴 문자(a–z), 숫자(0–9), 마침표, 하이픈, 밑줄만 사용할 수 있습니다. 이름은 문자나 숫자로 시작하고 끝나야 하며 2자 이상 64자 이하여야 합니다.",
           "invalid_namespace_name_char": "‘{{char}}’은(는) 네임스페이스 이름에 사용할 수 없습니다. 소문자 a–z, 0–9, . -⁠ _ 문자만 사용하세요.",
-          "invalid_namespace_name_letter": "‘{{char}}’({{script}}, {{code}})은(는) 네임스페이스 이름에 사용할 수 없습니다. 소문자 a–z, 0–9, . -⁠ _ 문자만 사용하세요."
+          "invalid_namespace_name_letter": "‘{{char}}’({{script}}, {{code}})은(는) 네임스페이스 이름에 사용할 수 없습니다. 소문자 a–z, 0–9, . -⁠ _ 문자만 사용하세요.",
+          "pending_count_other": "{{count}}개 보류 중"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1011,7 +1011,6 @@
         },
         "reportView": {
           "blast_radius": "영향 범위: {{scope}}",
-          "blocking": "차단",
           "changes_reviewed_other": "변경 {{count}}건 리뷰됨",
           "clear": "지우기",
           "design_gate": "설계 게이트 ·",
@@ -1026,10 +1025,11 @@
           "open_the_pull_request": "풀 리퀘스트 열기",
           "share": "공유",
           "sharing": "공유 중…",
-          "should_fix": "수정 권장",
           "step_problem": "문제",
           "step_solution_fit": "해결책 적합성",
-          "step_why_it_matters": "왜 중요한가"
+          "step_why_it_matters": "왜 중요한가",
+          "blocking_count_other": "차단 {{count}}개",
+          "should_fix_count_other": "수정 권장 {{count}}개"
         },
         "reviewChat": {
           "error_generic": "후속 세션을 열지 못했습니다. 다시 시도하세요.",
@@ -1066,44 +1066,44 @@
           "delete_review_of": "{{label}}의 리뷰 삭제",
           "delete_this_review": "이 리뷰 삭제",
           "delete_this_review_2": "이 리뷰를 삭제하시겠습니까?",
-          "more": "외",
           "needs_review_count_other": "{{count}}건 리뷰 필요",
           "pull_requests": "개 풀 리퀘스트",
           "review": "리뷰",
           "review_of": "{{label}}의 리뷰",
           "review_of_with_more_other": "{{label}} 외 {{count}}건의 리뷰",
-          "worth_a_glance_count_other": "{{count}}건 살펴볼 만함"
+          "worth_a_glance_count_other": "{{count}}건 살펴볼 만함",
+          "more_count_other": "외 +{{count}}개"
         },
         "runDetail": {
           "cancelled_before_any_finished": "어떤 풀 리퀘스트도 끝나기 전에 취소되었습니다.",
           "finished": "완료",
           "loading_report": "보고서를 불러오고 있습니다…",
-          "more": "외",
           "nothing_to_report": "리뷰를 완료한 풀 리퀘스트가 없어 보고할 내용이 없었습니다.",
           "pull_request_other": "풀 리퀘스트 {{count}}개",
           "report_appears_when_the_review_finishes": "리뷰가 끝나는 대로 보고서가 여기에 표시됩니다.",
           "skipped_inflight_other": "다른 리뷰가 이미 처리하고 있어 풀 리퀘스트 {{count}}개는 건너뛰었습니다.",
           "started": "시작",
           "this_review_produced_no_report": "이 리뷰는 보고서를 생성하지 않았습니다.",
-          "you_can_leave_this_page_a_notification_will_tell": "이 페이지를 떠나도 됩니다 — 완료되면 알림으로 알려 드립니다."
+          "you_can_leave_this_page_a_notification_will_tell": "이 페이지를 떠나도 됩니다 — 완료되면 알림으로 알려 드립니다.",
+          "more_count_other": "외 +{{count}}개"
         },
         "runList": {
           "new_review": "새 리뷰"
         },
         "runProgress": {
           "cancel_review": "리뷰 취소",
-          "cancelled": "취소됨",
           "cancelling": "취소 중…",
           "elapsed_time": "경과 시간",
-          "failed": "실패",
           "median_of_past_runs_of_this_size": "비슷한 규모의 과거 실행 중앙값",
           "review_progress": "리뷰 진행 상황",
-          "reviewed": "리뷰됨",
           "reviewers_busy": "리뷰어 {{max}}명 중 {{busy}}명 작업 중",
           "step": "· 단계",
           "stops_queued_prs_one_already_being_reviewed_will": "대기 중인 PR을 중단합니다. 이미 리뷰 중인 것은 끝까지 진행됩니다.",
           "usually": "보통 약",
-          "working": "처리 중"
+          "working": "처리 중",
+          "reviewed_of_other": "{{done}} / {{count}} 리뷰됨",
+          "failed_count_other": "{{count}}개 실패",
+          "cancelled_count_other": "{{count}}개 취소됨"
         },
         "runStatusPill": {
           "cancelled": "취소됨",

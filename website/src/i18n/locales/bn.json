@@ -904,11 +904,12 @@
           "new_namespace_name": "নতুন namespace-এর নাম",
           "pattern_one": "{{count}} প্যাটার্ন",
           "pattern_other": "{{count}} প্যাটার্ন",
-          "pending": "বাকি",
           "read_namespace": "namespace {{name}} পড়ো",
           "invalid_namespace_name": "namespace-এর নামই তার ফোল্ডারের নাম হয়, তাই এতে শুধু ছোট হাতের ল্যাটিন অক্ষর (a–z), অঙ্ক (0–9), বিন্দু, হাইফেন আর আন্ডারস্কোর থাকতে পারে। নাম কোনো অক্ষর বা অঙ্ক দিয়ে শুরু ও শেষ হতে হবে এবং 2 থেকে 64টি অক্ষরের হতে হবে।",
           "invalid_namespace_name_char": "“{{char}}” namespace-এর নামে ব্যবহার করা যায় না। ছোট হাতের a–z, 0–9, . -⁠ _ ব্যবহার করো।",
-          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) namespace-এর নামে ব্যবহার করা যায় না। ছোট হাতের a–z, 0–9, . -⁠ _ ব্যবহার করো।"
+          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) namespace-এর নামে ব্যবহার করা যায় না। ছোট হাতের a–z, 0–9, . -⁠ _ ব্যবহার করো।",
+          "pending_count_one": "{{count}}টি বাকি",
+          "pending_count_other": "{{count}}টি বাকি"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1051,7 +1052,6 @@
         },
         "reportView": {
           "blast_radius": "প্রভাবের পরিসর: {{scope}}",
-          "blocking": "আটকে দেয়",
           "changes_reviewed_one": "{{count}} পরিবর্তন রিভিউ হয়েছে",
           "changes_reviewed_other": "{{count}} পরিবর্তন রিভিউ হয়েছে",
           "clear": "মুছে দাও",
@@ -1068,10 +1068,13 @@
           "open_the_pull_request": "pull request খোলো",
           "share": "ভাগ করো",
           "sharing": "ভাগ করা হচ্ছে…",
-          "should_fix": "ঠিক করা উচিত",
           "step_problem": "সমস্যা",
           "step_solution_fit": "সমাধান কতটা খাপ খায়",
-          "step_why_it_matters": "এটা কেন জরুরি"
+          "step_why_it_matters": "এটা কেন জরুরি",
+          "blocking_count_one": "{{count}}টি আটকে দেয়",
+          "blocking_count_other": "{{count}}টি আটকে দেয়",
+          "should_fix_count_one": "{{count}}টি ঠিক করা উচিত",
+          "should_fix_count_other": "{{count}}টি ঠিক করা উচিত"
         },
         "reviewChat": {
           "error_generic": "ফলো-অাপ সেশন খোলা যায়নি। আবার নেষ্টা করুন।",
@@ -1108,7 +1111,6 @@
           "delete_review_of": "{{label}}-এর রিভিউ মুছে ফেলো",
           "delete_this_review": "এই রিভিউ মুছে ফেলো",
           "delete_this_review_2": "এই রিভিউ মুছে ফেলব?",
-          "more": "আরও",
           "needs_review_count_one": "{{count}}-এর রিভিউ দরকার",
           "needs_review_count_other": "{{count}}-এর রিভিউ দরকার",
           "pull_requests": "pull request",
@@ -1117,13 +1119,14 @@
           "review_of_with_more_one": "{{label}} আর আরও {{count}}-এর রিভিউ",
           "review_of_with_more_other": "{{label}} আর আরও {{count}}-এর রিভিউ",
           "worth_a_glance_count_one": "{{count}}-এ চোখ রাখা ভালো",
-          "worth_a_glance_count_other": "{{count}}-এ চোখ রাখা ভালো"
+          "worth_a_glance_count_other": "{{count}}-এ চোখ রাখা ভালো",
+          "more_count_one": "আরও +{{count}}",
+          "more_count_other": "আরও +{{count}}"
         },
         "runDetail": {
           "cancelled_before_any_finished": "কোনো pull request শেষ হওয়ার আগেই ওটা বাতিল হয়ে গেছিল।",
           "finished": "শেষ",
           "loading_report": "রিপোর্ট লোড হচ্ছে…",
-          "more": "আরও",
           "nothing_to_report": "কোনো pull request-এর রিভিউ শেষ হয়নি, তাই জানানোর কিছু ছিল না।",
           "pull_request_one": "{{count}} pull request",
           "pull_request_other": "{{count}} pull request",
@@ -1132,25 +1135,30 @@
           "skipped_inflight_other": "{{count}} pull request বাদ পড়েছে, কারণ আরেকটা রিভিউ আগেই সেগুলো নিয়ে নিয়েছিল।",
           "started": "শুরু",
           "this_review_produced_no_report": "এই রিভিউ কোনো রিপোর্ট বানায়নি।",
-          "you_can_leave_this_page_a_notification_will_tell": "তুমি এই পাতা ছেড়ে যেতে পারো — এসে গেলে একটা নোটিফিকেশন জানিয়ে দেবে।"
+          "you_can_leave_this_page_a_notification_will_tell": "তুমি এই পাতা ছেড়ে যেতে পারো — এসে গেলে একটা নোটিফিকেশন জানিয়ে দেবে।",
+          "more_count_one": "আরও +{{count}}",
+          "more_count_other": "আরও +{{count}}"
         },
         "runList": {
           "new_review": "নতুন রিভিউ"
         },
         "runProgress": {
           "cancel_review": "রিভিউ বাতিল করো",
-          "cancelled": "বাতিল",
           "cancelling": "বাতিল করা হচ্ছে…",
           "elapsed_time": "কেটে যাওয়া সময়",
-          "failed": "ব্যর্থ",
           "median_of_past_runs_of_this_size": "এই মাপের আগের চালানোগুলোর মধ্যক",
           "review_progress": "রিভিউয়ের অগ্রগতি",
-          "reviewed": "রিভিউ হয়েছে",
           "reviewers_busy": "{{max}}-এর মধ্যে {{busy}} জন রিভিউয়ার ব্যস্ত",
           "step": "· ধাপ",
           "stops_queued_prs_one_already_being_reviewed_will": "সারিতে থাকা PR থেমে যাবে; যেটার রিভিউ চলছে সেটা শেষ হবে।",
           "usually": "সাধারণত ~",
-          "working": "কাজ চলছে"
+          "working": "কাজ চলছে",
+          "reviewed_of_one": "{{done}} / {{count}} রিভিউ হয়েছে",
+          "reviewed_of_other": "{{done}} / {{count}} রিভিউ হয়েছে",
+          "failed_count_one": "{{count}}টি ব্যর্থ",
+          "failed_count_other": "{{count}}টি ব্যর্থ",
+          "cancelled_count_one": "{{count}}টি বাতিল",
+          "cancelled_count_other": "{{count}}টি বাতিল"
         },
         "runStatusPill": {
           "cancelled": "বাতিল",
