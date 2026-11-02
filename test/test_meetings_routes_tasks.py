@@ -533,6 +533,7 @@ class TestNoStoreCallRunsOnTheEventLoop:
             "list_meetings",
             "tasks_path",
             "read_tasks",
+            "read_tasks_for_update",
             "write_tasks",
             "ensure_agent_files",
             "read_agent_outputs",

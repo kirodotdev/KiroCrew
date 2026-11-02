@@ -42,15 +42,17 @@ import shutil
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.manager import app_data_dir
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry, replace_with_retry
 from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 from kiro_crew.platform_compat import is_link_or_junction, strip_extended_length_prefix
 from kiro_crew.sel import sel
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger("kirocrew.app.meetings")
 
@@ -642,14 +644,99 @@ def tasks_path(meeting_id: str, root: Path | None = None) -> Path:
     )
 
 
+def _load_tasks_doc(path: Path) -> Any:
+    """Parse ``tasks.json``, accepting one leading UTF-8 byte-order mark.
+
+    Raises ``FileNotFoundError`` for a missing file, another ``OSError`` when the
+    read fails, and ``ValueError`` when the bytes are not UTF-8 JSON.
+    """
+    return loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
+
+
+def _empty_tasks_doc(meeting_id: str) -> dict[str, Any]:
+    return {"meeting_id": meeting_id, "tasks": [], "updated_at": utc_now_iso()}
+
+
 def read_tasks(meeting_id: str, root: Path | None = None) -> dict[str, Any]:
-    doc = _read_json(tasks_path(meeting_id, root), None)
+    """The meeting's task document for display. Degrades to an empty list. BLOCKING.
+
+    A write must not start from this answer: it is empty for a file that is present
+    but unreadable. Writers read through :func:`read_tasks_for_update`.
+    """
+    path = tasks_path(meeting_id, root)
+    try:
+        doc = _load_tasks_doc(path)
+    except FileNotFoundError:
+        doc = None
+    except (OSError, ValueError):
+        logger.warning("meetings: unreadable JSON at %s — using default", path)
+        doc = None
     if not isinstance(doc, dict):
-        return {"meeting_id": meeting_id, "tasks": [], "updated_at": utc_now_iso()}
+        return _empty_tasks_doc(meeting_id)
     tasks = doc.get("tasks")
     if not isinstance(tasks, list):
         doc["tasks"] = []
     return doc
+
+
+def read_tasks_for_update(meeting_id: str, root: Path | None = None) -> dict[str, Any]:
+    """The task document a read-modify-write starts from. BLOCKING.
+
+    ``tasks.json`` is agent-written, so a half-written or malformed file is a real
+    case. :func:`read_tasks` shows it as an empty list; a write starting there
+    would save one task over every task still in the file. Here a present file that
+    does not parse as a task document is moved aside to
+    ``tasks.json.corrupt-<utc>`` with a warning first, so its bytes outlive the
+    write, which then starts from an empty list. When the read itself fails, or the
+    move does, this raises :class:`MeetingsPathError` (500, ``tasks_unreadable``)
+    and the file stays as it is.
+    """
+    path = tasks_path(meeting_id, root)
+    try:
+        doc = _load_tasks_doc(path)
+    except FileNotFoundError:
+        return _empty_tasks_doc(meeting_id)
+    except OSError as exc:
+        # A failed read says nothing about the bytes, which may be a good list.
+        logger.warning("meetings: could not read %s (%s); refusing to save over it", path, exc)
+        raise MeetingsPathError(
+            "the task list could not be read from disk",
+            status=500,
+            code="tasks_unreadable",
+        ) from exc
+    except ValueError as exc:
+        _set_tasks_aside(path, exc)
+        return _empty_tasks_doc(meeting_id)
+    if not isinstance(doc, dict) or not isinstance(doc.get("tasks"), list):
+        _set_tasks_aside(path, "not a task document: no tasks list")
+        return _empty_tasks_doc(meeting_id)
+    return doc
+
+
+def _set_tasks_aside(path: Path, reason: object) -> None:
+    """Move an unparseable ``tasks.json`` to ``<name>.corrupt-<utc>`` before a save."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    aside = path.with_name(f"{path.name}.corrupt-{stamp}")
+    try:
+        replace_with_retry(path, aside)
+    except OSError as exc:
+        logger.warning(
+            "meetings: %s could not be parsed (%s) or moved aside (%s); not saving over it",
+            path,
+            reason,
+            exc,
+        )
+        raise MeetingsPathError(
+            "the task list could not be read from disk",
+            status=500,
+            code="tasks_unreadable",
+        ) from exc
+    logger.warning(
+        "meetings: %s could not be parsed (%s); moved it to %s before saving",
+        path,
+        reason,
+        aside.name,
+    )
 
 
 def write_tasks(meeting_id: str, tasks: list[dict[str, Any]], root: Path | None = None) -> dict:
