@@ -37,7 +37,6 @@ src/apps/mochi/src/shared/utils.ts 0.0   # 0/44
 src/apps/ops-mission-control/HandoverPanel.tsx 0.0   # 0/42
 src/apps/papyrus/ProjectList.tsx 48.6   # 36/74
 src/apps/personal-shopper/HistoryTab.tsx 0.0   # 0/45
-src/apps/pptx-maker/LibraryPanel.tsx 39.6   # 42/106
 src/apps/spec-builder/components/ChatColumn.tsx 0.0   # 0/2
 src/apps/workflows/WorkflowSourcePanel.tsx 4.7   # 2/43
 src/components/AddJobSplitButton.tsx 66.7   # 2/3
